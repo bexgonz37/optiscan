@@ -15,12 +15,30 @@ import {
   fetchQuote,
   fetchCandles,
   fetchOptionChain,
+  fetchTickerName,
 } from "@/lib/polygon-provider";
 import { buildMomentumSignal, momentumConfigFromEnv } from "@/lib/momentum-signals";
 import { buildOptionSignal, optionsConfigFromEnv } from "@/lib/options-signals";
 import { detectUnusualContracts, unusualConfigFromEnv } from "@/lib/unusual-activity";
 import { getScanUniverse } from "@/lib/universe";
+import { companyName } from "@/lib/company-names";
 import { cached, mapLimit } from "@/lib/scan-cache";
+
+const NAME_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** Resolve a company name: instant static map first, then Polygon (cached 24h). */
+async function resolveName(symbol: string): Promise<string | null> {
+  const stat = companyName(symbol);
+  if (stat) return stat;
+  if (!hasPolygon()) return null;
+  return cached<string | null>(`name:${symbol}`, NAME_TTL_MS, async () => {
+    try {
+      return (await fetchTickerName(symbol)) ?? null;
+    } catch {
+      return null;
+    }
+  });
+}
 import type {
   MomentumRow,
   UnusualRow,
@@ -81,6 +99,7 @@ async function enrichSymbol(symbol: string, quote: any, ttlMs: number): Promise<
       });
       const contracts: OptionContract[] = chainRes?.contracts ?? [];
 
+      const name = await resolveName(symbol);
       const opt: any = buildOptionSignal(mom, contracts, optCfg);
       // buildOptionSignal drops gamma/theta/vega; re-attach from the full chain
       // so the detail panel can show the complete greeks.
@@ -96,13 +115,15 @@ async function enrichSymbol(symbol: string, quote: any, ttlMs: number): Promise<
           };
         }
       }
-      const unusual: UnusualRow[] = detectUnusualContracts(contracts, {
+      const unusualRaw: UnusualRow[] = detectUnusualContracts(contracts, {
         ...unuCfg,
         symbol,
       });
+      const unusual: UnusualRow[] = unusualRaw.map((u) => ({ ...u, name }));
 
       const momentumRow: MomentumRow = {
         symbol: mom.symbol ?? symbol,
+        name,
         bias: opt.bias ?? mom.bias,
         side: opt.side ?? null,
         score: opt.score ?? 0,
@@ -125,11 +146,12 @@ async function enrichSymbol(symbol: string, quote: any, ttlMs: number): Promise<
         quote: quote
           ? {
               symbol,
+              name,
               price: quote.price ?? quote.last ?? null,
               changePercent: quote.changePercent ?? null,
               volume: quote.volume ?? null,
             }
-          : null,
+          : { symbol, name, price: null, changePercent: null, volume: null },
         momentum: momentumRow,
         unusual,
         contracts,

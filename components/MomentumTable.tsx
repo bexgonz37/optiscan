@@ -109,7 +109,7 @@ export function MomentumTable({
                       {r.contract && (r.contract.iv ?? 0) > 0.8 ? <span className="tag t-iv">IV↑</span> : null}
                       {(r.relVol ?? 0) >= 1.5 ? <span className="tag t-vol">VOL</span> : null}
                     </div>
-                    <div className="tsub">{r.trend === "up" ? "Uptrend" : r.trend === "down" ? "Downtrend" : "Mixed"}</div>
+                    <div className="tsub">{r.name ?? (r.trend === "up" ? "Uptrend" : r.trend === "down" ? "Downtrend" : "Mixed")}</div>
                   </div>
                 </div>
               </td>

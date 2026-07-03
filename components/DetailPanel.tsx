@@ -83,7 +83,7 @@ export function DetailPanel({
                 <TickerIcon symbol={symbol} size={40} />
                 <div>
                   <div className="nm">{symbol}</div>
-                  <div className="co">US equity options</div>
+                  <div className="co">{data?.quote?.name ?? "US equity options"}</div>
                 </div>
                 <div className="dprice">
                   <div className="p">{fmtPrice(mom?.underlyingPrice ?? data?.quote?.price ?? null)}</div>

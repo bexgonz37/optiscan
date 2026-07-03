@@ -24,6 +24,7 @@ export interface OptionContract {
 
 export interface MomentumRow {
   symbol: string | null;
+  name?: string | null;
   bias: string;
   side: OptionSide | null;
   score: number;
@@ -43,6 +44,7 @@ export interface MomentumRow {
 
 export interface UnusualRow {
   symbol: string | null;
+  name?: string | null;
   optionSymbol: string | null;
   side: OptionSide | string;
   strike: number | null;
@@ -85,6 +87,7 @@ export interface SymbolDetail extends ScanMeta {
   symbol: string;
   quote: {
     symbol: string;
+    name?: string | null;
     price: number | null;
     changePercent: number | null;
     volume: number | null;

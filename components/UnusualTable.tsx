@@ -100,7 +100,7 @@ export function UnusualTable({
                       {r.symbol}
                       {r.newPositioning ? <span className="tag t-new">NEW</span> : null}
                     </div>
-                    <div className="tsub">{fmtPremium(r.mid)} mid</div>
+                    <div className="tsub">{r.name ?? `${fmtPremium(r.mid)} mid`}</div>
                   </div>
                 </div>
               </td>
