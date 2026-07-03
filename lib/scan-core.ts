@@ -22,7 +22,7 @@ import { buildOptionSignal, optionsConfigFromEnv } from "@/lib/options-signals";
 import { detectUnusualContracts, unusualConfigFromEnv } from "@/lib/unusual-activity";
 import { getScanUniverse } from "@/lib/universe";
 import { companyName } from "@/lib/company-names";
-import { cached, mapLimit } from "@/lib/scan-cache";
+import { cached, cachedMaxAge, mapLimit } from "@/lib/scan-cache";
 
 const NAME_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -77,8 +77,8 @@ interface Enriched {
 }
 
 /** Fetch candles + full chain for one symbol and derive both signal types. */
-async function enrichSymbol(symbol: string, quote: any, ttlMs: number): Promise<Enriched> {
-  return cached<Enriched>(`sym:${symbol}`, ttlMs, async () => {
+async function enrichSymbol(symbol: string, quote: any, maxAgeMs: number): Promise<Enriched> {
+  return cachedMaxAge<Enriched>(`sym:${symbol}`, maxAgeMs, async () => {
     const momCfg = momentumConfigFromEnv();
     const optCfg = optionsConfigFromEnv();
     const unuCfg = unusualConfigFromEnv();
@@ -197,10 +197,12 @@ async function buildShortlist(cfg: ScanConfig): Promise<{ symbols: string[]; quo
   return { symbols, quotes, universeCount: universe.length };
 }
 
-/** Full scan feeding both tabs. Cached under a single key for the TTL window. */
-export async function runScan(): Promise<ScanResult> {
+/** Full scan feeding both tabs. Freshness is controlled by `maxAgeMs` (the
+ * client's poll rate), defaulting to SCAN_CACHE_MS. */
+export async function runScan(maxAgeMs?: number): Promise<ScanResult> {
   const cfg = scanConfig();
   const keyPresent = hasPolygon();
+  const freshness = Number.isFinite(maxAgeMs) ? Math.max(0, Number(maxAgeMs)) : cfg.cacheTtlMs;
 
   if (!keyPresent) {
     const universe = getScanUniverse();
@@ -218,11 +220,11 @@ export async function runScan(): Promise<ScanResult> {
     };
   }
 
-  return cached<ScanResult>("scan", cfg.cacheTtlMs, async () => {
+  return cachedMaxAge<ScanResult>("scan", freshness, async () => {
     const { symbols, quotes, universeCount } = await buildShortlist(cfg);
 
     const enriched = await mapLimit(symbols, cfg.concurrency, (sym) =>
-      enrichSymbol(sym, quotes.get(sym), cfg.cacheTtlMs),
+      enrichSymbol(sym, quotes.get(sym), freshness),
     );
 
     const momentum: MomentumRow[] = [];

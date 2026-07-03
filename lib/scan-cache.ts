@@ -23,6 +23,26 @@ export async function cached<T>(key: string, ttlMs: number, fn: () => Promise<T>
   return value;
 }
 
+interface AgeEntry<T> {
+  value: T;
+  ts: number;
+}
+const ageStore = new Map<string, AgeEntry<unknown>>();
+
+/**
+ * Age-based cache: serve the stored value only if it's younger than `maxAgeMs`.
+ * Lets the caller (the client's poll rate) control freshness at request time,
+ * while still de-duplicating bursts (e.g. two endpoints scanning the same tick).
+ */
+export async function cachedMaxAge<T>(key: string, maxAgeMs: number, fn: () => Promise<T>): Promise<T> {
+  const now = Date.now();
+  const hit = ageStore.get(key) as AgeEntry<T> | undefined;
+  if (hit && now - hit.ts <= Math.max(0, maxAgeMs)) return hit.value;
+  const value = await fn();
+  ageStore.set(key, { value, ts: Date.now() });
+  return value;
+}
+
 export function cacheAgeMs(key: string, ttlMs: number): number | null {
   const hit = store.get(key);
   if (!hit) return null;

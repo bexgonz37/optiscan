@@ -4,9 +4,10 @@ import { runScan } from "@/lib/scan-core";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
-    const scan = await runScan();
+    const maxAge = Number(new URL(req.url).searchParams.get("maxAge"));
+    const scan = await runScan(Number.isFinite(maxAge) ? maxAge : undefined);
     const { unusual, ...rest } = scan;
     void unusual;
     return NextResponse.json({ ...rest, signals: scan.momentum });

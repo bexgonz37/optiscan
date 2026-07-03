@@ -115,6 +115,8 @@ export function useScanner(opts: {
   const onStrongRef = useRef(onNewStrong);
   onStrongRef.current = onNewStrong;
   const inFlight = useRef(false);
+  const intervalRef = useRef(intervalSec);
+  intervalRef.current = intervalSec;
 
   const detectStrong = useCallback((momentum: MomentumRow[], unusual: UnusualRow[]) => {
     const fresh: StrongAlert[] = [];
@@ -155,10 +157,14 @@ export function useScanner(opts: {
     if (inFlight.current) return;
     inFlight.current = true;
     setState((s) => ({ ...s, loading: true }));
+    // Ask the server for data at least as fresh as our poll rate, so every poll
+    // returns a genuinely new scan (the small margin lets the two endpoints
+    // share one underlying scan within the same tick).
+    const maxAge = Math.max(400, intervalRef.current * 1000 - 300);
     try {
       const [mRes, uRes] = await Promise.all([
-        fetch("/api/scan/momentum", { cache: "no-store" }),
-        fetch("/api/scan/unusual", { cache: "no-store" }),
+        fetch(`/api/scan/momentum?maxAge=${maxAge}`, { cache: "no-store" }),
+        fetch(`/api/scan/unusual?maxAge=${maxAge}`, { cache: "no-store" }),
       ]);
       const m = await mRes.json();
       const u = await uRes.json();
@@ -199,7 +205,7 @@ export function useScanner(opts: {
 
   useEffect(() => {
     if (!autoRefresh) return;
-    const ms = Math.max(5, intervalSec) * 1000;
+    const ms = Math.max(1, intervalSec) * 1000;
     const id = setInterval(refresh, ms);
     return () => clearInterval(id);
   }, [autoRefresh, intervalSec, refresh]);
