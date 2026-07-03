@@ -82,6 +82,20 @@ async function enrichSymbol(symbol: string, quote: any, ttlMs: number): Promise<
       const contracts: OptionContract[] = chainRes?.contracts ?? [];
 
       const opt: any = buildOptionSignal(mom, contracts, optCfg);
+      // buildOptionSignal drops gamma/theta/vega; re-attach from the full chain
+      // so the detail panel can show the complete greeks.
+      let optContract = opt.contract;
+      if (optContract?.optionSymbol) {
+        const full: any = contracts.find((c: any) => c.optionSymbol === optContract.optionSymbol);
+        if (full) {
+          optContract = {
+            ...optContract,
+            gamma: full.gamma ?? null,
+            theta: full.theta ?? null,
+            vega: full.vega ?? null,
+          };
+        }
+      }
       const unusual: UnusualRow[] = detectUnusualContracts(contracts, {
         ...unuCfg,
         symbol,
@@ -100,7 +114,7 @@ async function enrichSymbol(symbol: string, quote: any, ttlMs: number): Promise<
         rsi: mom.rsi ?? null,
         relVol: mom.relVol ?? null,
         trend: mom.trend ?? "mixed",
-        contract: opt.contract ?? null,
+        contract: optContract ?? null,
         reason: opt.reason ?? mom.reason ?? "",
         reasons: opt.reasons ?? [],
         warnings: opt.warnings ?? mom.warnings ?? [],

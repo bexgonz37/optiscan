@@ -2,16 +2,37 @@
 
 import { useMemo, useState } from "react";
 import type { MomentumRow } from "@/lib/types";
-import { GradeChip, SideBadge, ScoreBar } from "@/components/ui";
-import { changeColor, fmtExpiry, fmtIv, fmtNum, fmtPct, fmtPremium, fmtPrice, fmtInt } from "@/lib/format";
+import { TickerIcon, ScoreBar, IvBar, GradeChip } from "@/components/ui";
+import { changeColor, fmtNum, fmtPct, fmtPremium, fmtPrice, fmtInt } from "@/lib/format";
 
-type SortKey = "score" | "symbol" | "movePct" | "iv";
+type SortKey = "symbol" | "price" | "chg" | "iv" | "delta" | "entry" | "dte" | "score";
+
+const dirColor: Record<string, string> = {
+  bullish: "var(--green)",
+  bearish: "var(--red)",
+  neutral: "var(--amber)",
+};
+
+function val(r: MomentumRow, k: SortKey): number | string {
+  switch (k) {
+    case "symbol": return r.symbol ?? "";
+    case "price": return r.underlyingPrice ?? 0;
+    case "chg": return r.movePct ?? 0;
+    case "iv": return r.contract?.iv ?? 0;
+    case "delta": return Math.abs(r.contract?.delta ?? 0);
+    case "entry": return r.contract?.entry ?? 0;
+    case "dte": return r.contract?.dte ?? 0;
+    default: return r.score ?? 0;
+  }
+}
 
 export function MomentumTable({
   rows,
+  selected,
   onSelect,
 }: {
   rows: MomentumRow[];
+  selected: string | null;
   onSelect: (symbol: string) => void;
 }) {
   const [sort, setSort] = useState<SortKey>("score");
@@ -20,129 +41,106 @@ export function MomentumTable({
   const sorted = useMemo(() => {
     const copy = [...rows];
     copy.sort((a, b) => {
-      let av: number | string;
-      let bv: number | string;
-      switch (sort) {
-        case "symbol":
-          av = a.symbol ?? "";
-          bv = b.symbol ?? "";
-          return av < bv ? dir : av > bv ? -dir : 0;
-        case "movePct":
-          av = a.movePct ?? 0;
-          bv = b.movePct ?? 0;
-          break;
-        case "iv":
-          av = a.contract?.iv ?? 0;
-          bv = b.contract?.iv ?? 0;
-          break;
-        default:
-          av = a.score ?? 0;
-          bv = b.score ?? 0;
+      const av = val(a, sort);
+      const bv = val(b, sort);
+      if (typeof av === "string" || typeof bv === "string") {
+        return String(av).localeCompare(String(bv)) * dir;
       }
-      return ((av as number) - (bv as number)) * dir;
+      return (av - bv) * dir;
     });
     return copy;
   }, [rows, sort, dir]);
 
-  function toggle(key: SortKey) {
-    if (sort === key) setDir((d) => (d === -1 ? 1 : -1));
+  function toggle(k: SortKey) {
+    if (sort === k) setDir((d) => (d === -1 ? 1 : -1));
     else {
-      setSort(key);
+      setSort(k);
       setDir(-1);
     }
   }
 
-  const Th = ({ k, label, className = "" }: { k?: SortKey; label: string; className?: string }) => (
-    <th
-      className={`whitespace-nowrap px-3 py-2 text-left font-semibold uppercase tracking-wider text-zinc-500 ${
-        k ? "cursor-pointer select-none hover:text-zinc-300" : ""
-      } ${className}`}
-      onClick={k ? () => toggle(k) : undefined}
-    >
+  const Th = ({ k, label }: { k: SortKey; label: string }) => (
+    <th className={sort === k ? "sorted" : ""} onClick={() => toggle(k)}>
       {label}
-      {k && sort === k ? (dir === -1 ? " ↓" : " ↑") : ""}
+      {sort === k ? <span className="arrow">{dir < 0 ? "▼" : "▲"}</span> : null}
     </th>
   );
 
   if (!rows.length) {
-    return <EmptyState />;
+    return (
+      <div className="empty">
+        <div className="big">No directional options signals right now.</div>
+        Calls/puts appear here as stocks build intraday momentum. Try clearing a filter.
+      </div>
+    );
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[820px] border-collapse text-sm">
+    <div className="tablewrap">
+      <table>
         <thead>
-          <tr className="border-b border-white/10 text-[10px]">
-            <Th k="symbol" label="Symbol" />
-            <Th label="Signal" />
-            <Th k="movePct" label="Day" />
-            <Th label="Contract" />
-            <Th label="Entry" />
-            <Th label="Δ" />
+          <tr>
+            <Th k="symbol" label="Ticker" />
+            <Th k="price" label="Price" />
+            <Th k="chg" label="Chg %" />
+            <th>Setup</th>
             <Th k="iv" label="IV" />
-            <Th label="OI / Vol" />
-            <Th k="score" label="Score" />
-            <Th label="Why" className="min-w-[220px]" />
+            <Th k="delta" label="Δ" />
+            <Th k="entry" label="Entry" />
+            <Th k="dte" label="DTE" />
+            <th>OI / Vol</th>
+            <Th k="score" label="Signal" />
           </tr>
         </thead>
         <tbody>
           {sorted.map((r) => (
             <tr
               key={`${r.symbol}-${r.contract?.optionSymbol ?? r.side}`}
+              data-sym={r.symbol ?? ""}
+              className={selected === r.symbol ? "sel" : ""}
               onClick={() => r.symbol && onSelect(r.symbol)}
-              className="row-in cursor-pointer border-b border-white/5 transition hover:bg-white/[0.03]"
             >
-              <td className="px-3 py-2.5">
-                <div className="font-bold text-zinc-100">{r.symbol}</div>
-                <div className="tabular text-[11px] text-zinc-500">{fmtPrice(r.underlyingPrice)}</div>
+              <td>
+                <div className="tkr">
+                  <TickerIcon symbol={r.symbol} />
+                  <div>
+                    <div className="tname">
+                      {r.symbol}
+                      {r.contract && (r.contract.iv ?? 0) > 0.8 ? <span className="tag t-iv">IV↑</span> : null}
+                      {(r.relVol ?? 0) >= 1.5 ? <span className="tag t-vol">VOL</span> : null}
+                    </div>
+                    <div className="tsub">{r.trend === "up" ? "Uptrend" : r.trend === "down" ? "Downtrend" : "Mixed"}</div>
+                  </div>
+                </div>
               </td>
-              <td className="px-3 py-2.5">
-                <SideBadge side={r.side} />
-              </td>
-              <td className={`tabular px-3 py-2.5 font-semibold ${changeColor(r.movePct)}`}>
+              <td className="num">{fmtPrice(r.underlyingPrice).replace("$", "")}</td>
+              <td className="num" style={{ color: changeColor(r.movePct) }}>
                 {fmtPct(r.movePct)}
               </td>
-              <td className="tabular px-3 py-2.5 text-zinc-200">
-                {r.contract ? (
-                  <>
-                    <span className="font-semibold">{fmtNum(r.contract.strike, 0)}</span>
-                    <span className="text-zinc-500"> · {fmtExpiry(r.contract.expiration)}</span>
-                    <span className="text-zinc-600"> ({r.contract.dte}d)</span>
-                  </>
-                ) : (
-                  "—"
-                )}
+              <td>
+                <span className="badge b-strat" style={{ color: dirColor[r.bias] ?? "var(--muted)" }}>
+                  Long {String(r.side ?? "").toUpperCase() || "—"}
+                </span>
               </td>
-              <td className="tabular px-3 py-2.5 text-zinc-200">{fmtPremium(r.contract?.entry)}</td>
-              <td className="tabular px-3 py-2.5 text-zinc-400">{fmtNum(r.contract?.delta, 2)}</td>
-              <td className="tabular px-3 py-2.5 text-zinc-400">{fmtIv(r.contract?.iv)}</td>
-              <td className="tabular px-3 py-2.5 text-zinc-400">
+              <td>
+                <IvBar iv={r.contract?.iv} />
+              </td>
+              <td className="num">{fmtNum(r.contract?.delta, 2)}</td>
+              <td className="num">{fmtPremium(r.contract?.entry)}</td>
+              <td className="num">{r.contract?.dte ?? "—"}</td>
+              <td className="num muted">
                 {fmtInt(r.contract?.openInterest)} / {fmtInt(r.contract?.volume)}
               </td>
-              <td className="px-3 py-2.5">
-                <div className="flex items-center gap-2">
+              <td>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-end" }}>
                   <ScoreBar score={r.score} />
                   <GradeChip grade={r.grade} />
                 </div>
-              </td>
-              <td className="px-3 py-2.5 text-[12px] text-zinc-400">
-                <span className="line-clamp-2">{r.reason}</span>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
-    </div>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="grid place-items-center px-6 py-16 text-center">
-      <div className="text-sm text-zinc-400">No directional options signals right now.</div>
-      <div className="mt-1 text-xs text-zinc-600">
-        The scanner surfaces calls/puts on stocks with the strongest intraday momentum. Check back as names start moving.
-      </div>
     </div>
   );
 }

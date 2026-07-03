@@ -1,46 +1,111 @@
 import type { Grade } from "@/lib/types";
-import { gradeClasses, sideClasses } from "@/lib/format";
 
-export function GradeChip({ grade }: { grade: Grade | string }) {
+/** Deterministic vivid color for a ticker badge. */
+export function tickerColor(symbol: string | null | undefined): string {
+  const s = symbol ?? "";
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
+  return `hsl(${h}, 62%, 58%)`;
+}
+
+export function TickerIcon({ symbol, size = 30 }: { symbol: string | null | undefined; size?: number }) {
+  const label = (symbol ?? "?").slice(0, 2).toUpperCase();
   return (
-    <span
-      className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wider ${gradeClasses(grade)}`}
-    >
-      {grade}
-    </span>
+    <div className="ticon" style={{ background: tickerColor(symbol), width: size, height: size }}>
+      {label}
+    </div>
   );
 }
 
-export function SideBadge({ side }: { side: string | null | undefined }) {
-  const label = side === "call" ? "CALL" : side === "put" ? "PUT" : "—";
+export function SideTag({ side }: { side: string | null | undefined }) {
+  if (side === "call") return <span className="tag t-call">CALL</span>;
+  if (side === "put") return <span className="tag t-put">PUT</span>;
+  return null;
+}
+
+export function GradeChip({ grade }: { grade: Grade | string }) {
+  const color =
+    grade === "STRONG" ? "var(--green)" : grade === "GOOD" ? "var(--cyan)" : grade === "WATCH" ? "var(--amber)" : "var(--dim)";
   return (
-    <span
-      className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wider ${sideClasses(side)}`}
-    >
-      {label}
+    <span className="badge b-strat" style={{ color }}>
+      {grade}
     </span>
   );
 }
 
 export function ScoreBar({ score }: { score: number }) {
   const pct = Math.max(0, Math.min(100, score));
-  const color =
-    score >= 80 ? "bg-emerald-400" : score >= 65 ? "bg-sky-400" : score >= 50 ? "bg-amber-400" : "bg-zinc-500";
   return (
-    <div className="flex items-center gap-2">
-      <div className="h-1.5 w-14 overflow-hidden rounded-full bg-white/5">
-        <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
-      </div>
-      <span className="tabular w-7 text-right text-xs text-zinc-300">{Math.round(score)}</span>
-    </div>
+    <span className="score">
+      <span className="scorebar">
+        <i style={{ width: `${pct}%` }} />
+      </span>
+      <span className="scoreval">{Math.round(score)}</span>
+    </span>
+  );
+}
+
+export function ivColor(v: number | null | undefined): string {
+  const n = v ?? 0;
+  return n > 90 ? "var(--red)" : n > 55 ? "var(--amber)" : "var(--green)";
+}
+
+export function IvBar({ iv }: { iv: number | null | undefined }) {
+  const n = iv ?? null;
+  if (n == null) return <span className="dim">—</span>;
+  const pct = Math.max(0, Math.min(100, n > 5 ? n : n * 100));
+  return (
+    <span className="ivr">
+      <span className="ivbar">
+        <i style={{ width: `${pct}%`, background: ivColor(pct) }} />
+      </span>
+      <span className="num" style={{ width: 26 }}>
+        {Math.round(pct)}
+      </span>
+    </span>
   );
 }
 
 export function Stat({ label, value, accent }: { label: string; value: React.ReactNode; accent?: string }) {
   return (
-    <div className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2">
-      <div className="text-[10px] uppercase tracking-wider text-zinc-500">{label}</div>
-      <div className={`tabular mt-0.5 text-sm font-semibold ${accent ?? "text-zinc-100"}`}>{value}</div>
+    <div className="stat">
+      <div className="l">{label}</div>
+      <div className="v" style={accent ? { color: accent } : undefined}>
+        {value}
+      </div>
     </div>
+  );
+}
+
+export function Sparkline({
+  values,
+  color = "#00d68f",
+  width = 64,
+  height = 26,
+}: {
+  values: number[];
+  color?: string;
+  width?: number;
+  height?: number;
+}) {
+  if (!values || values.length < 2) return null;
+  const mn = Math.min(...values);
+  const mx = Math.max(...values);
+  const r = mx - mn || 1;
+  const pts = values
+    .map((v, i) => `${(i / (values.length - 1)) * width},${height - ((v - mn) / r) * height}`)
+    .join(" ");
+  return (
+    <svg width={width} height={height}>
+      <polyline
+        points={pts}
+        fill="none"
+        stroke={color}
+        strokeWidth={1.8}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        opacity={0.85}
+      />
+    </svg>
   );
 }

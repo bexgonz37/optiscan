@@ -3,6 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { MomentumRow, UnusualRow, ScanMeta } from "@/lib/types";
 
+export interface KpiSnapshot {
+  signals: number;
+  unusual: number;
+  strong: number;
+  avgScore: number;
+  avgIv: number;
+  scanned: number;
+}
+
 export interface ScannerState {
   momentum: MomentumRow[];
   unusual: UnusualRow[];
@@ -10,15 +19,43 @@ export interface ScannerState {
   loading: boolean;
   error: string | null;
   lastUpdated: number | null;
+  kpi: KpiSnapshot;
+  kpiHistory: KpiSnapshot[];
+}
+
+export interface StrongAlert {
+  title: string;
+  desc: string;
 }
 
 const STRONG_ONLY_MIN = 80;
+const HISTORY = 16;
+const EMPTY_KPI: KpiSnapshot = { signals: 0, unusual: 0, strong: 0, avgScore: 0, avgIv: 0, scanned: 0 };
 
 function momentumId(r: MomentumRow): string {
   return `M:${r.symbol}:${r.contract?.optionSymbol ?? `${r.side}:${r.contract?.strike}:${r.contract?.expiration}`}`;
 }
 function unusualId(r: UnusualRow): string {
   return `U:${r.symbol}:${r.optionSymbol ?? `${r.side}:${r.strike}:${r.expiration}`}`;
+}
+
+function ivPct(iv: number | null | undefined): number | null {
+  if (iv == null) return null;
+  return iv > 5 ? iv : iv * 100;
+}
+
+function computeKpi(momentum: MomentumRow[], unusual: UnusualRow[], meta: ScanMeta | null): KpiSnapshot {
+  const scores = momentum.map((r) => r.score).filter((n) => Number.isFinite(n));
+  const ivs = momentum.map((r) => ivPct(r.contract?.iv)).filter((n): n is number => n != null);
+  const strong = momentum.filter((r) => r.score >= 80).length + unusual.filter((r) => r.score >= 80).length;
+  return {
+    signals: momentum.length,
+    unusual: unusual.length,
+    strong,
+    avgScore: scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0,
+    avgIv: ivs.length ? Math.round(ivs.reduce((a, b) => a + b, 0) / ivs.length) : 0,
+    scanned: meta?.scannedCount ?? 0,
+  };
 }
 
 function beep() {
@@ -43,10 +80,10 @@ function beep() {
   }
 }
 
-function notify(title: string, body: string) {
+function desktopNotify(title: string, body: string) {
   try {
     if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-      new Notification(title, { body, icon: "/favicon.ico", tag: title });
+      new Notification(title, { body, tag: title });
     }
   } catch {
     /* ignore */
@@ -57,8 +94,9 @@ export function useScanner(opts: {
   autoRefresh: boolean;
   intervalSec: number;
   notifyEnabled: boolean;
+  onNewStrong?: (alerts: StrongAlert[]) => void;
 }) {
-  const { autoRefresh, intervalSec, notifyEnabled } = opts;
+  const { autoRefresh, intervalSec, notifyEnabled, onNewStrong } = opts;
   const [state, setState] = useState<ScannerState>({
     momentum: [],
     unusual: [],
@@ -66,27 +104,31 @@ export function useScanner(opts: {
     loading: false,
     error: null,
     lastUpdated: null,
+    kpi: EMPTY_KPI,
+    kpiHistory: [],
   });
 
   const seen = useRef<Set<string>>(new Set());
   const primed = useRef(false);
   const notifyRef = useRef(notifyEnabled);
   notifyRef.current = notifyEnabled;
+  const onStrongRef = useRef(onNewStrong);
+  onStrongRef.current = onNewStrong;
   const inFlight = useRef(false);
 
-  const maybeNotify = useCallback((momentum: MomentumRow[], unusual: UnusualRow[]) => {
-    const fresh: string[] = [];
-    const check = (id: string, label: string, sub: string) => {
+  const detectStrong = useCallback((momentum: MomentumRow[], unusual: UnusualRow[]) => {
+    const fresh: StrongAlert[] = [];
+    const check = (id: string, title: string, desc: string) => {
       if (seen.current.has(id)) return;
       seen.current.add(id);
-      if (primed.current && notifyRef.current) fresh.push(`${label}||${sub}`);
+      if (primed.current) fresh.push({ title, desc });
     };
     for (const r of momentum) {
       if (r.score >= STRONG_ONLY_MIN && r.contract) {
         check(
           momentumId(r),
-          `${r.symbol} ${r.side?.toUpperCase()} signal`,
-          `${r.contract.strike} ${r.side} · score ${Math.round(r.score)} · ${r.reason}`,
+          `${r.symbol} ${r.side?.toUpperCase()} · score ${Math.round(r.score)}`,
+          `${r.contract.strike} ${r.side} · ${r.reason}`,
         );
       }
     }
@@ -99,11 +141,12 @@ export function useScanner(opts: {
         );
       }
     }
-    if (fresh.length) {
-      beep();
-      const first = fresh[0].split("||");
-      const extra = fresh.length > 1 ? ` (+${fresh.length - 1} more)` : "";
-      notify(first[0] + extra, first[1]);
+    if (fresh.length && primed.current) {
+      if (notifyRef.current) {
+        beep();
+        desktopNotify(fresh[0].title + (fresh.length > 1 ? ` (+${fresh.length - 1} more)` : ""), fresh[0].desc);
+      }
+      onStrongRef.current?.(fresh);
     }
     primed.current = true;
   }, []);
@@ -131,21 +174,24 @@ export function useScanner(opts: {
         scanned: m.scanned ?? [],
         errors: m.errors ?? [],
       };
-      maybeNotify(momentum, unusual);
-      setState({
+      detectStrong(momentum, unusual);
+      const kpi = computeKpi(momentum, unusual, meta);
+      setState((s) => ({
         momentum,
         unusual,
         meta,
         loading: false,
         error: m.error ?? u.error ?? null,
         lastUpdated: Date.now(),
-      });
+        kpi,
+        kpiHistory: [...s.kpiHistory, kpi].slice(-HISTORY),
+      }));
     } catch (err: any) {
       setState((s) => ({ ...s, loading: false, error: err?.message ?? "Failed to load scan" }));
     } finally {
       inFlight.current = false;
     }
-  }, [maybeNotify]);
+  }, [detectStrong]);
 
   useEffect(() => {
     refresh();
