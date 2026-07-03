@@ -13,7 +13,7 @@ import { useToast } from "@/components/Toasts";
 import type { MomentumRow, UnusualRow } from "@/lib/types";
 import { fmtTime } from "@/lib/format";
 
-const INTERVALS = [1, 2, 3, 5, 10, 15, 30, 60];
+const REFRESH_SEC = 1; // live: re-scan every second
 
 function ivPct(iv: number | null | undefined): number {
   if (iv == null) return 0;
@@ -27,7 +27,6 @@ export default function Page() {
   const [tab, setTab] = useState<Tab>("momentum");
   const [filters, setFilters] = useState<FilterKey[]>([]);
   const [autoRefresh, setAutoRefresh] = useState(true);
-  const [intervalSec, setIntervalSec] = useState(2);
   const [notifyEnabled, setNotifyEnabled] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -41,7 +40,6 @@ export default function Page() {
       if (raw) {
         const p = JSON.parse(raw);
         if (typeof p.autoRefresh === "boolean") setAutoRefresh(p.autoRefresh);
-        if (typeof p.intervalSec === "number") setIntervalSec(p.intervalSec);
         if (typeof p.activeView === "string") {
           const v = VIEWS.find((x) => x.id === p.activeView);
           if (v) {
@@ -58,11 +56,11 @@ export default function Page() {
 
   useEffect(() => {
     try {
-      localStorage.setItem("optiscan:prefs", JSON.stringify({ autoRefresh, intervalSec, activeView }));
+      localStorage.setItem("optiscan:prefs", JSON.stringify({ autoRefresh, activeView }));
     } catch {
       /* ignore */
     }
-  }, [autoRefresh, intervalSec, activeView]);
+  }, [autoRefresh, activeView]);
 
   useEffect(() => {
     const tick = () =>
@@ -82,7 +80,7 @@ export default function Page() {
 
   const { momentum, unusual, meta, loading, error, lastUpdated, kpi, kpiHistory, refresh } = useScanner({
     autoRefresh,
-    intervalSec,
+    intervalSec: REFRESH_SEC,
     notifyEnabled,
     onNewStrong,
   });
@@ -222,20 +220,8 @@ export default function Page() {
 
         <div className="pill btn" onClick={refresh}>Refresh</div>
         <div className={`pill btn ${autoRefresh ? "on" : ""}`} onClick={() => setAutoRefresh((v) => !v)}>
-          {autoRefresh ? "Live" : "Paused"}
+          {autoRefresh ? "Live · 1s" : "Paused"}
         </div>
-        <select
-          className="pill"
-          style={{ cursor: "pointer" }}
-          value={intervalSec}
-          onChange={(e) => setIntervalSec(Number(e.target.value))}
-        >
-          {INTERVALS.map((s) => (
-            <option key={s} value={s} style={{ background: "#131b24" }}>
-              {s}s
-            </option>
-          ))}
-        </select>
         <div className={`pill btn ${notifyEnabled ? "on" : ""}`} onClick={toggleNotify}>
           {notifyEnabled ? "Alerts on" : "Alerts off"}
         </div>
