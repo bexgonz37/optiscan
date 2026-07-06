@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { scanHeaders } from "@/hooks/useScanner";
 import { TickerIcon, ScoreBar } from "@/components/ui";
-import { changeColor, fmtPct, fmtPrice } from "@/lib/format";
+import { changeColor, fmtPct, fmtPrice, pctClass } from "@/lib/format";
 import {
   computeWatchScore,
   sortTape,
@@ -118,8 +118,7 @@ export function ScannerDashboard({
   const chip = (id: FilterKey, label: string) => (
     <button
       type="button"
-      className={`pill btn${filter === id ? " btn-primary" : ""}`}
-      style={{ fontSize: 11, padding: "4px 10px" }}
+      className={`pill btn btn-xs${filter === id ? " btn-primary" : ""}`}
       onClick={() => setFilter(id)}
     >
       {label}
@@ -144,7 +143,7 @@ export function ScannerDashboard({
       </div>
 
       <div className="scanner-toolbar">
-        <div className="search search-inline" style={{ flex: 1, maxWidth: 220 }}>
+        <div className="search search-inline search-narrow">
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter ticker" />
         </div>
         <div className="mover-filters">
@@ -152,8 +151,7 @@ export function ScannerDashboard({
           {chip("all", "All")}
           <button
             type="button"
-            className={`pill btn${paused ? " btn-primary" : ""}`}
-            style={{ fontSize: 11, padding: "4px 10px" }}
+            className={`pill btn btn-xs${paused ? " btn-primary" : ""}`}
             onClick={() => setPaused((v) => !v)}
             title="Freeze the table while you read"
           >
@@ -161,8 +159,7 @@ export function ScannerDashboard({
           </button>
           <button
             type="button"
-            className={`pill btn${showDetails ? " btn-primary" : ""}`}
-            style={{ fontSize: 11, padding: "4px 10px" }}
+            className={`pill btn btn-xs${showDetails ? " btn-primary" : ""}`}
             onClick={() => setShowDetails((v) => !v)}
             title="Show RVOL, volume, VWAP, and level breaks"
           >
@@ -213,6 +210,18 @@ export function ScannerDashboard({
                         <div>
                           <div className="tname">{r.symbol}</div>
                           <div className="tsub">{fmtPrice(r.price)}</div>
+                          <div className="tape-badges">
+                            {r.catalystFresh && r.catalystType && r.catalystType !== "no_clear_catalyst" ? (
+                              <span className="tag t-vol" title="Fresh catalyst (<30m)">
+                                {String(r.catalystType).replace(/_/g, " ")}
+                              </span>
+                            ) : null}
+                            {r.haltStatus === "halted" ? (
+                              <span className="tag t-put" title="Trading halt detected in news">HALT</span>
+                            ) : r.haltStatus === "resumed" ? (
+                              <span className="tag t-call" title="Trading resumed">RESUME</span>
+                            ) : null}
+                          </div>
                         </div>
                       </div>
                     </td>
@@ -225,8 +234,8 @@ export function ScannerDashboard({
                         </span>
                       </span>
                     </td>
-                    <td className="num" style={{ color: changeColor(r.movePct) }}>{fmtPct(r.movePct)}</td>
-                    <td className="num" style={{ fontWeight: Math.abs(r.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN ? 700 : 400 }}>
+                    <td className={`num ${pctClass(r.movePct)}`}>{fmtPct(r.movePct)}</td>
+                    <td className={`num ${Math.abs(r.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN ? "fw-strong" : "fw-normal"}`}>
                       {r.shortRate != null ? `${r.shortRate > 0 ? "+" : ""}${r.shortRate.toFixed(2)}%/m` : "—"}
                     </td>
                     {showDetails ? (
@@ -234,7 +243,7 @@ export function ScannerDashboard({
                         <td className="num">{r.relVol != null ? `${r.relVol.toFixed(1)}x` : "—"}</td>
                         <td className="num muted">{fmtVol(r.volume)}</td>
                         <td className="num">{r.surge != null ? `${r.surge.toFixed(1)}x` : "—"}</td>
-                        <td className={r.aboveVwap == null ? "dim" : r.aboveVwap ? "pos" : "neg"} style={{ fontSize: 12 }}>
+                        <td className={`text-xs ${r.aboveVwap == null ? "dim" : r.aboveVwap ? "pos" : "neg"}`}>
                           {r.vwapDistPct != null ? `${r.vwapDistPct > 0 ? "+" : ""}${r.vwapDistPct.toFixed(2)}%` : r.aboveVwap == null ? "—" : r.aboveVwap ? "Above" : "Below"}
                         </td>
                         <td>

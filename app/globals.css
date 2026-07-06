@@ -2585,3 +2585,37 @@ table tbody tr {
   gap: 6px;
   width: 100%;
 }
+
+.tape-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.tape-badges .tag {
+  font-size: 9px;
+  padding: 1px 6px;
+}
+
+.stream-fresh-green.status-dot.live,
+.status-dot.stream-fresh-green.live {
+  background: var(--green);
+  box-shadow: 0 0 8px rgba(0, 214, 143, 0.55);
+}
+
+.stream-fresh-yellow.status-dot.live,
+.status-dot.stream-fresh-yellow.live {
+  background: var(--amber);
+  box-shadow: 0 0 8px rgba(255, 176, 32, 0.45);
+}
+
+.stream-fresh-red.status-dot.live,
+.status-dot.stream-fresh-red.live {
+  background: var(--red);
+  box-shadow: 0 0 8px rgba(255, 90, 114, 0.45);
+}
+
+.stream-fresh-label {
+  font-size: 10px;
+}

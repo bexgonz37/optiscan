@@ -222,6 +222,40 @@ async function refreshActiveAlerts(nowMs: number) {
   }
 }
 
+/** Throttled news enrichment for top tape symbols (catalyst + halt badges). */
+async function enrichTapeContext(tape: any[], nowMs: number) {
+  const top = [...tape]
+    .filter((r) => r?.symbol && Math.abs(r.shortRate ?? 0) > 0)
+    .sort((a, b) => Math.abs(b.shortRate ?? 0) - Math.abs(a.shortRate ?? 0))
+    .slice(0, 8);
+  if (!top.length) return;
+
+  const { fetchNews } = await import("@/lib/polygon-provider");
+  const { cached } = await import("@/lib/scan-cache");
+  const { classifyHeadline } = await import("@/lib/catalysts");
+  const { inferHaltStatus, catalystFromNews } = await import("@/lib/halt-inference");
+
+  await Promise.all(
+    top.map(async (row) => {
+      try {
+        const news: any = await cached(`loop-news:${row.symbol}`, 120_000, () =>
+          fetchNews(row.symbol, { limit: 8, days: 2 }),
+        );
+        const articles = news?.articles ?? news?.results ?? [];
+        const headlines = articles.map((a: any) => a.title ?? a.headline ?? "").filter(Boolean);
+        const cat = catalystFromNews(articles, classifyHeadline, nowMs);
+        row.catalystType = cat.catalystType;
+        row.catalystFresh = cat.catalystFresh;
+        row.haltStatus = inferHaltStatus(headlines);
+      } catch {
+        row.catalystType ??= "no_clear_catalyst";
+        row.catalystFresh ??= false;
+        row.haltStatus ??= null;
+      }
+    }),
+  );
+}
+
 async function tick() {
   const s = state();
   const nowMs = Date.now();
@@ -356,6 +390,7 @@ async function tick() {
   }
 
   s.movers = movers.sort((a, b) => Math.abs(b.shortRate ?? 0) - Math.abs(a.shortRate ?? 0)).slice(0, 20);
+  await enrichTapeContext(tape, nowMs);
   s.tape = tape;
 
   // Live option-quote refresh needs chains — RTH only.
