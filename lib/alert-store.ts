@@ -51,6 +51,8 @@ export interface NewAlert {
   longPutScore?: number | null;
   zeroDteContractScore?: number | null;
   riskFlags?: string[] | null;
+  shortRateAtAlert?: number | null;
+  volumeSurgeAtAlert?: number | null;
   optionsPressureLabel?: string | null;
   optionsPressureJson?: string | null;
   snapshot?: {
@@ -87,8 +89,8 @@ export function insertAlert(a: NewAlert): number | null {
           score_breakdown_json, ai_explanation, public_explanation, private_label, public_label,
           trade_bias, move_status, option_worth_score, worth_verdict, chase_risk, iv_risk, spread_risk,
           continuation_score, exhaustion_score, long_call_score, long_put_score, zero_dte_contract_score, risk_flags,
-          options_pressure_label, options_pressure_json, status
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'tracking')`,
+          options_pressure_label, options_pressure_json, short_rate_at_alert, volume_surge_at_alert, status
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'tracking')`,
       )
       .run(
         alert.ticker, alert.source, alert.alertType ?? null, alert.direction, alert.optionSymbol, alert.optionSide,
@@ -104,6 +106,7 @@ export function insertAlert(a: NewAlert): number | null {
         alert.longCallScore ?? null, alert.longPutScore ?? null, alert.zeroDteContractScore ?? null,
         alert.riskFlags ? JSON.stringify(alert.riskFlags) : null,
         alert.optionsPressureLabel ?? null, alert.optionsPressureJson ?? null,
+        alert.shortRateAtAlert ?? null, alert.volumeSurgeAtAlert ?? null,
       );
     if (res.changes === 0) return null;
     const id = Number(res.lastInsertRowid);

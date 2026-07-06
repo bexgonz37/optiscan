@@ -184,6 +184,8 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     longCallScore: watch.callWatch, longPutScore: watch.putWatch,
     zeroDteContractScore: contractRes.score,
     riskFlags: flags,
+    shortRateAtAlert: sig.shortRate,
+    volumeSurgeAtAlert: sig.surge,
     optionsPressureLabel: pressure?.label ?? null,
     optionsPressureJson: pressure ? JSON.stringify(pressure) : null,
     snapshot: sideContract ? {
@@ -198,8 +200,27 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
   if (id != null) {
     attachCatalystLater(id, sig.ticker, sig.relVol);
     void notifyNewAlert(id, {
-      ticker: sig.ticker, direction: sig.direction, setupScore: setup.score, riskScore: risk.score,
-      liquidityScore: explainInput.liquidityScore, publicExplanation: pub.text,
+      ticker: sig.ticker,
+      direction: sig.direction,
+      setupScore: setup.score,
+      riskScore: risk.score,
+      liquidityScore: explainInput.liquidityScore,
+      publicExplanation: pub.text,
+      tradeBias: bias,
+      moveStatus: status,
+      optionWorthScore: worth.score,
+      worthVerdict: worth.verdict,
+      zeroDteContractScore: contractRes.score,
+      riskFlags: JSON.stringify(flags),
+      optionSide: sideContract?.side ?? null,
+      strike: sideContract?.strike ?? null,
+      expiration: sideContract?.expiration ?? null,
+      dte: sideContract?.dte ?? null,
+      movePct: sig.movePct,
+      longCallScore: watch.callWatch,
+      longPutScore: watch.putWatch,
+      shortRate: sig.shortRate,
+      volumeSurge: sig.surge,
     });
   }
   return id;

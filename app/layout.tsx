@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { ToastProvider } from "@/components/Toasts";
+import { GlobalAlerts } from "@/components/GlobalAlerts";
 
 export const metadata: Metadata = {
   title: "OptiScan — Options Scanner",
@@ -22,7 +23,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT }} />
       </head>
       <body>
-        <ToastProvider>{children}</ToastProvider>
+        <ToastProvider>
+          {children}
+          <GlobalAlerts />
+        </ToastProvider>
       </body>
     </html>
   );

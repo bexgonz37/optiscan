@@ -6,8 +6,8 @@ import type { ReactNode } from "react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
 const PAGES = [
-  { href: "/", label: "Dashboard", hint: "Live board + scanner" },
-  { href: "/alert-lab", label: "Alerts", hint: "Saved signals & journal" },
+  { href: "/", label: "Dashboard", hint: "Ranked market scanner watchlist" },
+  { href: "/alert-lab", label: "Alerts", hint: "Buy call/put signals + journal" },
   { href: "/settings", label: "Settings", hint: "Notifications & preferences" },
 ] as const;
 
