@@ -31,3 +31,6 @@ dev.log
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Alert Lab local database
+data/

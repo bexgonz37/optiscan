@@ -84,12 +84,18 @@ async function enrichSymbol(symbol: string, quote: any, maxAgeMs: number): Promi
     const unuCfg = unusualConfigFromEnv();
 
     try {
+      // The provider returns { available: false, note } instead of throwing —
+      // check it, or a failed fetch silently becomes "no bars / no contracts"
+      // and the scan reports wrong scores with zero errors.
+      const problems: string[] = [];
+
       const candlesRes: any = await fetchCandles(symbol, {
         resolution: "5",
         timespan: "minute",
         days: 2,
         countback: 120,
       });
+      if (candlesRes?.available === false) problems.push(`candles: ${candlesRes.note ?? "unavailable"}`);
       const bars = candlesRes?.bars ?? [];
       const mom: any = buildMomentumSignal(quote || { symbol }, bars, momCfg);
 
@@ -97,6 +103,7 @@ async function enrichSymbol(symbol: string, quote: any, maxAgeMs: number): Promi
         dteMin: optCfg.dteMin,
         dteMax: optCfg.dteMax,
       });
+      if (chainRes?.available === false) problems.push(`chain: ${chainRes.note ?? "unavailable"}`);
       const contracts: OptionContract[] = chainRes?.contracts ?? [];
 
       const name = await resolveName(symbol);
@@ -155,6 +162,7 @@ async function enrichSymbol(symbol: string, quote: any, maxAgeMs: number): Promi
         momentum: momentumRow,
         unusual,
         contracts,
+        error: problems.length ? problems.join("; ") : undefined,
       };
     } catch (err: any) {
       return {
@@ -172,11 +180,13 @@ async function enrichSymbol(symbol: string, quote: any, maxAgeMs: number): Promi
 }
 
 /** Build the shortlist of symbols to enrich: biggest movers in the universe. */
-async function buildShortlist(cfg: ScanConfig): Promise<{ symbols: string[]; quotes: Map<string, any>; universeCount: number }> {
+async function buildShortlist(cfg: ScanConfig): Promise<{ symbols: string[]; quotes: Map<string, any>; universeCount: number; notes: string[] }> {
   const universe = getScanUniverse();
   const quotes = new Map<string, any>();
+  const notes: string[] = [];
 
   const bulk: any = await fetchBulkQuotes(universe);
+  if (bulk?.available === false) notes.push(`bulk quotes: ${bulk.note ?? "unavailable"}`);
   for (const q of bulk?.quotes ?? []) quotes.set(q.symbol, q);
 
   if (cfg.includeMovers) {
@@ -184,6 +194,8 @@ async function buildShortlist(cfg: ScanConfig): Promise<{ symbols: string[]; quo
       fetchTopMovers("gainers", cfg.moversPerSide),
       fetchTopMovers("losers", cfg.moversPerSide),
     ]);
+    if (gain?.available === false) notes.push(`gainers: ${gain.note ?? "unavailable"}`);
+    if (lose?.available === false) notes.push(`losers: ${lose.note ?? "unavailable"}`);
     for (const q of [...(gain?.quotes ?? []), ...(lose?.quotes ?? [])]) {
       if (!quotes.has(q.symbol)) quotes.set(q.symbol, q);
     }
@@ -194,7 +206,7 @@ async function buildShortlist(cfg: ScanConfig): Promise<{ symbols: string[]; quo
     .sort((a, b) => Math.abs(b.changePercent ?? 0) - Math.abs(a.changePercent ?? 0));
 
   const symbols = ranked.slice(0, cfg.shortlist).map((q) => q.symbol);
-  return { symbols, quotes, universeCount: universe.length };
+  return { symbols, quotes, universeCount: universe.length, notes };
 }
 
 /** Full scan feeding both tabs. Freshness is controlled by `maxAgeMs` (the
@@ -221,7 +233,7 @@ export async function runScan(maxAgeMs?: number): Promise<ScanResult> {
   }
 
   return cachedMaxAge<ScanResult>("scan", freshness, async () => {
-    const { symbols, quotes, universeCount } = await buildShortlist(cfg);
+    const { symbols, quotes, universeCount, notes } = await buildShortlist(cfg);
 
     const enriched = await mapLimit(symbols, cfg.concurrency, (sym) =>
       enrichSymbol(sym, quotes.get(sym), freshness),
@@ -229,7 +241,7 @@ export async function runScan(maxAgeMs?: number): Promise<ScanResult> {
 
     const momentum: MomentumRow[] = [];
     const unusual: UnusualRow[] = [];
-    const errors: { symbol: string; message: string }[] = [];
+    const errors: { symbol: string; message: string }[] = notes.map((n) => ({ symbol: "*", message: n }));
 
     for (const e of enriched) {
       if (e.error) errors.push({ symbol: e.symbol, message: e.error });
@@ -239,6 +251,13 @@ export async function runScan(maxAgeMs?: number): Promise<ScanResult> {
 
     momentum.sort((a, b) => b.score - a.score);
     unusual.sort((a, b) => b.score - a.score);
+
+    // Alert Lab capture: fire-and-forget so persistence/news lookups never add
+    // latency to (or break) the scan itself. Dynamic import keeps the scanner
+    // fully functional if better-sqlite3 isn't installed.
+    import("@/lib/alert-capture")
+      .then(({ captureAlerts }) => captureAlerts({ momentum, unusual, quotes }))
+      .catch((err) => console.warn("[alert-lab] capture skipped:", err?.message));
 
     return {
       generatedAt: new Date().toISOString(),

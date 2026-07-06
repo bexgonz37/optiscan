@@ -1,0 +1,352 @@
+"use client";
+
+/**
+ * /alert-lab — Alert Performance Tracker.
+ * Research view over persisted scanner alerts: what fired, what followed
+ * through, what was a false positive, and a personal journal. Market signals
+ * and measurements only — nothing on this page is a recommendation.
+ */
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { scanHeaders } from "@/hooks/useScanner";
+import { TickerIcon, GradeChip, ScoreBar } from "@/components/ui";
+import { changeColor, fmtPct, fmtPrice, fmtTime } from "@/lib/format";
+
+interface AlertRow {
+  id: number; ticker: string; source: string; direction: string | null;
+  option_symbol: string | null; option_side: string | null; strike: number | null;
+  expiration: string | null; dte: number | null; alert_time: string; trading_day: string;
+  price_at_alert: number | null; percent_move_at_alert: number | null;
+  volume: number | null; relative_volume: number | null;
+  catalyst_type: string | null; catalyst_quality: string | null; catalyst_summary: string | null;
+  signal_score: number | null; risk_score: number | null; options_liquidity_score: number | null;
+  status: string; is_false_positive: number | null;
+  latest_max_move: number | null; eod_move: number | null; trade_taken: number;
+}
+
+interface JournalRow {
+  id: number; alert_id: number | null; ticker: string; side: string | null;
+  entry_price: number | null; exit_price: number | null; quantity: number | null;
+  outcome_pct: number | null; notes: string | null; created_at: string;
+}
+
+const CATALYSTS = [
+  "earnings", "analyst", "fda_biotech", "partnership", "product_launch",
+  "legal_regulatory", "macro_sector", "social_momentum", "no_clear_catalyst",
+];
+
+const catLabel = (t: string | null) => (t ?? "—").replace(/_/g, " ");
+
+function qualityColor(q: string | null): string {
+  if (q === "strong") return "var(--green)";
+  if (q === "medium") return "var(--amber)";
+  if (q === "weak") return "var(--dim)";
+  return "var(--muted)";
+}
+
+export default function AlertLabPage() {
+  const [alerts, setAlerts] = useState<AlertRow[]>([]);
+  const [stats, setStats] = useState<any>(null);
+  const [report, setReport] = useState<any>(null);
+  const [journal, setJournal] = useState<JournalRow[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  // Filters
+  const [ticker, setTicker] = useState("");
+  const [date, setDate] = useState("");
+  const [catalyst, setCatalyst] = useState("");
+  const [minSignal, setMinSignal] = useState("");
+  const [maxRisk, setMaxRisk] = useState("");
+  const [minLiquidity, setMinLiquidity] = useState("");
+  const [fp, setFp] = useState("");
+  const [taken, setTaken] = useState("");
+
+  // Journal edit buffers
+  const [edits, setEdits] = useState<Record<number, { exitPrice?: string; outcomePct?: string; notes?: string }>>({});
+
+  const query = useMemo(() => {
+    const q = new URLSearchParams();
+    if (ticker.trim()) q.set("ticker", ticker.trim().toUpperCase());
+    if (date) q.set("date", date);
+    if (catalyst) q.set("catalyst", catalyst);
+    if (minSignal) q.set("minSignal", minSignal);
+    if (maxRisk) q.set("maxRisk", maxRisk);
+    if (minLiquidity) q.set("minLiquidity", minLiquidity);
+    if (fp) q.set("falsePositive", fp);
+    if (taken) q.set("tradeTaken", taken);
+    return q.toString();
+  }, [ticker, date, catalyst, minSignal, maxRisk, minLiquidity, fp, taken]);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      const headers = scanHeaders();
+      const [aRes, sRes, rRes, jRes] = await Promise.all([
+        fetch(`/api/alerts?${query}`, { cache: "no-store", headers }),
+        fetch(`/api/alerts/stats`, { cache: "no-store", headers }),
+        fetch(`/api/alerts/weekly-report`, { cache: "no-store", headers }),
+        fetch(`/api/trade-journal`, { cache: "no-store", headers }),
+      ]);
+      const a = await aRes.json();
+      const s = await sRes.json();
+      const r = await rRes.json();
+      const j = await jRes.json();
+      setAlerts(a.alerts ?? []);
+      setStats(s.ok ? s : null);
+      setReport(r.ok ? r.report : null);
+      setJournal(j.journal ?? []);
+      setError(a.ok === false ? a.error : s.ok === false ? s.error : null);
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to load Alert Lab");
+    } finally {
+      setLoading(false);
+    }
+  }, [query]);
+
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 60_000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  async function logTrade(a: AlertRow) {
+    await fetch("/api/trade-journal", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...scanHeaders() },
+      body: JSON.stringify({
+        alertId: a.id, ticker: a.ticker, side: a.option_side ?? undefined,
+        entryPrice: a.price_at_alert ?? undefined, openedAt: new Date().toISOString(),
+      }),
+    });
+    refresh();
+  }
+
+  async function saveJournal(j: JournalRow) {
+    const e = edits[j.id] ?? {};
+    const patch: Record<string, unknown> = {};
+    if (e.exitPrice !== undefined && e.exitPrice !== "") patch.exitPrice = Number(e.exitPrice);
+    if (e.outcomePct !== undefined && e.outcomePct !== "") patch.outcomePct = Number(e.outcomePct);
+    if (e.notes !== undefined) patch.notes = e.notes;
+    if (!Object.keys(patch).length) return;
+    if (patch.exitPrice != null || patch.outcomePct != null) patch.closedAt = new Date().toISOString();
+    await fetch(`/api/trade-journal/${j.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", ...scanHeaders() },
+      body: JSON.stringify(patch),
+    });
+    setEdits((prev) => ({ ...prev, [j.id]: {} }));
+    refresh();
+  }
+
+  const totals = stats?.totals;
+  const fpRate = totals?.completed ? (totals.false_positives ?? 0) / totals.completed : null;
+  const today = new Date().toISOString().slice(0, 10);
+  const todayCount = alerts.filter((a) => a.trading_day === today).length;
+
+  const sel = { background: "var(--bg2, #10161d)", color: "var(--txt)", border: "1px solid rgba(120,140,160,.25)", borderRadius: 8, padding: "6px 8px", fontSize: 12 } as const;
+
+  return (
+    <div className="app">
+      <div className="topbar">
+        <div className="logo">
+          <span className="mark">O</span>
+          OptiScan
+          <small>alert lab · signal research</small>
+        </div>
+        <div className="spacer" />
+        <div className="pill">{loading ? "Loading…" : `${alerts.length} alerts`}</div>
+        <div className="pill btn" onClick={refresh}>Refresh</div>
+        <a className="pill btn" href="/">← Scanner</a>
+      </div>
+
+      {error && (
+        <div className="kpi" style={{ marginBottom: 16, borderColor: "var(--amber)", background: "rgba(255,176,32,.06)" }}>
+          <div className="label" style={{ color: "var(--amber)" }}>Alert Lab unavailable</div>
+          <div className="sub">{error} — run <code>npm install</code> (better-sqlite3) and restart.</div>
+        </div>
+      )}
+
+      <div className="kpis" style={{ marginBottom: 14 }}>
+        <div className="kpi"><div className="label">Alerts today</div><div className="val num">{todayCount}</div><div className="sub">{totals?.total ?? 0} all-time</div></div>
+        <div className="kpi"><div className="label">Avg signal score</div><div className="val num">{totals?.avg_signal != null ? Math.round(totals.avg_signal) : "—"}</div><div className="sub">risk {totals?.avg_risk != null ? Math.round(totals.avg_risk) : "—"} · liq {totals?.avg_liquidity != null ? Math.round(totals.avg_liquidity) : "—"}</div></div>
+        <div className="kpi"><div className="label">Avg max move after alert</div><div className="val num">{stats?.avgMove?.avg_max_move != null ? `${stats.avgMove.avg_max_move.toFixed(1)}%` : "—"}</div><div className="sub">favorable-direction extreme, EOD basis</div></div>
+        <div className="kpi"><div className="label">False-positive rate</div><div className="val num">{fpRate != null ? `${Math.round(fpRate * 100)}%` : "—"}</div><div className="sub">{totals?.completed ?? 0} completed alerts</div></div>
+        <div className="kpi"><div className="label">Best setup type</div><div className="val" style={{ fontSize: 15 }}>{catLabel(stats?.byCatalyst?.[0]?.type ?? null)}</div><div className="sub">{stats?.byCatalyst?.[0]?.avg_max_move != null ? `${stats.byCatalyst[0].avg_max_move.toFixed(1)}% avg max move` : "needs completed alerts"}</div></div>
+      </div>
+
+      <div className="panel main" style={{ marginBottom: 14 }}>
+        <div className="toolbar">
+          <h2>Alerts</h2>
+          <div className="chips">
+            <input style={sel} placeholder="Ticker" value={ticker} onChange={(e) => setTicker(e.target.value)} />
+            <input style={sel} type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+            <select style={sel} value={catalyst} onChange={(e) => setCatalyst(e.target.value)}>
+              <option value="">Catalyst: any</option>
+              {CATALYSTS.map((c) => <option key={c} value={c}>{catLabel(c)}</option>)}
+            </select>
+            <select style={sel} value={minSignal} onChange={(e) => setMinSignal(e.target.value)}>
+              <option value="">Signal: any</option><option value="50">≥ 50</option><option value="65">≥ 65</option><option value="80">≥ 80</option>
+            </select>
+            <select style={sel} value={maxRisk} onChange={(e) => setMaxRisk(e.target.value)}>
+              <option value="">Risk: any</option><option value="30">≤ 30</option><option value="50">≤ 50</option><option value="70">≤ 70</option>
+            </select>
+            <select style={sel} value={minLiquidity} onChange={(e) => setMinLiquidity(e.target.value)}>
+              <option value="">Liquidity: any</option><option value="40">≥ 40</option><option value="60">≥ 60</option><option value="80">≥ 80</option>
+            </select>
+            <select style={sel} value={fp} onChange={(e) => setFp(e.target.value)}>
+              <option value="">FP: any</option><option value="1">False positives</option><option value="0">Valid / pending</option>
+            </select>
+            <select style={sel} value={taken} onChange={(e) => setTaken(e.target.value)}>
+              <option value="">Journal: any</option><option value="1">Logged</option><option value="0">Not logged</option>
+            </select>
+          </div>
+        </div>
+
+        {!alerts.length ? (
+          <div className="empty">
+            <div className="big">No alerts recorded yet.</div>
+            Alerts persist here automatically when the scanner flags a GOOD+ momentum or STRONG unusual-flow signal.
+          </div>
+        ) : (
+          <div className="tablewrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th><th>Ticker</th><th>Src</th><th>Move @ alert</th><th>Catalyst</th>
+                  <th>Signal</th><th>Risk</th><th>Liq</th><th>Max after</th><th>EOD</th><th>Status</th><th>Journal</th>
+                </tr>
+              </thead>
+              <tbody>
+                {alerts.map((a) => (
+                  <tr key={a.id}>
+                    <td className="num muted">{a.trading_day}<br />{fmtTime(a.alert_time)}</td>
+                    <td>
+                      <div className="tkr">
+                        <TickerIcon symbol={a.ticker} />
+                        <div>
+                          <div className="tname">{a.ticker}</div>
+                          <div className="tsub">
+                            {a.option_symbol ? `${a.strike ?? ""}${String(a.option_side ?? "").toUpperCase().slice(0, 1)} · ${a.dte ?? "—"} DTE` : fmtPrice(a.price_at_alert)}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    <td><span className={`badge ${a.source === "unusual" ? "t-new" : "b-strat"}`}>{a.source === "unusual" ? "FLOW" : "MOM"}</span></td>
+                    <td className="num" style={{ color: changeColor(a.percent_move_at_alert) }}>{fmtPct(a.percent_move_at_alert)}</td>
+                    <td>
+                      <span style={{ color: qualityColor(a.catalyst_quality) }} title={a.catalyst_summary ?? undefined}>
+                        {catLabel(a.catalyst_type)}
+                      </span>
+                      <div className="tsub">{a.catalyst_quality ?? "unknown"}</div>
+                    </td>
+                    <td><ScoreBar score={a.signal_score ?? 0} /></td>
+                    <td className="num" style={{ color: (a.risk_score ?? 0) >= 60 ? "var(--red)" : (a.risk_score ?? 0) >= 35 ? "var(--amber)" : "var(--green)" }}>{Math.round(a.risk_score ?? 0)}</td>
+                    <td className="num">{Math.round(a.options_liquidity_score ?? 0)}</td>
+                    <td className="num" style={{ color: changeColor(a.latest_max_move) }}>{fmtPct(a.latest_max_move)}</td>
+                    <td className="num" style={{ color: changeColor(a.eod_move) }}>{fmtPct(a.eod_move)}</td>
+                    <td>
+                      {a.is_false_positive === 1 ? <span className="tag t-put">FALSE +</span>
+                        : a.status === "complete" ? <GradeChip grade="GOOD" />
+                        : <span className="tag t-vol">TRACKING</span>}
+                    </td>
+                    <td>
+                      {a.trade_taken ? <span className="tag t-call">LOGGED</span>
+                        : <button className="pill btn" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => logTrade(a)}>Log</button>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="layout" style={{ gridTemplateColumns: "1fr 1fr", display: "grid", gap: 14 }}>
+        <div className="panel main">
+          <div className="toolbar"><h2>Weekly report</h2><div className="right muted" style={{ fontSize: 11 }}>{report?.since ? `since ${report.since}` : ""}</div></div>
+          {!report ? (
+            <div className="empty">No report yet.</div>
+          ) : (
+            <div style={{ padding: "4px 14px 14px", fontSize: 13, lineHeight: 1.7 }}>
+              <div className="statgrid" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 10 }}>
+                <div className="kpi"><div className="label">Alerts</div><div className="val num">{report.totalAlerts}</div></div>
+                <div className="kpi"><div className="label">Avg signal</div><div className="val num">{report.avgSignalScore != null ? Math.round(report.avgSignalScore) : "—"}</div></div>
+                <div className="kpi"><div className="label">Avg max move</div><div className="val num">{report.avgMaxMoveAfterAlert != null ? `${report.avgMaxMoveAfterAlert.toFixed(1)}%` : "—"}</div></div>
+                <div className="kpi"><div className="label">FP rate</div><div className="val num">{report.falsePositiveRate != null ? `${Math.round(report.falsePositiveRate * 100)}%` : "—"}</div></div>
+                <div className="kpi"><div className="label">Best catalyst</div><div className="val" style={{ fontSize: 13 }}>{catLabel(report.bestCatalystType?.type ?? null)}</div></div>
+                <div className="kpi"><div className="label">Journal win rate</div><div className="val num">{report.journalWinRate != null ? `${Math.round(report.journalWinRate * 100)}%` : "—"}</div></div>
+              </div>
+              <h4 style={{ margin: "10px 0 4px" }}>Biggest measured moves without a journal entry</h4>
+              {!report.missedOpportunities?.length ? <div className="muted">None yet — needs completed alerts.</div> :
+                report.missedOpportunities.map((m: any) => (
+                  <div key={m.id}>
+                    <span className="num">{m.ticker}</span> <span className="muted">{m.trading_day} · {catLabel(m.catalyst_type)}</span>
+                    <span className="num" style={{ float: "right", color: "var(--green)" }}>{fmtPct(m.max_move)}</span>
+                  </div>
+                ))}
+              <h4 style={{ margin: "12px 0 4px" }}>Highest-quality alerts</h4>
+              {!report.topQualityAlerts?.length ? <div className="muted">None yet.</div> :
+                report.topQualityAlerts.map((m: any) => (
+                  <div key={m.id}>
+                    <span className="num">{m.ticker}</span> <span className="muted">{m.trading_day} · signal {Math.round(m.signal_score ?? 0)} · {catLabel(m.catalyst_type)}</span>
+                    <span className="num" style={{ float: "right", color: changeColor(m.max_move) }}>{fmtPct(m.max_move)}</span>
+                  </div>
+                ))}
+              <div className="muted" style={{ marginTop: 10, fontSize: 11 }}>
+                Measurements of scanner output for research — max move is the best favorable print after an alert, not a realized result. Not financial advice.
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="panel main">
+          <div className="toolbar"><h2>Trade journal</h2><div className="right muted" style={{ fontSize: 11 }}>{journal.length} entries</div></div>
+          {!journal.length ? (
+            <div className="empty">
+              <div className="big">No journal entries.</div>
+              Click “Log” on an alert to start a personal record. This is a private log — not advice.
+            </div>
+          ) : (
+            <div className="tablewrap">
+              <table>
+                <thead>
+                  <tr><th>Ticker</th><th>Side</th><th>Entry</th><th>Exit</th><th>Outcome %</th><th>Notes</th><th></th></tr>
+                </thead>
+                <tbody>
+                  {journal.map((j) => (
+                    <tr key={j.id}>
+                      <td><div className="tkr"><TickerIcon symbol={j.ticker} /><div><div className="tname">{j.ticker}</div><div className="tsub">{fmtTime(j.created_at)}</div></div></div></td>
+                      <td>{j.side ? <span className={`badge ${j.side === "put" ? "t-put" : "t-call"}`}>{String(j.side).toUpperCase()}</span> : "—"}</td>
+                      <td className="num">{fmtPrice(j.entry_price)}</td>
+                      <td>
+                        <input style={{ ...sel, width: 70 }} placeholder={j.exit_price != null ? String(j.exit_price) : "—"}
+                          value={edits[j.id]?.exitPrice ?? ""}
+                          onChange={(e) => setEdits((p) => ({ ...p, [j.id]: { ...p[j.id], exitPrice: e.target.value } }))} />
+                      </td>
+                      <td>
+                        <input style={{ ...sel, width: 70 }} placeholder={j.outcome_pct != null ? `${j.outcome_pct}%` : "—"}
+                          value={edits[j.id]?.outcomePct ?? ""}
+                          onChange={(e) => setEdits((p) => ({ ...p, [j.id]: { ...p[j.id], outcomePct: e.target.value } }))} />
+                      </td>
+                      <td>
+                        <input style={{ ...sel, width: 140 }} placeholder={j.notes ?? "notes"}
+                          value={edits[j.id]?.notes ?? ""}
+                          onChange={(e) => setEdits((p) => ({ ...p, [j.id]: { ...p[j.id], notes: e.target.value } }))} />
+                      </td>
+                      <td><button className="pill btn" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => saveJournal(j)}>Save</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="footer">
+        Alert Lab · records and measures scanner alerts for research · no order placement, no recommendations · not financial advice
+      </div>
+    </div>
+  );
+}

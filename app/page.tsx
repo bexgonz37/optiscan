@@ -13,7 +13,11 @@ import { useToast } from "@/components/Toasts";
 import type { MomentumRow, UnusualRow } from "@/lib/types";
 import { fmtTime } from "@/lib/format";
 
-const REFRESH_SEC = 1; // live: re-scan every second
+// Poll choices (seconds). Each scan costs ~24+ Polygon calls (candles + chain
+// per shortlisted symbol), so 1s "live" polling was never sustainable — free
+// tier is ~5 calls/min, and even paid tiers just re-serve the same cached scan.
+const REFRESH_CHOICES: readonly number[] = [15, 30, 60, 120];
+const DEFAULT_REFRESH_SEC = 30;
 
 function ivPct(iv: number | null | undefined): number {
   if (iv == null) return 0;
@@ -27,6 +31,7 @@ export default function Page() {
   const [tab, setTab] = useState<Tab>("momentum");
   const [filters, setFilters] = useState<FilterKey[]>([]);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [refreshSec, setRefreshSec] = useState<number>(DEFAULT_REFRESH_SEC);
   const [notifyEnabled, setNotifyEnabled] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -40,6 +45,7 @@ export default function Page() {
       if (raw) {
         const p = JSON.parse(raw);
         if (typeof p.autoRefresh === "boolean") setAutoRefresh(p.autoRefresh);
+        if (typeof p.refreshSec === "number" && REFRESH_CHOICES.includes(p.refreshSec)) setRefreshSec(p.refreshSec);
         if (typeof p.activeView === "string") {
           const v = VIEWS.find((x) => x.id === p.activeView);
           if (v) {
@@ -56,11 +62,11 @@ export default function Page() {
 
   useEffect(() => {
     try {
-      localStorage.setItem("optiscan:prefs", JSON.stringify({ autoRefresh, activeView }));
+      localStorage.setItem("optiscan:prefs", JSON.stringify({ autoRefresh, activeView, refreshSec }));
     } catch {
       /* ignore */
     }
-  }, [autoRefresh, activeView]);
+  }, [autoRefresh, activeView, refreshSec]);
 
   useEffect(() => {
     const tick = () =>
@@ -80,7 +86,7 @@ export default function Page() {
 
   const { momentum, unusual, meta, loading, error, lastUpdated, kpi, kpiHistory, refresh } = useScanner({
     autoRefresh,
-    intervalSec: REFRESH_SEC,
+    intervalSec: refreshSec,
     notifyEnabled,
     onNewStrong,
   });
@@ -220,11 +226,24 @@ export default function Page() {
 
         <div className="pill btn" onClick={refresh}>Refresh</div>
         <div className={`pill btn ${autoRefresh ? "on" : ""}`} onClick={() => setAutoRefresh((v) => !v)}>
-          {autoRefresh ? "Live · 1s" : "Paused"}
+          {autoRefresh ? `Live · ${refreshSec}s` : "Paused"}
         </div>
+        {autoRefresh && (
+          <div
+            className="pill btn"
+            title="Poll interval"
+            onClick={() => {
+              const i = REFRESH_CHOICES.indexOf(refreshSec);
+              setRefreshSec(REFRESH_CHOICES[(i + 1) % REFRESH_CHOICES.length]);
+            }}
+          >
+            ⟳ {refreshSec}s
+          </div>
+        )}
         <div className={`pill btn ${notifyEnabled ? "on" : ""}`} onClick={toggleNotify}>
           {notifyEnabled ? "Alerts on" : "Alerts off"}
         </div>
+        <a className="pill btn" href="/alert-lab">Alert Lab</a>
       </div>
 
       {!keyPresent && meta && (

@@ -5,6 +5,7 @@ import type { SymbolDetail } from "@/lib/types";
 import { TickerIcon, Stat } from "@/components/ui";
 import { PayoffChart } from "@/components/PayoffChart";
 import { useToast } from "@/components/Toasts";
+import { scanHeaders } from "@/hooks/useScanner";
 import { economics } from "@/lib/economics";
 import {
   changeColor,
@@ -43,7 +44,7 @@ export function DetailPanel({
     setLoading(true);
     setError(null);
     setData(null);
-    fetch(`/api/scan/${encodeURIComponent(symbol)}`, { cache: "no-store" })
+    fetch(`/api/scan/${encodeURIComponent(symbol)}`, { cache: "no-store", headers: scanHeaders() })
       .then((r) => r.json())
       .then((d) => {
         if (cancelled) return;

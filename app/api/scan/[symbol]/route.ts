@@ -1,13 +1,15 @@
 import { NextResponse } from "next/server";
 import { scanSymbol } from "@/lib/scan-core";
+import { checkApiToken, unauthorized } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ symbol: string }> },
 ) {
+  if (!checkApiToken(req)) return unauthorized();
   const { symbol } = await params;
   try {
     const detail = await scanSymbol(symbol);

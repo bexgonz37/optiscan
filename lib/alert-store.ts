@@ -1,0 +1,352 @@
+/**
+ * alert-store.ts — all SQL for Alert Lab in one place. Route handlers and the
+ * tracker call these; nothing else should touch the DB directly.
+ *
+ * Research/logging only: rows describe scanner alerts and their measured
+ * follow-through. Nothing here places or suggests trades.
+ */
+
+import { getDb } from "@/lib/db";
+
+export interface NewAlert {
+  ticker: string;
+  source: "momentum" | "unusual";
+  direction: string | null;
+  optionSymbol: string | null;
+  optionSide: string | null;
+  strike: number | null;
+  expiration: string | null;
+  dte: number | null;
+  alertTime: string; // ISO
+  tradingDay: string; // YYYY-MM-DD ET
+  priceAtAlert: number | null;
+  percentMoveAtAlert: number | null;
+  volume: number | null;
+  relativeVolume: number | null;
+  catalystType: string | null;
+  catalystQuality: string | null;
+  catalystSummary: string | null;
+  catalystSource: string | null;
+  signalScore: number | null;
+  riskScore: number | null;
+  optionsLiquidityScore: number | null;
+  scannerScore: number | null;
+  snapshot?: {
+    optionSymbol: string | null;
+    bid: number | null; ask: number | null; mid: number | null;
+    spreadPct: number | null; volume: number | null;
+    openInterest: number | null; iv: number | null; delta: number | null;
+  } | null;
+  catalystRecords?: Array<{
+    headline: string; publisher: string | null; publishedAt: string | null;
+    url: string | null; catalystType: string; quality: string; matchedKeywords: string;
+  }>;
+}
+
+export function alertExists(ticker: string, source: string, optionSymbol: string | null, day: string): boolean {
+  const row = getDb()
+    .prepare("SELECT 1 FROM alerts WHERE ticker=? AND source=? AND coalesce(option_symbol,'')=? AND trading_day=?")
+    .get(ticker, source, optionSymbol ?? "", day);
+  return Boolean(row);
+}
+
+/** Insert alert + at-alert snapshot + catalyst records in one transaction.
+ * Returns the new id, or null when the dedup index says we already have it. */
+export function insertAlert(a: NewAlert): number | null {
+  const db = getDb();
+  const tx = db.transaction((alert: NewAlert): number | null => {
+    const res = db
+      .prepare(
+        `INSERT OR IGNORE INTO alerts (
+          ticker, source, direction, option_symbol, option_side, strike, expiration, dte,
+          alert_time, trading_day, price_at_alert, percent_move_at_alert, volume, relative_volume,
+          catalyst_type, catalyst_quality, catalyst_summary, catalyst_source,
+          signal_score, risk_score, options_liquidity_score, scanner_score, status
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'tracking')`,
+      )
+      .run(
+        alert.ticker, alert.source, alert.direction, alert.optionSymbol, alert.optionSide,
+        alert.strike, alert.expiration, alert.dte, alert.alertTime, alert.tradingDay,
+        alert.priceAtAlert, alert.percentMoveAtAlert, alert.volume, alert.relativeVolume,
+        alert.catalystType, alert.catalystQuality, alert.catalystSummary, alert.catalystSource,
+        alert.signalScore, alert.riskScore, alert.optionsLiquidityScore, alert.scannerScore,
+      );
+    if (res.changes === 0) return null;
+    const id = Number(res.lastInsertRowid);
+
+    if (alert.snapshot) {
+      db.prepare(
+        `INSERT INTO options_snapshots (alert_id, taken_at, checkpoint, option_symbol, bid, ask, mid, spread_pct, volume, open_interest, iv, delta)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      ).run(
+        id, alert.alertTime, "alert", alert.snapshot.optionSymbol, alert.snapshot.bid, alert.snapshot.ask,
+        alert.snapshot.mid, alert.snapshot.spreadPct, alert.snapshot.volume, alert.snapshot.openInterest,
+        alert.snapshot.iv, alert.snapshot.delta,
+      );
+    }
+    for (const c of alert.catalystRecords ?? []) {
+      db.prepare(
+        `INSERT INTO catalyst_records (alert_id, ticker, headline, publisher, published_at, url, catalyst_type, quality, matched_keywords)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
+      ).run(id, alert.ticker, c.headline, c.publisher, c.publishedAt, c.url, c.catalystType, c.quality, c.matchedKeywords);
+    }
+    return id;
+  });
+  return tx(a);
+}
+
+export interface AlertFilters {
+  ticker?: string;
+  date?: string; // trading_day
+  catalystType?: string;
+  minSignal?: number;
+  maxRisk?: number;
+  minLiquidity?: number;
+  falsePositive?: boolean;
+  tradeTaken?: boolean;
+  status?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export function listAlerts(f: AlertFilters = {}) {
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (f.ticker) { where.push("a.ticker = ?"); params.push(String(f.ticker).toUpperCase()); }
+  if (f.date) { where.push("a.trading_day = ?"); params.push(f.date); }
+  if (f.catalystType) { where.push("a.catalyst_type = ?"); params.push(f.catalystType); }
+  if (f.minSignal != null) { where.push("a.signal_score >= ?"); params.push(f.minSignal); }
+  if (f.maxRisk != null) { where.push("a.risk_score <= ?"); params.push(f.maxRisk); }
+  if (f.minLiquidity != null) { where.push("a.options_liquidity_score >= ?"); params.push(f.minLiquidity); }
+  if (f.falsePositive != null) where.push(f.falsePositive ? "a.is_false_positive = 1" : "(a.is_false_positive = 0 OR a.is_false_positive IS NULL)");
+  if (f.tradeTaken != null) where.push(`${f.tradeTaken ? "" : "NOT "}EXISTS (SELECT 1 FROM trade_journal j WHERE j.alert_id = a.id)`);
+  if (f.status) { where.push("a.status = ?"); params.push(f.status); }
+
+  const sql = `
+    SELECT a.*,
+      (SELECT max_percent_move_after_alert FROM alert_performance p WHERE p.alert_id=a.id ORDER BY p.checked_at DESC LIMIT 1) AS latest_max_move,
+      (SELECT percent_move_from_alert FROM alert_performance p WHERE p.alert_id=a.id AND p.checkpoint='eod') AS eod_move,
+      EXISTS (SELECT 1 FROM trade_journal j WHERE j.alert_id = a.id) AS trade_taken
+    FROM alerts a
+    ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+    ORDER BY a.alert_time DESC
+    LIMIT ? OFFSET ?`;
+  params.push(Math.min(Number(f.limit ?? 200), 1000), Number(f.offset ?? 0));
+  return getDb().prepare(sql).all(...params);
+}
+
+export function getAlertDetail(id: number) {
+  const db = getDb();
+  const alert = db.prepare("SELECT * FROM alerts WHERE id = ?").get(id);
+  if (!alert) return null;
+  return {
+    alert,
+    performance: db.prepare("SELECT * FROM alert_performance WHERE alert_id=? ORDER BY checked_at").all(id),
+    snapshots: db.prepare("SELECT * FROM options_snapshots WHERE alert_id=? ORDER BY taken_at").all(id),
+    catalysts: db.prepare("SELECT * FROM catalyst_records WHERE alert_id=? ORDER BY published_at DESC").all(id),
+    journal: db.prepare("SELECT * FROM trade_journal WHERE alert_id=? ORDER BY created_at").all(id),
+  };
+}
+
+export function listPerformance(f: { date?: string; ticker?: string; limit?: number } = {}) {
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (f.date) { where.push("a.trading_day = ?"); params.push(f.date); }
+  if (f.ticker) { where.push("a.ticker = ?"); params.push(String(f.ticker).toUpperCase()); }
+  const sql = `
+    SELECT p.*, a.ticker, a.source, a.direction, a.signal_score, a.risk_score, a.trading_day
+    FROM alert_performance p JOIN alerts a ON a.id = p.alert_id
+    ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+    ORDER BY p.checked_at DESC LIMIT ?`;
+  params.push(Math.min(Number(f.limit ?? 500), 2000));
+  return getDb().prepare(sql).all(...params);
+}
+
+export function trackingAlerts() {
+  return getDb().prepare("SELECT * FROM alerts WHERE status = 'tracking' ORDER BY alert_time").all();
+}
+
+export function existingCheckpoints(alertId: number): string[] {
+  return getDb().prepare("SELECT checkpoint FROM alert_performance WHERE alert_id=?").all(alertId).map((r: any) => r.checkpoint);
+}
+
+export function recordCheckpoint(row: {
+  alertId: number; checkpoint: string; checkedAt: string;
+  priceAtCheckpoint: number | null; percentMoveFromAlert: number | null;
+  maxPriceAfterAlert: number | null; maxPercentMoveAfterAlert: number | null;
+  drawdownAfterAlert: number | null; isFalsePositive: boolean | null;
+}) {
+  getDb().prepare(
+    `INSERT INTO alert_performance (alert_id, checkpoint, checked_at, price_at_checkpoint, percent_move_from_alert,
+       max_price_after_alert, max_percent_move_after_alert, drawdown_after_alert, is_false_positive)
+     VALUES (?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(alert_id, checkpoint) DO UPDATE SET
+       checked_at=excluded.checked_at, price_at_checkpoint=excluded.price_at_checkpoint,
+       percent_move_from_alert=excluded.percent_move_from_alert, max_price_after_alert=excluded.max_price_after_alert,
+       max_percent_move_after_alert=excluded.max_percent_move_after_alert, drawdown_after_alert=excluded.drawdown_after_alert,
+       is_false_positive=excluded.is_false_positive`,
+  ).run(
+    row.alertId, row.checkpoint, row.checkedAt, row.priceAtCheckpoint, row.percentMoveFromAlert,
+    row.maxPriceAfterAlert, row.maxPercentMoveAfterAlert, row.drawdownAfterAlert,
+    row.isFalsePositive == null ? null : row.isFalsePositive ? 1 : 0,
+  );
+}
+
+export function finalizeAlert(alertId: number, isFalsePositive: boolean) {
+  getDb().prepare("UPDATE alerts SET status='complete', is_false_positive=? WHERE id=?").run(isFalsePositive ? 1 : 0, alertId);
+}
+
+/** Aggregate stats for the Alert Lab dashboard. */
+export function statsSummary(day?: string) {
+  const db = getDb();
+  const dayClause = day ? "WHERE trading_day = ?" : "";
+  const dayParams = day ? [day] : [];
+  const totals: any = db.prepare(
+    `SELECT COUNT(*) AS total,
+            AVG(signal_score) AS avg_signal,
+            AVG(risk_score) AS avg_risk,
+            AVG(options_liquidity_score) AS avg_liquidity,
+            SUM(CASE WHEN is_false_positive = 1 THEN 1 ELSE 0 END) AS false_positives,
+            SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) AS completed
+     FROM alerts ${dayClause}`,
+  ).get(...dayParams);
+
+  const avgMove: any = db.prepare(
+    `SELECT AVG(p.max_percent_move_after_alert) AS avg_max_move,
+            AVG(p.percent_move_from_alert) AS avg_eod_move
+     FROM alert_performance p JOIN alerts a ON a.id = p.alert_id
+     WHERE p.checkpoint = 'eod' ${day ? "AND a.trading_day = ?" : ""}`,
+  ).get(...dayParams);
+
+  const byCatalyst = db.prepare(
+    `SELECT a.catalyst_type AS type, COUNT(*) AS alerts,
+            AVG(p.max_percent_move_after_alert) AS avg_max_move,
+            AVG(CASE WHEN p.is_false_positive = 1 THEN 1.0 ELSE 0.0 END) AS fp_rate
+     FROM alerts a LEFT JOIN alert_performance p ON p.alert_id = a.id AND p.checkpoint = 'eod'
+     ${dayClause}
+     GROUP BY a.catalyst_type ORDER BY avg_max_move DESC`,
+  ).all(...dayParams);
+
+  const bySource = db.prepare(
+    `SELECT a.source, COUNT(*) AS alerts, AVG(a.signal_score) AS avg_signal,
+            AVG(p.max_percent_move_after_alert) AS avg_max_move
+     FROM alerts a LEFT JOIN alert_performance p ON p.alert_id = a.id AND p.checkpoint = 'eod'
+     ${dayClause}
+     GROUP BY a.source`,
+  ).all(...dayParams);
+
+  return { totals, avgMove, byCatalyst, bySource };
+}
+
+/** Weekly report: last 7 trading days of measured scanner output. */
+export function weeklyReport() {
+  const db = getDb();
+  const since = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+
+  const totals: any = db.prepare(
+    `SELECT COUNT(*) AS total_alerts, AVG(signal_score) AS avg_signal_score,
+            SUM(CASE WHEN is_false_positive = 1 THEN 1 ELSE 0 END) AS false_positives,
+            SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) AS completed
+     FROM alerts WHERE trading_day >= ?`,
+  ).get(since);
+
+  const moves: any = db.prepare(
+    `SELECT AVG(p.max_percent_move_after_alert) AS avg_max_move
+     FROM alert_performance p JOIN alerts a ON a.id = p.alert_id
+     WHERE p.checkpoint = 'eod' AND a.trading_day >= ?`,
+  ).get(since);
+
+  const catalystRank = db.prepare(
+    `SELECT a.catalyst_type AS type, COUNT(*) AS alerts,
+            AVG(p.max_percent_move_after_alert) AS avg_max_move,
+            AVG(CASE WHEN p.is_false_positive = 1 THEN 1.0 ELSE 0.0 END) AS fp_rate
+     FROM alerts a JOIN alert_performance p ON p.alert_id = a.id AND p.checkpoint = 'eod'
+     WHERE a.trading_day >= ?
+     GROUP BY a.catalyst_type HAVING COUNT(*) >= 2 ORDER BY avg_max_move DESC`,
+  ).all(since) as any[];
+
+  // "Missed opportunities": biggest favorable follow-through where no journal
+  // entry exists — i.e. the scanner flagged it and it ran, per the data.
+  const missed = db.prepare(
+    `SELECT a.id, a.ticker, a.source, a.trading_day, a.signal_score, a.catalyst_type,
+            p.max_percent_move_after_alert AS max_move
+     FROM alerts a JOIN alert_performance p ON p.alert_id = a.id AND p.checkpoint = 'eod'
+     WHERE a.trading_day >= ? AND (a.is_false_positive = 0 OR a.is_false_positive IS NULL)
+       AND NOT EXISTS (SELECT 1 FROM trade_journal j WHERE j.alert_id = a.id)
+     ORDER BY p.max_percent_move_after_alert DESC LIMIT 10`,
+  ).all(since);
+
+  const topQuality = db.prepare(
+    `SELECT a.id, a.ticker, a.source, a.trading_day, a.signal_score, a.risk_score,
+            a.catalyst_type, a.catalyst_quality,
+            (SELECT p.max_percent_move_after_alert FROM alert_performance p WHERE p.alert_id=a.id AND p.checkpoint='eod') AS max_move
+     FROM alerts a WHERE a.trading_day >= ?
+     ORDER BY a.signal_score DESC LIMIT 10`,
+  ).all(since);
+
+  const journal: any = db.prepare(
+    `SELECT COUNT(*) AS entries,
+            SUM(CASE WHEN outcome_pct > 0 THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN outcome_pct <= 0 THEN 1 ELSE 0 END) AS losses,
+            AVG(outcome_pct) AS avg_outcome_pct
+     FROM trade_journal WHERE created_at >= ? AND outcome_pct IS NOT NULL`,
+  ).get(since);
+
+  return {
+    since,
+    totalAlerts: totals?.total_alerts ?? 0,
+    avgSignalScore: totals?.avg_signal_score ?? null,
+    avgMaxMoveAfterAlert: moves?.avg_max_move ?? null,
+    falsePositiveRate: totals?.completed ? (totals.false_positives ?? 0) / totals.completed : null,
+    bestCatalystType: catalystRank[0] ?? null,
+    worstCatalystType: catalystRank.length ? catalystRank[catalystRank.length - 1] : null,
+    missedOpportunities: missed,
+    topQualityAlerts: topQuality,
+    journalWinRate: journal?.entries ? (journal.wins ?? 0) / journal.entries : null,
+    journalEntries: journal?.entries ?? 0,
+    note: "Measured scanner output for research — max_move is the best favorable print after the alert, not a realized result.",
+  };
+}
+
+// ── Trade journal ────────────────────────────────────────────────────────────
+
+export function insertJournal(j: {
+  alertId?: number | null; ticker: string; side?: string | null;
+  entryPrice?: number | null; exitPrice?: number | null; quantity?: number | null;
+  openedAt?: string | null; closedAt?: string | null; outcomePct?: number | null; notes?: string | null;
+}) {
+  const res = getDb().prepare(
+    `INSERT INTO trade_journal (alert_id, ticker, side, entry_price, exit_price, quantity, opened_at, closed_at, outcome_pct, notes)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+  ).run(
+    j.alertId ?? null, String(j.ticker).toUpperCase(), j.side ?? null, j.entryPrice ?? null, j.exitPrice ?? null,
+    j.quantity ?? null, j.openedAt ?? null, j.closedAt ?? null, j.outcomePct ?? null, j.notes ?? null,
+  );
+  return getDb().prepare("SELECT * FROM trade_journal WHERE id=?").get(Number(res.lastInsertRowid));
+}
+
+const JOURNAL_FIELDS: Record<string, string> = {
+  side: "side", entryPrice: "entry_price", exitPrice: "exit_price", quantity: "quantity",
+  openedAt: "opened_at", closedAt: "closed_at", outcomePct: "outcome_pct", notes: "notes", alertId: "alert_id",
+};
+
+export function updateJournal(id: number, patch: Record<string, unknown>) {
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  for (const [k, col] of Object.entries(JOURNAL_FIELDS)) {
+    if (k in patch) { sets.push(`${col} = ?`); params.push(patch[k] ?? null); }
+  }
+  if (!sets.length) return getDb().prepare("SELECT * FROM trade_journal WHERE id=?").get(id) ?? null;
+  sets.push("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')");
+  params.push(id);
+  const res = getDb().prepare(`UPDATE trade_journal SET ${sets.join(", ")} WHERE id = ?`).run(...params);
+  if (res.changes === 0) return null;
+  return getDb().prepare("SELECT * FROM trade_journal WHERE id=?").get(id);
+}
+
+export function listJournal(limit = 100) {
+  return getDb().prepare(
+    `SELECT j.*, a.signal_score, a.catalyst_type FROM trade_journal j
+     LEFT JOIN alerts a ON a.id = j.alert_id ORDER BY j.created_at DESC LIMIT ?`,
+  ).all(Math.min(limit, 500));
+}
