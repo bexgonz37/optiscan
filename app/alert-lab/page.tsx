@@ -224,29 +224,41 @@ export default function AlertLabPage() {
                   <div className="sub">{accuracy.tracking} still tracking</div>
                 </div>
                 <div className="kpi">
-                  <div className="label">Hit rate</div>
+                  <div className="label">Stock hit rate</div>
                   <div className="val num">
                     {accuracy.hitRate != null ? `${Math.round(accuracy.hitRate * 100)}%` : "—"}
                   </div>
                   <div className="sub">{accuracy.wins} wins · {accuracy.losses} losses</div>
                 </div>
                 <div className="kpi">
-                  <div className="label">Avg best move</div>
+                  <div className="label">Option win rate</div>
+                  <div className="val num">
+                    {accuracy.optionWinRate != null ? `${Math.round(accuracy.optionWinRate * 100)}%` : "—"}
+                  </div>
+                  <div className="sub">
+                    {accuracy.optionWins || accuracy.optionLosses
+                      ? `${accuracy.optionWins} up ≥15% · ${accuracy.optionLosses} not`
+                      : "contract mid gain ≥15%"}
+                  </div>
+                </div>
+                <div className="kpi">
+                  <div className="label">Avg option return</div>
+                  <div className="val num" style={{ color: changeColor(accuracy.avgOptionReturn) }}>
+                    {accuracy.avgOptionReturn != null ? `${accuracy.avgOptionReturn.toFixed(0)}%` : "—"}
+                  </div>
+                  <div className="sub">entry mid → best mid after signal</div>
+                </div>
+                <div className="kpi">
+                  <div className="label">Avg best stock move</div>
                   <div className="val num">
                     {accuracy.avgMaxMove != null ? `${accuracy.avgMaxMove.toFixed(1)}%` : "—"}
                   </div>
                   <div className="sub">favorable direction after signal</div>
                 </div>
-                <div className="kpi">
-                  <div className="label">Avg EOD move</div>
-                  <div className="val num">
-                    {accuracy.avgEodMove != null ? `${accuracy.avgEodMove.toFixed(1)}%` : "—"}
-                  </div>
-                  <div className="sub">where the day closed vs alert</div>
-                </div>
               </div>
               <p className="settings-desc" style={{ marginBottom: 12 }}>
-                Win = stock moved ≥1.5% in the signal direction by end of day. Loss = false positive.
+                Stock RIGHT = moved ≥1.5% the signal&apos;s way by end of day. Option WIN = the contract&apos;s
+                mid price gained ≥15% from entry at any point after the signal. Both finalize at end of day.
                 Discord only fires on extra-clear signals (≥82% confidence, ≥0.2%/min aligned speed).
               </p>
               {!accuracy.recent?.length ? (
@@ -260,9 +272,11 @@ export default function AlertLabPage() {
                         <th>Ticker</th>
                         <th>Signal</th>
                         <th>Speed @ fire</th>
-                        <th>Best move</th>
-                        <th>EOD</th>
-                        <th>Result</th>
+                        <th>Best stock move</th>
+                        <th>Option entry → best</th>
+                        <th>Option %</th>
+                        <th>Stock</th>
+                        <th>Option</th>
                         <th>Discord</th>
                       </tr>
                     </thead>
@@ -272,6 +286,11 @@ export default function AlertLabPage() {
                         const done = row.status === "complete";
                         const win = done && row.is_false_positive === 0;
                         const loss = done && row.is_false_positive === 1;
+                        const liveOptionPct =
+                          row.option_return_pct ?? (row.entry_mid && row.best_mid
+                            ? +(((row.best_mid - row.entry_mid) / row.entry_mid) * 100).toFixed(1)
+                            : null);
+                        const optionDone = row.option_outcome_win != null;
                         return (
                           <tr key={row.id} className="clickable" onClick={() => openChart(row.ticker)}>
                             <td className="num muted">{row.trading_day}<br />{fmtTime(row.alert_time)}</td>
@@ -295,14 +314,28 @@ export default function AlertLabPage() {
                             <td className="num" style={{ color: changeColor(row.latest_max_move) }}>
                               {fmtPct(row.latest_max_move)}
                             </td>
-                            <td className="num" style={{ color: changeColor(row.eod_move) }}>
-                              {fmtPct(row.eod_move)}
+                            <td className="num muted" style={{ fontSize: 11 }}>
+                              {row.entry_mid != null
+                                ? `$${row.entry_mid.toFixed(2)} → ${row.best_mid != null ? `$${row.best_mid.toFixed(2)}` : "…"}`
+                                : "—"}
+                            </td>
+                            <td className="num" style={{ color: changeColor(liveOptionPct) }}>
+                              {liveOptionPct != null ? `${liveOptionPct > 0 ? "+" : ""}${liveOptionPct.toFixed(0)}%` : "—"}
                             </td>
                             <td>
                               {!done ? <span className="tag t-vol">TRACKING</span>
                                 : win ? <span className="tag t-call">RIGHT</span>
                                 : loss ? <span className="tag t-put">WRONG</span>
                                 : <span className="muted">—</span>}
+                            </td>
+                            <td>
+                              {optionDone
+                                ? (row.option_outcome_win === 1
+                                  ? <span className="tag t-call">WIN</span>
+                                  : <span className="tag t-put">LOSS</span>)
+                                : liveOptionPct != null
+                                  ? <span className="tag t-vol">LIVE</span>
+                                  : <span className="muted">—</span>}
                             </td>
                             <td>{row.discord_sent ? <span className="tag t-call">SENT</span> : <span className="muted">—</span>}</td>
                           </tr>

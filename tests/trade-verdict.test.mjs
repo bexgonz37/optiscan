@@ -154,10 +154,35 @@ test("computeTradeVerdict: research tier never TRADEs even with fast at-alert sp
   assert.equal(v.action, "WAIT");
 });
 
-test("computeTradeVerdict: live tape re-acceleration upgrades stale alert to TRADE", () => {
-  const stale = { ...goodCall, short_rate_at_alert: 0.02, volume_surge_at_alert: 0.8 };
-  assert.equal(computeTradeVerdict(stale).action, "WAIT");
-  assert.equal(computeTradeVerdict(stale, { shortRate: 0.3, surge: 1.8 }).action, "TRADE");
+test("computeTradeVerdict: live tape re-acceleration upgrades FRESH stalled alert to TRADE", () => {
+  const fresh = {
+    ...goodCall,
+    short_rate_at_alert: 0.02,
+    volume_surge_at_alert: 0.8,
+    alert_time: new Date(Date.now() - 3 * 60_000).toISOString(), // 3 min old
+  };
+  assert.equal(computeTradeVerdict(fresh).action, "WAIT");
+  assert.equal(computeTradeVerdict(fresh, { shortRate: 0.3, surge: 1.8 }).action, "TRADE");
+});
+
+// The user's "old alert still attached" bug: a signal from 40 min ago must
+// never re-arm as BUY just because the tape twitches the right way again.
+test("computeTradeVerdict: stale alert (40 min old) never re-arms as TRADE on live re-check", () => {
+  const old = { ...goodCall, alert_time: new Date(Date.now() - 40 * 60_000).toISOString() };
+  const v = computeTradeVerdict(old, { shortRate: 0.5, surge: 2.5, direction: "bullish" });
+  assert.equal(v.action, "WAIT");
+  assert.match(v.reason, /too old|stale/i);
+});
+
+test("computeTradeVerdict: stale alert WITHOUT live context keeps historical TRADE verdict", () => {
+  // History tab's "@ alert" column: shows what the verdict WAS, not what it is now.
+  const old = { ...goodCall, alert_time: new Date(Date.now() - 3 * 3_600_000).toISOString() };
+  assert.equal(computeTradeVerdict(old).action, "TRADE");
+});
+
+test("computeTradeVerdict: fresh alert (2 min) with fast aligned tape still TRADEs", () => {
+  const fresh = { ...goodCall, alert_time: new Date(Date.now() - 2 * 60_000).toISOString() };
+  assert.equal(computeTradeVerdict(fresh, { shortRate: 0.4, surge: 2.0, direction: "bullish" }).action, "TRADE");
 });
 
 test("isTradeEligible: popup filter matches TRADE verdicts only", () => {

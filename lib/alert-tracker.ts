@@ -19,9 +19,10 @@
  * inside aggregate limits.
  */
 
-import { fetchCandles } from "@/lib/polygon-provider";
+import { fetchCandles, fetchOptionChain } from "@/lib/polygon-provider";
 import { isFalsePositive } from "@/lib/alert-scoring";
 import { etCloseMs, tradingDay } from "@/lib/db";
+import { computeOptionOutcome } from "@/lib/signal-outcomes";
 import {
   trackingAlerts,
   existingCheckpoints,
@@ -29,6 +30,9 @@ import {
   finalizeAlert,
   recordAlertOutcomes,
   alertSpreadHistory,
+  alertOptionSnapshots,
+  recordOptionOutcome,
+  insertOptionSnapshot,
 } from "@/lib/alert-store";
 
 const CHECKPOINTS: { key: string; mins: number | null }[] = [
@@ -42,6 +46,29 @@ const CHECKPOINTS: { key: string; mins: number | null }[] = [
 ];
 
 const FP_MIN_FAVORABLE_PCT = Number(process.env.ALERT_FP_MIN_FAVORABLE_PCT ?? 1.5);
+
+/**
+ * Option contract P&L at finalize: try one last quote (EOD snapshot), then
+ * measure entry mid -> best mid across all snapshots. Best-effort — a missing
+ * EOD quote (expired 0DTE after close) still measures from live snapshots.
+ */
+async function finalizeOptionOutcome(a: { id: number; ticker: string; option_symbol: string | null }) {
+  if (a.option_symbol) {
+    try {
+      const chain: any = await fetchOptionChain(a.ticker, { dteMin: 0, dteMax: 5, maxPages: 2 });
+      const c = chain?.available ? chain.contracts?.find((x: any) => x.optionSymbol === a.option_symbol) : null;
+      if (c) {
+        insertOptionSnapshot(a.id, "eod", {
+          optionSymbol: c.optionSymbol, bid: c.bid, ask: c.ask, mid: c.mid,
+          spreadPct: c.spreadPct, volume: c.volume, openInterest: c.openInterest,
+          iv: c.iv, delta: c.delta,
+        });
+      }
+    } catch { /* quote is a bonus; snapshots so far still measure */ }
+  }
+  const outcome = computeOptionOutcome(alertOptionSnapshots(a.id));
+  if (outcome) recordOptionOutcome(a.id, outcome.returnPct, outcome.win);
+}
 
 interface Bar { t: number; c: number; h: number; l: number; v: number }
 
@@ -141,6 +168,7 @@ export async function runTrackerSweep(nowMs = Date.now()) {
             priceAtCheckpoint: null, percentMoveFromAlert: null, maxPriceAfterAlert: null,
             maxPercentMoveAfterAlert: null, drawdownAfterAlert: null, isFalsePositive: null });
           finalizeAlert(a.id, false);
+          await finalizeOptionOutcome(a).catch(() => { /* option P&L is best-effort */ });
           finalized++;
         }
         continue;
@@ -179,6 +207,7 @@ export async function runTrackerSweep(nowMs = Date.now()) {
             });
           }
         } catch { /* outcome bookkeeping never blocks finalize */ }
+        await finalizeOptionOutcome(a).catch(() => { /* option P&L is best-effort */ });
         finalized++;
       }
     }

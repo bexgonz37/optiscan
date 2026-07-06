@@ -34,6 +34,7 @@ interface PopupAlert {
   short_rate_at_alert: number | null; volume_surge_at_alert: number | null;
   risk_flags: string | null; options_pressure_label: string | null;
   alert_tier: string | null;
+  alert_time: string | null;
 }
 
 const MOVE_STATUS_TEXT: Record<string, string> = {

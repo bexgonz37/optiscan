@@ -39,6 +39,8 @@ export interface AlertVerdictInput {
   long_put_score?: number | null;
   /** 'trade' = live 1s loop with speed data; 'research' = slower scan, never TRADE. */
   alert_tier?: string | null;
+  /** ISO time the alert fired — TRADE is capped to fresh signals only. */
+  alert_time?: string | null;
 }
 
 export interface TradeVerdict {
@@ -102,6 +104,25 @@ export interface LiveTapeContext {
 /** Discord / high-urgency: stricter than TRADE — must be unmistakably moving now. */
 export const CLEAR_SIGNAL_MIN_CONFIDENCE = 82;
 export const CLEAR_SIGNAL_MIN_SPEED = 0.2;
+
+/** A BUY signal older than this can never re-show as TRADE — the contract,
+ * strike, and premium it was based on are stale. Fresh signals only. */
+export const MAX_FRESH_ALERT_AGE_MS = 15 * 60_000;
+
+/** Minutes since the alert fired, or null when alert_time is missing. */
+export function alertAgeMinutes(a: Pick<AlertVerdictInput, "alert_time">, nowMs = Date.now()): number | null {
+  if (!a.alert_time) return null;
+  const t = Date.parse(a.alert_time);
+  if (!Number.isFinite(t)) return null;
+  return Math.max(0, Math.round((nowMs - t) / 60_000));
+}
+
+function isStaleForTrade(a: Pick<AlertVerdictInput, "alert_time">, nowMs = Date.now()): boolean {
+  if (!a.alert_time) return false;
+  const t = Date.parse(a.alert_time);
+  if (!Number.isFinite(t)) return false;
+  return nowMs - t > MAX_FRESH_ALERT_AGE_MS;
+}
 
 export function isLiveTapeAligned(side: OptionSide, live?: LiveTapeContext): boolean {
   if (!live || side === "NONE") return true;
@@ -302,6 +323,24 @@ export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext
         contractLine: contractLine(merged),
         bullets: [...bullets, against],
         logicLine: `${logicBase} Quality passed but live tape disagrees.`,
+        hasSpeedProof: false,
+      };
+    }
+    // Freshness gate (live re-checks only, never the historical at-alert view):
+    // an old BUY was priced off a contract/premium that no longer exists. Even
+    // if the tape re-accelerates, demand a NEW alert instead of reviving this one.
+    if (live != null && isStaleForTrade(merged)) {
+      const ageMin = alertAgeMinutes(merged) ?? 0;
+      const staleWhy = `This signal fired ${ageMin} min ago — too old to act on. The contract and entry it was based on are stale; wait for a fresh signal.`;
+      return {
+        action: "WAIT",
+        side,
+        headline: side === "PUT" ? "WAIT — PUT SETUP" : side === "CALL" ? "WAIT — CALL SETUP" : "WAIT",
+        reason: staleWhy,
+        confidence: Math.round(setup * 0.3 + worth * 0.3 + contract * 0.2),
+        contractLine: contractLine(merged),
+        bullets: [...bullets, staleWhy],
+        logicLine: `${logicBase} Blocked: signal older than ${Math.round(MAX_FRESH_ALERT_AGE_MS / 60_000)} min — stale signals never re-arm as BUY.`,
         hasSpeedProof: false,
       };
     }

@@ -200,6 +200,9 @@ const ALERT_COLUMN_MIGRATIONS: [string, string][] = [
   ["volume_surge_at_alert", "ALTER TABLE alerts ADD COLUMN volume_surge_at_alert REAL"],
   // 'trade' = live 1s loop with speed proof; 'research' = slow scan / no speed, never TRADE
   ["alert_tier", "ALTER TABLE alerts ADD COLUMN alert_tier TEXT"],
+  // option contract P&L: entry mid -> best mid after alert (set at EOD finalize)
+  ["option_return_pct", "ALTER TABLE alerts ADD COLUMN option_return_pct REAL"],
+  ["option_outcome_win", "ALTER TABLE alerts ADD COLUMN option_outcome_win INTEGER"],
 ];
 const JOURNAL_COLUMN_MIGRATIONS: [string, string][] = [
   ["contract", "ALTER TABLE trade_journal ADD COLUMN contract TEXT"],

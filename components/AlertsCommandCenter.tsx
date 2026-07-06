@@ -19,7 +19,7 @@ import type { LiveTape, LiveTapeRow } from "@/hooks/useLiveTapeMap";
 import { liveCtxFor } from "@/hooks/useLiveTapeMap";
 import { TickerIcon } from "@/components/ui";
 import { TradeVerdictHero } from "@/components/TradeVerdictHero";
-import { computeTradeVerdict, MIN_SPEED_PCT_PER_MIN, type TradeVerdict } from "@/lib/trade-verdict";
+import { computeTradeVerdict, alertAgeMinutes, MIN_SPEED_PCT_PER_MIN, type TradeVerdict } from "@/lib/trade-verdict";
 import { useStableSymbolOrder } from "@/lib/stable-order";
 import { changeColor, fmtPct, fmtPrice } from "@/lib/format";
 
@@ -35,6 +35,15 @@ interface Entry {
 function speedText(r: LiveTapeRow | null): string {
   if (r?.shortRate == null) return "—";
   return `${r.shortRate > 0 ? "+" : ""}${r.shortRate.toFixed(2)}%/min`;
+}
+
+/** Alerts older than this drop off "Right now" entirely — they live in History. */
+const RIGHT_NOW_WINDOW_MS = 30 * 60_000;
+
+function ageText(alert: any): string | null {
+  const m = alertAgeMinutes(alert ?? {});
+  if (m == null) return null;
+  return m < 1 ? "just now" : `${m}m ago`;
 }
 
 export function AlertsCommandCenter({
@@ -76,9 +85,16 @@ export function AlertsCommandCenter({
   const entries = useMemo<Entry[]>(() => {
     const symbols = new Set<string>([...tape.map.keys(), ...alerts.keys()]);
     const out: Entry[] = [];
+    const nowMs = Date.now();
     for (const symbol of symbols) {
       const tapeRow = tape.map.get(symbol) ?? null;
-      const alert = alerts.get(symbol) ?? null;
+      const rawAlert = alerts.get(symbol) ?? null;
+      // Old alerts never attach here — a signal from an hour ago must not sit
+      // next to live tape looking actionable. History keeps the full record.
+      const alert =
+        rawAlert && rawAlert.alert_time && nowMs - Date.parse(rawAlert.alert_time) <= RIGHT_NOW_WINDOW_MS
+          ? rawAlert
+          : null;
       const live = liveCtxFor(tape, symbol);
       const verdict = alert ? computeTradeVerdict(alert, live) : null;
       const fast = Math.abs(tapeRow?.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN;
@@ -162,7 +178,10 @@ export function AlertsCommandCenter({
               <TickerIcon symbol={hero.symbol} />
               <div>
                 <div className="tname" style={{ fontSize: 16 }}>{hero.symbol}</div>
-                <div className="tsub">{fmtPrice(heroLive?.price ?? hero.alert.price_at_alert)}</div>
+                <div className="tsub">
+                  {fmtPrice(heroLive?.price ?? hero.alert.price_at_alert)}
+                  {ageText(hero.alert) ? ` · signal ${ageText(hero.alert)}` : ""}
+                </div>
               </div>
             </div>
             <TradeVerdictHero alert={hero.alert} live={heroLive} />
@@ -269,7 +288,12 @@ export function AlertsCommandCenter({
                     </td>
                     <td>
                       {v ? (
-                        <span className={`verdict-pill verdict-${v.action.toLowerCase()}`} title={v.reason}>{v.headline}</span>
+                        <>
+                          <span className={`verdict-pill verdict-${v.action.toLowerCase()}`} title={v.reason}>{v.headline}</span>
+                          {ageText(e.alert) ? (
+                            <div className="muted" style={{ fontSize: 10, marginTop: 2 }}>{ageText(e.alert)}</div>
+                          ) : null}
+                        </>
                       ) : (
                         <span className="verdict-pill verdict-wait">
                           {e.tapeRow?.direction === "bullish" ? "MOVING UP" : e.tapeRow?.direction === "bearish" ? "MOVING DOWN" : "MOVING"}

@@ -280,6 +280,32 @@ export function alertSpreadHistory(alertId: number): { atAlert: number | null; m
   return { atAlert: first?.spread_pct ?? null, maxLive: live?.m ?? null };
 }
 
+/** All mid quotes for an alert's contract, for option-P&L measurement. */
+export function alertOptionSnapshots(alertId: number): { checkpoint: string; mid: number | null }[] {
+  return getDb().prepare(
+    "SELECT checkpoint, mid FROM options_snapshots WHERE alert_id=? ORDER BY taken_at",
+  ).all(alertId) as any[];
+}
+
+/** Persist the contract P&L outcome (computed at EOD finalize). */
+export function recordOptionOutcome(alertId: number, returnPct: number | null, win: boolean | null) {
+  getDb().prepare("UPDATE alerts SET option_return_pct=?, option_outcome_win=? WHERE id=?")
+    .run(returnPct, win == null ? null : win ? 1 : 0, alertId);
+}
+
+/** One more contract quote row (used by the tracker for the EOD checkpoint). */
+export function insertOptionSnapshot(alertId: number, checkpoint: string, c: {
+  optionSymbol?: string | null; bid?: number | null; ask?: number | null; mid?: number | null;
+  spreadPct?: number | null; volume?: number | null; openInterest?: number | null;
+  iv?: number | null; delta?: number | null;
+}, takenAt = new Date().toISOString()) {
+  getDb().prepare(
+    `INSERT INTO options_snapshots (alert_id, taken_at, checkpoint, option_symbol, bid, ask, mid, spread_pct, volume, open_interest, iv, delta)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(alertId, takenAt, checkpoint, c.optionSymbol ?? null, c.bid ?? null, c.ask ?? null, c.mid ?? null,
+    c.spreadPct ?? null, c.volume ?? null, c.openInterest ?? null, c.iv ?? null, c.delta ?? null);
+}
+
 /** Aggregate stats for the Alert Lab dashboard. */
 export function statsSummary(day?: string) {
   const db = getDb();
@@ -335,7 +361,10 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
             SUM(CASE WHEN a.status = 'complete' AND a.is_false_positive = 1 THEN 1 ELSE 0 END) AS losses,
             SUM(CASE WHEN a.status = 'tracking' THEN 1 ELSE 0 END) AS tracking,
             AVG(CASE WHEN p.checkpoint = 'eod' THEN p.max_percent_move_after_alert END) AS avg_max_move,
-            AVG(CASE WHEN p.checkpoint = 'eod' THEN p.percent_move_from_alert END) AS avg_eod_move
+            AVG(CASE WHEN p.checkpoint = 'eod' THEN p.percent_move_from_alert END) AS avg_eod_move,
+            SUM(CASE WHEN a.option_outcome_win = 1 THEN 1 ELSE 0 END) AS option_wins,
+            SUM(CASE WHEN a.option_outcome_win = 0 THEN 1 ELSE 0 END) AS option_losses,
+            AVG(a.option_return_pct) AS avg_option_return
      FROM alerts a
      LEFT JOIN alert_performance p ON p.alert_id = a.id AND p.checkpoint = 'eod'
      WHERE a.trading_day >= ? AND a.alert_tier = 'trade'`,
@@ -343,6 +372,8 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
 
   const completed = (summary?.wins ?? 0) + (summary?.losses ?? 0);
   const hitRate = completed > 0 ? (summary.wins ?? 0) / completed : null;
+  const optionCompleted = (summary?.option_wins ?? 0) + (summary?.option_losses ?? 0);
+  const optionWinRate = optionCompleted > 0 ? (summary.option_wins ?? 0) / optionCompleted : null;
 
   const bySide = db.prepare(
     `SELECT a.option_side AS side, COUNT(*) AS total,
@@ -356,7 +387,11 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
   const recent = db.prepare(
     `SELECT a.id, a.ticker, a.option_side, a.strike, a.dte, a.alert_time, a.trading_day,
             a.direction, a.signal_score, a.short_rate_at_alert, a.percent_move_at_alert,
-            a.status, a.is_false_positive,
+            a.status, a.is_false_positive, a.option_return_pct, a.option_outcome_win,
+            (SELECT s.mid FROM options_snapshots s
+             WHERE s.alert_id = a.id AND s.checkpoint = 'alert' LIMIT 1) AS entry_mid,
+            (SELECT MAX(s.mid) FROM options_snapshots s
+             WHERE s.alert_id = a.id AND s.checkpoint IN ('live','eod')) AS best_mid,
             (SELECT p.max_percent_move_after_alert FROM alert_performance p
              WHERE p.alert_id = a.id ORDER BY p.checked_at DESC LIMIT 1) AS latest_max_move,
             (SELECT p.percent_move_from_alert FROM alert_performance p
@@ -378,9 +413,13 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
     hitRate,
     avgMaxMove: summary?.avg_max_move ?? null,
     avgEodMove: summary?.avg_eod_move ?? null,
+    optionWins: summary?.option_wins ?? 0,
+    optionLosses: summary?.option_losses ?? 0,
+    optionWinRate,
+    avgOptionReturn: summary?.avg_option_return ?? null,
     bySide,
     recent,
-    note: "Tracks trade-tier BUY signals only. Win = favorable move ≥ threshold by EOD; loss = false positive.",
+    note: "Tracks trade-tier BUY signals only. Stock win = favorable move ≥ threshold by EOD. Option win = contract mid gained ≥ 15% from entry.",
   };
 }
 
