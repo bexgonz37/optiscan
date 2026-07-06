@@ -206,7 +206,11 @@ export function AlertPopup({
       const show = fresh.filter((x) =>
         !(snoozed[x.ticker] && now - snoozed[x.ticker] < SNOOZE_MS) &&
         x.alert_tier !== "research" &&
-        isTradeEligible(x, liveCtxFor(tapeRef.current, x.ticker)),
+        // Stock callouts (premarket/AH) have no option scores — BUY at capture
+        // is their popup bar. Options keep the live-confirmed TRADE check.
+        ((x as any).asset_class === "stock"
+          ? (x as any).capture_action === "TRADE"
+          : isTradeEligible(x, liveCtxFor(tapeRef.current, x.ticker))),
       );
       if (!show.length) return;
 
@@ -219,9 +223,13 @@ export function AlertPopup({
       if (settingsRef.current?.sound_enabled) beep();
       if (settingsRef.current?.desktop_notification_enabled && typeof Notification !== "undefined" && Notification.permission === "granted") {
         const latest = show[show.length - 1];
-        const v = computeTradeVerdict(latest, liveCtxFor(tapeRef.current, latest.ticker));
-        const title = langMode === "private" ? `${latest.ticker}: ${v.headline}` : `${latest.public_label ?? "Alert"}: ${latest.ticker}`;
-        const body = langMode === "private" ? v.reason : `Setup ${Math.round(latest.signal_score ?? 0)}/100 · Risk ${Math.round(latest.risk_score ?? 0)}/100`;
+        const isStock = (latest as any).asset_class === "stock";
+        const v = isStock ? null : computeTradeVerdict(latest, liveCtxFor(tapeRef.current, latest.ticker));
+        const headline = isStock ? ((latest as any).private_label ?? "STOCK SIGNAL") : v!.headline;
+        const title = langMode === "private" ? `${latest.ticker}: ${headline}` : `${latest.public_label ?? "Alert"}: ${latest.ticker}`;
+        const body = langMode === "private"
+          ? (isStock ? `Stock momentum — setup ${Math.round(latest.signal_score ?? 0)}/100` : v!.reason)
+          : `Setup ${Math.round(latest.signal_score ?? 0)}/100 · Risk ${Math.round(latest.risk_score ?? 0)}/100`;
         new Notification(title, { body, tag: `optiscan-${latest.id}` });
       }
     } catch { /* polling is best-effort */ }
