@@ -30,6 +30,17 @@ export interface StrongAlert {
 
 const STRONG_ONLY_MIN = 80;
 const HISTORY = 16;
+
+/** Optional API token (see SCAN_API_TOKEN): set once via
+ * localStorage.setItem("optiscan:token", "..."). */
+export function scanHeaders(): HeadersInit {
+  try {
+    const t = localStorage.getItem("optiscan:token");
+    return t ? { "x-scan-token": t } : {};
+  } catch {
+    return {};
+  }
+}
 const EMPTY_KPI: KpiSnapshot = { signals: 0, unusual: 0, strong: 0, avgScore: 0, avgIv: 0, scanned: 0 };
 
 function momentumId(r: MomentumRow): string {
@@ -162,9 +173,10 @@ export function useScanner(opts: {
     // share one underlying scan within the same tick).
     const maxAge = Math.max(400, intervalRef.current * 1000 - 300);
     try {
+      const headers = scanHeaders();
       const [mRes, uRes] = await Promise.all([
-        fetch(`/api/scan/momentum?maxAge=${maxAge}`, { cache: "no-store" }),
-        fetch(`/api/scan/unusual?maxAge=${maxAge}`, { cache: "no-store" }),
+        fetch(`/api/scan/momentum?maxAge=${maxAge}`, { cache: "no-store", headers }),
+        fetch(`/api/scan/unusual?maxAge=${maxAge}`, { cache: "no-store", headers }),
       ]);
       const m = await mRes.json();
       const u = await uRes.json();
@@ -205,7 +217,9 @@ export function useScanner(opts: {
 
   useEffect(() => {
     if (!autoRefresh) return;
-    const ms = Math.max(1, intervalSec) * 1000;
+    // Floor of 5s: each scan is ~24+ provider calls, so sub-5s polling only
+    // burns quota (and on the free tier fails outright with 429s).
+    const ms = Math.max(5, intervalSec) * 1000;
     const id = setInterval(refresh, ms);
     return () => clearInterval(id);
   }, [autoRefresh, intervalSec, refresh]);
