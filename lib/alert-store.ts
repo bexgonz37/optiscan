@@ -360,11 +360,19 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
             SUM(CASE WHEN a.status = 'complete' AND a.is_false_positive = 0 THEN 1 ELSE 0 END) AS wins,
             SUM(CASE WHEN a.status = 'complete' AND a.is_false_positive = 1 THEN 1 ELSE 0 END) AS losses,
             SUM(CASE WHEN a.status = 'tracking' THEN 1 ELSE 0 END) AS tracking,
+            SUM(CASE WHEN a.status = 'tracking' AND COALESCE(
+              (SELECT p.max_percent_move_after_alert FROM alert_performance p
+               WHERE p.alert_id = a.id ORDER BY p.checked_at DESC LIMIT 1), 0) >= 1.5
+            THEN 1 ELSE 0 END) AS live_on_track,
             AVG(CASE WHEN p.checkpoint = 'eod' THEN p.max_percent_move_after_alert END) AS avg_max_move,
             AVG(CASE WHEN p.checkpoint = 'eod' THEN p.percent_move_from_alert END) AS avg_eod_move,
             SUM(CASE WHEN a.option_outcome_win = 1 THEN 1 ELSE 0 END) AS option_wins,
             SUM(CASE WHEN a.option_outcome_win = 0 THEN 1 ELSE 0 END) AS option_losses,
-            AVG(a.option_return_pct) AS avg_option_return
+            AVG(a.option_return_pct) AS avg_option_return,
+            SUM(CASE WHEN EXISTS (
+              SELECT 1 FROM notification_events n
+              WHERE n.alert_id = a.id AND n.channel = 'discord_webhook' AND n.status = 'sent'
+            ) THEN 1 ELSE 0 END) AS discord_sent_count
      FROM alerts a
      LEFT JOIN alert_performance p ON p.alert_id = a.id AND p.checkpoint = 'eod'
      WHERE a.trading_day >= ? AND a.alert_tier = 'trade'`,
@@ -396,6 +404,12 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
              WHERE p.alert_id = a.id ORDER BY p.checked_at DESC LIMIT 1) AS latest_max_move,
             (SELECT p.percent_move_from_alert FROM alert_performance p
              WHERE p.alert_id = a.id AND p.checkpoint = 'eod') AS eod_move,
+            (SELECT n.status FROM notification_events n
+             WHERE n.alert_id = a.id AND n.channel = 'discord_webhook'
+             ORDER BY n.id DESC LIMIT 1) AS discord_status,
+            (SELECT n.error FROM notification_events n
+             WHERE n.alert_id = a.id AND n.channel = 'discord_webhook'
+             ORDER BY n.id DESC LIMIT 1) AS discord_note,
             EXISTS (SELECT 1 FROM notification_events n
                     WHERE n.alert_id = a.id AND n.channel = 'discord_webhook' AND n.status = 'sent') AS discord_sent
      FROM alerts a
@@ -410,6 +424,8 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
     wins: summary?.wins ?? 0,
     losses: summary?.losses ?? 0,
     tracking: summary?.tracking ?? 0,
+    liveOnTrack: summary?.live_on_track ?? 0,
+    discordSentCount: summary?.discord_sent_count ?? 0,
     hitRate,
     avgMaxMove: summary?.avg_max_move ?? null,
     avgEodMove: summary?.avg_eod_move ?? null,
@@ -419,7 +435,7 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
     avgOptionReturn: summary?.avg_option_return ?? null,
     bySide,
     recent,
-    note: "Tracks trade-tier BUY signals only. Stock win = favorable move ≥ threshold by EOD. Option win = contract mid gained ≥ 15% from entry.",
+    note: "Tracks trade-tier BUY signals only. LIVE columns update every second during the session. Final stock/option grades lock at market close.",
   };
 }
 

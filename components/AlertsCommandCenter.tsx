@@ -71,14 +71,24 @@ export function AlertsCommandCenter({
         const prev = map.get(a.ticker);
         if (!prev || a.id > prev.id) map.set(a.ticker, a);
       }
-      setAlerts(map);
+      setAlerts((prev) => {
+        if (prev.size === map.size) {
+          let same = true;
+          for (const [k, v] of map) {
+            const p = prev.get(k);
+            if (!p || p.id !== v.id) { same = false; break; }
+          }
+          if (same) return prev;
+        }
+        return map;
+      });
     } catch { /* best effort */ }
     finally { pollInFlight.current = false; }
   }, []);
 
   useEffect(() => {
     pollAlerts();
-    const id = setInterval(pollAlerts, 5000);
+    const id = setInterval(pollAlerts, 1000);
     return () => clearInterval(id);
   }, [pollAlerts]);
 
@@ -158,7 +168,7 @@ export function AlertsCommandCenter({
         <div>
           <h2 className="section-title">Right now</h2>
           <p className="section-sub">
-            One list, best first. BUY only when the stock is moving the right way right now. List order refreshes every ~5s — pause to freeze.
+            One list, best first. BUY only when the stock is moving the right way right now. Updates every second — pause to freeze list order.
           </p>
         </div>
         <div className="status-group">

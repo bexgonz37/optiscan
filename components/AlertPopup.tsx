@@ -45,8 +45,8 @@ const MOVE_STATUS_TEXT: Record<string, string> = {
 const LS_LAST_ID = "optiscan:popup:lastId";
 const LS_SNOOZE = "optiscan:popup:snooze";
 const SNOOZE_MS = 60 * 60 * 1000;
-// Fast pickup — a BUY signal 20 seconds late is a missed entry on 0DTE.
-const POLL_MS = 5_000;
+// Fast pickup — a BUY signal even a few seconds late is a missed entry on 0DTE.
+const POLL_MS = 1_000;
 const MAX_STACK = 3;
 
 function beep() {

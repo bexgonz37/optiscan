@@ -99,8 +99,8 @@ export default function AlertLabPage() {
     return q.toString();
   }, [ticker, date, catalyst, minSignal, maxRisk, fp, taken]);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const refresh = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     try {
       const headers = scanHeaders();
       const [aRes, sRes, rRes, accRes, jRes] = await Promise.all([
@@ -124,15 +124,29 @@ export default function AlertLabPage() {
     } catch (err: any) {
       setError(err?.message ?? "Failed to load Alert Lab");
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
   }, [query]);
 
+  const refreshAccuracy = useCallback(async () => {
+    try {
+      const acc = await fetch(`/api/alerts/signal-accuracy?days=14`, { cache: "no-store", headers: scanHeaders() }).then((r) => r.json());
+      if (acc.ok) setAccuracy(acc);
+    } catch { /* best effort */ }
+  }, []);
+
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, 60_000);
+    const id = setInterval(() => refresh({ silent: true }), 60_000);
     return () => clearInterval(id);
   }, [refresh]);
+
+  useEffect(() => {
+    if (tab !== "accuracy") return;
+    refreshAccuracy();
+    const id = setInterval(refreshAccuracy, 1000);
+    return () => clearInterval(id);
+  }, [tab, refreshAccuracy]);
 
   async function logTrade(a: AlertRow) {
     await fetch("/api/trade-journal", {
@@ -210,25 +224,70 @@ export default function AlertLabPage() {
           <div className="toolbar">
             <h2>Signal accuracy</h2>
             <div className="right muted" style={{ fontSize: 11 }}>
-              Trade-tier BUY CALL/PUT only · last {accuracy?.days ?? 14} days
+              Live · updates every second · last {accuracy?.days ?? 14} days
             </div>
           </div>
           {!accuracy ? (
             <div className="empty">Loading accuracy…</div>
           ) : (
             <div style={{ padding: "4px 14px 14px" }}>
+              <p className="settings-desc" style={{ marginBottom: 12 }}>
+                <strong>Two scoreboards.</strong> The top row is <em>live right now</em> during the session (stock move + option mid).
+                The bottom row is <em>final grades at market close</em> — hit rate and win rate only count once the day is done.
+                Discord sends <strong>instantly</strong> when a signal clears the extra-clear bar (≥82% confidence, ≥0.2%/min aligned speed) — most signals don&apos;t qualify, which is intentional.
+              </p>
+
+              <div className="label muted" style={{ fontSize: 11, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                Live session (updates every second)
+              </div>
               <div className="kpis" style={{ marginBottom: 14 }}>
                 <div className="kpi">
-                  <div className="label">Trade signals</div>
+                  <div className="label">Signals today</div>
                   <div className="val num">{accuracy.total}</div>
-                  <div className="sub">{accuracy.tracking} still tracking</div>
+                  <div className="sub">{accuracy.tracking} still open</div>
                 </div>
+                <div className="kpi">
+                  <div className="label">On track now</div>
+                  <div className="val num" style={{ color: accuracy.liveOnTrack ? "var(--green)" : undefined }}>
+                    {accuracy.liveOnTrack ?? 0}
+                  </div>
+                  <div className="sub">stock moved ≥1.5% the right way so far</div>
+                </div>
+                <div className="kpi">
+                  <div className="label">Discord sent</div>
+                  <div className="val num">{accuracy.discordSentCount ?? 0}</div>
+                  <div className="sub">extra-clear only · not delayed</div>
+                </div>
+                <div className="kpi">
+                  <div className="label">Avg live stock move</div>
+                  <div className="val num">
+                    {accuracy.recent?.length
+                      ? `${(
+                          accuracy.recent
+                            .filter((r: any) => r.latest_max_move != null)
+                            .reduce((s: number, r: any) => s + r.latest_max_move, 0) /
+                          Math.max(1, accuracy.recent.filter((r: any) => r.latest_max_move != null).length)
+                        ).toFixed(1)}%`
+                      : "—"}
+                  </div>
+                  <div className="sub">best favorable move so far today</div>
+                </div>
+              </div>
+
+              <div className="label muted" style={{ fontSize: 11, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                Final grades (locks at market close)
+              </div>
+              <div className="kpis" style={{ marginBottom: 14 }}>
                 <div className="kpi">
                   <div className="label">Stock hit rate</div>
                   <div className="val num">
                     {accuracy.hitRate != null ? `${Math.round(accuracy.hitRate * 100)}%` : "—"}
                   </div>
-                  <div className="sub">{accuracy.wins} wins · {accuracy.losses} losses</div>
+                  <div className="sub">
+                    {accuracy.wins + accuracy.losses > 0
+                      ? `${accuracy.wins} right · ${accuracy.losses} wrong`
+                      : `${accuracy.tracking} still tracking — grades at close`}
+                  </div>
                 </div>
                 <div className="kpi">
                   <div className="label">Option win rate</div>
@@ -238,7 +297,7 @@ export default function AlertLabPage() {
                   <div className="sub">
                     {accuracy.optionWins || accuracy.optionLosses
                       ? `${accuracy.optionWins} up ≥15% · ${accuracy.optionLosses} not`
-                      : "contract mid gain ≥15%"}
+                      : "contract mid gain ≥15% · grades at close"}
                   </div>
                 </div>
                 <div className="kpi">
@@ -246,21 +305,16 @@ export default function AlertLabPage() {
                   <div className="val num" style={{ color: changeColor(accuracy.avgOptionReturn) }}>
                     {accuracy.avgOptionReturn != null ? `${accuracy.avgOptionReturn.toFixed(0)}%` : "—"}
                   </div>
-                  <div className="sub">entry mid → best mid after signal</div>
+                  <div className="sub">entry mid → best mid (final at close)</div>
                 </div>
                 <div className="kpi">
                   <div className="label">Avg best stock move</div>
                   <div className="val num">
                     {accuracy.avgMaxMove != null ? `${accuracy.avgMaxMove.toFixed(1)}%` : "—"}
                   </div>
-                  <div className="sub">favorable direction after signal</div>
+                  <div className="sub">favorable direction after signal (EOD)</div>
                 </div>
               </div>
-              <p className="settings-desc" style={{ marginBottom: 12 }}>
-                Stock RIGHT = moved ≥1.5% the signal&apos;s way by end of day. Option WIN = the contract&apos;s
-                mid price gained ≥15% from entry at any point after the signal. Both finalize at end of day.
-                Discord only fires on extra-clear signals (≥82% confidence, ≥0.2%/min aligned speed).
-              </p>
               {!accuracy.recent?.length ? (
                 <div className="empty small">No trade-tier signals recorded yet this period.</div>
               ) : (
@@ -337,7 +391,17 @@ export default function AlertLabPage() {
                                   ? <span className="tag t-vol">LIVE</span>
                                   : <span className="muted">—</span>}
                             </td>
-                            <td>{row.discord_sent ? <span className="tag t-call">SENT</span> : <span className="muted">—</span>}</td>
+                            <td>
+                              {row.discord_sent ? (
+                                <span className="tag t-call" title="Sent instantly when signal cleared the Discord bar">SENT</span>
+                              ) : row.discord_status === "skipped" ? (
+                                <span className="tag t-vol" title={row.discord_note ?? "Below Discord bar"}>SKIP</span>
+                              ) : row.discord_status === "failed" ? (
+                                <span className="tag t-put" title={row.discord_note ?? "Send failed"}>FAIL</span>
+                              ) : (
+                                <span className="muted" title="Did not clear extra-clear bar">—</span>
+                              )}
+                            </td>
                           </tr>
                         );
                       })}
