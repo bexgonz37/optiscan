@@ -669,6 +669,92 @@ body {
 tr.acc-row-on-track {
   background: rgba(80, 200, 120, 0.06);
 }
+.acc-hero-ratio {
+  background: linear-gradient(180deg, var(--panel), var(--bg2));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+}
+.acc-hero-ratio-val {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 6px;
+}
+.acc-hero-ratio-val .num {
+  font-size: 28px;
+  font-weight: 700;
+}
+.acc-hero-ratio-pct {
+  font-size: 14px;
+  color: var(--muted);
+}
+.acc-charts-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+  margin-bottom: 16px;
+}
+.acc-chart-panel {
+  background: var(--panel2, var(--bg2));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+.acc-chart-wide {
+  grid-column: 1 / -1;
+}
+.acc-chart-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.acc-chart-gauge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.acc-gauge-center {
+  text-align: center;
+  margin-bottom: -8px;
+}
+.acc-gauge-num {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--green);
+}
+.acc-gauge-of {
+  display: block;
+  font-size: 13px;
+  color: var(--muted);
+}
+.acc-gauge-pct {
+  display: block;
+  font-size: 18px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+.scanner-layout {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 14px;
+  align-items: start;
+  margin-bottom: 16px;
+}
+.scanner-main {
+  min-width: 0;
+}
+@media (max-width: 900px) {
+  .acc-charts-grid {
+    grid-template-columns: 1fr;
+  }
+  .scanner-layout {
+    grid-template-columns: 1fr;
+  }
+}
 .signal-momentum {
   font-size: 11px;
   font-weight: 600;

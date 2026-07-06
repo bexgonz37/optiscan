@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 
 const LS_KEY = "optiscan:guide:";
 
-export function UsageGuide({ page }: { page: "dashboard" | "alerts" }) {
+export function UsageGuide({ page }: { page: "dashboard" | "scanner" | "alerts" }) {
   const [open, setOpen] = useState(true);
 
   useEffect(() => {
@@ -27,7 +27,17 @@ export function UsageGuide({ page }: { page: "dashboard" | "alerts" }) {
       <li><strong>Market scanner</strong> — all symbols ranked by <em>Watch score</em> (speed + volume + VWAP + levels). Sort by any column. This is your “what’s worth looking at” board.</li>
       <li><strong>Default view shows fast movers</strong> — click <em>All</em> to see the full universe, or <em>Pause</em> to freeze the table while you read it. Rows only re-rank every ~5 seconds so the list doesn't jump every second.</li>
       <li><strong>Stock vs options</strong> — the <em>Stock</em> column is price direction. Options flow (in the chart drawer) is call vs put volume — they can disagree (e.g. calls heavy while the stock dips).</li>
-      <li><strong>Alerts page</strong> — go there for BUY CALL / BUY PUT / WAIT / SKIP when the scanner fires a trade signal.</li>
+      <li><strong>Alerts page</strong> — go there for BUY CALL / BUY PUT callouts when the scanner fires a trade signal.</li>
+      <li><strong>Scanner page</strong> — options momentum + unusual flow research with charts (separate from live tape).</li>
+    </ol>
+  );
+
+  const scanner = (
+    <ol className="guide-list">
+      <li><strong>Options scanner</strong> — ranked momentum setups (best call/put contract per ticker) and unusual flow (volume/OI spikes).</li>
+      <li><strong>Momentum vs Unusual</strong> — switch tabs or use sidebar views (High-Conviction, Calls, Puts, New Positioning).</li>
+      <li><strong>Charts</strong> — click any row to open the chart drawer with 0DTE contract cards and options flow.</li>
+      <li><strong>Dashboard</strong> — live stock tape (speed, VWAP, levels). <strong>Alerts</strong> — fired BUY callouts + accuracy tracking.</li>
     </ol>
   );
 
@@ -39,7 +49,7 @@ export function UsageGuide({ page }: { page: "dashboard" | "alerts" }) {
       <li><strong>Called + momentum</strong> — each signal shows when it fired (e.g. 3m ago) and whether the stock is still moving, slowing, or stalled. The &quot;Called recently&quot; strip keeps the last 45 minutes.</li>
       <li><strong>Live updates</strong> — Right now, the scanner tape, popups, and Accuracy tab all refresh every second during market hours.</li>
           <li><strong>Popups</strong> — only fire for a live BUY CALL / BUY PUT. Everything else stays quiet in this page's history.</li>
-          <li><strong>Accuracy tab</strong> — tracks every trade-tier BUY CALL/PUT and whether the move worked (RIGHT / WRONG / still tracking).</li>
+          <li><strong>Accuracy tab</strong> — tracks every trade-tier BUY callout: &quot;7 of 12 on track&quot; live, charts over time, final RIGHT/WRONG at close.</li>
           <li><strong>Discord</strong> — only extra-clear signals (≥82% confidence, ≥0.2%/min aligned speed). WAIT/SKIP never notify.</li>
       <li><strong>History and Journal tabs</strong> — past alerts (with the verdict then vs now), stats, and your personal trade log.</li>
     </ol>
@@ -49,11 +59,11 @@ export function UsageGuide({ page }: { page: "dashboard" | "alerts" }) {
     <section className="panel guide-panel">
       <button type="button" className="guide-toggle" onClick={toggle}>
         <span>{open ? "▾" : "▸"}</span>
-        <span>How to use {page === "dashboard" ? "the dashboard" : "Alerts"}</span>
+        <span>How to use {page === "dashboard" ? "the dashboard" : page === "scanner" ? "the scanner" : "Alerts"}</span>
       </button>
       {open ? (
         <div className="guide-body">
-          {page === "dashboard" ? dashboard : alerts}
+          {page === "dashboard" ? dashboard : page === "scanner" ? scanner : alerts}
           <p className="guide-foot muted">
             Full instructions on the <a href="/guide" style={{ color: "inherit", textDecoration: "underline" }}>How to use</a> page.
             Research signals only — you choose entries and size. Not financial advice.

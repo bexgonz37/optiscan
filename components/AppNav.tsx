@@ -7,7 +7,8 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 
 const PAGES = [
   { href: "/", label: "Dashboard", hint: "Ranked market scanner watchlist" },
-  { href: "/alert-lab", label: "Alerts", hint: "Buy call/put signals + journal" },
+  { href: "/scanner", label: "Scanner", hint: "Options momentum + unusual flow" },
+  { href: "/alert-lab", label: "Alerts", hint: "Buy call/put callouts + accuracy" },
   { href: "/guide", label: "How to use", hint: "Full plain-English instructions" },
   { href: "/settings", label: "Settings", hint: "Notifications & preferences" },
 ] as const;

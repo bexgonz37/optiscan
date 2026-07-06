@@ -7,6 +7,7 @@
  */
 
 import { getDb } from "@/lib/db";
+import { formatOnTrackRatio, mapDailyTrendRow, onTrackPct } from "./accuracy-ratios";
 
 export interface NewAlert {
   ticker: string;
@@ -443,16 +444,64 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
      ORDER BY latest_max_move DESC LIMIT 50`,
   ).all(since);
 
+  const todayOnTrack: any = db.prepare(
+    `SELECT COUNT(*) AS cnt FROM alerts a
+     WHERE a.trading_day = ? AND a.alert_tier = 'trade' AND a.status = 'tracking'
+       AND COALESCE(
+         (SELECT p.max_percent_move_after_alert FROM alert_performance p
+          WHERE p.alert_id = a.id ORDER BY p.checked_at DESC LIMIT 1), 0) >= 1.5`,
+  ).get(today);
+
+  const completedToday: any = db.prepare(
+    `SELECT COUNT(*) AS cnt FROM alerts a
+     WHERE a.trading_day = ? AND a.alert_tier = 'trade' AND a.status = 'complete'`,
+  ).get(today);
+
+  const dailyTrend = db.prepare(
+    `SELECT a.trading_day AS day,
+            COUNT(*) AS total,
+            SUM(CASE WHEN a.status = 'complete' THEN 1 ELSE 0 END) AS completed,
+            SUM(CASE WHEN a.status = 'complete' AND a.is_false_positive = 0 THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN a.status = 'complete' AND a.is_false_positive = 1 THEN 1 ELSE 0 END) AS losses,
+            SUM(CASE WHEN a.status = 'tracking' THEN 1 ELSE 0 END) AS tracking,
+            SUM(CASE WHEN a.status = 'tracking' AND COALESCE(
+              (SELECT p.max_percent_move_after_alert FROM alert_performance p
+               WHERE p.alert_id = a.id ORDER BY p.checked_at DESC LIMIT 1), 0) >= 1.5
+            THEN 1 ELSE 0 END) AS live_on_track,
+            SUM(CASE WHEN a.option_outcome_win = 1 THEN 1 ELSE 0 END) AS option_wins,
+            SUM(CASE WHEN a.option_outcome_win = 0 THEN 1 ELSE 0 END) AS option_losses,
+            AVG(CASE WHEN p.checkpoint = 'eod' THEN p.max_percent_move_after_alert END) AS avg_max_move
+     FROM alerts a
+     LEFT JOIN alert_performance p ON p.alert_id = a.id AND p.checkpoint = 'eod'
+     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'
+     GROUP BY a.trading_day
+     ORDER BY a.trading_day ASC`,
+  ).all(since).map((row: any) => mapDailyTrendRow(row));
+
+  const liveOnTrack = summary?.live_on_track ?? 0;
+  const todayTotal = summary?.today_total ?? 0;
+  const todayTracking = summary?.today_tracking ?? 0;
+  const todayOnTrackCount = todayOnTrack?.cnt ?? 0;
+  const liveOnTrackPct = onTrackPct(todayOnTrackCount, todayTotal);
+  const liveOnTrackOfOpenPct = onTrackPct(todayOnTrackCount, todayTracking);
+
   return {
     since,
     days,
     total: summary?.total ?? 0,
-    todayTotal: summary?.today_total ?? 0,
-    todayTracking: summary?.today_tracking ?? 0,
+    todayTotal,
+    todayTracking,
+    todayOnTrack: todayOnTrackCount,
+    completedToday: completedToday?.cnt ?? 0,
     wins: summary?.wins ?? 0,
     losses: summary?.losses ?? 0,
     tracking: summary?.tracking ?? 0,
-    liveOnTrack: summary?.live_on_track ?? 0,
+    liveOnTrack,
+    liveOnTrackOfToday: formatOnTrackRatio(todayOnTrackCount, todayTotal),
+    liveOnTrackPct,
+    liveOnTrackOfOpen: formatOnTrackRatio(todayOnTrackCount, todayTracking),
+    liveOnTrackOfOpenPct,
+    overallHitRate: hitRate,
     discordSentCount: summary?.discord_sent_count ?? 0,
     hitRate,
     avgMaxMove: summary?.avg_max_move ?? null,
@@ -464,7 +513,8 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
     bySide,
     recent,
     onTrackNow,
-    note: "Tracks trade-tier BUY signals only. LIVE columns update every second during the session. Final stock/option grades lock at market close.",
+    dailyTrend,
+    note: "Tracks trade-tier BUY callouts only. LIVE columns update every second during the session. Final stock/option grades lock at market close.",
   };
 }
 

@@ -17,6 +17,7 @@ import { useLiveTapeMap, liveCtxFor } from "@/hooks/useLiveTapeMap";
 import { AppNav } from "@/components/AppNav";
 import { ChartPanel } from "@/components/ChartPanel";
 import { AlertsCommandCenter } from "@/components/AlertsCommandCenter";
+import { AccuracyCharts } from "@/components/AccuracyCharts";
 import { UsageGuide } from "@/components/UsageGuide";
 import { computeTradeVerdict, formatSpeedLine } from "@/lib/trade-verdict";
 import { calledAgoLabel, sideFromAlert, stillMovingStatus } from "@/lib/signal-live";
@@ -261,37 +262,50 @@ export default function AlertLabPage() {
           ) : (
             <div style={{ padding: "4px 14px 14px" }}>
               <p className="settings-desc" style={{ marginBottom: 12 }}>
-                <strong>Two scoreboards.</strong> The top row is <em>live right now</em> during the session (stock move + option mid).
-                The bottom row is <em>final grades at market close</em> — hit rate and win rate only count once the day is done.
-                Discord sends <strong>instantly</strong> when a signal clears the extra-clear bar (≥82% confidence, ≥0.2%/min aligned speed) — most signals don&apos;t qualify, which is intentional.
+                <strong>Callouts</strong> = every trade-tier BUY CALL/PUT the scanner fired. Live section updates every second;
+                final grades lock at market close.
               </p>
+
+              <button
+                type="button"
+                className={`acc-hero-ratio kpi-clickable${accFilter === "on_track" ? " kpi-active" : ""}`}
+                onClick={() => setAccFilter((f) => (f === "on_track" ? "all" : "on_track"))}
+                style={{ marginBottom: 14, width: "100%", textAlign: "left" }}
+              >
+                <div className="label">On track right now</div>
+                <div className="acc-hero-ratio-val">
+                  <span className="num" style={{ color: (accuracy.todayOnTrack ?? 0) > 0 ? "var(--green)" : undefined }}>
+                    {accuracy.liveOnTrackOfToday ?? `${accuracy.todayOnTrack ?? 0} of ${accuracy.todayTotal ?? 0}`}
+                  </span>
+                  {accuracy.liveOnTrackPct != null ? (
+                    <span className="acc-hero-ratio-pct">({Math.round(accuracy.liveOnTrackPct * 100)}% of today&apos;s callouts)</span>
+                  ) : null}
+                </div>
+                <div className="sub">
+                  Stock moved ≥1.5% the right way · {accuracy.liveOnTrackOfOpen ?? `${accuracy.todayOnTrack ?? 0} of ${accuracy.todayTracking ?? 0}`} still open
+                  {accFilter === "on_track" ? " · filtered" : " · click to view list"}
+                </div>
+              </button>
 
               <div className="label muted" style={{ fontSize: 11, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.04em" }}>
                 Live session (updates every second)
               </div>
               <div className="kpis" style={{ marginBottom: 14 }}>
-                {accKpi("open", "Signals today", accuracy.todayTotal ?? accuracy.total, `${accuracy.todayTracking ?? accuracy.tracking} still open`)}
-                {accKpi("on_track", "On track now", (
-                  <span style={{ color: (accuracy.liveOnTrack ?? 0) > 0 ? "var(--green)" : undefined }}>
-                    {accuracy.liveOnTrack ?? 0}
-                  </span>
-                ), "stock moved ≥1.5% the right way")}
+                {accKpi("open", "Callouts today", accuracy.todayTotal ?? accuracy.total, `${accuracy.todayTracking ?? accuracy.tracking} still open`)}
                 {accKpi("discord", "Discord sent", accuracy.discordSentCount ?? 0, "extra-clear only · not delayed")}
+                <div className="kpi">
+                  <div className="label">Completed today</div>
+                  <div className="val num">{accuracy.completedToday ?? 0}</div>
+                  <div className="sub">final grades at close</div>
+                </div>
                 <div className="kpi">
                   <div className="label">Avg live stock move</div>
                   <div className="val num">
                     {onTrackRows.length
                       ? `${(onTrackRows.reduce((s: number, r: any) => s + (r.latest_max_move ?? 0), 0) / onTrackRows.length).toFixed(1)}%`
-                      : accuracy.recent?.length
-                        ? `${(
-                            accuracy.recent
-                              .filter((r: any) => r.latest_max_move != null)
-                              .reduce((s: number, r: any) => s + r.latest_max_move, 0) /
-                            Math.max(1, accuracy.recent.filter((r: any) => r.latest_max_move != null).length)
-                          ).toFixed(1)}%`
-                        : "—"}
+                      : "—"}
                   </div>
-                  <div className="sub">on-track signals only when filtered</div>
+                  <div className="sub">on-track callouts only</div>
                 </div>
               </div>
 
@@ -321,7 +335,18 @@ export default function AlertLabPage() {
                 </div>
               ) : null}
 
-              <div className="label muted" style={{ fontSize: 11, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+              <AccuracyCharts
+                data={{
+                  todayOnTrack: accuracy.todayOnTrack,
+                  todayTotal: accuracy.todayTotal,
+                  liveOnTrackPct: accuracy.liveOnTrackPct,
+                  overallHitRate: accuracy.overallHitRate ?? accuracy.hitRate,
+                  dailyTrend: accuracy.dailyTrend,
+                  bySide: accuracy.bySide,
+                }}
+              />
+
+              <div className="label muted" style={{ fontSize: 11, margin: "16px 0 6px", textTransform: "uppercase", letterSpacing: "0.04em" }}>
                 Final grades (locks at market close)
               </div>
               <div className="kpis" style={{ marginBottom: 14 }}>
@@ -361,6 +386,10 @@ export default function AlertLabPage() {
                   </div>
                   <div className="sub">favorable direction after signal (EOD)</div>
                 </div>
+              </div>
+
+              <div className="label muted" style={{ fontSize: 11, margin: "16px 0 6px", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                All callouts
               </div>
               {!filteredAccuracyRows.length ? (
                 <div className="empty small">

@@ -47,7 +47,7 @@ export default function Page() {
       <ChartPanel symbol={chartSymbol} open={chartOpen} onClose={() => setChartOpen(false)} />
 
       <div className="footer">
-        OptiScan scanner · ranked watchlist · trade signals are on the Alerts page
+        OptiScan scanner · ranked watchlist · options research on Scanner · trade callouts on Alerts
       </div>
     </div>
   );

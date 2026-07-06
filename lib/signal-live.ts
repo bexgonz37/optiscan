@@ -2,7 +2,7 @@
  * Live signal context — when a call fired and whether the tape is still moving.
  */
 
-import { alertAgeMinutes, MIN_SPEED_PCT_PER_MIN, type OptionSide } from "./trade-verdict.ts";
+import { alertAgeMinutes, MIN_SPEED_PCT_PER_MIN, type OptionSide } from "./trade-verdict";
 
 export function calledAgoLabel(alertTime?: string | null, nowMs = Date.now()): string | null {
   const m = alertAgeMinutes({ alert_time: alertTime ?? null }, nowMs);
