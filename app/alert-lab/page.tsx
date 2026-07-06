@@ -38,6 +38,8 @@ interface AlertRow {
   long_call_score?: number | null; long_put_score?: number | null;
   short_rate_at_alert?: number | null; volume_surge_at_alert?: number | null;
   alert_tier?: string | null;
+  asset_class?: string | null; session?: string | null;
+  private_label?: string | null; capture_action?: string | null; capture_confidence?: number | null;
   status: string; is_false_positive: number | null;
   latest_max_move: number | null; eod_move: number | null; trade_taken: number;
 }
@@ -50,6 +52,7 @@ interface JournalRow {
 
 type Tab = "now" | "accuracy" | "history" | "journal";
 type AccFilter = "all" | "on_track" | "open" | "discord";
+type AssetFilter = "" | "options" | "stock";
 
 const CATALYSTS = [
   "earnings", "analyst", "fda_biotech", "partnership", "product_launch",
@@ -70,6 +73,9 @@ export default function AlertLabPage() {
   const [loading, setLoading] = useState(true);
 
   const tape = useLiveTapeMap(1000);
+
+  // Asset class: Options | Stocks | All (affects history list + accuracy KPIs)
+  const [asset, setAsset] = useState<AssetFilter>("");
 
   // Filters (History tab)
   const [ticker, setTicker] = useState("");
@@ -101,8 +107,9 @@ export default function AlertLabPage() {
     if (maxRisk) q.set("maxRisk", maxRisk);
     if (fp) q.set("falsePositive", fp);
     if (taken) q.set("tradeTaken", taken);
+    if (asset) q.set("asset", asset);
     return q.toString();
-  }, [ticker, date, catalyst, minSignal, maxRisk, fp, taken]);
+  }, [ticker, date, catalyst, minSignal, maxRisk, fp, taken, asset]);
 
   const refresh = useCallback(async (opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true);
@@ -112,7 +119,7 @@ export default function AlertLabPage() {
         fetch(`/api/alerts?${query}`, { cache: "no-store", headers }),
         fetch(`/api/alerts/stats`, { cache: "no-store", headers }),
         fetch(`/api/alerts/weekly-report`, { cache: "no-store", headers }),
-        fetch(`/api/alerts/signal-accuracy?days=14`, { cache: "no-store", headers }),
+        fetch(`/api/alerts/signal-accuracy?days=14${asset ? `&asset=${asset}` : ""}`, { cache: "no-store", headers }),
         fetch(`/api/trade-journal`, { cache: "no-store", headers }),
       ]);
       const a = await aRes.json();
@@ -131,14 +138,14 @@ export default function AlertLabPage() {
     } finally {
       if (!opts?.silent) setLoading(false);
     }
-  }, [query]);
+  }, [query, asset]);
 
   const refreshAccuracy = useCallback(async () => {
     try {
-      const acc = await fetch(`/api/alerts/signal-accuracy?days=14`, { cache: "no-store", headers: scanHeaders() }).then((r) => r.json());
+      const acc = await fetch(`/api/alerts/signal-accuracy?days=14${asset ? `&asset=${asset}` : ""}`, { cache: "no-store", headers: scanHeaders() }).then((r) => r.json());
       if (acc.ok) setAccuracy(acc);
     } catch { /* best effort */ }
-  }, []);
+  }, [asset]);
 
   useEffect(() => {
     refresh();
@@ -244,6 +251,19 @@ export default function AlertLabPage() {
         {tabBtn("accuracy", "Accuracy")}
         {tabBtn("history", "History")}
         {tabBtn("journal", "Journal")}
+        <span className="nav-group-divider" aria-hidden style={{ margin: "0 4px" }} />
+        {(["", "options", "stock"] as AssetFilter[]).map((a) => (
+          <button
+            key={a || "all"}
+            type="button"
+            className={`pill btn${asset === a ? " btn-primary" : ""}`}
+            style={{ fontSize: 12, padding: "6px 12px" }}
+            onClick={() => setAsset(a)}
+            title={a === "stock" ? "Premarket / after-hours stock callouts" : a === "options" ? "RTH 0DTE options callouts" : "Both systems"}
+          >
+            {a === "" ? "All" : a === "options" ? "Options" : "Stocks"}
+          </button>
+        ))}
       </div>
 
       {tab === "now" ? (
@@ -315,7 +335,9 @@ export default function AlertLabPage() {
                   </div>
                   <div className="acc-on-track-chips">
                     {onTrackRows.map((row: any) => {
-                      const side = String(row.option_side ?? "").toLowerCase().startsWith("p") ? "PUT" : "CALL";
+                      const side = row.asset_class === "stock"
+                        ? (row.direction === "bearish" ? "SHORT" : "LONG")
+                        : String(row.option_side ?? "").toLowerCase().startsWith("p") ? "PUT" : "CALL";
                       return (
                         <button
                           key={row.id}
@@ -465,7 +487,10 @@ export default function AlertLabPage() {
                     </thead>
                     <tbody>
                       {filteredAccuracyRows.map((row: any) => {
-                        const side = String(row.option_side ?? "").toLowerCase().startsWith("p") ? "PUT" : "CALL";
+                        const isStock = row.asset_class === "stock";
+                        const side = isStock
+                          ? (row.direction === "bearish" ? "SHORT" : "LONG")
+                          : String(row.option_side ?? "").toLowerCase().startsWith("p") ? "PUT" : "CALL";
                         const done = row.status === "complete";
                         const win = done && row.is_false_positive === 0;
                         const loss = done && row.is_false_positive === 1;
@@ -478,7 +503,8 @@ export default function AlertLabPage() {
                             : null);
                         const optionDone = row.option_outcome_win != null;
                         const tapeRow = tape.map.get(row.ticker);
-                        const momentum = stillMovingStatus(side, tapeRow);
+                        // LONG/SHORT map onto the CALL/PUT direction check.
+                        const momentum = stillMovingStatus(side === "LONG" ? "CALL" : side === "SHORT" ? "PUT" : side, tapeRow);
                         return (
                           <tr key={row.id} className={`clickable${onTrack ? " acc-row-on-track" : ""}`} onClick={() => openChart(row.ticker)}>
                             <td className="num muted">
@@ -491,7 +517,9 @@ export default function AlertLabPage() {
                                 <TickerIcon symbol={row.ticker} />
                                 <div>
                                   <div className="tname">{row.ticker}</div>
-                                  <div className="tsub">{row.strike ? `$${row.strike}${side[0]} · ${row.dte ?? 0}DTE` : "—"}</div>
+                                  <div className="tsub">
+                                    {isStock ? `stock · ${row.session ?? "extended"}` : row.strike ? `$${row.strike}${side[0]} · ${row.dte ?? 0}DTE` : "—"}
+                                  </div>
                                 </div>
                               </div>
                             </td>
@@ -623,9 +651,10 @@ export default function AlertLabPage() {
                   </thead>
                   <tbody>
                     {alerts.map((a) => {
-                      const atAlert = computeTradeVerdict(a);
+                      const isStock = a.asset_class === "stock";
+                      const atAlert = isStock ? null : computeTradeVerdict(a);
                       const live = liveCtxFor(tape, a.ticker);
-                      const now = live ? computeTradeVerdict(a, live) : null;
+                      const now = !isStock && live ? computeTradeVerdict(a, live) : null;
                       return (
                         <tr
                           key={a.id}
@@ -640,19 +669,30 @@ export default function AlertLabPage() {
                               <div>
                                 <div className="tname">{a.ticker}</div>
                                 <div className="tsub">
-                                  {a.option_symbol ? `${a.strike ?? ""}${String(a.option_side ?? "").toUpperCase().slice(0, 1)} · ${a.dte ?? "—"} DTE` : fmtPrice(a.price_at_alert)}
+                                  {isStock
+                                    ? `stock · ${a.session ?? "extended"} · ${fmtPrice(a.price_at_alert)}`
+                                    : a.option_symbol ? `${a.strike ?? ""}${String(a.option_side ?? "").toUpperCase().slice(0, 1)} · ${a.dte ?? "—"} DTE` : fmtPrice(a.price_at_alert)}
                                 </div>
                               </div>
                             </div>
                           </td>
                           <td>
-                            <span className={`verdict-pill verdict-${atAlert.action.toLowerCase()}`} title={atAlert.reason}>{atAlert.headline}</span>
+                            {isStock ? (
+                              <span
+                                className={`verdict-pill verdict-${(a.capture_action ?? "wait").toLowerCase() === "trade" ? "trade" : "wait"}`}
+                                title={`${a.session ?? "extended"} stock callout`}
+                              >
+                                {a.private_label ?? (a.direction === "bearish" ? "SHORT setup" : "LONG setup")}
+                              </span>
+                            ) : atAlert ? (
+                              <span className={`verdict-pill verdict-${atAlert.action.toLowerCase()}`} title={atAlert.reason}>{atAlert.headline}</span>
+                            ) : null}
                           </td>
                           <td>
                             {now ? (
                               <span className={`verdict-pill verdict-${now.action.toLowerCase()}`} title={now.reason}>{now.headline}</span>
                             ) : (
-                              <span className="muted" style={{ fontSize: 11 }}>not live</span>
+                              <span className="muted" style={{ fontSize: 11 }}>{isStock ? "stock" : "not live"}</span>
                             )}
                           </td>
                           <td className="num muted" style={{ fontSize: 11, maxWidth: 120 }}>{formatSpeedLine(a)}</td>

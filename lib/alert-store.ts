@@ -75,6 +75,10 @@ export interface NewAlert {
   /** Verdict at capture time: TRADE | WAIT | SKIP */
   captureAction?: string | null;
   captureConfidence?: number | null;
+  /** 'options' (default) = 0DTE contract callout; 'stock' = underlying-only callout. */
+  assetClass?: "options" | "stock" | null;
+  /** Session the alert fired in: premarket | regular | afterhours */
+  session?: string | null;
   optionsPressureLabel?: string | null;
   optionsPressureJson?: string | null;
   snapshot?: {
@@ -111,8 +115,8 @@ export function insertAlert(a: NewAlert): number | null {
           score_breakdown_json, ai_explanation, public_explanation, private_label, public_label,
           trade_bias, move_status, option_worth_score, worth_verdict, chase_risk, iv_risk, spread_risk,
           continuation_score, exhaustion_score, long_call_score, long_put_score, zero_dte_contract_score, risk_flags,
-          options_pressure_label, options_pressure_json, short_rate_at_alert, volume_surge_at_alert, alert_tier, capture_action, capture_confidence, status
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'tracking')`,
+          options_pressure_label, options_pressure_json, short_rate_at_alert, volume_surge_at_alert, alert_tier, capture_action, capture_confidence, asset_class, session, status
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'tracking')`,
       )
       .run(
         alert.ticker, alert.source, alert.alertType ?? null, alert.direction, alert.optionSymbol, alert.optionSide,
@@ -131,6 +135,7 @@ export function insertAlert(a: NewAlert): number | null {
         alert.shortRateAtAlert ?? null, alert.volumeSurgeAtAlert ?? null,
         alert.alertTier ?? null,
         alert.captureAction ?? null, alert.captureConfidence ?? null,
+        alert.assetClass ?? "options", alert.session ?? null,
       );
     if (res.changes === 0) return null;
     const id = Number(res.lastInsertRowid);
@@ -169,6 +174,7 @@ export interface AlertFilters {
   falsePositive?: boolean;
   tradeTaken?: boolean;
   status?: string;
+  assetClass?: "options" | "stock"; // omit = all
   minId?: number; // for popup polling: only alerts newer than this id
   limit?: number;
   offset?: number;
@@ -186,6 +192,7 @@ export function listAlerts(f: AlertFilters = {}) {
   if (f.falsePositive != null) where.push(f.falsePositive ? "a.is_false_positive = 1" : "(a.is_false_positive = 0 OR a.is_false_positive IS NULL)");
   if (f.tradeTaken != null) where.push(`${f.tradeTaken ? "" : "NOT "}EXISTS (SELECT 1 FROM trade_journal j WHERE j.alert_id = a.id)`);
   if (f.status) { where.push("a.status = ?"); params.push(f.status); }
+  if (f.assetClass) { where.push("coalesce(a.asset_class,'options') = ?"); params.push(f.assetClass); }
   if (f.minId != null) { where.push("a.id > ?"); params.push(f.minId); }
 
   const sql = `
@@ -370,8 +377,14 @@ export function statsSummary(day?: string) {
 }
 
 /** BUY CALL/PUT signal accuracy — trade-tier alerts with measured outcomes. */
-export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}) {
+export function tradeSignalAccuracy(opts: { days?: number; limit?: number; asset?: "options" | "stock" } = {}) {
   const db = getDb();
+  // Validated literal (never user text) — appended to every per-tier WHERE so
+  // options and stock callouts grade separately when asked.
+  const assetClause =
+    opts.asset === "stock" ? " AND coalesce(a.asset_class,'options') = 'stock'"
+    : opts.asset === "options" ? " AND coalesce(a.asset_class,'options') = 'options'"
+    : "";
   const days = Math.max(1, Number(opts.days ?? 14));
   const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
   const today = new Date().toISOString().slice(0, 10);
@@ -404,7 +417,7 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
             ) THEN 1 ELSE 0 END) AS discord_sent_count
      FROM alerts a
      LEFT JOIN alert_performance p ON p.alert_id = a.id AND p.checkpoint = 'eod'
-     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'`,
+     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'${assetClause}`,
   ).get(today, today, since);
 
   const completed = (summary?.wins ?? 0) + (summary?.losses ?? 0);
@@ -417,13 +430,14 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
             SUM(CASE WHEN a.is_false_positive = 0 THEN 1 ELSE 0 END) AS wins,
             SUM(CASE WHEN a.is_false_positive = 1 THEN 1 ELSE 0 END) AS losses
      FROM alerts a
-     WHERE a.trading_day >= ? AND a.alert_tier = 'trade' AND a.status = 'complete'
+     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'${assetClause} AND a.status = 'complete'
      GROUP BY a.option_side`,
   ).all(since);
 
   const recent = db.prepare(
     `SELECT a.id, a.ticker, a.option_side, a.strike, a.dte, a.alert_time, a.trading_day,
             a.direction, a.signal_score, a.short_rate_at_alert, a.percent_move_at_alert,
+            coalesce(a.asset_class,'options') AS asset_class, a.session,
             a.status, a.is_false_positive, a.option_return_pct, a.option_outcome_win,
             (SELECT s.mid FROM options_snapshots s
              WHERE s.alert_id = a.id AND s.checkpoint = 'alert' LIMIT 1) AS entry_mid,
@@ -446,12 +460,13 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
             EXISTS (SELECT 1 FROM notification_events n
                     WHERE n.alert_id = a.id AND n.channel = 'discord_webhook' AND n.status = 'sent') AS discord_sent
      FROM alerts a
-     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'
+     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'${assetClause}
      ORDER BY a.id DESC LIMIT ?`,
   ).all(since, limit);
 
   const onTrackNow = db.prepare(
     `SELECT a.id, a.ticker, a.option_side, a.strike, a.dte, a.alert_time, a.trading_day,
+            a.direction, coalesce(a.asset_class,'options') AS asset_class, a.session,
             a.status, a.option_return_pct, a.option_outcome_win,
             (SELECT s.mid FROM options_snapshots s
              WHERE s.alert_id = a.id AND s.checkpoint = 'alert' LIMIT 1) AS entry_mid,
@@ -465,20 +480,20 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
             EXISTS (SELECT 1 FROM notification_events n
                     WHERE n.alert_id = a.id AND n.channel = 'discord_webhook' AND n.status = 'sent') AS discord_sent
      FROM alerts a
-     WHERE a.trading_day >= ? AND a.alert_tier = 'trade' AND a.status = 'tracking'
+     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'${assetClause} AND a.status = 'tracking'
        AND ${sqlEarlyOnTrack()}
      ORDER BY ${SQL_MOVE_5M} DESC, ${SQL_MOVE_1M} DESC LIMIT 50`,
   ).all(since);
 
   const todayOnTrack: any = db.prepare(
     `SELECT COUNT(*) AS cnt FROM alerts a
-     WHERE a.trading_day = ? AND a.alert_tier = 'trade' AND a.status = 'tracking'
+     WHERE a.trading_day = ? AND a.alert_tier = 'trade'${assetClause} AND a.status = 'tracking'
        AND ${sqlEarlyOnTrack()}`,
   ).get(today);
 
   const completedToday: any = db.prepare(
     `SELECT COUNT(*) AS cnt FROM alerts a
-     WHERE a.trading_day = ? AND a.alert_tier = 'trade' AND a.status = 'complete'`,
+     WHERE a.trading_day = ? AND a.alert_tier = 'trade'${assetClause} AND a.status = 'complete'`,
   ).get(today);
 
   const dailyTrend = db.prepare(
@@ -497,7 +512,7 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
             AVG(CASE WHEN p.checkpoint = 'eod' THEN p.max_percent_move_after_alert END) AS avg_max_move
      FROM alerts a
      LEFT JOIN alert_performance p ON p.alert_id = a.id AND p.checkpoint = 'eod'
-     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'
+     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'${assetClause}
      GROUP BY a.trading_day
      ORDER BY a.trading_day ASC`,
   ).all(since).map((row: any) => mapDailyTrendRow(row));

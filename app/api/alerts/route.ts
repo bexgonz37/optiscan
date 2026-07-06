@@ -24,6 +24,7 @@ export async function GET(req: Request) {
       falsePositive: bool(q.get("falsePositive")),
       tradeTaken: bool(q.get("tradeTaken")),
       status: q.get("status") || undefined,
+      assetClass: (q.get("asset") === "stock" || q.get("asset") === "options" ? q.get("asset") : undefined) as "stock" | "options" | undefined,
       minId: num(q.get("minId")),
       limit: num(q.get("limit")),
       offset: num(q.get("offset")),

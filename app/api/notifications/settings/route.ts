@@ -24,6 +24,7 @@ export async function GET(req: Request) {
         scannerMinAccel: getSettingNum("scanner_min_accel", Number(process.env.SCANNER_MIN_ACCEL ?? 0)),
         scannerMinEfficiency: getSettingNum("scanner_min_efficiency", Number(process.env.SCANNER_MIN_EFFICIENCY ?? 0.35)),
         scannerMinLevelSurge: getSettingNum("scanner_min_level_surge", Number(process.env.SCANNER_MIN_LEVEL_SURGE ?? 1.2)),
+        stockMinScore: getSettingNum("stock_min_score", Number(process.env.STOCK_MIN_SCORE ?? 66)),
       },
     });
   } catch (err: any) {
@@ -46,6 +47,7 @@ export async function PATCH(req: Request) {
     if (body.scannerMinAccel != null) setSetting("scanner_min_accel", String(Number(body.scannerMinAccel)));
     if (body.scannerMinEfficiency != null) setSetting("scanner_min_efficiency", String(Number(body.scannerMinEfficiency)));
     if (body.scannerMinLevelSurge != null) setSetting("scanner_min_level_surge", String(Number(body.scannerMinLevelSurge)));
+    if (body.stockMinScore != null) setSetting("stock_min_score", String(Number(body.stockMinScore)));
     const settings = updateNotificationSettings(body);
     if (body.discordRequiresManualConfirm === false || body.discordRequiresManualConfirm === 0) {
       const { ensureDiscordPendingCleared } = await import("@/lib/notifications");
@@ -59,6 +61,7 @@ export async function PATCH(req: Request) {
         scannerMinAccel: getSettingNum("scanner_min_accel", Number(process.env.SCANNER_MIN_ACCEL ?? 0)),
         scannerMinEfficiency: getSettingNum("scanner_min_efficiency", Number(process.env.SCANNER_MIN_EFFICIENCY ?? 0.35)),
         scannerMinLevelSurge: getSettingNum("scanner_min_level_surge", Number(process.env.SCANNER_MIN_LEVEL_SURGE ?? 1.2)),
+        stockMinScore: getSettingNum("stock_min_score", Number(process.env.STOCK_MIN_SCORE ?? 66)),
       } });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err?.message }, { status: 500 });

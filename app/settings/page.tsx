@@ -28,6 +28,7 @@ export default function SettingsPage() {
   const [minAccel, setMinAccel] = useState("0");
   const [minEfficiency, setMinEfficiency] = useState("0.35");
   const [minLevelSurge, setMinLevelSurge] = useState("1.2");
+  const [stockMinScore, setStockMinScore] = useState("66");
   const [refreshSec, setRefreshSec] = useState(DEFAULT_REFRESH_SEC);
   const [desktopAlerts, setDesktopAlerts] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -51,6 +52,7 @@ export default function SettingsPage() {
           setMinAccel(String(t.scannerMinAccel ?? 0));
           setMinEfficiency(String(t.scannerMinEfficiency ?? 0.35));
           setMinLevelSurge(String(t.scannerMinLevelSurge ?? 1.2));
+          setStockMinScore(String(t.stockMinScore ?? 66));
         }
       }
       const manualConfirm = Boolean(d.settings?.discord_requires_manual_confirm);
@@ -238,6 +240,10 @@ export default function SettingsPage() {
             <input className="input-sm" style={{ width: 64 }} value={minEfficiency} onChange={(e) => setMinEfficiency(e.target.value)} />
             <span className="settings-desc" style={{ margin: 0 }}>· Level-break surge ≥</span>
             <input className="input-sm" style={{ width: 64 }} value={minLevelSurge} onChange={(e) => setMinLevelSurge(e.target.value)} />
+          </div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+            <span className="settings-desc" style={{ margin: 0 }} title="Premarket/after-hours stock callouts (BUY LONG/SHORT)">Stock score ≥</span>
+            <input className="input-sm" style={{ width: 64 }} value={stockMinScore} onChange={(e) => setStockMinScore(e.target.value)} />
             <button
               type="button"
               className="btn-primary"
@@ -250,6 +256,7 @@ export default function SettingsPage() {
                   scannerMinAccel: Number(minAccel),
                   scannerMinEfficiency: Number(minEfficiency),
                   scannerMinLevelSurge: Number(minLevelSurge),
+                  stockMinScore: Number(stockMinScore),
                 })
               }
             >

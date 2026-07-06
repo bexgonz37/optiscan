@@ -11,8 +11,10 @@ export async function GET(req: Request) {
     const url = new URL(req.url);
     const days = Number(url.searchParams.get("days") ?? 14);
     const limit = Number(url.searchParams.get("limit") ?? 50);
+    const rawAsset = url.searchParams.get("asset");
+    const asset = rawAsset === "stock" || rawAsset === "options" ? rawAsset : undefined;
     const { tradeSignalAccuracy } = await import("@/lib/alert-store");
-    return NextResponse.json({ ok: true, ...tradeSignalAccuracy({ days, limit }) });
+    return NextResponse.json({ ok: true, ...tradeSignalAccuracy({ days, limit, asset }) });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err?.message }, { status: 500 });
   }

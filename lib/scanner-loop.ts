@@ -31,7 +31,7 @@ import {
   speedPersistentFromRing,
 } from "@/lib/zero-dte";
 import { getZeroDteUniverse, getZeroDteDiscoveryUniverse } from "@/lib/universe";
-import { tradingDay, minutesToClose } from "@/lib/trading-session";
+import { tradingDay, minutesToClose, marketSession, type MarketSession } from "@/lib/trading-session";
 import { getSettingNum } from "@/lib/alert-store";
 
 const LOOP_MS = Number(process.env.SCANNER_LOOP_MS ?? 1000);
@@ -65,6 +65,7 @@ interface LoopState {
   alerts: number;
   errors: number;
   note: string | null;
+  session: MarketSession | null;
   symbols: Map<string, SymState>;
   movers: any[];
   tape: any[];
@@ -80,11 +81,12 @@ function state(): LoopState {
   if (!g.__optiscanLoop) {
     g.__optiscanLoop = {
       running: false, intervalMs: LOOP_MS, targetMs: LOOP_MS, lastTickAt: null,
-      ticks: 0, triggers: 0, alerts: 0, errors: 0, note: null,
+      ticks: 0, triggers: 0, alerts: 0, errors: 0, note: null, session: null,
       symbols: new Map(), movers: [], tape: [], lastDiscoveryAt: 0, discoveryCount: 0, promoted: new Map(),
     };
   }
   // Survive Next dev hot reloads from pre-discovery loop state.
+  g.__optiscanLoop.session ??= null;
   g.__optiscanLoop.lastDiscoveryAt ??= 0;
   g.__optiscanLoop.discoveryCount ??= 0;
   g.__optiscanLoop.promoted ??= new Map();
@@ -131,6 +133,27 @@ async function ensureVwap(ticker: string, st: SymState, nowMs: number) {
   if (res?.available && res.bars?.length) {
     st.vwap = sessionVwap(sessionBars(res.bars));
     st.relVol = relativeVolume(res.bars, nowMs);
+  }
+}
+
+/** Extended-hours trigger: regular-stock callout, NO option chain fetch. */
+async function handleStockTrigger(ticker: string, st: SymState, read: any, quote: any, nowMs: number) {
+  const s = state();
+  st.cooldownUntil = nowMs + TRIGGER_COOLDOWN_MS;
+  s.triggers++;
+  const { captureStockAlert } = await import("@/lib/stock-capture");
+  const id = await captureStockAlert({
+    ticker, price: quote.price, movePct: quote.changePercent ?? 0,
+    shortRate: read.accelRead.shortRate, accel: read.accelRead.accel,
+    surge: read.surge, relVol: st.relVol, efficiency: read.efficiency,
+    vwap: st.vwap, aboveVwap: read.levels.aboveVwap,
+    hodBreak: read.levels.hodBreak, lodBreak: read.levels.lodBreak,
+    direction: read.dir.direction, directionConfidence: read.dir.confidence,
+    shareVolume: quote.volume ?? null, nowMs,
+  });
+  if (id != null) {
+    st.lastAlertAt = nowMs;
+    s.alerts++;
   }
 }
 
@@ -204,6 +227,15 @@ async function tick() {
   const nowMs = Date.now();
   s.lastTickAt = nowMs;
   s.ticks++;
+
+  // Session router: premarket/afterhours -> stock callouts, regular -> 0DTE
+  // options, closed -> no scanning at all (tracker still finishes open alerts).
+  const session: MarketSession = marketSession(nowMs);
+  s.session = session;
+  if (session === "closed") {
+    s.note = "market closed — scanning paused (resumes 4:00 AM ET)";
+    return; // no snapshot call: zero API spend while closed
+  }
 
   const minRate = getSettingNum("scanner_min_rate_pct_min", Number(process.env.SCANNER_MIN_RATE_PCT_MIN ?? 0.18));
   const minSurge = getSettingNum("scanner_min_vol_surge", Number(process.env.SCANNER_MIN_VOL_SURGE ?? 1.4));
@@ -297,9 +329,13 @@ async function tick() {
         minRate, minSurge, minLevelSurge, minEfficiency,
       })
     ) {
-      // fire-and-forget: the 1s heartbeat must never wait on a chain fetch
-      handleTrigger(q.symbol, st, { accelRead, surge, efficiency, levels, dir }, q, nowMs)
-        .catch((err) => { s.errors++; console.warn("[0dte-loop] trigger failed:", err?.message); });
+      // fire-and-forget: the 1s heartbeat must never wait on a chain fetch.
+      // Session router: options capture during RTH, stock capture in
+      // premarket/after-hours (never fetches a chain).
+      const fire = session === "regular"
+        ? handleTrigger(q.symbol, st, { accelRead, surge, efficiency, levels, dir }, q, nowMs)
+        : handleStockTrigger(q.symbol, st, { accelRead, surge, efficiency, levels, dir }, q, nowMs);
+      fire.catch((err) => { s.errors++; console.warn(`[${session === "regular" ? "0dte" : "stock"}-loop] trigger failed:`, err?.message); });
     }
   }
   vwapCandidates.sort((a, b) => b.rate - a.rate);
@@ -322,7 +358,8 @@ async function tick() {
   s.movers = movers.sort((a, b) => Math.abs(b.shortRate ?? 0) - Math.abs(a.shortRate ?? 0)).slice(0, 20);
   s.tape = tape;
 
-  refreshActiveAlerts(nowMs).catch(() => {});
+  // Live option-quote refresh needs chains — RTH only.
+  if (session === "regular") refreshActiveAlerts(nowMs).catch(() => {});
 }
 
 export function startScannerLoop() {
@@ -351,7 +388,7 @@ export function loopState() {
   return {
     running: s.running, intervalMs: s.intervalMs, lastTickAt: s.lastTickAt,
     ticks: s.ticks, triggers: s.triggers, alerts: s.alerts, errors: s.errors,
-    note: s.note, movers: s.movers, tape: s.tape,
+    note: s.note, session: s.session ?? marketSession(), movers: s.movers, tape: s.tape,
     coreSymbols: getZeroDteUniverse().length,
     discoverySymbols: s.discoveryCount,
     promotedSymbols: [...s.promoted.keys()],

@@ -37,7 +37,8 @@ test("SPEC: catalyst attach is fire-and-forget after insert — never blocks or 
 test("SPEC: scanner is AI-free — no model calls anywhere in lib/", () => {
   for (const f of readdirSync(join(root, "lib"))) {
     const src = read(join("lib", f));
-    assert.ok(!/openai|anthropic\.com|claude|gpt-|llm/i.test(src), `AI reference found in lib/${f}`);
+    // \b guards: "stillMoving" contains "llm" — match whole tokens only.
+    assert.ok(!/\bopenai\b|anthropic\.com|\bclaude\b|\bgpt-|\bllm\b/i.test(src), `AI reference found in lib/${f}`);
   }
 });
 

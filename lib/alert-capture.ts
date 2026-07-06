@@ -37,6 +37,7 @@ import { cached } from "@/lib/scan-cache";
 import { computeTradeVerdict, hasLiveSpeedProof, isClearTradeSignal, passesQualityGates, resolveAlertTier } from "@/lib/trade-verdict";
 import { alertExists, insertAlert, getSettingNum, updateAlertCatalyst, insertNotificationEvent } from "@/lib/alert-store";
 import { tradingDay, minutesToClose } from "@/lib/db";
+import { isOptionsSession } from "@/lib/trading-session";
 import { notifyNewAlert } from "@/lib/notifications";
 import type { MomentumRow, UnusualRow } from "@/lib/types";
 
@@ -85,6 +86,11 @@ export interface ZeroDteSignal {
 /** Score + persist one 0DTE signal. Returns alert id or null (dup/below bar). */
 export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null> {
   const nowMs = sig.nowMs ?? Date.now();
+  // 0DTE options callouts are an RTH product: outside 9:30-16:00 ET there is
+  // no same-day liquidity and spreads are junk. Extended hours belong to the
+  // stock capture path (lib/stock-capture.ts); this guard covers every caller
+  // (1s loop, swing radar, manual) so options can never fire premarket/AH.
+  if (!isOptionsSession(nowMs)) return null;
   const day = tradingDay(nowMs);
   const minsToClose = minutesToClose(nowMs);
   const dirUp = sig.direction !== "bearish";
@@ -220,6 +226,7 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     alertTier: tier,
     captureAction: captureVerdict.action,
     captureConfidence: captureVerdict.confidence,
+    assetClass: "options", session: "regular",
     optionsPressureLabel: pressure?.label ?? null,
     optionsPressureJson: pressure ? JSON.stringify(pressure) : null,
     snapshot: sideContract ? {

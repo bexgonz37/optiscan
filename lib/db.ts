@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS alerts (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_dedup
-  ON alerts(ticker, source, coalesce(option_symbol,''), trading_day);
+  ON alerts(ticker, source, coalesce(option_symbol,''), coalesce(session,''), trading_day);
 CREATE INDEX IF NOT EXISTS idx_alerts_day ON alerts(trading_day);
 CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status);
 
@@ -205,6 +205,9 @@ const ALERT_COLUMN_MIGRATIONS: [string, string][] = [
   ["option_outcome_win", "ALTER TABLE alerts ADD COLUMN option_outcome_win INTEGER"],
   ["capture_action", "ALTER TABLE alerts ADD COLUMN capture_action TEXT"],
   ["capture_confidence", "ALTER TABLE alerts ADD COLUMN capture_confidence INTEGER"],
+  // stocks mode: 'options' (default) | 'stock', plus the session the alert fired in
+  ["asset_class", "ALTER TABLE alerts ADD COLUMN asset_class TEXT NOT NULL DEFAULT 'options'"],
+  ["session", "ALTER TABLE alerts ADD COLUMN session TEXT"],
 ];
 const JOURNAL_COLUMN_MIGRATIONS: [string, string][] = [
   ["contract", "ALTER TABLE trade_journal ADD COLUMN contract TEXT"],
@@ -218,9 +221,20 @@ const JOURNAL_COLUMN_MIGRATIONS: [string, string][] = [
 ];
 
 function migrate(db: Database.Database) {
-  db.exec(SCHEMA);
+  // Column migrations must run before SCHEMA: idx_alerts_dedup references the
+  // 'session' column, which pre-stocks-mode databases don't have yet.
   const cols = (table: string) =>
     new Set((db.prepare(`PRAGMA table_info(${table})`).all() as any[]).map((c) => c.name));
+  const hasAlerts = Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='alerts'").get());
+  if (hasAlerts) {
+    const alertColsPre = cols("alerts");
+    for (const [col, sql] of ALERT_COLUMN_MIGRATIONS) if (!alertColsPre.has(col)) db.exec(sql);
+    // Stocks mode: dedup is per-session so premarket + after-hours can each
+    // call out the same ticker once per day (options rows keep contract dedup).
+    const dedupSql: any = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_alerts_dedup'").get();
+    if (dedupSql?.sql && !String(dedupSql.sql).includes("session")) db.exec("DROP INDEX idx_alerts_dedup");
+  }
+  db.exec(SCHEMA);
   const alertCols = cols("alerts");
   for (const [col, sql] of ALERT_COLUMN_MIGRATIONS) if (!alertCols.has(col)) db.exec(sql);
   const journalCols = cols("trade_journal");

@@ -121,10 +121,16 @@ export function computeCheckpoint(
 /** Which checkpoints are due for an alert at `nowMs` (excluding recorded). */
 export function dueCheckpoints(alert: { alert_time: string; trading_day: string }, done: string[], nowMs: number) {
   const alertMs = Date.parse(alert.alert_time);
+  // 'eod' anchor: 16:00 ET normally, but an after-hours stock alert fires
+  // AFTER the close — its session ends at 20:00 ET instead (otherwise the eod
+  // checkpoint would be "due" instantly with an empty bar window and the alert
+  // would finalize with null data).
+  const closeMs = etCloseMs(alert.trading_day);
+  const eodMs = alertMs >= closeMs ? closeMs + 4 * 3_600_000 : closeMs;
   const out: { key: string; cpMs: number }[] = [];
   for (const cp of CHECKPOINTS) {
     if (done.includes(cp.key)) continue;
-    const cpMs = cp.mins != null ? alertMs + cp.mins * 60_000 : etCloseMs(alert.trading_day);
+    const cpMs = cp.mins != null ? alertMs + cp.mins * 60_000 : eodMs;
     if (cpMs <= nowMs) out.push({ key: cp.key, cpMs });
   }
   return out;
