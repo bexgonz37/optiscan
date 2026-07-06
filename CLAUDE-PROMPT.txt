@@ -1,9 +1,25 @@
-You are working on OptiScan, a Next.js 15 trading scanner at https://github.com/bexgonz37/optiscan (local: C:\Users\bexgo\Downloads\optiscan-main).
+=== CRITICAL: CORRECT FOLDER ===
+Repo: https://github.com/bexgonz37/optiscan (private)
+ONLY use: C:\Users\bexgo\Downloads\optiscan-main
+DO NOT use: C:\Users\bexgo\optiscan (OLD - stale, wrong)
 
-User has top-tier Massive/Polygon real-time plan. Deploy VPS, audit/improve app, add regular-stocks mode with session routing.
+Verify before any work:
+  cd C:\Users\bexgo\Downloads\optiscan-main
+  git log -1 --oneline
+Must be commit 58dae80 or newer.
+
+These files must exist (else wrong folder):
+  lib/early-accuracy.ts, docker-compose.yml, scripts/vps-setup.sh
+
+In Cursor: Open Folder -> C:\Users\bexgo\Downloads\optiscan-main
+
+=== TASK ===
+You are working on OptiScan, Next.js 15 trading scanner.
+User has top-tier Massive/Polygon real-time plan.
+Deploy VPS, audit/improve app, add regular-stocks mode with session routing.
 
 === PART 1: VPS DEPLOY ===
-Use Docker on Ubuntu 24.04 VPS (~$6/mo DigitalOcean or Hetzner).
+Docker on Ubuntu 24.04 VPS (~$6/mo DigitalOcean or Hetzner).
 Repo has: Dockerfile, docker-compose.yml, env.production.example, scripts/vps-setup.sh
 Boot starts scanner+tracker via instrumentation.ts. Port 8780. SQLite in data/
 
@@ -13,35 +29,24 @@ Steps:
 3. Edit /opt/optiscan/.env.production: POLYGON_API_KEY, SCAN_API_TOKEN, DISCORD_WEBHOOK_URL
 4. cd /opt/optiscan && docker compose up -d --build
 5. curl http://localhost:8780/api/health
-6. Secure: SSH tunnel ssh -L 8780:localhost:8780 root@IP (do not expose 8780 publicly)
+6. Secure: SSH tunnel ssh -L 8780:localhost:8780 root@IP
 7. Write docs/VPS.md
-8. Audit: scanner runs without browser, Discord works, DB persists, run scripts/audit-accuracy.mjs
+8. Run scripts/audit-accuracy.mjs
 
 === PART 2: AUDIT OPTIONS SCANNER ===
 Files: lib/scanner-loop.ts, lib/zero-dte.js, lib/alert-capture.ts, lib/trade-verdict.ts, lib/early-accuracy.ts, lib/alert-store.ts, app/alert-lab/page.tsx, components/AppNav.tsx
-Goal: 70% early hit rate @ 5m on TRADE-at-capture, high volume. Run npm test, tsc, build. Fix bugs.
+Goal: 70% early hit rate @ 5m on TRADE-at-capture. npm test, tsc, build.
 
-=== PART 3: REGULAR STOCKS MODE (NEW) ===
-Session schedule (US/Eastern):
-- Premarket 4:00-9:30 AM = stock callouts only (no options)
-- Regular 9:30 AM-4:00 PM = 0DTE options callouts only
-- After hours 4:00-8:00 PM = stock callouts only
-- Closed = no new callouts
+=== PART 3: REGULAR STOCKS MODE ===
+Premarket 4-9:30 AM ET = stock callouts only
+Regular 9:30 AM-4 PM ET = 0DTE options only
+After hours 4-8 PM ET = stock callouts only
+Closed = no new callouts
 
-Implement:
-1. lib/trading-session.ts: marketSession(), isOptionsSession(), isStockSession()
-2. Stock scanner: reuse 1s tape, no chain fetch extended hours, BUY LONG/SHORT verdicts
-3. DB: asset_class (stock|options), session field, migration in lib/db.ts
-4. Session router in capture logic
-5. Nav: Options | Stocks | Alerts | Settings at top (components/AppNav.tsx)
-6. Alerts UI: filter Options/Stocks/All, stock rows no strike/DTE
-7. Discord: stocks extended hours, options RTH only
-8. Tests for session times
+Implement: marketSession() in lib/trading-session.ts, stock scanner, DB asset_class field, nav Options|Stocks|Alerts|Settings, Discord routing, tests.
 
 === CONSTRAINTS ===
-Signals only. Single VPS instance. No AI in signals. Catalysts never block. Keep options accuracy. Commit and push to main.
+Signals only. Single VPS. No AI in signals. Push to main on github.com/bexgonz37/optiscan
 
 === DELIVER ===
 VPS instructions, audit summary, nav map, session table, test guide, commit SHAs.
-
-Start: README, lib/trading-session.ts, components/AppNav.tsx, lib/scanner-loop.ts

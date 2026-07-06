@@ -4,7 +4,35 @@ Copy everything below the line into Claude or a new Cursor agent chat.
 
 ---
 
-You are working on **OptiScan**, a Next.js 15 trading scanner at https://github.com/bexgonz37/optiscan (local clone: C:\Users\bexgo\Downloads\optiscan-main).
+## CRITICAL — correct repo folder (read first)
+
+**GitHub repo:** https://github.com/bexgonz37/optiscan (private)
+
+**ONLY work in this local folder:**
+```
+C:\Users\bexgo\Downloads\optiscan-main
+```
+
+**DO NOT use** `C:\Users\bexgo\optiscan` — that is an **old stale clone** (missing early-accuracy, Docker, VPS scripts, signal gates).
+
+**Before writing any code, verify you are in the right place:**
+```powershell
+cd C:\Users\bexgo\Downloads\optiscan-main
+git log -1 --oneline
+```
+Must show commit **58dae80** or newer (e.g. `docs: add Claude handoff prompt`).
+
+**These files MUST exist** (if missing, you are in the wrong folder):
+- `lib/early-accuracy.ts`
+- `docker-compose.yml`
+- `scripts/vps-setup.sh`
+- `CLAUDE-PROMPT.txt`
+
+If using Cursor: **File → Open Folder →** `C:\Users\bexgo\Downloads\optiscan-main` before starting.
+
+---
+
+You are working on **OptiScan**, a Next.js 15 trading scanner.
 
 The user is on the **top-tier Massive/Polygon plan** (real-time). Deploy to a VPS, audit and improve the app, and add regular-stocks mode with session-based routing.
 
