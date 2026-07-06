@@ -78,6 +78,14 @@ export function changeColor(n: number | null | undefined): string {
   return "text-zinc-400";
 }
 
+/** CSS class for signed percent cells (design-system pos/neg/muted). */
+export function pctClass(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "muted";
+  if (n > 0) return "pos";
+  if (n < 0) return "neg";
+  return "muted";
+}
+
 export function isMarketHours(now = new Date()): boolean {
   // US regular session, roughly, in America/New_York.
   const et = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));

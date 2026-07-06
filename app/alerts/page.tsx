@@ -25,6 +25,8 @@ import { calledAgoLabel, sideFromAlert, stillMovingStatus } from "@/lib/signal-l
 import { earlyMoveWin, pickEarlyMove, EARLY_MOVE_WIN_PCT, EARLY_ON_TRACK_MIN_PCT } from "@/lib/early-accuracy";
 import { TickerIcon, GradeChip, ScoreBar } from "@/components/ui";
 import { changeColor, fmtPct, fmtPrice, fmtTime } from "@/lib/format";
+import { sessionGroupLabel } from "@/lib/language-modes";
+import { groupAlertsBySession } from "@/lib/alert-session-groups";
 
 interface AlertRow {
   id: number; ticker: string; source: string; direction: string | null;
@@ -665,14 +667,19 @@ function AlertsPageInner() {
               </div>
             ) : (
               <div className="tablewrap">
-                <table>
+                {groupAlertsBySession(alerts).map(({ key, items }) => (
+                  <div key={key} className="alert-session-group">
+                    <div className="alert-session-divider">
+                      {sessionGroupLabel(key, items[0]?.asset_class ?? "options")}
+                    </div>
+                    <table>
                   <thead>
                     <tr>
                       <th>Time</th><th>Ticker</th><th>@ alert</th><th>Now</th><th>Speed @ alert</th><th>Day move @ alert</th><th>Signal</th><th>Status</th><th></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {alerts.map((a) => {
+                    {items.map((a) => {
                       const isStock = a.asset_class === "stock";
                       const atAlert = isStock ? null : computeTradeVerdict(a);
                       const live = liveCtxFor(tape, a.ticker);
@@ -741,6 +748,8 @@ function AlertsPageInner() {
                     })}
                   </tbody>
                 </table>
+                  </div>
+                ))}
               </div>
             )}
           </div>

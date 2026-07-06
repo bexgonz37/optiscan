@@ -26,6 +26,7 @@ export async function GET(req: Request) {
         scannerMinLevelSurge: getSettingNum("scanner_min_level_surge", Number(process.env.SCANNER_MIN_LEVEL_SURGE ?? 1.2)),
         stockMinScore: getSettingNum("stock_min_score", Number(process.env.STOCK_MIN_SCORE ?? 66)),
       },
+      extendedStockNotify: getSetting("extended_stock_notify") === "1",
     });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err?.message }, { status: 500 });
@@ -48,6 +49,9 @@ export async function PATCH(req: Request) {
     if (body.scannerMinEfficiency != null) setSetting("scanner_min_efficiency", String(Number(body.scannerMinEfficiency)));
     if (body.scannerMinLevelSurge != null) setSetting("scanner_min_level_surge", String(Number(body.scannerMinLevelSurge)));
     if (body.stockMinScore != null) setSetting("stock_min_score", String(Number(body.stockMinScore)));
+    if (typeof body.extendedStockNotify === "boolean") {
+      setSetting("extended_stock_notify", body.extendedStockNotify ? "1" : "0");
+    }
     const settings = updateNotificationSettings(body);
     if (body.discordRequiresManualConfirm === false || body.discordRequiresManualConfirm === 0) {
       const { ensureDiscordPendingCleared } = await import("@/lib/notifications");
@@ -62,7 +66,9 @@ export async function PATCH(req: Request) {
         scannerMinEfficiency: getSettingNum("scanner_min_efficiency", Number(process.env.SCANNER_MIN_EFFICIENCY ?? 0.35)),
         scannerMinLevelSurge: getSettingNum("scanner_min_level_surge", Number(process.env.SCANNER_MIN_LEVEL_SURGE ?? 1.2)),
         stockMinScore: getSettingNum("stock_min_score", Number(process.env.STOCK_MIN_SCORE ?? 66)),
-      } });
+      },
+      extendedStockNotify: getSetting("extended_stock_notify") === "1",
+    });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err?.message }, { status: 500 });
   }

@@ -18,8 +18,22 @@
   --violet: #8b7dff;
   --cyan: #3ad0ff;
   --accent: #00d68f;
-  --radius: 16px;
-  --radius-sm: 10px;
+  --bull: var(--green);
+  --bear: var(--red);
+  --warn: var(--amber);
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --text-xs: 11px;
+  --text-sm: 13px;
+  --text-lg: 16px;
+  --row-h: 32px;
   --mono: "SF Mono", ui-monospace, "Roboto Mono", Menlo, Consolas, monospace;
   --sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --glow1: rgba(0, 214, 143, 0.08);
@@ -2222,4 +2236,274 @@ tr.clickable {
 .system-explanation-footer {
   font-size: 11px;
   margin: 8px 0 0;
+}
+
+/* ── Item 2: design system primitives + terminal density ─────────────── */
+
+.ui-panel {
+  padding: var(--space-3);
+}
+
+.ui-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.ui-panel-title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+
+.ui-panel-sub {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
+.ui-panel-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.stat-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel2);
+  text-align: left;
+}
+
+.stat-chip-clickable {
+  cursor: pointer;
+}
+
+.stat-chip-clickable:hover {
+  border-color: var(--line2);
+}
+
+.stat-chip-active {
+  border-color: var(--accent);
+  background: var(--green-dim);
+}
+
+.stat-chip-label {
+  font-size: var(--text-xs);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.stat-chip-value {
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+
+.stat-chip-hint {
+  font-size: 10px;
+}
+
+.stat-chip-bull .stat-chip-value { color: var(--bull); }
+.stat-chip-bear .stat-chip-value { color: var(--bear); }
+.stat-chip-warn .stat-chip-value { color: var(--warn); }
+
+.ui-table-wrap .ui-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.ui-table-head th,
+.ui-table-body td,
+table th,
+table td {
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-xs);
+  line-height: 1.25;
+  vertical-align: middle;
+}
+
+.ui-table-head th,
+table thead th {
+  height: var(--row-h);
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 10px;
+}
+
+.ui-table-body td,
+table tbody td {
+  height: var(--row-h);
+}
+
+.ui-align-right,
+td.num,
+th.num,
+.ui-table td.ui-align-right {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.ui-align-center { text-align: center; }
+
+.cell-bull, .stat-accent-bull { color: var(--bull); }
+.cell-bear, .stat-accent-bear { color: var(--bear); }
+.cell-warn, .stat-accent-warn { color: var(--warn); }
+
+.grade-strong { color: var(--bull); }
+.grade-good { color: var(--cyan); }
+.grade-watch { color: var(--warn); }
+.grade-dim { color: var(--dim); }
+
+.iv-val { width: 26px; display: inline-block; }
+.ivbar-fill.iv-low { background: var(--bull); }
+.ivbar-fill.iv-mid { background: var(--warn); }
+.ivbar-fill.iv-high { background: var(--bear); }
+
+.btn-xs {
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-2);
+}
+
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.flex-1 { flex: 1; }
+.gap-2 { gap: var(--space-2); }
+.fw-strong { font-weight: 700; }
+.fw-normal { font-weight: 400; }
+.text-xs { font-size: var(--text-xs); }
+.text-sm { font-size: var(--text-sm); }
+.text-lg { font-size: var(--text-lg); }
+.mt-1 { margin-top: var(--space-1); }
+.mt-2 { margin-top: var(--space-2); }
+.mb-2 { margin-bottom: var(--space-2); }
+.search-narrow { flex: 1; max-width: 220px; }
+
+.popup-stack {
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 400px;
+  max-width: calc(100vw - 32px);
+}
+
+.popup-card {
+  padding: var(--space-3);
+  box-shadow: var(--shadow);
+  border: 1px solid var(--line2);
+}
+
+.popup-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.popup-badge-stock {
+  font-size: 10px;
+  padding: 2px var(--space-2);
+  background: rgba(56, 120, 180, 0.25);
+  border: 1px solid rgba(56, 120, 180, 0.45);
+}
+
+.popup-badge-options {
+  font-size: 10px;
+  padding: 2px var(--space-2);
+  background: rgba(180, 120, 40, 0.25);
+  border: 1px solid rgba(180, 120, 40, 0.45);
+}
+
+.popup-details {
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.popup-details-scroll {
+  white-space: pre-line;
+  max-height: 120px;
+  overflow: auto;
+  margin-top: var(--space-2);
+}
+
+.section-scanner-dash .section-sub,
+.section-live .section-sub {
+  font-size: var(--text-xs);
+  max-width: 480px;
+}
+
+table tbody tr {
+  height: var(--row-h);
+}
+
+/* ── Item 3: alert cards + session grouping ─────────────────────────────── */
+
+.alert-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-2);
+}
+
+.alert-badge-0dte {
+  font-size: 10px;
+  padding: 2px var(--space-2);
+  background: rgba(180, 120, 40, 0.25);
+  border: 1px solid rgba(180, 120, 40, 0.45);
+}
+
+.alert-badge-shares {
+  font-size: 10px;
+  padding: 2px var(--space-2);
+  background: rgba(56, 120, 180, 0.25);
+  border: 1px solid rgba(56, 120, 180, 0.45);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.alert-badge-session {
+  font-size: 10px;
+  padding: 2px var(--space-2);
+  background: rgba(120, 140, 160, 0.15);
+  border: 1px solid rgba(120, 140, 160, 0.35);
+}
+
+.alert-kind-hint {
+  flex-basis: 100%;
+  margin-top: 2px;
+}
+
+.alert-session-group {
+  margin-bottom: var(--space-3);
+}
+
+.alert-session-divider {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: var(--space-2) 0;
+  margin-bottom: var(--space-1);
+  border-bottom: 1px solid var(--line);
 }

@@ -22,7 +22,9 @@ import { TradeVerdictHero } from "@/components/TradeVerdictHero";
 import { computeTradeVerdict, MIN_SPEED_PCT_PER_MIN, type TradeVerdict } from "@/lib/trade-verdict";
 import { calledAgoLabel, calledAgoLong, sideFromAlert, stillMovingStatus } from "@/lib/signal-live";
 import { useStableSymbolOrder } from "@/lib/stable-order";
-import { changeColor, fmtPct, fmtPrice } from "@/lib/format";
+import { changeColor, fmtPct, fmtPrice, pctClass } from "@/lib/format";
+import { sessionGroupLabel } from "@/lib/language-modes";
+import { groupAlertsBySession } from "@/lib/alert-session-groups";
 
 interface Entry {
   symbol: string;
@@ -202,13 +204,13 @@ export function AlertsCommandCenter({
             <div className="acc-hero-symbol">
               <TickerIcon symbol={hero.symbol} />
               <div>
-                <div className="tname" style={{ fontSize: 16 }}>{hero.symbol}</div>
+                <div className="tname text-lg">{hero.symbol}</div>
                 <div className="tsub">
                   {fmtPrice(heroLive?.price ?? hero.alert.price_at_alert)}
                   {calledAgoLong(hero.alert.alert_time) ? ` · ${calledAgoLong(hero.alert.alert_time)}` : ""}
                 </div>
                 {heroTape ? (
-                  <div className={`signal-momentum signal-momentum-${stillMovingStatus(sideFromAlert(hero.alert), heroTape).tone}`} style={{ fontSize: 11, marginTop: 4 }}>
+                  <div className={`signal-momentum signal-momentum-${stillMovingStatus(sideFromAlert(hero.alert), heroTape).tone} text-xs mt-1`}>
                     {stillMovingStatus(sideFromAlert(hero.alert), heroTape).label}
                   </div>
                 ) : null}
@@ -219,13 +221,13 @@ export function AlertsCommandCenter({
           <div className="acc-hero-side">
             <div className="acc-stat">
               <span className="label">Speed now</span>
-              <span className="num" style={{ fontWeight: Math.abs(heroTape?.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN ? 700 : 400 }}>
+              <span className={`num ${Math.abs(heroTape?.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN ? "fw-strong" : "fw-normal"}`}>
                 {speedText(heroTape)}
               </span>
             </div>
             <div className="acc-stat">
               <span className="label">Day move</span>
-              <span className="num" style={{ color: changeColor(heroTape?.movePct ?? hero.alert.percent_move_at_alert) }}>
+              <span className={`num ${pctClass(heroTape?.movePct ?? hero.alert.percent_move_at_alert)}`}>
                 {fmtPct(heroTape?.movePct ?? hero.alert.percent_move_at_alert)}
               </span>
             </div>
@@ -367,29 +369,36 @@ export function AlertsCommandCenter({
           <div className="label muted" style={{ fontSize: 11, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>
             Called recently (last 45 min) — click to check if still moving
           </div>
-          <div className="acc-on-track-chips">
-            {recentCalls.map((a) => {
-              const tapeRow = tape.map.get(a.ticker) ?? null;
-              const side = sideFromAlert(a);
-              const momentum = stillMovingStatus(side, tapeRow);
-              const live = liveCtxFor(tape, a.ticker);
-              const nowVerdict = computeTradeVerdict(a, live);
-              return (
-                <button
-                  key={a.id}
-                  type="button"
-                  className="pill btn acc-on-track-chip"
-                  onClick={() => pick(a.ticker)}
-                  title={nowVerdict.reason}
-                >
-                  <span className="tname">{a.ticker}</span>
-                  <span className="muted">{calledAgoLabel(a.alert_time)}</span>
-                  <span className={`signal-momentum signal-momentum-${momentum.tone}`}>{momentum.label}</span>
-                  <span className="muted">{nowVerdict.headline}</span>
-                </button>
-              );
-            })}
-          </div>
+          {groupAlertsBySession(recentCalls).map(({ key, items }) => (
+            <div key={key} className="alert-session-group">
+              <div className="alert-session-divider">
+                {sessionGroupLabel(key, items[0]?.asset_class ?? "options")}
+              </div>
+              <div className="acc-on-track-chips">
+                {items.map((a) => {
+                  const tapeRow = tape.map.get(a.ticker) ?? null;
+                  const side = sideFromAlert(a);
+                  const momentum = stillMovingStatus(side, tapeRow);
+                  const live = liveCtxFor(tape, a.ticker);
+                  const nowVerdict = computeTradeVerdict(a, live);
+                  return (
+                    <button
+                      key={a.id}
+                      type="button"
+                      className="pill btn acc-on-track-chip"
+                      onClick={() => pick(a.ticker)}
+                      title={nowVerdict.reason}
+                    >
+                      <span className="tname">{a.ticker}</span>
+                      <span className="muted">{calledAgoLabel(a.alert_time)}</span>
+                      <span className={`signal-momentum signal-momentum-${momentum.tone}`}>{momentum.label}</span>
+                      <span className="muted">{nowVerdict.headline}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </div>
       ) : null}
     </section>

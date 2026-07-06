@@ -25,8 +25,16 @@ import {
   getSetting,
 } from "@/lib/alert-store";
 
-export function discordConfigured(): boolean {
-  return Boolean(process.env.DISCORD_WEBHOOK_URL);
+/** True when extended-hours stock notify is disabled (default). */
+export function extendedStockNotifyEnabled(): boolean {
+  return getSetting("extended_stock_notify") === "1";
+}
+
+function isExtendedStockAlert(alertLike: any): boolean {
+  const isStock = alertLike?.assetClass === "stock" || alertLike?.asset_class === "stock";
+  if (!isStock) return false;
+  const session = alertLike?.session;
+  return session === "premarket" || session === "afterhours";
 }
 
 /** Clear stale manual-confirm queue when auto-send is on (one-time + boot safety). */
@@ -61,6 +69,15 @@ export async function notifyNewAlert(alertId: number, alertLike: any): Promise<v
       return;
     }
     const isStock = alertLike?.assetClass === "stock" || alertLike?.asset_class === "stock";
+    if (isExtendedStockAlert(alertLike) && !extendedStockNotifyEnabled()) {
+      insertNotificationEvent({
+        alertId,
+        channel: "discord_webhook",
+        status: "skipped",
+        error: "extended-hours stock alerts disabled in settings (still logged to history)",
+      });
+      return;
+    }
     if (!isStock && !isOptionsSession()) {
       insertNotificationEvent({
         alertId,

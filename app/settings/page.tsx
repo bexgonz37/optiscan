@@ -31,6 +31,7 @@ export default function SettingsPage() {
   const [stockMinScore, setStockMinScore] = useState("66");
   const [refreshSec, setRefreshSec] = useState(DEFAULT_REFRESH_SEC);
   const [desktopAlerts, setDesktopAlerts] = useState(false);
+  const [extendedStockNotify, setExtendedStockNotify] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [testPreview, setTestPreview] = useState<any>(null);
 
@@ -54,6 +55,7 @@ export default function SettingsPage() {
           setMinLevelSurge(String(t.scannerMinLevelSurge ?? 1.2));
           setStockMinScore(String(t.stockMinScore ?? 66));
         }
+        setExtendedStockNotify(Boolean(d.extendedStockNotify));
       }
       const manualConfirm = Boolean(d.settings?.discord_requires_manual_confirm);
       if (manualConfirm) {
@@ -272,6 +274,25 @@ export default function SettingsPage() {
           <Toggle label="Browser popups" field="browser_popup_enabled" hint="Popup cards with Watch / Journal / Snooze" />
           <Toggle label="Desktop notifications" field="desktop_notification_enabled" hint="Works with popup alerts from the scanner" />
           <Toggle label="Sound" field="sound_enabled" />
+          <div className="settings-row">
+            <div className="settings-row-label">
+              Premarket/after-hours stock alerts
+              <div className="settings-row-hint">
+                Popups and Discord for extended-hours share callouts. Off by default — alerts still appear in History.
+              </div>
+            </div>
+            <button
+              type="button"
+              className={`btn-toggle${extendedStockNotify ? " on" : ""}`}
+              onClick={() => {
+                const next = !extendedStockNotify;
+                setExtendedStockNotify(next);
+                patch({ extendedStockNotify: next });
+              }}
+            >
+              {extendedStockNotify ? "On" : "Off"}
+            </button>
+          </div>
           <div style={{ marginTop: 12 }}>
             <button type="button" className="btn-primary" onClick={testChannels}>
               Preview test alert

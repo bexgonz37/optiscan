@@ -13,8 +13,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { scanHeaders } from "@/hooks/useScanner";
 import { useLiveTapeMap, liveCtxFor } from "@/hooks/useLiveTapeMap";
-import { changeColor, fmtPct } from "@/lib/format";
-import { TradeVerdictHero, useTradeVerdict } from "@/components/TradeVerdictHero";
 import { computeTradeVerdict, isTradeEligible } from "@/lib/trade-verdict";
 import { isOptionsSession } from "@/lib/trading-session";
 
@@ -46,19 +44,16 @@ function alertKind(a: PopupAlert): "stock" | "options" {
   return "options";
 }
 
-function kindBadge(a: PopupAlert): string {
-  const kind = alertKind(a);
-  if (kind === "stock") {
-    const session = a.session === "afterhours" ? "After-hours" : a.session === "premarket" ? "Premarket" : "Stock";
-    return `${session} · Shares`;
-  }
-  return "0DTE · Options";
+function isExtendedStockAlert(a: PopupAlert): boolean {
+  if (alertKind(a) !== "stock") return false;
+  const s = a.session ?? "";
+  return s === "premarket" || s === "afterhours";
 }
 
-const MOVE_STATUS_TEXT: Record<string, string> = {
-  early: "Early Move", continuing: "Continuation Setup",
-  extended_tradable: "Extended But Still Tradable", extended_risky: "Chase Risk", exhausted: "Move Exhausted",
-};
+function stockNotifyLabel(a: PopupAlert): string {
+  const session = a.session === "afterhours" ? "After hours" : a.session === "premarket" ? "Premarket" : "Shares";
+  return `${session} · SHARES ONLY`;
+}
 
 const LS_LAST_ID = "optiscan:popup:lastId";
 const LS_SNOOZE = "optiscan:popup:snooze";
@@ -102,84 +97,42 @@ function AlertCard({
   onAct: (action: string) => void;
 }) {
   const [showDetails, setShowDetails] = useState(false);
-  const verdict = useTradeVerdict(a, live);
-  const label = mode === "public" ? a.public_label : a.private_label;
-  const explanation = mode === "public" ? a.public_explanation : a.ai_explanation;
-  const btn = { fontSize: 11, padding: "4px 8px" } as const;
+  const kind = alertKind(a);
 
   return (
-    <div className="panel" style={{ padding: 14, boxShadow: "0 12px 40px rgba(0,0,0,.5)", border: "1px solid rgba(120,140,160,.35)" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-        <strong style={{ fontSize: 14 }}>{a.ticker}</strong>
-        <span
-          className="pill"
-          style={{
-            fontSize: 10,
-            padding: "2px 8px",
-            background: alertKind(a) === "stock" ? "rgba(56, 120, 180, .25)" : "rgba(180, 120, 40, .25)",
-            border: `1px solid ${alertKind(a) === "stock" ? "rgba(56, 120, 180, .45)" : "rgba(180, 120, 40, .45)"}`,
-          }}
-        >
-          {kindBadge(a)}
-        </span>
-        {mode === "public" ? <span className="muted" style={{ fontSize: 12 }}>{label}</span> : null}
-        <span className="spacer" style={{ flex: 1 }} />
-        <button className="pill btn" style={btn} onClick={onDismiss}>✕</button>
+    <div className="panel popup-card">
+      <div className="popup-card-head">
+        <span className="spacer flex-1" />
+        <button className="pill btn btn-xs" onClick={onDismiss}>✕</button>
       </div>
 
-      {mode === "private" ? (
-        <TradeVerdictHero alert={a} live={live} />
+      {kind === "stock" ? (
+        <StockAlertCard alert={a} mode={mode} showDetails={showDetails} />
       ) : (
-        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{label ?? "Scanner Alert"}</div>
+        <OptionAlertCard alert={a} live={live} mode={mode} showDetails={showDetails} />
       )}
 
-      <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
-        <span style={{ color: changeColor(a.percent_move_at_alert) }}>Day {fmtPct(a.percent_move_at_alert)}</span>
-        {live?.shortRate != null ? ` · Speed now ${live.shortRate > 0 ? "+" : ""}${live.shortRate.toFixed(2)}%/min` : ""}
-        {a.relative_volume != null ? ` · RVOL ${a.relative_volume}x` : ""}
-      </div>
-
       <button
-        className="pill btn"
-        style={{ ...btn, marginBottom: showDetails ? 8 : 0 }}
+        type="button"
+        className={`pill btn btn-xs${showDetails ? " mb-2" : ""}`}
         onClick={() => setShowDetails((v) => !v)}
       >
         {showDetails ? "Hide details" : "Show details"}
       </button>
 
-      {showDetails ? (
-        <div style={{ marginTop: 8, fontSize: 11, lineHeight: 1.55, color: "var(--muted)" }}>
-          <div style={{ marginBottom: 6 }}>
-            Setup {Math.round(a.signal_score ?? 0)}/100 · Risk {Math.round(a.risk_score ?? 0)}/100
-            {a.zero_dte_contract_score != null ? ` · Contract ${Math.round(a.zero_dte_contract_score)}/100` : ""}
-            {a.option_worth_score != null ? ` · Worth-it ${Math.round(a.option_worth_score)}/100` : ""}
-          </div>
-          {(a.move_status || a.worth_verdict) ? (
-            <div style={{ marginBottom: 6 }}>
-              {a.move_status ? `Move: ${MOVE_STATUS_TEXT[a.move_status] ?? a.move_status}` : ""}
-              {a.worth_verdict ? ` · ${a.worth_verdict}` : ""}
-            </div>
-          ) : null}
-          {mode === "private" && verdict.bullets.map((b) => <div key={b}>{b}</div>)}
-          {explanation ? (
-            <div style={{ whiteSpace: "pre-line", maxHeight: 120, overflow: "auto", marginTop: 6 }}>{explanation}</div>
-          ) : null}
-        </div>
-      ) : null}
-
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
-        <button className="pill btn btn-primary" style={btn} onClick={() => onAct("open_chart")}>Watch chart</button>
-        {verdict.action === "TRADE" ? (
-          <button className="pill btn" style={btn} onClick={() => onAct("trade_taken")}>I took this trade</button>
+      <div className="btn-row mt-2">
+        <button className="pill btn btn-primary btn-xs" onClick={() => onAct("open_chart")}>Watch chart</button>
+        {kind === "options" && computeTradeVerdict(a, live).action === "TRADE" ? (
+          <button className="pill btn btn-xs" onClick={() => onAct("trade_taken")}>I took this trade</button>
         ) : null}
-        <button className="pill btn" style={btn} onClick={() => onAct("journal")}>Journal</button>
-        <button className="pill btn" style={btn} onClick={() => onAct("snooze")}>Snooze 1h</button>
+        <button className="pill btn btn-xs" onClick={() => onAct("journal")}>Journal</button>
+        <button className="pill btn btn-xs" onClick={() => onAct("snooze")}>Snooze 1h</button>
       </div>
-      {mode === "public" ? (
-        <div className="muted" style={{ fontSize: 10, marginTop: 6 }}>Educational market signal only. Not financial advice.</div>
-      ) : (
-        <div className="muted" style={{ fontSize: 10, marginTop: 6 }}>Research signal — you decide size and execution.</div>
-      )}
+      <div className="muted text-xs mt-1">
+        {mode === "public"
+          ? "Educational market signal only. Not financial advice."
+          : "Research signal — you decide size and execution."}
+      </div>
     </div>
   );
 }
@@ -218,6 +171,7 @@ export function AlertPopup({
         setMode(langMode);
       }
       if (!settingsRef.current?.browser_popup_enabled) return;
+      const extendedStockNotify = Boolean(s.extendedStockNotify);
 
       const lastId = Number(localStorage.getItem(LS_LAST_ID) ?? 0);
       const res = await fetch(`/api/alerts?minId=${lastId}&limit=10`, { cache: "no-store", headers });
@@ -235,6 +189,7 @@ export function AlertPopup({
       const show = fresh.filter((x) =>
         !(snoozed[x.ticker] && now - snoozed[x.ticker] < SNOOZE_MS) &&
         x.alert_tier !== "research" &&
+        !(isExtendedStockAlert(x) && !extendedStockNotify) &&
         // Never popup 0DTE options outside regular hours (9:30–16:00 ET).
         (alertKind(x) === "stock" || isOptionsSession()) &&
         isTradeEligible(x, liveCtxFor(tapeRef.current, x.ticker)),
@@ -258,7 +213,7 @@ export function AlertPopup({
           ? `${prefix}${latest.ticker}: ${headline}`
           : `${prefix}${latest.public_label ?? "Alert"}: ${latest.ticker}`;
         const body = langMode === "private"
-          ? (kind === "stock" ? `${kindBadge(latest)} — setup ${Math.round(latest.signal_score ?? 0)}/100` : v.reason)
+          ? (kind === "stock" ? `${stockNotifyLabel(latest)} — setup ${Math.round(latest.signal_score ?? 0)}/100` : v.reason)
           : `Setup ${Math.round(latest.signal_score ?? 0)}/100 · Risk ${Math.round(latest.risk_score ?? 0)}/100`;
         new Notification(title, { body, tag: `optiscan-${latest.id}` });
       }
@@ -302,7 +257,7 @@ export function AlertPopup({
   if (!stack.length) return null;
 
   return (
-    <div style={{ position: "fixed", right: 16, bottom: 16, zIndex: 90, display: "flex", flexDirection: "column", gap: 10, width: 400, maxWidth: "calc(100vw - 32px)" }}>
+    <div className="popup-stack">
       {stack.map((a) => (
         <AlertCard
           key={a.id}

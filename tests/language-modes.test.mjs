@@ -10,6 +10,8 @@ import {
   suggestedAction,
   directionLabel,
   containsBannedPublicLanguage,
+  alertKindExplanation,
+  sessionGroupLabel,
 } from "../lib/language-modes.js";
 
 test("banned-language checker catches every unsafe phrase", () => {
@@ -71,4 +73,21 @@ test("riskLabel / suggestedAction / directionLabel", () => {
   assert.equal(suggestedAction(85, 30), "Watch");
   assert.equal(suggestedAction(90, 80), "Skip");
   assert.equal(directionLabel("choppy"), "Volatile / Unclear");
+});
+
+test("alertKindExplanation distinguishes stock vs 0DTE by session", () => {
+  assert.match(alertKindExplanation({ asset_class: "stock", session: "premarket" }), /Premarket share/i);
+  assert.match(alertKindExplanation({ asset_class: "stock", session: "afterhours" }), /After-hours share/i);
+  assert.match(alertKindExplanation({ asset_class: "options", session: "regular" }), /0DTE option/i);
+  assert.match(alertKindExplanation({ asset_class: "options", session: "premarket" }), /before the open/i);
+  for (const s of [
+    alertKindExplanation({ asset_class: "stock", session: "premarket" }),
+    alertKindExplanation({ asset_class: "options", session: "regular" }),
+  ]) assert.equal(containsBannedPublicLanguage(s), false, s);
+});
+
+test("sessionGroupLabel for history dividers", () => {
+  assert.equal(sessionGroupLabel("premarket", "stock"), "Premarket · Shares");
+  assert.equal(sessionGroupLabel("afterhours", "stock"), "After hours · Shares");
+  assert.equal(sessionGroupLabel("regular", "options"), "Regular hours · 0DTE options");
 });
