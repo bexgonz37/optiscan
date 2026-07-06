@@ -6,7 +6,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { scanHeaders } from "@/hooks/useScanner";
+import { useScannerStream } from "@/hooks/useScannerStream";
 import { TickerIcon, ScoreBar } from "@/components/ui";
 import { changeColor, fmtPct, fmtPrice, pctClass } from "@/lib/format";
 import {
@@ -40,51 +40,33 @@ export function ScannerDashboard({
   onOpenChart?: (symbol: string) => void;
   onLoopStatus?: (running: boolean) => void;
 }) {
-  const [tape, setTape] = useState<TapeRow[]>([]);
-  const [loop, setLoop] = useState<any>(null);
   const [sortKey, setSortKey] = useState<WatchSortKey>("watch");
   const [sortDir, setSortDir] = useState<-1 | 1>(-1);
   const [filter, setFilter] = useState<FilterKey>("fast");
   const [query, setQuery] = useState("");
   const [paused, setPaused] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
-  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+  const { realtime: loop, lastEventAt: updatedAt, freshness, transport } = useScannerStream();
+  const tape = (loop?.tape ?? loop?.movers ?? []) as TapeRow[];
   const [agoText, setAgoText] = useState("");
-  const inFlight = useRef(false);
-
-  const poll = useCallback(async () => {
-    if (inFlight.current) return;
-    inFlight.current = true;
-    try {
-      const res = await fetch("/api/scanner/live?realtimeOnly=1", { cache: "no-store", headers: scanHeaders() });
-      const d = await res.json();
-      if (d?.ok) {
-        setTape((d.realtime?.tape ?? d.realtime?.movers ?? []) as TapeRow[]);
-        setLoop(d.realtime);
-        setUpdatedAt(Date.now());
-        onLoopStatus?.(Boolean(d.realtime?.running));
-      }
-    } catch { /* best effort */ }
-    finally { inFlight.current = false; }
-  }, [onLoopStatus]);
+  const onLoopStatusRef = useRef(onLoopStatus);
+  onLoopStatusRef.current = onLoopStatus;
 
   useEffect(() => {
-    if (paused) return;
-    poll();
-    const id = setInterval(poll, 1000);
-    return () => clearInterval(id);
-  }, [poll, paused]);
+    onLoopStatusRef.current?.(Boolean(loop?.running));
+  }, [loop?.running]);
 
   useEffect(() => {
     const tick = () => {
       if (updatedAt == null) { setAgoText(""); return; }
       const ago = Math.round((Date.now() - updatedAt) / 1000);
-      setAgoText(ago > 3 ? `updated ${ago}s ago` : "live · 1s refresh");
+      const liveLabel = transport === "sse" ? "SSE live" : "poll live";
+      setAgoText(ago > 3 ? `updated ${ago}s ago · ${transport}` : `${liveLabel} · ${freshness}`);
     };
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [updatedAt]);
+  }, [updatedAt, transport, freshness]);
 
   const rows = useMemo(() => {
     const q = query.trim().toUpperCase();
@@ -135,7 +117,7 @@ export function ScannerDashboard({
           </p>
         </div>
         <div className="status-group">
-          <span className={`status-dot ${loop?.running && !paused ? "live" : ""}`} />
+          <span className={`status-dot ${loop?.running && !paused ? "live" : ""} stream-fresh-${freshness}`} />
           <span className="status-text">
             {paused ? "Paused" : loop?.running ? `${tape.length} symbols${agoText ? ` · ${agoText}` : ""}` : "Loop offline"}
           </span>

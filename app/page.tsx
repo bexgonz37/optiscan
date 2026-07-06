@@ -6,12 +6,14 @@ import { CompactStatusLine } from "@/components/CompactStatusLine";
 import { LivePageTabs } from "@/components/LivePageTabs";
 import { ChartPanel } from "@/components/ChartPanel";
 import { ZeroDteStrip } from "@/components/ZeroDteStrip";
+import { useScannerStream } from "@/hooks/useScannerStream";
 
 function LivePageInner() {
   const [chartSymbol, setChartSymbol] = useState<string | null>(null);
   const [chartOpen, setChartOpen] = useState(false);
   const [clock, setClock] = useState("");
   const [loopLive, setLoopLive] = useState(false);
+  const { freshness: streamFreshness } = useScannerStream();
 
   useEffect(() => {
     const tick = () =>
@@ -32,7 +34,7 @@ function LivePageInner() {
 
   return (
     <>
-      <CompactStatusLine loopLive={loopLive} clock={clock} />
+      <CompactStatusLine loopLive={loopLive} clock={clock} streamFreshness={streamFreshness} />
 
       <ZeroDteStrip chartSymbol={chartSymbol} onSelect={onOpenChart} />
 

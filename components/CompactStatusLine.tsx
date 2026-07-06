@@ -39,9 +39,11 @@ const SESSION_HINT: Record<MarketSession, string> = {
 export function CompactStatusLine({
   loopLive,
   clock,
+  streamFreshness,
 }: {
   loopLive?: boolean;
   clock?: string;
+  streamFreshness?: "green" | "yellow" | "red";
 }) {
   const [session, setSession] = useState<MarketSession | null>(null);
   const [report, setReport] = useState<AccessReport | null>(null);
@@ -93,8 +95,13 @@ export function CompactStatusLine({
 
         {loopLive != null ? (
           <span className={`compact-status-tape${loopLive ? " live" : ""}`}>
-            <span className={`status-dot${loopLive ? " live" : ""}`} />
+            <span className={`status-dot${loopLive ? " live" : ""}${streamFreshness ? ` stream-fresh-${streamFreshness}` : ""}`} />
             {loopLive ? "Tape live" : "Tape offline"}
+            {streamFreshness ? (
+              <span className={`stream-fresh-label stream-fresh-${streamFreshness}`}>
+                {streamFreshness === "green" ? " · fresh" : streamFreshness === "yellow" ? " · aging" : " · stale"}
+              </span>
+            ) : null}
           </span>
         ) : null}
 
