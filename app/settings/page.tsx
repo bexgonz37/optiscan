@@ -244,8 +244,8 @@ export default function SettingsPage() {
               {webhookConfigured ? "configured" : "not configured"}
             </strong>
           </p>
-          <Toggle label="Discord alerts" field="discord_enabled" hint="Master switch" />
-          <Toggle label="Manual confirmation" field="discord_requires_manual_confirm" hint="Review each alert before sending" />
+          <Toggle label="Discord alerts" field="discord_enabled" hint="Auto-send BUY CALL/PUT when TRADE fires (needs webhook in .env.local)" />
+          <Toggle label="Manual confirmation" field="discord_requires_manual_confirm" hint="Off = instant Discord on every BUY signal" />
           <div className="settings-row">
             <div className="settings-row-label">
               Public wording for Discord

@@ -5,7 +5,7 @@
  * Like a pro scanner: what's actually worth watching, most → least.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { scanHeaders } from "@/hooks/useScanner";
 import { TickerIcon, ScoreBar } from "@/components/ui";
 import { changeColor, fmtPct, fmtPrice } from "@/lib/format";
@@ -48,8 +48,11 @@ export function ScannerDashboard({
   const [paused, setPaused] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [agoText, setAgoText] = useState("");
+  const inFlight = useRef(false);
 
   const poll = useCallback(async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     try {
       const res = await fetch("/api/scanner/live?realtimeOnly=1", { cache: "no-store", headers: scanHeaders() });
       const d = await res.json();
@@ -60,6 +63,7 @@ export function ScannerDashboard({
         onLoopStatus?.(Boolean(d.realtime?.running));
       }
     } catch { /* best effort */ }
+    finally { inFlight.current = false; }
   }, [onLoopStatus]);
 
   useEffect(() => {

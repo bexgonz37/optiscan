@@ -99,13 +99,14 @@ export interface LiveTapeContext {
 
 /**
  * REQUIRED for TRADE: the tape must be moving the right way, right now.
- * Live tape wins over what was stored at alert time. A volume burst can
- * substitute for speed, but never when the tape is moving AGAINST the bias.
- * If we have no speed data at all (old rows, slow research scan), it fails.
+ * When `live` is present, only live shortRate/surge count — never borrow
+ * alert-time values (prevents a stalled tape keeping BUY via stale surge).
+ * At-capture (no live) uses stored alert-time speed/surge.
  */
 export function hasLiveSpeedProof(a: AlertVerdictInput, side: OptionSide, live?: LiveTapeContext): boolean {
-  const speed = live?.shortRate ?? a.short_rate_at_alert;
-  const surge = live?.surge ?? a.volume_surge_at_alert;
+  const hasLive = live != null;
+  const speed = hasLive ? (live.shortRate ?? null) : a.short_rate_at_alert;
+  const surge = hasLive ? (live.surge ?? null) : a.volume_surge_at_alert;
   if (speed == null && surge == null) return false;
   if (speed != null) {
     if (side === "CALL" && speed >= MIN_SPEED_PCT_PER_MIN) return true;
@@ -129,9 +130,10 @@ export function isTradeEligible(a: AlertVerdictInput, live?: LiveTapeContext): b
 }
 
 export function formatSpeedLine(a: AlertVerdictInput, live?: LiveTapeContext): string {
-  const speed = live?.shortRate ?? a.short_rate_at_alert;
-  const surge = live?.surge ?? a.volume_surge_at_alert;
-  const fromLive = live?.shortRate != null;
+  const hasLive = live != null;
+  const speed = hasLive ? (live.shortRate ?? null) : a.short_rate_at_alert;
+  const surge = hasLive ? (live.surge ?? null) : a.volume_surge_at_alert;
+  const fromLive = hasLive && live.shortRate != null;
   if (speed != null) {
     const ok = Math.abs(speed) >= MIN_SPEED_PCT_PER_MIN;
     return `Speed ${fromLive ? "now " : ""}${speed > 0 ? "+" : ""}${speed.toFixed(2)}%/min${ok ? " ✓" : " (too slow for TRADE)"}`;
@@ -179,7 +181,7 @@ export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext
   const liq = Number(merged.options_liquidity_score ?? 0);
   const verdict = String(merged.worth_verdict ?? "");
   const isResearch = merged.alert_tier === "research";
-  const speedOk = !isResearch && hasLiveSpeedProof(a, side, live);
+  const speedOk = !isResearch && hasLiveSpeedProof(merged, side, live);
   const speedLine = formatSpeedLine(a, live);
 
   const bullets: string[] = [

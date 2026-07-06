@@ -77,7 +77,7 @@ export default function GuidePage() {
         <ul className="guide-list">
           <li>Popups appear on any page, bottom-right, only for a live BUY CALL / BUY PUT, with a sound. Snooze a ticker for an hour if it's spamming you.</li>
           <li>Desktop notifications work when the browser tab is in the background — allow notifications when asked.</li>
-          <li>Discord (Settings page) sends the same BUY-only signals to your private channel. Off by default; requires your webhook in <code>.env.local</code>.</li>
+          <li>Discord sends <strong>automatic</strong> BUY CALL / BUY PUT alerts to your private channel with confidence %, contract, speed, and why. Set <code>DISCORD_WEBHOOK_URL</code> in <code>.env.local</code> — on by default once the app starts. Turn off manual confirmation in Settings if you want zero-click delivery.</li>
         </ul>
       </Section>
 

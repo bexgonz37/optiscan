@@ -144,7 +144,6 @@ function AlertCard({
         ) : null}
         <button className="pill btn" style={btn} onClick={() => onAct("journal")}>Journal</button>
         <button className="pill btn" style={btn} onClick={() => onAct("snooze")}>Snooze 1h</button>
-        <button className="pill btn" style={btn} onClick={() => onAct("open_chain")}>Options chain</button>
       </div>
       {mode === "public" ? (
         <div className="muted" style={{ fontSize: 10, marginTop: 6 }}>Educational market signal only. Not financial advice.</div>
@@ -156,10 +155,8 @@ function AlertCard({
 }
 
 export function AlertPopup({
-  onOpenChain,
   onOpenChart,
 }: {
-  onOpenChain?: (symbol: string) => void;
   onOpenChart?: (symbol: string) => void;
 }) {
   const [stack, setStack] = useState<PopupAlert[]>([]);
@@ -167,6 +164,7 @@ export function AlertPopup({
   const settingsRef = useRef<any>({ browser_popup_enabled: 1, desktop_notification_enabled: 1, sound_enabled: 1 });
   const tape = useLiveTapeMap(2000);
   const tapeRef = useRef(tape);
+  const pollInFlight = useRef(false);
   tapeRef.current = tape;
 
   const logEvent = useCallback((alertId: number | null, ticker: string | null, action: string) => {
@@ -178,6 +176,8 @@ export function AlertPopup({
   }, []);
 
   const poll = useCallback(async () => {
+    if (pollInFlight.current) return;
+    pollInFlight.current = true;
     try {
       const headers = scanHeaders();
       const sRes = await fetch("/api/notifications/settings", { cache: "no-store", headers });
@@ -209,7 +209,11 @@ export function AlertPopup({
       );
       if (!show.length) return;
 
-      setStack((prev) => [...prev, ...show].slice(-MAX_STACK));
+      setStack((prev) => {
+        const ids = new Set(prev.map((x) => x.id));
+        const merged = [...prev, ...show.filter((x) => !ids.has(x.id))];
+        return merged.slice(-MAX_STACK);
+      });
       for (const x of show) logEvent(x.id, x.ticker, "shown");
       if (settingsRef.current?.sound_enabled) beep();
       if (settingsRef.current?.desktop_notification_enabled && typeof Notification !== "undefined" && Notification.permission === "granted") {
@@ -220,6 +224,7 @@ export function AlertPopup({
         new Notification(title, { body, tag: `optiscan-${latest.id}` });
       }
     } catch { /* polling is best-effort */ }
+    finally { pollInFlight.current = false; }
   }, [logEvent]);
 
   useEffect(() => {
@@ -251,9 +256,7 @@ export function AlertPopup({
         }),
       }).catch(() => {});
     }
-    if (action === "open_chain") onOpenChain?.(a.ticker);
     if (action === "open_chart") onOpenChart?.(a.ticker);
-    if (action === "open_details") window.location.href = "/alert-lab";
     dismiss(a);
   }
 

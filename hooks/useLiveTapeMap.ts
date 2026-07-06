@@ -7,7 +7,7 @@
  * the label is correct RIGHT NOW, not at alert time.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { scanHeaders } from "@/hooks/useScanner";
 import type { LiveTapeContext } from "@/lib/trade-verdict";
 
@@ -45,8 +45,11 @@ export function useLiveTapeMap(pollMs = 1000): LiveTape {
   const [running, setRunning] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  const inFlight = useRef(false);
 
   const poll = useCallback(async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     try {
       const res = await fetch("/api/scanner/live?realtimeOnly=1", { cache: "no-store", headers: scanHeaders() });
       const d = await res.json();
@@ -57,6 +60,7 @@ export function useLiveTapeMap(pollMs = 1000): LiveTape {
         setLastUpdated(Date.now());
       }
     } catch { /* best effort */ }
+    finally { inFlight.current = false; }
   }, []);
 
   useEffect(() => {

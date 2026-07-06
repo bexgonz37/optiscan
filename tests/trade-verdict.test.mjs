@@ -63,6 +63,17 @@ test("computeTradeVerdict: live speed stalled downgrades TRADE to WAIT", () => {
   assert.equal(v.action, "WAIT");
 });
 
+test("computeTradeVerdict: stalled with live null surge must not borrow alert surge (C1)", () => {
+  const stalled = {
+    ...goodCall,
+    short_rate_at_alert: 0.35,
+    volume_surge_at_alert: 2.1,
+  };
+  const v = computeTradeVerdict(stalled, { shortRate: 0.02, surge: null });
+  assert.equal(v.action, "WAIT");
+  assert.equal(v.hasSpeedProof, false);
+});
+
 test("computeTradeVerdict: bearish put candidate -> BUY PUT", () => {
   const v = computeTradeVerdict({
     ...goodCall,

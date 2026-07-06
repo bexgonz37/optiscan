@@ -7,13 +7,10 @@
  * (server-side, below), email_later / sms_later (placeholders, not wired).
  *
  * Discord rules (enforced here, not just documented):
- *   - OFF by default (discord_enabled=0 in notification_settings)
- *   - webhook URL lives ONLY in env (DISCORD_WEBHOOK_URL) — never sent to the
- *     frontend; the settings API exposes only a boolean "configured" flag
- *   - messages are formatted in PUBLIC/EDUCATION wording and re-checked with
- *     containsBannedPublicLanguage() at send time; unsafe payloads are refused
- *   - when discord_requires_manual_confirm=1 (default), alerts queue as
- *     'pending_confirm' and are only sent via POST /api/notifications/pending
+ *   - ON by default (discord_enabled=1); requires DISCORD_WEBHOOK_URL in env
+ *   - Auto-send TRADE alerts (no manual confirm by default)
+ *   - webhook URL lives ONLY in env — never sent to the frontend
+ *   - private mode uses direct BUY CALL/PUT wording; public mode is education-safe
  */
 
 import { formatDiscordAlert } from "@/lib/alert-format";

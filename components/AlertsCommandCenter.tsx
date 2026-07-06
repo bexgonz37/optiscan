@@ -13,7 +13,7 @@
  * BUY CALL that stalls downgrades to WAIT in front of you.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { scanHeaders } from "@/hooks/useScanner";
 import type { LiveTape, LiveTapeRow } from "@/hooks/useLiveTapeMap";
 import { liveCtxFor } from "@/hooks/useLiveTapeMap";
@@ -46,8 +46,11 @@ export function AlertsCommandCenter({
   const [alerts, setAlerts] = useState<Map<string, any>>(new Map());
   const [selected, setSelected] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const pollInFlight = useRef(false);
 
   const pollAlerts = useCallback(async () => {
+    if (pollInFlight.current) return;
+    pollInFlight.current = true;
     try {
       const today = new Date().toISOString().slice(0, 10);
       const res = await fetch(`/api/alerts?date=${today}&limit=100`, { cache: "no-store", headers: scanHeaders() });
@@ -56,6 +59,7 @@ export function AlertsCommandCenter({
       for (const a of d.alerts ?? []) if (!map.has(a.ticker)) map.set(a.ticker, a);
       setAlerts(map);
     } catch { /* best effort */ }
+    finally { pollInFlight.current = false; }
   }, []);
 
   useEffect(() => {
@@ -99,9 +103,13 @@ export function AlertsCommandCenter({
   const hero = useMemo(() => {
     if (selected) {
       const found = entries.find((e) => e.symbol === selected);
-      if (found) return found;
+      if (found && found.verdict?.action !== "SKIP") return found;
     }
-    return entries.find((e) => e.alert) ?? entries[0] ?? null;
+    const trade = entries.find((e) => e.verdict?.action === "TRADE");
+    if (trade) return trade;
+    const wait = entries.find((e) => e.verdict?.action === "WAIT" && e.alert);
+    if (wait) return wait;
+    return null;
   }, [entries, selected]);
 
   function pick(symbol: string) {

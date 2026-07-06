@@ -147,8 +147,8 @@ CREATE TABLE IF NOT EXISTS notification_settings (
   browser_popup_enabled INTEGER NOT NULL DEFAULT 1,
   desktop_notification_enabled INTEGER NOT NULL DEFAULT 1,
   sound_enabled INTEGER NOT NULL DEFAULT 1,
-  discord_enabled INTEGER NOT NULL DEFAULT 0,        -- OFF by default
-  discord_requires_manual_confirm INTEGER NOT NULL DEFAULT 1,
+  discord_enabled INTEGER NOT NULL DEFAULT 1,
+  discord_requires_manual_confirm INTEGER NOT NULL DEFAULT 0,
   public_mode_required_for_discord INTEGER NOT NULL DEFAULT 1,
   updated_at TEXT
 );
@@ -220,6 +220,16 @@ function migrate(db: Database.Database) {
   for (const [col, sql] of ALERT_COLUMN_MIGRATIONS) if (!alertCols.has(col)) db.exec(sql);
   const journalCols = cols("trade_journal");
   for (const [col, sql] of JOURNAL_COLUMN_MIGRATIONS) if (!journalCols.has(col)) db.exec(sql);
+
+  // One-time: enable automatic Discord TRADE alerts (BUY CALL/PUT only at capture).
+  const autoDiscord: any = db.prepare("SELECT value FROM scanner_settings WHERE key='discord_auto_defaults_v1'").get();
+  if (!autoDiscord) {
+    db.prepare("UPDATE notification_settings SET discord_enabled=1, discord_requires_manual_confirm=0 WHERE id=1").run();
+    db.prepare(
+      `INSERT INTO scanner_settings (key, value) VALUES ('discord_auto_defaults_v1', '1')
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+    ).run();
+  }
 }
 
 type G = typeof globalThis & { __optiscanDb?: Database.Database };
