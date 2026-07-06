@@ -19,6 +19,7 @@ import { ChartPanel } from "@/components/ChartPanel";
 import { AlertsCommandCenter } from "@/components/AlertsCommandCenter";
 import { UsageGuide } from "@/components/UsageGuide";
 import { computeTradeVerdict, formatSpeedLine } from "@/lib/trade-verdict";
+import { calledAgoLabel, sideFromAlert, stillMovingStatus } from "@/lib/signal-live";
 import { TickerIcon, GradeChip, ScoreBar } from "@/components/ui";
 import { changeColor, fmtPct, fmtPrice, fmtTime } from "@/lib/format";
 
@@ -310,6 +311,7 @@ export default function AlertLabPage() {
                           onClick={() => openChart(row.ticker)}
                         >
                           <span className="tname">{row.ticker}</span>
+                          <span className="muted">{calledAgoLabel(row.alert_time) ?? fmtTime(row.alert_time)}</span>
                           <span className="muted">BUY {side}</span>
                           <span className="num" style={{ color: "var(--green)" }}>{fmtPct(row.latest_max_move)}</span>
                         </button>
@@ -387,9 +389,10 @@ export default function AlertLabPage() {
                   <table>
                     <thead>
                       <tr>
-                        <th>Time</th>
+                        <th>Called</th>
                         <th>Ticker</th>
                         <th>Signal</th>
+                        <th>Momentum</th>
                         <th>Speed @ fire</th>
                         <th>Best stock move</th>
                         <th>Option entry → best</th>
@@ -411,9 +414,15 @@ export default function AlertLabPage() {
                             ? +(((row.best_mid - row.entry_mid) / row.entry_mid) * 100).toFixed(1)
                             : null);
                         const optionDone = row.option_outcome_win != null;
+                        const tapeRow = tape.map.get(row.ticker);
+                        const momentum = stillMovingStatus(side, tapeRow);
                         return (
                           <tr key={row.id} className={`clickable${onTrack ? " acc-row-on-track" : ""}`} onClick={() => openChart(row.ticker)}>
-                            <td className="num muted">{row.trading_day}<br />{fmtTime(row.alert_time)}</td>
+                            <td className="num muted">
+                              {calledAgoLabel(row.alert_time) ?? "—"}
+                              <br />
+                              <span style={{ fontSize: 10 }}>{fmtTime(row.alert_time)}</span>
+                            </td>
                             <td>
                               <div className="tkr">
                                 <TickerIcon symbol={row.ticker} />
@@ -425,6 +434,13 @@ export default function AlertLabPage() {
                             </td>
                             <td>
                               <span className={`verdict-pill verdict-trade`}>BUY {side}</span>
+                            </td>
+                            <td>
+                              {!done ? (
+                                <span className={`signal-momentum signal-momentum-${momentum.tone}`}>{momentum.label}</span>
+                              ) : (
+                                <span className="muted">closed</span>
+                              )}
                             </td>
                             <td className="num muted">
                               {row.short_rate_at_alert != null

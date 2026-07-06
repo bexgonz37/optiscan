@@ -20,6 +20,7 @@ import { liveCtxFor } from "@/hooks/useLiveTapeMap";
 import { TickerIcon } from "@/components/ui";
 import { TradeVerdictHero } from "@/components/TradeVerdictHero";
 import { computeTradeVerdict, MIN_SPEED_PCT_PER_MIN, type TradeVerdict } from "@/lib/trade-verdict";
+import { calledAgoLabel, calledAgoLong, sideFromAlert, stillMovingStatus } from "@/lib/signal-live";
 import { useStableSymbolOrder } from "@/lib/stable-order";
 import { changeColor, fmtPct, fmtPrice } from "@/lib/format";
 
@@ -39,6 +40,8 @@ function speedText(r: LiveTapeRow | null): string {
 
 /** Only alerts from the last few minutes attach to Right now — older ones live in History. */
 const RIGHT_NOW_WINDOW_MS = 5 * 60_000;
+/** Recent calls strip — session memory for "what was called and is it still moving". */
+const RECENT_CALLS_WINDOW_MS = 45 * 60_000;
 
 function isFreshAlert(alert: { alert_time?: string | null }, nowMs = Date.now()): boolean {
   if (!alert?.alert_time) return false;
@@ -61,6 +64,7 @@ export function AlertsCommandCenter({
   onOpenChart?: (symbol: string) => void;
 }) {
   const [alerts, setAlerts] = useState<Map<string, any>>(new Map());
+  const [recentCalls, setRecentCalls] = useState<any[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [paused, setPaused] = useState(false);
@@ -75,11 +79,24 @@ export function AlertsCommandCenter({
       const d = await res.json();
       const nowMs = Date.now();
       const map = new Map<string, any>();
+      const recent: any[] = [];
+      const recentCutoff = nowMs - RECENT_CALLS_WINDOW_MS;
       for (const a of d.alerts ?? []) {
+        const t = Date.parse(a.alert_time ?? "");
+        if (Number.isFinite(t) && t >= recentCutoff) recent.push(a);
         if (!isFreshAlert(a, nowMs)) continue;
         const prev = map.get(a.ticker);
         if (!prev || a.id > prev.id) map.set(a.ticker, a);
       }
+      recent.sort((a, b) => b.id - a.id);
+      const dedupedRecent: any[] = [];
+      const seen = new Set<string>();
+      for (const a of recent) {
+        if (seen.has(a.ticker)) continue;
+        seen.add(a.ticker);
+        dedupedRecent.push(a);
+      }
+      setRecentCalls(dedupedRecent.slice(0, 12));
       setAlerts((prev) => {
         if (prev.size === map.size) {
           let same = true;
@@ -186,7 +203,15 @@ export function AlertsCommandCenter({
               <TickerIcon symbol={hero.symbol} />
               <div>
                 <div className="tname" style={{ fontSize: 16 }}>{hero.symbol}</div>
-                <div className="tsub">{fmtPrice(heroLive?.price ?? hero.alert.price_at_alert)}</div>
+                <div className="tsub">
+                  {fmtPrice(heroLive?.price ?? hero.alert.price_at_alert)}
+                  {calledAgoLong(hero.alert.alert_time) ? ` · ${calledAgoLong(hero.alert.alert_time)}` : ""}
+                </div>
+                {heroTape ? (
+                  <div className={`signal-momentum signal-momentum-${stillMovingStatus(sideFromAlert(hero.alert), heroTape).tone}`} style={{ fontSize: 11, marginTop: 4 }}>
+                    {stillMovingStatus(sideFromAlert(hero.alert), heroTape).label}
+                  </div>
+                ) : null}
               </div>
             </div>
             <TradeVerdictHero alert={hero.alert} live={heroLive} />
@@ -263,6 +288,8 @@ export function AlertsCommandCenter({
                 <th>#</th>
                 <th>Ticker</th>
                 <th>Signal</th>
+                <th>Called</th>
+                <th>Momentum</th>
                 <th>Stock</th>
                 <th>Speed now</th>
                 <th>Day move</th>
@@ -274,6 +301,8 @@ export function AlertsCommandCenter({
             <tbody>
               {displayEntries.map((e, i) => {
                 const v = e.verdict;
+                const side = e.alert ? sideFromAlert(e.alert) : "NONE";
+                const momentum = stillMovingStatus(side, e.tapeRow);
                 return (
                   <tr
                     key={e.symbol}
@@ -299,6 +328,12 @@ export function AlertsCommandCenter({
                           {e.tapeRow?.direction === "bullish" ? "MOVING UP" : e.tapeRow?.direction === "bearish" ? "MOVING DOWN" : "MOVING"}
                         </span>
                       )}
+                    </td>
+                    <td className="num muted" style={{ fontSize: 11 }}>
+                      {e.alert ? calledAgoLabel(e.alert.alert_time) ?? "—" : "—"}
+                    </td>
+                    <td>
+                      <span className={`signal-momentum signal-momentum-${momentum.tone}`}>{momentum.label}</span>
                     </td>
                     <td>
                       <span className={`stock-dir stock-dir-${e.tapeRow?.direction ?? "chop"}`}>
@@ -326,6 +361,37 @@ export function AlertsCommandCenter({
         </div>
       )}
       </div>
+
+      {recentCalls.length > 0 ? (
+        <div className="acc-recent-calls" style={{ marginTop: 16 }}>
+          <div className="label muted" style={{ fontSize: 11, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+            Called recently (last 45 min) — click to check if still moving
+          </div>
+          <div className="acc-on-track-chips">
+            {recentCalls.map((a) => {
+              const tapeRow = tape.map.get(a.ticker) ?? null;
+              const side = sideFromAlert(a);
+              const momentum = stillMovingStatus(side, tapeRow);
+              const live = liveCtxFor(tape, a.ticker);
+              const nowVerdict = computeTradeVerdict(a, live);
+              return (
+                <button
+                  key={a.id}
+                  type="button"
+                  className="pill btn acc-on-track-chip"
+                  onClick={() => pick(a.ticker)}
+                  title={nowVerdict.reason}
+                >
+                  <span className="tname">{a.ticker}</span>
+                  <span className="muted">{calledAgoLabel(a.alert_time)}</span>
+                  <span className={`signal-momentum signal-momentum-${momentum.tone}`}>{momentum.label}</span>
+                  <span className="muted">{nowVerdict.headline}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

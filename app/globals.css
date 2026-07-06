@@ -669,6 +669,14 @@ body {
 tr.acc-row-on-track {
   background: rgba(80, 200, 120, 0.06);
 }
+.signal-momentum {
+  font-size: 11px;
+  font-weight: 600;
+}
+.signal-momentum-live { color: var(--green); }
+.signal-momentum-slow { color: var(--amber); }
+.signal-momentum-stalled { color: var(--red); }
+.signal-momentum-na { color: var(--muted); }
 
 /* ── Layout ──────────────────────────────────────────────────────────────── */
 .layout {
