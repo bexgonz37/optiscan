@@ -64,8 +64,8 @@ test("SPEC: reality check + pressure exist and chains stay trigger/open-gated", 
   const chart = read("components/ChartPanel.tsx");
   assert.ok(chart.includes("/api/options/"), "chart panel fetches the reality check on open");
   assert.ok(!/setInterval\([^)]*api\/options/.test(chart), "no polling of chains from the dashboard");
-  const board = read("components/LiveMoversBoard.tsx");
-  assert.ok(board.includes("onOpenChart"), "movers open the chart panel on click");
+  const board = read("components/AlertsCommandCenter.tsx");
+  assert.ok(board.includes("onOpenChart"), "live rows open the chart panel on click");
 });
 
 test("SPEC: candles + data-access probe routes exist and chart uses lightweight-charts", () => {

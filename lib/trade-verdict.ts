@@ -2,7 +2,9 @@
  * trade-verdict.ts — one clear TRADE / WAIT / SKIP answer from alert fields.
  *
  * Uses the same inputs as alert-capture (trade_bias, worth scores, risk flags).
- * TRADE also requires live speed proof (same 0.15%/min gate as shouldTrigger).
+ * TRADE requires LIVE, direction-aligned speed proof: the tape must be moving
+ * the right way at ≥ 0.15%/min right now (or a real volume burst). A big day
+ * move or high RVOL alone is context — it never turns into BUY CALL/PUT.
  */
 
 export type TradeAction = "TRADE" | "WAIT" | "SKIP";
@@ -10,6 +12,8 @@ export type OptionSide = "CALL" | "PUT" | "NONE";
 
 export const MIN_SPEED_PCT_PER_MIN = 0.15;
 export const MIN_VOLUME_SURGE = 1.3;
+/** Speed this far against the bias means the move reversed — never TRADE. */
+const REVERSAL_SPEED = 0.1;
 
 export interface AlertVerdictInput {
   ticker?: string | null;
@@ -33,6 +37,8 @@ export interface AlertVerdictInput {
   volume_surge_at_alert?: number | null;
   long_call_score?: number | null;
   long_put_score?: number | null;
+  /** 'trade' = live 1s loop with speed data; 'research' = slower scan, never TRADE. */
+  alert_tier?: string | null;
 }
 
 export interface TradeVerdict {
@@ -84,30 +90,56 @@ function contractLine(a: AlertVerdictInput): string | null {
   return `${a.ticker ?? "?"} $${a.strike}${side} ${exp}`.trim();
 }
 
-/** Same speed idea as shouldTrigger() in zero-dte.js — tape must be moving NOW. */
-export function hasSpeedProof(a: AlertVerdictInput): boolean {
-  const speed = a.short_rate_at_alert;
-  const surge = a.volume_surge_at_alert;
-  const dailyMove = Math.abs(Number(a.percent_move_at_alert ?? 0));
-  const rvol = Number(a.relative_volume ?? 0);
-  if (speed != null && Math.abs(speed) >= MIN_SPEED_PCT_PER_MIN) return true;
-  if (surge != null && surge >= MIN_VOLUME_SURGE) return true;
-  if (dailyMove >= 2.5) return true;
-  if (rvol >= 2.5) return true;
-  return false;
+/** Optional live tape — re-checks speed so stale BUY CALL downgrades if move stopped. */
+export interface LiveTapeContext {
+  shortRate?: number | null;
+  surge?: number | null;
+  price?: number | null;
 }
 
-export function formatSpeedLine(a: AlertVerdictInput): string {
-  const speed = a.short_rate_at_alert;
-  const surge = a.volume_surge_at_alert;
+/**
+ * REQUIRED for TRADE: the tape must be moving the right way, right now.
+ * Live tape wins over what was stored at alert time. A volume burst can
+ * substitute for speed, but never when the tape is moving AGAINST the bias.
+ * If we have no speed data at all (old rows, slow research scan), it fails.
+ */
+export function hasLiveSpeedProof(a: AlertVerdictInput, side: OptionSide, live?: LiveTapeContext): boolean {
+  const speed = live?.shortRate ?? a.short_rate_at_alert;
+  const surge = live?.surge ?? a.volume_surge_at_alert;
+  if (speed == null && surge == null) return false;
+  if (speed != null) {
+    if (side === "CALL" && speed >= MIN_SPEED_PCT_PER_MIN) return true;
+    if (side === "PUT" && speed <= -MIN_SPEED_PCT_PER_MIN) return true;
+    if (side === "NONE" && Math.abs(speed) >= MIN_SPEED_PCT_PER_MIN) return true;
+    // Reversed against the bias: no volume burst can rescue a BUY here.
+    if (side === "CALL" && speed < -REVERSAL_SPEED) return false;
+    if (side === "PUT" && speed > REVERSAL_SPEED) return false;
+  }
+  return surge != null && surge >= MIN_VOLUME_SURGE;
+}
+
+/** Day move / RVOL — used for WAIT wording only, never enough for TRADE. */
+export function hasContextSpeed(a: AlertVerdictInput): boolean {
+  return Math.abs(Number(a.percent_move_at_alert ?? 0)) >= 2.5 || Number(a.relative_volume ?? 0) >= 2.5;
+}
+
+/** One-call helper for popup / Discord / UI filters: should this interrupt the user? */
+export function isTradeEligible(a: AlertVerdictInput, live?: LiveTapeContext): boolean {
+  return computeTradeVerdict(a, live).action === "TRADE";
+}
+
+export function formatSpeedLine(a: AlertVerdictInput, live?: LiveTapeContext): string {
+  const speed = live?.shortRate ?? a.short_rate_at_alert;
+  const surge = live?.surge ?? a.volume_surge_at_alert;
+  const fromLive = live?.shortRate != null;
   if (speed != null) {
     const ok = Math.abs(speed) >= MIN_SPEED_PCT_PER_MIN;
-    return `Speed ${speed > 0 ? "+" : ""}${speed.toFixed(2)}%/min${ok ? " ✓" : " (too slow for TRADE)"}`;
+    return `Speed ${fromLive ? "now " : ""}${speed > 0 ? "+" : ""}${speed.toFixed(2)}%/min${ok ? " ✓" : " (too slow for TRADE)"}`;
   }
   if (surge != null) return `Volume surge ${surge.toFixed(1)}x`;
   const move = a.percent_move_at_alert;
   if (move != null) return `Day move ${move > 0 ? "+" : ""}${move.toFixed(1)}% (no live speed recorded)`;
-  return "No live speed data — slower swing scan";
+  return "No live speed data — slower research scan";
 }
 
 function skipVerdict(
@@ -130,12 +162,6 @@ function skipVerdict(
   };
 }
 
-/** Optional live tape — re-checks speed so stale BUY CALL downgrades if move stopped. */
-export interface LiveTapeContext {
-  shortRate?: number | null;
-  surge?: number | null;
-}
-
 export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext): TradeVerdict {
   const merged: AlertVerdictInput = {
     ...a,
@@ -152,8 +178,9 @@ export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext
   const contract = Number(merged.zero_dte_contract_score ?? 0);
   const liq = Number(merged.options_liquidity_score ?? 0);
   const verdict = String(merged.worth_verdict ?? "");
-  const speedOk = hasSpeedProof(merged);
-  const speedLine = formatSpeedLine(merged);
+  const isResearch = merged.alert_tier === "research";
+  const speedOk = !isResearch && hasLiveSpeedProof(a, side, live);
+  const speedLine = formatSpeedLine(a, live);
 
   const bullets: string[] = [
     speedLine,
@@ -164,12 +191,15 @@ export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext
     bullets.push(`Call watch ${Math.round(merged.long_call_score)} · Put watch ${Math.round(merged.long_put_score)}`);
   }
   if (flags.length) bullets.push(`Flags: ${flags.join(", ")}`);
+  if (!speedOk && hasContextSpeed(a)) {
+    bullets.push("Big day move / high volume is context only — BUY needs live speed right now.");
+  }
   if (live?.shortRate != null && a.short_rate_at_alert != null && Math.abs(live.shortRate) < MIN_SPEED_PCT_PER_MIN) {
     bullets.push(`Live speed now ${live.shortRate.toFixed(2)}%/min — move may have stalled since alert.`);
   }
 
   const logicBase =
-    "BUY CALL/PUT only when: direction + contract quality pass AND tape speed ≥ 0.15%/min (or volume surge / big day move).";
+    "BUY CALL/PUT only when: direction + contract quality pass AND the tape is moving the right way ≥ 0.15%/min right now (or a live volume burst).";
 
   if (bias === "skip" || bias === "no_clean_setup" || merged.direction === "choppy" || merged.move_status === "exhausted") {
     return skipVerdict(merged, "No clean directional setup — tape is choppy or exhausted.", bullets, `${logicBase} Failed: choppy or exhausted.`, speedOk);
@@ -195,11 +225,14 @@ export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext
     (bias === "long_call_candidate" || bias === "long_put_candidate");
 
   if (qualityGates && !speedOk) {
+    const why = isResearch
+      ? "This came from the slower research scan — verify live speed on the chart before acting."
+      : "Scores look good but the stock isn't moving the right way fast enough right now — need live speed ≥ 0.15%/min or a volume burst.";
     return {
       action: "WAIT",
       side: side !== "NONE" ? side : sideFromDirection(merged.direction),
       headline: side === "PUT" ? "WAIT — PUT SETUP" : side === "CALL" ? "WAIT — CALL SETUP" : "WAIT",
-      reason: "Scores look good but the stock isn't moving fast right now — need live speed ≥ 0.15%/min or a volume burst.",
+      reason: why,
       confidence: Math.round(setup * 0.4 + worth * 0.4 + contract * 0.2),
       contractLine: contractLine(merged),
       bullets,

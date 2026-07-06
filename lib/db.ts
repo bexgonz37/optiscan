@@ -198,6 +198,8 @@ const ALERT_COLUMN_MIGRATIONS: [string, string][] = [
   ["reversed", "ALTER TABLE alerts ADD COLUMN reversed INTEGER"],
   ["short_rate_at_alert", "ALTER TABLE alerts ADD COLUMN short_rate_at_alert REAL"],
   ["volume_surge_at_alert", "ALTER TABLE alerts ADD COLUMN volume_surge_at_alert REAL"],
+  // 'trade' = live 1s loop with speed proof; 'research' = slow scan / no speed, never TRADE
+  ["alert_tier", "ALTER TABLE alerts ADD COLUMN alert_tier TEXT"],
 ];
 const JOURNAL_COLUMN_MIGRATIONS: [string, string][] = [
   ["contract", "ALTER TABLE trade_journal ADD COLUMN contract TEXT"],
