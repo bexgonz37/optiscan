@@ -2390,6 +2390,47 @@ th.num,
 .mt-2 { margin-top: var(--space-2); }
 .mb-2 { margin-bottom: var(--space-2); }
 .search-narrow { flex: 1; max-width: 220px; }
+.ml-2 { margin-left: var(--space-2); }
+.mt-4 { margin-top: var(--space-4); }
+.text-center { text-align: center; }
+.empty-chart { height: 200px; }
+.score-row { display: flex; align-items: center; gap: var(--space-2); justify-content: flex-end; }
+.bias-bullish { color: var(--bull); }
+.bias-bearish { color: var(--bear); }
+.bias-neutral { color: var(--warn); }
+.speed-strong { font-weight: 700; }
+.speed-normal { font-weight: 400; }
+.vol-ratio-badge { background: var(--panel2); border: 1px solid var(--line2); font-family: var(--mono); }
+.vol-ratio-new { color: var(--violet); }
+.vol-ratio-high { color: var(--bull); }
+.vol-ratio-normal { color: var(--txt); }
+.verdict-side-call { color: var(--bull); }
+.verdict-side-put { color: var(--bear); }
+.guide-link { color: inherit; text-decoration: underline; }
+.session-banner {
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  border-left: 3px solid var(--line2);
+}
+.session-banner-regular { border-left-color: var(--amber); }
+.session-banner-closed { border-left-color: var(--muted); }
+.session-banner-extended { border-left-color: var(--cyan); }
+.chart-change-inline { margin-left: var(--space-2); font-size: var(--text-sm); }
+.chart-reality-meta { font-size: var(--text-xs); margin-bottom: var(--space-2); }
+.detail-close { margin-left: 10px; padding: 6px 10px; }
+.setup-signal-score { margin-left: auto; color: var(--dim); font-weight: 600; }
+.setup-dte { margin-left: auto; font-size: 11px; color: var(--dim); }
+.legs-dim-right { float: right; color: var(--dim); }
+.acc-recent-calls { margin-top: var(--space-4); }
+.acc-recent-label {
+  font-size: 11px;
+  margin-bottom: var(--space-2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.status-dot-gap { margin-right: 6px; }
 
 .popup-stack {
   position: fixed;

@@ -51,14 +51,14 @@ export function Toolbar({
         </span>
       </div>
 
-      <div className="right" style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <div className="right">
         {onRefresh ? (
-          <button type="button" className="pill btn" style={{ fontSize: 11, padding: "4px 8px" }} onClick={onRefresh}>
+          <button type="button" className="pill btn btn-xs" onClick={onRefresh}>
             Refresh
           </button>
         ) : null}
         <span className="status-text">
-          <span className={`status-dot${loading ? " live" : ""}`} style={{ marginRight: 6 }} />
+          <span className={`status-dot status-dot-gap${loading ? " live" : ""}`} />
           {loading ? "scanning…" : `${count} shown`}
         </span>
       </div>

@@ -8,7 +8,6 @@ import { useToast } from "@/components/Toasts";
 import { scanHeaders } from "@/hooks/useScanner";
 import { economics } from "@/lib/economics";
 import {
-  changeColor,
   fmtExpiry,
   fmtInt,
   fmtIv,
@@ -16,12 +15,13 @@ import {
   fmtPct,
   fmtPremium,
   fmtPrice,
+  pctClass,
 } from "@/lib/format";
 
-const dirColor: Record<string, string> = {
-  bullish: "var(--green)",
-  bearish: "var(--red)",
-  neutral: "var(--amber)",
+const biasClass: Record<string, string> = {
+  bullish: "bias-bullish",
+  bearish: "bias-bearish",
+  neutral: "bias-neutral",
 };
 
 export function DetailPanel({
@@ -88,14 +88,13 @@ export function DetailPanel({
                 </div>
                 <div className="dprice">
                   <div className="p">{fmtPrice(mom?.underlyingPrice ?? data?.quote?.price ?? null)}</div>
-                  <div className="c" style={{ color: changeColor(mom?.movePct ?? data?.quote?.changePercent ?? null) }}>
+                  <div className={`c ${pctClass(mom?.movePct ?? data?.quote?.changePercent ?? null)}`}>
                     {fmtPct(mom?.movePct ?? data?.quote?.changePercent ?? null)}
                   </div>
                 </div>
                 <button
-                  className="close pill btn"
+                  className="close pill btn detail-close"
                   onClick={onClose}
-                  style={{ marginLeft: 10, padding: "6px 10px" }}
                   aria-label="Close"
                 >
                   ✕
@@ -115,21 +114,21 @@ export function DetailPanel({
                 <div className="dsection">
                   <h4>
                     Recommended setup
-                    <span style={{ marginLeft: "auto", color: "var(--dim)", fontWeight: 600 }}>
+                    <span className="setup-signal-score">
                       signal {Math.round(mom?.score ?? 0)}
                     </span>
                   </h4>
                   <div className="setup-card">
                     <div className="st">
-                      <span style={{ color: dirColor[mom?.bias ?? "neutral"] }}>●</span>
+                      <span className={biasClass[mom?.bias ?? "neutral"]}>●</span>
                       Long {String(contract.side).toUpperCase()}
-                      <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--dim)" }}>{contract.dte} DTE</span>
+                      <span className="setup-dte">{contract.dte} DTE</span>
                     </div>
                     <div className="legs">
                       <div>
                         <span className="buy">BUY</span> {symbol} {fmtNum(contract.strike, 0)}{" "}
                         {String(contract.side).toUpperCase()} {fmtExpiry(contract.expiration)}
-                        <span style={{ float: "right", color: "var(--dim)" }}>{fmtPremium(contract.entry)}</span>
+                        <span className="legs-dim-right">{fmtPremium(contract.entry)}</span>
                       </div>
                     </div>
                     {mom?.reasons?.length ? (
@@ -154,8 +153,8 @@ export function DetailPanel({
                   <h4>Trade economics</h4>
                   <div className="statgrid">
                     <Stat label="Debit / contract" value={econ.debitPerContract != null ? `$${fmtInt(econ.debitPerContract)}` : "—"} />
-                    <Stat label="Max loss" value={econ.maxLoss != null ? `$${fmtInt(econ.maxLoss)}` : "—"} accent="var(--red)" />
-                    <Stat label="Max profit" value={econ.maxProfit == null ? "Unbounded" : `$${fmtInt(econ.maxProfit)}`} accent="var(--green)" />
+                    <Stat label="Max loss" value={econ.maxLoss != null ? `$${fmtInt(econ.maxLoss)}` : "—"} accent="bear" />
+                    <Stat label="Max profit" value={econ.maxProfit == null ? "Unbounded" : `$${fmtInt(econ.maxProfit)}`} accent="bull" />
                     <Stat label="Breakeven" value={fmtPrice(econ.breakeven)} />
                     <Stat label="To breakeven" value={fmtPct(econ.toBreakevenPct)} />
                     <Stat label="Spread" value={contract.spreadPct != null ? `${contract.spreadPct}%` : "—"} />
@@ -175,7 +174,7 @@ export function DetailPanel({
                     </div>
                     <div className="greek">
                       <div className="g">Theta</div>
-                      <div className="gv" style={{ color: (contract.theta ?? 0) >= 0 ? "var(--green)" : "var(--red)" }}>
+                      <div className={`gv ${(contract.theta ?? 0) >= 0 ? "pos" : "neg"}`}>
                         {fmtNum(contract.theta, 3)}
                       </div>
                     </div>
@@ -188,7 +187,7 @@ export function DetailPanel({
                       <div className="gv">{fmtIv(contract.iv)}</div>
                     </div>
                   </div>
-                  <div className="statgrid" style={{ marginTop: 10 }}>
+                  <div className="statgrid mt-2">
                     <Stat label="Open interest" value={fmtInt(contract.openInterest)} />
                     <Stat label="Volume" value={fmtInt(contract.volume)} />
                   </div>
@@ -208,12 +207,12 @@ export function DetailPanel({
             {data?.unusual?.length ? (
               <div className="dsection">
                 <h4>Unusual activity</h4>
-                <div className="legs" style={{ color: "var(--muted)" }}>
+                <div className="legs muted">
                   {data.unusual.map((u) => (
                     <div key={u.optionSymbol ?? `${u.side}${u.strike}${u.expiration}`}>
                       <span className={u.side === "call" ? "buy" : "sell"}>{String(u.side).toUpperCase()}</span>{" "}
                       {fmtNum(u.strike, 0)} {fmtExpiry(u.expiration)}
-                      <span style={{ float: "right", color: "var(--dim)" }}>
+                      <span className="legs-dim-right">
                         vol {fmtInt(u.volume)} · {u.newPositioning ? "NEW" : `${fmtNum(u.volOiRatio, 1)}x`}
                       </span>
                     </div>

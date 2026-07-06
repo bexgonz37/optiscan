@@ -58,7 +58,7 @@ export function UsageGuide({ page }: { page: "dashboard" | "scanner" | "alerts" 
         <div className="guide-body">
           {page === "dashboard" ? dashboard : page === "scanner" ? scanner : alerts}
           <p className="guide-foot muted">
-            Full instructions on the <a href="/guide" style={{ color: "inherit", textDecoration: "underline" }}>How to use</a> page.
+            Full instructions on the <a href="/guide" className="guide-link">How to use</a> page.
             Research signals only — you choose entries and size. Not financial advice.
           </p>
         </div>

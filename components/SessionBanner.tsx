@@ -9,7 +9,7 @@ const MESSAGES: Record<MarketSession, { text: ReactNode }> = {
     text: (
       <>
         Market open — watching for <strong>0DTE option</strong> signals. Go to{" "}
-        <Link href="/alerts" style={{ color: "inherit", textDecoration: "underline" }}>Alerts</Link> when one fires.
+        <Link href="/alerts" className="guide-link">Alerts</Link> when one fires.
       </>
     ),
   },
@@ -44,17 +44,15 @@ export function SessionBanner() {
   if (!session) return null;
   const msg = MESSAGES[session];
 
+  const bannerClass =
+    session === "regular"
+      ? "session-banner-regular"
+      : session === "closed"
+        ? "session-banner-closed"
+        : "session-banner-extended";
+
   return (
-    <div
-      className="panel main"
-      style={{
-        padding: "10px 14px",
-        marginBottom: 14,
-        fontSize: 13,
-        lineHeight: 1.5,
-        borderLeft: `3px solid ${session === "regular" ? "var(--amber)" : session === "closed" ? "var(--muted)" : "var(--blue, #4a90c4)"}`,
-      }}
-    >
+    <div className={`panel main session-banner ${bannerClass}`}>
       {msg.text}
     </div>
   );

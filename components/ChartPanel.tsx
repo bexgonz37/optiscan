@@ -15,7 +15,7 @@ import {
   type LogicalRange,
 } from "lightweight-charts";
 import { scanHeaders } from "@/hooks/useScanner";
-import { fmtPrice, fmtPct, fmtInt, changeColor } from "@/lib/format";
+import { fmtPrice, fmtPct, fmtInt, pctClass } from "@/lib/format";
 import {
   CHART_TIMEFRAMES,
   CHART_INDICATORS,
@@ -452,7 +452,7 @@ export function ChartPanel({
             <div className="chart-price num">
               {last ? fmtPrice(last.c) : "—"}
               {dayChangePct != null ? (
-                <span className="num" style={{ color: changeColor(dayChangePct), marginLeft: 8, fontSize: 13 }}>
+                <span className={`num chart-change-inline ${pctClass(dayChangePct)}`}>
                   {fmtPct(dayChangePct)}
                 </span>
               ) : null}
@@ -497,18 +497,18 @@ export function ChartPanel({
         <div className="chart-reality">
           <div className="chart-reality-title">0DTE reality check</div>
           {reality?.error ? (
-            <div className="warn" style={{ fontSize: 12 }}>⚠ {reality.error}</div>
+            <div className="warn text-sm">⚠ {reality.error}</div>
           ) : reality ? (
             <>
-              <div className="muted" style={{ fontSize: 11, marginBottom: 8 }}>
+              <div className="muted chart-reality-meta">
                 <div>
                   Stock today:{" "}
-                  <strong style={{ color: changeColor(dayChangePct) }}>
+                  <strong className={pctClass(dayChangePct)}>
                     {dayChangePct != null ? fmtPct(dayChangePct) : "—"}
                   </strong>
                   {stockDirection ? ` (${stockDirection === "bullish" ? "up" : "down"})` : ""}
                 </div>
-                <div style={{ marginTop: 4 }}>
+                <div className="mt-1">
                   Options flow: <strong>{reality.pressure?.label ?? "—"}</strong>
                   {reality.pressure ? (
                     <>
@@ -521,11 +521,11 @@ export function ChartPanel({
               <div className="contract-cards">
                 {bestCall ? <ContractRow c={bestCall} /> : null}
                 {bestPut ? <ContractRow c={bestPut} /> : null}
-                {!bestCall && !bestPut ? <div className="muted" style={{ fontSize: 12 }}>No qualifying 0DTE contracts.</div> : null}
+                {!bestCall && !bestPut ? <div className="muted text-sm">No qualifying 0DTE contracts.</div> : null}
               </div>
             </>
           ) : (
-            <div className="muted" style={{ fontSize: 12 }}>Loading contracts…</div>
+            <div className="muted text-sm">Loading contracts…</div>
           )}
         </div>
       </aside>

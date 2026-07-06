@@ -3,14 +3,14 @@
 import { useMemo, useState } from "react";
 import type { MomentumRow } from "@/lib/types";
 import { TickerIcon, ScoreBar, IvBar, GradeChip } from "@/components/ui";
-import { changeColor, fmtNum, fmtPct, fmtPremium, fmtPrice, fmtInt } from "@/lib/format";
+import { fmtNum, fmtPct, fmtPremium, fmtPrice, fmtInt, pctClass } from "@/lib/format";
 
 type SortKey = "symbol" | "price" | "chg" | "iv" | "delta" | "entry" | "dte" | "score";
 
-const dirColor: Record<string, string> = {
-  bullish: "var(--green)",
-  bearish: "var(--red)",
-  neutral: "var(--amber)",
+const biasClass: Record<string, string> = {
+  bullish: "bias-bullish",
+  bearish: "bias-bearish",
+  neutral: "bias-neutral",
 };
 
 function val(r: MomentumRow, k: SortKey): number | string {
@@ -114,11 +114,11 @@ export function MomentumTable({
                 </div>
               </td>
               <td className="num">{fmtPrice(r.underlyingPrice).replace("$", "")}</td>
-              <td className="num" style={{ color: changeColor(r.movePct) }}>
+              <td className={`num ${pctClass(r.movePct)}`}>
                 {fmtPct(r.movePct)}
               </td>
               <td>
-                <span className="badge b-strat" style={{ color: dirColor[r.bias] ?? "var(--muted)" }}>
+                <span className={`badge b-strat ${biasClass[r.bias] ?? "muted"}`}>
                   Long {String(r.side ?? "").toUpperCase() || "—"}
                 </span>
               </td>
@@ -132,7 +132,7 @@ export function MomentumTable({
                 {fmtInt(r.contract?.openInterest)} / {fmtInt(r.contract?.volume)}
               </td>
               <td>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-end" }}>
+                <div className="score-row">
                   <ScoreBar score={r.score} />
                   <GradeChip grade={r.grade} />
                 </div>

@@ -20,8 +20,8 @@ export function TradeVerdictHero({
 }) {
   const v = computeTradeVerdict(alert, live);
   const cls = ACTION_CLASS[v.action] ?? "verdict-wait";
-  const sideColor =
-    v.side === "CALL" ? "var(--green)" : v.side === "PUT" ? "var(--red)" : "var(--muted)";
+  const sideClass =
+    v.side === "CALL" ? "verdict-side-call" : v.side === "PUT" ? "verdict-side-put" : "muted";
 
   if (compact) {
     return (
@@ -35,7 +35,7 @@ export function TradeVerdictHero({
     <div className={`verdict-hero ${cls}`}>
       <div className="verdict-headline">{v.headline}</div>
       {v.side !== "NONE" && v.action === "TRADE" ? (
-        <div className="verdict-side" style={{ color: sideColor }}>
+        <div className={`verdict-side ${sideClass}`}>
           {v.side} · {v.confidence}% confidence
         </div>
       ) : (

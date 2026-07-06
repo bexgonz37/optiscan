@@ -125,7 +125,7 @@ export function AccuracyCharts({ data }: { data: AccuracyChartData }) {
             </Pie>
           </PieChart>
         </ResponsiveContainer>
-        <div className="muted" style={{ fontSize: 11, textAlign: "center" }}>
+        <div className="muted text-xs text-center">
           Stock move within 5 min of call (≥{data.earlyOnTrackMinPct ?? 0.5}% favorable)
         </div>
       </div>
@@ -143,7 +143,7 @@ export function AccuracyCharts({ data }: { data: AccuracyChartData }) {
             </LineChart>
           </ResponsiveContainer>
         ) : (
-          <div className="empty small" style={{ height: 200 }}>Pending — grades lock at market close</div>
+          <div className="empty small empty-chart">Pending — grades lock at market close</div>
         )}
       </div>
 
@@ -160,7 +160,7 @@ export function AccuracyCharts({ data }: { data: AccuracyChartData }) {
             </LineChart>
           </ResponsiveContainer>
         ) : (
-          <div className="empty small" style={{ height: 200 }}>Pending — contract grades at close</div>
+          <div className="empty small empty-chart">Pending — contract grades at close</div>
         )}
       </div>
 
@@ -178,7 +178,7 @@ export function AccuracyCharts({ data }: { data: AccuracyChartData }) {
               <Legend wrapperStyle={{ fontSize: 11 }} />
             </PieChart>
           </ResponsiveContainer>
-          <div className="muted" style={{ fontSize: 11 }}>
+          <div className="muted text-xs">
             Overall hit rate (window): {pct(data.overallHitRate)}
           </div>
         </div>

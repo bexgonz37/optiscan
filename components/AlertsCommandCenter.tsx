@@ -22,7 +22,7 @@ import { TradeVerdictHero } from "@/components/TradeVerdictHero";
 import { computeTradeVerdict, MIN_SPEED_PCT_PER_MIN, type TradeVerdict } from "@/lib/trade-verdict";
 import { calledAgoLabel, calledAgoLong, sideFromAlert, stillMovingStatus } from "@/lib/signal-live";
 import { useStableSymbolOrder } from "@/lib/stable-order";
-import { changeColor, fmtPct, fmtPrice, pctClass } from "@/lib/format";
+import { fmtPct, fmtPrice, pctClass } from "@/lib/format";
 import { sessionGroupLabel } from "@/lib/language-modes";
 import { groupAlertsBySession } from "@/lib/alert-session-groups";
 
@@ -260,18 +260,17 @@ export function AlertsCommandCenter({
 
       {/* Single ranked list */}
       <div className="acc-list-header">
-        <span className="muted" style={{ fontSize: 12 }}>Click a row to load it above and open the chart.</span>
-        <div style={{ display: "flex", gap: 8 }}>
+        <span className="muted text-sm">Click a row to load it above and open the chart.</span>
+        <div className="btn-row gap-2">
           <button
             type="button"
-            className={`pill btn${paused ? " btn-primary" : ""}`}
-            style={{ fontSize: 11, padding: "4px 10px" }}
+            className={`pill btn btn-xs${paused ? " btn-primary" : ""}`}
             onClick={() => setPaused((v) => !v)}
             title="Freeze list order while you read"
           >
             {paused ? "▶ Resume" : "⏸ Pause"}
           </button>
-          <button className={`pill btn${showAll ? " btn-primary" : ""}`} style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => setShowAll((v) => !v)}>
+          <button className={`pill btn btn-xs${showAll ? " btn-primary" : ""}`} onClick={() => setShowAll((v) => !v)}>
             {showAll ? "Hide WAIT setups" : "Show WAIT setups"}
           </button>
         </div>
@@ -331,7 +330,7 @@ export function AlertsCommandCenter({
                         </span>
                       )}
                     </td>
-                    <td className="num muted" style={{ fontSize: 11 }}>
+                    <td className="num muted text-xs">
                       {e.alert ? calledAgoLabel(e.alert.alert_time) ?? "—" : "—"}
                     </td>
                     <td>
@@ -342,16 +341,16 @@ export function AlertsCommandCenter({
                         {e.tapeRow?.direction === "bullish" ? "▲ Up" : e.tapeRow?.direction === "bearish" ? "▼ Down" : "—"}
                       </span>
                     </td>
-                    <td className="num" style={{ fontWeight: Math.abs(e.tapeRow?.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN ? 700 : 400 }}>
+                    <td className={`num ${Math.abs(e.tapeRow?.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN ? "speed-strong" : "speed-normal"}`}>
                       {speedText(e.tapeRow)}
                     </td>
-                    <td className="num" style={{ color: changeColor(e.tapeRow?.movePct ?? e.alert?.percent_move_at_alert) }}>
+                    <td className={`num ${pctClass(e.tapeRow?.movePct ?? e.alert?.percent_move_at_alert)}`}>
                       {fmtPct(e.tapeRow?.movePct ?? e.alert?.percent_move_at_alert)}
                     </td>
-                    <td className="num muted" style={{ fontSize: 12 }}>{v?.contractLine ?? "—"}</td>
+                    <td className="num muted text-sm">{v?.contractLine ?? "—"}</td>
                     <td className="num">{v ? `${v.confidence}%` : "—"}</td>
                     <td onClick={(ev) => ev.stopPropagation()}>
-                      <button className="pill btn" style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => pick(e.symbol)}>
+                      <button className="pill btn btn-xs" onClick={() => pick(e.symbol)}>
                         Chart
                       </button>
                     </td>
@@ -365,8 +364,8 @@ export function AlertsCommandCenter({
       </div>
 
       {recentCalls.length > 0 ? (
-        <div className="acc-recent-calls" style={{ marginTop: 16 }}>
-          <div className="label muted" style={{ fontSize: 11, marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>
+        <div className="acc-recent-calls">
+          <div className="label muted acc-recent-label">
             Called recently (last 45 min) — click to check if still moving
           </div>
           {groupAlertsBySession(recentCalls).map(({ key, items }) => (

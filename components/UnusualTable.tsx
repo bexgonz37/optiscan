@@ -110,19 +110,15 @@ export function UnusualTable({
               <td className="num muted">
                 {fmtNum(r.strike, 0)} · {fmtExpiry(r.expiration)}
               </td>
-              <td className="num" style={{ fontWeight: 700 }}>
+              <td className="num fw-strong">
                 {fmtInt(r.volume)}
               </td>
               <td className="num muted">{fmtInt(r.openInterest)}</td>
               <td>
                 <span
-                  className="badge"
-                  style={{
-                    color: r.newPositioning ? "var(--violet)" : (r.volOiRatio ?? 0) >= 2 ? "var(--green)" : "var(--txt)",
-                    background: "var(--panel2)",
-                    border: "1px solid var(--line2)",
-                    fontFamily: "var(--mono)",
-                  }}
+                  className={`badge vol-ratio-badge ${
+                    r.newPositioning ? "vol-ratio-new" : (r.volOiRatio ?? 0) >= 2 ? "vol-ratio-high" : "vol-ratio-normal"
+                  }`}
                 >
                   {r.newPositioning ? "NEW" : `${fmtNum(r.volOiRatio, 1)}x`}
                 </span>
@@ -132,7 +128,7 @@ export function UnusualTable({
               </td>
               <td className="num">{r.dte ?? "—"}</td>
               <td>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "flex-end" }}>
+                <div className="score-row">
                   <ScoreBar score={r.score} />
                   <GradeChip grade={r.grade} />
                 </div>
