@@ -58,11 +58,13 @@ export async function GET(req: Request, { params }: { params: Promise<{ ticker: 
       const expRemain = expectedRemainingMovePct({ shortRate: 0.2, minsToClose: mins }); // neutral estimate for browsing
       const bestCalls = rankZeroDteContracts(res.contracts, "call", { minsToClose: mins, expRemainPct: expRemain, max: 3 } as any);
       const bestPuts = rankZeroDteContracts(res.contracts, "put", { minsToClose: mins, expRemainPct: expRemain, max: 3 } as any);
+      const dirParam = new URL(req.url).searchParams.get("dir");
+      const direction = dirParam === "bullish" || dirParam === "bearish" ? dirParam : undefined;
       return NextResponse.json({
         ok: true,
         ticker: res.underlying,
         minsToClose: mins,
-        pressure: optionsPressure(res.contracts),
+        pressure: optionsPressure(res.contracts, { direction }),
         bestCalls: bestCalls.map((r: any) => realityCheck(r.contract, mins, expRemain)),
         bestPuts: bestPuts.map((r: any) => realityCheck(r.contract, mins, expRemain)),
         note: "Reality check is research data (ratings + required move), not a recommendation.",

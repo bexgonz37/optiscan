@@ -20,6 +20,7 @@ import { liveCtxFor } from "@/hooks/useLiveTapeMap";
 import { TickerIcon } from "@/components/ui";
 import { TradeVerdictHero } from "@/components/TradeVerdictHero";
 import { computeTradeVerdict, MIN_SPEED_PCT_PER_MIN, type TradeVerdict } from "@/lib/trade-verdict";
+import { useStableSymbolOrder } from "@/lib/stable-order";
 import { changeColor, fmtPct, fmtPrice } from "@/lib/format";
 
 interface Entry {
@@ -46,6 +47,7 @@ export function AlertsCommandCenter({
   const [alerts, setAlerts] = useState<Map<string, any>>(new Map());
   const [selected, setSelected] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const [paused, setPaused] = useState(false);
   const pollInFlight = useRef(false);
 
   const pollAlerts = useCallback(async () => {
@@ -100,6 +102,16 @@ export function AlertsCommandCenter({
     [entries, showAll],
   );
 
+  const stableSymbols = useStableSymbolOrder(
+    visible.map((e) => e.symbol),
+    { paused, intervalMs: 5000, resetKey: showAll ? "all" : "active" },
+  );
+  const entryMap = useMemo(() => new Map(visible.map((e) => [e.symbol, e])), [visible]);
+  const displayEntries = useMemo(
+    () => stableSymbols.map((s) => entryMap.get(s)).filter(Boolean) as Entry[],
+    [stableSymbols, entryMap],
+  );
+
   const hero = useMemo(() => {
     if (selected) {
       const found = entries.find((e) => e.symbol === selected);
@@ -127,7 +139,7 @@ export function AlertsCommandCenter({
         <div>
           <h2 className="section-title">Right now</h2>
           <p className="section-sub">
-            One list, best first. BUY only shows when the stock is moving the right way at this moment.
+            One list, best first. BUY only when the stock is moving the right way right now. List order refreshes every ~5s — pause to freeze.
           </p>
         </div>
         <div className="status-group">
@@ -138,7 +150,8 @@ export function AlertsCommandCenter({
         </div>
       </div>
 
-      {/* Hero: the one signal to look at */}
+      {/* Hero: the one signal to look at — fixed slot height so the page doesn't jump */}
+      <div className="acc-hero-slot">
       {hero?.alert ? (
         <div className="acc-hero">
           <div className="acc-hero-main">
@@ -182,24 +195,37 @@ export function AlertsCommandCenter({
           </div>
         </div>
       ) : (
-        <div className="empty">
+        <div className="empty acc-hero-empty">
           <div className="big">{tape.running ? "No trade signal right now" : "Scanner is off"}</div>
           {tape.running
             ? "That's normal — most of the day is waiting. Names appear below as they start moving."
             : "Start the app during market hours to see live signals."}
         </div>
       )}
+      </div>
 
       {/* Single ranked list */}
       <div className="acc-list-header">
         <span className="muted" style={{ fontSize: 12 }}>Click a row to load it above and open the chart.</span>
-        <button className={`pill btn${showAll ? " btn-primary" : ""}`} style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => setShowAll((v) => !v)}>
-          {showAll ? "Hide skipped / slow" : "Show skipped / slow"}
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            type="button"
+            className={`pill btn${paused ? " btn-primary" : ""}`}
+            style={{ fontSize: 11, padding: "4px 10px" }}
+            onClick={() => setPaused((v) => !v)}
+            title="Freeze list order while you read"
+          >
+            {paused ? "▶ Resume" : "⏸ Pause"}
+          </button>
+          <button className={`pill btn${showAll ? " btn-primary" : ""}`} style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => setShowAll((v) => !v)}>
+            {showAll ? "Hide skipped / slow" : "Show skipped / slow"}
+          </button>
+        </div>
       </div>
 
-      {!visible.length ? (
-        <div className="empty small">
+      <div className="table-area">
+      {!displayEntries.length ? (
+        <div className="empty small table-empty">
           {tape.running ? "Nothing worth listing yet — names show up when they start moving." : "Scanner offline."}
         </div>
       ) : (
@@ -207,8 +233,10 @@ export function AlertsCommandCenter({
           <table>
             <thead>
               <tr>
+                <th>#</th>
                 <th>Ticker</th>
                 <th>Signal</th>
+                <th>Stock</th>
                 <th>Speed now</th>
                 <th>Day move</th>
                 <th>Contract</th>
@@ -217,7 +245,7 @@ export function AlertsCommandCenter({
               </tr>
             </thead>
             <tbody>
-              {visible.map((e) => {
+              {displayEntries.map((e, i) => {
                 const v = e.verdict;
                 return (
                   <tr
@@ -226,6 +254,7 @@ export function AlertsCommandCenter({
                     onClick={() => pick(e.symbol)}
                     title="Load above and open chart"
                   >
+                    <td className="num muted">{i + 1}</td>
                     <td>
                       <div className="tkr">
                         <TickerIcon symbol={e.symbol} />
@@ -243,6 +272,11 @@ export function AlertsCommandCenter({
                           {e.tapeRow?.direction === "bullish" ? "MOVING UP" : e.tapeRow?.direction === "bearish" ? "MOVING DOWN" : "MOVING"}
                         </span>
                       )}
+                    </td>
+                    <td>
+                      <span className={`stock-dir stock-dir-${e.tapeRow?.direction ?? "chop"}`}>
+                        {e.tapeRow?.direction === "bullish" ? "▲ Up" : e.tapeRow?.direction === "bearish" ? "▼ Down" : "—"}
+                      </span>
                     </td>
                     <td className="num" style={{ fontWeight: Math.abs(e.tapeRow?.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN ? 700 : 400 }}>
                       {speedText(e.tapeRow)}
@@ -264,6 +298,7 @@ export function AlertsCommandCenter({
           </table>
         </div>
       )}
+      </div>
     </section>
   );
 }

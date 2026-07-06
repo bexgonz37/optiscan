@@ -33,6 +33,10 @@ export async function PATCH(req: Request) {
     if (body.alertMinMomentumScore != null) setSetting("alert_min_momentum_score", String(Number(body.alertMinMomentumScore)));
     if (body.alertMinUnusualScore != null) setSetting("alert_min_unusual_score", String(Number(body.alertMinUnusualScore)));
     const settings = updateNotificationSettings(body);
+    if (body.discordRequiresManualConfirm === false || body.discordRequiresManualConfirm === 0) {
+      const { ensureDiscordPendingCleared } = await import("@/lib/notifications");
+      ensureDiscordPendingCleared();
+    }
     return NextResponse.json({ ok: true, settings, languageMode: getSetting("language_mode") ?? "private", discordWebhookConfigured: discordConfigured() });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err?.message }, { status: 500 });

@@ -15,6 +15,7 @@ import {
   type TapeRow,
   type WatchSortKey,
 } from "@/lib/watch-score";
+import { useStableSymbolOrder } from "@/lib/stable-order";
 import { MIN_SPEED_PCT_PER_MIN } from "@/lib/trade-verdict";
 
 type FilterKey = "all" | "fast" | "aboveVwap" | "belowVwap" | "hod" | "lod";
@@ -98,6 +99,16 @@ export function ScannerDashboard({
     return sortTape(list, sortKey, sortDir).slice(0, 60);
   }, [tape, filter, query, sortKey, sortDir]);
 
+  const stableSymbols = useStableSymbolOrder(
+    rows.map((r) => r.symbol),
+    { paused, intervalMs: 5000, resetKey: `${filter}:${sortKey}:${sortDir}:${query}` },
+  );
+  const rowMap = useMemo(() => new Map(rows.map((r) => [r.symbol, r])), [rows]);
+  const displayRows = useMemo(
+    () => stableSymbols.map((s) => rowMap.get(s)).filter(Boolean) as TapeRow[],
+    [stableSymbols, rowMap],
+  );
+
   function toggleSort(k: WatchSortKey) {
     if (sortKey === k) setSortDir((d) => (d === -1 ? 1 : -1));
     else { setSortKey(k); setSortDir(-1); }
@@ -126,7 +137,7 @@ export function ScannerDashboard({
         <div>
           <h2 className="section-title">Market scanner</h2>
           <p className="section-sub">
-            Ranked by watch score — speed, volume, VWAP, and levels. Click a row for the chart.
+            Ranked by watch score — speed, volume, VWAP, and levels. Rows reorder every ~5s so the list stays readable; hit Pause to freeze.
           </p>
         </div>
         <div className="status-group">
@@ -160,8 +171,9 @@ export function ScannerDashboard({
         </div>
       </div>
 
-      {!rows.length ? (
-        <div className="empty">
+      <div className="table-area">
+      {!displayRows.length ? (
+        <div className="empty table-empty">
           <div className="big">{loop?.running ? (filter === "fast" ? "No fast movers right now" : "Warming up tape…") : "Scanner offline"}</div>
           {loop?.running
             ? (filter === "fast" ? "That's normal in quiet stretches — click All to see the full universe." : "Symbols rank here once the loop has a few seconds of data.")
@@ -175,7 +187,7 @@ export function ScannerDashboard({
                 <th>#</th>
                 <Th k="symbol" label="Ticker" />
                 <Th k="watch" label="Watch" />
-                <th>Dir</th>
+                <th>Stock</th>
                 <Th k="move" label="% Chg" />
                 <Th k="speed" label="Speed" />
                 <Th k="rvol" label="RVOL" />
@@ -186,7 +198,7 @@ export function ScannerDashboard({
               </tr>
             </thead>
             <tbody>
-              {rows.map((r, i) => {
+              {displayRows.map((r, i) => {
                 const watch = computeWatchScore(r);
                 return (
                   <tr key={r.symbol} className="clickable" onClick={() => onOpenChart?.(r.symbol)} title="Open chart">
@@ -201,7 +213,14 @@ export function ScannerDashboard({
                       </div>
                     </td>
                     <td><ScoreBar score={watch} /></td>
-                    <td>{dirChip(r.direction)}</td>
+                    <td>
+                      <span className={`stock-dir stock-dir-${r.direction}`} title={r.direction === "bullish" ? "Stock moving up" : r.direction === "bearish" ? "Stock moving down" : "Choppy"}>
+                        {dirChip(r.direction)}
+                        <span className="stock-dir-label">
+                          {r.direction === "bullish" ? "Up" : r.direction === "bearish" ? "Down" : "—"}
+                        </span>
+                      </span>
+                    </td>
                     <td className="num" style={{ color: changeColor(r.movePct) }}>{fmtPct(r.movePct)}</td>
                     <td className="num" style={{ fontWeight: Math.abs(r.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN ? 700 : 400 }}>
                       {r.shortRate != null ? `${r.shortRate > 0 ? "+" : ""}${r.shortRate.toFixed(2)}%/m` : "—"}
@@ -222,6 +241,7 @@ export function ScannerDashboard({
           </table>
         </div>
       )}
+      </div>
     </section>
   );
 }

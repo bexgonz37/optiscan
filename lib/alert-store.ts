@@ -510,6 +510,15 @@ export function pendingDiscordEvents() {
   ).all();
 }
 
+/** Drop queued manual-confirm rows (e.g. after enabling auto-send). */
+export function discardAllPendingDiscord(reason = "superseded: auto-send enabled"): number {
+  const res = getDb().prepare(
+    `UPDATE notification_events SET status='skipped', error=?
+     WHERE channel='discord_webhook' AND status='pending_confirm'`,
+  ).run(reason);
+  return res.changes;
+}
+
 export function getNotificationEvent(id: number) {
   return getDb().prepare("SELECT * FROM notification_events WHERE id=?").get(id) as any;
 }

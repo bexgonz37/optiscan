@@ -38,9 +38,14 @@ export default function SettingsPage() {
         setLanguageMode(d.languageMode);
         setWebhookConfigured(Boolean(d.discordWebhookConfigured));
       }
-      const p = await fetch("/api/notifications/pending", { cache: "no-store", headers });
-      const pd = await p.json();
-      if (pd.ok) setPending(pd.pending ?? []);
+      const manualConfirm = Boolean(d.settings?.discord_requires_manual_confirm);
+      if (manualConfirm) {
+        const p = await fetch("/api/notifications/pending", { cache: "no-store", headers });
+        const pd = await p.json();
+        if (pd.ok) setPending(pd.pending ?? []);
+      } else {
+        setPending([]);
+      }
     } catch (e: any) {
       setMsg(e?.message ?? "Failed to load settings");
     }
@@ -246,6 +251,11 @@ export default function SettingsPage() {
           </p>
           <Toggle label="Discord alerts" field="discord_enabled" hint="Auto-send BUY CALL/PUT when TRADE fires (needs webhook in .env.local)" />
           <Toggle label="Manual confirmation" field="discord_requires_manual_confirm" hint="Off = instant Discord on every BUY signal" />
+          {!settings?.discord_requires_manual_confirm && settings?.discord_enabled ? (
+            <p className="settings-desc" style={{ color: "var(--green)", marginTop: 8 }}>
+              Auto-send ON — high-confidence BUY CALL/PUT alerts go to Discord instantly. No manual step.
+            </p>
+          ) : null}
           <div className="settings-row">
             <div className="settings-row-label">
               Public wording for Discord
@@ -261,32 +271,36 @@ export default function SettingsPage() {
             </button>
           </div>
 
-          <h2>Pending Discord ({pending.length})</h2>
-          {!pending.length ? (
-            <p className="settings-desc">Nothing waiting for confirmation.</p>
-          ) : (
-            pending.map((p) => {
-              let content = "";
-              try {
-                content = JSON.parse(p.payload_json ?? "{}").content ?? "";
-              } catch {
-                /* ignore */
-              }
-              return (
-                <div key={p.id} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: 10, marginBottom: 8 }}>
-                  <div style={{ fontSize: 11, whiteSpace: "pre-line", marginBottom: 8 }}>{content}</div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button type="button" className="btn-primary" onClick={() => confirmPending(p.id)}>
-                      Send
-                    </button>
-                    <button type="button" className="btn-toggle" onClick={() => confirmPending(p.id, true)}>
-                      Discard
-                    </button>
-                  </div>
-                </div>
-              );
-            })
-          )}
+          {settings?.discord_requires_manual_confirm ? (
+            <>
+              <h2>Pending Discord ({pending.length})</h2>
+              {!pending.length ? (
+                <p className="settings-desc">Nothing waiting for confirmation.</p>
+              ) : (
+                pending.map((p) => {
+                  let content = "";
+                  try {
+                    content = JSON.parse(p.payload_json ?? "{}").content ?? "";
+                  } catch {
+                    /* ignore */
+                  }
+                  return (
+                    <div key={p.id} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: 10, marginBottom: 8 }}>
+                      <div style={{ fontSize: 11, whiteSpace: "pre-line", marginBottom: 8 }}>{content}</div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button type="button" className="btn-primary" onClick={() => confirmPending(p.id)}>
+                          Send
+                        </button>
+                        <button type="button" className="btn-toggle" onClick={() => confirmPending(p.id, true)}>
+                          Discard
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </>
+          ) : null}
         </div>
       </div>
 

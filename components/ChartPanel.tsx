@@ -131,9 +131,16 @@ export function ChartPanel({
       return;
     }
     let cancelled = false;
+    const lastBar = bars.length ? bars[bars.length - 1] : null;
+    const firstBar = bars.length ? bars[0] : null;
+    const dayChg =
+      lastBar && firstBar && firstBar.c ? ((lastBar.c - firstBar.c) / firstBar.c) * 100 : null;
+    const dir =
+      dayChg == null ? undefined : dayChg > 0.08 ? "bullish" : dayChg < -0.08 ? "bearish" : undefined;
     (async () => {
       try {
-        const res = await fetch(`/api/options/${encodeURIComponent(symbol)}?zero=1`, {
+        const dirQ = dir ? `&dir=${dir}` : "";
+        const res = await fetch(`/api/options/${encodeURIComponent(symbol)}?zero=1${dirQ}`, {
           cache: "no-store",
           headers: scanHeaders(),
         });
@@ -146,7 +153,7 @@ export function ChartPanel({
     return () => {
       cancelled = true;
     };
-  }, [open, symbol]);
+  }, [open, symbol, bars]);
 
   // (Re)build the chart when data, indicators, or panel visibility change.
   useEffect(() => {
@@ -263,6 +270,8 @@ export function ChartPanel({
   const last = bars.length ? bars[bars.length - 1] : null;
   const first = bars.length ? bars[0] : null;
   const dayChangePct = last && first && first.c ? ((last.c - first.c) / first.c) * 100 : null;
+  const stockDirection =
+    dayChangePct == null ? undefined : dayChangePct > 0.08 ? "bullish" : dayChangePct < -0.08 ? "bearish" : undefined;
 
   const bestCall = reality?.bestCalls?.[0] ?? null;
   const bestPut = reality?.bestPuts?.[0] ?? null;
@@ -330,13 +339,37 @@ export function ChartPanel({
           ) : reality ? (
             <>
               <div className="muted" style={{ fontSize: 11, marginBottom: 8 }}>
-                Pressure: <strong>{reality.pressure?.label ?? "—"}</strong>
-                {reality.pressure ? (
-                  <>
-                    {" · "}call vol {fmtInt(reality.pressure.callVolume)} vs put vol {fmtInt(reality.pressure.putVolume)}
-                  </>
-                ) : null}
-                {reality.minsToClose != null ? ` · ${reality.minsToClose} min to close` : ""}
+                <div>
+                  Stock today:{" "}
+                  <strong style={{ color: changeColor(dayChangePct) }}>
+                    {dayChangePct != null ? fmtPct(dayChangePct) : "—"}
+                  </strong>
+                  {stockDirection ? ` (${stockDirection === "bullish" ? "up" : "down"})` : ""}
+                </div>
+                <div style={{ marginTop: 4 }}>
+                  Options flow: <strong>{reality.pressure?.label ?? "—"}</strong>
+                  {reality.pressure ? (
+                    <>
+                      {" · "}call vol {fmtInt(reality.pressure.callVolume)} vs put vol {fmtInt(reality.pressure.putVolume)}
+                    </>
+                  ) : null}
+                  {reality.minsToClose != null ? ` · ${reality.minsToClose} min to close` : ""}
+                </div>
+                {reality.pressure?.hint ? (
+                  <div
+                    style={{
+                      marginTop: 6,
+                      color: reality.pressure.stockAligned === false ? "var(--amber)" : "var(--muted)",
+                    }}
+                  >
+                    {reality.pressure.stockAligned === false ? "⚠ " : ""}
+                    {reality.pressure.hint}
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 6, fontSize: 10 }}>
+                    Options flow counts call vs put volume — it is not the same as stock price direction.
+                  </div>
+                )}
               </div>
               <div className="contract-cards">
                 {bestCall ? <ContractRow c={bestCall} /> : null}

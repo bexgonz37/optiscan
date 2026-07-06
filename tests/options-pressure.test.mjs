@@ -4,19 +4,19 @@ import { optionsPressure, pressureConfirms } from "../lib/options-pressure.js";
 
 const mk = (side, strike, volume, mid, spreadPct = 4) => ({ side, strike, volume, mid, spreadPct });
 
-test("call-heavy volume AND premium -> Call pressure building", () => {
+test("call-heavy volume AND premium -> More call volume than puts", () => {
   const p = optionsPressure([
     mk("call", 500, 8000, 1.2), mk("call", 501, 5000, 0.8), mk("put", 499, 3000, 0.9),
   ]);
-  assert.equal(p.label, "Call pressure building");
+  assert.equal(p.label, "More call volume than puts");
   assert.ok(p.score >= 50);
   assert.equal(pressureConfirms(p.label, "bullish"), true);
   assert.equal(pressureConfirms(p.label, "bearish"), false);
 });
 
-test("put-heavy -> Put pressure building; balanced -> mixed/no-clear", () => {
+test("put-heavy -> More put volume than calls; balanced -> mixed/no-clear", () => {
   const put = optionsPressure([mk("put", 499, 9000, 1.1), mk("call", 500, 3000, 0.9)]);
-  assert.equal(put.label, "Put pressure building");
+  assert.equal(put.label, "More put volume than puts");
   const flat = optionsPressure([mk("call", 500, 5000, 1.0), mk("put", 499, 5000, 1.0)]);
   assert.equal(flat.label, "No clear options confirmation");
 });
@@ -25,6 +25,16 @@ test("volume and premium disagreeing never claims a side", () => {
   // calls dominate volume but puts dominate dollars (big put premium)
   const p = optionsPressure([mk("call", 500, 8000, 0.1), mk("put", 499, 4000, 3.0)]);
   assert.ok(p.label === "Mixed flow" || p.label === "No clear options confirmation", p.label);
+});
+
+test("mismatch hint when calls heavy but stock falling", () => {
+  const p = optionsPressure(
+    [mk("call", 500, 8000, 1.2), mk("call", 501, 5000, 0.8), mk("put", 499, 3000, 0.9)],
+    { direction: "bearish" },
+  );
+  assert.equal(p.label, "More call volume than puts");
+  assert.equal(p.stockAligned, false);
+  assert.match(p.hint ?? "", /falling/i);
 });
 
 test("dead chain -> Liquidity too poor; refresh stall + widening -> Flow fading", () => {

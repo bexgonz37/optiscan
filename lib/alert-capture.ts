@@ -151,7 +151,9 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     dirUp ? "CALL" : "PUT",
   ) ? "trade" : "research";
 
-  const pressure = sig.chainContracts?.length ? optionsPressure(sig.chainContracts) : null;
+  const pressure = sig.chainContracts?.length
+    ? optionsPressure(sig.chainContracts, { direction: sig.direction ?? undefined })
+    : null;
   const continuationScore = worth.score;
   const exhaustionScore = 100 - ({ early: 85, continuing: 80, extended_tradable: 55, extended_risky: 30, exhausted: 5 }[status] ?? 50);
 

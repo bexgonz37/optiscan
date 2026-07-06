@@ -19,4 +19,11 @@ export function ensureServerBoot(): void {
   } catch (err) {
     console.warn("[0dte-loop] not started:", (err as Error)?.message);
   }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const cleared = require("@/lib/notifications").ensureDiscordPendingCleared();
+    if (cleared > 0) console.info(`[discord] cleared ${cleared} stale pending_confirm event(s)`);
+  } catch (err) {
+    console.warn("[discord] pending cleanup skipped:", (err as Error)?.message);
+  }
 }

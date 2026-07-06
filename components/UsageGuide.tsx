@@ -25,7 +25,8 @@ export function UsageGuide({ page }: { page: "dashboard" | "alerts" }) {
   const dashboard = (
     <ol className="guide-list">
       <li><strong>Market scanner</strong> — all symbols ranked by <em>Watch score</em> (speed + volume + VWAP + levels). Sort by any column. This is your “what’s worth looking at” board.</li>
-      <li><strong>Default view shows fast movers</strong> — click <em>All</em> to see the full universe, or <em>Pause</em> to freeze the table while you read it.</li>
+      <li><strong>Default view shows fast movers</strong> — click <em>All</em> to see the full universe, or <em>Pause</em> to freeze the table while you read it. Rows only re-rank every ~5 seconds so the list doesn't jump every second.</li>
+      <li><strong>Stock vs options</strong> — the <em>Stock</em> column is price direction. Options flow (in the chart drawer) is call vs put volume — they can disagree (e.g. calls heavy while the stock dips).</li>
       <li><strong>Alerts page</strong> — go there for BUY CALL / BUY PUT / WAIT / SKIP when the scanner fires a trade signal.</li>
     </ol>
   );

@@ -230,6 +230,19 @@ function migrate(db: Database.Database) {
        ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
     ).run();
   }
+
+  // One-time: drop backlog from when manual confirmation was enabled.
+  const discardPending: any = db.prepare("SELECT value FROM scanner_settings WHERE key='discord_discard_stale_pending_v1'").get();
+  if (!discardPending) {
+    db.prepare(
+      `UPDATE notification_events SET status='skipped', error='superseded: auto-send enabled'
+       WHERE channel='discord_webhook' AND status='pending_confirm'`,
+    ).run();
+    db.prepare(
+      `INSERT INTO scanner_settings (key, value) VALUES ('discord_discard_stale_pending_v1', '1')
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+    ).run();
+  }
 }
 
 type G = typeof globalThis & { __optiscanDb?: Database.Database };

@@ -20,11 +20,19 @@ import {
   insertNotificationEvent,
   getNotificationEvent,
   markNotificationEvent,
+  discardAllPendingDiscord,
   getSetting,
 } from "@/lib/alert-store";
 
 export function discordConfigured(): boolean {
   return Boolean(process.env.DISCORD_WEBHOOK_URL);
+}
+
+/** Clear stale manual-confirm queue when auto-send is on (one-time + boot safety). */
+export function ensureDiscordPendingCleared(): number {
+  const s = getNotificationSettings();
+  if (!s || s.discord_requires_manual_confirm) return 0;
+  return discardAllPendingDiscord("superseded: auto-send enabled");
 }
 
 async function postToDiscord(content: string, { skipPublicCheck = false } = {}): Promise<void> {

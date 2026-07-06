@@ -327,7 +327,8 @@ body {
 
 /* ── Sections ────────────────────────────────────────────────────────────── */
 .section-live,
-.section-scanner {
+.section-scanner,
+.section-scanner-dash {
   margin-bottom: 16px;
 }
 .section-header {
@@ -1647,6 +1648,38 @@ tr.clickable {
   padding: 16px;
   font-size: 12px;
 }
+.table-area {
+  min-height: 320px;
+}
+.table-empty {
+  min-height: 280px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.stock-dir {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.stock-dir-label {
+  font-size: 11px;
+  color: var(--muted);
+}
+.stock-dir-bullish .stock-dir-label,
+.stock-dir-bullish {
+  color: var(--green);
+}
+.stock-dir-bearish .stock-dir-label,
+.stock-dir-bearish {
+  color: var(--red);
+}
+.stock-dir-chop {
+  color: var(--dim);
+}
 
 /* ── Alerts command center (single-column, beginner-first) ───────────────── */
 .acc-tabs {
@@ -1659,6 +1692,17 @@ tr.clickable {
   grid-template-columns: 1fr 220px;
   gap: 14px;
   padding: 0 14px 14px;
+}
+.acc-hero-slot {
+  min-height: 200px;
+}
+.acc-hero-empty {
+  padding: 28px 24px;
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
 }
 .acc-hero-main {
   min-width: 0;
