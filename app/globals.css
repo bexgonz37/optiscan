@@ -1601,6 +1601,22 @@ tr.clickable {
 .section-collapsed .section-header-btn {
   border-bottom: none;
 }
+.scanner-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px 12px;
+}
+.scanner-table th.sorted {
+  color: var(--txt);
+  cursor: pointer;
+}
+.scanner-table .arrow {
+  margin-left: 4px;
+  font-size: 9px;
+  opacity: 0.7;
+}
 .mover-filters {
   display: flex;
   flex-wrap: wrap;

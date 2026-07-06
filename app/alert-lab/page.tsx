@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { scanHeaders } from "@/hooks/useScanner";
 import { AppNav } from "@/components/AppNav";
 import { ChartPanel } from "@/components/ChartPanel";
+import { LiveMoversBoard } from "@/components/LiveMoversBoard";
 import { UsageGuide } from "@/components/UsageGuide";
 import { TradeVerdictHero } from "@/components/TradeVerdictHero";
 import { formatSpeedLine } from "@/lib/trade-verdict";
@@ -172,6 +173,8 @@ export default function AlertLabPage() {
 
       <UsageGuide page="alerts" />
 
+      <LiveMoversBoard onOpenChart={(sym) => { setChartSymbol(sym); setChartOpen(true); }} />
+
       <div className="kpis" style={{ marginBottom: 14 }}>
         <div className="kpi"><div className="label">Alerts today</div><div className="val num">{todayCount}</div><div className="sub">{totals?.total ?? 0} all-time</div></div>
         <div className="kpi"><div className="label">Avg signal score</div><div className="val num">{totals?.avg_signal != null ? Math.round(totals.avg_signal) : "—"}</div><div className="sub">risk {totals?.avg_risk != null ? Math.round(totals.avg_risk) : "—"} · liq {totals?.avg_liquidity != null ? Math.round(totals.avg_liquidity) : "—"}</div></div>
@@ -182,7 +185,7 @@ export default function AlertLabPage() {
 
       <div className="panel main" style={{ marginBottom: 14 }}>
         <div className="toolbar">
-          <h2>Alerts</h2>
+          <h2>Alert history</h2>
           <div className="chips">
             <input style={sel} placeholder="Ticker" value={ticker} onChange={(e) => setTicker(e.target.value)} />
             <input style={sel} type="date" value={date} onChange={(e) => setDate(e.target.value)} />

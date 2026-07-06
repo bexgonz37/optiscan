@@ -66,6 +66,7 @@ interface LoopState {
   note: string | null;
   symbols: Map<string, SymState>;
   movers: any[];
+  tape: any[];
   lastDiscoveryAt: number;
   discoveryCount: number;
   promoted: Map<string, number>;
@@ -79,7 +80,7 @@ function state(): LoopState {
     g.__optiscanLoop = {
       running: false, intervalMs: LOOP_MS, targetMs: LOOP_MS, lastTickAt: null,
       ticks: 0, triggers: 0, alerts: 0, errors: 0, note: null,
-      symbols: new Map(), movers: [], lastDiscoveryAt: 0, discoveryCount: 0, promoted: new Map(),
+      symbols: new Map(), movers: [], tape: [], lastDiscoveryAt: 0, discoveryCount: 0, promoted: new Map(),
     };
   }
   // Survive Next dev hot reloads from pre-discovery loop state.
@@ -218,30 +219,56 @@ async function tick() {
   s.intervalMs = Math.max(s.targetMs, Math.round(s.intervalMs * 0.8)); // decay back after backoff
 
   const movers: any[] = [];
+  const tape: any[] = [];
+  const vwapCandidates: { symbol: string; st: SymState; rate: number }[] = [];
+
   for (const q of res.quotes ?? []) {
     if (q.price == null) continue;
     const st = sym(s, q.symbol);
     st.ring.push({ t: nowMs, p: q.price, v: q.volume ?? 0 });
     if (st.ring.length > RING_MAX) st.ring.shift();
-    if (st.ring.length < 10) continue; // warm-up
+
+    if (st.ring.length < 10) {
+      const warmLevels = detectLevels({ price: q.price, dayHigh: q.dayHigh, dayLow: q.dayLow, vwap: st.vwap });
+      tape.push({
+        symbol: q.symbol, price: q.price, movePct: q.changePercent, volume: q.volume ?? null,
+        shortRate: null, accel: null, surge: null, efficiency: null,
+        direction: (q.changePercent ?? 0) > 0.15 ? "bullish" : (q.changePercent ?? 0) < -0.15 ? "bearish" : "choppy",
+        confidence: 15,
+        hodBreak: warmLevels.hodBreak, lodBreak: warmLevels.lodBreak,
+        aboveVwap: warmLevels.aboveVwap, vwapDistPct: warmLevels.vwapDistPct, relVol: st.relVol,
+        promoted: s.promoted.has(q.symbol),
+      });
+      continue;
+    }
 
     const accelRead = acceleration(st.ring, { nowMs } as any);
     const surge = volumeSurge(st.ring, { nowMs } as any);
     const efficiency = pathEfficiency(st.ring, { nowMs } as any);
     const nearTrigger = accelRead.shortRate != null && Math.abs(accelRead.shortRate) >= MIN_RATE * 0.7;
     if (nearTrigger) await ensureVwap(q.symbol, st, nowMs);
+    if (accelRead.shortRate != null) {
+      vwapCandidates.push({ symbol: q.symbol, st, rate: Math.abs(accelRead.shortRate) });
+    }
     const levels = detectLevels({ price: q.price, dayHigh: q.dayHigh, dayLow: q.dayLow, vwap: st.vwap });
     const dir = directionRead({
       movePct: q.changePercent, shortRate: accelRead.shortRate, accel: accelRead.accel,
       aboveVwap: levels.aboveVwap, hodBreak: levels.hodBreak, lodBreak: levels.lodBreak, efficiency,
     });
 
-    movers.push({
-      symbol: q.symbol, price: q.price, movePct: q.changePercent,
+    const row = {
+      symbol: q.symbol, price: q.price, movePct: q.changePercent, volume: q.volume ?? null,
       shortRate: accelRead.shortRate, accel: accelRead.accel, surge, efficiency,
       direction: dir.direction, confidence: dir.confidence,
       hodBreak: levels.hodBreak, lodBreak: levels.lodBreak, aboveVwap: levels.aboveVwap,
-    });
+      vwapDistPct: levels.vwapDistPct, relVol: st.relVol,
+      promoted: s.promoted.has(q.symbol),
+    };
+
+    tape.push(row);
+    if (Math.abs(accelRead.shortRate ?? 0) >= MIN_RATE * 0.5 || nearTrigger) {
+      movers.push(row);
+    }
 
     if (shouldTrigger({
       shortRate: accelRead.shortRate, surge, hodBreak: levels.hodBreak, lodBreak: levels.lodBreak,
@@ -252,7 +279,25 @@ async function tick() {
         .catch((err) => { s.errors++; console.warn("[0dte-loop] trigger failed:", err?.message); });
     }
   }
+  vwapCandidates.sort((a, b) => b.rate - a.rate);
+  for (const c of vwapCandidates.slice(0, 8)) {
+    await ensureVwap(c.symbol, c.st, nowMs);
+  }
+  for (const row of tape) {
+    const st = s.symbols.get(row.symbol);
+    if (!st) continue;
+    const levels = detectLevels({
+      price: row.price, dayHigh: null, dayLow: null, vwap: st.vwap,
+    });
+    if (st.vwap != null) {
+      row.aboveVwap = levels.aboveVwap;
+      row.vwapDistPct = levels.vwapDistPct;
+      row.relVol = st.relVol;
+    }
+  }
+
   s.movers = movers.sort((a, b) => Math.abs(b.shortRate ?? 0) - Math.abs(a.shortRate ?? 0)).slice(0, 20);
+  s.tape = tape;
 
   refreshActiveAlerts(nowMs).catch(() => {});
 }
@@ -283,7 +328,7 @@ export function loopState() {
   return {
     running: s.running, intervalMs: s.intervalMs, lastTickAt: s.lastTickAt,
     ticks: s.ticks, triggers: s.triggers, alerts: s.alerts, errors: s.errors,
-    note: s.note, movers: s.movers,
+    note: s.note, movers: s.movers, tape: s.tape,
     coreSymbols: getZeroDteUniverse().length,
     discoverySymbols: s.discoveryCount,
     promotedSymbols: [...s.promoted.keys()],

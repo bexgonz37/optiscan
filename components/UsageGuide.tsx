@@ -24,18 +24,18 @@ export function UsageGuide({ page }: { page: "dashboard" | "alerts" }) {
 
   const dashboard = (
     <ol className="guide-list">
-      <li><strong>Top momentum movers</strong> — Calls on the left, puts on the right. Default filter <strong>Worth watching</strong> hides slow names. Speed must be ≥ 0.15%/min for BUY.</li>
-      <li><strong>Popup alerts</strong> — BUY CALL / PUT / WAIT / SKIP. Click <strong>Watch chart</strong> first. If speed drops after alert, verdict downgrades to WAIT.</li>
-      <li><strong>Swing scanner</strong> (below) — slower scan every ~30s. Good for ideas; live movers + popups are what matter for fast entries.</li>
+      <li><strong>Market scanner</strong> — all symbols ranked by <em>Watch score</em> (speed + volume + VWAP + levels). Sort by any column. This is your “what’s worth looking at” board.</li>
+      <li><strong>Filters</strong> — Fast (≥0.15%/min), Above/Below VWAP, HOD/LOD breaks. Click a row to open the chart.</li>
+      <li><strong>Alerts page</strong> — go there for BUY CALL / BUY PUT / WAIT / SKIP when the scanner fires a trade signal.</li>
     </ol>
   );
 
   const alerts = (
     <ol className="guide-list">
-      <li><strong>Action column</strong> — BUY CALL/PUT only when speed + contract + scores all pass. WAIT = idea forming. SKIP = don&apos;t trade.</li>
-      <li><strong>Chart</strong> — click the button or the row to open candles + indicators for that ticker.</li>
-      <li><strong>Log</strong> — record if you took a trade (personal journal, not order placement). TRACKING = still measuring follow-through.</li>
-      <li><strong>Move @ alert</strong> = day&apos;s % change. A small number (+0.2%) can still alert from structure — check <em>Speed</em> column for live burst.</li>
+      <li><strong>Buy calls / Buy puts</strong> — live panels at the top. Only shows names worth watching. Default filter hides slow movers.</li>
+      <li><strong>What to do column</strong> — BUY CALL/PUT only when speed + scores pass. WAIT = not ready. SKIP = don’t trade.</li>
+      <li><strong>Popup</strong> — fires on new alerts anywhere in the app. Click <strong>Watch chart</strong> first.</li>
+      <li><strong>History + Log</strong> — below: past alerts, chart, and personal trade journal.</li>
     </ol>
   );
 
