@@ -11,6 +11,7 @@ import { AlertPopup } from "@/components/AlertPopup";
 import { LiveMoversBoard } from "@/components/LiveMoversBoard";
 import { AppNav } from "@/components/AppNav";
 import { DataAccessBanner } from "@/components/DataAccessBanner";
+import { UsageGuide, CollapsibleSection } from "@/components/UsageGuide";
 import { ChartPanel } from "@/components/ChartPanel";
 import { useScanner } from "@/hooks/useScanner";
 import { useToast } from "@/components/Toasts";
@@ -181,11 +182,18 @@ export default function Page() {
 
       <DataAccessBanner />
 
-      <KpiRow kpi={kpi} universeCount={meta?.universeCount ?? 0} loopLive={loopLive} />
+      <UsageGuide page="dashboard" />
 
       <LiveMoversBoard loopStatus={onLoopStatus} onOpenChart={onOpenChart} />
 
-      <section className="panel main section-scanner">
+      <CollapsibleSection
+        id="swing-scanner"
+        title="Swing scanner"
+        subtitle="Slower scan (~30s) — momentum & unusual flow tables"
+        defaultOpen={false}
+      >
+        <KpiRow kpi={kpi} universeCount={meta?.universeCount ?? 0} loopLive={loopLive} />
+        <div className="section-scanner-inner">
         <Toolbar
           tab={tab}
           onTabChange={setTab}
@@ -214,11 +222,12 @@ export default function Page() {
         ) : (
           <UnusualTable rows={filteredUnusual} selected={selected} onSelect={onSelect} />
         )}
-      </section>
+        </div>
+      </CollapsibleSection>
 
       <DetailPanel symbol={selected} open={detailOpen} onClose={() => setDetailOpen(false)} />
       <ChartPanel symbol={chartSymbol} open={chartOpen} onClose={() => setChartOpen(false)} />
-      <AlertPopup onOpenChain={onSelect} />
+      <AlertPopup onOpenChain={onSelect} onOpenChart={onOpenChart} />
 
       <div className="footer">
         OptiScan · research signals only, not buy/sell instructions · not financial advice

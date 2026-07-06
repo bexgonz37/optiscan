@@ -1,13 +1,15 @@
 "use client";
 
 /**
- * Live 0DTE movers board — feeds off the every-second scanner loop (in-memory).
- * Click a row to open the chart panel (candles, indicators, reality check).
+ * Live movers — organized call/put panels. Re-checks live speed so BUY CALL
+ * downgrades if the stock stopped moving.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { scanHeaders } from "@/hooks/useScanner";
-import { TickerIcon, ScoreBar } from "@/components/ui";
+import { TickerIcon } from "@/components/ui";
+import { TradeVerdictHero } from "@/components/TradeVerdictHero";
+import { computeTradeVerdict, MIN_SPEED_PCT_PER_MIN } from "@/lib/trade-verdict";
 import { changeColor, fmtPct, fmtPrice } from "@/lib/format";
 
 interface Mover {
@@ -17,26 +19,61 @@ interface Mover {
   shortRate: number | null;
   accel: number | null;
   surge: number | null;
-  efficiency: number | null;
   direction: string;
-  confidence: number;
   hodBreak: boolean;
   lodBreak: boolean;
   aboveVwap: boolean | null;
 }
 
-const MOVE_STATUS_TEXT: Record<string, string> = {
-  early: "Early",
-  continuing: "Continuation",
-  extended_tradable: "Extended OK",
-  extended_risky: "Chase Risk",
-  exhausted: "Exhausted",
-};
+type ViewFilter = "tradable" | "calls" | "puts" | "all";
 
-function dirChip(d: string) {
-  if (d === "bullish") return <span className="dir-bull">▲ BULL</span>;
-  if (d === "bearish") return <span className="dir-bear">▼ BEAR</span>;
-  return <span className="dir-chop">◆ CHOP</span>;
+function liveCtx(m: Mover) {
+  return { shortRate: m.shortRate, surge: m.surge };
+}
+
+function MoverCard({
+  m,
+  alert,
+  onOpenChart,
+}: {
+  m: Mover;
+  alert: any | null;
+  onOpenChart?: (symbol: string) => void;
+}) {
+  const live = liveCtx(m);
+  const v = alert
+    ? computeTradeVerdict(alert, live)
+    : null;
+  const speed = m.shortRate != null ? `${m.shortRate > 0 ? "+" : ""}${m.shortRate.toFixed(2)}%/m` : "—";
+
+  return (
+    <button type="button" className="mover-card" onClick={() => onOpenChart?.(m.symbol)}>
+      <div className="mover-card-top">
+        <TickerIcon symbol={m.symbol} />
+        <span className="tname">{m.symbol}</span>
+        <span className="num" style={{ color: changeColor(m.movePct) }}>{fmtPct(m.movePct)}</span>
+      </div>
+      <div className="mover-card-mid">
+        <span className="num">{fmtPrice(m.price)}</span>
+        <span className="muted">Speed {speed}</span>
+        {m.surge != null ? <span className="muted">Vol {m.surge}x</span> : null}
+      </div>
+      <div className="mover-card-action">
+        {alert ? (
+          <TradeVerdictHero alert={alert} live={live} compact />
+        ) : Math.abs(m.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN ? (
+          <span className={`verdict-pill verdict-wait`}>
+            {m.direction === "bullish" ? "MOVING — CALL SIDE" : m.direction === "bearish" ? "MOVING — PUT SIDE" : "MOVING"}
+          </span>
+        ) : (
+          <span className="verdict-pill verdict-skip">TOO SLOW</span>
+        )}
+      </div>
+      {v?.action === "TRADE" ? null : v?.reason ? (
+        <div className="mover-card-why muted">{v.reason}</div>
+      ) : null}
+    </button>
+  );
 }
 
 export function LiveMoversBoard({
@@ -49,6 +86,7 @@ export function LiveMoversBoard({
   const [movers, setMovers] = useState<Mover[]>([]);
   const [loop, setLoop] = useState<any>(null);
   const [alerts, setAlerts] = useState<Map<string, any>>(new Map());
+  const [filter, setFilter] = useState<ViewFilter>("tradable");
 
   const pollLoop = useCallback(async () => {
     try {
@@ -59,9 +97,7 @@ export function LiveMoversBoard({
         setLoop(d.realtime);
         loopStatus?.(Boolean(d.realtime?.running), d.realtime?.note);
       }
-    } catch {
-      /* best effort */
-    }
+    } catch { /* best effort */ }
   }, [loopStatus]);
 
   const pollAlerts = useCallback(async () => {
@@ -72,105 +108,99 @@ export function LiveMoversBoard({
       const map = new Map<string, any>();
       for (const a of d.alerts ?? []) if (!map.has(a.ticker)) map.set(a.ticker, a);
       setAlerts(map);
-    } catch {
-      /* best effort */
-    }
+    } catch { /* best effort */ }
   }, []);
 
   useEffect(() => {
     pollLoop();
     pollAlerts();
-    const a = setInterval(pollLoop, 1500);
-    const b = setInterval(pollAlerts, 15000);
-    return () => {
-      clearInterval(a);
-      clearInterval(b);
-    };
+    const a = setInterval(pollLoop, 3000);
+    const b = setInterval(pollAlerts, 20000);
+    return () => { clearInterval(a); clearInterval(b); };
   }, [pollLoop, pollAlerts]);
 
-  const rows = useMemo(() => movers.map((m) => ({ m, a: alerts.get(m.symbol) ?? null })), [movers, alerts]);
+  const rows = useMemo(() => {
+    return movers.map((m) => {
+      const a = alerts.get(m.symbol) ?? null;
+      const v = a ? computeTradeVerdict(a, liveCtx(m)) : null;
+      const fast = Math.abs(m.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN;
+      const isCall = m.direction === "bullish" || v?.side === "CALL";
+      const isPut = m.direction === "bearish" || v?.side === "PUT";
+      const tradable = v?.action === "TRADE" || (fast && (isCall || isPut));
+      return { m, a, v, fast, isCall, isPut, tradable };
+    });
+  }, [movers, alerts]);
+
+  const calls = useMemo(() =>
+    rows.filter((r) => r.isCall && (filter === "all" || filter === "calls" || (filter === "tradable" && r.tradable)))
+      .sort((a, b) => Math.abs(b.m.shortRate ?? 0) - Math.abs(a.m.shortRate ?? 0))
+      .slice(0, 8),
+  [rows, filter]);
+
+  const puts = useMemo(() =>
+    rows.filter((r) => r.isPut && (filter === "all" || filter === "puts" || (filter === "tradable" && r.tradable)))
+      .sort((a, b) => Math.abs(b.m.shortRate ?? 0) - Math.abs(a.m.shortRate ?? 0))
+      .slice(0, 8),
+  [rows, filter]);
+
+  const chip = (id: ViewFilter, label: string) => (
+    <button
+      type="button"
+      className={`pill btn${filter === id ? " btn-primary" : ""}`}
+      style={{ fontSize: 12, padding: "5px 12px" }}
+      onClick={() => setFilter(id)}
+    >
+      {label}
+    </button>
+  );
 
   return (
     <section className="panel main section-live">
       <div className="section-header">
         <div>
-          <h2 className="section-title">Live movers</h2>
-          <p className="section-sub">Real-time tape · click any row for the chart</p>
+          <h2 className="section-title">Top momentum movers</h2>
+          <p className="section-sub">Calls left · Puts right · updates every 3s · click for chart</p>
         </div>
         <div className="status-group">
           <span className={`status-dot ${loop?.running ? "live" : ""}`} />
           <span className="status-text">{loop?.running ? "Loop live" : "Loop offline"}</span>
-          {loop?.note ? <span className="status-warn">{String(loop.note).slice(0, 50)}</span> : null}
         </div>
+      </div>
+
+      <div className="mover-filters">
+        {chip("tradable", "Worth watching")}
+        {chip("calls", "Calls only")}
+        {chip("puts", "Puts only")}
+        {chip("all", "All movers")}
       </div>
 
       {!rows.length ? (
         <div className="empty">
           <div className="big">{loop?.running ? "Watching the tape…" : "Scanner is off"}</div>
-          {loop?.note ? String(loop.note) : loop?.running ? "Names show up here as they start moving." : "Start the app during market hours to see live movers."}
+          {loop?.running ? "Names appear when speed ≥ 0.15%/min." : "Start during market hours."}
         </div>
       ) : (
-        <div className="tablewrap live-table">
-          <table>
-            <thead>
-              <tr>
-                <th>Ticker</th>
-                <th>Price</th>
-                <th>Move</th>
-                <th>Dir</th>
-                <th>Speed</th>
-                <th>Vol</th>
-                <th>VWAP</th>
-                <th>Level</th>
-                <th>Call</th>
-                <th>Put</th>
-                <th>0DTE</th>
-                <th>Status</th>
-                <th>Label</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(({ m, a }) => (
-                <tr
-                  key={m.symbol}
-                  data-sym={m.symbol}
-                  className="clickable"
-                  onClick={() => onOpenChart?.(m.symbol)}
-                  title="Open chart"
-                >
-                  <td>
-                    <div className="tkr">
-                      <TickerIcon symbol={m.symbol} />
-                      <div>
-                        <div className="tname">{m.symbol}</div>
-                        <div className="tsub">
-                          {m.accel != null && m.accel > 0 ? "accelerating" : m.accel != null && m.accel < 0 ? "decelerating" : "steady"}
-                        </div>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="num live-num">{fmtPrice(m.price)}</td>
-                  <td className="num live-num" style={{ color: changeColor(m.movePct) }}>{fmtPct(m.movePct)}</td>
-                  <td>{dirChip(m.direction)}</td>
-                  <td className="num">{m.shortRate != null ? `${m.shortRate > 0 ? "+" : ""}${m.shortRate.toFixed(2)}%/m` : "—"}</td>
-                  <td className="num">{m.surge != null ? `${m.surge}x` : "—"}</td>
-                  <td className={m.aboveVwap == null ? "dim" : m.aboveVwap ? "pos" : "neg"} style={{ fontSize: 12 }}>
-                    {m.aboveVwap == null ? "—" : m.aboveVwap ? "Above" : "Below"}
-                  </td>
-                  <td>{m.hodBreak ? <span className="tag t-call">HOD</span> : m.lodBreak ? <span className="tag t-put">LOD</span> : "—"}</td>
-                  <td className="num" style={{ color: (a?.long_call_score ?? 0) >= 70 ? "var(--green)" : undefined }}>
-                    {a?.long_call_score != null ? Math.round(a.long_call_score) : "—"}
-                  </td>
-                  <td className="num" style={{ color: (a?.long_put_score ?? 0) >= 70 ? "var(--red)" : undefined }}>
-                    {a?.long_put_score != null ? Math.round(a.long_put_score) : "—"}
-                  </td>
-                  <td>{a?.zero_dte_contract_score != null ? <ScoreBar score={a.zero_dte_contract_score} /> : "—"}</td>
-                  <td className="muted" style={{ fontSize: 12 }}>{a?.move_status ? MOVE_STATUS_TEXT[a.move_status] ?? a.move_status : "—"}</td>
-                  <td className="muted" style={{ fontSize: 12 }}>{a?.private_label ?? "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="mover-panels">
+          <div className="mover-panel mover-panel-calls">
+            <h3 className="mover-panel-title">▲ Buy calls</h3>
+            {!calls.length ? <div className="empty small">No call setups right now.</div> : (
+              <div className="mover-card-grid">
+                {calls.map(({ m, a }) => (
+                  <MoverCard key={m.symbol} m={m} alert={a} onOpenChart={onOpenChart} />
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="mover-panel mover-panel-puts">
+            <h3 className="mover-panel-title">▼ Buy puts</h3>
+            {!puts.length ? <div className="empty small">No put setups right now.</div> : (
+              <div className="mover-card-grid">
+                {puts.map(({ m, a }) => (
+                  <MoverCard key={m.symbol} m={m} alert={a} onOpenChart={onOpenChart} />
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </section>

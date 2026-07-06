@@ -11,6 +11,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { scanHeaders } from "@/hooks/useScanner";
 import { AppNav } from "@/components/AppNav";
 import { ChartPanel } from "@/components/ChartPanel";
+import { UsageGuide } from "@/components/UsageGuide";
+import { TradeVerdictHero } from "@/components/TradeVerdictHero";
+import { formatSpeedLine } from "@/lib/trade-verdict";
 import { TickerIcon, GradeChip, ScoreBar } from "@/components/ui";
 import { changeColor, fmtPct, fmtPrice, fmtTime } from "@/lib/format";
 
@@ -22,6 +25,10 @@ interface AlertRow {
   volume: number | null; relative_volume: number | null;
   catalyst_type: string | null; catalyst_quality: string | null; catalyst_summary: string | null;
   signal_score: number | null; risk_score: number | null; options_liquidity_score: number | null;
+  trade_bias?: string | null; option_worth_score?: number | null; worth_verdict?: string | null;
+  zero_dte_contract_score?: number | null; move_status?: string | null; risk_flags?: string | null;
+  long_call_score?: number | null; long_put_score?: number | null;
+  short_rate_at_alert?: number | null; volume_surge_at_alert?: number | null;
   status: string; is_false_positive: number | null;
   latest_max_move: number | null; eod_move: number | null; trade_taken: number;
 }
@@ -163,6 +170,8 @@ export default function AlertLabPage() {
         </div>
       )}
 
+      <UsageGuide page="alerts" />
+
       <div className="kpis" style={{ marginBottom: 14 }}>
         <div className="kpi"><div className="label">Alerts today</div><div className="val num">{todayCount}</div><div className="sub">{totals?.total ?? 0} all-time</div></div>
         <div className="kpi"><div className="label">Avg signal score</div><div className="val num">{totals?.avg_signal != null ? Math.round(totals.avg_signal) : "—"}</div><div className="sub">risk {totals?.avg_risk != null ? Math.round(totals.avg_risk) : "—"} · liq {totals?.avg_liquidity != null ? Math.round(totals.avg_liquidity) : "—"}</div></div>
@@ -209,13 +218,17 @@ export default function AlertLabPage() {
             <table>
               <thead>
                 <tr>
-                  <th>Time</th><th>Ticker</th><th>Src</th><th>Move @ alert</th><th>Catalyst</th>
-                  <th>Signal</th><th>Risk</th><th>Liq</th><th>Max after</th><th>EOD</th><th>Status</th><th>Chart</th><th>Journal</th>
+                  <th>Time</th><th>Ticker</th><th>What to do</th><th>Speed</th><th>Day move</th><th>Signal</th><th>Status</th><th></th>
                 </tr>
               </thead>
               <tbody>
                 {alerts.map((a) => (
-                  <tr key={a.id}>
+                  <tr
+                    key={a.id}
+                    className="clickable"
+                    onClick={() => { setChartSymbol(a.ticker); setChartOpen(true); }}
+                    title="Click row to open chart"
+                  >
                     <td className="num muted">{a.trading_day}<br />{fmtTime(a.alert_time)}</td>
                     <td>
                       <div className="tkr">
@@ -228,34 +241,23 @@ export default function AlertLabPage() {
                         </div>
                       </div>
                     </td>
-                    <td><span className={`badge ${a.source === "unusual" ? "t-new" : "b-strat"}`}>{a.source === "unusual" ? "FLOW" : "MOM"}</span></td>
+                    <td onClick={(e) => e.stopPropagation()}><TradeVerdictHero alert={a} compact /></td>
+                    <td className="num muted" style={{ fontSize: 11, maxWidth: 120 }}>{formatSpeedLine(a)}</td>
                     <td className="num" style={{ color: changeColor(a.percent_move_at_alert) }}>{fmtPct(a.percent_move_at_alert)}</td>
-                    <td>
-                      <span style={{ color: qualityColor(a.catalyst_quality) }} title={a.catalyst_summary ?? undefined}>
-                        {catLabel(a.catalyst_type)}
-                      </span>
-                      <div className="tsub">{a.catalyst_quality ?? "unknown"}</div>
-                    </td>
                     <td><ScoreBar score={a.signal_score ?? 0} /></td>
-                    <td className="num" style={{ color: (a.risk_score ?? 0) >= 60 ? "var(--red)" : (a.risk_score ?? 0) >= 35 ? "var(--amber)" : "var(--green)" }}>{Math.round(a.risk_score ?? 0)}</td>
-                    <td className="num">{Math.round(a.options_liquidity_score ?? 0)}</td>
-                    <td className="num" style={{ color: changeColor(a.latest_max_move) }}>{fmtPct(a.latest_max_move)}</td>
-                    <td className="num" style={{ color: changeColor(a.eod_move) }}>{fmtPct(a.eod_move)}</td>
                     <td>
                       {a.is_false_positive === 1 ? <span className="tag t-put">FALSE +</span>
                         : a.status === "complete" ? <GradeChip grade="GOOD" />
                         : <span className="tag t-vol">TRACKING</span>}
                     </td>
-                    <td>
+                    <td onClick={(e) => e.stopPropagation()}>
                       <button
-                        className="pill btn"
-                        style={{ fontSize: 11, padding: "4px 8px" }}
+                        className="pill btn btn-primary"
+                        style={{ fontSize: 11, padding: "4px 10px", marginRight: 4 }}
                         onClick={() => { setChartSymbol(a.ticker); setChartOpen(true); }}
                       >
                         Chart
                       </button>
-                    </td>
-                    <td>
                       {a.trade_taken ? <span className="tag t-call">LOGGED</span>
                         : <button className="pill btn" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => logTrade(a)}>Log</button>}
                     </td>
