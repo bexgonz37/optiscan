@@ -636,6 +636,39 @@ body {
   top: 14px;
   opacity: 0.9;
 }
+.kpi-clickable {
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  font: inherit;
+  color: inherit;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.kpi-clickable:hover {
+  border-color: rgba(80, 200, 120, 0.45);
+}
+.kpi-clickable.kpi-active {
+  border-color: var(--green);
+  box-shadow: 0 0 0 1px rgba(80, 200, 120, 0.25);
+}
+.acc-on-track-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.acc-on-track-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px !important;
+  font-size: 12px !important;
+}
+.acc-on-track-chip .tname {
+  font-weight: 700;
+}
+tr.acc-row-on-track {
+  background: rgba(80, 200, 120, 0.06);
+}
 
 /* ── Layout ──────────────────────────────────────────────────────────────── */
 .layout {

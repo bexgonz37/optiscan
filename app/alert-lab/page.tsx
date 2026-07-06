@@ -11,7 +11,7 @@
  * Market signals and measurements only — nothing here is a recommendation.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { scanHeaders } from "@/hooks/useScanner";
 import { useLiveTapeMap, liveCtxFor } from "@/hooks/useLiveTapeMap";
 import { AppNav } from "@/components/AppNav";
@@ -46,6 +46,7 @@ interface JournalRow {
 }
 
 type Tab = "now" | "accuracy" | "history" | "journal";
+type AccFilter = "all" | "on_track" | "open" | "discord";
 
 const CATALYSTS = [
   "earnings", "analyst", "fda_biotech", "partnership", "product_launch",
@@ -60,6 +61,7 @@ export default function AlertLabPage() {
   const [stats, setStats] = useState<any>(null);
   const [report, setReport] = useState<any>(null);
   const [accuracy, setAccuracy] = useState<any>(null);
+  const [accFilter, setAccFilter] = useState<AccFilter>("all");
   const [journal, setJournal] = useState<JournalRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -182,6 +184,32 @@ export default function AlertLabPage() {
   const today = new Date().toISOString().slice(0, 10);
   const todayCount = alerts.filter((a) => a.trading_day === today).length;
 
+  const onTrackRows = useMemo(
+    () => accuracy?.onTrackNow ?? (accuracy?.recent ?? []).filter((r: any) => r.live_on_track === 1 || r.live_on_track === true),
+    [accuracy],
+  );
+
+  const filteredAccuracyRows = useMemo(() => {
+    const rows = accuracy?.recent ?? [];
+    if (accFilter === "on_track") return accuracy?.onTrackNow ?? rows.filter((r: any) => r.live_on_track === 1 || r.live_on_track === true);
+    if (accFilter === "open") return rows.filter((r: any) => r.status === "tracking");
+    if (accFilter === "discord") return rows.filter((r: any) => r.discord_sent);
+    return rows;
+  }, [accuracy, accFilter]);
+
+  const accKpi = (id: AccFilter, label: string, val: ReactNode, sub: string) => (
+    <button
+      type="button"
+      className={`kpi kpi-clickable${accFilter === id ? " kpi-active" : ""}`}
+      onClick={() => setAccFilter((f) => (f === id ? "all" : id))}
+      title={id === "on_track" ? "Click to show only on-track signals" : `Click to filter: ${label}`}
+    >
+      <div className="label">{label}</div>
+      <div className="val num">{val}</div>
+      <div className="sub">{sub}{accFilter === id ? " · filtered" : id === "on_track" ? " · click to view" : ""}</div>
+    </button>
+  );
+
   const sel = { background: "var(--bg2, #10161d)", color: "var(--txt)", border: "1px solid rgba(120,140,160,.25)", borderRadius: 8, padding: "6px 8px", fontSize: 12 } as const;
 
   const tabBtn = (id: Tab, label: string) => (
@@ -241,38 +269,55 @@ export default function AlertLabPage() {
                 Live session (updates every second)
               </div>
               <div className="kpis" style={{ marginBottom: 14 }}>
-                <div className="kpi">
-                  <div className="label">Signals today</div>
-                  <div className="val num">{accuracy.total}</div>
-                  <div className="sub">{accuracy.tracking} still open</div>
-                </div>
-                <div className="kpi">
-                  <div className="label">On track now</div>
-                  <div className="val num" style={{ color: accuracy.liveOnTrack ? "var(--green)" : undefined }}>
+                {accKpi("open", "Signals today", accuracy.todayTotal ?? accuracy.total, `${accuracy.todayTracking ?? accuracy.tracking} still open`)}
+                {accKpi("on_track", "On track now", (
+                  <span style={{ color: (accuracy.liveOnTrack ?? 0) > 0 ? "var(--green)" : undefined }}>
                     {accuracy.liveOnTrack ?? 0}
-                  </div>
-                  <div className="sub">stock moved ≥1.5% the right way so far</div>
-                </div>
-                <div className="kpi">
-                  <div className="label">Discord sent</div>
-                  <div className="val num">{accuracy.discordSentCount ?? 0}</div>
-                  <div className="sub">extra-clear only · not delayed</div>
-                </div>
+                  </span>
+                ), "stock moved ≥1.5% the right way")}
+                {accKpi("discord", "Discord sent", accuracy.discordSentCount ?? 0, "extra-clear only · not delayed")}
                 <div className="kpi">
                   <div className="label">Avg live stock move</div>
                   <div className="val num">
-                    {accuracy.recent?.length
-                      ? `${(
-                          accuracy.recent
-                            .filter((r: any) => r.latest_max_move != null)
-                            .reduce((s: number, r: any) => s + r.latest_max_move, 0) /
-                          Math.max(1, accuracy.recent.filter((r: any) => r.latest_max_move != null).length)
-                        ).toFixed(1)}%`
-                      : "—"}
+                    {onTrackRows.length
+                      ? `${(onTrackRows.reduce((s: number, r: any) => s + (r.latest_max_move ?? 0), 0) / onTrackRows.length).toFixed(1)}%`
+                      : accuracy.recent?.length
+                        ? `${(
+                            accuracy.recent
+                              .filter((r: any) => r.latest_max_move != null)
+                              .reduce((s: number, r: any) => s + r.latest_max_move, 0) /
+                            Math.max(1, accuracy.recent.filter((r: any) => r.latest_max_move != null).length)
+                          ).toFixed(1)}%`
+                        : "—"}
                   </div>
-                  <div className="sub">best favorable move so far today</div>
+                  <div className="sub">on-track signals only when filtered</div>
                 </div>
               </div>
+
+              {onTrackRows.length > 0 ? (
+                <div className="acc-on-track-strip" style={{ marginBottom: 14 }}>
+                  <div className="label muted" style={{ fontSize: 11, marginBottom: 8 }}>
+                    On track right now — click a ticker to open chart
+                  </div>
+                  <div className="acc-on-track-chips">
+                    {onTrackRows.map((row: any) => {
+                      const side = String(row.option_side ?? "").toLowerCase().startsWith("p") ? "PUT" : "CALL";
+                      return (
+                        <button
+                          key={row.id}
+                          type="button"
+                          className="pill btn acc-on-track-chip"
+                          onClick={() => openChart(row.ticker)}
+                        >
+                          <span className="tname">{row.ticker}</span>
+                          <span className="muted">BUY {side}</span>
+                          <span className="num" style={{ color: "var(--green)" }}>{fmtPct(row.latest_max_move)}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
 
               <div className="label muted" style={{ fontSize: 11, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.04em" }}>
                 Final grades (locks at market close)
@@ -315,10 +360,30 @@ export default function AlertLabPage() {
                   <div className="sub">favorable direction after signal (EOD)</div>
                 </div>
               </div>
-              {!accuracy.recent?.length ? (
-                <div className="empty small">No trade-tier signals recorded yet this period.</div>
+              {!filteredAccuracyRows.length ? (
+                <div className="empty small">
+                  {accFilter === "on_track"
+                    ? "No signals on track right now (need ≥1.5% favorable stock move)."
+                    : accFilter !== "all"
+                      ? "No signals match this filter."
+                      : "No trade-tier signals recorded yet this period."}
+                </div>
               ) : (
                 <div className="tablewrap">
+                  <div className="muted" style={{ fontSize: 11, marginBottom: 8 }}>
+                    {accFilter === "on_track"
+                      ? `Showing ${filteredAccuracyRows.length} on-track signal${filteredAccuracyRows.length === 1 ? "" : "s"}`
+                      : accFilter === "open"
+                        ? `Showing ${filteredAccuracyRows.length} open signal${filteredAccuracyRows.length === 1 ? "" : "s"}`
+                        : accFilter === "discord"
+                          ? `Showing ${filteredAccuracyRows.length} Discord-sent signal${filteredAccuracyRows.length === 1 ? "" : "s"}`
+                          : `All signals · click a row to open chart`}
+                    {accFilter !== "all" ? (
+                      <button type="button" className="pill btn" style={{ fontSize: 10, padding: "2px 8px", marginLeft: 8 }} onClick={() => setAccFilter("all")}>
+                        Clear filter
+                      </button>
+                    ) : null}
+                  </div>
                   <table>
                     <thead>
                       <tr>
@@ -335,18 +400,19 @@ export default function AlertLabPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {accuracy.recent.map((row: any) => {
+                      {filteredAccuracyRows.map((row: any) => {
                         const side = String(row.option_side ?? "").toLowerCase().startsWith("p") ? "PUT" : "CALL";
                         const done = row.status === "complete";
                         const win = done && row.is_false_positive === 0;
                         const loss = done && row.is_false_positive === 1;
+                        const onTrack = row.live_on_track === 1 || row.live_on_track === true;
                         const liveOptionPct =
                           row.option_return_pct ?? (row.entry_mid && row.best_mid
                             ? +(((row.best_mid - row.entry_mid) / row.entry_mid) * 100).toFixed(1)
                             : null);
                         const optionDone = row.option_outcome_win != null;
                         return (
-                          <tr key={row.id} className="clickable" onClick={() => openChart(row.ticker)}>
+                          <tr key={row.id} className={`clickable${onTrack ? " acc-row-on-track" : ""}`} onClick={() => openChart(row.ticker)}>
                             <td className="num muted">{row.trading_day}<br />{fmtTime(row.alert_time)}</td>
                             <td>
                               <div className="tkr">
@@ -377,7 +443,11 @@ export default function AlertLabPage() {
                               {liveOptionPct != null ? `${liveOptionPct > 0 ? "+" : ""}${liveOptionPct.toFixed(0)}%` : "—"}
                             </td>
                             <td>
-                              {!done ? <span className="tag t-vol">TRACKING</span>
+                              {!done ? (
+                                onTrack
+                                  ? <span className="tag t-call">ON TRACK</span>
+                                  : <span className="tag t-vol">TRACKING</span>
+                              )
                                 : win ? <span className="tag t-call">RIGHT</span>
                                 : loss ? <span className="tag t-put">WRONG</span>
                                 : <span className="muted">—</span>}

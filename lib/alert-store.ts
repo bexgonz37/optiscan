@@ -353,10 +353,13 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
   const db = getDb();
   const days = Math.max(1, Number(opts.days ?? 14));
   const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+  const today = new Date().toISOString().slice(0, 10);
   const limit = Math.min(Number(opts.limit ?? 50), 200);
 
   const summary: any = db.prepare(
     `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN a.trading_day = ? THEN 1 ELSE 0 END) AS today_total,
+            SUM(CASE WHEN a.trading_day = ? AND a.status = 'tracking' THEN 1 ELSE 0 END) AS today_tracking,
             SUM(CASE WHEN a.status = 'complete' AND a.is_false_positive = 0 THEN 1 ELSE 0 END) AS wins,
             SUM(CASE WHEN a.status = 'complete' AND a.is_false_positive = 1 THEN 1 ELSE 0 END) AS losses,
             SUM(CASE WHEN a.status = 'tracking' THEN 1 ELSE 0 END) AS tracking,
@@ -376,7 +379,7 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
      FROM alerts a
      LEFT JOIN alert_performance p ON p.alert_id = a.id AND p.checkpoint = 'eod'
      WHERE a.trading_day >= ? AND a.alert_tier = 'trade'`,
-  ).get(since);
+  ).get(today, today, since);
 
   const completed = (summary?.wins ?? 0) + (summary?.losses ?? 0);
   const hitRate = completed > 0 ? (summary.wins ?? 0) / completed : null;
@@ -402,6 +405,10 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
              WHERE s.alert_id = a.id AND s.checkpoint IN ('live','eod')) AS best_mid,
             (SELECT p.max_percent_move_after_alert FROM alert_performance p
              WHERE p.alert_id = a.id ORDER BY p.checked_at DESC LIMIT 1) AS latest_max_move,
+            CASE WHEN a.status = 'tracking' AND COALESCE(
+              (SELECT p.max_percent_move_after_alert FROM alert_performance p
+               WHERE p.alert_id = a.id ORDER BY p.checked_at DESC LIMIT 1), 0) >= 1.5
+            THEN 1 ELSE 0 END AS live_on_track,
             (SELECT p.percent_move_from_alert FROM alert_performance p
              WHERE p.alert_id = a.id AND p.checkpoint = 'eod') AS eod_move,
             (SELECT n.status FROM notification_events n
@@ -417,10 +424,31 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
      ORDER BY a.id DESC LIMIT ?`,
   ).all(since, limit);
 
+  const onTrackNow = db.prepare(
+    `SELECT a.id, a.ticker, a.option_side, a.strike, a.dte, a.alert_time, a.trading_day,
+            a.status, a.option_return_pct, a.option_outcome_win,
+            (SELECT s.mid FROM options_snapshots s
+             WHERE s.alert_id = a.id AND s.checkpoint = 'alert' LIMIT 1) AS entry_mid,
+            (SELECT MAX(s.mid) FROM options_snapshots s
+             WHERE s.alert_id = a.id AND s.checkpoint IN ('live','eod')) AS best_mid,
+            (SELECT p.max_percent_move_after_alert FROM alert_performance p
+             WHERE p.alert_id = a.id ORDER BY p.checked_at DESC LIMIT 1) AS latest_max_move,
+            EXISTS (SELECT 1 FROM notification_events n
+                    WHERE n.alert_id = a.id AND n.channel = 'discord_webhook' AND n.status = 'sent') AS discord_sent
+     FROM alerts a
+     WHERE a.trading_day >= ? AND a.alert_tier = 'trade' AND a.status = 'tracking'
+       AND COALESCE(
+         (SELECT p.max_percent_move_after_alert FROM alert_performance p
+          WHERE p.alert_id = a.id ORDER BY p.checked_at DESC LIMIT 1), 0) >= 1.5
+     ORDER BY latest_max_move DESC LIMIT 50`,
+  ).all(since);
+
   return {
     since,
     days,
     total: summary?.total ?? 0,
+    todayTotal: summary?.today_total ?? 0,
+    todayTracking: summary?.today_tracking ?? 0,
     wins: summary?.wins ?? 0,
     losses: summary?.losses ?? 0,
     tracking: summary?.tracking ?? 0,
@@ -435,6 +463,7 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
     avgOptionReturn: summary?.avg_option_return ?? null,
     bySide,
     recent,
+    onTrackNow,
     note: "Tracks trade-tier BUY signals only. LIVE columns update every second during the session. Final stock/option grades lock at market close.",
   };
 }
