@@ -170,6 +170,11 @@ The scanner's primary mode is now a **0DTE options momentum scanner**:
   watches a small liquid universe, computing acceleration, volume surge, chop,
   VWAP side, and HOD/LOD state in memory. Chains are fetched **only when a
   symbol triggers** — never wholesale — and active alerts re-quote every ~7s.
+- A second, slower discovery lane snapshots the broader options universe every
+  30 seconds and promotes its strongest liquid movers into the one-second loop
+  for five minutes. This expands coverage (including `SPCX`) without fetching
+  hundreds of option chains. Use `SCANNER_0DTE_UNIVERSE_EXTRA` to pin any name
+  permanently into the fast lane without replacing the built-in core.
 - Every alert answers the direction question explicitly: **UP or DOWN, calls
   side or puts side**, with separate Call Watch / Put Watch scores, a 0DTE
   Contract Score, Move Status (Early → Continuation → Extended → Chase Risk →

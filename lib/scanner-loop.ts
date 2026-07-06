@@ -29,7 +29,7 @@ import {
   acceleration, volumeSurge, pathEfficiency, detectLevels, directionRead,
   shouldTrigger, rankZeroDteContracts, expectedRemainingMovePct,
 } from "@/lib/zero-dte";
-import { getZeroDteUniverse } from "@/lib/universe";
+import { getZeroDteUniverse, getZeroDteDiscoveryUniverse } from "@/lib/universe";
 import { tradingDay, minutesToClose, getDb } from "@/lib/db";
 
 const LOOP_MS = Number(process.env.SCANNER_LOOP_MS ?? 1000);
@@ -37,6 +37,10 @@ const ACTIVE_REFRESH_MS = Number(process.env.SCANNER_ACTIVE_REFRESH_MS ?? 7000);
 const TRIGGER_COOLDOWN_MS = Number(process.env.SCANNER_TRIGGER_COOLDOWN_MS ?? 5 * 60 * 1000);
 const MIN_RATE = Number(process.env.SCANNER_MIN_RATE_PCT_MIN ?? 0.15);
 const MIN_SURGE = Number(process.env.SCANNER_MIN_VOL_SURGE ?? 1.3);
+const DISCOVERY_MS = Number(process.env.SCANNER_DISCOVERY_MS ?? 30_000);
+const DISCOVERY_TOP_N = Number(process.env.SCANNER_DISCOVERY_TOP_N ?? 20);
+const PROMOTION_MS = Number(process.env.SCANNER_PROMOTION_MS ?? 5 * 60_000);
+const DISCOVERY_MIN_VOLUME = Number(process.env.SCANNER_DISCOVERY_MIN_VOLUME ?? 100_000);
 const RING_MAX = 360; // ~6 minutes of 1s ticks
 
 interface Tick { t: number; p: number; v: number }
@@ -62,6 +66,9 @@ interface LoopState {
   note: string | null;
   symbols: Map<string, SymState>;
   movers: any[];
+  lastDiscoveryAt: number;
+  discoveryCount: number;
+  promoted: Map<string, number>;
 }
 
 type G = typeof globalThis & { __optiscanLoop?: LoopState; __optiscanLoopTimer?: ReturnType<typeof setTimeout> };
@@ -72,10 +79,37 @@ function state(): LoopState {
     g.__optiscanLoop = {
       running: false, intervalMs: LOOP_MS, targetMs: LOOP_MS, lastTickAt: null,
       ticks: 0, triggers: 0, alerts: 0, errors: 0, note: null,
-      symbols: new Map(), movers: [],
+      symbols: new Map(), movers: [], lastDiscoveryAt: 0, discoveryCount: 0, promoted: new Map(),
     };
   }
+  // Survive Next dev hot reloads from pre-discovery loop state.
+  g.__optiscanLoop.lastDiscoveryAt ??= 0;
+  g.__optiscanLoop.discoveryCount ??= 0;
+  g.__optiscanLoop.promoted ??= new Map();
   return g.__optiscanLoop;
+}
+
+/** Promote broad-universe movers into the fast loop without fetching chains. */
+async function refreshDiscovery(nowMs: number) {
+  const s = state();
+  const res: any = await fetchBulkQuotes(getZeroDteDiscoveryUniverse());
+  if (!res?.available) {
+    s.note = res?.note ?? "discovery snapshot unavailable";
+    return;
+  }
+  s.discoveryCount = (res.quotes ?? []).length;
+  const ranked = (res.quotes ?? [])
+    .filter((q: any) => q?.symbol && q.price > 0 && q.changePercent != null && (q.volume ?? 0) >= DISCOVERY_MIN_VOLUME)
+    .sort((a: any, b: any) => Math.abs(b.changePercent) - Math.abs(a.changePercent))
+    .slice(0, Math.max(0, DISCOVERY_TOP_N));
+  for (const q of ranked) s.promoted.set(q.symbol, nowMs + PROMOTION_MS);
+  for (const [ticker, expiresAt] of s.promoted) if (expiresAt <= nowMs) s.promoted.delete(ticker);
+}
+
+function realtimeUniverse(nowMs: number) {
+  const s = state();
+  for (const [ticker, expiresAt] of s.promoted) if (expiresAt <= nowMs) s.promoted.delete(ticker);
+  return Array.from(new Set([...getZeroDteUniverse(), ...s.promoted.keys()]));
 }
 
 function sym(s: LoopState, ticker: string): SymState {
@@ -168,7 +202,11 @@ async function tick() {
   s.lastTickAt = nowMs;
   s.ticks++;
 
-  const res: any = await fetchBulkQuotes(getZeroDteUniverse());
+  if (nowMs - s.lastDiscoveryAt >= DISCOVERY_MS) {
+    s.lastDiscoveryAt = nowMs;
+    refreshDiscovery(nowMs).catch((err) => { s.errors++; console.warn("[0dte-loop] discovery failed:", err?.message); });
+  }
+  const res: any = await fetchBulkQuotes(realtimeUniverse(nowMs));
   if (!res?.available) {
     s.errors++;
     s.note = res?.note ?? "snapshot unavailable";
@@ -245,5 +283,8 @@ export function loopState() {
     running: s.running, intervalMs: s.intervalMs, lastTickAt: s.lastTickAt,
     ticks: s.ticks, triggers: s.triggers, alerts: s.alerts, errors: s.errors,
     note: s.note, movers: s.movers,
+    coreSymbols: getZeroDteUniverse().length,
+    discoverySymbols: s.discoveryCount,
+    promotedSymbols: [...s.promoted.keys()],
   };
 }
