@@ -1,139 +1,265 @@
 /**
- * alert-capture.ts — turns qualifying scanner rows into persisted Alert Lab
- * rows. Called fire-and-forget after each fresh scan (see scan-core.ts) so it
- * never adds latency to, or breaks, the scanner itself.
+ * alert-capture.ts — turns scanner signals into persisted, fully-scored 0DTE
+ * alerts. Two entry points:
  *
- * Capture thresholds (env-tunable):
- *   ALERT_MIN_MOMENTUM_SCORE (default 65 — GOOD and up)
- *   ALERT_MIN_UNUSUAL_SCORE  (default 80 — STRONG only)
+ *   captureZeroDte(...)  — from the every-second scanner loop (primary path):
+ *                          full tape context (acceleration, surge, efficiency,
+ *                          HOD/LOD) + ranked 0DTE contracts.
+ *   captureAlerts(...)   — from the slower swing-radar scan (secondary): maps
+ *                          candle-based signals into the same scoring.
  *
- * API cost note: each NEW alert ticker costs one Polygon news call for
- * catalyst classification, cached 15 minutes per ticker (dedup runs BEFORE the
- * news lookup, so re-scans of an already-captured alert cost nothing).
+ * Spec rules enforced here:
+ *   - CATALYSTS NEVER BLOCK: the alert inserts immediately; news is fetched
+ *     fire-and-forget afterwards and attached via updateAlertCatalyst.
+ *   - Big moves are analyzed for continuation, never auto-skipped.
+ *   - Everything is deterministic — no AI in the alert path.
  */
 
 import { fetchNews } from "@/lib/polygon-provider";
 import { classifyCatalyst } from "@/lib/catalysts";
-import { optionsLiquidityScore, riskScore, signalQualityScore } from "@/lib/alert-scoring";
+import { optionsLiquidityScore, riskScore, setupScore, ivToPct } from "@/lib/alert-scoring";
+import {
+  moveStatus as calcMoveStatus,
+  MOVE_STATUS_LABEL,
+  zeroDteContractScore,
+  watchScores,
+  optionStillWorthIt,
+  tradeBias,
+  TRADE_BIAS_LABEL,
+  riskFlags0dte,
+  expectedRemainingMovePct,
+  level,
+} from "@/lib/zero-dte";
+import { privateLabel0dte, publicLabel0dte, riskLabel } from "@/lib/language-modes";
+import { optionsPressure } from "@/lib/options-pressure";
+import { buildExplanation } from "@/lib/explain";
 import { cached } from "@/lib/scan-cache";
-import { alertExists, insertAlert } from "@/lib/alert-store";
-import { tradingDay } from "@/lib/db";
+import { alertExists, insertAlert, getSettingNum, updateAlertCatalyst } from "@/lib/alert-store";
+import { tradingDay, minutesToClose } from "@/lib/db";
+import { notifyNewAlert } from "@/lib/notifications";
 import type { MomentumRow, UnusualRow } from "@/lib/types";
 
 const NEWS_TTL_MS = 15 * 60 * 1000;
 
-function thresholds(env = process.env) {
-  return {
-    momentum: Number(env.ALERT_MIN_MOMENTUM_SCORE ?? 65),
-    unusual: Number(env.ALERT_MIN_UNUSUAL_SCORE ?? 80),
-    enabled: env.ALERT_LAB_ENABLED !== "0",
+/** Fire-and-forget catalyst attach — context only, never blocks the alert. */
+function attachCatalystLater(alertId: number, ticker: string, relVol: number | null) {
+  void (async () => {
+    try {
+      const news: any = await cached(`news:${ticker}`, NEWS_TTL_MS, () => fetchNews(ticker, { limit: 10, days: 3 }));
+      const items = news?.available ? news.items : [];
+      const cat = classifyCatalyst(items, { relVol: relVol ?? 0 });
+      updateAlertCatalyst(alertId, cat, ticker);
+    } catch (err: any) {
+      console.warn(`[alert-lab] catalyst attach skipped for ${ticker}:`, err?.message);
+    }
+  })();
+}
+
+export interface ZeroDteSignal {
+  ticker: string;
+  price: number | null;
+  movePct: number;
+  shortRate: number | null;
+  accel: number | null;
+  surge: number | null;
+  relVol: number | null;
+  efficiency: number | null;
+  vwap: number | null;
+  aboveVwap: boolean | null;
+  hodBreak: boolean;
+  lodBreak: boolean;
+  direction: "bullish" | "bearish" | "choppy";
+  directionConfidence: number; // 0-100
+  shareVolume: number | null;
+  bestCall: any | null; // ranked 0DTE contracts (normalized shape)
+  bestPut: any | null;
+  scannerScore?: number | null;
+  source?: "momentum" | "unusual";
+  alertType?: string;
+  nowMs?: number;
+  /** full 0DTE chain at trigger (optional) — used for pressure confirmation */
+  chainContracts?: any[] | null;
+}
+
+/** Score + persist one 0DTE signal. Returns alert id or null (dup/below bar). */
+export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null> {
+  const nowMs = sig.nowMs ?? Date.now();
+  const day = tradingDay(nowMs);
+  const minsToClose = minutesToClose(nowMs);
+  const dirUp = sig.direction !== "bearish";
+  const sideContract = sig.direction === "bearish" ? sig.bestPut : sig.bestCall;
+
+  const source = sig.source ?? "momentum";
+  const dedupKey = sideContract?.optionSymbol ?? null;
+  if (alertExists(sig.ticker, source, dedupKey, day)) return null;
+
+  const expRemainPct = expectedRemainingMovePct({ shortRate: sig.shortRate ?? 0, minsToClose });
+  const status = calcMoveStatus({
+    movePct: sig.movePct, shortRate: sig.shortRate, accel: sig.accel,
+    direction: dirUp ? "bullish" : "bearish", aboveVwap: sig.aboveVwap,
+    hodBreak: sig.hodBreak, lodBreak: sig.lodBreak, surge: sig.surge, efficiency: sig.efficiency,
+  });
+
+  const contractRes = sideContract
+    ? zeroDteContractScore(sideContract, { minsToClose, expRemainPct })
+    : { score: 0, reasons: ["No qualifying 0DTE contract"], flags: { spreadTooWide: true, lowLiquidity: true, premiumTooExpensive: false, ivTooHot: false, thetaRiskHigh: minsToClose < 120 } };
+
+  const risk = riskScore({
+    spreadPct: sideContract?.spreadPct, optionVolume: sideContract?.volume, openInterest: sideContract?.openInterest,
+    efficiency: sig.efficiency, moveStatus: status, iv: sideContract?.iv,
+    minsToClose, shareVolume: sig.shareVolume,
+  });
+
+  const setup = setupScore({
+    momentum01: sig.directionConfidence / 100,
+    relVol: sig.relVol, surge: sig.surge,
+    vwapAligned: sig.aboveVwap == null ? false : dirUp ? sig.aboveVwap : !sig.aboveVwap,
+    levelBreak: dirUp ? sig.hodBreak : sig.lodBreak,
+    optionVolume: sideContract?.volume, openInterest: sideContract?.openInterest,
+    spreadPct: sideContract?.spreadPct, zeroDteScore: contractRes.score,
+    moveStatus: status, riskScore: risk.score,
+  });
+
+  const minScore = getSettingNum("alert_min_momentum_score", Number(process.env.ALERT_MIN_MOMENTUM_SCORE ?? 55));
+  if (setup.score < minScore) return null;
+
+  const watch = watchScores({
+    shortRate: sig.shortRate, accel: sig.accel, aboveVwap: sig.aboveVwap,
+    hodBreak: sig.hodBreak, lodBreak: sig.lodBreak, surge: sig.surge, relVol: sig.relVol,
+    efficiency: sig.efficiency, callContract: sig.bestCall, putContract: sig.bestPut,
+    minsToClose, expRemainPct,
+  });
+  const worth = optionStillWorthIt({
+    status, contractScore: contractRes.score, minsToClose,
+    spreadPct: sideContract?.spreadPct, efficiency: sig.efficiency,
+  });
+  const bias = tradeBias({
+    direction: sig.direction, status, callWatch: watch.callWatch, putWatch: watch.putWatch,
+    contractScore: contractRes.score, worthItScore: worth.score,
+  });
+  const flags = riskFlags0dte({
+    flags: contractRes.flags, status, efficiency: sig.efficiency, minsToClose,
+    hodBreak: sig.hodBreak, lodBreak: sig.lodBreak, surge: sig.surge, direction: sig.direction,
+  });
+
+  const pressure = sig.chainContracts?.length ? optionsPressure(sig.chainContracts) : null;
+  const continuationScore = worth.score;
+  const exhaustionScore = 100 - ({ early: 85, continuing: 80, extended_tradable: 55, extended_risky: 30, exhausted: 5 }[status] ?? 50);
+
+  const explainInput = {
+    ticker: sig.ticker, direction: sig.direction, movePct: sig.movePct, shortRate: sig.shortRate,
+    relVol: sig.relVol, surge: sig.surge, vwapAligned: sig.aboveVwap == null ? null : dirUp ? sig.aboveVwap : !sig.aboveVwap,
+    levelBreak: dirUp ? sig.hodBreak : sig.lodBreak, efficiency: sig.efficiency,
+    moveStatus: status, worthItVerdict: worth.verdict, zeroDteScore: contractRes.score,
+    liquidityScore: optionsLiquidityScore(sideContract ?? {}).score,
+    riskScore: risk.score, setupScore: setup.score,
+    spreadPct: sideContract?.spreadPct, ivPct: ivToPct(sideContract?.iv), minsToClose,
+    riskFlags: flags,
   };
-}
+  const priv = buildExplanation(explainInput, "private");
+  const pub = buildExplanation(explainInput, "public");
 
-async function catalystFor(ticker: string, relVol: number | null) {
-  const news: any = await cached(`news:${ticker}`, NEWS_TTL_MS, () => fetchNews(ticker, { limit: 10, days: 3 }));
-  // available:false (plan limits, 429, outage) -> classify with zero items but
-  // an honest source label so we never fabricate a catalyst.
-  const items = news?.available ? news.items : [];
-  const cat = classifyCatalyst(items, { relVol: relVol ?? 0 });
-  if (!news?.available) {
-    return { ...cat, type: "no_clear_catalyst", quality: "unknown", summary: `News unavailable: ${news?.note ?? "unknown"}`, source: "unavailable", records: [] };
+  const id = insertAlert({
+    ticker: sig.ticker, source, alertType: sig.alertType ?? "0dte_momentum",
+    direction: sig.direction,
+    optionSymbol: sideContract?.optionSymbol ?? null, optionSide: sideContract?.side ?? null,
+    strike: sideContract?.strike ?? null, expiration: sideContract?.expiration ?? null, dte: sideContract?.dte ?? null,
+    alertTime: new Date(nowMs).toISOString(), tradingDay: day,
+    priceAtAlert: sig.price, percentMoveAtAlert: sig.movePct,
+    volume: sig.shareVolume, relativeVolume: sig.relVol,
+    catalystType: null, catalystQuality: null, catalystSummary: null, catalystSource: "pending",
+    signalScore: setup.score, riskScore: risk.score,
+    optionsLiquidityScore: explainInput.liquidityScore,
+    scannerScore: sig.scannerScore ?? null,
+    scoreBreakdownJson: JSON.stringify({ ...setup.breakdown, reasons: setup.reasons, riskReasons: risk.reasons, contractReasons: contractRes.reasons }),
+    aiExplanation: priv.text, publicExplanation: pub.text,
+    privateLabel: privateLabel0dte({ bias, setupScore: setup.score, direction: sig.direction, riskFlags: flags } as any),
+    publicLabel: publicLabel0dte({ direction: sig.direction, setupScore: setup.score }),
+    tradeBias: bias, moveStatus: status,
+    optionWorthScore: worth.score, worthVerdict: worth.verdict,
+    chaseRisk: status === "extended_risky" ? "High" : status === "extended_tradable" ? "Medium" : "Low",
+    ivRisk: level(ivToPct(sideContract?.iv), 150, 250),
+    spreadRisk: level(sideContract?.spreadPct, 6, 10),
+    continuationScore, exhaustionScore,
+    longCallScore: watch.callWatch, longPutScore: watch.putWatch,
+    zeroDteContractScore: contractRes.score,
+    riskFlags: flags,
+    optionsPressureLabel: pressure?.label ?? null,
+    optionsPressureJson: pressure ? JSON.stringify(pressure) : null,
+    snapshot: sideContract ? {
+      optionSymbol: sideContract.optionSymbol ?? null, bid: sideContract.bid ?? null, ask: sideContract.ask ?? null,
+      mid: sideContract.mid ?? null, spreadPct: sideContract.spreadPct ?? null,
+      volume: sideContract.volume ?? null, openInterest: sideContract.openInterest ?? null,
+      iv: sideContract.iv ?? null, delta: sideContract.delta ?? null,
+    } : null,
+    catalystRecords: [],
+  });
+
+  if (id != null) {
+    attachCatalystLater(id, sig.ticker, sig.relVol);
+    void notifyNewAlert(id, {
+      ticker: sig.ticker, direction: sig.direction, setupScore: setup.score, riskScore: risk.score,
+      liquidityScore: explainInput.liquidityScore, publicExplanation: pub.text,
+    });
   }
-  return cat;
+  return id;
 }
 
+/** Secondary path: map the slower swing-radar rows into the same 0DTE scoring. */
 export async function captureAlerts(input: {
   momentum: MomentumRow[];
   unusual: UnusualRow[];
   quotes?: Map<string, any>;
   nowMs?: number;
 }): Promise<{ inserted: number; skipped: number }> {
-  const cfg = thresholds();
-  if (!cfg.enabled) return { inserted: 0, skipped: 0 };
+  if (process.env.ALERT_LAB_ENABLED === "0") return { inserted: 0, skipped: 0 };
   const nowMs = input.nowMs ?? Date.now();
-  const alertTime = new Date(nowMs).toISOString();
-  const day = tradingDay(nowMs);
-  const unusualTickers = new Set(input.unusual.map((u) => u.symbol));
+  const minUnusual = getSettingNum("alert_min_unusual_score", Number(process.env.ALERT_MIN_UNUSUAL_SCORE ?? 80));
   let inserted = 0;
   let skipped = 0;
 
   for (const r of input.momentum) {
-    if (!r.symbol || !r.contract || r.score < cfg.momentum) continue;
-    if (alertExists(r.symbol, "momentum", r.contract.optionSymbol, day)) { skipped++; continue; }
-
+    if (!r.symbol || !r.contract) continue;
     const quote = input.quotes?.get(r.symbol);
-    const cat = await catalystFor(r.symbol, r.relVol);
-    const liq = optionsLiquidityScore(r.contract);
-    const risk = riskScore({
-      spreadPct: r.contract.spreadPct, openInterest: r.contract.openInterest,
-      catalystType: cat.type, catalystQuality: cat.quality,
-      movePct: r.movePct, shareVolume: quote?.volume ?? null, iv: r.contract.iv,
-    });
-    const quality = signalQualityScore({
-      relVol: r.relVol, movePct: r.movePct, catalystType: cat.type, catalystQuality: cat.quality,
-      liquidityScore: liq.score, hasUnusualFlow: unusualTickers.has(r.symbol),
-    });
-
-    const id = insertAlert({
-      ticker: r.symbol, source: "momentum", direction: r.bias ?? null,
-      optionSymbol: r.contract.optionSymbol, optionSide: (r.contract.side as string) ?? r.side,
-      strike: r.contract.strike, expiration: r.contract.expiration, dte: r.contract.dte,
-      alertTime, tradingDay: day,
-      priceAtAlert: r.underlyingPrice, percentMoveAtAlert: r.movePct,
-      volume: quote?.volume ?? null, relativeVolume: r.relVol,
-      catalystType: cat.type, catalystQuality: cat.quality, catalystSummary: cat.summary, catalystSource: cat.source,
-      signalScore: quality.score, riskScore: risk.score, optionsLiquidityScore: liq.score,
-      scannerScore: r.score,
-      snapshot: {
-        optionSymbol: r.contract.optionSymbol, bid: r.contract.bid, ask: r.contract.ask,
-        mid: r.contract.entry ?? r.contract.mid ?? null, spreadPct: r.contract.spreadPct,
-        volume: r.contract.volume, openInterest: r.contract.openInterest,
-        iv: r.contract.iv, delta: r.contract.delta,
-      },
-      catalystRecords: cat.records,
+    const dirUp = r.bias !== "bearish";
+    const id = await captureZeroDte({
+      ticker: r.symbol, price: r.underlyingPrice, movePct: r.movePct,
+      shortRate: null, accel: null, surge: null, relVol: r.relVol,
+      efficiency: null, vwap: null,
+      aboveVwap: r.priceVsVwapPct == null ? null : r.priceVsVwapPct >= 0,
+      hodBreak: quote?.dayHigh != null && r.underlyingPrice != null ? r.underlyingPrice >= quote.dayHigh * 0.999 : false,
+      lodBreak: quote?.dayLow != null && r.underlyingPrice != null ? r.underlyingPrice <= quote.dayLow * 1.001 : false,
+      direction: r.bias === "bearish" ? "bearish" : r.bias === "bullish" ? "bullish" : "choppy",
+      directionConfidence: Math.min(100, (r.momentumScore ?? 50)),
+      shareVolume: quote?.volume ?? null,
+      bestCall: dirUp ? r.contract : null,
+      bestPut: dirUp ? null : r.contract,
+      scannerScore: r.score, source: "momentum", alertType: "intraday_momentum", nowMs,
     });
     if (id != null) inserted++; else skipped++;
   }
 
   for (const u of input.unusual) {
-    if (!u.symbol || u.score < cfg.unusual) continue;
-    if (alertExists(u.symbol, "unusual", u.optionSymbol, day)) { skipped++; continue; }
-
+    if (!u.symbol || u.score < minUnusual) continue;
     const quote = input.quotes?.get(u.symbol);
     const momPeer = input.momentum.find((m) => m.symbol === u.symbol);
-    const relVol = momPeer?.relVol ?? null;
-    const movePct = quote?.changePercent ?? momPeer?.movePct ?? 0;
-    const cat = await catalystFor(u.symbol, relVol);
-    const liq = optionsLiquidityScore({ spreadPct: u.spreadPct, volume: u.volume, openInterest: u.openInterest, dte: u.dte });
-    const risk = riskScore({
-      spreadPct: u.spreadPct, openInterest: u.openInterest,
-      catalystType: cat.type, catalystQuality: cat.quality,
-      movePct, shareVolume: quote?.volume ?? null, iv: u.iv,
-    });
-    const quality = signalQualityScore({
-      relVol, movePct, catalystType: cat.type, catalystQuality: cat.quality,
-      liquidityScore: liq.score, hasUnusualFlow: true,
-    });
-
-    const id = insertAlert({
-      ticker: u.symbol, source: "unusual",
-      direction: u.side === "call" ? "bullish" : u.side === "put" ? "bearish" : "neutral",
-      optionSymbol: u.optionSymbol, optionSide: (u.side as string) ?? null,
-      strike: u.strike, expiration: u.expiration, dte: u.dte,
-      alertTime, tradingDay: day,
-      priceAtAlert: u.underlyingPrice ?? quote?.price ?? null, percentMoveAtAlert: movePct,
-      volume: quote?.volume ?? null, relativeVolume: relVol,
-      catalystType: cat.type, catalystQuality: cat.quality, catalystSummary: cat.summary, catalystSource: cat.source,
-      signalScore: quality.score, riskScore: risk.score, optionsLiquidityScore: liq.score,
-      scannerScore: u.score,
-      snapshot: {
-        optionSymbol: u.optionSymbol, bid: u.bid, ask: u.ask, mid: u.mid, spreadPct: u.spreadPct,
-        volume: u.volume, openInterest: u.openInterest, iv: u.iv, delta: u.delta,
-      },
-      catalystRecords: cat.records,
+    const dirUp = u.side === "call";
+    const id = await captureZeroDte({
+      ticker: u.symbol, price: u.underlyingPrice ?? quote?.price ?? null,
+      movePct: quote?.changePercent ?? momPeer?.movePct ?? 0,
+      shortRate: null, accel: null, surge: null, relVol: momPeer?.relVol ?? null,
+      efficiency: null, vwap: null, aboveVwap: null,
+      hodBreak: false, lodBreak: false,
+      direction: dirUp ? "bullish" : u.side === "put" ? "bearish" : "choppy",
+      directionConfidence: Math.min(100, u.score),
+      shareVolume: quote?.volume ?? null,
+      bestCall: dirUp ? u : null, bestPut: dirUp ? null : (u.side === "put" ? u : null),
+      scannerScore: u.score, source: "unusual", alertType: "options_volume_spike", nowMs,
     });
     if (id != null) inserted++; else skipped++;
   }
 
   return { inserted, skipped };
 }
+
+export { MOVE_STATUS_LABEL, TRADE_BIAS_LABEL };

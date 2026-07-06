@@ -10,7 +10,8 @@ import { getDb } from "@/lib/db";
 
 export interface NewAlert {
   ticker: string;
-  source: "momentum" | "unusual";
+  source: "momentum" | "unusual" | "manual";
+  alertType?: string | null;
   direction: string | null;
   optionSymbol: string | null;
   optionSide: string | null;
@@ -31,6 +32,27 @@ export interface NewAlert {
   riskScore: number | null;
   optionsLiquidityScore: number | null;
   scannerScore: number | null;
+  scoreBreakdownJson?: string | null;
+  aiExplanation?: string | null;
+  publicExplanation?: string | null;
+  privateLabel?: string | null;
+  publicLabel?: string | null;
+  // 0DTE fields
+  tradeBias?: string | null;
+  moveStatus?: string | null;
+  optionWorthScore?: number | null;
+  worthVerdict?: string | null;
+  chaseRisk?: string | null;
+  ivRisk?: string | null;
+  spreadRisk?: string | null;
+  continuationScore?: number | null;
+  exhaustionScore?: number | null;
+  longCallScore?: number | null;
+  longPutScore?: number | null;
+  zeroDteContractScore?: number | null;
+  riskFlags?: string[] | null;
+  optionsPressureLabel?: string | null;
+  optionsPressureJson?: string | null;
   snapshot?: {
     optionSymbol: string | null;
     bid: number | null; ask: number | null; mid: number | null;
@@ -50,30 +72,45 @@ export function alertExists(ticker: string, source: string, optionSymbol: string
   return Boolean(row);
 }
 
-/** Insert alert + at-alert snapshot + catalyst records in one transaction.
- * Returns the new id, or null when the dedup index says we already have it. */
+/** Insert alert + at-alert snapshot + catalyst records + score breakdown in
+ * one transaction. Returns new id, or null when the dedup index rejects it. */
 export function insertAlert(a: NewAlert): number | null {
   const db = getDb();
   const tx = db.transaction((alert: NewAlert): number | null => {
     const res = db
       .prepare(
         `INSERT OR IGNORE INTO alerts (
-          ticker, source, direction, option_symbol, option_side, strike, expiration, dte,
+          ticker, source, alert_type, direction, option_symbol, option_side, strike, expiration, dte,
           alert_time, trading_day, price_at_alert, percent_move_at_alert, volume, relative_volume,
           catalyst_type, catalyst_quality, catalyst_summary, catalyst_source,
-          signal_score, risk_score, options_liquidity_score, scanner_score, status
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'tracking')`,
+          signal_score, risk_score, options_liquidity_score, scanner_score,
+          score_breakdown_json, ai_explanation, public_explanation, private_label, public_label,
+          trade_bias, move_status, option_worth_score, worth_verdict, chase_risk, iv_risk, spread_risk,
+          continuation_score, exhaustion_score, long_call_score, long_put_score, zero_dte_contract_score, risk_flags,
+          options_pressure_label, options_pressure_json, status
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'tracking')`,
       )
       .run(
-        alert.ticker, alert.source, alert.direction, alert.optionSymbol, alert.optionSide,
+        alert.ticker, alert.source, alert.alertType ?? null, alert.direction, alert.optionSymbol, alert.optionSide,
         alert.strike, alert.expiration, alert.dte, alert.alertTime, alert.tradingDay,
         alert.priceAtAlert, alert.percentMoveAtAlert, alert.volume, alert.relativeVolume,
         alert.catalystType, alert.catalystQuality, alert.catalystSummary, alert.catalystSource,
         alert.signalScore, alert.riskScore, alert.optionsLiquidityScore, alert.scannerScore,
+        alert.scoreBreakdownJson ?? null, alert.aiExplanation ?? null, alert.publicExplanation ?? null,
+        alert.privateLabel ?? null, alert.publicLabel ?? null,
+        alert.tradeBias ?? null, alert.moveStatus ?? null, alert.optionWorthScore ?? null, alert.worthVerdict ?? null,
+        alert.chaseRisk ?? null, alert.ivRisk ?? null, alert.spreadRisk ?? null,
+        alert.continuationScore ?? null, alert.exhaustionScore ?? null,
+        alert.longCallScore ?? null, alert.longPutScore ?? null, alert.zeroDteContractScore ?? null,
+        alert.riskFlags ? JSON.stringify(alert.riskFlags) : null,
+        alert.optionsPressureLabel ?? null, alert.optionsPressureJson ?? null,
       );
     if (res.changes === 0) return null;
     const id = Number(res.lastInsertRowid);
 
+    if (alert.scoreBreakdownJson) {
+      db.prepare("INSERT INTO score_breakdowns (alert_id, breakdown_json) VALUES (?,?)").run(id, alert.scoreBreakdownJson);
+    }
     if (alert.snapshot) {
       db.prepare(
         `INSERT INTO options_snapshots (alert_id, taken_at, checkpoint, option_symbol, bid, ask, mid, spread_pct, volume, open_interest, iv, delta)
@@ -105,6 +142,7 @@ export interface AlertFilters {
   falsePositive?: boolean;
   tradeTaken?: boolean;
   status?: string;
+  minId?: number; // for popup polling: only alerts newer than this id
   limit?: number;
   offset?: number;
 }
@@ -121,6 +159,7 @@ export function listAlerts(f: AlertFilters = {}) {
   if (f.falsePositive != null) where.push(f.falsePositive ? "a.is_false_positive = 1" : "(a.is_false_positive = 0 OR a.is_false_positive IS NULL)");
   if (f.tradeTaken != null) where.push(`${f.tradeTaken ? "" : "NOT "}EXISTS (SELECT 1 FROM trade_journal j WHERE j.alert_id = a.id)`);
   if (f.status) { where.push("a.status = ?"); params.push(f.status); }
+  if (f.minId != null) { where.push("a.id > ?"); params.push(f.minId); }
 
   const sql = `
     SELECT a.*,
@@ -129,7 +168,7 @@ export function listAlerts(f: AlertFilters = {}) {
       EXISTS (SELECT 1 FROM trade_journal j WHERE j.alert_id = a.id) AS trade_taken
     FROM alerts a
     ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-    ORDER BY a.alert_time DESC
+    ORDER BY a.id DESC
     LIMIT ? OFFSET ?`;
   params.push(Math.min(Number(f.limit ?? 200), 1000), Number(f.offset ?? 0));
   return getDb().prepare(sql).all(...params);
@@ -145,6 +184,7 @@ export function getAlertDetail(id: number) {
     snapshots: db.prepare("SELECT * FROM options_snapshots WHERE alert_id=? ORDER BY taken_at").all(id),
     catalysts: db.prepare("SELECT * FROM catalyst_records WHERE alert_id=? ORDER BY published_at DESC").all(id),
     journal: db.prepare("SELECT * FROM trade_journal WHERE alert_id=? ORDER BY created_at").all(id),
+    breakdowns: db.prepare("SELECT * FROM score_breakdowns WHERE alert_id=?").all(id),
   };
 }
 
@@ -192,8 +232,46 @@ export function recordCheckpoint(row: {
   );
 }
 
+/** Late catalyst attach — news is fetched AFTER the alert exists so it can
+ * never delay or block a momentum alert (spec: catalysts are context only). */
+export function updateAlertCatalyst(alertId: number, cat: {
+  type: string; quality: string; summary: string | null; source: string | null;
+  records?: Array<{ headline: string; publisher: string | null; publishedAt: string | null; url: string | null; catalystType: string; quality: string; matchedKeywords: string }>;
+}, ticker: string) {
+  const db = getDb();
+  db.prepare("UPDATE alerts SET catalyst_type=?, catalyst_quality=?, catalyst_summary=?, catalyst_source=? WHERE id=?")
+    .run(cat.type, cat.quality, cat.summary, cat.source, alertId);
+  for (const c of cat.records ?? []) {
+    db.prepare(
+      `INSERT INTO catalyst_records (alert_id, ticker, headline, publisher, published_at, url, catalyst_type, quality, matched_keywords)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+    ).run(alertId, ticker, c.headline, c.publisher, c.publishedAt, c.url, c.catalystType, c.quality, c.matchedKeywords);
+  }
+}
+
 export function finalizeAlert(alertId: number, isFalsePositive: boolean) {
   getDb().prepare("UPDATE alerts SET status='complete', is_false_positive=? WHERE id=?").run(isFalsePositive ? 1 : 0, alertId);
+}
+
+/** EOD outcome facts the Alert Lab measures beyond price checkpoints:
+ * did the call side work, did the put side work (>= threshold favorable move
+ * in that direction at any point), did the tracked contract's spread widen
+ * materially vs the alert snapshot, and did the move reverse. */
+export function recordAlertOutcomes(alertId: number, o: {
+  callSideWorked: boolean | null; putSideWorked: boolean | null;
+  spreadWidened: boolean | null; reversed: boolean | null;
+}) {
+  const b = (v: boolean | null) => (v == null ? null : v ? 1 : 0);
+  getDb().prepare("UPDATE alerts SET call_side_worked=?, put_side_worked=?, spread_widened=?, reversed=? WHERE id=?")
+    .run(b(o.callSideWorked), b(o.putSideWorked), b(o.spreadWidened), b(o.reversed), alertId);
+}
+
+/** Spread comparison inputs for outcome measurement. */
+export function alertSpreadHistory(alertId: number): { atAlert: number | null; maxLive: number | null } {
+  const db = getDb();
+  const first: any = db.prepare("SELECT spread_pct FROM options_snapshots WHERE alert_id=? AND checkpoint='alert' LIMIT 1").get(alertId);
+  const live: any = db.prepare("SELECT MAX(spread_pct) AS m FROM options_snapshots WHERE alert_id=? AND checkpoint='live'").get(alertId);
+  return { atAlert: first?.spread_pct ?? null, maxLive: live?.m ?? null };
 }
 
 /** Aggregate stats for the Alert Lab dashboard. */
@@ -310,25 +388,25 @@ export function weeklyReport() {
 
 // ── Trade journal ────────────────────────────────────────────────────────────
 
-export function insertJournal(j: {
-  alertId?: number | null; ticker: string; side?: string | null;
-  entryPrice?: number | null; exitPrice?: number | null; quantity?: number | null;
-  openedAt?: string | null; closedAt?: string | null; outcomePct?: number | null; notes?: string | null;
-}) {
+const JOURNAL_FIELDS: Record<string, string> = {
+  alertId: "alert_id", side: "side", contract: "contract",
+  entryPrice: "entry_price", exitPrice: "exit_price", quantity: "quantity",
+  openedAt: "opened_at", closedAt: "closed_at", outcomePct: "outcome_pct", pnl: "pnl",
+  entryReason: "entry_reason", exitReason: "exit_reason", mistakeNotes: "mistake_notes",
+  screenshotUrl: "screenshot_url", emotionTag: "emotion_tag", lesson: "lesson", notes: "notes",
+};
+
+export function insertJournal(j: Record<string, unknown> & { ticker: string }) {
+  const cols = ["ticker"];
+  const vals: unknown[] = [String(j.ticker).toUpperCase()];
+  for (const [k, col] of Object.entries(JOURNAL_FIELDS)) {
+    if (k in j && j[k] !== undefined) { cols.push(col); vals.push(j[k] ?? null); }
+  }
   const res = getDb().prepare(
-    `INSERT INTO trade_journal (alert_id, ticker, side, entry_price, exit_price, quantity, opened_at, closed_at, outcome_pct, notes)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
-  ).run(
-    j.alertId ?? null, String(j.ticker).toUpperCase(), j.side ?? null, j.entryPrice ?? null, j.exitPrice ?? null,
-    j.quantity ?? null, j.openedAt ?? null, j.closedAt ?? null, j.outcomePct ?? null, j.notes ?? null,
-  );
+    `INSERT INTO trade_journal (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`,
+  ).run(...vals);
   return getDb().prepare("SELECT * FROM trade_journal WHERE id=?").get(Number(res.lastInsertRowid));
 }
-
-const JOURNAL_FIELDS: Record<string, string> = {
-  side: "side", entryPrice: "entry_price", exitPrice: "exit_price", quantity: "quantity",
-  openedAt: "opened_at", closedAt: "closed_at", outcomePct: "outcome_pct", notes: "notes", alertId: "alert_id",
-};
 
 export function updateJournal(id: number, patch: Record<string, unknown>) {
   const sets: string[] = [];
@@ -349,4 +427,89 @@ export function listJournal(limit = 100) {
     `SELECT j.*, a.signal_score, a.catalyst_type FROM trade_journal j
      LEFT JOIN alerts a ON a.id = j.alert_id ORDER BY j.created_at DESC LIMIT ?`,
   ).all(Math.min(limit, 500));
+}
+
+// ── Scanner settings (key/value overrides, editable from /settings) ─────────
+
+export function getSetting(key: string): string | null {
+  const row: any = getDb().prepare("SELECT value FROM scanner_settings WHERE key=?").get(key);
+  return row?.value ?? null;
+}
+
+export function getSettingNum(key: string, fallback: number): number {
+  const v = getSetting(key);
+  const n = v == null ? NaN : Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+export function setSetting(key: string, value: string) {
+  getDb().prepare(
+    `INSERT INTO scanner_settings (key, value) VALUES (?,?)
+     ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
+  ).run(key, value);
+}
+
+export function allSettings(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const r of getDb().prepare("SELECT key, value FROM scanner_settings").all() as any[]) out[r.key] = r.value;
+  return out;
+}
+
+// ── Notification settings + events ──────────────────────────────────────────
+
+export function getNotificationSettings() {
+  return getDb().prepare("SELECT * FROM notification_settings WHERE id=1").get() as any;
+}
+
+const NOTIF_FIELDS: Record<string, string> = {
+  browserPopupEnabled: "browser_popup_enabled",
+  desktopNotificationEnabled: "desktop_notification_enabled",
+  soundEnabled: "sound_enabled",
+  discordEnabled: "discord_enabled",
+  discordRequiresManualConfirm: "discord_requires_manual_confirm",
+  publicModeRequiredForDiscord: "public_mode_required_for_discord",
+};
+
+export function updateNotificationSettings(patch: Record<string, unknown>) {
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  for (const [k, col] of Object.entries(NOTIF_FIELDS)) {
+    if (k in patch) { sets.push(`${col} = ?`); params.push(patch[k] ? 1 : 0); }
+  }
+  if (sets.length) {
+    sets.push("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')");
+    getDb().prepare(`UPDATE notification_settings SET ${sets.join(", ")} WHERE id=1`).run(...params);
+  }
+  return getNotificationSettings();
+}
+
+export function logPopupEvent(alertId: number | null, ticker: string | null, action: string) {
+  getDb().prepare("INSERT INTO popup_events (alert_id, ticker, action) VALUES (?,?,?)").run(alertId, ticker, action);
+}
+
+export function insertNotificationEvent(e: {
+  alertId: number | null; channel: string; status: string;
+  payloadJson?: string | null; error?: string | null; sentAt?: string | null;
+}): number {
+  const res = getDb().prepare(
+    "INSERT INTO notification_events (alert_id, channel, status, payload_json, error, sent_at) VALUES (?,?,?,?,?,?)",
+  ).run(e.alertId, e.channel, e.status, e.payloadJson ?? null, e.error ?? null, e.sentAt ?? null);
+  return Number(res.lastInsertRowid);
+}
+
+export function pendingDiscordEvents() {
+  return getDb().prepare(
+    `SELECT n.*, a.ticker FROM notification_events n LEFT JOIN alerts a ON a.id = n.alert_id
+     WHERE n.channel='discord_webhook' AND n.status='pending_confirm' ORDER BY n.created_at DESC LIMIT 50`,
+  ).all();
+}
+
+export function getNotificationEvent(id: number) {
+  return getDb().prepare("SELECT * FROM notification_events WHERE id=?").get(id) as any;
+}
+
+export function markNotificationEvent(id: number, status: string, error?: string | null) {
+  getDb().prepare(
+    "UPDATE notification_events SET status=?, error=?, sent_at=CASE WHEN ?='sent' THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE sent_at END WHERE id=?",
+  ).run(status, error ?? null, status, id);
 }

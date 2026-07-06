@@ -1,0 +1,75 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync, readdirSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const read = (p) => readFileSync(join(root, p), "utf8");
+
+test("SPEC: every-second scanner loop exists (default 1000ms) and is started at boot", () => {
+  const loop = read("lib/scanner-loop.ts");
+  assert.ok(loop.includes("SCANNER_LOOP_MS ?? 1000"), "loop default must be 1s");
+  assert.ok(loop.includes("export function startScannerLoop"));
+  assert.ok(read("lib/server-boot.ts").includes("startScannerLoop"), "boot must start scanner loop");
+});
+
+test("SPEC: options chains are fetched only for triggered/active tickers, never in the 1s tick body", () => {
+  const loop = read("lib/scanner-loop.ts");
+  // tick() = everything between 'async function tick' and 'export function startScannerLoop'
+  const tickBody = loop.slice(loop.indexOf("async function tick"), loop.indexOf("export function startScannerLoop"));
+  assert.ok(!tickBody.includes("fetchOptionChain("), "tick() must not fetch chains directly");
+  const triggerBody = loop.slice(loop.indexOf("async function handleTrigger"), loop.indexOf("async function refreshActiveAlerts"));
+  assert.ok(triggerBody.includes("fetchOptionChain("), "chains fetch inside handleTrigger only");
+  assert.ok(tickBody.includes("shouldTrigger("), "tick must gate via shouldTrigger");
+  assert.ok(loop.includes("lastChainFetch"), "per-symbol chain throttle required");
+  assert.ok(loop.includes("intervalMs * 2"), "429 backoff required");
+});
+
+test("SPEC: catalyst attach is fire-and-forget after insert — never blocks or gates an alert", () => {
+  const cap = read("lib/alert-capture.ts");
+  assert.ok(cap.includes("attachCatalystLater"), "late attach fn required");
+  const beforeInsert = cap.slice(0, cap.indexOf("insertAlert({"));
+  assert.ok(!beforeInsert.includes("await fetchNews"), "news must not be awaited before insert");
+  assert.ok(cap.includes('catalystSource: "pending"'), "alerts insert with catalyst pending");
+});
+
+test("SPEC: scanner is AI-free — no model calls anywhere in lib/", () => {
+  for (const f of readdirSync(join(root, "lib"))) {
+    const src = read(join("lib", f));
+    assert.ok(!/openai|anthropic\.com|claude|gpt-|llm/i.test(src), `AI reference found in lib/${f}`);
+  }
+});
+
+test("SPEC: Alert Lab tracks 1m/3m/5m/15m/30m/1h/eod checkpoints", () => {
+  const tr = read("lib/alert-tracker.ts");
+  for (const cp of ['"1m"', '"3m"', '"5m"', '"15m"', '"30m"', '"1h"', '"eod"']) {
+    assert.ok(tr.includes(cp), `missing checkpoint ${cp}`);
+  }
+  assert.ok(tr.includes("recordAlertOutcomes"), "EOD must record side-worked/spread/reversal outcomes");
+  assert.ok(tr.includes("callSideWorked") && tr.includes("putSideWorked"));
+});
+
+test("SPEC: trade journal links trades to alerts (alert_id foreign key + popup wiring)", () => {
+  assert.ok(read("lib/db.ts").includes("alert_id INTEGER REFERENCES alerts(id)"));
+  assert.ok(read("lib/alert-store.ts").includes("alertId: \"alert_id\""));
+  assert.ok(read("components/AlertPopup.tsx").includes("alertId: a.id"));
+});
+
+test("SPEC: reality check + pressure exist and chains stay trigger/open-gated", () => {
+  const opt = read("app/api/options/[ticker]/route.ts");
+  assert.ok(opt.includes("realityCheck") && opt.includes("optionsPressure"));
+  // Reality check now lives in the chart panel: chains fetch only when a symbol
+  // is opened (mover row or alert row), and are never polled on an interval.
+  const chart = read("components/ChartPanel.tsx");
+  assert.ok(chart.includes("/api/options/"), "chart panel fetches the reality check on open");
+  assert.ok(!/setInterval\([^)]*api\/options/.test(chart), "no polling of chains from the dashboard");
+  const board = read("components/LiveMoversBoard.tsx");
+  assert.ok(board.includes("onOpenChart"), "movers open the chart panel on click");
+});
+
+test("SPEC: candles + data-access probe routes exist and chart uses lightweight-charts", () => {
+  assert.ok(read("app/api/candles/[symbol]/route.ts").includes("fetchCandles"), "candles route wraps fetchCandles");
+  assert.ok(read("app/api/health/data-access/route.ts").includes("NOT_AUTHORIZED") || read("app/api/health/data-access/route.ts").includes("probe"), "data-access probe route exists");
+  assert.ok(read("components/ChartPanel.tsx").includes("lightweight-charts"), "chart panel uses lightweight-charts");
+});

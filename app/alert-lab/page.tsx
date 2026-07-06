@@ -9,6 +9,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { scanHeaders } from "@/hooks/useScanner";
+import { AppNav } from "@/components/AppNav";
+import { ChartPanel } from "@/components/ChartPanel";
 import { TickerIcon, GradeChip, ScoreBar } from "@/components/ui";
 import { changeColor, fmtPct, fmtPrice, fmtTime } from "@/lib/format";
 
@@ -64,6 +66,10 @@ export default function AlertLabPage() {
 
   // Journal edit buffers
   const [edits, setEdits] = useState<Record<number, { exitPrice?: string; outcomePct?: string; notes?: string }>>({});
+
+  // Chart panel
+  const [chartSymbol, setChartSymbol] = useState<string | null>(null);
+  const [chartOpen, setChartOpen] = useState(false);
 
   const query = useMemo(() => {
     const q = new URLSearchParams();
@@ -148,17 +154,7 @@ export default function AlertLabPage() {
 
   return (
     <div className="app">
-      <div className="topbar">
-        <div className="logo">
-          <span className="mark">O</span>
-          OptiScan
-          <small>alert lab · signal research</small>
-        </div>
-        <div className="spacer" />
-        <div className="pill">{loading ? "Loading…" : `${alerts.length} alerts`}</div>
-        <div className="pill btn" onClick={refresh}>Refresh</div>
-        <a className="pill btn" href="/">← Scanner</a>
-      </div>
+      <AppNav status={[{ label: loading ? "Loading…" : `${alerts.length} alerts` }]} onRefresh={refresh} />
 
       {error && (
         <div className="kpi" style={{ marginBottom: 16, borderColor: "var(--amber)", background: "rgba(255,176,32,.06)" }}>
@@ -170,9 +166,9 @@ export default function AlertLabPage() {
       <div className="kpis" style={{ marginBottom: 14 }}>
         <div className="kpi"><div className="label">Alerts today</div><div className="val num">{todayCount}</div><div className="sub">{totals?.total ?? 0} all-time</div></div>
         <div className="kpi"><div className="label">Avg signal score</div><div className="val num">{totals?.avg_signal != null ? Math.round(totals.avg_signal) : "—"}</div><div className="sub">risk {totals?.avg_risk != null ? Math.round(totals.avg_risk) : "—"} · liq {totals?.avg_liquidity != null ? Math.round(totals.avg_liquidity) : "—"}</div></div>
-        <div className="kpi"><div className="label">Avg max move after alert</div><div className="val num">{stats?.avgMove?.avg_max_move != null ? `${stats.avgMove.avg_max_move.toFixed(1)}%` : "—"}</div><div className="sub">favorable-direction extreme, EOD basis</div></div>
-        <div className="kpi"><div className="label">False-positive rate</div><div className="val num">{fpRate != null ? `${Math.round(fpRate * 100)}%` : "—"}</div><div className="sub">{totals?.completed ?? 0} completed alerts</div></div>
-        <div className="kpi"><div className="label">Best setup type</div><div className="val" style={{ fontSize: 15 }}>{catLabel(stats?.byCatalyst?.[0]?.type ?? null)}</div><div className="sub">{stats?.byCatalyst?.[0]?.avg_max_move != null ? `${stats.byCatalyst[0].avg_max_move.toFixed(1)}% avg max move` : "needs completed alerts"}</div></div>
+        <div className="kpi"><div className="label">Avg max move after alert</div><div className="val num">{stats?.avgMove?.avg_max_move != null ? `${stats.avgMove.avg_max_move.toFixed(1)}%` : "—"}</div><div className="sub">best move in your direction</div></div>
+        <div className="kpi"><div className="label">False-positive rate</div><div className="val num">{fpRate != null ? `${Math.round(fpRate * 100)}%` : "—"}</div><div className="sub">{totals?.completed ?? 0} finished alerts</div></div>
+        <div className="kpi"><div className="label">Best setup type</div><div className="val" style={{ fontSize: 15 }}>{catLabel(stats?.byCatalyst?.[0]?.type ?? null)}</div><div className="sub">{stats?.byCatalyst?.[0]?.avg_max_move != null ? `${stats.byCatalyst[0].avg_max_move.toFixed(1)}% avg max move` : "shows once alerts finish"}</div></div>
       </div>
 
       <div className="panel main" style={{ marginBottom: 14 }}>
@@ -205,8 +201,8 @@ export default function AlertLabPage() {
 
         {!alerts.length ? (
           <div className="empty">
-            <div className="big">No alerts recorded yet.</div>
-            Alerts persist here automatically when the scanner flags a GOOD+ momentum or STRONG unusual-flow signal.
+            <div className="big">No alerts yet</div>
+            Alerts land here on their own once the scanner catches a strong momentum or unusual-flow setup.
           </div>
         ) : (
           <div className="tablewrap">
@@ -214,7 +210,7 @@ export default function AlertLabPage() {
               <thead>
                 <tr>
                   <th>Time</th><th>Ticker</th><th>Src</th><th>Move @ alert</th><th>Catalyst</th>
-                  <th>Signal</th><th>Risk</th><th>Liq</th><th>Max after</th><th>EOD</th><th>Status</th><th>Journal</th>
+                  <th>Signal</th><th>Risk</th><th>Liq</th><th>Max after</th><th>EOD</th><th>Status</th><th>Chart</th><th>Journal</th>
                 </tr>
               </thead>
               <tbody>
@@ -249,6 +245,15 @@ export default function AlertLabPage() {
                       {a.is_false_positive === 1 ? <span className="tag t-put">FALSE +</span>
                         : a.status === "complete" ? <GradeChip grade="GOOD" />
                         : <span className="tag t-vol">TRACKING</span>}
+                    </td>
+                    <td>
+                      <button
+                        className="pill btn"
+                        style={{ fontSize: 11, padding: "4px 8px" }}
+                        onClick={() => { setChartSymbol(a.ticker); setChartOpen(true); }}
+                      >
+                        Chart
+                      </button>
                     </td>
                     <td>
                       {a.trade_taken ? <span className="tag t-call">LOGGED</span>
@@ -343,6 +348,8 @@ export default function AlertLabPage() {
           )}
         </div>
       </div>
+
+      <ChartPanel symbol={chartSymbol} open={chartOpen} onClose={() => setChartOpen(false)} />
 
       <div className="footer">
         Alert Lab · records and measures scanner alerts for research · no order placement, no recommendations · not financial advice
