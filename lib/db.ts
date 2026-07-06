@@ -189,6 +189,13 @@ const ALERT_COLUMN_MIGRATIONS: [string, string][] = [
   ["long_put_score", "ALTER TABLE alerts ADD COLUMN long_put_score REAL"],
   ["zero_dte_contract_score", "ALTER TABLE alerts ADD COLUMN zero_dte_contract_score REAL"],
   ["risk_flags", "ALTER TABLE alerts ADD COLUMN risk_flags TEXT"],
+  // options pressure confirmation + measured outcomes
+  ["options_pressure_label", "ALTER TABLE alerts ADD COLUMN options_pressure_label TEXT"],
+  ["options_pressure_json", "ALTER TABLE alerts ADD COLUMN options_pressure_json TEXT"],
+  ["call_side_worked", "ALTER TABLE alerts ADD COLUMN call_side_worked INTEGER"],
+  ["put_side_worked", "ALTER TABLE alerts ADD COLUMN put_side_worked INTEGER"],
+  ["spread_widened", "ALTER TABLE alerts ADD COLUMN spread_widened INTEGER"],
+  ["reversed", "ALTER TABLE alerts ADD COLUMN reversed INTEGER"],
 ];
 const JOURNAL_COLUMN_MIGRATIONS: [string, string][] = [
   ["contract", "ALTER TABLE trade_journal ADD COLUMN contract TEXT"],

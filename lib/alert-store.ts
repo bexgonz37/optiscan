@@ -51,6 +51,8 @@ export interface NewAlert {
   longPutScore?: number | null;
   zeroDteContractScore?: number | null;
   riskFlags?: string[] | null;
+  optionsPressureLabel?: string | null;
+  optionsPressureJson?: string | null;
   snapshot?: {
     optionSymbol: string | null;
     bid: number | null; ask: number | null; mid: number | null;
@@ -84,8 +86,9 @@ export function insertAlert(a: NewAlert): number | null {
           signal_score, risk_score, options_liquidity_score, scanner_score,
           score_breakdown_json, ai_explanation, public_explanation, private_label, public_label,
           trade_bias, move_status, option_worth_score, worth_verdict, chase_risk, iv_risk, spread_risk,
-          continuation_score, exhaustion_score, long_call_score, long_put_score, zero_dte_contract_score, risk_flags, status
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'tracking')`,
+          continuation_score, exhaustion_score, long_call_score, long_put_score, zero_dte_contract_score, risk_flags,
+          options_pressure_label, options_pressure_json, status
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'tracking')`,
       )
       .run(
         alert.ticker, alert.source, alert.alertType ?? null, alert.direction, alert.optionSymbol, alert.optionSide,
@@ -100,6 +103,7 @@ export function insertAlert(a: NewAlert): number | null {
         alert.continuationScore ?? null, alert.exhaustionScore ?? null,
         alert.longCallScore ?? null, alert.longPutScore ?? null, alert.zeroDteContractScore ?? null,
         alert.riskFlags ? JSON.stringify(alert.riskFlags) : null,
+        alert.optionsPressureLabel ?? null, alert.optionsPressureJson ?? null,
       );
     if (res.changes === 0) return null;
     const id = Number(res.lastInsertRowid);
@@ -247,6 +251,27 @@ export function updateAlertCatalyst(alertId: number, cat: {
 
 export function finalizeAlert(alertId: number, isFalsePositive: boolean) {
   getDb().prepare("UPDATE alerts SET status='complete', is_false_positive=? WHERE id=?").run(isFalsePositive ? 1 : 0, alertId);
+}
+
+/** EOD outcome facts the Alert Lab measures beyond price checkpoints:
+ * did the call side work, did the put side work (>= threshold favorable move
+ * in that direction at any point), did the tracked contract's spread widen
+ * materially vs the alert snapshot, and did the move reverse. */
+export function recordAlertOutcomes(alertId: number, o: {
+  callSideWorked: boolean | null; putSideWorked: boolean | null;
+  spreadWidened: boolean | null; reversed: boolean | null;
+}) {
+  const b = (v: boolean | null) => (v == null ? null : v ? 1 : 0);
+  getDb().prepare("UPDATE alerts SET call_side_worked=?, put_side_worked=?, spread_widened=?, reversed=? WHERE id=?")
+    .run(b(o.callSideWorked), b(o.putSideWorked), b(o.spreadWidened), b(o.reversed), alertId);
+}
+
+/** Spread comparison inputs for outcome measurement. */
+export function alertSpreadHistory(alertId: number): { atAlert: number | null; maxLive: number | null } {
+  const db = getDb();
+  const first: any = db.prepare("SELECT spread_pct FROM options_snapshots WHERE alert_id=? AND checkpoint='alert' LIMIT 1").get(alertId);
+  const live: any = db.prepare("SELECT MAX(spread_pct) AS m FROM options_snapshots WHERE alert_id=? AND checkpoint='live'").get(alertId);
+  return { atAlert: first?.spread_pct ?? null, maxLive: live?.m ?? null };
 }
 
 /** Aggregate stats for the Alert Lab dashboard. */

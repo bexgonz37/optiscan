@@ -27,9 +27,13 @@ import {
   existingCheckpoints,
   recordCheckpoint,
   finalizeAlert,
+  recordAlertOutcomes,
+  alertSpreadHistory,
 } from "@/lib/alert-store";
 
 const CHECKPOINTS: { key: string; mins: number | null }[] = [
+  { key: "1m", mins: 1 },
+  { key: "3m", mins: 3 },
   { key: "5m", mins: 5 },
   { key: "15m", mins: 15 },
   { key: "30m", mins: 30 },
@@ -159,6 +163,22 @@ export async function runTrackerSweep(nowMs = Date.now()) {
       recorded++;
       if (key === "eod") {
         finalizeAlert(a.id, Boolean(fp));
+        // Outcome facts beyond price: which SIDE worked, spread health, reversal.
+        try {
+          const win = bars.filter((b) => b.t >= alertMs && b.t <= cpMs);
+          if (win.length && Number.isFinite(a.price_at_alert) && a.price_at_alert > 0) {
+            const maxUp = (Math.max(...win.map((b) => (Number.isFinite(b.h) ? b.h : b.c))) - a.price_at_alert) / a.price_at_alert * 100;
+            const maxDown = (Math.min(...win.map((b) => (Number.isFinite(b.l) ? b.l : b.c))) - a.price_at_alert) / a.price_at_alert * 100;
+            const thr = FP_MIN_FAVORABLE_PCT;
+            const spreads = alertSpreadHistory(a.id);
+            recordAlertOutcomes(a.id, {
+              callSideWorked: maxUp >= thr,
+              putSideWorked: maxDown <= -thr,
+              spreadWidened: spreads.atAlert != null && spreads.maxLive != null ? spreads.maxLive > Math.max(spreads.atAlert * 1.5, spreads.atAlert + 3) : null,
+              reversed: Boolean(cp.maxPercentMoveAfterAlert != null && cp.maxPercentMoveAfterAlert >= thr && cp.percentMoveFromAlert != null && cp.percentMoveFromAlert < 0),
+            });
+          }
+        } catch { /* outcome bookkeeping never blocks finalize */ }
         finalized++;
       }
     }

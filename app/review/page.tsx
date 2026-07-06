@@ -37,6 +37,7 @@ export default function ReviewPage() {
       <Section title="The pipeline" items={X.pipeline} />
       <Section title="Not just what's moving" items={X.notJustMovement} />
       <Section title="Compared to broker scanners" items={X.comparedToBrokerScanners} />
+      <Section title="Compared to options flow tools" items={X.comparedToFlowTools} />
       <Section title="Design goals" items={X.designGoals} />
       <Section title="Honest limits" items={X.honestLimits} />
 

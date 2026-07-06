@@ -126,6 +126,7 @@ async function handleTrigger(ticker: string, st: SymState, read: any, quote: any
     hodBreak: read.levels.hodBreak, lodBreak: read.levels.lodBreak,
     direction: read.dir.direction, directionConfidence: read.dir.confidence,
     shareVolume: quote.volume ?? null, bestCall, bestPut,
+    chainContracts: chain.contracts,
     source: "momentum", alertType: "0dte_momentum", nowMs,
   });
   if (id != null) {

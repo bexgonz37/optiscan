@@ -30,6 +30,7 @@ interface PopupAlert {
   chase_risk: string | null; iv_risk: string | null; spread_risk: string | null;
   long_call_score: number | null; long_put_score: number | null;
   zero_dte_contract_score: number | null;
+  risk_flags: string | null; options_pressure_label: string | null;
 }
 
 const MOVE_STATUS_TEXT: Record<string, string> = {
@@ -200,7 +201,11 @@ export function AlertPopup({ onOpenChain }: { onOpenChain?: (symbol: string) => 
                 {a.chase_risk ? ` · Chase ${a.chase_risk}` : ""}
                 {a.iv_risk ? ` · IV ${a.iv_risk}` : ""}
                 {a.spread_risk ? ` · Spread ${a.spread_risk}` : ""}
+                {(() => { try { return JSON.parse(a.risk_flags ?? "[]").includes("Theta Risk High") ? " · Theta High" : " · Theta OK"; } catch { return ""; } })()}
               </div>
+            ) : null}
+            {a.options_pressure_label ? (
+              <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>Flow: {a.options_pressure_label} <span style={{ color: "var(--dim)" }}>(context, not certainty)</span></div>
             ) : null}
             <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
               <span style={{ color: changeColor(a.percent_move_at_alert) }}>{fmtPct(a.percent_move_at_alert)}</span>

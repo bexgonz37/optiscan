@@ -40,3 +40,26 @@ test("SPEC: scanner is AI-free — no model calls anywhere in lib/", () => {
     assert.ok(!/openai|anthropic\.com|claude|gpt-|llm/i.test(src), `AI reference found in lib/${f}`);
   }
 });
+
+test("SPEC: Alert Lab tracks 1m/3m/5m/15m/30m/1h/eod checkpoints", () => {
+  const tr = read("lib/alert-tracker.ts");
+  for (const cp of ['"1m"', '"3m"', '"5m"', '"15m"', '"30m"', '"1h"', '"eod"']) {
+    assert.ok(tr.includes(cp), `missing checkpoint ${cp}`);
+  }
+  assert.ok(tr.includes("recordAlertOutcomes"), "EOD must record side-worked/spread/reversal outcomes");
+  assert.ok(tr.includes("callSideWorked") && tr.includes("putSideWorked"));
+});
+
+test("SPEC: trade journal links trades to alerts (alert_id foreign key + popup wiring)", () => {
+  assert.ok(read("lib/db.ts").includes("alert_id INTEGER REFERENCES alerts(id)"));
+  assert.ok(read("lib/alert-store.ts").includes("alertId: \"alert_id\""));
+  assert.ok(read("components/AlertPopup.tsx").includes("alertId: a.id"));
+});
+
+test("SPEC: reality check + pressure exist and chains stay trigger/open-gated", () => {
+  const opt = read("app/api/options/[ticker]/route.ts");
+  assert.ok(opt.includes("realityCheck") && opt.includes("optionsPressure"));
+  const now = read("app/now/page.tsx");
+  assert.ok(now.includes("openReality"), "reality check fetches only when a row is opened");
+  assert.ok(!now.includes("setInterval(openReality"), "no polling of chains from the dashboard");
+});

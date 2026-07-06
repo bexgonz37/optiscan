@@ -22,6 +22,11 @@ export const SYSTEM_EXPLANATION = {
     "It checks whether 0DTE contracts have workable spreads, real volume, usable deltas, and premium that doesn't already price in more move than plausibly remains.",
     "No news is neutral. Catalysts attach after the alert as optional context and never gate, boost, or suppress a clean momentum signal.",
   ],
+  comparedToFlowTools: [
+    "Options flow tools show what contracts are trading across the market.",
+    "This scanner asks a narrower question: does THIS 0DTE setup fit a momentum workflow right now — speed, direction, liquidity, spread, premium sanity — and did similar past alerts actually work?",
+    "Its options-pressure read is confirmation context from the visible 0DTE chain, not institutional certainty, and it says so on screen.",
+  ],
   comparedToBrokerScanners: [
     "Broker scanners help users find symbols and execute quickly.",
     "This scanner asks 'is the option still tradable after the move?' — direction, continuation vs exhaustion, spread, premium, and time-of-day, with every alert tracked afterward.",

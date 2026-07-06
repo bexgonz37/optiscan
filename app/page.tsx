@@ -244,6 +244,7 @@ export default function Page() {
         <div className={`pill btn ${notifyEnabled ? "on" : ""}`} onClick={toggleNotify}>
           {notifyEnabled ? "Alerts on" : "Alerts off"}
         </div>
+        <a className="pill btn" href="/now">Now</a>
         <a className="pill btn" href="/alert-lab">Alert Lab</a>
         <a className="pill btn" href="/settings" title="Settings">⚙</a>
       </div>

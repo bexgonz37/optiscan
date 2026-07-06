@@ -31,6 +31,7 @@ import {
   level,
 } from "@/lib/zero-dte";
 import { privateLabel0dte, publicLabel0dte, riskLabel } from "@/lib/language-modes";
+import { optionsPressure } from "@/lib/options-pressure";
 import { buildExplanation } from "@/lib/explain";
 import { cached } from "@/lib/scan-cache";
 import { alertExists, insertAlert, getSettingNum, updateAlertCatalyst } from "@/lib/alert-store";
@@ -76,6 +77,8 @@ export interface ZeroDteSignal {
   source?: "momentum" | "unusual";
   alertType?: string;
   nowMs?: number;
+  /** full 0DTE chain at trigger (optional) — used for pressure confirmation */
+  chainContracts?: any[] | null;
 }
 
 /** Score + persist one 0DTE signal. Returns alert id or null (dup/below bar). */
@@ -139,6 +142,7 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     hodBreak: sig.hodBreak, lodBreak: sig.lodBreak, surge: sig.surge, direction: sig.direction,
   });
 
+  const pressure = sig.chainContracts?.length ? optionsPressure(sig.chainContracts) : null;
   const continuationScore = worth.score;
   const exhaustionScore = 100 - ({ early: 85, continuing: 80, extended_tradable: 55, extended_risky: 30, exhausted: 5 }[status] ?? 50);
 
@@ -180,6 +184,8 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     longCallScore: watch.callWatch, longPutScore: watch.putWatch,
     zeroDteContractScore: contractRes.score,
     riskFlags: flags,
+    optionsPressureLabel: pressure?.label ?? null,
+    optionsPressureJson: pressure ? JSON.stringify(pressure) : null,
     snapshot: sideContract ? {
       optionSymbol: sideContract.optionSymbol ?? null, bid: sideContract.bid ?? null, ask: sideContract.ask ?? null,
       mid: sideContract.mid ?? null, spreadPct: sideContract.spreadPct ?? null,
