@@ -357,7 +357,7 @@ export default function AlertLabPage() {
               </div>
               <div className="kpis" style={{ marginBottom: 14 }}>
                 <div className="kpi">
-                  <div className="label">Early hit rate (5m)</div>
+                  <div className="label">Early hit rate (5m) — all callouts</div>
                   <div className="val num">
                     {accuracy.earlyHitRate != null ? `${Math.round(accuracy.earlyHitRate * 100)}%` : "—"}
                   </div>
@@ -365,6 +365,19 @@ export default function AlertLabPage() {
                     {accuracy.earlyGraded
                       ? `${accuracy.earlyWins} right · ${accuracy.earlyLosses} wrong @ 5m (≥${EARLY_MOVE_WIN_PCT}%)`
                       : "grades when 5m checkpoint records"}
+                  </div>
+                </div>
+                <div className="kpi">
+                  <div className="label">Early hit rate — TRADE at fire</div>
+                  <div className="val num" style={{ color: (accuracy.tradeCaptureEarlyHitRate ?? 0) >= 0.7 ? "var(--green)" : undefined }}>
+                    {accuracy.tradeCaptureEarlyHitRate != null
+                      ? `${Math.round(accuracy.tradeCaptureEarlyHitRate * 100)}%`
+                      : "—"}
+                  </div>
+                  <div className="sub">
+                    {accuracy.tradeCaptureEarlyGraded
+                      ? `${accuracy.tradeCaptureEarlyWins} right · ${accuracy.tradeCaptureEarlyLosses} wrong · ${accuracy.tradeCaptureTotal} TRADE at capture`
+                      : "BUY gates passed when signal fired"}
                   </div>
                 </div>
                 <div className="kpi">

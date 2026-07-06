@@ -63,6 +63,33 @@ const BLOCKING_FLAGS = new Set([
   "Fake Breakout Risk",
 ]);
 
+/** Quality gates for TRADE — exported for tier assignment at capture. */
+export function passesQualityGates(a: AlertVerdictInput): boolean {
+  const setup = Number(a.signal_score ?? 0);
+  const worth = Number(a.option_worth_score ?? 0);
+  const contract = Number(a.zero_dte_contract_score ?? 0);
+  const liq = Number(a.options_liquidity_score ?? 0);
+  const bias = a.trade_bias ?? "";
+  return (
+    setup >= 75 &&
+    worth >= 70 &&
+    contract >= 55 &&
+    liq >= 45 &&
+    (bias === "long_call_candidate" || bias === "long_put_candidate")
+  );
+}
+
+/** Assign trade tier: TRADE at capture, or quality+speed fallback (not surge-only). */
+export function resolveAlertTier(
+  verdict: Pick<TradeVerdict, "action">,
+  qualityGates: boolean,
+  speedOk: boolean,
+): "trade" | "research" {
+  if (verdict.action === "TRADE") return "trade";
+  if (qualityGates && speedOk) return "trade";
+  return "research";
+}
+
 function parseFlags(raw: string | null | undefined): string[] {
   if (!raw) return [];
   try {

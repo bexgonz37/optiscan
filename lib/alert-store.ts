@@ -72,6 +72,9 @@ export interface NewAlert {
   volumeSurgeAtAlert?: number | null;
   /** 'trade' = live loop with speed proof; 'research' = slow scan, history only. */
   alertTier?: "trade" | "research" | null;
+  /** Verdict at capture time: TRADE | WAIT | SKIP */
+  captureAction?: string | null;
+  captureConfidence?: number | null;
   optionsPressureLabel?: string | null;
   optionsPressureJson?: string | null;
   snapshot?: {
@@ -108,8 +111,8 @@ export function insertAlert(a: NewAlert): number | null {
           score_breakdown_json, ai_explanation, public_explanation, private_label, public_label,
           trade_bias, move_status, option_worth_score, worth_verdict, chase_risk, iv_risk, spread_risk,
           continuation_score, exhaustion_score, long_call_score, long_put_score, zero_dte_contract_score, risk_flags,
-          options_pressure_label, options_pressure_json, short_rate_at_alert, volume_surge_at_alert, alert_tier, status
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'tracking')`,
+          options_pressure_label, options_pressure_json, short_rate_at_alert, volume_surge_at_alert, alert_tier, capture_action, capture_confidence, status
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'tracking')`,
       )
       .run(
         alert.ticker, alert.source, alert.alertType ?? null, alert.direction, alert.optionSymbol, alert.optionSide,
@@ -127,6 +130,7 @@ export function insertAlert(a: NewAlert): number | null {
         alert.optionsPressureLabel ?? null, alert.optionsPressureJson ?? null,
         alert.shortRateAtAlert ?? null, alert.volumeSurgeAtAlert ?? null,
         alert.alertTier ?? null,
+        alert.captureAction ?? null, alert.captureConfidence ?? null,
       );
     if (res.changes === 0) return null;
     const id = Number(res.lastInsertRowid);
@@ -384,6 +388,10 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
             SUM(CASE WHEN ${SQL_MOVE_5M} >= ${EARLY_MOVE_WIN_PCT} THEN 1 ELSE 0 END) AS early_wins,
             SUM(CASE WHEN ${SQL_MOVE_5M} IS NOT NULL AND ${SQL_MOVE_5M} < ${EARLY_MOVE_WIN_PCT} THEN 1 ELSE 0 END) AS early_losses,
             SUM(CASE WHEN ${SQL_MOVE_5M} IS NOT NULL THEN 1 ELSE 0 END) AS early_graded,
+            SUM(CASE WHEN a.capture_action = 'TRADE' AND ${SQL_MOVE_5M} >= ${EARLY_MOVE_WIN_PCT} THEN 1 ELSE 0 END) AS trade_capture_early_wins,
+            SUM(CASE WHEN a.capture_action = 'TRADE' AND ${SQL_MOVE_5M} IS NOT NULL AND ${SQL_MOVE_5M} < ${EARLY_MOVE_WIN_PCT} THEN 1 ELSE 0 END) AS trade_capture_early_losses,
+            SUM(CASE WHEN a.capture_action = 'TRADE' AND ${SQL_MOVE_5M} IS NOT NULL THEN 1 ELSE 0 END) AS trade_capture_early_graded,
+            SUM(CASE WHEN a.capture_action = 'TRADE' THEN 1 ELSE 0 END) AS trade_capture_total,
             AVG(CASE WHEN ${SQL_MOVE_5M} IS NOT NULL THEN ${SQL_MOVE_5M} END) AS avg_move_5m,
             AVG(CASE WHEN p.checkpoint = 'eod' THEN p.max_percent_move_after_alert END) AS avg_max_move,
             AVG(CASE WHEN p.checkpoint = 'eod' THEN p.percent_move_from_alert END) AS avg_eod_move,
@@ -502,6 +510,9 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
   const liveOnTrackOfOpenPct = onTrackPct(todayOnTrackCount, todayTracking);
   const earlyGraded = (summary?.early_graded ?? 0) as number;
   const earlyHitRate = earlyGraded > 0 ? (summary?.early_wins ?? 0) / earlyGraded : null;
+  const tradeCaptureGraded = (summary?.trade_capture_early_graded ?? 0) as number;
+  const tradeCaptureEarlyHitRate =
+    tradeCaptureGraded > 0 ? (summary?.trade_capture_early_wins ?? 0) / tradeCaptureGraded : null;
 
   return {
     since,
@@ -524,6 +535,11 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
     earlyLosses: summary?.early_losses ?? 0,
     earlyGraded,
     earlyHitRate,
+    tradeCaptureTotal: summary?.trade_capture_total ?? 0,
+    tradeCaptureEarlyWins: summary?.trade_capture_early_wins ?? 0,
+    tradeCaptureEarlyLosses: summary?.trade_capture_early_losses ?? 0,
+    tradeCaptureEarlyGraded: tradeCaptureGraded,
+    tradeCaptureEarlyHitRate,
     avgMove5m: summary?.avg_move_5m ?? null,
     earlyMoveWinPct: EARLY_MOVE_WIN_PCT,
     earlyOnTrackMinPct: EARLY_ON_TRACK_MIN_PCT,
@@ -539,7 +555,7 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
     recent,
     onTrackNow,
     dailyTrend,
-    note: "Accuracy uses stock % move right after the call (1m/5m checkpoints). On-track = ≥0.5% favorable by 5m. Early win = ≥0.75% at 5m. EOD grades still finalize at close.",
+    note: "Accuracy uses stock % move right after the call (1m/5m checkpoints). On-track = ≥0.5% favorable by 5m. Early win = ≥0.75% at 5m. TRADE-at-capture rate uses signals that passed all BUY gates when fired.",
   };
 }
 

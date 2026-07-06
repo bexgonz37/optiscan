@@ -34,7 +34,7 @@ import { privateLabel0dte, publicLabel0dte, riskLabel } from "@/lib/language-mod
 import { optionsPressure } from "@/lib/options-pressure";
 import { buildExplanation } from "@/lib/explain";
 import { cached } from "@/lib/scan-cache";
-import { computeTradeVerdict, hasLiveSpeedProof, isClearTradeSignal } from "@/lib/trade-verdict";
+import { computeTradeVerdict, hasLiveSpeedProof, isClearTradeSignal, passesQualityGates, resolveAlertTier } from "@/lib/trade-verdict";
 import { alertExists, insertAlert, getSettingNum, updateAlertCatalyst, insertNotificationEvent } from "@/lib/alert-store";
 import { tradingDay, minutesToClose } from "@/lib/db";
 import { notifyNewAlert } from "@/lib/notifications";
@@ -121,8 +121,11 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     moveStatus: status, riskScore: risk.score,
   });
 
-  const minScore = getSettingNum("alert_min_momentum_score", Number(process.env.ALERT_MIN_MOMENTUM_SCORE ?? 55));
+  const minScore = getSettingNum("alert_min_momentum_score", Number(process.env.ALERT_MIN_MOMENTUM_SCORE ?? 62));
   if (setup.score < minScore) return null;
+
+  const minEfficiency = getSettingNum("scanner_min_efficiency", Number(process.env.SCANNER_MIN_EFFICIENCY ?? 0.35));
+  if (sig.efficiency != null && sig.efficiency < minEfficiency) return null;
 
   const watch = watchScores({
     shortRate: sig.shortRate, accel: sig.accel, aboveVwap: sig.aboveVwap,
@@ -143,13 +146,30 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     hodBreak: sig.hodBreak, lodBreak: sig.lodBreak, surge: sig.surge, direction: sig.direction,
   });
 
-  // Tier: 'trade' only when the tape had direction-aligned live speed proof at
-  // capture. Swing-radar rows (shortRate/surge null) and stalled tapes are
-  // 'research' — they log for history but never popup or auto-send.
-  const tier: "trade" | "research" = hasLiveSpeedProof(
-    { short_rate_at_alert: sig.shortRate, volume_surge_at_alert: sig.surge },
-    dirUp ? "CALL" : "PUT",
-  ) ? "trade" : "research";
+  if (flags.includes("Fake Breakout Risk")) return null;
+  if (status === "exhausted" || (status as string) === "extended_risky") return null;
+
+  const liquidityScore = optionsLiquidityScore(sideContract ?? {}).score;
+  const liveCtx = { shortRate: sig.shortRate, surge: sig.surge, direction: sig.direction };
+  const side = dirUp ? "CALL" : "PUT";
+  const verdictInput = {
+    ticker: sig.ticker, direction: sig.direction, trade_bias: bias,
+    signal_score: setup.score, risk_score: risk.score,
+    option_worth_score: worth.score, worth_verdict: worth.verdict,
+    zero_dte_contract_score: contractRes.score,
+    options_liquidity_score: liquidityScore,
+    move_status: status, risk_flags: JSON.stringify(flags),
+    option_side: sideContract?.side ?? null, strike: sideContract?.strike ?? null,
+    dte: sideContract?.dte ?? null,
+    percent_move_at_alert: sig.movePct, relative_volume: sig.relVol,
+    short_rate_at_alert: sig.shortRate, volume_surge_at_alert: sig.surge,
+    long_call_score: watch.callWatch, long_put_score: watch.putWatch,
+  };
+
+  const captureVerdict = computeTradeVerdict(verdictInput, liveCtx);
+  const qualityGates = passesQualityGates(verdictInput);
+  const speedOk = hasLiveSpeedProof(verdictInput, side, liveCtx);
+  const tier = resolveAlertTier(captureVerdict, qualityGates, speedOk);
 
   const pressure = sig.chainContracts?.length
     ? optionsPressure(sig.chainContracts, { direction: sig.direction ?? undefined })
@@ -162,7 +182,7 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     relVol: sig.relVol, surge: sig.surge, vwapAligned: sig.aboveVwap == null ? null : dirUp ? sig.aboveVwap : !sig.aboveVwap,
     levelBreak: dirUp ? sig.hodBreak : sig.lodBreak, efficiency: sig.efficiency,
     moveStatus: status, worthItVerdict: worth.verdict, zeroDteScore: contractRes.score,
-    liquidityScore: optionsLiquidityScore(sideContract ?? {}).score,
+    liquidityScore,
     riskScore: risk.score, setupScore: setup.score,
     spreadPct: sideContract?.spreadPct, ivPct: ivToPct(sideContract?.iv), minsToClose,
     riskFlags: flags,
@@ -198,6 +218,8 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     shortRateAtAlert: sig.shortRate,
     volumeSurgeAtAlert: sig.surge,
     alertTier: tier,
+    captureAction: captureVerdict.action,
+    captureConfidence: captureVerdict.confidence,
     optionsPressureLabel: pressure?.label ?? null,
     optionsPressureJson: pressure ? JSON.stringify(pressure) : null,
     snapshot: sideContract ? {
@@ -211,34 +233,8 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
 
   if (id != null) {
     attachCatalystLater(id, sig.ticker, sig.relVol);
-    // Notify (Discord) only when the verdict at this exact moment is TRADE —
-    // WAIT/SKIP and research-tier alerts are history only, never an interruption.
-    const verdict = computeTradeVerdict({
-      ticker: sig.ticker, direction: sig.direction, trade_bias: bias,
-      signal_score: setup.score, risk_score: risk.score,
-      option_worth_score: worth.score, worth_verdict: worth.verdict,
-      zero_dte_contract_score: contractRes.score,
-      options_liquidity_score: explainInput.liquidityScore,
-      move_status: status, risk_flags: JSON.stringify(flags),
-      option_side: sideContract?.side ?? null, strike: sideContract?.strike ?? null,
-      dte: sideContract?.dte ?? null,
-      percent_move_at_alert: sig.movePct, relative_volume: sig.relVol,
-      short_rate_at_alert: sig.shortRate, volume_surge_at_alert: sig.surge,
-      long_call_score: watch.callWatch, long_put_score: watch.putWatch,
-      alert_tier: tier,
-    }, { shortRate: sig.shortRate, surge: sig.surge, direction: sig.direction });
-    if (isClearTradeSignal({
-      ticker: sig.ticker, direction: sig.direction, trade_bias: bias,
-      signal_score: setup.score, risk_score: risk.score,
-      option_worth_score: worth.score, worth_verdict: worth.verdict,
-      zero_dte_contract_score: contractRes.score,
-      options_liquidity_score: explainInput.liquidityScore,
-      move_status: status, risk_flags: JSON.stringify(flags),
-      option_side: sideContract?.side ?? null, strike: sideContract?.strike ?? null,
-      dte: sideContract?.dte ?? null,
-      short_rate_at_alert: sig.shortRate, volume_surge_at_alert: sig.surge,
-      alert_tier: tier,
-    }, { shortRate: sig.shortRate, surge: sig.surge, direction: sig.direction })) {
+    const verdictInputWithTier = { ...verdictInput, alert_tier: tier };
+    if (isClearTradeSignal(verdictInputWithTier, liveCtx)) {
       void notifyNewAlert(id, {
         ticker: sig.ticker,
         direction: sig.direction,
@@ -266,9 +262,9 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
       try {
         insertNotificationEvent({
           alertId: id, channel: "discord_webhook", status: "skipped",
-          error: verdict.action === "TRADE"
+          error: captureVerdict.action === "TRADE"
             ? "TRADE but not clear enough for Discord (need ≥82% confidence, ≥0.2%/min aligned speed)"
-            : `verdict ${verdict.action} (${tier} tier) — only clear TRADE notifies`,
+            : `verdict ${captureVerdict.action} (${tier} tier) — only clear TRADE notifies`,
         });
       } catch { /* bookkeeping never breaks capture */ }
     }

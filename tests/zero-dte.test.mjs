@@ -17,6 +17,7 @@ import {
   riskFlags0dte,
   shouldTrigger,
   rankZeroDteContracts,
+  speedPersistentFromRing,
 } from "../lib/zero-dte.js";
 
 const T0 = Date.parse("2026-07-06T15:00:00Z");
@@ -144,13 +145,20 @@ test("riskFlags0dte covers the label set incl. fake breakout", () => {
   }
 });
 
-test("SPEC: trigger rule — velocity + volume or level break, chop and cooldown suppress; chain fetch is trigger-gated", () => {
+test("SPEC: trigger rule — velocity + volume or level break with surge, chop and cooldown suppress", () => {
   assert.equal(shouldTrigger({ shortRate: 0.4, surge: 1.8, efficiency: 0.6, nowMs: T0 }), true);
-  assert.equal(shouldTrigger({ shortRate: 0.4, surge: 1.0, hodBreak: true, efficiency: 0.6, nowMs: T0 }), true);
+  assert.equal(shouldTrigger({ shortRate: 0.4, surge: 1.2, hodBreak: true, efficiency: 0.6, nowMs: T0 }), true);
+  assert.equal(shouldTrigger({ shortRate: 0.4, surge: 1.0, hodBreak: true, efficiency: 0.6, nowMs: T0 }), false); // level break needs surge ≥1.2
   assert.equal(shouldTrigger({ shortRate: 0.05, surge: 3, efficiency: 0.6, nowMs: T0 }), false); // too slow
   assert.equal(shouldTrigger({ shortRate: 0.5, surge: 2, efficiency: 0.1, nowMs: T0 }), false); // too choppy
   assert.equal(shouldTrigger({ shortRate: 0.5, surge: 2, efficiency: 0.6, nowMs: T0, cooldownUntil: T0 + 60000 }), false); // cooldown
-  // no catalyst input exists at all — news can never gate a trigger
+});
+
+test("speedPersistentFromRing: requires sustained direction-aligned speed", () => {
+  const fastRing = ring(12, (i) => 100 + i * 0.08);
+  assert.equal(speedPersistentFromRing(fastRing, { minRate: 0.15, direction: "bullish", nowMs: T0 + 11000 }), true);
+  const spikeRing = ring(12, (i) => (i < 10 ? 100 : 100 + (i - 10) * 2));
+  assert.equal(speedPersistentFromRing(spikeRing, { minRate: 0.15, direction: "bullish", nowMs: T0 + 11000 }), false);
 });
 
 test("rankZeroDteContracts: composite ranking beats cheapest/most-volume heuristics", () => {

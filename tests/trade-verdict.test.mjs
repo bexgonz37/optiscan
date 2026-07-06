@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { computeTradeVerdict, isTradeEligible, hasLiveSpeedProof, isClearTradeSignal } from "../lib/trade-verdict.ts";
+import { computeTradeVerdict, isTradeEligible, hasLiveSpeedProof, isClearTradeSignal, passesQualityGates, resolveAlertTier } from "../lib/trade-verdict.ts";
 
 const goodCall = {
   ticker: "SMCI",
@@ -204,4 +204,16 @@ test("isClearTradeSignal: needs high confidence and fast aligned speed", () => {
   assert.equal(isClearTradeSignal(goodCall, { shortRate: 0.35, direction: "bullish" }), true);
   assert.equal(isClearTradeSignal(goodCall, { shortRate: 0.12, direction: "bullish" }), false);
   assert.equal(isClearTradeSignal({ ...goodCall, alert_tier: "research" }, { shortRate: 0.35, direction: "bullish" }), false);
+});
+
+test("resolveAlertTier: TRADE or quality+speed fallback", () => {
+  assert.equal(resolveAlertTier({ action: "TRADE" }, false, false), "trade");
+  assert.equal(resolveAlertTier({ action: "WAIT" }, true, true), "trade");
+  assert.equal(resolveAlertTier({ action: "WAIT" }, true, false), "research");
+  assert.equal(resolveAlertTier({ action: "SKIP" }, false, false), "research");
+});
+
+test("passesQualityGates: setup/worth/contract/liquidity + bias", () => {
+  assert.equal(passesQualityGates(goodCall), true);
+  assert.equal(passesQualityGates({ ...goodCall, signal_score: 70 }), false);
 });

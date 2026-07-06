@@ -21,8 +21,13 @@ export default function SettingsPage() {
   const [languageMode, setLanguageMode] = useState("private");
   const [webhookConfigured, setWebhookConfigured] = useState(false);
   const [pending, setPending] = useState<any[]>([]);
-  const [minMomentum, setMinMomentum] = useState("65");
+  const [minMomentum, setMinMomentum] = useState("62");
   const [minUnusual, setMinUnusual] = useState("80");
+  const [minRate, setMinRate] = useState("0.18");
+  const [minSurge, setMinSurge] = useState("1.4");
+  const [minAccel, setMinAccel] = useState("0");
+  const [minEfficiency, setMinEfficiency] = useState("0.35");
+  const [minLevelSurge, setMinLevelSurge] = useState("1.2");
   const [refreshSec, setRefreshSec] = useState(DEFAULT_REFRESH_SEC);
   const [desktopAlerts, setDesktopAlerts] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -37,6 +42,16 @@ export default function SettingsPage() {
         setSettings(d.settings);
         setLanguageMode(d.languageMode);
         setWebhookConfigured(Boolean(d.discordWebhookConfigured));
+        const t = d.scannerThresholds;
+        if (t) {
+          setMinMomentum(String(t.alertMinMomentumScore ?? 62));
+          setMinUnusual(String(t.alertMinUnusualScore ?? 80));
+          setMinRate(String(t.scannerMinRatePctMin ?? 0.18));
+          setMinSurge(String(t.scannerMinVolSurge ?? 1.4));
+          setMinAccel(String(t.scannerMinAccel ?? 0));
+          setMinEfficiency(String(t.scannerMinEfficiency ?? 0.35));
+          setMinLevelSurge(String(t.scannerMinLevelSurge ?? 1.2));
+        }
       }
       const manualConfirm = Boolean(d.settings?.discord_requires_manual_confirm);
       if (manualConfirm) {
@@ -203,16 +218,40 @@ export default function SettingsPage() {
           </div>
 
           <h2>Capture thresholds</h2>
-          <p className="settings-desc">Minimum score for a signal to be saved as an alert. Use 80 for strong-only.</p>
+          <p className="settings-desc">Minimum scores and scanner gates. Higher = fewer but sharper callouts. Run <code>node scripts/calibrate-accuracy.mjs</code> to tune toward 70% early hit rate.</p>
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
             <span className="settings-desc" style={{ margin: 0 }}>Momentum ≥</span>
             <input className="input-sm" style={{ width: 64 }} value={minMomentum} onChange={(e) => setMinMomentum(e.target.value)} />
             <span className="settings-desc" style={{ margin: 0 }}>Unusual ≥</span>
             <input className="input-sm" style={{ width: 64 }} value={minUnusual} onChange={(e) => setMinUnusual(e.target.value)} />
+          </div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+            <span className="settings-desc" style={{ margin: 0 }}>Speed ≥</span>
+            <input className="input-sm" style={{ width: 64 }} value={minRate} onChange={(e) => setMinRate(e.target.value)} />
+            <span className="settings-desc" style={{ margin: 0 }}>%/min · Surge ≥</span>
+            <input className="input-sm" style={{ width: 64 }} value={minSurge} onChange={(e) => setMinSurge(e.target.value)} />
+            <span className="settings-desc" style={{ margin: 0 }}>x · Accel &gt;</span>
+            <input className="input-sm" style={{ width: 64 }} value={minAccel} onChange={(e) => setMinAccel(e.target.value)} />
+          </div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+            <span className="settings-desc" style={{ margin: 0 }}>Efficiency ≥</span>
+            <input className="input-sm" style={{ width: 64 }} value={minEfficiency} onChange={(e) => setMinEfficiency(e.target.value)} />
+            <span className="settings-desc" style={{ margin: 0 }}>· Level-break surge ≥</span>
+            <input className="input-sm" style={{ width: 64 }} value={minLevelSurge} onChange={(e) => setMinLevelSurge(e.target.value)} />
             <button
               type="button"
               className="btn-primary"
-              onClick={() => patch({ alertMinMomentumScore: Number(minMomentum), alertMinUnusualScore: Number(minUnusual) })}
+              onClick={() =>
+                patch({
+                  alertMinMomentumScore: Number(minMomentum),
+                  alertMinUnusualScore: Number(minUnusual),
+                  scannerMinRatePctMin: Number(minRate),
+                  scannerMinVolSurge: Number(minSurge),
+                  scannerMinAccel: Number(minAccel),
+                  scannerMinEfficiency: Number(minEfficiency),
+                  scannerMinLevelSurge: Number(minLevelSurge),
+                })
+              }
             >
               Save thresholds
             </button>

@@ -203,6 +203,8 @@ const ALERT_COLUMN_MIGRATIONS: [string, string][] = [
   // option contract P&L: entry mid -> best mid after alert (set at EOD finalize)
   ["option_return_pct", "ALTER TABLE alerts ADD COLUMN option_return_pct REAL"],
   ["option_outcome_win", "ALTER TABLE alerts ADD COLUMN option_outcome_win INTEGER"],
+  ["capture_action", "ALTER TABLE alerts ADD COLUMN capture_action TEXT"],
+  ["capture_confidence", "ALTER TABLE alerts ADD COLUMN capture_confidence INTEGER"],
 ];
 const JOURNAL_COLUMN_MIGRATIONS: [string, string][] = [
   ["contract", "ALTER TABLE trade_journal ADD COLUMN contract TEXT"],

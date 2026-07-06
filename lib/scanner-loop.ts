@@ -28,15 +28,15 @@ import { vwap as sessionVwap, sessionBars, relativeVolume } from "@/lib/momentum
 import {
   acceleration, volumeSurge, pathEfficiency, detectLevels, directionRead,
   shouldTrigger, rankZeroDteContracts, expectedRemainingMovePct,
+  speedPersistentFromRing,
 } from "@/lib/zero-dte";
 import { getZeroDteUniverse, getZeroDteDiscoveryUniverse } from "@/lib/universe";
 import { tradingDay, minutesToClose } from "@/lib/trading-session";
+import { getSettingNum } from "@/lib/alert-store";
 
 const LOOP_MS = Number(process.env.SCANNER_LOOP_MS ?? 1000);
 const ACTIVE_REFRESH_MS = Number(process.env.SCANNER_ACTIVE_REFRESH_MS ?? 7000);
 const TRIGGER_COOLDOWN_MS = Number(process.env.SCANNER_TRIGGER_COOLDOWN_MS ?? 5 * 60 * 1000);
-const MIN_RATE = Number(process.env.SCANNER_MIN_RATE_PCT_MIN ?? 0.15);
-const MIN_SURGE = Number(process.env.SCANNER_MIN_VOL_SURGE ?? 1.3);
 const DISCOVERY_MS = Number(process.env.SCANNER_DISCOVERY_MS ?? 30_000);
 const DISCOVERY_TOP_N = Number(process.env.SCANNER_DISCOVERY_TOP_N ?? 20);
 const PROMOTION_MS = Number(process.env.SCANNER_PROMOTION_MS ?? 5 * 60_000);
@@ -46,6 +46,7 @@ const RING_MAX = 360; // ~6 minutes of 1s ticks
 interface Tick { t: number; p: number; v: number }
 interface SymState {
   ring: Tick[];
+  recentRates: number[];
   cooldownUntil: number;
   lastChainFetch: number;
   vwap: number | null;
@@ -116,7 +117,7 @@ function realtimeUniverse(nowMs: number) {
 function sym(s: LoopState, ticker: string): SymState {
   let st = s.symbols.get(ticker);
   if (!st) {
-    st = { ring: [], cooldownUntil: 0, lastChainFetch: 0, vwap: null, vwapAt: 0, relVol: null, lastAlertAt: 0 };
+    st = { ring: [], recentRates: [], cooldownUntil: 0, lastChainFetch: 0, vwap: null, vwapAt: 0, relVol: null, lastAlertAt: 0 };
     s.symbols.set(ticker, st);
   }
   return st;
@@ -204,6 +205,12 @@ async function tick() {
   s.lastTickAt = nowMs;
   s.ticks++;
 
+  const minRate = getSettingNum("scanner_min_rate_pct_min", Number(process.env.SCANNER_MIN_RATE_PCT_MIN ?? 0.18));
+  const minSurge = getSettingNum("scanner_min_vol_surge", Number(process.env.SCANNER_MIN_VOL_SURGE ?? 1.4));
+  const minAccel = getSettingNum("scanner_min_accel", Number(process.env.SCANNER_MIN_ACCEL ?? 0));
+  const minEfficiency = getSettingNum("scanner_min_efficiency", Number(process.env.SCANNER_MIN_EFFICIENCY ?? 0.35));
+  const minLevelSurge = getSettingNum("scanner_min_level_surge", Number(process.env.SCANNER_MIN_LEVEL_SURGE ?? 1.2));
+
   if (nowMs - s.lastDiscoveryAt >= DISCOVERY_MS) {
     s.lastDiscoveryAt = nowMs;
     refreshDiscovery(nowMs).catch((err) => { s.errors++; console.warn("[0dte-loop] discovery failed:", err?.message); });
@@ -245,7 +252,7 @@ async function tick() {
     const accelRead = acceleration(st.ring, { nowMs } as any);
     const surge = volumeSurge(st.ring, { nowMs } as any);
     const efficiency = pathEfficiency(st.ring, { nowMs } as any);
-    const nearTrigger = accelRead.shortRate != null && Math.abs(accelRead.shortRate) >= MIN_RATE * 0.7;
+    const nearTrigger = accelRead.shortRate != null && Math.abs(accelRead.shortRate) >= minRate * 0.7;
     if (nearTrigger) await ensureVwap(q.symbol, st, nowMs);
     if (accelRead.shortRate != null) {
       vwapCandidates.push({ symbol: q.symbol, st, rate: Math.abs(accelRead.shortRate) });
@@ -255,6 +262,11 @@ async function tick() {
       movePct: q.changePercent, shortRate: accelRead.shortRate, accel: accelRead.accel,
       aboveVwap: levels.aboveVwap, hodBreak: levels.hodBreak, lodBreak: levels.lodBreak, efficiency,
     });
+
+    if (accelRead.shortRate != null) {
+      st.recentRates.push(accelRead.shortRate);
+      if (st.recentRates.length > 5) st.recentRates.shift();
+    }
 
     const row = {
       symbol: q.symbol, price: q.price, movePct: q.changePercent, volume: q.volume ?? null,
@@ -266,14 +278,25 @@ async function tick() {
     };
 
     tape.push(row);
-    if (Math.abs(accelRead.shortRate ?? 0) >= MIN_RATE * 0.5 || nearTrigger) {
+    if (Math.abs(accelRead.shortRate ?? 0) >= minRate * 0.5 || nearTrigger) {
       movers.push(row);
     }
 
-    if (shouldTrigger({
-      shortRate: accelRead.shortRate, surge, hodBreak: levels.hodBreak, lodBreak: levels.lodBreak,
-      efficiency, nowMs, cooldownUntil: st.cooldownUntil, minRate: MIN_RATE, minSurge: MIN_SURGE,
-    })) {
+    const persistOk = speedPersistentFromRing(st.ring, {
+      minRate,
+      direction: dir.direction === "bearish" ? "bearish" : "bullish",
+    });
+    const accelOk = minAccel <= 0 || (accelRead.accel != null && accelRead.accel > minAccel);
+
+    if (
+      persistOk &&
+      accelOk &&
+      shouldTrigger({
+        shortRate: accelRead.shortRate, surge, hodBreak: levels.hodBreak, lodBreak: levels.lodBreak,
+        efficiency, nowMs, cooldownUntil: st.cooldownUntil,
+        minRate, minSurge, minLevelSurge, minEfficiency,
+      })
+    ) {
       // fire-and-forget: the 1s heartbeat must never wait on a chain fetch
       handleTrigger(q.symbol, st, { accelRead, surge, efficiency, levels, dir }, q, nowMs)
         .catch((err) => { s.errors++; console.warn("[0dte-loop] trigger failed:", err?.message); });
