@@ -35,6 +35,8 @@ export interface DashboardPrefs {
   chartIndicatorsByTf?: Partial<Record<ChartStackTimeframe, ChartIndicator[]>>;
   /** Mobile forces single chart regardless. */
   chartStacked?: boolean;
+  /** Optional override for 0DTE context strip (max 6). */
+  zeroDteStripSymbols?: string[];
 }
 
 export function loadDashboardPrefs(): DashboardPrefs {

@@ -5,6 +5,7 @@ import { AppNav } from "@/components/AppNav";
 import { CompactStatusLine } from "@/components/CompactStatusLine";
 import { LivePageTabs } from "@/components/LivePageTabs";
 import { ChartPanel } from "@/components/ChartPanel";
+import { ZeroDteStrip } from "@/components/ZeroDteStrip";
 
 function LivePageInner() {
   const [chartSymbol, setChartSymbol] = useState<string | null>(null);
@@ -32,6 +33,8 @@ function LivePageInner() {
   return (
     <>
       <CompactStatusLine loopLive={loopLive} clock={clock} />
+
+      <ZeroDteStrip chartSymbol={chartSymbol} onSelect={onOpenChart} />
 
       <LivePageTabs onOpenChart={onOpenChart} onLoopStatus={setLoopLive} />
 

@@ -2548,3 +2548,40 @@ table tbody tr {
   overflow-y: auto;
   max-height: calc(100vh - 280px);
 }
+
+/* ── Item 6: 0DTE context strip ───────────────────────────────────────── */
+
+.zero-dte-strip {
+  margin-bottom: var(--space-3);
+}
+
+.zero-dte-strip-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.zero-dte-strip-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: var(--space-2);
+}
+
+.zero-dte-strip-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  width: 100%;
+}
+
+.zero-dte-strip-iv {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}

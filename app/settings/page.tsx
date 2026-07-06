@@ -32,6 +32,7 @@ export default function SettingsPage() {
   const [refreshSec, setRefreshSec] = useState(DEFAULT_REFRESH_SEC);
   const [desktopAlerts, setDesktopAlerts] = useState(false);
   const [extendedStockNotify, setExtendedStockNotify] = useState(false);
+  const [stripSymbols, setStripSymbols] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
   const [testPreview, setTestPreview] = useState<any>(null);
 
@@ -77,6 +78,7 @@ export default function SettingsPage() {
       setRefreshSec(p.refreshSec);
     }
     if (typeof p.desktopAlerts === "boolean") setDesktopAlerts(p.desktopAlerts);
+    if (Array.isArray(p.zeroDteStripSymbols)) setStripSymbols(p.zeroDteStripSymbols.join(", "));
   }, [load]);
 
   async function patch(body: Record<string, unknown>) {
@@ -202,6 +204,26 @@ export default function SettingsPage() {
             <button type="button" className={`btn-toggle${desktopAlerts ? " on" : ""}`} onClick={toggleDesktopAlerts}>
               {desktopAlerts ? "On" : "Off"}
             </button>
+          </div>
+
+          <div className="settings-row">
+            <div className="settings-row-label">
+              0DTE context strip symbols
+              <div className="settings-row-hint">Up to 6 tickers on Live (comma-separated). Chart symbol is always first.</div>
+            </div>
+            <input
+              className="input-sm"
+              style={{ minWidth: 220 }}
+              placeholder="SPY, QQQ, IWM…"
+              value={stripSymbols}
+              onChange={(e) => setStripSymbols(e.target.value)}
+              onBlur={() => {
+                const list = stripSymbols.split(/[\s,]+/).map((s) => s.trim().toUpperCase()).filter(Boolean).slice(0, 6);
+                setStripSymbols(list.join(", "));
+                saveDashboardPrefs({ zeroDteStripSymbols: list.length ? list : undefined });
+                setMsg(list.length ? "0DTE strip symbols saved." : "0DTE strip reset to universe default.");
+              }}
+            />
           </div>
 
           <h2>Language mode</h2>
