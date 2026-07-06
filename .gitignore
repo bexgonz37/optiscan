@@ -34,3 +34,6 @@ next-env.d.ts
 
 # Alert Lab local database
 data/
+
+# local dev logs
+dev-server*.log

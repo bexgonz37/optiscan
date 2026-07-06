@@ -3,9 +3,15 @@
  * rows. Called fire-and-forget after each fresh scan (see scan-core.ts) so it
  * never adds latency to, or breaks, the scanner itself.
  *
- * Capture thresholds (env-tunable):
- *   ALERT_MIN_MOMENTUM_SCORE (default 65 — GOOD and up)
- *   ALERT_MIN_UNUSUAL_SCORE  (default 80 — STRONG only)
+ * Capture thresholds: /settings overrides (scanner_settings table) win, then
+ * env, then defaults:
+ *   alert_min_momentum_score / ALERT_MIN_MOMENTUM_SCORE (default 65 — GOOD+)
+ *   alert_min_unusual_score  / ALERT_MIN_UNUSUAL_SCORE  (default 80 — STRONG)
+ *
+ * For each new alert it computes and stores: options liquidity score, risk
+ * score, setup score WITH full component breakdown (score_breakdown_json),
+ * private + public labels, and deterministic private + public explanations.
+ * Discord (if enabled) is notified via the notifications module.
  *
  * API cost note: each NEW alert ticker costs one Polygon news call for
  * catalyst classification, cached 15 minutes per ticker (dedup runs BEFORE the
@@ -14,18 +20,22 @@
 
 import { fetchNews } from "@/lib/polygon-provider";
 import { classifyCatalyst } from "@/lib/catalysts";
-import { optionsLiquidityScore, riskScore, signalQualityScore } from "@/lib/alert-scoring";
+import { optionsLiquidityScore, riskScore, setupScore } from "@/lib/alert-scoring";
+import { privateLabel, publicLabel, riskLabel } from "@/lib/language-modes";
+import { buildExplanation } from "@/lib/explain";
 import { cached } from "@/lib/scan-cache";
-import { alertExists, insertAlert } from "@/lib/alert-store";
-import { tradingDay } from "@/lib/db";
+import { alertExists, insertAlert, getSettingNum } from "@/lib/alert-store";
+import { tradingDay, minutesToClose } from "@/lib/db";
+import { notifyNewAlert } from "@/lib/notifications";
+import { ivToPct } from "@/lib/alert-scoring";
 import type { MomentumRow, UnusualRow } from "@/lib/types";
 
 const NEWS_TTL_MS = 15 * 60 * 1000;
 
 function thresholds(env = process.env) {
   return {
-    momentum: Number(env.ALERT_MIN_MOMENTUM_SCORE ?? 65),
-    unusual: Number(env.ALERT_MIN_UNUSUAL_SCORE ?? 80),
+    momentum: getSettingNum("alert_min_momentum_score", Number(env.ALERT_MIN_MOMENTUM_SCORE ?? 65)),
+    unusual: getSettingNum("alert_min_unusual_score", Number(env.ALERT_MIN_UNUSUAL_SCORE ?? 80)),
     enabled: env.ALERT_LAB_ENABLED !== "0",
   };
 }
@@ -42,6 +52,88 @@ async function catalystFor(ticker: string, relVol: number | null) {
   return cat;
 }
 
+interface BuildArgs {
+  ticker: string;
+  source: "momentum" | "unusual";
+  alertType: string;
+  direction: string;
+  optionSide: string | null;
+  contract: any | null;
+  movePct: number;
+  relVol: number | null;
+  shareVolume: number | null;
+  priceAtAlert: number | null;
+  scannerScore: number;
+  hasUnusualFlow: boolean;
+  trendAligned: boolean;
+  vwapAligned: boolean;
+  nowMs: number;
+}
+
+/** Compute scores + labels + explanations and persist one alert. */
+async function buildAndInsert(a: BuildArgs): Promise<number | null> {
+  const cat = await catalystFor(a.ticker, a.relVol);
+  const liq = optionsLiquidityScore(a.contract ?? {});
+  const risk = riskScore({
+    spreadPct: a.contract?.spreadPct, openInterest: a.contract?.openInterest,
+    catalystType: cat.type, catalystQuality: cat.quality,
+    movePct: a.movePct, shareVolume: a.shareVolume, iv: a.contract?.iv,
+    minsToClose: minutesToClose(a.nowMs),
+  });
+  const setup = setupScore({
+    relVol: a.relVol, movePct: a.movePct,
+    catalystType: cat.type, catalystQuality: cat.quality,
+    liquidityScore: liq.score, riskScore: risk.score,
+    trendAligned: a.trendAligned, vwapAligned: a.vwapAligned,
+  });
+
+  const rl = riskLabel(risk.score);
+  const explainInput = {
+    ticker: a.ticker, direction: a.direction, movePct: a.movePct, relVol: a.relVol,
+    catalystType: cat.type, catalystQuality: cat.quality, catalystSummary: cat.summary,
+    liquidityScore: liq.score, riskScore: risk.score, setupScore: setup.score,
+    spreadPct: a.contract?.spreadPct, openInterest: a.contract?.openInterest,
+    ivPct: ivToPct(a.contract?.iv), hasUnusualFlow: a.hasUnusualFlow,
+    trendAligned: a.trendAligned, optionSide: a.optionSide,
+  };
+  const priv = buildExplanation(explainInput, "private");
+  const pub = buildExplanation(explainInput, "public");
+
+  const alertTime = new Date(a.nowMs).toISOString();
+  const id = insertAlert({
+    ticker: a.ticker, source: a.source, alertType: a.alertType, direction: a.direction,
+    optionSymbol: a.contract?.optionSymbol ?? null, optionSide: a.optionSide,
+    strike: a.contract?.strike ?? null, expiration: a.contract?.expiration ?? null, dte: a.contract?.dte ?? null,
+    alertTime, tradingDay: tradingDay(a.nowMs),
+    priceAtAlert: a.priceAtAlert, percentMoveAtAlert: a.movePct,
+    volume: a.shareVolume, relativeVolume: a.relVol,
+    catalystType: cat.type, catalystQuality: cat.quality, catalystSummary: cat.summary, catalystSource: cat.source,
+    signalScore: setup.score, riskScore: risk.score, optionsLiquidityScore: liq.score,
+    scannerScore: a.scannerScore,
+    scoreBreakdownJson: JSON.stringify({ ...setup.breakdown, reasons: setup.reasons, riskReasons: risk.reasons, liquidityReasons: liq.reasons }),
+    aiExplanation: priv.text, publicExplanation: pub.text,
+    privateLabel: privateLabel(setup.score, { riskLabel: rl }),
+    publicLabel: publicLabel(setup.score, { riskLabel: rl }),
+    snapshot: a.contract ? {
+      optionSymbol: a.contract.optionSymbol ?? null, bid: a.contract.bid ?? null, ask: a.contract.ask ?? null,
+      mid: a.contract.entry ?? a.contract.mid ?? null, spreadPct: a.contract.spreadPct ?? null,
+      volume: a.contract.volume ?? null, openInterest: a.contract.openInterest ?? null,
+      iv: a.contract.iv ?? null, delta: a.contract.delta ?? null,
+    } : null,
+    catalystRecords: cat.records,
+  });
+
+  if (id != null) {
+    // Server-side channels (Discord). Browser popup/sound/desktop are handled
+    // client-side by AlertPopup, which polls for new alert rows.
+    void notifyNewAlert(id, {
+      ticker: a.ticker, setupScore: setup.score, riskScore: risk.score,
+      liquidityScore: liq.score, publicExplanation: pub.text,
+    });
+  }
+  return id;
+}
+
 export async function captureAlerts(input: {
   momentum: MomentumRow[];
   unusual: UnusualRow[];
@@ -51,7 +143,6 @@ export async function captureAlerts(input: {
   const cfg = thresholds();
   if (!cfg.enabled) return { inserted: 0, skipped: 0 };
   const nowMs = input.nowMs ?? Date.now();
-  const alertTime = new Date(nowMs).toISOString();
   const day = tradingDay(nowMs);
   const unusualTickers = new Set(input.unusual.map((u) => u.symbol));
   let inserted = 0;
@@ -60,37 +151,16 @@ export async function captureAlerts(input: {
   for (const r of input.momentum) {
     if (!r.symbol || !r.contract || r.score < cfg.momentum) continue;
     if (alertExists(r.symbol, "momentum", r.contract.optionSymbol, day)) { skipped++; continue; }
-
     const quote = input.quotes?.get(r.symbol);
-    const cat = await catalystFor(r.symbol, r.relVol);
-    const liq = optionsLiquidityScore(r.contract);
-    const risk = riskScore({
-      spreadPct: r.contract.spreadPct, openInterest: r.contract.openInterest,
-      catalystType: cat.type, catalystQuality: cat.quality,
-      movePct: r.movePct, shareVolume: quote?.volume ?? null, iv: r.contract.iv,
-    });
-    const quality = signalQualityScore({
-      relVol: r.relVol, movePct: r.movePct, catalystType: cat.type, catalystQuality: cat.quality,
-      liquidityScore: liq.score, hasUnusualFlow: unusualTickers.has(r.symbol),
-    });
-
-    const id = insertAlert({
-      ticker: r.symbol, source: "momentum", direction: r.bias ?? null,
-      optionSymbol: r.contract.optionSymbol, optionSide: (r.contract.side as string) ?? r.side,
-      strike: r.contract.strike, expiration: r.contract.expiration, dte: r.contract.dte,
-      alertTime, tradingDay: day,
-      priceAtAlert: r.underlyingPrice, percentMoveAtAlert: r.movePct,
-      volume: quote?.volume ?? null, relativeVolume: r.relVol,
-      catalystType: cat.type, catalystQuality: cat.quality, catalystSummary: cat.summary, catalystSource: cat.source,
-      signalScore: quality.score, riskScore: risk.score, optionsLiquidityScore: liq.score,
-      scannerScore: r.score,
-      snapshot: {
-        optionSymbol: r.contract.optionSymbol, bid: r.contract.bid, ask: r.contract.ask,
-        mid: r.contract.entry ?? r.contract.mid ?? null, spreadPct: r.contract.spreadPct,
-        volume: r.contract.volume, openInterest: r.contract.openInterest,
-        iv: r.contract.iv, delta: r.contract.delta,
-      },
-      catalystRecords: cat.records,
+    const id = await buildAndInsert({
+      ticker: r.symbol, source: "momentum", alertType: "intraday_momentum",
+      direction: r.bias ?? "neutral", optionSide: (r.contract.side as string) ?? r.side,
+      contract: r.contract, movePct: r.movePct, relVol: r.relVol,
+      shareVolume: quote?.volume ?? null, priceAtAlert: r.underlyingPrice,
+      scannerScore: r.score, hasUnusualFlow: unusualTickers.has(r.symbol),
+      trendAligned: r.trend === (r.bias === "bearish" ? "down" : "up"),
+      vwapAligned: r.priceVsVwapPct != null && (r.bias === "bearish" ? r.priceVsVwapPct < 0 : r.priceVsVwapPct >= 0),
+      nowMs,
     });
     if (id != null) inserted++; else skipped++;
   }
@@ -98,39 +168,18 @@ export async function captureAlerts(input: {
   for (const u of input.unusual) {
     if (!u.symbol || u.score < cfg.unusual) continue;
     if (alertExists(u.symbol, "unusual", u.optionSymbol, day)) { skipped++; continue; }
-
     const quote = input.quotes?.get(u.symbol);
     const momPeer = input.momentum.find((m) => m.symbol === u.symbol);
-    const relVol = momPeer?.relVol ?? null;
-    const movePct = quote?.changePercent ?? momPeer?.movePct ?? 0;
-    const cat = await catalystFor(u.symbol, relVol);
-    const liq = optionsLiquidityScore({ spreadPct: u.spreadPct, volume: u.volume, openInterest: u.openInterest, dte: u.dte });
-    const risk = riskScore({
-      spreadPct: u.spreadPct, openInterest: u.openInterest,
-      catalystType: cat.type, catalystQuality: cat.quality,
-      movePct, shareVolume: quote?.volume ?? null, iv: u.iv,
-    });
-    const quality = signalQualityScore({
-      relVol, movePct, catalystType: cat.type, catalystQuality: cat.quality,
-      liquidityScore: liq.score, hasUnusualFlow: true,
-    });
-
-    const id = insertAlert({
-      ticker: u.symbol, source: "unusual",
+    const id = await buildAndInsert({
+      ticker: u.symbol, source: "unusual", alertType: "options_volume_spike",
       direction: u.side === "call" ? "bullish" : u.side === "put" ? "bearish" : "neutral",
-      optionSymbol: u.optionSymbol, optionSide: (u.side as string) ?? null,
-      strike: u.strike, expiration: u.expiration, dte: u.dte,
-      alertTime, tradingDay: day,
-      priceAtAlert: u.underlyingPrice ?? quote?.price ?? null, percentMoveAtAlert: movePct,
-      volume: quote?.volume ?? null, relativeVolume: relVol,
-      catalystType: cat.type, catalystQuality: cat.quality, catalystSummary: cat.summary, catalystSource: cat.source,
-      signalScore: quality.score, riskScore: risk.score, optionsLiquidityScore: liq.score,
-      scannerScore: u.score,
-      snapshot: {
-        optionSymbol: u.optionSymbol, bid: u.bid, ask: u.ask, mid: u.mid, spreadPct: u.spreadPct,
-        volume: u.volume, openInterest: u.openInterest, iv: u.iv, delta: u.delta,
-      },
-      catalystRecords: cat.records,
+      optionSide: (u.side as string) ?? null,
+      contract: u, movePct: quote?.changePercent ?? momPeer?.movePct ?? 0,
+      relVol: momPeer?.relVol ?? null, shareVolume: quote?.volume ?? null,
+      priceAtAlert: u.underlyingPrice ?? quote?.price ?? null,
+      scannerScore: u.score, hasUnusualFlow: true,
+      trendAligned: false, vwapAligned: false,
+      nowMs,
     });
     if (id != null) inserted++; else skipped++;
   }

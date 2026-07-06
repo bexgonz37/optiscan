@@ -135,3 +135,29 @@ and drawdown; at EOD an alert is marked a false positive if it never moved
   same optional `SCAN_API_TOKEN` gate.
 - Everything is research/logging of scanner output — no order placement and no
   recommendations, and the journal is a personal record only.
+
+## Language modes, popups & notifications
+
+- **Private Trading Mode / Public Education Mode** — toggled in `/settings`.
+  Private shows my labels (A+ Setup, Possible Call/Put Setup); Public uses
+  education-safe wording only. A banned-phrase checker
+  (`lib/language-modes.js`) is enforced by tests AND at runtime: any public
+  payload containing directive trading language is refused.
+- **Popups** — real-time popup cards (browser popup + optional desktop
+  notification + sound, all toggleable) with Watch / Journal / Mark Trade
+  Taken / Snooze / Ignore / Open Chain / Details actions. Every interaction is
+  logged to `popup_events` for the feedback loop.
+- **Discord** — built but **disabled by default**. Webhook URL lives only in
+  `DISCORD_WEBHOOK_URL` (env; never sent to the frontend). Messages are always
+  Public/Education wording, re-checked for banned language at send time, and
+  by default queue for **manual confirmation** in `/settings` before sending.
+- **Setup / Risk / Liquidity scores** — formulas and weights are documented in
+  `lib/alert-scoring.js`; every alert stores its full component breakdown
+  (`score_breakdown_json`) plus deterministic private + public explanations
+  (`lib/explain.js` — rules-based from real values, no model calls).
+- **Pages** — `/scanner` = the home scanner, `/alerts` data lives in
+  `/alert-lab` (list + filters + analytics), `/trade-journal` section inside
+  Alert Lab, `/settings`, `/review` (how the system works + honest limits).
+
+Everything remains research/decision-support: no order placement, no
+recommendations, no profit claims. Not financial advice.

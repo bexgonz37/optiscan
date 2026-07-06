@@ -8,6 +8,7 @@ import { Toolbar } from "@/components/Toolbar";
 import { MomentumTable } from "@/components/MomentumTable";
 import { UnusualTable } from "@/components/UnusualTable";
 import { DetailPanel } from "@/components/DetailPanel";
+import { AlertPopup } from "@/components/AlertPopup";
 import { useScanner, requestNotifyPermission } from "@/hooks/useScanner";
 import { useToast } from "@/components/Toasts";
 import type { MomentumRow, UnusualRow } from "@/lib/types";
@@ -244,6 +245,7 @@ export default function Page() {
           {notifyEnabled ? "Alerts on" : "Alerts off"}
         </div>
         <a className="pill btn" href="/alert-lab">Alert Lab</a>
+        <a className="pill btn" href="/settings" title="Settings">⚙</a>
       </div>
 
       {!keyPresent && meta && (
@@ -283,6 +285,8 @@ export default function Page() {
 
         <DetailPanel symbol={selected} open={detailOpen} onClose={() => setDetailOpen(false)} />
       </div>
+
+      <AlertPopup onOpenChain={onSelect} />
 
       <div className="footer">
         OptiScan · signals only, no order placement · data: {meta?.provider ?? "polygon"} (delayed on free tiers) · not financial advice

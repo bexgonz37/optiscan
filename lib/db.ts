@@ -7,6 +7,9 @@
  *
  * Like the scan cache, this is process-local by design — single-instance
  * `next start`/`next dev` is the supported deployment (see README).
+ *
+ * Migrations: CREATE TABLE IF NOT EXISTS for new tables, plus guarded ALTERs
+ * so existing databases pick up new alert columns without data loss.
  */
 
 import Database from "better-sqlite3";
@@ -17,7 +20,7 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS alerts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ticker TEXT NOT NULL,
-  source TEXT NOT NULL,               -- 'momentum' | 'unusual'
+  source TEXT NOT NULL,               -- 'momentum' | 'unusual' | 'manual'
   direction TEXT,                     -- 'bullish' | 'bearish' | 'neutral'
   option_symbol TEXT,
   option_side TEXT,                   -- 'call' | 'put'
@@ -34,7 +37,7 @@ CREATE TABLE IF NOT EXISTS alerts (
   catalyst_quality TEXT,
   catalyst_summary TEXT,
   catalyst_source TEXT,
-  signal_score REAL,
+  signal_score REAL,                  -- setup score (0-100)
   risk_score REAL,
   options_liquidity_score REAL,
   scanner_score REAL,                 -- raw score from the scanner tab
@@ -66,13 +69,21 @@ CREATE TABLE IF NOT EXISTS trade_journal (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   alert_id INTEGER REFERENCES alerts(id) ON DELETE SET NULL,
   ticker TEXT NOT NULL,
-  side TEXT,                          -- 'call' | 'put' | 'shares'
+  side TEXT,                          -- 'call' | 'put' | 'shares' | 'spread' | 'no trade'
+  contract TEXT,                      -- contract selected (option symbol)
   entry_price REAL,
   exit_price REAL,
   quantity REAL,
   opened_at TEXT,
   closed_at TEXT,
   outcome_pct REAL,
+  pnl REAL,
+  entry_reason TEXT,
+  exit_reason TEXT,
+  mistake_notes TEXT,
+  screenshot_url TEXT,
+  emotion_tag TEXT,
+  lesson TEXT,
   notes TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at TEXT
@@ -108,7 +119,83 @@ CREATE TABLE IF NOT EXISTS catalyst_records (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_cat_alert ON catalyst_records(alert_id);
+
+CREATE TABLE IF NOT EXISTS scanner_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT,
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE TABLE IF NOT EXISTS score_breakdowns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  alert_id INTEGER NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
+  breakdown_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_breakdown_alert ON score_breakdowns(alert_id);
+
+CREATE TABLE IF NOT EXISTS popup_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  alert_id INTEGER REFERENCES alerts(id) ON DELETE SET NULL,
+  ticker TEXT,
+  action TEXT NOT NULL,               -- 'shown'|'watch'|'journal'|'trade_taken'|'snooze'|'ignore'|'open_chain'|'open_details'
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE TABLE IF NOT EXISTS notification_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  browser_popup_enabled INTEGER NOT NULL DEFAULT 1,
+  desktop_notification_enabled INTEGER NOT NULL DEFAULT 1,
+  sound_enabled INTEGER NOT NULL DEFAULT 1,
+  discord_enabled INTEGER NOT NULL DEFAULT 0,        -- OFF by default
+  discord_requires_manual_confirm INTEGER NOT NULL DEFAULT 1,
+  public_mode_required_for_discord INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT
+);
+INSERT OR IGNORE INTO notification_settings (id) VALUES (1);
+
+CREATE TABLE IF NOT EXISTS notification_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  alert_id INTEGER REFERENCES alerts(id) ON DELETE SET NULL,
+  channel TEXT NOT NULL,              -- 'browser_popup'|'browser_desktop_notification'|'sound_alert'|'discord_webhook'|'email_later'|'sms_later'
+  status TEXT NOT NULL,               -- 'sent'|'pending_confirm'|'failed'|'skipped'
+  payload_json TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  sent_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_notif_status ON notification_events(status);
 `;
+
+/** Columns added after the first Alert Lab release — guarded ALTERs. */
+const ALERT_COLUMN_MIGRATIONS: [string, string][] = [
+  ["alert_type", "ALTER TABLE alerts ADD COLUMN alert_type TEXT"],
+  ["score_breakdown_json", "ALTER TABLE alerts ADD COLUMN score_breakdown_json TEXT"],
+  ["ai_explanation", "ALTER TABLE alerts ADD COLUMN ai_explanation TEXT"],
+  ["public_explanation", "ALTER TABLE alerts ADD COLUMN public_explanation TEXT"],
+  ["private_label", "ALTER TABLE alerts ADD COLUMN private_label TEXT"],
+  ["public_label", "ALTER TABLE alerts ADD COLUMN public_label TEXT"],
+];
+const JOURNAL_COLUMN_MIGRATIONS: [string, string][] = [
+  ["contract", "ALTER TABLE trade_journal ADD COLUMN contract TEXT"],
+  ["pnl", "ALTER TABLE trade_journal ADD COLUMN pnl REAL"],
+  ["entry_reason", "ALTER TABLE trade_journal ADD COLUMN entry_reason TEXT"],
+  ["exit_reason", "ALTER TABLE trade_journal ADD COLUMN exit_reason TEXT"],
+  ["mistake_notes", "ALTER TABLE trade_journal ADD COLUMN mistake_notes TEXT"],
+  ["screenshot_url", "ALTER TABLE trade_journal ADD COLUMN screenshot_url TEXT"],
+  ["emotion_tag", "ALTER TABLE trade_journal ADD COLUMN emotion_tag TEXT"],
+  ["lesson", "ALTER TABLE trade_journal ADD COLUMN lesson TEXT"],
+];
+
+function migrate(db: Database.Database) {
+  db.exec(SCHEMA);
+  const cols = (table: string) =>
+    new Set((db.prepare(`PRAGMA table_info(${table})`).all() as any[]).map((c) => c.name));
+  const alertCols = cols("alerts");
+  for (const [col, sql] of ALERT_COLUMN_MIGRATIONS) if (!alertCols.has(col)) db.exec(sql);
+  const journalCols = cols("trade_journal");
+  for (const [col, sql] of JOURNAL_COLUMN_MIGRATIONS) if (!journalCols.has(col)) db.exec(sql);
+}
 
 type G = typeof globalThis & { __optiscanDb?: Database.Database };
 
@@ -120,7 +207,7 @@ export function getDb(): Database.Database {
   const db = new Database(path.join(dir, "optiscan.db"));
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
-  db.exec(SCHEMA);
+  migrate(db);
   g.__optiscanDb = db;
   return db;
 }
@@ -139,4 +226,9 @@ export function etCloseMs(day: string): number {
     if (Number.isFinite(ms) && hourFmt.format(new Date(ms)) === "16") return ms;
   }
   return Date.parse(`${day}T16:00:00-05:00`);
+}
+
+/** Minutes until today's 16:00 ET close (negative = after close). */
+export function minutesToClose(nowMs: number = Date.now()): number {
+  return Math.round((etCloseMs(tradingDay(nowMs)) - nowMs) / 60000);
 }
