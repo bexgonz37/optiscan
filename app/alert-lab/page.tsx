@@ -45,7 +45,7 @@ interface JournalRow {
   outcome_pct: number | null; notes: string | null; created_at: string;
 }
 
-type Tab = "now" | "history" | "journal";
+type Tab = "now" | "accuracy" | "history" | "journal";
 
 const CATALYSTS = [
   "earnings", "analyst", "fda_biotech", "partnership", "product_launch",
@@ -59,6 +59,7 @@ export default function AlertLabPage() {
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
   const [stats, setStats] = useState<any>(null);
   const [report, setReport] = useState<any>(null);
+  const [accuracy, setAccuracy] = useState<any>(null);
   const [journal, setJournal] = useState<JournalRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -102,19 +103,22 @@ export default function AlertLabPage() {
     setLoading(true);
     try {
       const headers = scanHeaders();
-      const [aRes, sRes, rRes, jRes] = await Promise.all([
+      const [aRes, sRes, rRes, accRes, jRes] = await Promise.all([
         fetch(`/api/alerts?${query}`, { cache: "no-store", headers }),
         fetch(`/api/alerts/stats`, { cache: "no-store", headers }),
         fetch(`/api/alerts/weekly-report`, { cache: "no-store", headers }),
+        fetch(`/api/alerts/signal-accuracy?days=14`, { cache: "no-store", headers }),
         fetch(`/api/trade-journal`, { cache: "no-store", headers }),
       ]);
       const a = await aRes.json();
       const s = await sRes.json();
       const r = await rRes.json();
+      const acc = await accRes.json();
       const j = await jRes.json();
       setAlerts(a.alerts ?? []);
       setStats(s.ok ? s : null);
       setReport(r.ok ? r.report : null);
+      setAccuracy(acc.ok ? acc : null);
       setJournal(j.journal ?? []);
       setError(a.ok === false ? a.error : s.ok === false ? s.error : null);
     } catch (err: any) {
@@ -192,12 +196,125 @@ export default function AlertLabPage() {
 
       <div className="acc-tabs">
         {tabBtn("now", "Right now")}
+        {tabBtn("accuracy", "Accuracy")}
         {tabBtn("history", "History")}
         {tabBtn("journal", "Journal")}
       </div>
 
       {tab === "now" ? (
         <AlertsCommandCenter tape={tape} onOpenChart={openChart} />
+      ) : null}
+
+      {tab === "accuracy" ? (
+        <div className="panel main">
+          <div className="toolbar">
+            <h2>Signal accuracy</h2>
+            <div className="right muted" style={{ fontSize: 11 }}>
+              Trade-tier BUY CALL/PUT only · last {accuracy?.days ?? 14} days
+            </div>
+          </div>
+          {!accuracy ? (
+            <div className="empty">Loading accuracy…</div>
+          ) : (
+            <div style={{ padding: "4px 14px 14px" }}>
+              <div className="kpis" style={{ marginBottom: 14 }}>
+                <div className="kpi">
+                  <div className="label">Trade signals</div>
+                  <div className="val num">{accuracy.total}</div>
+                  <div className="sub">{accuracy.tracking} still tracking</div>
+                </div>
+                <div className="kpi">
+                  <div className="label">Hit rate</div>
+                  <div className="val num">
+                    {accuracy.hitRate != null ? `${Math.round(accuracy.hitRate * 100)}%` : "—"}
+                  </div>
+                  <div className="sub">{accuracy.wins} wins · {accuracy.losses} losses</div>
+                </div>
+                <div className="kpi">
+                  <div className="label">Avg best move</div>
+                  <div className="val num">
+                    {accuracy.avgMaxMove != null ? `${accuracy.avgMaxMove.toFixed(1)}%` : "—"}
+                  </div>
+                  <div className="sub">favorable direction after signal</div>
+                </div>
+                <div className="kpi">
+                  <div className="label">Avg EOD move</div>
+                  <div className="val num">
+                    {accuracy.avgEodMove != null ? `${accuracy.avgEodMove.toFixed(1)}%` : "—"}
+                  </div>
+                  <div className="sub">where the day closed vs alert</div>
+                </div>
+              </div>
+              <p className="settings-desc" style={{ marginBottom: 12 }}>
+                Win = stock moved ≥1.5% in the signal direction by end of day. Loss = false positive.
+                Discord only fires on extra-clear signals (≥82% confidence, ≥0.2%/min aligned speed).
+              </p>
+              {!accuracy.recent?.length ? (
+                <div className="empty small">No trade-tier signals recorded yet this period.</div>
+              ) : (
+                <div className="tablewrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Time</th>
+                        <th>Ticker</th>
+                        <th>Signal</th>
+                        <th>Speed @ fire</th>
+                        <th>Best move</th>
+                        <th>EOD</th>
+                        <th>Result</th>
+                        <th>Discord</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {accuracy.recent.map((row: any) => {
+                        const side = String(row.option_side ?? "").toLowerCase().startsWith("p") ? "PUT" : "CALL";
+                        const done = row.status === "complete";
+                        const win = done && row.is_false_positive === 0;
+                        const loss = done && row.is_false_positive === 1;
+                        return (
+                          <tr key={row.id} className="clickable" onClick={() => openChart(row.ticker)}>
+                            <td className="num muted">{row.trading_day}<br />{fmtTime(row.alert_time)}</td>
+                            <td>
+                              <div className="tkr">
+                                <TickerIcon symbol={row.ticker} />
+                                <div>
+                                  <div className="tname">{row.ticker}</div>
+                                  <div className="tsub">{row.strike ? `$${row.strike}${side[0]} · ${row.dte ?? 0}DTE` : "—"}</div>
+                                </div>
+                              </div>
+                            </td>
+                            <td>
+                              <span className={`verdict-pill verdict-trade`}>BUY {side}</span>
+                            </td>
+                            <td className="num muted">
+                              {row.short_rate_at_alert != null
+                                ? `${row.short_rate_at_alert > 0 ? "+" : ""}${row.short_rate_at_alert.toFixed(2)}%/m`
+                                : "—"}
+                            </td>
+                            <td className="num" style={{ color: changeColor(row.latest_max_move) }}>
+                              {fmtPct(row.latest_max_move)}
+                            </td>
+                            <td className="num" style={{ color: changeColor(row.eod_move) }}>
+                              {fmtPct(row.eod_move)}
+                            </td>
+                            <td>
+                              {!done ? <span className="tag t-vol">TRACKING</span>
+                                : win ? <span className="tag t-call">RIGHT</span>
+                                : loss ? <span className="tag t-put">WRONG</span>
+                                : <span className="muted">—</span>}
+                            </td>
+                            <td>{row.discord_sent ? <span className="tag t-call">SENT</span> : <span className="muted">—</span>}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       ) : null}
 
       {tab === "history" ? (

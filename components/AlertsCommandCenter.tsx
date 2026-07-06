@@ -58,7 +58,10 @@ export function AlertsCommandCenter({
       const res = await fetch(`/api/alerts?date=${today}&limit=100`, { cache: "no-store", headers: scanHeaders() });
       const d = await res.json();
       const map = new Map<string, any>();
-      for (const a of d.alerts ?? []) if (!map.has(a.ticker)) map.set(a.ticker, a);
+      for (const a of d.alerts ?? []) {
+        const prev = map.get(a.ticker);
+        if (!prev || a.id > prev.id) map.set(a.ticker, a);
+      }
       setAlerts(map);
     } catch { /* best effort */ }
     finally { pollInFlight.current = false; }

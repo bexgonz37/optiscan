@@ -322,6 +322,68 @@ export function statsSummary(day?: string) {
   return { totals, avgMove, byCatalyst, bySource };
 }
 
+/** BUY CALL/PUT signal accuracy — trade-tier alerts with measured outcomes. */
+export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}) {
+  const db = getDb();
+  const days = Math.max(1, Number(opts.days ?? 14));
+  const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+  const limit = Math.min(Number(opts.limit ?? 50), 200);
+
+  const summary: any = db.prepare(
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN a.status = 'complete' AND a.is_false_positive = 0 THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN a.status = 'complete' AND a.is_false_positive = 1 THEN 1 ELSE 0 END) AS losses,
+            SUM(CASE WHEN a.status = 'tracking' THEN 1 ELSE 0 END) AS tracking,
+            AVG(CASE WHEN p.checkpoint = 'eod' THEN p.max_percent_move_after_alert END) AS avg_max_move,
+            AVG(CASE WHEN p.checkpoint = 'eod' THEN p.percent_move_from_alert END) AS avg_eod_move
+     FROM alerts a
+     LEFT JOIN alert_performance p ON p.alert_id = a.id AND p.checkpoint = 'eod'
+     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'`,
+  ).get(since);
+
+  const completed = (summary?.wins ?? 0) + (summary?.losses ?? 0);
+  const hitRate = completed > 0 ? (summary.wins ?? 0) / completed : null;
+
+  const bySide = db.prepare(
+    `SELECT a.option_side AS side, COUNT(*) AS total,
+            SUM(CASE WHEN a.is_false_positive = 0 THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN a.is_false_positive = 1 THEN 1 ELSE 0 END) AS losses
+     FROM alerts a
+     WHERE a.trading_day >= ? AND a.alert_tier = 'trade' AND a.status = 'complete'
+     GROUP BY a.option_side`,
+  ).all(since);
+
+  const recent = db.prepare(
+    `SELECT a.id, a.ticker, a.option_side, a.strike, a.dte, a.alert_time, a.trading_day,
+            a.direction, a.signal_score, a.short_rate_at_alert, a.percent_move_at_alert,
+            a.status, a.is_false_positive,
+            (SELECT p.max_percent_move_after_alert FROM alert_performance p
+             WHERE p.alert_id = a.id ORDER BY p.checked_at DESC LIMIT 1) AS latest_max_move,
+            (SELECT p.percent_move_from_alert FROM alert_performance p
+             WHERE p.alert_id = a.id AND p.checkpoint = 'eod') AS eod_move,
+            EXISTS (SELECT 1 FROM notification_events n
+                    WHERE n.alert_id = a.id AND n.channel = 'discord_webhook' AND n.status = 'sent') AS discord_sent
+     FROM alerts a
+     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'
+     ORDER BY a.id DESC LIMIT ?`,
+  ).all(since, limit);
+
+  return {
+    since,
+    days,
+    total: summary?.total ?? 0,
+    wins: summary?.wins ?? 0,
+    losses: summary?.losses ?? 0,
+    tracking: summary?.tracking ?? 0,
+    hitRate,
+    avgMaxMove: summary?.avg_max_move ?? null,
+    avgEodMove: summary?.avg_eod_move ?? null,
+    bySide,
+    recent,
+    note: "Tracks trade-tier BUY signals only. Win = favorable move ≥ threshold by EOD; loss = false positive.",
+  };
+}
+
 /** Weekly report: last 7 trading days of measured scanner output. */
 export function weeklyReport() {
   const db = getDb();

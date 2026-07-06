@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { computeTradeVerdict, isTradeEligible, hasLiveSpeedProof } from "../lib/trade-verdict.ts";
+import { computeTradeVerdict, isTradeEligible, hasLiveSpeedProof, isClearTradeSignal } from "../lib/trade-verdict.ts";
 
 const goodCall = {
   ticker: "SMCI",
@@ -125,6 +125,18 @@ test("computeTradeVerdict: reversed speed against call bias -> not TRADE", () =>
   assert.notEqual(v.action, "TRADE");
 });
 
+// GME-style: live tape dipping with high surge must not show BUY CALL.
+test("computeTradeVerdict: live down + surge does not keep BUY CALL", () => {
+  const v = computeTradeVerdict(goodCall, { shortRate: -0.05, surge: 2.2, direction: "bearish" });
+  assert.notEqual(v.action, "TRADE");
+  assert.equal(v.action, "WAIT");
+});
+
+test("computeTradeVerdict: live bearish direction blocks CALL even with speed", () => {
+  const v = computeTradeVerdict(goodCall, { shortRate: 0.25, surge: 2.0, direction: "bearish" });
+  assert.equal(v.action, "WAIT");
+});
+
 // Swing-radar path stores no speed data — capped at WAIT even with day move/RVOL.
 test("computeTradeVerdict: swing path (null speed, big day move) -> never TRADE", () => {
   const v = computeTradeVerdict({
@@ -160,4 +172,11 @@ test("hasLiveSpeedProof: direction-aligned only", () => {
   assert.equal(hasLiveSpeedProof(base, "PUT"), false);
   assert.equal(hasLiveSpeedProof({ short_rate_at_alert: -0.2, volume_surge_at_alert: null }, "PUT"), true);
   assert.equal(hasLiveSpeedProof({ short_rate_at_alert: null, volume_surge_at_alert: null }, "CALL"), false);
+  assert.equal(hasLiveSpeedProof(goodCall, "CALL", { shortRate: -0.03, surge: 2.5 }), false);
+});
+
+test("isClearTradeSignal: needs high confidence and fast aligned speed", () => {
+  assert.equal(isClearTradeSignal(goodCall, { shortRate: 0.35, direction: "bullish" }), true);
+  assert.equal(isClearTradeSignal(goodCall, { shortRate: 0.12, direction: "bullish" }), false);
+  assert.equal(isClearTradeSignal({ ...goodCall, alert_tier: "research" }, { shortRate: 0.35, direction: "bullish" }), false);
 });

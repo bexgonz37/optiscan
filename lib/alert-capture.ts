@@ -34,7 +34,7 @@ import { privateLabel0dte, publicLabel0dte, riskLabel } from "@/lib/language-mod
 import { optionsPressure } from "@/lib/options-pressure";
 import { buildExplanation } from "@/lib/explain";
 import { cached } from "@/lib/scan-cache";
-import { computeTradeVerdict, hasLiveSpeedProof } from "@/lib/trade-verdict";
+import { computeTradeVerdict, hasLiveSpeedProof, isClearTradeSignal } from "@/lib/trade-verdict";
 import { alertExists, insertAlert, getSettingNum, updateAlertCatalyst, insertNotificationEvent } from "@/lib/alert-store";
 import { tradingDay, minutesToClose } from "@/lib/db";
 import { notifyNewAlert } from "@/lib/notifications";
@@ -226,8 +226,19 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
       short_rate_at_alert: sig.shortRate, volume_surge_at_alert: sig.surge,
       long_call_score: watch.callWatch, long_put_score: watch.putWatch,
       alert_tier: tier,
-    });
-    if (verdict.action === "TRADE") {
+    }, { shortRate: sig.shortRate, surge: sig.surge, direction: sig.direction });
+    if (isClearTradeSignal({
+      ticker: sig.ticker, direction: sig.direction, trade_bias: bias,
+      signal_score: setup.score, risk_score: risk.score,
+      option_worth_score: worth.score, worth_verdict: worth.verdict,
+      zero_dte_contract_score: contractRes.score,
+      options_liquidity_score: explainInput.liquidityScore,
+      move_status: status, risk_flags: JSON.stringify(flags),
+      option_side: sideContract?.side ?? null, strike: sideContract?.strike ?? null,
+      dte: sideContract?.dte ?? null,
+      short_rate_at_alert: sig.shortRate, volume_surge_at_alert: sig.surge,
+      alert_tier: tier,
+    }, { shortRate: sig.shortRate, surge: sig.surge, direction: sig.direction })) {
       void notifyNewAlert(id, {
         ticker: sig.ticker,
         direction: sig.direction,
@@ -255,7 +266,9 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
       try {
         insertNotificationEvent({
           alertId: id, channel: "discord_webhook", status: "skipped",
-          error: `verdict ${verdict.action} (${tier} tier) — only TRADE notifies`,
+          error: verdict.action === "TRADE"
+            ? "TRADE but not clear enough for Discord (need ≥82% confidence, ≥0.2%/min aligned speed)"
+            : `verdict ${verdict.action} (${tier} tier) — only clear TRADE notifies`,
         });
       } catch { /* bookkeeping never breaks capture */ }
     }

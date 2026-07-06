@@ -37,7 +37,7 @@ export interface LiveTape {
 export function liveCtxFor(tape: LiveTape | null | undefined, symbol: string): LiveTapeContext | undefined {
   const r = tape?.map.get(symbol);
   if (!r) return undefined;
-  return { shortRate: r.shortRate, surge: r.surge, price: r.price };
+  return { shortRate: r.shortRate, surge: r.surge, price: r.price, direction: r.direction };
 }
 
 export function useLiveTapeMap(pollMs = 1000): LiveTape {

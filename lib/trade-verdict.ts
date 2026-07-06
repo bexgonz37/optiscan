@@ -95,27 +95,53 @@ export interface LiveTapeContext {
   shortRate?: number | null;
   surge?: number | null;
   price?: number | null;
+  /** Live scanner direction: bullish | bearish | choppy */
+  direction?: string | null;
+}
+
+/** Discord / high-urgency: stricter than TRADE — must be unmistakably moving now. */
+export const CLEAR_SIGNAL_MIN_CONFIDENCE = 82;
+export const CLEAR_SIGNAL_MIN_SPEED = 0.2;
+
+export function isLiveTapeAligned(side: OptionSide, live?: LiveTapeContext): boolean {
+  if (!live || side === "NONE") return true;
+  if (side === "CALL") {
+    if (live.direction === "bearish") return false;
+    if (live.shortRate != null && live.shortRate < 0) return false;
+  }
+  if (side === "PUT") {
+    if (live.direction === "bullish") return false;
+    if (live.shortRate != null && live.shortRate > 0) return false;
+  }
+  return true;
 }
 
 /**
  * REQUIRED for TRADE: the tape must be moving the right way, right now.
  * When `live` is present, only live shortRate/surge count — never borrow
  * alert-time values (prevents a stalled tape keeping BUY via stale surge).
- * At-capture (no live) uses stored alert-time speed/surge.
+ * Live surge alone never justifies a BUY against a flat/down (or up) tape.
  */
 export function hasLiveSpeedProof(a: AlertVerdictInput, side: OptionSide, live?: LiveTapeContext): boolean {
   const hasLive = live != null;
   const speed = hasLive ? (live.shortRate ?? null) : a.short_rate_at_alert;
   const surge = hasLive ? (live.surge ?? null) : a.volume_surge_at_alert;
   if (speed == null && surge == null) return false;
+
+  if (hasLive) {
+    if (side === "CALL" && speed != null && speed <= 0) return false;
+    if (side === "PUT" && speed != null && speed >= 0) return false;
+  }
+
   if (speed != null) {
     if (side === "CALL" && speed >= MIN_SPEED_PCT_PER_MIN) return true;
     if (side === "PUT" && speed <= -MIN_SPEED_PCT_PER_MIN) return true;
     if (side === "NONE" && Math.abs(speed) >= MIN_SPEED_PCT_PER_MIN) return true;
-    // Reversed against the bias: no volume burst can rescue a BUY here.
     if (side === "CALL" && speed < -REVERSAL_SPEED) return false;
     if (side === "PUT" && speed > REVERSAL_SPEED) return false;
   }
+
+  if (hasLive) return false; // live: volume burst without aligned speed is not enough
   return surge != null && surge >= MIN_VOLUME_SURGE;
 }
 
@@ -127,6 +153,24 @@ export function hasContextSpeed(a: AlertVerdictInput): boolean {
 /** One-call helper for popup / Discord / UI filters: should this interrupt the user? */
 export function isTradeEligible(a: AlertVerdictInput, live?: LiveTapeContext): boolean {
   return computeTradeVerdict(a, live).action === "TRADE";
+}
+
+/** Stricter gate for Discord — only unmistakable, direction-aligned moves. */
+export function isClearTradeSignal(a: AlertVerdictInput, live?: LiveTapeContext): boolean {
+  const v = computeTradeVerdict(a, live);
+  if (v.action !== "TRADE" || v.side === "NONE") return false;
+  if (a.alert_tier === "research") return false;
+  if (v.confidence < CLEAR_SIGNAL_MIN_CONFIDENCE) return false;
+  const speed = live?.shortRate ?? a.short_rate_at_alert;
+  if (v.side === "CALL") {
+    if ((speed ?? 0) < CLEAR_SIGNAL_MIN_SPEED) return false;
+    if ((live?.direction ?? a.direction) === "bearish") return false;
+  }
+  if (v.side === "PUT") {
+    if ((speed ?? 0) > -CLEAR_SIGNAL_MIN_SPEED) return false;
+    if ((live?.direction ?? a.direction) === "bullish") return false;
+  }
+  return isLiveTapeAligned(v.side, live);
 }
 
 export function formatSpeedLine(a: AlertVerdictInput, live?: LiveTapeContext): string {
@@ -244,6 +288,23 @@ export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext
   }
 
   if (qualityGates && speedOk) {
+    if (live != null && !isLiveTapeAligned(side, live)) {
+      const against =
+        side === "CALL"
+          ? "Tape turned down — stock is not pushing up right now."
+          : "Tape turned up — stock is not pushing down right now.";
+      return {
+        action: "WAIT",
+        side,
+        headline: side === "PUT" ? "WAIT — PUT SETUP" : side === "CALL" ? "WAIT — CALL SETUP" : "WAIT",
+        reason: against,
+        confidence: Math.round(setup * 0.35 + worth * 0.35 + contract * 0.2),
+        contractLine: contractLine(merged),
+        bullets: [...bullets, against],
+        logicLine: `${logicBase} Quality passed but live tape disagrees.`,
+        hasSpeedProof: false,
+      };
+    }
     const headline = side === "CALL" ? "BUY CALL" : side === "PUT" ? "BUY PUT" : "TRADE";
     const confidence = Math.round(setup * 0.35 + worth * 0.35 + contract * 0.2 + (100 - risk) * 0.1);
     return {

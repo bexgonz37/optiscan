@@ -253,7 +253,7 @@ export default function SettingsPage() {
           <Toggle label="Manual confirmation" field="discord_requires_manual_confirm" hint="Off = instant Discord on every BUY signal" />
           {!settings?.discord_requires_manual_confirm && settings?.discord_enabled ? (
             <p className="settings-desc" style={{ color: "var(--green)", marginTop: 8 }}>
-              Auto-send ON — high-confidence BUY CALL/PUT alerts go to Discord instantly. No manual step.
+              Auto-send ON — only extra-clear BUY signals (≥82% confidence, stock moving ≥0.2%/min the right way). No flood.
             </p>
           ) : null}
           <div className="settings-row">
