@@ -19,7 +19,7 @@ import type { LiveTape, LiveTapeRow } from "@/hooks/useLiveTapeMap";
 import { liveCtxFor } from "@/hooks/useLiveTapeMap";
 import { TickerIcon } from "@/components/ui";
 import { TradeVerdictHero } from "@/components/TradeVerdictHero";
-import { computeTradeVerdict, alertAgeMinutes, MIN_SPEED_PCT_PER_MIN, type TradeVerdict } from "@/lib/trade-verdict";
+import { computeTradeVerdict, MIN_SPEED_PCT_PER_MIN, type TradeVerdict } from "@/lib/trade-verdict";
 import { useStableSymbolOrder } from "@/lib/stable-order";
 import { changeColor, fmtPct, fmtPrice } from "@/lib/format";
 
@@ -37,13 +37,20 @@ function speedText(r: LiveTapeRow | null): string {
   return `${r.shortRate > 0 ? "+" : ""}${r.shortRate.toFixed(2)}%/min`;
 }
 
-/** Alerts older than this drop off "Right now" entirely — they live in History. */
-const RIGHT_NOW_WINDOW_MS = 30 * 60_000;
+/** Only alerts from the last few minutes attach to Right now — older ones live in History. */
+const RIGHT_NOW_WINDOW_MS = 5 * 60_000;
 
-function ageText(alert: any): string | null {
-  const m = alertAgeMinutes(alert ?? {});
-  if (m == null) return null;
-  return m < 1 ? "just now" : `${m}m ago`;
+function isFreshAlert(alert: { alert_time?: string | null }, nowMs = Date.now()): boolean {
+  if (!alert?.alert_time) return false;
+  const t = Date.parse(alert.alert_time);
+  return Number.isFinite(t) && nowMs - t <= RIGHT_NOW_WINDOW_MS;
+}
+
+/** Default list: live BUY only, or a stock moving fast with no stale alert attached. */
+function isRightNowEntry(e: Entry): boolean {
+  if (e.verdict?.action === "TRADE") return true;
+  const fast = Math.abs(e.tapeRow?.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN;
+  return fast && !e.alert;
 }
 
 export function AlertsCommandCenter({
@@ -66,8 +73,10 @@ export function AlertsCommandCenter({
       const today = new Date().toISOString().slice(0, 10);
       const res = await fetch(`/api/alerts?date=${today}&limit=100`, { cache: "no-store", headers: scanHeaders() });
       const d = await res.json();
+      const nowMs = Date.now();
       const map = new Map<string, any>();
       for (const a of d.alerts ?? []) {
+        if (!isFreshAlert(a, nowMs)) continue;
         const prev = map.get(a.ticker);
         if (!prev || a.id > prev.id) map.set(a.ticker, a);
       }
@@ -95,16 +104,9 @@ export function AlertsCommandCenter({
   const entries = useMemo<Entry[]>(() => {
     const symbols = new Set<string>([...tape.map.keys(), ...alerts.keys()]);
     const out: Entry[] = [];
-    const nowMs = Date.now();
     for (const symbol of symbols) {
       const tapeRow = tape.map.get(symbol) ?? null;
-      const rawAlert = alerts.get(symbol) ?? null;
-      // Old alerts never attach here — a signal from an hour ago must not sit
-      // next to live tape looking actionable. History keeps the full record.
-      const alert =
-        rawAlert && rawAlert.alert_time && nowMs - Date.parse(rawAlert.alert_time) <= RIGHT_NOW_WINDOW_MS
-          ? rawAlert
-          : null;
+      const alert = alerts.get(symbol) ?? null;
       const live = liveCtxFor(tape, symbol);
       const verdict = alert ? computeTradeVerdict(alert, live) : null;
       const fast = Math.abs(tapeRow?.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN;
@@ -127,7 +129,7 @@ export function AlertsCommandCenter({
   }, [tape, alerts]);
 
   const visible = useMemo(
-    () => (showAll ? entries : entries.filter((e) => e.rank < 3)).slice(0, 30),
+    () => (showAll ? entries.filter((e) => e.rank < 3) : entries.filter(isRightNowEntry)).slice(0, 30),
     [entries, showAll],
   );
 
@@ -143,14 +145,10 @@ export function AlertsCommandCenter({
 
   const hero = useMemo(() => {
     if (selected) {
-      const found = entries.find((e) => e.symbol === selected);
-      if (found && found.verdict?.action !== "SKIP") return found;
+      const found = entries.find((e) => e.symbol === selected && e.verdict?.action === "TRADE");
+      if (found) return found;
     }
-    const trade = entries.find((e) => e.verdict?.action === "TRADE");
-    if (trade) return trade;
-    const wait = entries.find((e) => e.verdict?.action === "WAIT" && e.alert);
-    if (wait) return wait;
-    return null;
+    return entries.find((e) => e.verdict?.action === "TRADE") ?? null;
   }, [entries, selected]);
 
   function pick(symbol: string) {
@@ -168,7 +166,7 @@ export function AlertsCommandCenter({
         <div>
           <h2 className="section-title">Right now</h2>
           <p className="section-sub">
-            One list, best first. BUY only when the stock is moving the right way right now. Updates every second — pause to freeze list order.
+            Live BUY signals only — stocks moving the right way this second. Updates every second. Older setups are in History.
           </p>
         </div>
         <div className="status-group">
@@ -188,10 +186,7 @@ export function AlertsCommandCenter({
               <TickerIcon symbol={hero.symbol} />
               <div>
                 <div className="tname" style={{ fontSize: 16 }}>{hero.symbol}</div>
-                <div className="tsub">
-                  {fmtPrice(heroLive?.price ?? hero.alert.price_at_alert)}
-                  {ageText(hero.alert) ? ` · signal ${ageText(hero.alert)}` : ""}
-                </div>
+                <div className="tsub">{fmtPrice(heroLive?.price ?? hero.alert.price_at_alert)}</div>
               </div>
             </div>
             <TradeVerdictHero alert={hero.alert} live={heroLive} />
@@ -250,7 +245,7 @@ export function AlertsCommandCenter({
             {paused ? "▶ Resume" : "⏸ Pause"}
           </button>
           <button className={`pill btn${showAll ? " btn-primary" : ""}`} style={{ fontSize: 11, padding: "4px 10px" }} onClick={() => setShowAll((v) => !v)}>
-            {showAll ? "Hide skipped / slow" : "Show skipped / slow"}
+            {showAll ? "Hide WAIT setups" : "Show WAIT setups"}
           </button>
         </div>
       </div>
@@ -258,7 +253,7 @@ export function AlertsCommandCenter({
       <div className="table-area">
       {!displayEntries.length ? (
         <div className="empty small table-empty">
-          {tape.running ? "Nothing worth listing yet — names show up when they start moving." : "Scanner offline."}
+          {tape.running ? "Nothing live right now — a BUY appears here the moment a stock is moving fast enough." : "Scanner offline."}
         </div>
       ) : (
         <div className="tablewrap">
@@ -298,12 +293,7 @@ export function AlertsCommandCenter({
                     </td>
                     <td>
                       {v ? (
-                        <>
-                          <span className={`verdict-pill verdict-${v.action.toLowerCase()}`} title={v.reason}>{v.headline}</span>
-                          {ageText(e.alert) ? (
-                            <div className="muted" style={{ fontSize: 10, marginTop: 2 }}>{ageText(e.alert)}</div>
-                          ) : null}
-                        </>
+                        <span className={`verdict-pill verdict-${v.action.toLowerCase()}`} title={v.reason}>{v.headline}</span>
                       ) : (
                         <span className="verdict-pill verdict-wait">
                           {e.tapeRow?.direction === "bullish" ? "MOVING UP" : e.tapeRow?.direction === "bearish" ? "MOVING DOWN" : "MOVING"}

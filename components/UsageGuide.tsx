@@ -35,7 +35,7 @@ export function UsageGuide({ page }: { page: "dashboard" | "alerts" }) {
     <ol className="guide-list">
       <li><strong>Right now tab</strong> — one list, best first. The big card at the top is the strongest signal at this moment; click any row to load it and see the chart.</li>
       <li><strong>Signals</strong> — BUY CALL/PUT only shows while the stock is actually moving the right way (≥ 0.15%/min). WAIT = setup forming, not ready. SKIP/slow rows are hidden by default.</li>
-      <li><strong>Fresh signals only</strong> — a BUY older than 15 minutes automatically downgrades to WAIT, and alerts older than 30 minutes drop off Right now entirely (find them in History). Never trade an old signal.</li>
+      <li><strong>Right now = live only</strong> — you only see a live BUY or a stock moving fast this second. Alerts older than 5 minutes never appear here (check History for those). A BUY older than 15 min can never re-arm.</li>
       <li><strong>Live updates</strong> — Right now, the scanner tape, popups, and Accuracy tab all refresh every second during market hours.</li>
           <li><strong>Popups</strong> — only fire for a live BUY CALL / BUY PUT. Everything else stays quiet in this page's history.</li>
           <li><strong>Accuracy tab</strong> — tracks every trade-tier BUY CALL/PUT and whether the move worked (RIGHT / WRONG / still tracking).</li>
