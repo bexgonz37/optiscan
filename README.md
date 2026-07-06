@@ -161,3 +161,24 @@ and drawdown; at EOD an alert is marked a false positive if it never moved
 
 Everything remains research/decision-support: no order placement, no
 recommendations, no profit claims. Not financial advice.
+
+## 0DTE momentum engine (v3)
+
+The scanner's primary mode is now a **0DTE options momentum scanner**:
+
+- An every-second loop (paid real-time plan required; `SCANNER_LOOP_MS`)
+  watches a small liquid universe, computing acceleration, volume surge, chop,
+  VWAP side, and HOD/LOD state in memory. Chains are fetched **only when a
+  symbol triggers** — never wholesale — and active alerts re-quote every ~7s.
+- Every alert answers the direction question explicitly: **UP or DOWN, calls
+  side or puts side**, with separate Call Watch / Put Watch scores, a 0DTE
+  Contract Score, Move Status (Early → Continuation → Extended → Chase Risk →
+  Exhausted), and an "Option Still Worth It" verdict.
+- **Big moves are not auto-skipped.** A +15% name still accelerating with
+  volume is a Continuation Setup; the same move decelerating is Chase Risk.
+- **Catalysts are context only.** News attaches after the alert fires and
+  never gates, scores, or suppresses a signal. No news = neutral.
+- All scoring is deterministic (documented in `lib/alert-scoring.js` and
+  `lib/zero-dte.js`); AI is optional and only ever for prose, never decisions.
+- 429s auto-back-off the loop up to 60s and recover — a free key degrades
+  gracefully but is 15-min delayed: practice/logging only for 0DTE.

@@ -24,6 +24,36 @@ interface PopupAlert {
   ai_explanation: string | null; public_explanation: string | null;
   option_symbol: string | null; option_side: string | null; strike: number | null;
   expiration: string | null; dte: number | null; price_at_alert: number | null;
+  // 0DTE fields
+  trade_bias: string | null; move_status: string | null;
+  option_worth_score: number | null; worth_verdict: string | null;
+  chase_risk: string | null; iv_risk: string | null; spread_risk: string | null;
+  long_call_score: number | null; long_put_score: number | null;
+  zero_dte_contract_score: number | null;
+}
+
+const MOVE_STATUS_TEXT: Record<string, string> = {
+  early: "Early Move", continuing: "Continuation Setup",
+  extended_tradable: "Extended But Still Tradable", extended_risky: "Chase Risk", exhausted: "Move Exhausted",
+};
+
+/** The up-or-down answer, loud: direction arrow + which side is in play. */
+function DirectionLine({ a, mode }: { a: PopupAlert; mode: string }) {
+  const up = a.direction === "bullish";
+  const down = a.direction === "bearish";
+  const color = up ? "var(--green)" : down ? "var(--red)" : "var(--amber)";
+  const arrow = up ? "▲ UP" : down ? "▼ DOWN" : "◆ CHOPPY";
+  const side = mode === "private" ? (up ? " — calls side in play" : down ? " — puts side in play" : " — no clean side") : "";
+  return (
+    <div style={{ fontSize: 13, fontWeight: 700, color, marginBottom: 4 }}>
+      {arrow}{side}
+      {mode === "private" && a.long_call_score != null && a.long_put_score != null ? (
+        <span style={{ marginLeft: 8, fontWeight: 500, fontSize: 11, color: "var(--muted)" }}>
+          Call Watch {Math.round(a.long_call_score)} · Put Watch {Math.round(a.long_put_score)}
+        </span>
+      ) : null}
+    </div>
+  );
 }
 
 const LS_LAST_ID = "optiscan:popup:lastId";
@@ -157,10 +187,21 @@ export function AlertPopup({ onOpenChain }: { onOpenChain?: (symbol: string) => 
               <span className="spacer" style={{ flex: 1 }} />
               <button className="pill btn" style={btn} onClick={() => { logEvent(a.id, a.ticker, "ignore"); dismiss(a); }}>✕</button>
             </div>
+            <DirectionLine a={a} mode={mode} />
             <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
-              {a.direction === "bearish" ? "Bearish momentum" : a.direction === "bullish" ? "Bullish momentum" : "Volatile / Unclear"}
-              {" · "}Setup {Math.round(a.signal_score ?? 0)}/100 · Risk {Math.round(a.risk_score ?? 0)}/100 · Liquidity {Math.round(a.options_liquidity_score ?? 0)}/100
+              Setup {Math.round(a.signal_score ?? 0)}/100 · Risk {Math.round(a.risk_score ?? 0)}/100
+              {a.zero_dte_contract_score != null ? ` · 0DTE Contract ${Math.round(a.zero_dte_contract_score)}/100` : ` · Liquidity ${Math.round(a.options_liquidity_score ?? 0)}/100`}
+              {a.option_worth_score != null ? ` · Worth it: ${Math.round(a.option_worth_score)}/100` : ""}
             </div>
+            {(a.move_status || a.worth_verdict) ? (
+              <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
+                {a.move_status ? `Move: ${MOVE_STATUS_TEXT[a.move_status] ?? a.move_status}` : ""}
+                {a.worth_verdict ? ` · ${a.worth_verdict}` : ""}
+                {a.chase_risk ? ` · Chase ${a.chase_risk}` : ""}
+                {a.iv_risk ? ` · IV ${a.iv_risk}` : ""}
+                {a.spread_risk ? ` · Spread ${a.spread_risk}` : ""}
+              </div>
+            ) : null}
             <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
               <span style={{ color: changeColor(a.percent_move_at_alert) }}>{fmtPct(a.percent_move_at_alert)}</span>
               {a.relative_volume != null ? ` · RVOL ${a.relative_volume}x` : ""}

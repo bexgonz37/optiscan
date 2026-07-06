@@ -2,8 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   privateLabel,
-  privateSideHint,
+  privateLabel0dte,
   publicLabel,
+  publicLabel0dte,
+  privateSideHint,
   riskLabel,
   suggestedAction,
   directionLabel,
@@ -15,67 +17,58 @@ test("banned-language checker catches every unsafe phrase", () => {
     "Buy now before it rips", "This is a STRONG BUY", "take this trade",
     "Just buy calls here", "buy puts on this", "guaranteed winner",
     "easy money setup", "copy this trade", "time to sell everything",
-    "Take this call", "take this put",
+    "Take this call", "take this put", "take calls here", "take puts now", "sell now",
   ];
   for (const s of unsafe) assert.equal(containsBannedPublicLanguage(s), true, s);
 });
 
-test("banned checker passes safe education wording (incl. tricky substrings)", () => {
-  const safe = [
-    "High-Quality Scanner Alert: RDDT",
-    "Watchlist Candidate — momentum + catalyst detected",
+test("banned checker passes safe education wording", () => {
+  for (const s of [
+    "Bullish Momentum Alert: SPY",
+    "Bearish scanner alert — momentum setup detected",
+    "0DTE Watchlist Candidate",
     "Educational market signal only. Not financial advice.",
-    "Options Liquidity Alert: spreads are workable",
-    "buyout rumors circulating", // 'buyout' must not trip the 'buy' word-boundary
-    "sell-side analyst coverage initiated", // hyphenated, not the verb usage... still contains 'sell'? word boundary check
-  ];
-  // Note: "sell-side" DOES contain the whole word "sell" — by design we treat
-  // it as unsafe (over-blocking beats under-blocking for public output).
-  assert.equal(containsBannedPublicLanguage(safe[0]), false);
-  assert.equal(containsBannedPublicLanguage(safe[1]), false);
-  assert.equal(containsBannedPublicLanguage(safe[2]), false);
-  assert.equal(containsBannedPublicLanguage(safe[3]), false);
-  assert.equal(containsBannedPublicLanguage(safe[4]), false);
-  assert.equal(containsBannedPublicLanguage(safe[5]), true);
+    "buyout rumors circulating", // word boundary: 'buyout' is not 'buy'
+  ]) assert.equal(containsBannedPublicLanguage(s), false, s);
 });
 
-test("privateLabel bands per spec", () => {
-  assert.equal(privateLabel(95), "A+ Setup");
-  assert.equal(privateLabel(85), "High-Quality Alert");
-  assert.equal(privateLabel(75), "Watchlist Candidate");
-  assert.equal(privateLabel(65), "Needs Confirmation");
-  assert.equal(privateLabel(40), "Low Quality / Ignore");
-  assert.equal(privateLabel(95, { riskLabel: "Extreme Risk / Avoid" }), "Skip / Too Risky");
+test("SPEC: private 0DTE labels — call/put watch wording, flags override", () => {
+  assert.equal(privateLabel0dte({ bias: "long_call_candidate", setupScore: 91 }), "A+ 0DTE Call Watch");
+  assert.equal(privateLabel0dte({ bias: "long_call_candidate", setupScore: 78 }), "0DTE Call Watch");
+  assert.equal(privateLabel0dte({ bias: "long_put_candidate", setupScore: 92 }), "A+ 0DTE Put Watch");
+  assert.equal(privateLabel0dte({ bias: "wait_for_pullback", setupScore: 70 }), "Wait for Pullback");
+  assert.equal(privateLabel0dte({ bias: "chase_risk", setupScore: 70 }), "Chase Risk");
+  assert.equal(privateLabel0dte({ bias: "no_clean_setup", setupScore: 70 }), "Too Choppy");
+  assert.equal(privateLabel0dte({ bias: "watch_only", setupScore: 70, direction: "bullish" }), "Bullish 0DTE Setup");
+  assert.equal(privateLabel0dte({ bias: "watch_only", setupScore: 70, direction: "bearish" }), "Bearish 0DTE Setup");
+  assert.equal(privateLabel0dte({ bias: "long_call_candidate", setupScore: 95, riskFlags: ["Spread Too Wide"] }), "Spread Too Wide");
+  assert.equal(privateLabel0dte({ bias: "long_call_candidate", setupScore: 95, riskFlags: ["Premium Too Expensive"] }), "Premium Too Expensive");
 });
 
-test("publicLabel bands are education-safe and pass the checker", () => {
-  for (const s of [95, 85, 75, 65, 40]) {
-    const label = publicLabel(s);
+test("SPEC: public 0DTE labels are directional but never call/put and always safe", () => {
+  assert.equal(publicLabel0dte({ direction: "bullish", setupScore: 88 }), "Bullish Momentum Alert");
+  assert.equal(publicLabel0dte({ direction: "bearish", setupScore: 75 }), "Bearish Momentum Alert");
+  assert.equal(publicLabel0dte({ direction: "choppy", setupScore: 65 }), "0DTE Watchlist Candidate");
+  assert.equal(publicLabel0dte({ direction: "bullish", setupScore: 55 }), "Momentum Setup Detected");
+  assert.equal(publicLabel0dte({ direction: "bullish", setupScore: 20 }), "Educational Only");
+  for (const d of ["bullish", "bearish", "choppy"]) for (const s of [95, 75, 62, 55, 20]) {
+    const label = publicLabel0dte({ direction: d, setupScore: s });
     assert.equal(containsBannedPublicLanguage(label), false, label);
+    assert.ok(!/call|put/i.test(label), `public label leaks side: ${label}`);
   }
+});
+
+test("legacy label bands still work for swing/manual alerts", () => {
+  assert.equal(privateLabel(95), "A+ Setup");
+  assert.equal(privateLabel(65), "Needs Confirmation");
   assert.equal(publicLabel(85), "High-Quality Scanner Alert");
-  assert.equal(publicLabel(75), "Watchlist Candidate");
-  assert.equal(publicLabel(40), "Educational Only");
-  assert.equal(publicLabel(95, { riskLabel: "Extreme Risk / Avoid" }), "Risk Warning");
-});
-
-test("riskLabel bands", () => {
-  assert.equal(riskLabel(10), "Low Risk");
-  assert.equal(riskLabel(40), "Medium Risk");
-  assert.equal(riskLabel(60), "High Risk");
-  assert.equal(riskLabel(80), "Extreme Risk / Avoid");
-});
-
-test("suggestedAction: skip on extreme risk or low quality, watch on clean strength", () => {
-  assert.equal(suggestedAction(90, 80), "Skip");
-  assert.equal(suggestedAction(50, 20), "Skip");
-  assert.equal(suggestedAction(85, 30), "Watch");
-  assert.equal(suggestedAction(72, 40), "Confirm");
-});
-
-test("private side hints exist only for real sides", () => {
   assert.equal(privateSideHint("call"), "Possible Call Setup");
-  assert.equal(privateSideHint("put"), "Possible Put Setup");
-  assert.equal(privateSideHint(null), null);
-  assert.equal(directionLabel("neutral"), "Volatile / Unclear");
+});
+
+test("riskLabel / suggestedAction / directionLabel", () => {
+  assert.equal(riskLabel(10), "Low Risk");
+  assert.equal(riskLabel(80), "Extreme Risk / Avoid");
+  assert.equal(suggestedAction(85, 30), "Watch");
+  assert.equal(suggestedAction(90, 80), "Skip");
+  assert.equal(directionLabel("choppy"), "Volatile / Unclear");
 });

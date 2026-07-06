@@ -175,6 +175,20 @@ const ALERT_COLUMN_MIGRATIONS: [string, string][] = [
   ["public_explanation", "ALTER TABLE alerts ADD COLUMN public_explanation TEXT"],
   ["private_label", "ALTER TABLE alerts ADD COLUMN private_label TEXT"],
   ["public_label", "ALTER TABLE alerts ADD COLUMN public_label TEXT"],
+  // 0DTE pivot fields
+  ["trade_bias", "ALTER TABLE alerts ADD COLUMN trade_bias TEXT"],
+  ["move_status", "ALTER TABLE alerts ADD COLUMN move_status TEXT"],
+  ["option_worth_score", "ALTER TABLE alerts ADD COLUMN option_worth_score REAL"],
+  ["worth_verdict", "ALTER TABLE alerts ADD COLUMN worth_verdict TEXT"],
+  ["chase_risk", "ALTER TABLE alerts ADD COLUMN chase_risk TEXT"],
+  ["iv_risk", "ALTER TABLE alerts ADD COLUMN iv_risk TEXT"],
+  ["spread_risk", "ALTER TABLE alerts ADD COLUMN spread_risk TEXT"],
+  ["continuation_score", "ALTER TABLE alerts ADD COLUMN continuation_score REAL"],
+  ["exhaustion_score", "ALTER TABLE alerts ADD COLUMN exhaustion_score REAL"],
+  ["long_call_score", "ALTER TABLE alerts ADD COLUMN long_call_score REAL"],
+  ["long_put_score", "ALTER TABLE alerts ADD COLUMN long_put_score REAL"],
+  ["zero_dte_contract_score", "ALTER TABLE alerts ADD COLUMN zero_dte_contract_score REAL"],
+  ["risk_flags", "ALTER TABLE alerts ADD COLUMN risk_flags TEXT"],
 ];
 const JOURNAL_COLUMN_MIGRATIONS: [string, string][] = [
   ["contract", "ALTER TABLE trade_journal ADD COLUMN contract TEXT"],

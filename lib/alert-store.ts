@@ -37,6 +37,20 @@ export interface NewAlert {
   publicExplanation?: string | null;
   privateLabel?: string | null;
   publicLabel?: string | null;
+  // 0DTE fields
+  tradeBias?: string | null;
+  moveStatus?: string | null;
+  optionWorthScore?: number | null;
+  worthVerdict?: string | null;
+  chaseRisk?: string | null;
+  ivRisk?: string | null;
+  spreadRisk?: string | null;
+  continuationScore?: number | null;
+  exhaustionScore?: number | null;
+  longCallScore?: number | null;
+  longPutScore?: number | null;
+  zeroDteContractScore?: number | null;
+  riskFlags?: string[] | null;
   snapshot?: {
     optionSymbol: string | null;
     bid: number | null; ask: number | null; mid: number | null;
@@ -68,8 +82,10 @@ export function insertAlert(a: NewAlert): number | null {
           alert_time, trading_day, price_at_alert, percent_move_at_alert, volume, relative_volume,
           catalyst_type, catalyst_quality, catalyst_summary, catalyst_source,
           signal_score, risk_score, options_liquidity_score, scanner_score,
-          score_breakdown_json, ai_explanation, public_explanation, private_label, public_label, status
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'tracking')`,
+          score_breakdown_json, ai_explanation, public_explanation, private_label, public_label,
+          trade_bias, move_status, option_worth_score, worth_verdict, chase_risk, iv_risk, spread_risk,
+          continuation_score, exhaustion_score, long_call_score, long_put_score, zero_dte_contract_score, risk_flags, status
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'tracking')`,
       )
       .run(
         alert.ticker, alert.source, alert.alertType ?? null, alert.direction, alert.optionSymbol, alert.optionSide,
@@ -79,6 +95,11 @@ export function insertAlert(a: NewAlert): number | null {
         alert.signalScore, alert.riskScore, alert.optionsLiquidityScore, alert.scannerScore,
         alert.scoreBreakdownJson ?? null, alert.aiExplanation ?? null, alert.publicExplanation ?? null,
         alert.privateLabel ?? null, alert.publicLabel ?? null,
+        alert.tradeBias ?? null, alert.moveStatus ?? null, alert.optionWorthScore ?? null, alert.worthVerdict ?? null,
+        alert.chaseRisk ?? null, alert.ivRisk ?? null, alert.spreadRisk ?? null,
+        alert.continuationScore ?? null, alert.exhaustionScore ?? null,
+        alert.longCallScore ?? null, alert.longPutScore ?? null, alert.zeroDteContractScore ?? null,
+        alert.riskFlags ? JSON.stringify(alert.riskFlags) : null,
       );
     if (res.changes === 0) return null;
     const id = Number(res.lastInsertRowid);
@@ -205,6 +226,23 @@ export function recordCheckpoint(row: {
     row.maxPriceAfterAlert, row.maxPercentMoveAfterAlert, row.drawdownAfterAlert,
     row.isFalsePositive == null ? null : row.isFalsePositive ? 1 : 0,
   );
+}
+
+/** Late catalyst attach — news is fetched AFTER the alert exists so it can
+ * never delay or block a momentum alert (spec: catalysts are context only). */
+export function updateAlertCatalyst(alertId: number, cat: {
+  type: string; quality: string; summary: string | null; source: string | null;
+  records?: Array<{ headline: string; publisher: string | null; publishedAt: string | null; url: string | null; catalystType: string; quality: string; matchedKeywords: string }>;
+}, ticker: string) {
+  const db = getDb();
+  db.prepare("UPDATE alerts SET catalyst_type=?, catalyst_quality=?, catalyst_summary=?, catalyst_source=? WHERE id=?")
+    .run(cat.type, cat.quality, cat.summary, cat.source, alertId);
+  for (const c of cat.records ?? []) {
+    db.prepare(
+      `INSERT INTO catalyst_records (alert_id, ticker, headline, publisher, published_at, url, catalyst_type, quality, matched_keywords)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+    ).run(alertId, ticker, c.headline, c.publisher, c.publishedAt, c.url, c.catalystType, c.quality, c.matchedKeywords);
+  }
 }
 
 export function finalizeAlert(alertId: number, isFalsePositive: boolean) {

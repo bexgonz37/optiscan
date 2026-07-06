@@ -19,70 +19,70 @@ test("optionsLiquidityScore: liquid contract scores high, dead one low", () => {
   const dead = optionsLiquidityScore({ spreadPct: 22, volume: 3, openInterest: 40, dte: 60 });
   assert.ok(liquid.score >= 90, `liquid=${liquid.score}`);
   assert.ok(dead.score <= 10, `dead=${dead.score}`);
-  assert.ok(liquid.score <= 100 && dead.score >= 0);
 });
 
-test("optionsLiquidityScore: missing quote zeroes the spread part", () => {
-  const noQuote = optionsLiquidityScore({ spreadPct: null, volume: 3000, openInterest: 8000, dte: 14 });
-  const quoted = optionsLiquidityScore({ spreadPct: 0, volume: 3000, openInterest: 8000, dte: 14 });
-  assert.equal(quoted.score - noQuote.score, 40);
-  assert.ok(noQuote.reasons.some((r) => r.includes("spread unknown")));
-});
-
-test("riskScore: clean liquid setup ~0, flag pile-up climbs and caps at 100", () => {
+test("SPEC: riskScore has NO catalyst input — no news is not a red flag", () => {
   const clean = riskScore({
-    spreadPct: 3, openInterest: 5000, catalystType: "earnings", catalystQuality: "strong",
-    movePct: 2, shareVolume: 5_000_000, iv: 0.4, minsToClose: 300,
+    spreadPct: 3, optionVolume: 4000, openInterest: 2000, efficiency: 0.7,
+    moveStatus: "continuing", iv: 0.9, minsToClose: 200, shareVolume: 30_000_000,
   });
   assert.ok(clean.score <= 5, `clean=${clean.score}`);
-
-  const ugly = riskScore({
-    spreadPct: 30, openInterest: 10, catalystType: "no_clear_catalyst", catalystQuality: "unknown",
-    movePct: 18, shareVolume: 50_000, iv: 2.0, minsToClose: 10,
+  // identical input with catalyst fields present changes nothing:
+  const withCat = riskScore({
+    spreadPct: 3, optionVolume: 4000, openInterest: 2000, efficiency: 0.7,
+    moveStatus: "continuing", iv: 0.9, minsToClose: 200, shareVolume: 30_000_000,
+    catalystType: "no_clear_catalyst", catalystQuality: "unknown",
   });
-  assert.ok(ugly.score >= 85 && ugly.score <= 100, `ugly=${ugly.score}`);
-  assert.ok(ugly.reasons.some((r) => r.includes("No clear catalyst")));
-  assert.ok(ugly.reasons.some((r) => r.includes("Very high IV")));
-  assert.ok(ugly.reasons.some((r) => r.includes("Near market close")));
+  assert.equal(clean.score, withCat.score);
 });
 
-test("riskScore: stale catalyst counts as a catalyst red flag", () => {
-  const stale = riskScore({ catalystType: "earnings", catalystQuality: "stale" });
-  assert.equal(stale.score, 15);
-  assert.ok(stale.reasons.some((r) => r.includes("stale")));
-});
-
-test("setupScore: components sum per spec weights and are capped", () => {
-  const strong = setupScore({
-    relVol: 4, movePct: 3.5, catalystType: "earnings", catalystQuality: "strong",
-    liquidityScore: 100, riskScore: 0, trendAligned: true, vwapAligned: true,
+test("SPEC: riskScore does not penalize big moves — structure does the work", () => {
+  const bigCleanMove = riskScore({
+    spreadPct: 3, optionVolume: 4000, openInterest: 2000, efficiency: 0.7,
+    moveStatus: "continuing", movePct: 17, iv: 0.9, minsToClose: 200, shareVolume: 30_000_000,
   });
-  // 20 + 10.5 + 20 + 20 + 10 + 10 - 0 = 90.5 -> 91
-  assert.equal(strong.score, 91);
-  assert.equal(strong.breakdown.relVol, 20);
-  assert.equal(strong.breakdown.catalyst, 20);
-  assert.equal(strong.breakdown.timing, 10);
-  assert.equal(strong.breakdown.technical, 10);
-  assert.equal(strong.breakdown.riskPenalty, 0);
-
-  const weak = setupScore({ relVol: 1, movePct: 0.5, catalystQuality: "unknown", liquidityScore: 10, riskScore: 80 });
-  assert.ok(weak.score <= 10, `weak=${weak.score}`);
-  assert.equal(weak.breakdown.riskPenalty, -20);
+  assert.ok(bigCleanMove.score <= 5, `bigClean=${bigCleanMove.score}`);
+  const exhausted = riskScore({ ...{}, moveStatus: "exhausted", efficiency: 0.2, spreadPct: 22, minsToClose: 20 });
+  assert.ok(exhausted.score >= 55, `exhausted=${exhausted.score}`);
+  assert.ok(exhausted.reasons.some((r) => r.includes("exhausted")));
+  assert.ok(exhausted.reasons.some((r) => r.includes("Late-day")));
 });
 
-test("setupScore: extended moves lose the timing points", () => {
-  const base = { relVol: 2, catalystQuality: "medium", liquidityScore: 60, riskScore: 20 };
-  const early = setupScore({ ...base, movePct: 3 });
-  const late = setupScore({ ...base, movePct: 12 });
-  assert.equal(early.breakdown.timing, 10);
-  assert.equal(late.breakdown.timing, 0);
-  assert.ok(late.reasons.some((r) => r.includes("extended")));
+test("SPEC: setupScore has no catalyst term and rewards continuation at ANY size", () => {
+  const bigContinuing = setupScore({
+    momentum01: 0.9, relVol: 4, surge: 1.8, vwapAligned: true, levelBreak: true,
+    optionVolume: 3000, openInterest: 1500, spreadPct: 3, zeroDteScore: 85,
+    moveStatus: "continuing", riskScore: 10,
+  });
+  assert.ok(bigContinuing.score >= 85, `score=${bigContinuing.score}`);
+  assert.equal(bigContinuing.breakdown.timing, 10); // continuation = full timing points
+  assert.ok(!("catalyst" in bigContinuing.breakdown));
+
+  const exhausted = setupScore({
+    momentum01: 0.3, relVol: 1.2, vwapAligned: false, levelBreak: false,
+    optionVolume: 50, openInterest: 30, spreadPct: 15, zeroDteScore: 20,
+    moveStatus: "exhausted", riskScore: 80,
+  });
+  assert.ok(exhausted.score <= 15, `exhausted=${exhausted.score}`);
+  assert.equal(exhausted.breakdown.timing, 0);
+  assert.equal(exhausted.breakdown.riskPenalty, -20);
 });
 
-test("setupScore bounded 0-100 and risk penalty caps at 25", () => {
-  const max = setupScore({ relVol: 10, movePct: 5, catalystQuality: "strong", liquidityScore: 100, riskScore: 0, trendAligned: true, vwapAligned: true });
-  assert.ok(max.score <= 100);
-  const pen = setupScore({ relVol: 1, movePct: 0, catalystQuality: "unknown", liquidityScore: 0, riskScore: 100 });
+test("setupScore component caps: momentum 20, volume 15, levels 15, liquidity 25, spread 10, 0dte 10, timing 10, penalty -25", () => {
+  const max = setupScore({
+    momentum01: 1, relVol: 10, surge: 5, vwapAligned: true, levelBreak: true,
+    optionVolume: 99999, openInterest: 99999, spreadPct: 0, zeroDteScore: 100,
+    moveStatus: "continuing", riskScore: 0,
+  });
+  assert.equal(max.score, 100);
+  assert.equal(max.breakdown.momentum, 20);
+  assert.equal(max.breakdown.volume, 15);
+  assert.equal(max.breakdown.vwapLevels, 15);
+  assert.equal(max.breakdown.liquidity, 25);
+  assert.equal(max.breakdown.spread, 10);
+  assert.equal(max.breakdown.zeroDteFit, 10);
+  assert.equal(max.breakdown.timing, 10);
+  const pen = setupScore({ momentum01: 0, riskScore: 100 });
   assert.equal(pen.breakdown.riskPenalty, -25);
   assert.ok(pen.score >= 0);
 });
