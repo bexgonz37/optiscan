@@ -243,6 +243,7 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     const verdictInputWithTier = { ...verdictInput, alert_tier: tier };
     if (isClearTradeSignal(verdictInputWithTier, liveCtx)) {
       void notifyNewAlert(id, {
+        assetClass: "options",
         ticker: sig.ticker,
         direction: sig.direction,
         setupScore: setup.score,
@@ -288,6 +289,7 @@ export async function captureAlerts(input: {
 }): Promise<{ inserted: number; skipped: number }> {
   if (process.env.ALERT_LAB_ENABLED === "0") return { inserted: 0, skipped: 0 };
   const nowMs = input.nowMs ?? Date.now();
+  if (!isOptionsSession(nowMs)) return { inserted: 0, skipped: 0 };
   const minUnusual = getSettingNum("alert_min_unusual_score", Number(process.env.ALERT_MIN_UNUSUAL_SCORE ?? 80));
   let inserted = 0;
   let skipped = 0;

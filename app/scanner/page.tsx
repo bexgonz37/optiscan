@@ -8,15 +8,15 @@ import { KpiRow } from "@/components/KpiRow";
 import { MomentumTable } from "@/components/MomentumTable";
 import { UnusualTable } from "@/components/UnusualTable";
 import { Toolbar } from "@/components/Toolbar";
-import { Sidebar, type FilterKey, type Tab, type View } from "@/components/Sidebar";
-import { UsageGuide } from "@/components/UsageGuide";
+import { Sidebar, type FilterKey, type Tab } from "@/components/Sidebar";
+import { SessionBanner } from "@/components/SessionBanner";
 import { useScanner } from "@/hooks/useScanner";
 import { DEFAULT_REFRESH_SEC, loadDashboardPrefs } from "@/lib/dashboard-prefs";
 import { filterMomentum, filterUnusual } from "@/lib/scanner-filters";
 
 export default function ScannerPage() {
   const [prefs] = useState(() => loadDashboardPrefs());
-  const [tab, setTab] = useState<Tab>(prefs.tab ?? "momentum");
+  const [tab, setTab] = useState<Tab>("momentum");
   const [activeView, setActiveView] = useState("momentum");
   const [filters, setFilters] = useState<FilterKey[]>([]);
   const [chartSymbol, setChartSymbol] = useState<string | null>(null);
@@ -66,15 +66,14 @@ export default function ScannerPage() {
     setChartOpen(true);
   }, []);
 
-  function selectView(v: View) {
-    setActiveView(v.id);
-    setTab(v.tab);
-    setFilters(v.filters);
+  function selectView(id: string, t: Tab) {
+    setActiveView(id);
+    setTab(t);
+    setFilters([]);
   }
 
   function toggleFilter(key: FilterKey) {
     setFilters((prev) => (prev.includes(key) ? prev.filter((f) => f !== key) : [...prev, key]));
-    setActiveView("custom");
   }
 
   return (
@@ -88,7 +87,14 @@ export default function ScannerPage() {
       />
 
       <DataAccessBanner />
-      <UsageGuide page="scanner" />
+      <SessionBanner />
+
+      <div className="panel main" style={{ padding: "12px 14px", marginBottom: 14 }}>
+        <h1 style={{ margin: "0 0 4px", fontSize: 16 }}>Options research</h1>
+        <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+          Deeper momentum + unusual-flow scan. For daily use, the <a href="/" style={{ color: "inherit" }}>Live</a> page is enough.
+        </p>
+      </div>
 
       <KpiRow kpi={kpi} universeCount={meta?.universeCount ?? 0} loopLive={loopLive} />
 
@@ -100,7 +106,11 @@ export default function ScannerPage() {
       ) : null}
 
       <div className="scanner-layout">
-        <Sidebar activeView={activeView} onSelect={selectView} counts={counts} />
+        <Sidebar
+          activeView={activeView}
+          onSelect={(v) => selectView(v.id, v.tab)}
+          counts={counts}
+        />
 
         <div className="scanner-main">
           <Toolbar
@@ -112,9 +122,10 @@ export default function ScannerPage() {
             }}
             activeFilters={filters}
             onToggle={toggleFilter}
-            onClear={() => { setFilters([]); setActiveView(tab); }}
+            onClear={() => setFilters([])}
             loading={loading}
             count={rows.length}
+            onRefresh={refresh}
           />
 
           <div className="table-area">
@@ -130,7 +141,7 @@ export default function ScannerPage() {
       <ChartPanel symbol={chartSymbol} open={chartOpen} onClose={() => setChartOpen(false)} />
 
       <div className="footer">
-        OptiScan scanner · options momentum + unusual flow · trade callouts on Alerts page
+        OptiScan · options research · trade callouts on Alerts
       </div>
     </div>
   );

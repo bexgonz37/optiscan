@@ -3,20 +3,6 @@
 import type { ReactNode } from "react";
 import type { Tab, FilterKey } from "@/components/Sidebar";
 
-const CHIPS: Record<Tab, { key: FilterKey; label: string }[]> = {
-  momentum: [
-    { key: "strong", label: "Strong" },
-    { key: "call", label: "Calls" },
-    { key: "put", label: "Puts" },
-    { key: "highiv", label: "High IV" },
-  ],
-  unusual: [
-    { key: "strong", label: "Strong" },
-    { key: "new", label: "New positioning" },
-    { key: "highiv", label: "High IV" },
-  ],
-};
-
 export function Toolbar({
   tab,
   onTabChange,
@@ -26,6 +12,7 @@ export function Toolbar({
   loading,
   count,
   search,
+  onRefresh,
 }: {
   tab: Tab;
   onTabChange: (t: Tab) => void;
@@ -35,9 +22,9 @@ export function Toolbar({
   loading: boolean;
   count: number;
   search?: ReactNode;
+  onRefresh?: () => void;
 }) {
-  const chips = CHIPS[tab];
-  const noneActive = activeFilters.length === 0;
+  const strongOnly = activeFilters.includes("strong");
 
   return (
     <div className="toolbar scanner-toolbar">
@@ -46,28 +33,30 @@ export function Toolbar({
           Momentum
         </button>
         <button type="button" className={`scanner-tab${tab === "unusual" ? " active" : ""}`} onClick={() => onTabChange("unusual")}>
-          Unusual Flow
+          Unusual flow
         </button>
       </div>
 
       {search}
 
       <div className="chips">
-        <span className={`chip ${noneActive ? "on" : ""}`} onClick={onClear}>
-          All
+        <span
+          className={`chip ${strongOnly ? "on" : ""}`}
+          onClick={() => {
+            if (strongOnly) onClear();
+            else onToggle("strong");
+          }}
+        >
+          Strong only
         </span>
-        {chips.map((c) => (
-          <span
-            key={c.key}
-            className={`chip ${activeFilters.includes(c.key) ? "on" : ""}`}
-            onClick={() => onToggle(c.key)}
-          >
-            {c.label}
-          </span>
-        ))}
       </div>
 
-      <div className="right">
+      <div className="right" style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        {onRefresh ? (
+          <button type="button" className="pill btn" style={{ fontSize: 11, padding: "4px 8px" }} onClick={onRefresh}>
+            Refresh
+          </button>
+        ) : null}
         <span className="status-text">
           <span className={`status-dot${loading ? " live" : ""}`} style={{ marginRight: 6 }} />
           {loading ? "scanning…" : `${count} shown`}

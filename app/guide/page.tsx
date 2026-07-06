@@ -24,80 +24,80 @@ export default function GuidePage() {
       <div className="guide-intro panel main">
         <h1 style={{ margin: "0 0 6px", fontSize: 22 }}>How to use OptiScan</h1>
         <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
-          OptiScan watches a universe of fast, liquid stocks every second and tells you when one is
-          moving hard enough that a same-day (0DTE) call or put is worth a look. You always make the
-          final decision — this is a research tool, not financial advice.
+          OptiScan watches fast, liquid stocks every second. During market hours it looks for same-day
+          (0DTE) option setups. Before and after the regular session it watches shares only. You always
+          make the final decision — this is a research tool, not financial advice.
         </p>
       </div>
 
       <Section title="1. Quick start (every trading day)">
         <ol className="guide-list">
-          <li>Start the app before or during market hours (9:30am–4:00pm ET). The scanner loop starts on its own.</li>
-          <li>Keep the <strong>Dashboard</strong> open to watch what's heating up, or the <strong>Alerts</strong> page for direct signals.</li>
-          <li>Wait for a popup. Popups only appear for a live <strong>BUY CALL</strong> or <strong>BUY PUT</strong> — never for WAIT or SKIP.</li>
+          <li>Start the app before or during market hours. The scanner loop starts on its own.</li>
+          <li>Keep <strong>Live</strong> open to watch what&apos;s moving, or <strong>Alerts</strong> for signals that fired.</li>
+          <li>Wait for a popup. Popups only appear for a clear live signal — never for &quot;watch&quot; or &quot;skip.&quot;</li>
           <li>When one fires: click <strong>Watch chart</strong> first. Confirm the move with your own eyes before doing anything.</li>
           <li>If you take the trade, click <strong>I took this trade</strong> so it lands in your journal.</li>
         </ol>
       </Section>
 
-      <Section title="2. What the signals mean">
+      <Section title="2. What the signals mean (market hours — options)">
         <ul className="guide-list">
-          <li><strong>BUY CALL</strong> — the stock is moving UP at ≥ 0.15%/min right now, the setup scores pass, and there's a liquid same-day call contract. The exact contract (strike + expiry) is shown on the card.</li>
-          <li><strong>BUY PUT</strong> — same thing but the stock is moving DOWN fast right now.</li>
-          <li><strong>WAIT — CALL/PUT SETUP</strong> — the setup looks good but the stock is not moving fast enough at this moment. Watch it; if speed comes back it can upgrade to BUY.</li>
-          <li><strong>SKIP — DON'T TRADE</strong> — something disqualifies it: choppy tape, exhausted move, spread too wide, or premium too expensive. These are hidden by default.</li>
+          <li><strong>Buy call option ↑</strong> — the stock is moving UP at ≥ 0.15%/min right now, scores pass, and there&apos;s a liquid same-day call. The contract (strike + expiry) is on the card.</li>
+          <li><strong>Buy put option ↓</strong> — same thing but the stock is moving DOWN fast right now.</li>
+          <li><strong>Watch call/put setup</strong> — looks good but not moving fast enough yet. If speed comes back it can upgrade.</li>
+          <li><strong>Skip — don&apos;t trade</strong> — choppy tape, exhausted move, spread too wide, or premium too expensive. Hidden by default.</li>
         </ul>
         <p className="muted">
-          The label is re-checked against the live tape every second. If a BUY CALL stalls, it downgrades
-          to WAIT in front of you — what you see is always the verdict for <em>right now</em>, not for when
-          the alert first fired.
+          Labels re-check against the live tape every second. If a buy signal stalls, it downgrades to
+          &quot;watch&quot; — what you see is always for <em>right now</em>, not when the alert first fired.
         </p>
       </Section>
 
-      <Section title="3. The Dashboard (market scanner)">
+      <Section title="3. After-hours stock signals (shares, not options)">
         <ul className="guide-list">
-          <li>Every symbol is ranked by <strong>Watch score</strong> — a 0–100 blend of speed, volume, VWAP position, and level breaks. Higher = more worth watching.</li>
-          <li><strong>Speed</strong> is %/minute over the last few minutes — the single most important number. Bold means it clears the 0.15%/min trade bar.</li>
-          <li><strong>RVOL</strong> — today's volume vs normal. 2x+ means real interest. <strong>Vol surge</strong> — volume burst in the last minute vs the minutes before.</li>
-          <li><strong>VWAP</strong> — distance from the volume-weighted average price. Calls are healthier above VWAP, puts below. <strong>HOD/LOD</strong> — breaking the high or low of the day.</li>
-          <li>The table refreshes every second. Click <strong>Pause</strong> to freeze it while you read; the default filter shows fast movers only — click <strong>All</strong> for everything.</li>
-          <li>Click any row to open the chart with VWAP, EMAs, RSI, and the option reality check.</li>
+          <li><strong>Buy stock ↑</strong> — price is rising fast in premarket or after hours. This means buy shares (the actual stock), not an option contract.</li>
+          <li><strong>Bet stock ↓</strong> — price is falling fast. This is a short/sell-shares idea — still shares, not options.</li>
+          <li><strong>Watch ↑/↓ move</strong> — might go that direction but not fast enough yet.</li>
+          <li>Option alerts do <strong>not</strong> fire outside 9:30am–4:00pm ET. After 4pm you only get share signals until 8pm.</li>
         </ul>
       </Section>
 
-      <Section title="4. The Alerts page">
+      <Section title="4. The Live page (market scanner)">
         <ul className="guide-list">
-          <li><strong>Right now tab</strong> — one list, best first. The big card at the top is the strongest signal at this moment: the verdict, the exact contract, live speed, and a Watch chart button. Click any row to load it into the card.</li>
-          <li><strong>History tab</strong> — every alert the scanner ever fired, with two badges: the verdict <em>when it fired</em> and the verdict <em>now</em>. Great for seeing how fast signals go stale. Stats and the weekly report live here too.</li>
-          <li><strong>Journal tab</strong> — your personal trade log. Fill in exits and outcomes so the weekly report can tell you what's actually working for you.</li>
+          <li>Every symbol is ranked by <strong>Score</strong> — how hot it is right now (0–100). Higher = more worth watching.</li>
+          <li><strong>Speed</strong> is how fast price moves per minute — the most important number. Bold means it clears the trade bar.</li>
+          <li><strong>Today %</strong> is the day&apos;s move so far. Speed matters more than a big day move alone.</li>
+          <li>Click <strong>Show details</strong> for RVOL, volume surge, VWAP, and high/low-of-day breaks.</li>
+          <li>Default view shows <strong>Moving now</strong> only. Click <strong>All</strong> for everything, or <strong>Pause</strong> to freeze the table.</li>
+          <li>Click any row to open the chart. Expand <strong>Options research</strong> below for deeper momentum + unusual-flow tables.</li>
         </ul>
       </Section>
 
-      <Section title="5. Popups and Discord">
+      <Section title="5. The Alerts page">
         <ul className="guide-list">
-          <li>Popups appear on any page, bottom-right, only for a live BUY CALL / BUY PUT, with a sound. Snooze a ticker for an hour if it's spamming you.</li>
-          <li>Desktop notifications work when the browser tab is in the background — allow notifications when asked.</li>
-          <li>Discord sends <strong>automatic</strong> BUY CALL / BUY PUT alerts to your private channel with confidence %, contract, speed, and why. Set <code>DISCORD_WEBHOOK_URL</code> in <code>.env.local</code> — on by default once the app starts. Turn off manual confirmation in Settings if you want zero-click delivery.</li>
+          <li><strong>Right now</strong> — one list, best first. The big card is the strongest signal at this moment.</li>
+          <li><strong>Track record</strong> — did signals work 1m/5m after they fired? Early hit rate lives here.</li>
+          <li><strong>Past alerts</strong> — every alert with verdict when it fired vs now.</li>
+          <li><strong>My trades</strong> — your personal log with exits and outcomes.</li>
         </ul>
       </Section>
 
-      <Section title="6. A simple routine for beginners">
+      <Section title="6. Popups and Discord">
+        <ul className="guide-list">
+          <li>Popups appear bottom-right for live buy signals only, with a sound. Snooze a ticker for an hour if needed.</li>
+          <li>Desktop notifications work when the tab is in the background — allow notifications when asked.</li>
+          <li>Discord sends automatic alerts with confidence %, contract (options) or direction (shares), speed, and why.</li>
+        </ul>
+      </Section>
+
+      <Section title="7. A simple routine for beginners">
         <ol className="guide-list">
-          <li>Trade only BUY signals — ignore everything else until you're comfortable.</li>
-          <li>Always open the chart first. The signal says "moving fast now"; the chart tells you if you believe it.</li>
-          <li>Check the spread on the contract line — the reality check in the chart panel flags wide spreads and expensive premium.</li>
-          <li>0DTE options decay fast. These are quick momentum trades, not positions to hold — decide your exit before you enter.</li>
-          <li>Log every trade in the journal. After a few weeks the weekly report shows which setups actually pay you.</li>
-          <li>Signals get less reliable in the last hour before close (theta burn) and the first minutes after open (chaos). The scores account for time-to-close, but be extra careful there.</li>
+          <li>Trade only clear buy signals — ignore watch/skip until you&apos;re comfortable.</li>
+          <li>Always open the chart first.</li>
+          <li>For options: check the spread on the contract line before entering.</li>
+          <li>0DTE options decay fast — decide your exit before you enter.</li>
+          <li>Log every trade in My trades so you can see what actually works for you.</li>
         </ol>
-      </Section>
-
-      <Section title="7. Good to know">
-        <ul className="guide-list">
-          <li>The scanner is fully deterministic — same inputs, same answer, no AI in the signal path. Every alert stores its scores so you can audit it later.</li>
-          <li>Old alerts and slow-scan (research tier) alerts can never show BUY — only the live 1-second loop with real speed data can.</li>
-          <li>Everything runs locally on your machine against your Polygon subscription. Nothing is sent anywhere except your own Discord webhook if you enable it.</li>
-        </ul>
       </Section>
 
       <div className="footer">

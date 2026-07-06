@@ -4,8 +4,10 @@ import { useCallback, useEffect, useState } from "react";
 import { AppNav } from "@/components/AppNav";
 import { DataAccessBanner } from "@/components/DataAccessBanner";
 import { ScannerDashboard } from "@/components/ScannerDashboard";
+import { SessionBanner } from "@/components/SessionBanner";
+import { OptionsResearchPanel } from "@/components/OptionsResearchPanel";
+import { PageIntro } from "@/components/PageIntro";
 import { ChartPanel } from "@/components/ChartPanel";
-import { UsageGuide } from "@/components/UsageGuide";
 
 export default function Page() {
   const [chartSymbol, setChartSymbol] = useState<string | null>(null);
@@ -40,14 +42,23 @@ export default function Page() {
       />
 
       <DataAccessBanner />
-      <UsageGuide page="dashboard" />
+      <SessionBanner />
+
+      <PageIntro
+        title="Live"
+        action={{ href: "/alerts", label: "Open Alerts →" }}
+      >
+        Watch what&apos;s moving. When a signal fires, check Alerts (or wait for a popup).
+      </PageIntro>
 
       <ScannerDashboard onOpenChart={onOpenChart} onLoopStatus={setLoopLive} />
+
+      <OptionsResearchPanel onOpenChart={onOpenChart} />
 
       <ChartPanel symbol={chartSymbol} open={chartOpen} onClose={() => setChartOpen(false)} />
 
       <div className="footer">
-        OptiScan scanner · ranked watchlist · options research on Scanner · trade callouts on Alerts
+        OptiScan · Live watchlist · trade callouts on Alerts
       </div>
     </div>
   );

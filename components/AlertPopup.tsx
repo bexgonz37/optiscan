@@ -16,6 +16,7 @@ import { useLiveTapeMap, liveCtxFor } from "@/hooks/useLiveTapeMap";
 import { changeColor, fmtPct } from "@/lib/format";
 import { TradeVerdictHero, useTradeVerdict } from "@/components/TradeVerdictHero";
 import { computeTradeVerdict, isTradeEligible } from "@/lib/trade-verdict";
+import { isOptionsSession } from "@/lib/trading-session";
 
 interface PopupAlert {
   id: number; ticker: string; direction: string | null; alert_type: string | null;
@@ -35,6 +36,23 @@ interface PopupAlert {
   risk_flags: string | null; options_pressure_label: string | null;
   alert_tier: string | null;
   alert_time: string | null;
+  asset_class: string | null;
+  session: string | null;
+  capture_action: string | null;
+}
+
+function alertKind(a: PopupAlert): "stock" | "options" {
+  if (a.asset_class === "stock" || (a.trade_bias ?? "").startsWith("stock_")) return "stock";
+  return "options";
+}
+
+function kindBadge(a: PopupAlert): string {
+  const kind = alertKind(a);
+  if (kind === "stock") {
+    const session = a.session === "afterhours" ? "After-hours" : a.session === "premarket" ? "Premarket" : "Stock";
+    return `${session} · Shares`;
+  }
+  return "0DTE · Options";
 }
 
 const MOVE_STATUS_TEXT: Record<string, string> = {
@@ -91,8 +109,19 @@ function AlertCard({
 
   return (
     <div className="panel" style={{ padding: 14, boxShadow: "0 12px 40px rgba(0,0,0,.5)", border: "1px solid rgba(120,140,160,.35)" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
         <strong style={{ fontSize: 14 }}>{a.ticker}</strong>
+        <span
+          className="pill"
+          style={{
+            fontSize: 10,
+            padding: "2px 8px",
+            background: alertKind(a) === "stock" ? "rgba(56, 120, 180, .25)" : "rgba(180, 120, 40, .25)",
+            border: `1px solid ${alertKind(a) === "stock" ? "rgba(56, 120, 180, .45)" : "rgba(180, 120, 40, .45)"}`,
+          }}
+        >
+          {kindBadge(a)}
+        </span>
         {mode === "public" ? <span className="muted" style={{ fontSize: 12 }}>{label}</span> : null}
         <span className="spacer" style={{ flex: 1 }} />
         <button className="pill btn" style={btn} onClick={onDismiss}>✕</button>
@@ -206,11 +235,9 @@ export function AlertPopup({
       const show = fresh.filter((x) =>
         !(snoozed[x.ticker] && now - snoozed[x.ticker] < SNOOZE_MS) &&
         x.alert_tier !== "research" &&
-        // Stock callouts (premarket/AH) have no option scores — BUY at capture
-        // is their popup bar. Options keep the live-confirmed TRADE check.
-        ((x as any).asset_class === "stock"
-          ? (x as any).capture_action === "TRADE"
-          : isTradeEligible(x, liveCtxFor(tapeRef.current, x.ticker))),
+        // Never popup 0DTE options outside regular hours (9:30–16:00 ET).
+        (alertKind(x) === "stock" || isOptionsSession()) &&
+        isTradeEligible(x, liveCtxFor(tapeRef.current, x.ticker)),
       );
       if (!show.length) return;
 
@@ -223,12 +250,15 @@ export function AlertPopup({
       if (settingsRef.current?.sound_enabled) beep();
       if (settingsRef.current?.desktop_notification_enabled && typeof Notification !== "undefined" && Notification.permission === "granted") {
         const latest = show[show.length - 1];
-        const isStock = (latest as any).asset_class === "stock";
-        const v = isStock ? null : computeTradeVerdict(latest, liveCtxFor(tapeRef.current, latest.ticker));
-        const headline = isStock ? ((latest as any).private_label ?? "STOCK SIGNAL") : v!.headline;
-        const title = langMode === "private" ? `${latest.ticker}: ${headline}` : `${latest.public_label ?? "Alert"}: ${latest.ticker}`;
+        const kind = alertKind(latest);
+        const v = computeTradeVerdict(latest, liveCtxFor(tapeRef.current, latest.ticker));
+        const headline = v.headline;
+        const prefix = kind === "stock" ? `[Stock] ` : `[0DTE] `;
+        const title = langMode === "private"
+          ? `${prefix}${latest.ticker}: ${headline}`
+          : `${prefix}${latest.public_label ?? "Alert"}: ${latest.ticker}`;
         const body = langMode === "private"
-          ? (isStock ? `Stock momentum — setup ${Math.round(latest.signal_score ?? 0)}/100` : v!.reason)
+          ? (kind === "stock" ? `${kindBadge(latest)} — setup ${Math.round(latest.signal_score ?? 0)}/100` : v.reason)
           : `Setup ${Math.round(latest.signal_score ?? 0)}/100 · Risk ${Math.round(latest.risk_score ?? 0)}/100`;
         new Notification(title, { body, tag: `optiscan-${latest.id}` });
       }

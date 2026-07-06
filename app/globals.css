@@ -1924,3 +1924,109 @@ tr.clickable {
     grid-template-columns: 1fr;
   }
 }
+
+/* ── Page intro (where am I / what to do) ─────────────────────────────── */
+.app-shell {
+  padding-bottom: 72px;
+}
+.page-intro {
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+.page-intro-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.page-intro-title {
+  margin: 0 0 6px;
+  font-size: 18px;
+  font-weight: 800;
+}
+.page-intro-body {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--muted);
+  max-width: 52rem;
+}
+.page-intro-action {
+  flex-shrink: 0;
+  font-size: 12px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+/* ── Mobile bottom navigation ─────────────────────────────────────────── */
+.mobile-bottom-nav {
+  display: none;
+}
+@media (max-width: 768px) {
+  .app-shell {
+    padding-bottom: 88px;
+  }
+  .app-nav-links {
+    display: none;
+  }
+  .app-nav-bar > a.icon-btn[href="/guide"] {
+    display: none;
+  }
+  .mobile-bottom-nav {
+    display: block;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 100;
+    background: var(--panel);
+    border-top: 1px solid var(--line2);
+    padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.35);
+  }
+  .mobile-bottom-session {
+    text-align: center;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin-bottom: 4px;
+  }
+  .mobile-bottom-links {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+  }
+  .mobile-bottom-link {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: 8px 4px;
+    border-radius: var(--radius-sm);
+    text-decoration: none;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .mobile-bottom-link.active {
+    color: var(--txt);
+    background: var(--panel2);
+  }
+  .mobile-bottom-icon {
+    font-size: 16px;
+    line-height: 1;
+  }
+  .acc-tabs {
+    flex-wrap: wrap;
+  }
+  .acc-tabs-primary {
+    margin-bottom: 8px;
+  }
+  .acc-tabs-filters {
+    margin-bottom: 14px;
+    padding-left: 2px;
+  }
+}

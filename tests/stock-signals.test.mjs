@@ -23,7 +23,7 @@ test("computeStockVerdict: BUY LONG needs aligned speed + volume + score", () =>
   const v = computeStockVerdict(strongLong);
   assert.equal(v.action, "BUY");
   assert.equal(v.side, "LONG");
-  assert.equal(v.headline, "BUY LONG");
+  assert.equal(v.headline, "Buy stock ↑");
 });
 
 test("computeStockVerdict: BUY SHORT on downside speed", () => {
@@ -32,7 +32,7 @@ test("computeStockVerdict: BUY SHORT on downside speed", () => {
     aboveVwap: false, hodBreak: false, lodBreak: true,
   });
   assert.equal(v.action, "BUY");
-  assert.equal(v.headline, "BUY SHORT");
+  assert.equal(v.headline, "Bet stock ↓");
 });
 
 test("computeStockVerdict: speed below the bar never BUYs (day move is context only)", () => {

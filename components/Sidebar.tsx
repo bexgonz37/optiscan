@@ -9,18 +9,13 @@ export interface View {
   icon: string;
   tab: Tab;
   filters: FilterKey[];
-  section: "scanners" | "views";
   countKey?: "momentum" | "unusual" | "strong";
 }
 
+/** Two scanners only — views sidebar removed for simpler UX. */
 export const VIEWS: View[] = [
-  { id: "momentum", label: "Momentum", icon: "⚡", tab: "momentum", filters: [], section: "scanners", countKey: "momentum" },
-  { id: "unusual", label: "Unusual Flow", icon: "🌊", tab: "unusual", filters: [], section: "scanners", countKey: "unusual" },
-  { id: "strong", label: "High-Conviction", icon: "🎯", tab: "momentum", filters: ["strong"], section: "views", countKey: "strong" },
-  { id: "calls", label: "Bullish Calls", icon: "📈", tab: "momentum", filters: ["call"], section: "views" },
-  { id: "puts", label: "Bearish Puts", icon: "📉", tab: "momentum", filters: ["put"], section: "views" },
-  { id: "newpos", label: "New Positioning", icon: "🧨", tab: "unusual", filters: ["new"], section: "views" },
-  { id: "highiv", label: "High IV", icon: "🔥", tab: "unusual", filters: ["highiv"], section: "views" },
+  { id: "momentum", label: "Momentum", icon: "⚡", tab: "momentum", filters: [], countKey: "momentum" },
+  { id: "unusual", label: "Unusual Flow", icon: "🌊", tab: "unusual", filters: [], countKey: "unusual" },
 ];
 
 export function Sidebar({
@@ -32,28 +27,20 @@ export function Sidebar({
   onSelect: (view: View) => void;
   counts: { momentum: number; unusual: number; strong: number };
 }) {
-  const scanners = VIEWS.filter((v) => v.section === "scanners");
-  const views = VIEWS.filter((v) => v.section === "views");
-
-  const item = (v: View) => (
-    <button
-      key={v.id}
-      className={`scan-item ${activeView === v.id ? "active" : ""}`}
-      onClick={() => onSelect(v)}
-    >
-      <span className="ic">{v.icon}</span>
-      {v.label}
-      {v.countKey ? <span className="count">{counts[v.countKey]}</span> : null}
-    </button>
-  );
-
   return (
     <div className="panel side">
       <h3>Scanners</h3>
-      {scanners.map(item)}
-      <div className="divider" />
-      <h3>Views</h3>
-      {views.map(item)}
+      {VIEWS.map((v) => (
+        <button
+          key={v.id}
+          className={`scan-item ${activeView === v.id ? "active" : ""}`}
+          onClick={() => onSelect(v)}
+        >
+          <span className="ic">{v.icon}</span>
+          {v.label}
+          {v.countKey ? <span className="count">{counts[v.countKey]}</span> : null}
+        </button>
+      ))}
     </div>
   );
 }

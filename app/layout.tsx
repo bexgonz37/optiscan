@@ -2,10 +2,11 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { ToastProvider } from "@/components/Toasts";
 import { GlobalAlerts } from "@/components/GlobalAlerts";
+import { MobileBottomNav } from "@/components/MobileBottomNav";
 
 export const metadata: Metadata = {
-  title: "OptiScan — Options Scanner",
-  description: "Momentum + unusual options activity scanner powered by Polygon/Massive. Signals only.",
+  title: "OptiScan — Live scanner & alerts",
+  description: "Watch what's moving and get research signals for 0DTE options and extended-hours shares. Not financial advice.",
 };
 
 export const viewport: Viewport = {
@@ -24,8 +25,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         <ToastProvider>
-          {children}
+          <div className="app-shell">
+            {children}
+          </div>
           <GlobalAlerts />
+          <MobileBottomNav />
         </ToastProvider>
       </body>
     </html>

@@ -6,40 +6,23 @@ import { useEffect, useState, type ReactNode } from "react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { marketSession, type MarketSession } from "@/lib/trading-session";
 
-/** Two-mode nav: Options (RTH 0DTE system) vs Stocks (premarket/after-hours). */
-const GROUPS = [
-  {
-    label: "Options",
-    pages: [
-      { href: "/", label: "Dashboard", hint: "Ranked market scanner watchlist" },
-      { href: "/scanner", label: "Scanner", hint: "Options momentum + unusual flow" },
-    ],
-  },
-  {
-    label: "Stocks",
-    pages: [
-      { href: "/stocks", label: "Stock Scanner", hint: "Premarket / after-hours stock momentum (no options)" },
-    ],
-  },
-  {
-    label: null, // shared
-    pages: [
-      { href: "/alert-lab", label: "Alerts", hint: "All callouts + accuracy (options & stocks)" },
-      { href: "/guide", label: "How to use", hint: "Full plain-English instructions" },
-      { href: "/settings", label: "Settings", hint: "Notifications & preferences" },
-    ],
-  },
+/** Minimal nav: Live · Alerts · Settings + help icon. */
+const PAGES = [
+  { href: "/", label: "Live", hint: "What's moving right now — session-aware watchlist" },
+  { href: "/alerts", label: "Alerts", hint: "Signals that fired + track record + journal" },
+  { href: "/settings", label: "Settings", hint: "Notifications & preferences" },
 ] as const;
 
 const SESSION_BADGE: Record<MarketSession, { text: string; mode: "options" | "stocks" | "off" }> = {
-  regular: { text: "OPTIONS · market open", mode: "options" },
-  premarket: { text: "STOCKS · premarket", mode: "stocks" },
-  afterhours: { text: "STOCKS · after hours", mode: "stocks" },
-  closed: { text: "CLOSED", mode: "off" },
+  regular: { text: "Options mode · market open", mode: "options" },
+  premarket: { text: "Shares mode · premarket", mode: "stocks" },
+  afterhours: { text: "Shares mode · after hours", mode: "stocks" },
+  closed: { text: "Market closed", mode: "off" },
 };
 
 function isActive(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
+  if (href === "/alerts") return pathname === "/alerts" || pathname.startsWith("/alert-lab");
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
@@ -59,8 +42,6 @@ export function AppNav({
   children?: ReactNode;
 }) {
   const pathname = usePathname() ?? "/";
-  // Session badge is clock-driven (client), refreshed each minute — shows
-  // instantly which mode is live: Options (RTH) or Stocks (extended hours).
   const [session, setSession] = useState<MarketSession | null>(null);
   useEffect(() => {
     const update = () => setSession(marketSession());
@@ -79,21 +60,15 @@ export function AppNav({
         </Link>
 
         <nav className="app-nav-links" aria-label="Main">
-          {GROUPS.map((g, gi) => (
-            <span key={g.label ?? "shared"} className="nav-group">
-              {g.label ? <span className="nav-group-label">{g.label}</span> : null}
-              {g.pages.map((p) => (
-                <Link
-                  key={p.href}
-                  href={p.href}
-                  className={`nav-tab${isActive(pathname, p.href) ? " active" : ""}`}
-                  title={p.hint}
-                >
-                  {p.label}
-                </Link>
-              ))}
-              {gi < GROUPS.length - 1 ? <span className="nav-group-divider" aria-hidden /> : null}
-            </span>
+          {PAGES.map((p) => (
+            <Link
+              key={p.href}
+              href={p.href}
+              className={`nav-tab${isActive(pathname, p.href) ? " active" : ""}`}
+              title={p.hint}
+            >
+              {p.label}
+            </Link>
           ))}
         </nav>
 
@@ -122,6 +97,10 @@ export function AppNav({
             ↻
           </button>
         ) : null}
+
+        <Link href="/guide" className="icon-btn" title="How this works" aria-label="Help">
+          ?
+        </Link>
 
         <ThemeToggle />
 

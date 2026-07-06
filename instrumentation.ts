@@ -7,7 +7,10 @@ export async function register() {
   // Production VPS/Docker: start scanner + tracker immediately (no browser hit needed).
   if (process.env.NODE_ENV !== "production") return;
   try {
-    const { ensureServerBoot } = await import("@/lib/server-boot");
+    // webpackIgnore keeps better-sqlite3 out of the instrumentation bundle graph.
+    const { ensureServerBoot } = await import(
+      /* webpackIgnore: true */ "./lib/server-boot.ts"
+    );
     ensureServerBoot();
     console.info("[optiscan] scanner + alert tracker started at process boot");
   } catch (err) {

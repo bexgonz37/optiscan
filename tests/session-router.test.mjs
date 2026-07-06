@@ -63,3 +63,14 @@ test("SPEC: Discord stock wording has no option contract line", () => {
   assert.ok(!/strike|DTE/i.test(stockFn), "stock Discord message must not mention strike/DTE");
   assert.ok(stockFn.includes("not financial advice"), "research-language disclaimer required");
 });
+
+test("SPEC: options alerts never notify outside RTH (Discord + swing capture)", () => {
+  const notif = read("lib/notifications.ts");
+  assert.ok(notif.includes("isOptionsSession"), "notifyNewAlert must session-guard options");
+  const cap = read("lib/alert-capture.ts");
+  const capAlerts = cap.slice(cap.indexOf("export async function captureAlerts"));
+  assert.ok(/if \(!isOptionsSession\(nowMs\)\) return/.test(capAlerts), "captureAlerts must no-op outside RTH");
+  const verdict = read("lib/trade-verdict.ts");
+  assert.ok(verdict.includes("isStockAlert"), "trade verdict must distinguish stock vs options");
+  assert.ok(verdict.includes("Buy stock ↑") || verdict.includes("Bet stock ↓"), "stock verdict must use plain-English shares labels, not CALL/PUT");
+});

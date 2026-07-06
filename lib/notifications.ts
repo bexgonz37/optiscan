@@ -15,6 +15,7 @@
 
 import { formatDiscordAlert } from "@/lib/alert-format";
 import { containsBannedPublicLanguage } from "@/lib/language-modes";
+import { isOptionsSession } from "@/lib/trading-session";
 import {
   getNotificationSettings,
   insertNotificationEvent,
@@ -57,6 +58,16 @@ export async function notifyNewAlert(alertId: number, alertLike: any): Promise<v
     const s = getNotificationSettings();
     if (!s?.discord_enabled) {
       insertNotificationEvent({ alertId, channel: "discord_webhook", status: "skipped", error: "discord disabled" });
+      return;
+    }
+    const isStock = alertLike?.assetClass === "stock" || alertLike?.asset_class === "stock";
+    if (!isStock && !isOptionsSession()) {
+      insertNotificationEvent({
+        alertId,
+        channel: "discord_webhook",
+        status: "skipped",
+        error: "0DTE options notifications only fire during regular hours (9:30–16:00 ET)",
+      });
       return;
     }
     const languageMode = getSetting("language_mode") === "public" ? "public" : "private";

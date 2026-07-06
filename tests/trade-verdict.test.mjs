@@ -20,11 +20,25 @@ const goodCall = {
   risk_flags: "[]",
 };
 
-test("computeTradeVerdict: strong call setup -> BUY CALL", () => {
+test("computeTradeVerdict: strong call setup -> Buy call option", () => {
   const v = computeTradeVerdict(goodCall);
   assert.equal(v.action, "TRADE");
-  assert.equal(v.headline, "BUY CALL");
+  assert.equal(v.headline, "Buy call option ↑");
   assert.equal(v.side, "CALL");
+});
+
+test("computeTradeVerdict: stock alert says Buy stock, never Buy call", () => {
+  const v = computeTradeVerdict({
+    asset_class: "stock",
+    trade_bias: "stock_long_candidate",
+    capture_action: "TRADE",
+    session: "afterhours",
+    signal_score: 78,
+    short_rate_at_alert: 0.25,
+  });
+  assert.equal(v.headline, "Buy stock ↑");
+  assert.equal(v.side, "NONE");
+  assert.ok(!v.headline.includes("CALL"));
 });
 
 test("computeTradeVerdict: premium too expensive -> SKIP", () => {
@@ -83,7 +97,7 @@ test("computeTradeVerdict: bearish put candidate -> BUY PUT", () => {
     short_rate_at_alert: -0.4,
   });
   assert.equal(v.action, "TRADE");
-  assert.equal(v.headline, "BUY PUT");
+  assert.equal(v.headline, "Buy put option ↓");
 });
 
 // The AMZN case: barely-moving stock with strong contract scores must not
@@ -186,9 +200,11 @@ test("computeTradeVerdict: fresh alert (2 min) with fast aligned tape still TRAD
 });
 
 test("isTradeEligible: popup filter matches TRADE verdicts only", () => {
-  assert.equal(isTradeEligible(goodCall), true);
-  assert.equal(isTradeEligible(goodCall, { shortRate: 0.02, surge: 0.8 }), false);
-  assert.equal(isTradeEligible({ ...goodCall, alert_tier: "research" }), false);
+  const rthMs = Date.parse("2026-07-07T14:00:00-04:00"); // Tue 2:00 PM ET (regular hours)
+  assert.equal(isTradeEligible(goodCall, undefined, rthMs), true);
+  assert.equal(isTradeEligible(goodCall, { shortRate: 0.02, surge: 0.8 }, rthMs), false);
+  assert.equal(isTradeEligible({ ...goodCall, alert_tier: "research" }, undefined, rthMs), false);
+  assert.equal(isTradeEligible(goodCall, undefined, Date.parse("2026-07-07T17:00:00-04:00")), false);
 });
 
 test("hasLiveSpeedProof: direction-aligned only", () => {

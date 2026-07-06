@@ -9,6 +9,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { scanHeaders, requestNotifyPermission } from "@/hooks/useScanner";
 import { AppNav } from "@/components/AppNav";
+import { PageIntro } from "@/components/PageIntro";
 import {
   DEFAULT_REFRESH_SEC,
   REFRESH_CHOICES,
@@ -164,6 +165,10 @@ export default function SettingsPage() {
   return (
     <div className="app">
       <AppNav status={msg ? [{ label: msg }] : undefined} />
+
+      <PageIntro title="Settings">
+        Notifications and optional tuning. You can ignore most of this until alerts feel too noisy or too quiet.
+      </PageIntro>
 
       <div className="settings-grid">
         <div className="panel main settings-panel">

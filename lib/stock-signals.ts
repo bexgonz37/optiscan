@@ -106,30 +106,30 @@ export function computeStockVerdict(i: StockSignalInput, { minScore = STOCK_DEFA
   }
   if (!speedAligned) {
     return {
-      action: "WAIT", side, headline: side === "LONG" ? "WAIT — LONG SETUP" : "WAIT — SHORT SETUP",
+      action: "WAIT", side, headline: side === "LONG" ? "Watch ↑ move" : "Watch ↓ move",
       reason: `Needs live ${side === "LONG" ? "upward" : "downward"} speed ≥ ${STOCK_MIN_SPEED_PCT_PER_MIN}%/min right now.`,
       confidence, score, reasons,
     };
   }
   if (!volumeOk) {
     return {
-      action: "WAIT", side, headline: side === "LONG" ? "WAIT — LONG SETUP" : "WAIT — SHORT SETUP",
+      action: "WAIT", side, headline: side === "LONG" ? "Watch ↑ move" : "Watch ↓ move",
       reason: "Speed without volume — extended-hours moves need real participation.",
       confidence, score, reasons,
     };
   }
   if (score < minScore) {
     return {
-      action: "WAIT", side, headline: side === "LONG" ? "WAIT — LONG SETUP" : "WAIT — SHORT SETUP",
+      action: "WAIT", side, headline: side === "LONG" ? "Watch ↑ move" : "Watch ↓ move",
       reason: `Setup ${score}/100 is below the ${minScore} bar.`,
       confidence, score, reasons,
     };
   }
   return {
-    action: "BUY", side, headline: side === "LONG" ? "BUY LONG" : "BUY SHORT",
+    action: "BUY", side, headline: side === "LONG" ? "Buy stock ↑" : "Bet stock ↓",
     reason: side === "LONG"
-      ? `Accelerating up with volume (${reasons[0] ?? "live speed"}).`
-      : `Accelerating down with volume (${reasons[0] ?? "live speed"}).`,
+      ? `Price rising fast — buy shares, not options. ${reasons[0] ?? "Live speed"}.`
+      : `Price falling fast — short/sell shares, not options. ${reasons[0] ?? "Live speed"}.`,
     confidence, score, reasons,
   };
 }

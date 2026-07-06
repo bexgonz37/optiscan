@@ -1,8 +1,8 @@
 "use client";
 
 /**
- * Scanner Dashboard — ranked watchlist (speed, volume, VWAP, levels).
- * Like a pro scanner: what's actually worth watching, most → least.
+ * Scanner Dashboard — simplified ranked watchlist for the Live page.
+ * Default: 6 columns. "Show details" reveals RVOL, volume, surge, VWAP, levels.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -18,7 +18,7 @@ import {
 import { useStableSymbolOrder } from "@/lib/stable-order";
 import { MIN_SPEED_PCT_PER_MIN } from "@/lib/trade-verdict";
 
-type FilterKey = "all" | "fast" | "aboveVwap" | "belowVwap" | "hod" | "lod";
+type FilterKey = "all" | "fast";
 
 function dirChip(d: string) {
   if (d === "bullish") return <span className="dir-bull">▲</span>;
@@ -47,6 +47,7 @@ export function ScannerDashboard({
   const [filter, setFilter] = useState<FilterKey>("fast");
   const [query, setQuery] = useState("");
   const [paused, setPaused] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const [agoText, setAgoText] = useState("");
   const inFlight = useRef(false);
@@ -70,7 +71,6 @@ export function ScannerDashboard({
   useEffect(() => {
     if (paused) return;
     poll();
-    // Match the 1s scanner loop — trades move fast. Pause freezes the table.
     const id = setInterval(poll, 1000);
     return () => clearInterval(id);
   }, [poll, paused]);
@@ -79,7 +79,6 @@ export function ScannerDashboard({
     const tick = () => {
       if (updatedAt == null) { setAgoText(""); return; }
       const ago = Math.round((Date.now() - updatedAt) / 1000);
-      // At a 1s cadence "updated 0s ago" is noise — only warn when we fall behind.
       setAgoText(ago > 3 ? `updated ${ago}s ago` : "live · 1s refresh");
     };
     tick();
@@ -92,10 +91,6 @@ export function ScannerDashboard({
     let list = [...tape];
     if (q) list = list.filter((r) => r.symbol.includes(q));
     if (filter === "fast") list = list.filter((r) => Math.abs(r.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN);
-    if (filter === "aboveVwap") list = list.filter((r) => r.aboveVwap === true);
-    if (filter === "belowVwap") list = list.filter((r) => r.aboveVwap === false);
-    if (filter === "hod") list = list.filter((r) => r.hodBreak);
-    if (filter === "lod") list = list.filter((r) => r.lodBreak);
     return sortTape(list, sortKey, sortDir).slice(0, 60);
   }, [tape, filter, query, sortKey, sortDir]);
 
@@ -114,8 +109,8 @@ export function ScannerDashboard({
     else { setSortKey(k); setSortDir(-1); }
   }
 
-  const Th = ({ k, label }: { k: WatchSortKey; label: string }) => (
-    <th className={sortKey === k ? "sorted" : ""} onClick={() => toggleSort(k)}>
+  const Th = ({ k, label, title }: { k: WatchSortKey; label: string; title?: string }) => (
+    <th className={sortKey === k ? "sorted" : ""} onClick={() => toggleSort(k)} title={title}>
       {label}{sortKey === k ? <span className="arrow">{sortDir < 0 ? "▼" : "▲"}</span> : null}
     </th>
   );
@@ -135,9 +130,9 @@ export function ScannerDashboard({
     <section className="panel main section-scanner-dash">
       <div className="section-header">
         <div>
-          <h2 className="section-title">Market scanner</h2>
+          <h2 className="section-title">What&apos;s moving</h2>
           <p className="section-sub">
-            Ranked by watch score — speed, volume, VWAP, and levels. Rows reorder every ~5s so the list stays readable; hit Pause to freeze.
+            Ranked by score — how hot each ticker is right now. Rows reorder every ~5s; hit Pause to freeze.
           </p>
         </div>
         <div className="status-group">
@@ -153,20 +148,25 @@ export function ScannerDashboard({
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter ticker" />
         </div>
         <div className="mover-filters">
-          {chip("fast", "Fast ≥0.15%/m")}
+          {chip("fast", "Moving now")}
           {chip("all", "All")}
-          {chip("aboveVwap", "Above VWAP")}
-          {chip("belowVwap", "Below VWAP")}
-          {chip("hod", "HOD break")}
-          {chip("lod", "LOD break")}
           <button
             type="button"
             className={`pill btn${paused ? " btn-primary" : ""}`}
             style={{ fontSize: 11, padding: "4px 10px" }}
             onClick={() => setPaused((v) => !v)}
-            title="Freeze the table so rows stop moving while you read"
+            title="Freeze the table while you read"
           >
             {paused ? "▶ Resume" : "⏸ Pause"}
+          </button>
+          <button
+            type="button"
+            className={`pill btn${showDetails ? " btn-primary" : ""}`}
+            style={{ fontSize: 11, padding: "4px 10px" }}
+            onClick={() => setShowDetails((v) => !v)}
+            title="Show RVOL, volume, VWAP, and level breaks"
+          >
+            {showDetails ? "Hide details" : "Show details"}
           </button>
         </div>
       </div>
@@ -174,9 +174,9 @@ export function ScannerDashboard({
       <div className="table-area">
       {!displayRows.length ? (
         <div className="empty table-empty">
-          <div className="big">{loop?.running ? (filter === "fast" ? "No fast movers right now" : "Warming up tape…") : "Scanner offline"}</div>
+          <div className="big">{loop?.running ? (filter === "fast" ? "Nothing moving fast right now" : "Warming up tape…") : "Scanner offline"}</div>
           {loop?.running
-            ? (filter === "fast" ? "That's normal in quiet stretches — click All to see the full universe." : "Symbols rank here once the loop has a few seconds of data.")
+            ? (filter === "fast" ? "That's normal in quiet stretches — click All to see the full list." : "Symbols appear once the loop has a few seconds of data.")
             : "Start during market hours."}
         </div>
       ) : (
@@ -186,15 +186,19 @@ export function ScannerDashboard({
               <tr>
                 <th>#</th>
                 <Th k="symbol" label="Ticker" />
-                <Th k="watch" label="Watch" />
-                <th>Stock</th>
-                <Th k="move" label="% Chg" />
-                <Th k="speed" label="Speed" />
-                <Th k="rvol" label="RVOL" />
-                <Th k="volume" label="Volume" />
-                <th>Vol surge</th>
-                <Th k="vwap" label="VWAP" />
-                <th>Level</th>
+                <Th k="watch" label="Score" title="How hot this ticker is right now, 0–100" />
+                <th title="Price direction right now">Direction</th>
+                <Th k="move" label="Today %" title="Day's percent change" />
+                <Th k="speed" label="Speed" title="How fast price is moving per minute" />
+                {showDetails ? (
+                  <>
+                    <Th k="rvol" label="RVOL" title="Volume vs normal today" />
+                    <Th k="volume" label="Volume" />
+                    <th title="Volume burst in the last minute">Vol surge</th>
+                    <Th k="vwap" label="VWAP" title="Distance from volume-weighted average price" />
+                    <th title="High or low of day break">Level</th>
+                  </>
+                ) : null}
               </tr>
             </thead>
             <tbody>
@@ -214,7 +218,7 @@ export function ScannerDashboard({
                     </td>
                     <td><ScoreBar score={watch} /></td>
                     <td>
-                      <span className={`stock-dir stock-dir-${r.direction}`} title={r.direction === "bullish" ? "Stock moving up" : r.direction === "bearish" ? "Stock moving down" : "Choppy"}>
+                      <span className={`stock-dir stock-dir-${r.direction}`} title={r.direction === "bullish" ? "Moving up" : r.direction === "bearish" ? "Moving down" : "Choppy"}>
                         {dirChip(r.direction)}
                         <span className="stock-dir-label">
                           {r.direction === "bullish" ? "Up" : r.direction === "bearish" ? "Down" : "—"}
@@ -225,15 +229,19 @@ export function ScannerDashboard({
                     <td className="num" style={{ fontWeight: Math.abs(r.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN ? 700 : 400 }}>
                       {r.shortRate != null ? `${r.shortRate > 0 ? "+" : ""}${r.shortRate.toFixed(2)}%/m` : "—"}
                     </td>
-                    <td className="num">{r.relVol != null ? `${r.relVol.toFixed(1)}x` : "—"}</td>
-                    <td className="num muted">{fmtVol(r.volume)}</td>
-                    <td className="num">{r.surge != null ? `${r.surge.toFixed(1)}x` : "—"}</td>
-                    <td className={r.aboveVwap == null ? "dim" : r.aboveVwap ? "pos" : "neg"} style={{ fontSize: 12 }}>
-                      {r.vwapDistPct != null ? `${r.vwapDistPct > 0 ? "+" : ""}${r.vwapDistPct.toFixed(2)}%` : r.aboveVwap == null ? "—" : r.aboveVwap ? "Above" : "Below"}
-                    </td>
-                    <td>
-                      {r.hodBreak ? <span className="tag t-call">HOD</span> : r.lodBreak ? <span className="tag t-put">LOD</span> : "—"}
-                    </td>
+                    {showDetails ? (
+                      <>
+                        <td className="num">{r.relVol != null ? `${r.relVol.toFixed(1)}x` : "—"}</td>
+                        <td className="num muted">{fmtVol(r.volume)}</td>
+                        <td className="num">{r.surge != null ? `${r.surge.toFixed(1)}x` : "—"}</td>
+                        <td className={r.aboveVwap == null ? "dim" : r.aboveVwap ? "pos" : "neg"} style={{ fontSize: 12 }}>
+                          {r.vwapDistPct != null ? `${r.vwapDistPct > 0 ? "+" : ""}${r.vwapDistPct.toFixed(2)}%` : r.aboveVwap == null ? "—" : r.aboveVwap ? "Above" : "Below"}
+                        </td>
+                        <td>
+                          {r.hodBreak ? <span className="tag t-call">HOD</span> : r.lodBreak ? <span className="tag t-put">LOD</span> : "—"}
+                        </td>
+                      </>
+                    ) : null}
                   </tr>
                 );
               })}

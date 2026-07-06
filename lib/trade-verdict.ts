@@ -7,6 +7,8 @@
  * move or high RVOL alone is context — it never turns into BUY CALL/PUT.
  */
 
+import { isOptionsSession } from "./trading-session.ts";
+
 export type TradeAction = "TRADE" | "WAIT" | "SKIP";
 export type OptionSide = "CALL" | "PUT" | "NONE";
 
@@ -41,6 +43,11 @@ export interface AlertVerdictInput {
   alert_tier?: string | null;
   /** ISO time the alert fired — TRADE is capped to fresh signals only. */
   alert_time?: string | null;
+  /** 'stock' = extended-hours shares callout; 'options' = 0DTE (default). */
+  asset_class?: string | null;
+  /** Frozen verdict at capture — used for stock callouts (BUY LONG/SHORT). */
+  capture_action?: string | null;
+  session?: string | null;
 }
 
 export interface TradeVerdict {
@@ -109,7 +116,52 @@ function sideFromDirection(direction: string | null | undefined): OptionSide {
 function sideFromBias(bias: string | null | undefined, direction: string | null | undefined): OptionSide {
   if (bias === "long_call_candidate") return "CALL";
   if (bias === "long_put_candidate") return "PUT";
+  // Stock extended-hours biases must never map to CALL/PUT in the UI.
+  if (bias === "stock_long_candidate" || bias === "stock_short_candidate") return "NONE";
   return sideFromDirection(direction);
+}
+
+function isStockAlert(a: AlertVerdictInput): boolean {
+  return a.asset_class === "stock" || (a.trade_bias ?? "").startsWith("stock_");
+}
+
+function stockVerdict(a: AlertVerdictInput): TradeVerdict {
+  const bias = a.trade_bias ?? "";
+  const stockSide = bias === "stock_short_candidate" ? "SHORT" : "LONG";
+  const sessionWord =
+    a.session === "afterhours" ? "After-hours" : a.session === "premarket" ? "Premarket" : "Extended-hours";
+  const capture = String(a.capture_action ?? "").toUpperCase();
+  const action: TradeAction =
+    capture === "TRADE" ? "TRADE" : capture === "WAIT" ? "WAIT" : "SKIP";
+  const setup = Math.round(Number(a.signal_score ?? 0));
+  const bullets = [
+    formatSpeedLine(a),
+    `Setup ${setup}/100 · ${sessionWord} stock (shares, not options)`,
+  ];
+  const reason =
+    action === "TRADE"
+      ? stockSide === "LONG"
+        ? "Price rising fast — buy shares, not options."
+        : "Price falling fast — short/sell shares, not options."
+      : action === "WAIT"
+        ? "Stock setup forming — not a clear buy yet."
+        : "No clean stock setup.";
+  return {
+    action,
+    side: "NONE",
+    headline:
+      action === "TRADE"
+        ? stockSide === "LONG" ? "Buy stock ↑" : "Bet stock ↓"
+        : action === "WAIT"
+          ? stockSide === "LONG" ? "Watch ↑ move" : "Watch ↓ move"
+          : "SKIP — STOCK",
+    reason,
+    confidence: Math.round(Math.min(100, Math.max(0, setup))),
+    contractLine: null,
+    bullets,
+    logicLine: `${sessionWord} stock signal — trade shares, not 0DTE options.`,
+    hasSpeedProof: Number(a.short_rate_at_alert ?? 0) !== 0,
+  };
 }
 
 function contractLine(a: AlertVerdictInput): string | null {
@@ -199,7 +251,10 @@ export function hasContextSpeed(a: AlertVerdictInput): boolean {
 }
 
 /** One-call helper for popup / Discord / UI filters: should this interrupt the user? */
-export function isTradeEligible(a: AlertVerdictInput, live?: LiveTapeContext): boolean {
+export function isTradeEligible(a: AlertVerdictInput, live?: LiveTapeContext, nowMs: number = Date.now()): boolean {
+  if (isStockAlert(a)) return String(a.capture_action ?? "").toUpperCase() === "TRADE";
+  // 0DTE popups/notifications are an RTH product — never interrupt after the close.
+  if (!isOptionsSession(nowMs)) return false;
   return computeTradeVerdict(a, live).action === "TRADE";
 }
 
@@ -257,6 +312,8 @@ function skipVerdict(
 }
 
 export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext): TradeVerdict {
+  if (isStockAlert(a)) return stockVerdict(a);
+
   const merged: AlertVerdictInput = {
     ...a,
     short_rate_at_alert: live?.shortRate ?? a.short_rate_at_alert,
@@ -325,7 +382,7 @@ export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext
     return {
       action: "WAIT",
       side: side !== "NONE" ? side : sideFromDirection(merged.direction),
-      headline: side === "PUT" ? "WAIT — PUT SETUP" : side === "CALL" ? "WAIT — CALL SETUP" : "WAIT",
+      headline: side === "PUT" ? "Watch put setup" : side === "CALL" ? "Watch call setup" : "WAIT",
       reason: why,
       confidence: Math.round(setup * 0.4 + worth * 0.4 + contract * 0.2),
       contractLine: contractLine(merged),
@@ -344,7 +401,7 @@ export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext
       return {
         action: "WAIT",
         side,
-        headline: side === "PUT" ? "WAIT — PUT SETUP" : side === "CALL" ? "WAIT — CALL SETUP" : "WAIT",
+        headline: side === "PUT" ? "Watch put setup" : side === "CALL" ? "Watch call setup" : "WAIT",
         reason: against,
         confidence: Math.round(setup * 0.35 + worth * 0.35 + contract * 0.2),
         contractLine: contractLine(merged),
@@ -362,7 +419,7 @@ export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext
       return {
         action: "WAIT",
         side,
-        headline: side === "PUT" ? "WAIT — PUT SETUP" : side === "CALL" ? "WAIT — CALL SETUP" : "WAIT",
+        headline: side === "PUT" ? "Watch put setup" : side === "CALL" ? "Watch call setup" : "WAIT",
         reason: staleWhy,
         confidence: Math.round(setup * 0.3 + worth * 0.3 + contract * 0.2),
         contractLine: contractLine(merged),
@@ -371,7 +428,7 @@ export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext
         hasSpeedProof: false,
       };
     }
-    const headline = side === "CALL" ? "BUY CALL" : side === "PUT" ? "BUY PUT" : "TRADE";
+    const headline = side === "CALL" ? "Buy call option ↑" : side === "PUT" ? "Buy put option ↓" : "TRADE";
     const confidence = Math.round(setup * 0.35 + worth * 0.35 + contract * 0.2 + (100 - risk) * 0.1);
     return {
       action: "TRADE",
@@ -390,7 +447,7 @@ export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext
 
   const waitSide = side !== "NONE" ? side : sideFromDirection(merged.direction);
   const waitHeadline =
-    waitSide === "CALL" ? "WAIT — CALL SETUP" : waitSide === "PUT" ? "WAIT — PUT SETUP" : "WAIT";
+    waitSide === "CALL" ? "Watch call setup" : waitSide === "PUT" ? "Watch put setup" : "WAIT";
 
   let waitReason = "Setup forming — does not pass all entry gates yet.";
   if (bias === "wait_for_pullback" || verdict === "Wait for Pullback") {

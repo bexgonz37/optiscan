@@ -254,9 +254,13 @@ export async function runScan(maxAgeMs?: number): Promise<ScanResult> {
 
     // Alert Lab capture: fire-and-forget so persistence/news lookups never add
     // latency to (or break) the scan itself. Dynamic import keeps the scanner
-    // fully functional if better-sqlite3 isn't installed.
-    import("@/lib/alert-capture")
-      .then(({ captureAlerts }) => captureAlerts({ momentum, unusual, quotes }))
+    // fully functional if better-sqlite3 isn't installed. 0DTE capture is RTH-only.
+    import("@/lib/trading-session")
+      .then(({ isOptionsSession }) => {
+        if (!isOptionsSession()) return null;
+        return import("@/lib/alert-capture");
+      })
+      .then((mod) => mod?.captureAlerts({ momentum, unusual, quotes }))
       .catch((err) => console.warn("[alert-lab] capture skipped:", err?.message));
 
     return {
