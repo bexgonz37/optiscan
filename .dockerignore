@@ -1,0 +1,11 @@
+node_modules
+.next
+.git
+data
+.env.local
+.env
+*.md
+.cursor
+terminals
+agent-tools
+agent-transcripts

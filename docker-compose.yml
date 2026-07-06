@@ -1,0 +1,19 @@
+# OptiScan — run on a VPS: docker compose up -d --build
+services:
+  optiscan:
+    build: .
+    image: optiscan:latest
+    restart: unless-stopped
+    ports:
+      - "8780:8780"
+    env_file:
+      - .env.production
+    environment:
+      ALERT_DB_DIR: /app/data
+      ALERT_LAB_ENABLED: "1"
+      SCANNER_REALTIME: "1"
+    volumes:
+      - optiscan-data:/app/data
+
+volumes:
+  optiscan-data:
