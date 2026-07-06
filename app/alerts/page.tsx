@@ -11,14 +11,15 @@
  * Market signals and measurements only — nothing here is a recommendation.
  */
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { scanHeaders } from "@/hooks/useScanner";
 import { useLiveTapeMap, liveCtxFor } from "@/hooks/useLiveTapeMap";
 import { AppNav } from "@/components/AppNav";
 import { ChartPanel } from "@/components/ChartPanel";
 import { AlertsCommandCenter } from "@/components/AlertsCommandCenter";
 import { AccuracyCharts } from "@/components/AccuracyCharts";
-import { PageIntro } from "@/components/PageIntro";
+import { SystemExplanationSection } from "@/components/SystemExplanationSection";
 import { computeTradeVerdict, formatSpeedLine } from "@/lib/trade-verdict";
 import { calledAgoLabel, sideFromAlert, stillMovingStatus } from "@/lib/signal-live";
 import { earlyMoveWin, pickEarlyMove, EARLY_MOVE_WIN_PCT, EARLY_ON_TRACK_MIN_PCT } from "@/lib/early-accuracy";
@@ -50,7 +51,7 @@ interface JournalRow {
   outcome_pct: number | null; notes: string | null; created_at: string;
 }
 
-type Tab = "now" | "accuracy" | "history" | "journal";
+type Tab = "now" | "history" | "journal";
 type AccFilter = "all" | "on_track" | "open" | "discord";
 type AssetFilter = "" | "options" | "stock";
 
@@ -61,8 +62,13 @@ const CATALYSTS = [
 
 const catLabel = (t: string | null) => (t ?? "—").replace(/_/g, " ");
 
-export default function AlertLabPage() {
-  const [tab, setTab] = useState<Tab>("now");
+function AlertsPageInner() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const paramTab = searchParams.get("tab");
+  const [tab, setTab] = useState<Tab>(
+    paramTab === "history" || paramTab === "journal" ? paramTab : "now",
+  );
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
   const [stats, setStats] = useState<any>(null);
   const [report, setReport] = useState<any>(null);
@@ -148,13 +154,18 @@ export default function AlertLabPage() {
   }, [asset]);
 
   useEffect(() => {
+    const t = paramTab === "history" || paramTab === "journal" ? paramTab : "now";
+    setTab(t);
+  }, [paramTab]);
+
+  useEffect(() => {
     refresh();
     const id = setInterval(() => refresh({ silent: true }), 60_000);
     return () => clearInterval(id);
   }, [refresh]);
 
   useEffect(() => {
-    if (tab !== "accuracy") return;
+    if (tab !== "history") return;
     refreshAccuracy();
     const id = setInterval(refreshAccuracy, 1000);
     return () => clearInterval(id);
@@ -227,7 +238,10 @@ export default function AlertLabPage() {
       type="button"
       className={`pill btn${tab === id ? " btn-primary" : ""}`}
       style={{ fontSize: 13, padding: "7px 16px" }}
-      onClick={() => setTab(id)}
+      onClick={() => {
+        setTab(id);
+        router.replace(id === "now" ? "/alerts" : `/alerts?tab=${id}`, { scroll: false });
+      }}
     >
       {label}
     </button>
@@ -244,21 +258,18 @@ export default function AlertLabPage() {
         </div>
       )}
 
-      <PageIntro title="Alerts">
+      <div className="alerts-tab-header muted">
         {tab === "now"
-          ? "Live buy signals appear here and as popups. Stay on Right now during the session — other tabs are for history and stats."
-          : tab === "accuracy"
-            ? "Did past signals work 1–5 minutes after they fired? For live trades, switch back to Right now."
-            : tab === "history"
-              ? "Every alert the scanner saved. For what to trade now, switch to Right now."
-              : "Your personal trade log — optional, for learning what works for you."}
-      </PageIntro>
+          ? "Live buy signals — popups fire here too during the session."
+          : tab === "history"
+            ? "Track record, past alerts, weekly report, and how the scanner works."
+            : "Your personal trade log."}
+      </div>
 
       <div className="acc-tabs acc-tabs-primary">
         {tabBtn("now", "Right now")}
-        {tabBtn("accuracy", "Track record")}
-        {tabBtn("history", "Past alerts")}
-        {tabBtn("journal", "My trades")}
+        {tabBtn("history", "History")}
+        {tabBtn("journal", "Journal")}
       </div>
 
       {tab !== "now" ? (
@@ -283,7 +294,8 @@ export default function AlertLabPage() {
         <AlertsCommandCenter tape={tape} onOpenChart={openChart} />
       ) : null}
 
-      {tab === "accuracy" ? (
+      {tab === "history" ? (
+        <>
         <div className="panel main">
           <div className="toolbar">
             <h2>Signal accuracy</h2>
@@ -612,10 +624,7 @@ export default function AlertLabPage() {
             </div>
           )}
         </div>
-      ) : null}
 
-      {tab === "history" ? (
-        <>
           <div className="kpis" style={{ marginBottom: 14 }}>
             <div className="kpi"><div className="label">Alerts today</div><div className="val num">{todayCount}</div><div className="sub">{totals?.total ?? 0} all-time</div></div>
             <div className="kpi"><div className="label">Avg signal score</div><div className="val num">{totals?.avg_signal != null ? Math.round(totals.avg_signal) : "—"}</div><div className="sub">risk {totals?.avg_risk != null ? Math.round(totals.avg_risk) : "—"} · liq {totals?.avg_liquidity != null ? Math.round(totals.avg_liquidity) : "—"}</div></div>
@@ -772,6 +781,8 @@ export default function AlertLabPage() {
               </div>
             )}
           </div>
+
+          <SystemExplanationSection />
         </>
       ) : null}
 
@@ -823,8 +834,16 @@ export default function AlertLabPage() {
       <ChartPanel symbol={chartSymbol} open={chartOpen} onClose={() => setChartOpen(false)} />
 
       <div className="footer">
-        Alert Lab · records and measures scanner alerts for research · no order placement, no recommendations · not financial advice
+        Alerts · records and measures scanner output for research · not financial advice
       </div>
     </div>
+  );
+}
+
+export default function AlertLabPage() {
+  return (
+    <Suspense fallback={null}>
+      <AlertsPageInner />
+    </Suspense>
   );
 }

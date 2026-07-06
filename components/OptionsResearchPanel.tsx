@@ -1,8 +1,8 @@
-"use client";
+﻿"use client";
 
 /**
- * Options research — momentum + unusual flow tables (collapsed on Live page).
- * Same data as /scanner without the sidebar views clutter.
+ * Options research — momentum + unusual flow tables.
+ * Collapsed variant on Live tape tab; full variant on Research tab.
  */
 
 import { useCallback, useMemo, useState } from "react";
@@ -17,19 +17,26 @@ import { filterMomentum, filterUnusual } from "@/lib/scanner-filters";
 export function OptionsResearchPanel({
   onOpenChart,
   defaultOpen = false,
+  variant = "collapsed",
+  active = true,
 }: {
   onOpenChart?: (symbol: string) => void;
   defaultOpen?: boolean;
+  variant?: "collapsed" | "full";
+  active?: boolean;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  const isFull = variant === "full";
+  const [open, setOpen] = useState(isFull || defaultOpen);
   const [prefs] = useState(() => loadDashboardPrefs());
   const [tab, setTab] = useState<Tab>("momentum");
   const [filters, setFilters] = useState<FilterKey[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const intervalSec = Math.max(15, prefs.refreshSec ?? DEFAULT_REFRESH_SEC);
 
+  const expanded = isFull ? active : open;
+
   const { momentum, unusual, loading, error, refresh } = useScanner({
-    autoRefresh: open,
+    autoRefresh: expanded,
     intervalSec,
     notifyEnabled: false,
   });
@@ -50,50 +57,56 @@ export function OptionsResearchPanel({
     setFilters((prev) => (prev.includes(key) ? prev.filter((f) => f !== key) : [...prev, key]));
   }
 
+  const body = (
+    <>
+      {error ? (
+        <div className="banner-warn compact-banner-warn">{error}</div>
+      ) : null}
+
+      <Toolbar
+        tab={tab}
+        onTabChange={(t) => { setTab(t); setFilters([]); }}
+        activeFilters={filters}
+        onToggle={toggleFilter}
+        onClear={() => setFilters([])}
+        loading={loading}
+        count={rows.length}
+        onRefresh={refresh}
+      />
+
+      <div className="table-area live-research-table">
+        {tab === "momentum" ? (
+          <MomentumTable rows={filteredMomentum} selected={selected} onSelect={openChart} />
+        ) : (
+          <UnusualTable rows={filteredUnusual} selected={selected} onSelect={openChart} />
+        )}
+      </div>
+    </>
+  );
+
+  if (isFull) {
+    return (
+      <section className="panel main section-options-research section-options-research-full">
+        {body}
+      </section>
+    );
+  }
+
   return (
-    <section className="panel main section-options-research" style={{ marginTop: 14 }}>
+    <section className="panel main section-options-research">
       <button
         type="button"
         className="guide-toggle"
         onClick={() => setOpen((v) => !v)}
-        style={{ width: "100%", textAlign: "left", marginBottom: open ? 12 : 0 }}
       >
         <span>{open ? "▾" : "▸"}</span>
         <span>Options research — momentum &amp; unusual flow</span>
-        <span className="muted" style={{ marginLeft: 8, fontSize: 12, fontWeight: 400 }}>
-          (deeper 0DTE scan — not required for daily use)
+        <span className="muted section-options-research-hint">
+          (deeper 0DTE scan — use Research tab for full view)
         </span>
       </button>
 
-      {open ? (
-        <>
-          {error ? (
-            <div className="kpi" style={{ marginBottom: 14, borderColor: "var(--amber)", background: "rgba(255,176,32,.06)" }}>
-              <div className="label" style={{ color: "var(--amber)" }}>Scan error</div>
-              <div className="sub">{error}</div>
-            </div>
-          ) : null}
-
-          <Toolbar
-            tab={tab}
-            onTabChange={(t) => { setTab(t); setFilters([]); }}
-            activeFilters={filters}
-            onToggle={toggleFilter}
-            onClear={() => setFilters([])}
-            loading={loading}
-            count={rows.length}
-            onRefresh={refresh}
-          />
-
-          <div className="table-area" style={{ marginTop: 10 }}>
-            {tab === "momentum" ? (
-              <MomentumTable rows={filteredMomentum} selected={selected} onSelect={openChart} />
-            ) : (
-              <UnusualTable rows={filteredUnusual} selected={selected} onSelect={openChart} />
-            )}
-          </div>
-        </>
-      ) : null}
+      {open ? body : null}
     </section>
   );
 }

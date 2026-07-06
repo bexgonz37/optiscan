@@ -1,15 +1,12 @@
-"use client";
+﻿"use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import { AppNav } from "@/components/AppNav";
-import { DataAccessBanner } from "@/components/DataAccessBanner";
-import { ScannerDashboard } from "@/components/ScannerDashboard";
-import { SessionBanner } from "@/components/SessionBanner";
-import { OptionsResearchPanel } from "@/components/OptionsResearchPanel";
-import { PageIntro } from "@/components/PageIntro";
+import { CompactStatusLine } from "@/components/CompactStatusLine";
+import { LivePageTabs } from "@/components/LivePageTabs";
 import { ChartPanel } from "@/components/ChartPanel";
 
-export default function Page() {
+function LivePageInner() {
   const [chartSymbol, setChartSymbol] = useState<string | null>(null);
   const [chartOpen, setChartOpen] = useState(false);
   const [clock, setClock] = useState("");
@@ -33,29 +30,24 @@ export default function Page() {
   }, []);
 
   return (
-    <div className="app">
-      <AppNav
-        status={[
-          { label: clock ? `${clock} ET` : "—" },
-          { label: loopLive ? "Tape live" : "Tape offline", live: loopLive },
-        ]}
-      />
+    <>
+      <CompactStatusLine loopLive={loopLive} clock={clock} />
 
-      <DataAccessBanner />
-      <SessionBanner />
-
-      <PageIntro
-        title="Live"
-        action={{ href: "/alerts", label: "Open Alerts →" }}
-      >
-        Watch what&apos;s moving. When a signal fires, check Alerts (or wait for a popup).
-      </PageIntro>
-
-      <ScannerDashboard onOpenChart={onOpenChart} onLoopStatus={setLoopLive} />
-
-      <OptionsResearchPanel onOpenChart={onOpenChart} />
+      <LivePageTabs onOpenChart={onOpenChart} onLoopStatus={setLoopLive} />
 
       <ChartPanel symbol={chartSymbol} open={chartOpen} onClose={() => setChartOpen(false)} />
+    </>
+  );
+}
+
+export default function Page() {
+  return (
+    <div className="app app-live-compact">
+      <AppNav hideSessionBadge />
+
+      <Suspense fallback={null}>
+        <LivePageInner />
+      </Suspense>
 
       <div className="footer">
         OptiScan · Live watchlist · trade callouts on Alerts

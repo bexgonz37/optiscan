@@ -5,11 +5,10 @@
  * dashboard preferences, Discord controls, and pending manual-confirm queue.
  */
 
-import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { scanHeaders, requestNotifyPermission } from "@/hooks/useScanner";
 import { AppNav } from "@/components/AppNav";
-import { PageIntro } from "@/components/PageIntro";
+import { HelpSection } from "@/components/HelpSection";
 import {
   DEFAULT_REFRESH_SEC,
   REFRESH_CHOICES,
@@ -166,9 +165,9 @@ export default function SettingsPage() {
     <div className="app">
       <AppNav status={msg ? [{ label: msg }] : undefined} />
 
-      <PageIntro title="Settings">
-        Notifications and optional tuning. You can ignore most of this until alerts feel too noisy or too quiet.
-      </PageIntro>
+      <div className="settings-page-header muted">
+        Notifications and optional tuning. Help and how the scanner works are at the bottom.
+      </div>
 
       <div className="settings-grid">
         <div className="panel main settings-panel">
@@ -284,11 +283,7 @@ export default function SettingsPage() {
             </pre>
           ) : null}
 
-          <p className="settings-desc" style={{ marginTop: 20 }}>
-            <Link href="/review" className="btn-link">
-              How the scanner works →
-            </Link>
-          </p>
+
         </div>
 
         <div className="panel main settings-panel">
@@ -353,6 +348,10 @@ export default function SettingsPage() {
             </>
           ) : null}
         </div>
+      </div>
+
+      <div id="help" className="settings-help-wrap">
+        <HelpSection />
       </div>
 
       <div className="footer">Settings · alerts are research signals, never recommendations · not financial advice</div>

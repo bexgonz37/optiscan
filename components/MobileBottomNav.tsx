@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -49,14 +49,6 @@ export function MobileBottomNav() {
             <span>{item.label}</span>
           </Link>
         ))}
-        <Link
-          href="/guide"
-          className={`mobile-bottom-link${pathname === "/guide" ? " active" : ""}`}
-          title="How this works"
-        >
-          <span className="mobile-bottom-icon" aria-hidden>?</span>
-          <span>Help</span>
-        </Link>
       </div>
     </nav>
   );

@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -6,11 +6,11 @@ import { useEffect, useState, type ReactNode } from "react";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { marketSession, type MarketSession } from "@/lib/trading-session";
 
-/** Minimal nav: Live · Alerts · Settings + help icon. */
+/** Minimal nav: Live · Alerts · Settings. Help lives in Settings. */
 const PAGES = [
   { href: "/", label: "Live", hint: "What's moving right now — session-aware watchlist" },
   { href: "/alerts", label: "Alerts", hint: "Signals that fired + track record + journal" },
-  { href: "/settings", label: "Settings", hint: "Notifications & preferences" },
+  { href: "/settings", label: "Settings", hint: "Notifications, preferences, and help" },
 ] as const;
 
 const SESSION_BADGE: Record<MarketSession, { text: string; mode: "options" | "stocks" | "off" }> = {
@@ -36,10 +36,12 @@ export function AppNav({
   status,
   onRefresh,
   children,
+  hideSessionBadge,
 }: {
   status?: StatusItem[];
   onRefresh?: () => void;
   children?: ReactNode;
+  hideSessionBadge?: boolean;
 }) {
   const pathname = usePathname() ?? "/";
   const [session, setSession] = useState<MarketSession | null>(null);
@@ -74,7 +76,7 @@ export function AppNav({
 
         <div className="spacer" />
 
-        {badge ? (
+        {!hideSessionBadge && badge ? (
           <span className={`session-badge session-${badge.mode}`} title="Which callout system is live right now">
             <span className={`status-dot${badge.mode !== "off" ? " live" : ""}`} />
             {badge.text}
@@ -97,10 +99,6 @@ export function AppNav({
             ↻
           </button>
         ) : null}
-
-        <Link href="/guide" className="icon-btn" title="How this works" aria-label="Help">
-          ?
-        </Link>
 
         <ThemeToggle />
 

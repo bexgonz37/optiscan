@@ -1,12 +1,19 @@
-/** @type {import('next').NextConfig} */
+﻿/** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
   output: "standalone",
-  // Native module — must not be webpack-bundled (breaks fs/path in dev + API routes).
   serverExternalPackages: ["better-sqlite3"],
-  // Pin the tracing root to this project (a stray pnpm-lock.yaml in the home
-  // dir otherwise makes Next infer the wrong workspace root).
   outputFileTracingRoot: process.cwd(),
+  async redirects() {
+    return [
+      { source: "/scanner", destination: "/?tab=research", permanent: true },
+      { source: "/guide", destination: "/settings#help", permanent: true },
+      { source: "/review", destination: "/alerts?tab=history#how-it-works", permanent: true },
+      { source: "/stocks", destination: "/", permanent: true },
+      { source: "/now", destination: "/", permanent: true },
+      { source: "/alert-lab", destination: "/alerts", permanent: true },
+    ];
+  },
 };
 
 export default nextConfig;
