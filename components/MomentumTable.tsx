@@ -69,8 +69,8 @@ export function MomentumTable({
   if (!rows.length) {
     return (
       <div className="empty">
-        <div className="big">No directional options signals right now.</div>
-        Calls/puts appear here as stocks build intraday momentum. Try clearing a filter.
+        <div className="big">Nothing setting up right now</div>
+        Calls and puts show here as stocks build momentum. Try clearing a filter.
       </div>
     );
   }

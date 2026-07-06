@@ -59,7 +59,17 @@ test("SPEC: trade journal links trades to alerts (alert_id foreign key + popup w
 test("SPEC: reality check + pressure exist and chains stay trigger/open-gated", () => {
   const opt = read("app/api/options/[ticker]/route.ts");
   assert.ok(opt.includes("realityCheck") && opt.includes("optionsPressure"));
+  // Reality check now lives in the chart panel: chains fetch only when a symbol
+  // is opened (mover row or alert row), and are never polled on an interval.
+  const chart = read("components/ChartPanel.tsx");
+  assert.ok(chart.includes("/api/options/"), "chart panel fetches the reality check on open");
+  assert.ok(!/setInterval\([^)]*api\/options/.test(chart), "no polling of chains from the dashboard");
   const board = read("components/LiveMoversBoard.tsx");
-  assert.ok(board.includes("openReality"), "reality check fetches only when a row is opened");
-  assert.ok(!board.includes("setInterval(openReality"), "no polling of chains from the dashboard");
+  assert.ok(board.includes("onOpenChart"), "movers open the chart panel on click");
+});
+
+test("SPEC: candles + data-access probe routes exist and chart uses lightweight-charts", () => {
+  assert.ok(read("app/api/candles/[symbol]/route.ts").includes("fetchCandles"), "candles route wraps fetchCandles");
+  assert.ok(read("app/api/health/data-access/route.ts").includes("NOT_AUTHORIZED") || read("app/api/health/data-access/route.ts").includes("probe"), "data-access probe route exists");
+  assert.ok(read("components/ChartPanel.tsx").includes("lightweight-charts"), "chart panel uses lightweight-charts");
 });

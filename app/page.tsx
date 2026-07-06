@@ -10,6 +10,8 @@ import { DetailPanel } from "@/components/DetailPanel";
 import { AlertPopup } from "@/components/AlertPopup";
 import { LiveMoversBoard } from "@/components/LiveMoversBoard";
 import { AppNav } from "@/components/AppNav";
+import { DataAccessBanner } from "@/components/DataAccessBanner";
+import { ChartPanel } from "@/components/ChartPanel";
 import { useScanner } from "@/hooks/useScanner";
 import { useToast } from "@/components/Toasts";
 import type { MomentumRow, UnusualRow } from "@/lib/types";
@@ -35,6 +37,8 @@ export default function Page() {
   const [notifyEnabled, setNotifyEnabled] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [chartSymbol, setChartSymbol] = useState<string | null>(null);
+  const [chartOpen, setChartOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [clock, setClock] = useState("");
   const [loopLive, setLoopLive] = useState(false);
@@ -131,6 +135,11 @@ export default function Page() {
     setDetailOpen(true);
   }, []);
 
+  const onOpenChart = useCallback((symbol: string) => {
+    setChartSymbol(symbol);
+    setChartOpen(true);
+  }, []);
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -140,7 +149,8 @@ export default function Page() {
         return;
       }
       if (e.key === "Escape") {
-        if (detailOpen) setDetailOpen(false);
+        if (chartOpen) setChartOpen(false);
+        else if (detailOpen) setDetailOpen(false);
         else if (document.activeElement === searchRef.current) {
           setQuery("");
           searchRef.current?.blur();
@@ -149,9 +159,8 @@ export default function Page() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [detailOpen]);
+  }, [detailOpen, chartOpen]);
 
-  const keyPresent = meta?.keyPresent ?? false;
   const rowCount = tab === "momentum" ? filteredMomentum.length : filteredUnusual.length;
   const updatedLabel = loading
     ? "Scanning…"
@@ -170,18 +179,11 @@ export default function Page() {
         onRefresh={refresh}
       />
 
-      {!keyPresent && meta && (
-        <div className="banner-warn">
-          <strong>Add your Polygon API key</strong>
-          <span>
-            Set <code>POLYGON_API_KEY</code> in <code>.env.local</code> and restart.
-          </span>
-        </div>
-      )}
+      <DataAccessBanner />
 
       <KpiRow kpi={kpi} universeCount={meta?.universeCount ?? 0} loopLive={loopLive} />
 
-      <LiveMoversBoard loopStatus={onLoopStatus} />
+      <LiveMoversBoard loopStatus={onLoopStatus} onOpenChart={onOpenChart} />
 
       <section className="panel main section-scanner">
         <Toolbar
@@ -215,10 +217,11 @@ export default function Page() {
       </section>
 
       <DetailPanel symbol={selected} open={detailOpen} onClose={() => setDetailOpen(false)} />
+      <ChartPanel symbol={chartSymbol} open={chartOpen} onClose={() => setChartOpen(false)} />
       <AlertPopup onOpenChain={onSelect} />
 
       <div className="footer">
-        OptiScan · signals for review only, not buy/sell instructions · not financial advice
+        OptiScan · research signals only, not buy/sell instructions · not financial advice
       </div>
     </div>
   );

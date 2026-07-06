@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 const PAGES = [
   { href: "/", label: "Dashboard", hint: "Live board + scanner" },
@@ -71,6 +72,8 @@ export function AppNav({
             ↻
           </button>
         ) : null}
+
+        <ThemeToggle />
 
         {children}
       </div>
