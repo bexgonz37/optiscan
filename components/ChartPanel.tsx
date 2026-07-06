@@ -1,9 +1,8 @@
 "use client";
 
 /**
- * ChartPanel — right-side drawer with a candlestick + volume chart (TradingView
- * lightweight-charts), toggleable indicators (VWAP/EMA/SMA/RSI/MACD), and the
- * existing 0DTE reality-check contract cards. Opens on a mover or alert click.
+ * ChartPanel — right-side drawer with stacked synced 1m/5m/15m charts (desktop)
+ * or a single chart on mobile (≤768px). Toggleable indicators per timeframe.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -13,17 +12,21 @@ import {
   HistogramSeries,
   LineSeries,
   type IChartApi,
+  type LogicalRange,
 } from "lightweight-charts";
 import { scanHeaders } from "@/hooks/useScanner";
 import { fmtPrice, fmtPct, fmtInt, changeColor } from "@/lib/format";
 import {
   CHART_TIMEFRAMES,
   CHART_INDICATORS,
+  CHART_STACK_TIMEFRAMES,
   DEFAULT_CHART_INDICATORS,
+  DEFAULT_STACK_INDICATORS,
   loadDashboardPrefs,
   saveDashboardPrefs,
   type ChartTimeframe,
   type ChartIndicator,
+  type ChartStackTimeframe,
 } from "@/lib/dashboard-prefs";
 import {
   emaSeries,
@@ -44,10 +47,193 @@ const INDICATOR_LABELS: Record<ChartIndicator, string> = {
   macd: "MACD",
 };
 
+const MOBILE_MAX = 768;
+
 function cssVar(name: string, fallback: string): string {
   if (typeof window === "undefined") return fallback;
   const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   return v || fallback;
+}
+
+function useMobileChart(): boolean {
+  const [mobile, setMobile] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${MOBILE_MAX}px)`);
+    const update = () => setMobile(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+  return mobile;
+}
+
+function applyIndicators(chart: IChartApi, bars: Bar[], indicators: ChartIndicator[], tf: ChartTimeframe) {
+  const muted = cssVar("--muted", "#8798a8");
+  const green = cssVar("--green", "#00d68f");
+  const red = cssVar("--red", "#ff5a72");
+  const violet = cssVar("--violet", "#8b7dff");
+  const cyan = cssVar("--cyan", "#3ad0ff");
+  const amber = cssVar("--amber", "#ffb020");
+
+  const candle = chart.addSeries(CandlestickSeries, {
+    upColor: green,
+    downColor: red,
+    borderUpColor: green,
+    borderDownColor: red,
+    wickUpColor: green,
+    wickDownColor: red,
+  });
+  candle.setData(
+    bars.map((b) => ({ time: Math.floor(b.t / 1000) as any, open: b.o, high: b.h, low: b.l, close: b.c })),
+  );
+
+  const closes = bars.map((b) => b.c);
+
+  if (indicators.includes("vwap")) {
+    const s = chart.addSeries(LineSeries, { color: amber, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
+    s.setData(toLine(bars, vwapSeries(bars)) as any);
+  }
+  if (indicators.includes("ema9")) {
+    const s = chart.addSeries(LineSeries, { color: cyan, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+    s.setData(toLine(bars, emaSeries(closes, 9)) as any);
+  }
+  if (indicators.includes("ema21")) {
+    const s = chart.addSeries(LineSeries, { color: violet, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+    s.setData(toLine(bars, emaSeries(closes, 21)) as any);
+  }
+  if (indicators.includes("sma50")) {
+    const s = chart.addSeries(LineSeries, { color: muted, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+    s.setData(toLine(bars, smaSeries(closes, 50)) as any);
+  }
+
+  const vol = chart.addSeries(HistogramSeries, { priceFormat: { type: "volume" }, priceScaleId: "" }, 1);
+  vol.setData(
+    bars.map((b) => ({
+      time: Math.floor(b.t / 1000) as any,
+      value: b.v,
+      color: b.c >= b.o ? green : red,
+    })),
+  );
+
+  let nextPane = 2;
+  if (indicators.includes("rsi")) {
+    const pane = nextPane++;
+    const s = chart.addSeries(LineSeries, { color: violet, lineWidth: 1, lastValueVisible: true }, pane);
+    s.setData(toLine(bars, rsiSeries(closes)) as any);
+    s.createPriceLine({ price: 70, color: red, lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: "" });
+    s.createPriceLine({ price: 30, color: green, lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: "" });
+  }
+  if (indicators.includes("macd")) {
+    const pane = nextPane++;
+    const m = macdSeries(closes);
+    const hist = chart.addSeries(HistogramSeries, {}, pane);
+    hist.setData(
+      bars
+        .map((b, i) => ({ time: Math.floor(b.t / 1000) as any, value: m.hist[i], i }))
+        .filter((p) => p.value != null)
+        .map((p) => ({ time: p.time, value: p.value as number, color: (p.value as number) >= 0 ? green : red })),
+    );
+    const macdLine = chart.addSeries(LineSeries, { color: cyan, lineWidth: 1, lastValueVisible: false }, pane);
+    macdLine.setData(toLine(bars, m.macd) as any);
+    const sig = chart.addSeries(LineSeries, { color: amber, lineWidth: 1, lastValueVisible: false }, pane);
+    sig.setData(toLine(bars, m.signal) as any);
+  }
+
+  try {
+    const panes = chart.panes();
+    if (panes[0]) panes[0].setHeight(tf === "1D" ? 260 : 180);
+    for (let i = 1; i < panes.length; i++) panes[i].setHeight(70);
+  } catch { /* best effort */ }
+
+  chart.timeScale().fitContent();
+}
+
+function StackedCharts({
+  barsByTf,
+  indicatorsByTf,
+  onToggleIndicator,
+}: {
+  barsByTf: Partial<Record<ChartStackTimeframe, Bar[]>>;
+  indicatorsByTf: Record<ChartStackTimeframe, ChartIndicator[]>;
+  onToggleIndicator: (tf: ChartStackTimeframe, id: ChartIndicator) => void;
+}) {
+  const hostsRef = useRef<Partial<Record<ChartStackTimeframe, HTMLDivElement | null>>>({});
+  const chartsRef = useRef<Partial<Record<ChartStackTimeframe, IChartApi>>>({});
+  const syncing = useRef(false);
+
+  useEffect(() => {
+    const muted = cssVar("--muted", "#8798a8");
+    const line = cssVar("--line", "#1f2a37");
+    const charts: Partial<Record<ChartStackTimeframe, IChartApi>> = {};
+
+    for (const tf of CHART_STACK_TIMEFRAMES) {
+      const host = hostsRef.current[tf];
+      const bars = barsByTf[tf];
+      if (!host || !bars?.length) continue;
+      const chart = createChart(host, {
+        layout: { background: { color: "transparent" }, textColor: muted, attributionLogo: false },
+        grid: { vertLines: { color: line }, horzLines: { color: line } },
+        rightPriceScale: { borderColor: line },
+        timeScale: { borderColor: line, timeVisible: true, secondsVisible: false },
+        crosshair: { mode: 0 },
+        autoSize: true,
+      });
+      applyIndicators(chart, bars, indicatorsByTf[tf] ?? DEFAULT_STACK_INDICATORS[tf], tf);
+      charts[tf] = chart;
+    }
+    chartsRef.current = charts;
+
+    const syncRange = (source: ChartStackTimeframe, range: LogicalRange | null) => {
+      if (syncing.current || !range) return;
+      syncing.current = true;
+      for (const stackTf of CHART_STACK_TIMEFRAMES) {
+        if (stackTf === source) continue;
+        chartsRef.current[stackTf]?.timeScale().setVisibleLogicalRange(range);
+      }
+      syncing.current = false;
+    };
+
+    for (const stackTf of CHART_STACK_TIMEFRAMES) {
+      const chart = charts[stackTf];
+      if (!chart) continue;
+      chart.timeScale().subscribeVisibleLogicalRangeChange((range) => syncRange(stackTf, range));
+    }
+
+    return () => {
+      for (const c of Object.values(chartsRef.current)) c?.remove();
+      chartsRef.current = {};
+    };
+  }, [barsByTf, indicatorsByTf]);
+
+  return (
+    <div className="chart-stack">
+      {CHART_STACK_TIMEFRAMES.map((stackTf) => {
+        const bars = barsByTf[stackTf] ?? [];
+        const inds = indicatorsByTf[stackTf] ?? DEFAULT_STACK_INDICATORS[stackTf];
+        return (
+          <div key={stackTf} className="chart-stack-pane">
+            <div className="chart-stack-head">
+              <span className="chart-stack-label">{stackTf}</span>
+              <div className="ind-group">
+                {CHART_INDICATORS.map((id) => (
+                  <button
+                    key={id}
+                    type="button"
+                    className={`chip${inds.includes(id) ? " on" : ""}`}
+                    onClick={() => onToggleIndicator(stackTf, id)}
+                  >
+                    {INDICATOR_LABELS[id]}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {!bars.length ? <div className="chart-msg muted">No {stackTf} data.</div> : null}
+            <div ref={(el) => { hostsRef.current[stackTf] = el; }} className="chart-host chart-host-stack" />
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 export function ChartPanel({
@@ -59,9 +245,11 @@ export function ChartPanel({
   open: boolean;
   onClose: () => void;
 }) {
+  const mobile = useMobileChart();
   const [tf, setTf] = useState<ChartTimeframe>("5m");
   const [indicators, setIndicators] = useState<ChartIndicator[]>(DEFAULT_CHART_INDICATORS);
-  const [bars, setBars] = useState<Bar[]>([]);
+  const [indicatorsByTf, setIndicatorsByTf] = useState<Record<ChartStackTimeframe, ChartIndicator[]>>(DEFAULT_STACK_INDICATORS);
+  const [barsByTf, setBarsByTf] = useState<Partial<Record<ChartTimeframe, Bar[]>>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reality, setReality] = useState<any>(null);
@@ -74,7 +262,19 @@ export function ChartPanel({
     if (p.chartTimeframe && (CHART_TIMEFRAMES as readonly string[]).includes(p.chartTimeframe)) setTf(p.chartTimeframe);
     if (Array.isArray(p.chartIndicators)) {
       const valid = p.chartIndicators.filter((i): i is ChartIndicator => (CHART_INDICATORS as readonly string[]).includes(i));
-      setIndicators(valid);
+      if (valid.length) setIndicators(valid);
+    }
+    if (p.chartIndicatorsByTf) {
+      setIndicatorsByTf((cur) => {
+        const next = { ...cur };
+        for (const stackTf of CHART_STACK_TIMEFRAMES) {
+          const saved = p.chartIndicatorsByTf?.[stackTf];
+          if (Array.isArray(saved)) {
+            next[stackTf] = saved.filter((i): i is ChartIndicator => (CHART_INDICATORS as readonly string[]).includes(i));
+          }
+        }
+        return next;
+      });
     }
   }, []);
 
@@ -86,12 +286,23 @@ export function ChartPanel({
     });
   }, []);
 
+  const toggleStackIndicator = useCallback((stackTf: ChartStackTimeframe, id: ChartIndicator) => {
+    setIndicatorsByTf((cur) => {
+      const list = cur[stackTf] ?? DEFAULT_STACK_INDICATORS[stackTf];
+      const nextList = list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
+      const next = { ...cur, [stackTf]: nextList };
+      saveDashboardPrefs({ chartIndicatorsByTf: next });
+      return next;
+    });
+  }, []);
+
   const changeTf = useCallback((next: ChartTimeframe) => {
     setTf(next);
     saveDashboardPrefs({ chartTimeframe: next });
   }, []);
 
-  // Fetch candles + reality check whenever the symbol/timeframe changes.
+  const fetchTfs = mobile ? [tf] : [...CHART_STACK_TIMEFRAMES];
+
   useEffect(() => {
     if (!open || !symbol) return;
     let cancelled = false;
@@ -99,31 +310,40 @@ export function ChartPanel({
     setError(null);
     (async () => {
       try {
-        const res = await fetch(`/api/candles/${encodeURIComponent(symbol)}?tf=${tf}`, {
-          cache: "no-store",
-          headers: scanHeaders(),
-        });
-        const d = await res.json();
+        const results = await Promise.all(
+          fetchTfs.map(async (t) => {
+            const res = await fetch(`/api/candles/${encodeURIComponent(symbol)}?tf=${t}`, {
+              cache: "no-store",
+              headers: scanHeaders(),
+            });
+            const d = await res.json();
+            return { tf: t, ok: d.ok, bars: d.bars ?? [], error: d.error };
+          }),
+        );
         if (cancelled) return;
-        if (!d.ok) {
-          setError(d.error ?? "candles unavailable");
-          setBars([]);
+        const failed = results.find((r) => !r.ok);
+        if (failed && mobile) {
+          setError(failed.error ?? "candles unavailable");
+          setBarsByTf({});
         } else {
-          setBars(d.bars ?? []);
+          const map: Partial<Record<ChartTimeframe, Bar[]>> = {};
+          for (const r of results) map[r.tf as ChartTimeframe] = r.bars;
+          setBarsByTf(map);
+          if (failed) setError(failed.error ?? null);
         }
       } catch (e: any) {
         if (!cancelled) {
           setError(e?.message ?? "failed to load candles");
-          setBars([]);
+          setBarsByTf({});
         }
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
-  }, [open, symbol, tf]);
+    return () => { cancelled = true; };
+  }, [open, symbol, mobile, tf]);
+
+  const bars = mobile ? (barsByTf[tf] ?? []) : (barsByTf["5m"] ?? barsByTf["1m"] ?? []);
 
   useEffect(() => {
     if (!open || !symbol) {
@@ -150,122 +370,31 @@ export function ChartPanel({
         if (!cancelled) setReality({ error: e?.message ?? "failed" });
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [open, symbol, bars]);
 
-  // (Re)build the chart when data, indicators, or panel visibility change.
   useEffect(() => {
-    if (!open || !chartHostRef.current || !bars.length) return;
-
-    const host = chartHostRef.current;
-    const txt = cssVar("--txt", "#e8edf2");
-    const muted = cssVar("--muted", "#8798a8");
-    const line = cssVar("--line", "#1f2a37");
-    const green = cssVar("--green", "#00d68f");
-    const red = cssVar("--red", "#ff5a72");
-    const violet = cssVar("--violet", "#8b7dff");
-    const cyan = cssVar("--cyan", "#3ad0ff");
-    const amber = cssVar("--amber", "#ffb020");
-
-    const chart = createChart(host, {
-      layout: { background: { color: "transparent" }, textColor: muted, attributionLogo: false },
-      grid: { vertLines: { color: line }, horzLines: { color: line } },
-      rightPriceScale: { borderColor: line },
-      timeScale: { borderColor: line, timeVisible: tf !== "1D", secondsVisible: false },
-      crosshair: { mode: 0 },
-      autoSize: true,
-    });
-    chartRef.current = chart;
-
-    const candle = chart.addSeries(CandlestickSeries, {
-      upColor: green,
-      downColor: red,
-      borderUpColor: green,
-      borderDownColor: red,
-      wickUpColor: green,
-      wickDownColor: red,
-    });
-    candle.setData(
-      bars.map((b) => ({ time: Math.floor(b.t / 1000) as any, open: b.o, high: b.h, low: b.l, close: b.c })),
-    );
-
-    const closes = bars.map((b) => b.c);
-
-    if (indicators.includes("vwap")) {
-      const s = chart.addSeries(LineSeries, { color: amber, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
-      s.setData(toLine(bars, vwapSeries(bars)) as any);
+    if (mobile && open && chartHostRef.current && bars.length) {
+      const host = chartHostRef.current;
+      const muted = cssVar("--muted", "#8798a8");
+      const line = cssVar("--line", "#1f2a37");
+      const chart = createChart(host, {
+        layout: { background: { color: "transparent" }, textColor: muted, attributionLogo: false },
+        grid: { vertLines: { color: line }, horzLines: { color: line } },
+        rightPriceScale: { borderColor: line },
+        timeScale: { borderColor: line, timeVisible: tf !== "1D", secondsVisible: false },
+        crosshair: { mode: 0 },
+        autoSize: true,
+      });
+      chartRef.current = chart;
+      applyIndicators(chart, bars, indicators, tf);
+      return () => {
+        chart.remove();
+        chartRef.current = null;
+      };
     }
-    if (indicators.includes("ema9")) {
-      const s = chart.addSeries(LineSeries, { color: cyan, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-      s.setData(toLine(bars, emaSeries(closes, 9)) as any);
-    }
-    if (indicators.includes("ema21")) {
-      const s = chart.addSeries(LineSeries, { color: violet, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-      s.setData(toLine(bars, emaSeries(closes, 21)) as any);
-    }
-    if (indicators.includes("sma50")) {
-      const s = chart.addSeries(LineSeries, { color: muted, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-      s.setData(toLine(bars, smaSeries(closes, 50)) as any);
-    }
-
-    // Volume pane.
-    const volPane = 1;
-    const vol = chart.addSeries(
-      HistogramSeries,
-      { priceFormat: { type: "volume" }, priceScaleId: "" },
-      volPane,
-    );
-    vol.setData(
-      bars.map((b) => ({
-        time: Math.floor(b.t / 1000) as any,
-        value: b.v,
-        color: b.c >= b.o ? green : red,
-      })),
-    );
-
-    let nextPane = 2;
-    if (indicators.includes("rsi")) {
-      const pane = nextPane++;
-      const s = chart.addSeries(LineSeries, { color: violet, lineWidth: 1, lastValueVisible: true }, pane);
-      s.setData(toLine(bars, rsiSeries(closes)) as any);
-      s.createPriceLine({ price: 70, color: red, lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: "" });
-      s.createPriceLine({ price: 30, color: green, lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: "" });
-    }
-    if (indicators.includes("macd")) {
-      const pane = nextPane++;
-      const m = macdSeries(closes);
-      const hist = chart.addSeries(HistogramSeries, {}, pane);
-      hist.setData(
-        bars
-          .map((b, i) => ({ time: Math.floor(b.t / 1000) as any, value: m.hist[i], i }))
-          .filter((p) => p.value != null)
-          .map((p) => ({ time: p.time, value: p.value as number, color: (p.value as number) >= 0 ? green : red })),
-      );
-      const macdLine = chart.addSeries(LineSeries, { color: cyan, lineWidth: 1, lastValueVisible: false }, pane);
-      macdLine.setData(toLine(bars, m.macd) as any);
-      const sig = chart.addSeries(LineSeries, { color: amber, lineWidth: 1, lastValueVisible: false }, pane);
-      sig.setData(toLine(bars, m.signal) as any);
-    }
-
-    // Size panes: price gets the lion's share, sub-panes stay compact.
-    try {
-      const panes = chart.panes();
-      if (panes[0]) panes[0].setHeight(260);
-      for (let i = 1; i < panes.length; i++) panes[i].setHeight(90);
-    } catch {
-      /* pane sizing is best-effort */
-    }
-
-    chart.timeScale().fitContent();
-    void txt;
-
-    return () => {
-      chart.remove();
-      chartRef.current = null;
-    };
-  }, [open, bars, indicators, tf]);
+    return undefined;
+  }, [mobile, open, bars, indicators, tf]);
 
   const last = bars.length ? bars[bars.length - 1] : null;
   const first = bars.length ? bars[0] : null;
@@ -314,23 +443,36 @@ export function ChartPanel({
           </button>
         </header>
 
-        <div className="chart-controls">
-          <div className="tf-group">
-            {CHART_TIMEFRAMES.map((t) => (
-              <button key={t} type="button" className={`chip${tf === t ? " on" : ""}`} onClick={() => changeTf(t)}>
-                {t}
-              </button>
-            ))}
+        {mobile ? (
+          <>
+            <div className="chart-controls">
+              <div className="tf-group">
+                {CHART_TIMEFRAMES.map((t) => (
+                  <button key={t} type="button" className={`chip${tf === t ? " on" : ""}`} onClick={() => changeTf(t)}>
+                    {t}
+                  </button>
+                ))}
+              </div>
+              <div className="ind-group">{indicatorChips}</div>
+            </div>
+            <div className="chart-host-wrap">
+              {loading ? <div className="chart-msg muted">Loading candles…</div> : null}
+              {error ? <div className="chart-msg warn">⚠ {error}</div> : null}
+              {!loading && !error && !bars.length ? <div className="chart-msg muted">No candle data.</div> : null}
+              <div ref={chartHostRef} className="chart-host" />
+            </div>
+          </>
+        ) : (
+          <div className="chart-host-wrap chart-host-wrap-stack">
+            {loading ? <div className="chart-msg muted">Loading stacked charts…</div> : null}
+            {error ? <div className="chart-msg warn">⚠ {error}</div> : null}
+            <StackedCharts
+              barsByTf={barsByTf as Partial<Record<ChartStackTimeframe, Bar[]>>}
+              indicatorsByTf={indicatorsByTf}
+              onToggleIndicator={toggleStackIndicator}
+            />
           </div>
-          <div className="ind-group">{indicatorChips}</div>
-        </div>
-
-        <div className="chart-host-wrap">
-          {loading ? <div className="chart-msg muted">Loading candles…</div> : null}
-          {error ? <div className="chart-msg warn">⚠ {error}</div> : null}
-          {!loading && !error && !bars.length ? <div className="chart-msg muted">No candle data.</div> : null}
-          <div ref={chartHostRef} className="chart-host" />
-        </div>
+        )}
 
         <div className="chart-reality">
           <div className="chart-reality-title">0DTE reality check</div>
@@ -355,21 +497,6 @@ export function ChartPanel({
                   ) : null}
                   {reality.minsToClose != null ? ` · ${reality.minsToClose} min to close` : ""}
                 </div>
-                {reality.pressure?.hint ? (
-                  <div
-                    style={{
-                      marginTop: 6,
-                      color: reality.pressure.stockAligned === false ? "var(--amber)" : "var(--muted)",
-                    }}
-                  >
-                    {reality.pressure.stockAligned === false ? "⚠ " : ""}
-                    {reality.pressure.hint}
-                  </div>
-                ) : (
-                  <div style={{ marginTop: 6, fontSize: 10 }}>
-                    Options flow counts call vs put volume — it is not the same as stock price direction.
-                  </div>
-                )}
               </div>
               <div className="contract-cards">
                 {bestCall ? <ContractRow c={bestCall} /> : null}

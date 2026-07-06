@@ -2507,3 +2507,44 @@ table tbody tr {
   margin-bottom: var(--space-1);
   border-bottom: 1px solid var(--line);
 }
+
+/* ── Item 4: stacked multi-timeframe charts ────────────────────────────── */
+
+.chart-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.chart-stack-pane {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  background: var(--panel2);
+}
+
+.chart-stack-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-2);
+}
+
+.chart-stack-label {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.chart-host-stack {
+  min-height: 200px;
+}
+
+.chart-host-wrap-stack {
+  overflow-y: auto;
+  max-height: calc(100vh - 280px);
+}

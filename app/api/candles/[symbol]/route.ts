@@ -15,6 +15,7 @@ export const dynamic = "force-dynamic";
 const PRESETS: Record<string, { res: string; span: string; days: number }> = {
   "1m": { res: "1", span: "minute", days: 1 },
   "5m": { res: "5", span: "minute", days: 5 },
+  "15m": { res: "15", span: "minute", days: 10 },
   "1D": { res: "1", span: "day", days: 180 },
 };
 
