@@ -130,3 +130,50 @@ export function toLine(bars: Bar[], values: (number | null)[]): LinePoint[] {
   }
   return out;
 }
+
+export interface KeyLevel {
+  id: string;
+  label: string;
+  price: number;
+  lineStyle?: "solid" | "dashed";
+}
+
+/** Session key levels for horizontal price lines on charts. */
+export function keyLevels(bars: Bar[]): KeyLevel[] {
+  if (!bars.length) return [];
+  const highs = bars.map((b) => b.h).filter(isNum);
+  const lows = bars.map((b) => b.l).filter(isNum);
+  if (!highs.length || !lows.length) return [];
+
+  const hod = Math.max(...highs);
+  const lod = Math.min(...lows);
+  const last = bars[bars.length - 1]?.c;
+  const vwapVals = vwapSeries(bars);
+  const vwap = [...vwapVals].reverse().find(isNum) ?? null;
+
+  const out: KeyLevel[] = [
+    { id: "hod", label: "HOD", price: +hod.toFixed(2) },
+    { id: "lod", label: "LOD", price: +lod.toFixed(2) },
+  ];
+  if (isNum(vwap)) out.push({ id: "vwap", label: "VWAP", price: +vwap.toFixed(2), lineStyle: "dashed" });
+
+  if (isNum(last) && last > 0) {
+    const step = last >= 200 ? 5 : last >= 50 ? 1 : 0.5;
+    const below = Math.floor(last / step) * step;
+    const above = Math.ceil(last / step) * step;
+    if (below > 0 && Math.abs(last - below) / last <= 0.02) {
+      out.push({ id: "round-below", label: `$${below}`, price: +below.toFixed(2), lineStyle: "dashed" });
+    }
+    if (above > below && Math.abs(above - last) / last <= 0.02) {
+      out.push({ id: "round-above", label: `$${above}`, price: +above.toFixed(2), lineStyle: "dashed" });
+    }
+  }
+
+  const seen = new Set<number>();
+  return out.filter((l) => {
+    const k = Math.round(l.price * 100);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}

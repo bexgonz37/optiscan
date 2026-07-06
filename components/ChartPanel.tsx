@@ -35,7 +35,9 @@ import {
   macdSeries,
   vwapSeries,
   toLine,
+  keyLevels,
   type Bar,
+  type KeyLevel,
 } from "@/lib/chart-indicators";
 
 const INDICATOR_LABELS: Record<ChartIndicator, string> = {
@@ -67,6 +69,23 @@ function useMobileChart(): boolean {
   return mobile;
 }
 
+function applyKeyLevelLines(candle: ReturnType<IChartApi["addSeries"]>, levels: KeyLevel[]) {
+  const amber = cssVar("--amber", "#ffb020");
+  const cyan = cssVar("--cyan", "#3ad0ff");
+  const muted = cssVar("--muted", "#8798a8");
+  const colorFor = (id: string) => (id === "vwap" ? amber : id === "hod" || id === "lod" ? cyan : muted);
+  for (const lvl of levels) {
+    candle.createPriceLine({
+      price: lvl.price,
+      color: colorFor(lvl.id),
+      lineWidth: 1,
+      lineStyle: lvl.lineStyle === "dashed" ? 2 : 0,
+      axisLabelVisible: true,
+      title: lvl.label,
+    });
+  }
+}
+
 function applyIndicators(chart: IChartApi, bars: Bar[], indicators: ChartIndicator[], tf: ChartTimeframe) {
   const muted = cssVar("--muted", "#8798a8");
   const green = cssVar("--green", "#00d68f");
@@ -86,6 +105,7 @@ function applyIndicators(chart: IChartApi, bars: Bar[], indicators: ChartIndicat
   candle.setData(
     bars.map((b) => ({ time: Math.floor(b.t / 1000) as any, open: b.o, high: b.h, low: b.l, close: b.c })),
   );
+  applyKeyLevelLines(candle, keyLevels(bars));
 
   const closes = bars.map((b) => b.c);
 
