@@ -11,7 +11,7 @@ test("SPEC: every-second scanner loop exists (default 1000ms) and is started at 
   const loop = read("lib/scanner-loop.ts");
   assert.ok(loop.includes("SCANNER_LOOP_MS ?? 1000"), "loop default must be 1s");
   assert.ok(loop.includes("export function startScannerLoop"));
-  assert.ok(read("instrumentation.ts").includes("startScannerLoop"));
+  assert.ok(read("lib/server-boot.ts").includes("startScannerLoop"), "boot must start scanner loop");
 });
 
 test("SPEC: options chains are fetched only for triggered/active tickers, never in the 1s tick body", () => {
@@ -59,7 +59,7 @@ test("SPEC: trade journal links trades to alerts (alert_id foreign key + popup w
 test("SPEC: reality check + pressure exist and chains stay trigger/open-gated", () => {
   const opt = read("app/api/options/[ticker]/route.ts");
   assert.ok(opt.includes("realityCheck") && opt.includes("optionsPressure"));
-  const now = read("app/now/page.tsx");
-  assert.ok(now.includes("openReality"), "reality check fetches only when a row is opened");
-  assert.ok(!now.includes("setInterval(openReality"), "no polling of chains from the dashboard");
+  const board = read("components/LiveMoversBoard.tsx");
+  assert.ok(board.includes("openReality"), "reality check fetches only when a row is opened");
+  assert.ok(!board.includes("setInterval(openReality"), "no polling of chains from the dashboard");
 });

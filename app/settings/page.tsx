@@ -2,12 +2,19 @@
 
 /**
  * /settings — language mode, capture thresholds, notification channels,
- * Discord controls (off by default; webhook URL is env-only and never shown
- * here — only a configured yes/no), and the pending manual-confirm queue.
+ * dashboard preferences, Discord controls, and pending manual-confirm queue.
  */
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { scanHeaders } from "@/hooks/useScanner";
+import { scanHeaders, requestNotifyPermission } from "@/hooks/useScanner";
+import { AppNav } from "@/components/AppNav";
+import {
+  DEFAULT_REFRESH_SEC,
+  REFRESH_CHOICES,
+  loadDashboardPrefs,
+  saveDashboardPrefs,
+} from "@/lib/dashboard-prefs";
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<any>(null);
@@ -16,6 +23,8 @@ export default function SettingsPage() {
   const [pending, setPending] = useState<any[]>([]);
   const [minMomentum, setMinMomentum] = useState("65");
   const [minUnusual, setMinUnusual] = useState("80");
+  const [refreshSec, setRefreshSec] = useState(DEFAULT_REFRESH_SEC);
+  const [desktopAlerts, setDesktopAlerts] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [testPreview, setTestPreview] = useState<any>(null);
 
@@ -37,7 +46,14 @@ export default function SettingsPage() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    const p = loadDashboardPrefs();
+    if (typeof p.refreshSec === "number" && (REFRESH_CHOICES as readonly number[]).includes(p.refreshSec)) {
+      setRefreshSec(p.refreshSec);
+    }
+    if (typeof p.desktopAlerts === "boolean") setDesktopAlerts(p.desktopAlerts);
+  }, [load]);
 
   async function patch(body: Record<string, unknown>) {
     setMsg(null);
@@ -47,8 +63,11 @@ export default function SettingsPage() {
       body: JSON.stringify(body),
     });
     const d = await res.json();
-    if (d.ok) { setSettings(d.settings); setLanguageMode(d.languageMode); setMsg("Saved."); }
-    else setMsg(d.error ?? "Save failed");
+    if (d.ok) {
+      setSettings(d.settings);
+      setLanguageMode(d.languageMode);
+      setMsg("Saved.");
+    } else setMsg(d.error ?? "Save failed");
   }
 
   async function confirmPending(id: number, discard = false) {
@@ -75,117 +94,203 @@ export default function SettingsPage() {
     setMsg(d.ok ? "Discord test sent." : d.error ?? "Discord test failed");
   }
 
+  async function toggleDesktopAlerts() {
+    if (!desktopAlerts) {
+      const ok = await requestNotifyPermission();
+      setDesktopAlerts(ok);
+      saveDashboardPrefs({ desktopAlerts: ok });
+      setMsg(ok ? "Desktop alerts enabled." : "Browser blocked notifications.");
+    } else {
+      setDesktopAlerts(false);
+      saveDashboardPrefs({ desktopAlerts: false });
+      setMsg("Desktop alerts disabled.");
+    }
+  }
+
+  function setIntervalPref(sec: number) {
+    setRefreshSec(sec);
+    saveDashboardPrefs({ refreshSec: sec });
+    setMsg(`Scanner refresh set to ${sec}s.`);
+  }
+
   const Toggle = ({ label, field, hint }: { label: string; field: string; hint?: string }) => (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid rgba(120,140,160,.12)" }}>
-      <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 13 }}>{label}</div>
-        {hint ? <div className="muted" style={{ fontSize: 11 }}>{hint}</div> : null}
+    <div className="settings-row">
+      <div className="settings-row-label">
+        {label}
+        {hint ? <div className="settings-row-hint">{hint}</div> : null}
       </div>
-      <div
-        className={`pill btn ${settings?.[field] ? "on" : ""}`}
-        onClick={() => patch({ [{
-          browser_popup_enabled: "browserPopupEnabled",
-          desktop_notification_enabled: "desktopNotificationEnabled",
-          sound_enabled: "soundEnabled",
-          discord_enabled: "discordEnabled",
-          discord_requires_manual_confirm: "discordRequiresManualConfirm",
-        }[field] as string]: settings?.[field] ? 0 : 1 })}
+      <button
+        type="button"
+        className={`btn-toggle${settings?.[field] ? " on" : ""}`}
+        onClick={() =>
+          patch({
+            [{
+              browser_popup_enabled: "browserPopupEnabled",
+              desktop_notification_enabled: "desktopNotificationEnabled",
+              sound_enabled: "soundEnabled",
+              discord_enabled: "discordEnabled",
+              discord_requires_manual_confirm: "discordRequiresManualConfirm",
+            }[field] as string]: settings?.[field] ? 0 : 1,
+          })
+        }
       >
         {settings?.[field] ? "On" : "Off"}
-      </div>
+      </button>
     </div>
   );
 
-  const sel = { background: "#10161d", color: "var(--txt)", border: "1px solid rgba(120,140,160,.25)", borderRadius: 8, padding: "6px 8px", fontSize: 12 } as const;
-
   return (
     <div className="app">
-      <div className="topbar">
-        <div className="logo"><span className="mark">O</span>OptiScan<small>settings</small></div>
-        <div className="spacer" />
-        {msg ? <div className="pill">{msg}</div> : null}
-        <a className="pill btn" href="/alert-lab">Alert Lab</a>
-        <a className="pill btn" href="/review">How it works</a>
-        <a className="pill btn" href="/">← Scanner</a>
-      </div>
+      <AppNav status={msg ? [{ label: msg }] : undefined} />
 
-      <div className="layout" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, alignItems: "start" }}>
-        <div className="panel main" style={{ padding: 16 }}>
-          <h2 style={{ margin: "0 0 10px", fontSize: 15 }}>Language mode</h2>
-          <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
-            Private mode shows my labels (A+ Setup, Possible Call/Put Setup). Public mode is
-            education-safe wording for screenshots/streams — no directive trading language anywhere.
-          </div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-            <div className={`pill btn ${languageMode === "private" ? "on" : ""}`} onClick={() => patch({ languageMode: "private" })}>Private Trading Mode</div>
-            <div className={`pill btn ${languageMode === "public" ? "on" : ""}`} onClick={() => patch({ languageMode: "public" })}>Public / Education Mode</div>
-          </div>
+      <div className="settings-grid">
+        <div className="panel main settings-panel">
+          <h2>Dashboard</h2>
+          <p className="settings-desc">Scanner auto-refreshes on the dashboard. Live movers update every ~1.5s automatically.</p>
 
-          <h2 style={{ margin: "14px 0 10px", fontSize: 15 }}>Capture thresholds</h2>
-          <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
-            Minimum scanner score for a signal to be saved + tracked as an alert.
-          </div>
-          <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 6 }}>
-            <span style={{ fontSize: 12, width: 160 }}>Momentum alerts ≥</span>
-            <input style={{ ...sel, width: 70 }} value={minMomentum} onChange={(e) => setMinMomentum(e.target.value)} />
-            <span style={{ fontSize: 12, width: 160 }}>Unusual-flow alerts ≥</span>
-            <input style={{ ...sel, width: 70 }} value={minUnusual} onChange={(e) => setMinUnusual(e.target.value)} />
-            <div className="pill btn" onClick={() => patch({ alertMinMomentumScore: Number(minMomentum), alertMinUnusualScore: Number(minUnusual) })}>Save</div>
-          </div>
-          <div className="muted" style={{ fontSize: 11 }}>
-            Scoring weights themselves are documented in <code>lib/alert-scoring.js</code> and kept in code so every historical score stays comparable.
+          <div className="settings-row">
+            <div className="settings-row-label">
+              Scanner refresh interval
+              <div className="settings-row-hint">How often momentum &amp; unusual scans run</div>
+            </div>
+            <select
+              className="select-sm"
+              value={refreshSec}
+              onChange={(e) => setIntervalPref(Number(e.target.value))}
+            >
+              {REFRESH_CHOICES.map((s) => (
+                <option key={s} value={s}>
+                  {s} seconds
+                </option>
+              ))}
+            </select>
           </div>
 
-          <h2 style={{ margin: "16px 0 10px", fontSize: 15 }}>Notifications</h2>
-          <Toggle label="Browser popups" field="browser_popup_enabled" hint="Real-time popup cards with Watch / Journal / Snooze actions" />
-          <Toggle label="Desktop notifications" field="desktop_notification_enabled" hint="Needs browser permission (enable via Alerts On in the scanner)" />
+          <div className="settings-row">
+            <div className="settings-row-label">
+              Desktop alerts (browser)
+              <div className="settings-row-hint">OS notification ping on strong scanner signals</div>
+            </div>
+            <button type="button" className={`btn-toggle${desktopAlerts ? " on" : ""}`} onClick={toggleDesktopAlerts}>
+              {desktopAlerts ? "On" : "Off"}
+            </button>
+          </div>
+
+          <h2>Language mode</h2>
+          <p className="settings-desc">
+            Private mode shows trading labels. Public mode is education-safe for screenshots.
+          </p>
+          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+            <button
+              type="button"
+              className={`btn-toggle${languageMode === "private" ? " on" : ""}`}
+              onClick={() => patch({ languageMode: "private" })}
+            >
+              Private
+            </button>
+            <button
+              type="button"
+              className={`btn-toggle${languageMode === "public" ? " on" : ""}`}
+              onClick={() => patch({ languageMode: "public" })}
+            >
+              Public
+            </button>
+          </div>
+
+          <h2>Capture thresholds</h2>
+          <p className="settings-desc">Minimum score for a signal to be saved as an alert. Use 80 for strong-only.</p>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+            <span className="settings-desc" style={{ margin: 0 }}>Momentum ≥</span>
+            <input className="input-sm" style={{ width: 64 }} value={minMomentum} onChange={(e) => setMinMomentum(e.target.value)} />
+            <span className="settings-desc" style={{ margin: 0 }}>Unusual ≥</span>
+            <input className="input-sm" style={{ width: 64 }} value={minUnusual} onChange={(e) => setMinUnusual(e.target.value)} />
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() => patch({ alertMinMomentumScore: Number(minMomentum), alertMinUnusualScore: Number(minUnusual) })}
+            >
+              Save thresholds
+            </button>
+          </div>
+
+          <h2>Notifications</h2>
+          <Toggle label="Browser popups" field="browser_popup_enabled" hint="Popup cards with Watch / Journal / Snooze" />
+          <Toggle label="Desktop notifications" field="desktop_notification_enabled" hint="Works with popup alerts from the scanner" />
           <Toggle label="Sound" field="sound_enabled" />
-          <div style={{ marginTop: 10 }}>
-            <div className="pill btn" onClick={testChannels}>Render test alert payloads</div>
+          <div style={{ marginTop: 12 }}>
+            <button type="button" className="btn-primary" onClick={testChannels}>
+              Preview test alert
+            </button>
           </div>
           {testPreview ? (
-            <pre style={{ fontSize: 10, background: "#0b0f14", padding: 10, borderRadius: 8, overflow: "auto", maxHeight: 220, marginTop: 10 }}>
+            <pre style={{ fontSize: 10, background: "#0b0f14", padding: 10, borderRadius: 8, overflow: "auto", maxHeight: 180, marginTop: 10 }}>
               {JSON.stringify({ private: testPreview.privatePopup, public: testPreview.publicAlert, discord: testPreview.discordPreview }, null, 2)}
             </pre>
           ) : null}
+
+          <p className="settings-desc" style={{ marginTop: 20 }}>
+            <Link href="/review" className="btn-link">
+              How the scanner works →
+            </Link>
+          </p>
         </div>
 
-        <div className="panel main" style={{ padding: 16 }}>
-          <h2 style={{ margin: "0 0 10px", fontSize: 15 }}>Discord (off by default)</h2>
-          <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
-            Webhook URL lives only in <code>.env.local</code> (<code>DISCORD_WEBHOOK_URL</code>) — never in the browser.
-            Status: <strong style={{ color: webhookConfigured ? "var(--green)" : "var(--amber)" }}>{webhookConfigured ? "configured" : "not configured"}</strong>.
-            All Discord messages use Public / Education wording and are safety-checked before sending.
+        <div className="panel main settings-panel">
+          <h2>Discord</h2>
+          <p className="settings-desc">
+            Webhook in <code>.env.local</code> only — never exposed to the browser.
+            Status:{" "}
+            <strong style={{ color: webhookConfigured ? "var(--green)" : "var(--amber)" }}>
+              {webhookConfigured ? "configured" : "not configured"}
+            </strong>
+          </p>
+          <Toggle label="Discord alerts" field="discord_enabled" hint="Master switch" />
+          <Toggle label="Manual confirmation" field="discord_requires_manual_confirm" hint="Review each alert before sending" />
+          <div className="settings-row">
+            <div className="settings-row-label">
+              Public wording for Discord
+              <div className="settings-row-hint">Always locked on — education-safe language</div>
+            </div>
+            <span className="btn-toggle on" style={{ cursor: "default" }}>
+              Locked
+            </span>
           </div>
-          <Toggle label="Discord alerts" field="discord_enabled" hint="Master switch — nothing is ever sent while this is off" />
-          <Toggle label="Require manual confirmation" field="discord_requires_manual_confirm" hint="Alerts queue below; you review + send each one yourself" />
-          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0" }}>
-            <div style={{ flex: 1, fontSize: 13 }}>Public wording required for Discord<div className="muted" style={{ fontSize: 11 }}>Locked on — Discord always uses education-mode language</div></div>
-            <div className="pill on">Locked On</div>
-          </div>
-          <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-            <div className="pill btn" onClick={testDiscord}>Send Discord test</div>
+          <div style={{ marginTop: 12 }}>
+            <button type="button" className="btn-primary" onClick={testDiscord}>
+              Send Discord test
+            </button>
           </div>
 
-          <h2 style={{ margin: "16px 0 10px", fontSize: 15 }}>Pending Discord alerts ({pending.length})</h2>
+          <h2>Pending Discord ({pending.length})</h2>
           {!pending.length ? (
-            <div className="muted" style={{ fontSize: 12 }}>Nothing waiting for confirmation.</div>
-          ) : pending.map((p) => {
-            let content = ""; try { content = JSON.parse(p.payload_json ?? "{}").content ?? ""; } catch { /* ignore */ }
-            return (
-              <div key={p.id} style={{ border: "1px solid rgba(120,140,160,.2)", borderRadius: 8, padding: 10, marginBottom: 8 }}>
-                <div style={{ fontSize: 11, whiteSpace: "pre-line", marginBottom: 8 }}>{content}</div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <div className="pill btn" onClick={() => confirmPending(p.id)}>Confirm &amp; send</div>
-                  <div className="pill btn" onClick={() => confirmPending(p.id, true)}>Discard</div>
+            <p className="settings-desc">Nothing waiting for confirmation.</p>
+          ) : (
+            pending.map((p) => {
+              let content = "";
+              try {
+                content = JSON.parse(p.payload_json ?? "{}").content ?? "";
+              } catch {
+                /* ignore */
+              }
+              return (
+                <div key={p.id} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: 10, marginBottom: 8 }}>
+                  <div style={{ fontSize: 11, whiteSpace: "pre-line", marginBottom: 8 }}>{content}</div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button type="button" className="btn-primary" onClick={() => confirmPending(p.id)}>
+                      Send
+                    </button>
+                    <button type="button" className="btn-toggle" onClick={() => confirmPending(p.id, true)}>
+                      Discard
+                    </button>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })
+          )}
         </div>
       </div>
 
-      <div className="footer">Settings · scanner alerts are research signals, never recommendations · not financial advice</div>
+      <div className="footer">Settings · alerts are research signals, never recommendations · not financial advice</div>
     </div>
   );
 }

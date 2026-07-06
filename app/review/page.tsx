@@ -8,6 +8,7 @@
  */
 
 import { SYSTEM_EXPLANATION as X } from "@/lib/system-explanation";
+import { AppNav } from "@/components/AppNav";
 
 const Section = ({ title, items }: { title: string; items: string[] }) => (
   <div className="panel main" style={{ padding: 16, marginBottom: 14 }}>
@@ -21,13 +22,7 @@ const Section = ({ title, items }: { title: string; items: string[] }) => (
 export default function ReviewPage() {
   return (
     <div className="app">
-      <div className="topbar">
-        <div className="logo"><span className="mark">O</span>OptiScan<small>how this scanner works</small></div>
-        <div className="spacer" />
-        <a className="pill btn" href="/alert-lab">Alert Lab</a>
-        <a className="pill btn" href="/settings">Settings</a>
-        <a className="pill btn" href="/">← Scanner</a>
-      </div>
+      <AppNav />
 
       <div className="panel main" style={{ padding: 16, marginBottom: 14 }}>
         <h2 style={{ margin: "0 0 8px", fontSize: 16 }}>{X.title}</h2>

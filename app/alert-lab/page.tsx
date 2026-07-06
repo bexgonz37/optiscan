@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { scanHeaders } from "@/hooks/useScanner";
+import { AppNav } from "@/components/AppNav";
 import { TickerIcon, GradeChip, ScoreBar } from "@/components/ui";
 import { changeColor, fmtPct, fmtPrice, fmtTime } from "@/lib/format";
 
@@ -148,17 +149,7 @@ export default function AlertLabPage() {
 
   return (
     <div className="app">
-      <div className="topbar">
-        <div className="logo">
-          <span className="mark">O</span>
-          OptiScan
-          <small>alert lab · signal research</small>
-        </div>
-        <div className="spacer" />
-        <div className="pill">{loading ? "Loading…" : `${alerts.length} alerts`}</div>
-        <div className="pill btn" onClick={refresh}>Refresh</div>
-        <a className="pill btn" href="/">← Scanner</a>
-      </div>
+      <AppNav status={[{ label: loading ? "Loading…" : `${alerts.length} alerts` }]} onRefresh={refresh} />
 
       {error && (
         <div className="kpi" style={{ marginBottom: 16, borderColor: "var(--amber)", background: "rgba(255,176,32,.06)" }}>

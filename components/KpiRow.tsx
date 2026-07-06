@@ -1,37 +1,31 @@
 "use client";
 
 import type { KpiSnapshot } from "@/hooks/useScanner";
-import { Sparkline } from "@/components/ui";
 
 export function KpiRow({
   kpi,
-  history,
   universeCount,
+  loopLive,
 }: {
   kpi: KpiSnapshot;
-  history: KpiSnapshot[];
   universeCount: number;
+  loopLive?: boolean;
 }) {
-  const series = (key: keyof KpiSnapshot) => history.map((h) => h[key]);
-
-  const cards = [
-    { label: "Signals", val: String(kpi.signals), sub: `${kpi.unusual} unusual hits`, key: "signals" as const, color: "#00d68f" },
-    { label: "Strong setups", val: String(kpi.strong), sub: "score ≥ 80", key: "strong" as const, color: "#ffb020" },
-    { label: "Avg signal", val: String(kpi.avgScore), sub: "momentum quality", key: "avgScore" as const, color: "#3ad0ff" },
-    { label: "Avg IV", val: `${kpi.avgIv}%`, sub: "implied volatility", key: "avgIv" as const, color: "#8b7dff" },
-    { label: "Scanned", val: String(kpi.scanned), sub: `of ${universeCount} universe`, key: "scanned" as const, color: "#00d68f" },
+  const items = [
+    { label: "Strong", val: String(kpi.strong), hint: "score ≥ 80" },
+    { label: "Signals", val: String(kpi.signals), hint: `${kpi.unusual} unusual` },
+    { label: "Avg score", val: String(kpi.avgScore), hint: "momentum" },
+    { label: "Scanned", val: String(kpi.scanned), hint: `of ${universeCount}` },
+    { label: "Loop", val: loopLive ? "Live" : "—", hint: loopLive ? "1s tape" : "offline", live: loopLive },
   ];
 
   return (
-    <div className="kpis">
-      {cards.map((c) => (
-        <div className="kpi" key={c.label}>
-          <div className="spark">
-            <Sparkline values={series(c.key)} color={c.color} />
-          </div>
-          <div className="label">{c.label}</div>
-          <div className="val num">{c.val}</div>
-          <div className="sub">{c.sub}</div>
+    <div className="stat-strip">
+      {items.map((c) => (
+        <div className="stat-item" key={c.label}>
+          <span className="stat-label">{c.label}</span>
+          <span className={`stat-val num${c.live ? " live" : ""}`}>{c.val}</span>
+          <span className="stat-hint">{c.hint}</span>
         </div>
       ))}
     </div>

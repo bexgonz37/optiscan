@@ -30,7 +30,7 @@ import {
   shouldTrigger, rankZeroDteContracts, expectedRemainingMovePct,
 } from "@/lib/zero-dte";
 import { getZeroDteUniverse, getZeroDteDiscoveryUniverse } from "@/lib/universe";
-import { tradingDay, minutesToClose, getDb } from "@/lib/db";
+import { tradingDay, minutesToClose } from "@/lib/trading-session";
 
 const LOOP_MS = Number(process.env.SCANNER_LOOP_MS ?? 1000);
 const ACTIVE_REFRESH_MS = Number(process.env.SCANNER_ACTIVE_REFRESH_MS ?? 7000);
@@ -181,6 +181,7 @@ async function refreshActiveAlerts(nowMs: number) {
     const chain: any = await fetchOptionChain(ticker, { dteMin: 0, dteMax: 1, maxPages: 1 });
     if (!chain?.available) continue;
     try {
+      const { getDb } = await import("@/lib/db");
       const db = getDb();
       const alert: any = db.prepare(
         "SELECT id, option_symbol FROM alerts WHERE ticker=? AND trading_day=? ORDER BY id DESC LIMIT 1",

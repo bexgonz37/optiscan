@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import type { Tab, FilterKey } from "@/components/Sidebar";
 
 const CHIPS: Record<Tab, { key: FilterKey; label: string }[]> = {
@@ -17,28 +18,40 @@ const CHIPS: Record<Tab, { key: FilterKey; label: string }[]> = {
 };
 
 export function Toolbar({
-  title,
   tab,
+  onTabChange,
   activeFilters,
   onToggle,
   onClear,
   loading,
   count,
+  search,
 }: {
-  title: string;
   tab: Tab;
+  onTabChange: (t: Tab) => void;
   activeFilters: FilterKey[];
   onToggle: (key: FilterKey) => void;
   onClear: () => void;
   loading: boolean;
   count: number;
+  search?: ReactNode;
 }) {
   const chips = CHIPS[tab];
   const noneActive = activeFilters.length === 0;
 
   return (
-    <div className="toolbar">
-      <h2>{title}</h2>
+    <div className="toolbar scanner-toolbar">
+      <div className="scanner-tabs">
+        <button type="button" className={`scanner-tab${tab === "momentum" ? " active" : ""}`} onClick={() => onTabChange("momentum")}>
+          Momentum
+        </button>
+        <button type="button" className={`scanner-tab${tab === "unusual" ? " active" : ""}`} onClick={() => onTabChange("unusual")}>
+          Unusual Flow
+        </button>
+      </div>
+
+      {search}
+
       <div className="chips">
         <span className={`chip ${noneActive ? "on" : ""}`} onClick={onClear}>
           All
@@ -53,9 +66,10 @@ export function Toolbar({
           </span>
         ))}
       </div>
+
       <div className="right">
-        <span className="live">
-          <span className={`dot ${loading ? "" : "off"}`} style={{ width: 6, height: 6 }} />
+        <span className="status-text">
+          <span className={`status-dot${loading ? " live" : ""}`} style={{ marginRight: 6 }} />
           {loading ? "scanning…" : `${count} shown`}
         </span>
       </div>

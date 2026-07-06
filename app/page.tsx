@@ -1,24 +1,25 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Sidebar, VIEWS } from "@/components/Sidebar";
-import type { Tab, FilterKey, View } from "@/components/Sidebar";
+import type { Tab, FilterKey } from "@/components/Sidebar";
 import { KpiRow } from "@/components/KpiRow";
 import { Toolbar } from "@/components/Toolbar";
 import { MomentumTable } from "@/components/MomentumTable";
 import { UnusualTable } from "@/components/UnusualTable";
 import { DetailPanel } from "@/components/DetailPanel";
 import { AlertPopup } from "@/components/AlertPopup";
-import { useScanner, requestNotifyPermission } from "@/hooks/useScanner";
+import { LiveMoversBoard } from "@/components/LiveMoversBoard";
+import { AppNav } from "@/components/AppNav";
+import { useScanner } from "@/hooks/useScanner";
 import { useToast } from "@/components/Toasts";
 import type { MomentumRow, UnusualRow } from "@/lib/types";
 import { fmtTime } from "@/lib/format";
-
-// Poll choices (seconds). Each scan costs ~24+ Polygon calls (candles + chain
-// per shortlisted symbol), so 1s "live" polling was never sustainable — free
-// tier is ~5 calls/min, and even paid tiers just re-serve the same cached scan.
-const REFRESH_CHOICES: readonly number[] = [15, 30, 60, 120];
-const DEFAULT_REFRESH_SEC = 30;
+import {
+  DEFAULT_REFRESH_SEC,
+  REFRESH_CHOICES,
+  loadDashboardPrefs,
+  saveDashboardPrefs,
+} from "@/lib/dashboard-prefs";
 
 function ivPct(iv: number | null | undefined): number {
   if (iv == null) return 0;
@@ -28,53 +29,47 @@ function ivPct(iv: number | null | undefined): number {
 export default function Page() {
   const { push } = useToast();
 
-  const [activeView, setActiveView] = useState("momentum");
   const [tab, setTab] = useState<Tab>("momentum");
   const [filters, setFilters] = useState<FilterKey[]>([]);
-  const [autoRefresh, setAutoRefresh] = useState(true);
   const [refreshSec, setRefreshSec] = useState<number>(DEFAULT_REFRESH_SEC);
   const [notifyEnabled, setNotifyEnabled] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [clock, setClock] = useState("");
+  const [loopLive, setLoopLive] = useState(false);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem("optiscan:prefs");
-      if (raw) {
-        const p = JSON.parse(raw);
-        if (typeof p.autoRefresh === "boolean") setAutoRefresh(p.autoRefresh);
-        if (typeof p.refreshSec === "number" && REFRESH_CHOICES.includes(p.refreshSec)) setRefreshSec(p.refreshSec);
-        if (typeof p.activeView === "string") {
-          const v = VIEWS.find((x) => x.id === p.activeView);
-          if (v) {
-            setActiveView(v.id);
-            setTab(v.tab);
-            setFilters(v.filters);
-          }
-        }
-      }
-    } catch {
-      /* ignore */
+    const p = loadDashboardPrefs();
+    if (p.tab === "momentum" || p.tab === "unusual") setTab(p.tab);
+    if (typeof p.refreshSec === "number" && (REFRESH_CHOICES as readonly number[]).includes(p.refreshSec)) {
+      setRefreshSec(p.refreshSec);
     }
+    if (typeof p.desktopAlerts === "boolean") setNotifyEnabled(p.desktopAlerts);
   }, []);
 
   useEffect(() => {
-    try {
-      localStorage.setItem("optiscan:prefs", JSON.stringify({ autoRefresh, activeView, refreshSec }));
-    } catch {
-      /* ignore */
-    }
-  }, [autoRefresh, activeView, refreshSec]);
+    saveDashboardPrefs({ tab, refreshSec, desktopAlerts: notifyEnabled });
+  }, [tab, refreshSec, notifyEnabled]);
 
   useEffect(() => {
     const tick = () =>
-      setClock(new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "America/New_York" }));
+      setClock(
+        new Date().toLocaleTimeString("en-US", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          timeZone: "America/New_York",
+        }),
+      );
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
+  }, []);
+
+  const onLoopStatus = useCallback((running: boolean) => {
+    setLoopLive(running);
   }, []);
 
   const onNewStrong = useCallback(
@@ -85,8 +80,8 @@ export default function Page() {
     [push],
   );
 
-  const { momentum, unusual, meta, loading, error, lastUpdated, kpi, kpiHistory, refresh } = useScanner({
-    autoRefresh,
+  const { momentum, unusual, meta, loading, error, lastUpdated, kpi, refresh } = useScanner({
+    autoRefresh: true,
     intervalSec: refreshSec,
     notifyEnabled,
     onNewStrong,
@@ -100,20 +95,12 @@ export default function Page() {
     }
   }, [error, push]);
 
-  function selectView(v: View) {
-    setActiveView(v.id);
-    setTab(v.tab);
-    setFilters(v.filters);
-  }
-
   function toggleFilter(key: FilterKey) {
-    setActiveView("custom");
     setFilters((f) => (f.includes(key) ? f.filter((x) => x !== key) : [...f, key]));
   }
 
   function clearFilters() {
     setFilters([]);
-    setActiveView(tab);
   }
 
   const filteredMomentum: MomentumRow[] = useMemo(() => {
@@ -144,7 +131,6 @@ export default function Page() {
     setDetailOpen(true);
   }, []);
 
-  // Keyboard: Cmd/Ctrl+K focus search, Esc closes, arrows navigate rows.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -159,138 +145,80 @@ export default function Page() {
           setQuery("");
           searchRef.current?.blur();
         }
-        return;
-      }
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-        if (document.activeElement === searchRef.current) return;
-        const rows = Array.from(document.querySelectorAll("tbody tr[data-sym]")) as HTMLElement[];
-        if (!rows.length) return;
-        const idx = rows.findIndex((r) => r.dataset.sym === selected);
-        const next = e.key === "ArrowDown" ? Math.min(idx + 1, rows.length - 1) : Math.max(idx - 1, 0);
-        const sym = rows[next]?.dataset.sym;
-        if (sym) {
-          onSelect(sym);
-          rows[next].scrollIntoView({ block: "nearest" });
-          e.preventDefault();
-        }
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [detailOpen, selected, onSelect]);
-
-  async function toggleNotify() {
-    if (!notifyEnabled) {
-      const ok = await requestNotifyPermission();
-      setNotifyEnabled(ok);
-      push(ok ? "Alerts enabled" : "Alerts blocked", ok ? "You'll get a desktop ping + sound on STRONG signals." : "Allow notifications in your browser to enable alerts.", ok ? "ok" : "err");
-    } else {
-      setNotifyEnabled(false);
-      push("Alerts off", "Desktop alerts disabled.", "info");
-    }
-  }
+  }, [detailOpen]);
 
   const keyPresent = meta?.keyPresent ?? false;
-  const title = VIEWS.find((v) => v.id === activeView)?.label ?? (tab === "momentum" ? "Momentum" : "Unusual Flow");
   const rowCount = tab === "momentum" ? filteredMomentum.length : filteredUnusual.length;
+  const updatedLabel = loading
+    ? "Scanning…"
+    : lastUpdated
+      ? `Updated ${fmtTime(new Date(lastUpdated).toISOString())}`
+      : "Waiting…";
 
   return (
     <div className="app">
-      <div className="topbar">
-        <div className="logo">
-          <span className="mark">O</span>
-          OptiScan
-          <small>options intelligence</small>
-        </div>
-
-        <div className="search">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8798a8" strokeWidth="2">
-            <circle cx="11" cy="11" r="7" />
-            <path d="m21 21-4-4" />
-          </svg>
-          <input
-            ref={searchRef}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search ticker  (⌘K)"
-          />
-        </div>
-
-        <div className="pill">
-          <span className={`dot ${loading ? "" : "off"}`} /> {loading ? "Scanning" : `Updated ${fmtTime(lastUpdated ? new Date(lastUpdated).toISOString() : null)}`}
-        </div>
-        <div className="pill">
-          <span className="num" style={{ color: "var(--txt)" }}>{clock || "--:--:--"} ET</span>
-        </div>
-
-        <div className="spacer" />
-
-        <div className="pill btn" onClick={refresh}>Refresh</div>
-        <div className={`pill btn ${autoRefresh ? "on" : ""}`} onClick={() => setAutoRefresh((v) => !v)}>
-          {autoRefresh ? `Live · ${refreshSec}s` : "Paused"}
-        </div>
-        {autoRefresh && (
-          <div
-            className="pill btn"
-            title="Poll interval"
-            onClick={() => {
-              const i = REFRESH_CHOICES.indexOf(refreshSec);
-              setRefreshSec(REFRESH_CHOICES[(i + 1) % REFRESH_CHOICES.length]);
-            }}
-          >
-            ⟳ {refreshSec}s
-          </div>
-        )}
-        <div className={`pill btn ${notifyEnabled ? "on" : ""}`} onClick={toggleNotify}>
-          {notifyEnabled ? "Alerts on" : "Alerts off"}
-        </div>
-        <a className="pill btn" href="/now">Now</a>
-        <a className="pill btn" href="/alert-lab">Alert Lab</a>
-        <a className="pill btn" href="/settings" title="Settings">⚙</a>
-      </div>
+      <AppNav
+        status={[
+          { label: clock ? `${clock} ET` : "—" },
+          { label: updatedLabel, live: loading },
+          { label: `Auto ${refreshSec}s`, live: true },
+        ]}
+        onRefresh={refresh}
+      />
 
       {!keyPresent && meta && (
-        <div className="kpi" style={{ marginBottom: 16, borderColor: "var(--amber)", background: "rgba(255,176,32,.06)" }}>
-          <div className="label" style={{ color: "var(--amber)" }}>Add your Polygon/Massive API key</div>
-          <div className="sub">
-            Set <code>POLYGON_API_KEY</code> in <code>.env.local</code> and restart. Until then the scanners have no live data.
-          </div>
+        <div className="banner-warn">
+          <strong>Add your Polygon API key</strong>
+          <span>
+            Set <code>POLYGON_API_KEY</code> in <code>.env.local</code> and restart.
+          </span>
         </div>
       )}
 
-      <KpiRow kpi={kpi} history={kpiHistory} universeCount={meta?.universeCount ?? 0} />
+      <KpiRow kpi={kpi} universeCount={meta?.universeCount ?? 0} loopLive={loopLive} />
 
-      <div className="layout">
-        <Sidebar
-          activeView={activeView}
-          onSelect={selectView}
-          counts={{ momentum: momentum.length, unusual: unusual.length, strong: kpi.strong }}
+      <LiveMoversBoard loopStatus={onLoopStatus} />
+
+      <section className="panel main section-scanner">
+        <Toolbar
+          tab={tab}
+          onTabChange={setTab}
+          activeFilters={filters}
+          onToggle={toggleFilter}
+          onClear={clearFilters}
+          loading={loading}
+          count={rowCount}
+          search={
+            <div className="search search-inline">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8798a8" strokeWidth="2">
+                <circle cx="11" cy="11" r="7" />
+                <path d="m21 21-4-4" />
+              </svg>
+              <input
+                ref={searchRef}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search ticker (⌘K)"
+              />
+            </div>
+          }
         />
+        {tab === "momentum" ? (
+          <MomentumTable rows={filteredMomentum} selected={selected} onSelect={onSelect} />
+        ) : (
+          <UnusualTable rows={filteredUnusual} selected={selected} onSelect={onSelect} />
+        )}
+      </section>
 
-        <div className="panel main">
-          <Toolbar
-            title={title}
-            tab={tab}
-            activeFilters={filters}
-            onToggle={toggleFilter}
-            onClear={clearFilters}
-            loading={loading}
-            count={rowCount}
-          />
-          {tab === "momentum" ? (
-            <MomentumTable rows={filteredMomentum} selected={selected} onSelect={onSelect} />
-          ) : (
-            <UnusualTable rows={filteredUnusual} selected={selected} onSelect={onSelect} />
-          )}
-        </div>
-
-        <DetailPanel symbol={selected} open={detailOpen} onClose={() => setDetailOpen(false)} />
-      </div>
-
+      <DetailPanel symbol={selected} open={detailOpen} onClose={() => setDetailOpen(false)} />
       <AlertPopup onOpenChain={onSelect} />
 
       <div className="footer">
-        OptiScan · signals only, no order placement · data: {meta?.provider ?? "polygon"} (delayed on free tiers) · not financial advice
+        OptiScan · signals for review only, not buy/sell instructions · not financial advice
       </div>
     </div>
   );

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { runScan } from "@/lib/scan-core";
 import { loopState } from "@/lib/scanner-loop";
 import { checkApiToken, unauthorized } from "@/lib/auth";
+import { ensureServerBoot } from "@/lib/server-boot";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,6 +12,7 @@ export const dynamic = "force-dynamic";
  * loop data updates every SCANNER_LOOP_MS without any extra API cost here. */
 export async function GET(req: Request) {
   if (!checkApiToken(req)) return unauthorized();
+  ensureServerBoot();
   try {
     const q = new URL(req.url).searchParams;
     const realtime = loopState();
