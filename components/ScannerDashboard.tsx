@@ -43,8 +43,11 @@ export function ScannerDashboard({
   const [loop, setLoop] = useState<any>(null);
   const [sortKey, setSortKey] = useState<WatchSortKey>("watch");
   const [sortDir, setSortDir] = useState<-1 | 1>(-1);
-  const [filter, setFilter] = useState<FilterKey>("all");
+  const [filter, setFilter] = useState<FilterKey>("fast");
   const [query, setQuery] = useState("");
+  const [paused, setPaused] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+  const [agoText, setAgoText] = useState("");
 
   const poll = useCallback(async () => {
     try {
@@ -53,16 +56,31 @@ export function ScannerDashboard({
       if (d?.ok) {
         setTape((d.realtime?.tape ?? d.realtime?.movers ?? []) as TapeRow[]);
         setLoop(d.realtime);
+        setUpdatedAt(Date.now());
         onLoopStatus?.(Boolean(d.realtime?.running));
       }
     } catch { /* best effort */ }
   }, [onLoopStatus]);
 
   useEffect(() => {
+    if (paused) return;
     poll();
-    const id = setInterval(poll, 4000);
+    // Match the 1s scanner loop — trades move fast. Pause freezes the table.
+    const id = setInterval(poll, 1000);
     return () => clearInterval(id);
-  }, [poll]);
+  }, [poll, paused]);
+
+  useEffect(() => {
+    const tick = () => {
+      if (updatedAt == null) { setAgoText(""); return; }
+      const ago = Math.round((Date.now() - updatedAt) / 1000);
+      // At a 1s cadence "updated 0s ago" is noise — only warn when we fall behind.
+      setAgoText(ago > 3 ? `updated ${ago}s ago` : "live · 1s refresh");
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [updatedAt]);
 
   const rows = useMemo(() => {
     const q = query.trim().toUpperCase();
@@ -108,8 +126,10 @@ export function ScannerDashboard({
           </p>
         </div>
         <div className="status-group">
-          <span className={`status-dot ${loop?.running ? "live" : ""}`} />
-          <span className="status-text">{loop?.running ? `${tape.length} symbols` : "Loop offline"}</span>
+          <span className={`status-dot ${loop?.running && !paused ? "live" : ""}`} />
+          <span className="status-text">
+            {paused ? "Paused" : loop?.running ? `${tape.length} symbols${agoText ? ` · ${agoText}` : ""}` : "Loop offline"}
+          </span>
         </div>
       </div>
 
@@ -118,19 +138,30 @@ export function ScannerDashboard({
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter ticker" />
         </div>
         <div className="mover-filters">
-          {chip("all", "All")}
           {chip("fast", "Fast ≥0.15%/m")}
+          {chip("all", "All")}
           {chip("aboveVwap", "Above VWAP")}
           {chip("belowVwap", "Below VWAP")}
           {chip("hod", "HOD break")}
           {chip("lod", "LOD break")}
+          <button
+            type="button"
+            className={`pill btn${paused ? " btn-primary" : ""}`}
+            style={{ fontSize: 11, padding: "4px 10px" }}
+            onClick={() => setPaused((v) => !v)}
+            title="Freeze the table so rows stop moving while you read"
+          >
+            {paused ? "▶ Resume" : "⏸ Pause"}
+          </button>
         </div>
       </div>
 
       {!rows.length ? (
         <div className="empty">
-          <div className="big">{loop?.running ? "Warming up tape…" : "Scanner offline"}</div>
-          {loop?.running ? "Symbols rank here once the loop has a few seconds of data." : "Start during market hours."}
+          <div className="big">{loop?.running ? (filter === "fast" ? "No fast movers right now" : "Warming up tape…") : "Scanner offline"}</div>
+          {loop?.running
+            ? (filter === "fast" ? "That's normal in quiet stretches — click All to see the full universe." : "Symbols rank here once the loop has a few seconds of data.")
+            : "Start during market hours."}
         </div>
       ) : (
         <div className="tablewrap scanner-table">

@@ -3,15 +3,19 @@
 /**
  * AlertPopup — real-time popup stack for newly captured scanner alerts.
  *
- * Private mode: one clear TRADE / WAIT / SKIP verdict with BUY CALL / BUY PUT.
- * Details (scores, explanation) are collapsed behind a toggle.
+ * Interrupts ONLY for confirmed trades: a popup fires only when the verdict —
+ * re-checked against the LIVE tape at this moment — is TRADE (BUY CALL /
+ * BUY PUT). WAIT and SKIP alerts never popup or beep; they live in the Alerts
+ * page history instead. While a popup is on screen its verdict keeps
+ * re-computing against the live tape, so a stalled move downgrades in place.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { scanHeaders } from "@/hooks/useScanner";
+import { useLiveTapeMap, liveCtxFor } from "@/hooks/useLiveTapeMap";
 import { changeColor, fmtPct } from "@/lib/format";
 import { TradeVerdictHero, useTradeVerdict } from "@/components/TradeVerdictHero";
-import { computeTradeVerdict } from "@/lib/trade-verdict";
+import { computeTradeVerdict, isTradeEligible } from "@/lib/trade-verdict";
 
 interface PopupAlert {
   id: number; ticker: string; direction: string | null; alert_type: string | null;
@@ -29,6 +33,7 @@ interface PopupAlert {
   zero_dte_contract_score: number | null;
   short_rate_at_alert: number | null; volume_surge_at_alert: number | null;
   risk_flags: string | null; options_pressure_label: string | null;
+  alert_tier: string | null;
 }
 
 const MOVE_STATUS_TEXT: Record<string, string> = {
@@ -39,7 +44,8 @@ const MOVE_STATUS_TEXT: Record<string, string> = {
 const LS_LAST_ID = "optiscan:popup:lastId";
 const LS_SNOOZE = "optiscan:popup:snooze";
 const SNOOZE_MS = 60 * 60 * 1000;
-const POLL_MS = 20_000;
+// Fast pickup — a BUY signal 20 seconds late is a missed entry on 0DTE.
+const POLL_MS = 5_000;
 const MAX_STACK = 3;
 
 function beep() {
@@ -65,21 +71,19 @@ function snoozeMap(): Record<string, number> {
 
 function AlertCard({
   a,
+  live,
   mode,
   onDismiss,
   onAct,
-  onOpenChain,
-  onOpenChart,
 }: {
   a: PopupAlert;
+  live: ReturnType<typeof liveCtxFor>;
   mode: "private" | "public";
   onDismiss: () => void;
   onAct: (action: string) => void;
-  onOpenChain?: (symbol: string) => void;
-  onOpenChart?: (symbol: string) => void;
 }) {
   const [showDetails, setShowDetails] = useState(false);
-  const verdict = useTradeVerdict(a);
+  const verdict = useTradeVerdict(a, live);
   const label = mode === "public" ? a.public_label : a.private_label;
   const explanation = mode === "public" ? a.public_explanation : a.ai_explanation;
   const btn = { fontSize: 11, padding: "4px 8px" } as const;
@@ -94,15 +98,15 @@ function AlertCard({
       </div>
 
       {mode === "private" ? (
-        <TradeVerdictHero alert={a} />
+        <TradeVerdictHero alert={a} live={live} />
       ) : (
         <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>{label ?? "Scanner Alert"}</div>
       )}
 
       <div className="muted" style={{ fontSize: 12, marginBottom: 6 }}>
-        <span style={{ color: changeColor(a.percent_move_at_alert) }}>{fmtPct(a.percent_move_at_alert)}</span>
+        <span style={{ color: changeColor(a.percent_move_at_alert) }}>Day {fmtPct(a.percent_move_at_alert)}</span>
+        {live?.shortRate != null ? ` · Speed now ${live.shortRate > 0 ? "+" : ""}${live.shortRate.toFixed(2)}%/min` : ""}
         {a.relative_volume != null ? ` · RVOL ${a.relative_volume}x` : ""}
-        {` · ${(a.catalyst_type ?? "no clear catalyst").replace(/_/g, " ")}`}
       </div>
 
       <button
@@ -138,7 +142,6 @@ function AlertCard({
         {verdict.action === "TRADE" ? (
           <button className="pill btn" style={btn} onClick={() => onAct("trade_taken")}>I took this trade</button>
         ) : null}
-        <button className="pill btn" style={btn} onClick={() => onAct("watch")}>Watch</button>
         <button className="pill btn" style={btn} onClick={() => onAct("journal")}>Journal</button>
         <button className="pill btn" style={btn} onClick={() => onAct("snooze")}>Snooze 1h</button>
         <button className="pill btn" style={btn} onClick={() => onAct("open_chain")}>Options chain</button>
@@ -162,6 +165,9 @@ export function AlertPopup({
   const [stack, setStack] = useState<PopupAlert[]>([]);
   const [mode, setMode] = useState<"private" | "public">("private");
   const settingsRef = useRef<any>({ browser_popup_enabled: 1, desktop_notification_enabled: 1, sound_enabled: 1 });
+  const tape = useLiveTapeMap(2000);
+  const tapeRef = useRef(tape);
+  tapeRef.current = tape;
 
   const logEvent = useCallback((alertId: number | null, ticker: string | null, action: string) => {
     fetch("/api/popup-events", {
@@ -194,7 +200,13 @@ export function AlertPopup({
 
       const snoozed = snoozeMap();
       const now = Date.now();
-      const show = fresh.filter((x) => !(snoozed[x.ticker] && now - snoozed[x.ticker] < SNOOZE_MS));
+      // Popups interrupt ONLY for a live-confirmed BUY CALL / BUY PUT.
+      // Research-tier alerts and WAIT/SKIP verdicts stay in the Alerts history.
+      const show = fresh.filter((x) =>
+        !(snoozed[x.ticker] && now - snoozed[x.ticker] < SNOOZE_MS) &&
+        x.alert_tier !== "research" &&
+        isTradeEligible(x, liveCtxFor(tapeRef.current, x.ticker)),
+      );
       if (!show.length) return;
 
       setStack((prev) => [...prev, ...show].slice(-MAX_STACK));
@@ -202,7 +214,7 @@ export function AlertPopup({
       if (settingsRef.current?.sound_enabled) beep();
       if (settingsRef.current?.desktop_notification_enabled && typeof Notification !== "undefined" && Notification.permission === "granted") {
         const latest = show[show.length - 1];
-        const v = computeTradeVerdict(latest);
+        const v = computeTradeVerdict(latest, liveCtxFor(tapeRef.current, latest.ticker));
         const title = langMode === "private" ? `${latest.ticker}: ${v.headline}` : `${latest.public_label ?? "Alert"}: ${latest.ticker}`;
         const body = langMode === "private" ? v.reason : `Setup ${Math.round(latest.signal_score ?? 0)}/100 · Risk ${Math.round(latest.risk_score ?? 0)}/100`;
         new Notification(title, { body, tag: `optiscan-${latest.id}` });
@@ -253,11 +265,10 @@ export function AlertPopup({
         <AlertCard
           key={a.id}
           a={a}
+          live={liveCtxFor(tape, a.ticker)}
           mode={mode}
           onDismiss={() => { logEvent(a.id, a.ticker, "ignore"); dismiss(a); }}
           onAct={(action) => act(a, action)}
-          onOpenChain={onOpenChain}
-          onOpenChart={onOpenChart}
         />
       ))}
     </div>

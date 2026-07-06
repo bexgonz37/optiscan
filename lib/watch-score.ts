@@ -68,7 +68,9 @@ export function sortTape(rows: TapeRow[], key: WatchSortKey, dir: -1 | 1): TapeR
   };
   scored.sort((a, b) => {
     if (key === "symbol") return a.r.symbol.localeCompare(b.r.symbol) * dir;
-    return (num(a.r, key) - num(b.r, key)) * dir;
+    const d = (num(a.r, key) - num(b.r, key)) * dir;
+    // Stable tie-break by symbol so rows don't jump around between refreshes.
+    return d !== 0 ? d : a.r.symbol.localeCompare(b.r.symbol);
   });
   return scored.map((x) => x.r);
 }
