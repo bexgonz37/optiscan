@@ -21,6 +21,7 @@ import { AccuracyCharts } from "@/components/AccuracyCharts";
 import { UsageGuide } from "@/components/UsageGuide";
 import { computeTradeVerdict, formatSpeedLine } from "@/lib/trade-verdict";
 import { calledAgoLabel, sideFromAlert, stillMovingStatus } from "@/lib/signal-live";
+import { earlyMoveWin, pickEarlyMove, EARLY_MOVE_WIN_PCT, EARLY_ON_TRACK_MIN_PCT } from "@/lib/early-accuracy";
 import { TickerIcon, GradeChip, ScoreBar } from "@/components/ui";
 import { changeColor, fmtPct, fmtPrice, fmtTime } from "@/lib/format";
 
@@ -282,7 +283,7 @@ export default function AlertLabPage() {
                   ) : null}
                 </div>
                 <div className="sub">
-                  Stock moved ≥1.5% the right way · {accuracy.liveOnTrackOfOpen ?? `${accuracy.todayOnTrack ?? 0} of ${accuracy.todayTracking ?? 0}`} still open
+                  Move within 5 min of call (≥{EARLY_ON_TRACK_MIN_PCT}% favorable) · {accuracy.liveOnTrackOfOpen ?? `${accuracy.todayOnTrack ?? 0} of ${accuracy.todayTracking ?? 0}`} still open
                   {accFilter === "on_track" ? " · filtered" : " · click to view list"}
                 </div>
               </button>
@@ -299,13 +300,11 @@ export default function AlertLabPage() {
                   <div className="sub">final grades at close</div>
                 </div>
                 <div className="kpi">
-                  <div className="label">Avg live stock move</div>
+                  <div className="label">Avg move @ 5m</div>
                   <div className="val num">
-                    {onTrackRows.length
-                      ? `${(onTrackRows.reduce((s: number, r: any) => s + (r.latest_max_move ?? 0), 0) / onTrackRows.length).toFixed(1)}%`
-                      : "—"}
+                    {accuracy.avgMove5m != null ? `${accuracy.avgMove5m.toFixed(2)}%` : "—"}
                   </div>
-                  <div className="sub">on-track callouts only</div>
+                  <div className="sub">right after the call (today&apos;s graded)</div>
                 </div>
               </div>
 
@@ -327,7 +326,12 @@ export default function AlertLabPage() {
                           <span className="tname">{row.ticker}</span>
                           <span className="muted">{calledAgoLabel(row.alert_time) ?? fmtTime(row.alert_time)}</span>
                           <span className="muted">BUY {side}</span>
-                          <span className="num" style={{ color: "var(--green)" }}>{fmtPct(row.latest_max_move)}</span>
+                          <span className="num" style={{ color: "var(--green)" }}>
+                            {fmtPct(row.move_5m ?? row.move_1m ?? row.latest_max_move)}
+                          </span>
+                          <span className="muted" style={{ fontSize: 10 }}>
+                            {row.move_5m != null ? "@ 5m" : row.move_1m != null ? "@ 1m" : "peak"}
+                          </span>
                         </button>
                       );
                     })}
@@ -340,6 +344,8 @@ export default function AlertLabPage() {
                   todayOnTrack: accuracy.todayOnTrack,
                   todayTotal: accuracy.todayTotal,
                   liveOnTrackPct: accuracy.liveOnTrackPct,
+                  earlyOnTrackMinPct: accuracy.earlyOnTrackMinPct ?? EARLY_ON_TRACK_MIN_PCT,
+                  avgMove5m: accuracy.avgMove5m,
                   overallHitRate: accuracy.overallHitRate ?? accuracy.hitRate,
                   dailyTrend: accuracy.dailyTrend,
                   bySide: accuracy.bySide,
@@ -351,7 +357,18 @@ export default function AlertLabPage() {
               </div>
               <div className="kpis" style={{ marginBottom: 14 }}>
                 <div className="kpi">
-                  <div className="label">Stock hit rate</div>
+                  <div className="label">Early hit rate (5m)</div>
+                  <div className="val num">
+                    {accuracy.earlyHitRate != null ? `${Math.round(accuracy.earlyHitRate * 100)}%` : "—"}
+                  </div>
+                  <div className="sub">
+                    {accuracy.earlyGraded
+                      ? `${accuracy.earlyWins} right · ${accuracy.earlyLosses} wrong @ 5m (≥${EARLY_MOVE_WIN_PCT}%)`
+                      : "grades when 5m checkpoint records"}
+                  </div>
+                </div>
+                <div className="kpi">
+                  <div className="label">Stock hit rate (EOD)</div>
                   <div className="val num">
                     {accuracy.hitRate != null ? `${Math.round(accuracy.hitRate * 100)}%` : "—"}
                   </div>
@@ -394,7 +411,7 @@ export default function AlertLabPage() {
               {!filteredAccuracyRows.length ? (
                 <div className="empty small">
                   {accFilter === "on_track"
-                    ? "No signals on track right now (need ≥1.5% favorable stock move)."
+                    ? "No callouts on track yet — need ≥0.5% favorable move within 5 min of call."
                     : accFilter !== "all"
                       ? "No signals match this filter."
                       : "No trade-tier signals recorded yet this period."}
@@ -423,7 +440,9 @@ export default function AlertLabPage() {
                         <th>Signal</th>
                         <th>Momentum</th>
                         <th>Speed @ fire</th>
-                        <th>Best stock move</th>
+                        <th>Move @ 1m</th>
+                        <th>Move @ 5m</th>
+                        <th>Peak move</th>
                         <th>Option entry → best</th>
                         <th>Option %</th>
                         <th>Stock</th>
@@ -438,6 +457,8 @@ export default function AlertLabPage() {
                         const win = done && row.is_false_positive === 0;
                         const loss = done && row.is_false_positive === 1;
                         const onTrack = row.live_on_track === 1 || row.live_on_track === true;
+                        const earlyWin = earlyMoveWin(row.move_5m);
+                        const early = pickEarlyMove(row);
                         const liveOptionPct =
                           row.option_return_pct ?? (row.entry_mid && row.best_mid
                             ? +(((row.best_mid - row.entry_mid) / row.entry_mid) * 100).toFixed(1)
@@ -476,7 +497,13 @@ export default function AlertLabPage() {
                                 ? `${row.short_rate_at_alert > 0 ? "+" : ""}${row.short_rate_at_alert.toFixed(2)}%/m`
                                 : "—"}
                             </td>
-                            <td className="num" style={{ color: changeColor(row.latest_max_move) }}>
+                            <td className="num" style={{ color: changeColor(row.move_1m) }}>
+                              {row.move_1m != null ? fmtPct(row.move_1m) : <span className="muted">pending</span>}
+                            </td>
+                            <td className="num" style={{ color: changeColor(row.move_5m) }}>
+                              {row.move_5m != null ? fmtPct(row.move_5m) : <span className="muted">pending</span>}
+                            </td>
+                            <td className="num muted" style={{ fontSize: 11 }}>
                               {fmtPct(row.latest_max_move)}
                             </td>
                             <td className="num muted" style={{ fontSize: 11 }}>
@@ -490,11 +517,15 @@ export default function AlertLabPage() {
                             <td>
                               {!done ? (
                                 onTrack
-                                  ? <span className="tag t-call">ON TRACK</span>
-                                  : <span className="tag t-vol">TRACKING</span>
+                                  ? <span className="tag t-call" title={early ? `@ ${early.checkpoint}` : ""}>ON TRACK</span>
+                                  : early?.move != null
+                                    ? <span className="tag t-vol">@{early.checkpoint} {fmtPct(early.move)}</span>
+                                    : <span className="tag t-vol">WAIT 5m</span>
                               )
-                                : win ? <span className="tag t-call">RIGHT</span>
-                                : loss ? <span className="tag t-put">WRONG</span>
+                                : earlyWin === true ? <span className="tag t-call">RIGHT @5m</span>
+                                : earlyWin === false ? <span className="tag t-put">WRONG @5m</span>
+                                : win ? <span className="tag t-call">RIGHT EOD</span>
+                                : loss ? <span className="tag t-put">WRONG EOD</span>
                                 : <span className="muted">—</span>}
                             </td>
                             <td>

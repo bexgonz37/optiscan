@@ -19,6 +19,7 @@ export function mapDailyTrendRow(row: {
   live_on_track?: number;
   tracking?: number;
   avg_max_move?: number | null;
+  avg_move_5m?: number | null;
 }) {
   const done = (row.wins ?? 0) + (row.losses ?? 0);
   const optDone = (row.option_wins ?? 0) + (row.option_losses ?? 0);
@@ -32,5 +33,6 @@ export function mapDailyTrendRow(row: {
     hitRate: done > 0 ? (row.wins ?? 0) / done : null,
     optionWinRate: optDone > 0 ? (row.option_wins ?? 0) / optDone : null,
     avgMaxMove: row.avg_max_move ?? null,
+    avgMove5m: row.avg_move_5m ?? null,
   };
 }

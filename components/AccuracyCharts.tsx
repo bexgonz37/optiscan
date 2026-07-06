@@ -21,6 +21,8 @@ export interface AccuracyChartData {
   todayTotal?: number;
   liveOnTrackPct?: number | null;
   overallHitRate?: number | null;
+  earlyOnTrackMinPct?: number;
+  avgMove5m?: number | null;
   dailyTrend?: {
     day: string;
     total: number;
@@ -53,6 +55,7 @@ export function AccuracyCharts({ data }: { data: AccuracyChartData }) {
     day: fmtDay(d.day),
     callouts: d.total,
     onTrack: d.liveOnTrack,
+    avg5m: (d as any).avg_move_5m ?? null,
   }));
 
   const hitLine = trend
@@ -123,7 +126,7 @@ export function AccuracyCharts({ data }: { data: AccuracyChartData }) {
           </PieChart>
         </ResponsiveContainer>
         <div className="muted" style={{ fontSize: 11, textAlign: "center" }}>
-          Stock moved ≥1.5% the signal&apos;s way
+          Stock move within 5 min of call (≥{data.earlyOnTrackMinPct ?? 0.5}% favorable)
         </div>
       </div>
 

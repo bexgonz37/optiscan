@@ -8,6 +8,22 @@
 
 import { getDb } from "@/lib/db";
 import { formatOnTrackRatio, mapDailyTrendRow, onTrackPct } from "./accuracy-ratios";
+import {
+  EARLY_1M_ON_TRACK_MIN_PCT,
+  EARLY_MOVE_WIN_PCT,
+  EARLY_ON_TRACK_MIN_PCT,
+} from "./early-accuracy";
+
+const SQL_MOVE_1M = `(SELECT p.percent_move_from_alert FROM alert_performance p WHERE p.alert_id = a.id AND p.checkpoint = '1m')`;
+const SQL_MOVE_3M = `(SELECT p.percent_move_from_alert FROM alert_performance p WHERE p.alert_id = a.id AND p.checkpoint = '3m')`;
+const SQL_MOVE_5M = `(SELECT p.percent_move_from_alert FROM alert_performance p WHERE p.alert_id = a.id AND p.checkpoint = '5m')`;
+
+function sqlEarlyOnTrack(): string {
+  return `(
+    COALESCE(${SQL_MOVE_5M}, -999) >= ${EARLY_ON_TRACK_MIN_PCT}
+    OR (${SQL_MOVE_5M} IS NULL AND COALESCE(${SQL_MOVE_1M}, -999) >= ${EARLY_1M_ON_TRACK_MIN_PCT})
+  )`;
+}
 
 export interface NewAlert {
   ticker: string;
@@ -364,10 +380,11 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
             SUM(CASE WHEN a.status = 'complete' AND a.is_false_positive = 0 THEN 1 ELSE 0 END) AS wins,
             SUM(CASE WHEN a.status = 'complete' AND a.is_false_positive = 1 THEN 1 ELSE 0 END) AS losses,
             SUM(CASE WHEN a.status = 'tracking' THEN 1 ELSE 0 END) AS tracking,
-            SUM(CASE WHEN a.status = 'tracking' AND COALESCE(
-              (SELECT p.max_percent_move_after_alert FROM alert_performance p
-               WHERE p.alert_id = a.id ORDER BY p.checked_at DESC LIMIT 1), 0) >= 1.5
-            THEN 1 ELSE 0 END) AS live_on_track,
+            SUM(CASE WHEN a.status = 'tracking' AND ${sqlEarlyOnTrack()} THEN 1 ELSE 0 END) AS live_on_track,
+            SUM(CASE WHEN ${SQL_MOVE_5M} >= ${EARLY_MOVE_WIN_PCT} THEN 1 ELSE 0 END) AS early_wins,
+            SUM(CASE WHEN ${SQL_MOVE_5M} IS NOT NULL AND ${SQL_MOVE_5M} < ${EARLY_MOVE_WIN_PCT} THEN 1 ELSE 0 END) AS early_losses,
+            SUM(CASE WHEN ${SQL_MOVE_5M} IS NOT NULL THEN 1 ELSE 0 END) AS early_graded,
+            AVG(CASE WHEN ${SQL_MOVE_5M} IS NOT NULL THEN ${SQL_MOVE_5M} END) AS avg_move_5m,
             AVG(CASE WHEN p.checkpoint = 'eod' THEN p.max_percent_move_after_alert END) AS avg_max_move,
             AVG(CASE WHEN p.checkpoint = 'eod' THEN p.percent_move_from_alert END) AS avg_eod_move,
             SUM(CASE WHEN a.option_outcome_win = 1 THEN 1 ELSE 0 END) AS option_wins,
@@ -406,10 +423,10 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
              WHERE s.alert_id = a.id AND s.checkpoint IN ('live','eod')) AS best_mid,
             (SELECT p.max_percent_move_after_alert FROM alert_performance p
              WHERE p.alert_id = a.id ORDER BY p.checked_at DESC LIMIT 1) AS latest_max_move,
-            CASE WHEN a.status = 'tracking' AND COALESCE(
-              (SELECT p.max_percent_move_after_alert FROM alert_performance p
-               WHERE p.alert_id = a.id ORDER BY p.checked_at DESC LIMIT 1), 0) >= 1.5
-            THEN 1 ELSE 0 END AS live_on_track,
+            ${SQL_MOVE_1M} AS move_1m,
+            ${SQL_MOVE_3M} AS move_3m,
+            ${SQL_MOVE_5M} AS move_5m,
+            CASE WHEN ${sqlEarlyOnTrack()} THEN 1 ELSE 0 END AS live_on_track,
             (SELECT p.percent_move_from_alert FROM alert_performance p
              WHERE p.alert_id = a.id AND p.checkpoint = 'eod') AS eod_move,
             (SELECT n.status FROM notification_events n
@@ -434,22 +451,21 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
              WHERE s.alert_id = a.id AND s.checkpoint IN ('live','eod')) AS best_mid,
             (SELECT p.max_percent_move_after_alert FROM alert_performance p
              WHERE p.alert_id = a.id ORDER BY p.checked_at DESC LIMIT 1) AS latest_max_move,
+            ${SQL_MOVE_1M} AS move_1m,
+            ${SQL_MOVE_3M} AS move_3m,
+            ${SQL_MOVE_5M} AS move_5m,
             EXISTS (SELECT 1 FROM notification_events n
                     WHERE n.alert_id = a.id AND n.channel = 'discord_webhook' AND n.status = 'sent') AS discord_sent
      FROM alerts a
      WHERE a.trading_day >= ? AND a.alert_tier = 'trade' AND a.status = 'tracking'
-       AND COALESCE(
-         (SELECT p.max_percent_move_after_alert FROM alert_performance p
-          WHERE p.alert_id = a.id ORDER BY p.checked_at DESC LIMIT 1), 0) >= 1.5
-     ORDER BY latest_max_move DESC LIMIT 50`,
+       AND ${sqlEarlyOnTrack()}
+     ORDER BY ${SQL_MOVE_5M} DESC, ${SQL_MOVE_1M} DESC LIMIT 50`,
   ).all(since);
 
   const todayOnTrack: any = db.prepare(
     `SELECT COUNT(*) AS cnt FROM alerts a
      WHERE a.trading_day = ? AND a.alert_tier = 'trade' AND a.status = 'tracking'
-       AND COALESCE(
-         (SELECT p.max_percent_move_after_alert FROM alert_performance p
-          WHERE p.alert_id = a.id ORDER BY p.checked_at DESC LIMIT 1), 0) >= 1.5`,
+       AND ${sqlEarlyOnTrack()}`,
   ).get(today);
 
   const completedToday: any = db.prepare(
@@ -464,10 +480,10 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
             SUM(CASE WHEN a.status = 'complete' AND a.is_false_positive = 0 THEN 1 ELSE 0 END) AS wins,
             SUM(CASE WHEN a.status = 'complete' AND a.is_false_positive = 1 THEN 1 ELSE 0 END) AS losses,
             SUM(CASE WHEN a.status = 'tracking' THEN 1 ELSE 0 END) AS tracking,
-            SUM(CASE WHEN a.status = 'tracking' AND COALESCE(
-              (SELECT p.max_percent_move_after_alert FROM alert_performance p
-               WHERE p.alert_id = a.id ORDER BY p.checked_at DESC LIMIT 1), 0) >= 1.5
-            THEN 1 ELSE 0 END) AS live_on_track,
+            SUM(CASE WHEN a.status = 'tracking' AND ${sqlEarlyOnTrack()} THEN 1 ELSE 0 END) AS live_on_track,
+            AVG(CASE WHEN ${SQL_MOVE_5M} IS NOT NULL THEN ${SQL_MOVE_5M} END) AS avg_move_5m,
+            SUM(CASE WHEN ${SQL_MOVE_5M} >= ${EARLY_MOVE_WIN_PCT} THEN 1 ELSE 0 END) AS early_wins,
+            SUM(CASE WHEN ${SQL_MOVE_5M} IS NOT NULL AND ${SQL_MOVE_5M} < ${EARLY_MOVE_WIN_PCT} THEN 1 ELSE 0 END) AS early_losses,
             SUM(CASE WHEN a.option_outcome_win = 1 THEN 1 ELSE 0 END) AS option_wins,
             SUM(CASE WHEN a.option_outcome_win = 0 THEN 1 ELSE 0 END) AS option_losses,
             AVG(CASE WHEN p.checkpoint = 'eod' THEN p.max_percent_move_after_alert END) AS avg_max_move
@@ -484,6 +500,8 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
   const todayOnTrackCount = todayOnTrack?.cnt ?? 0;
   const liveOnTrackPct = onTrackPct(todayOnTrackCount, todayTotal);
   const liveOnTrackOfOpenPct = onTrackPct(todayOnTrackCount, todayTracking);
+  const earlyGraded = (summary?.early_graded ?? 0) as number;
+  const earlyHitRate = earlyGraded > 0 ? (summary?.early_wins ?? 0) / earlyGraded : null;
 
   return {
     since,
@@ -502,6 +520,13 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
     liveOnTrackOfOpen: formatOnTrackRatio(todayOnTrackCount, todayTracking),
     liveOnTrackOfOpenPct,
     overallHitRate: hitRate,
+    earlyWins: summary?.early_wins ?? 0,
+    earlyLosses: summary?.early_losses ?? 0,
+    earlyGraded,
+    earlyHitRate,
+    avgMove5m: summary?.avg_move_5m ?? null,
+    earlyMoveWinPct: EARLY_MOVE_WIN_PCT,
+    earlyOnTrackMinPct: EARLY_ON_TRACK_MIN_PCT,
     discordSentCount: summary?.discord_sent_count ?? 0,
     hitRate,
     avgMaxMove: summary?.avg_max_move ?? null,
@@ -514,7 +539,7 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number } = {}
     recent,
     onTrackNow,
     dailyTrend,
-    note: "Tracks trade-tier BUY callouts only. LIVE columns update every second during the session. Final stock/option grades lock at market close.",
+    note: "Accuracy uses stock % move right after the call (1m/5m checkpoints). On-track = ≥0.5% favorable by 5m. Early win = ≥0.75% at 5m. EOD grades still finalize at close.",
   };
 }
 

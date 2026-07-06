@@ -49,7 +49,7 @@ export function UsageGuide({ page }: { page: "dashboard" | "scanner" | "alerts" 
       <li><strong>Called + momentum</strong> — each signal shows when it fired (e.g. 3m ago) and whether the stock is still moving, slowing, or stalled. The &quot;Called recently&quot; strip keeps the last 45 minutes.</li>
       <li><strong>Live updates</strong> — Right now, the scanner tape, popups, and Accuracy tab all refresh every second during market hours.</li>
           <li><strong>Popups</strong> — only fire for a live BUY CALL / BUY PUT. Everything else stays quiet in this page's history.</li>
-          <li><strong>Accuracy tab</strong> — tracks every trade-tier BUY callout: &quot;7 of 12 on track&quot; live, charts over time, final RIGHT/WRONG at close.</li>
+          <li><strong>Accuracy tab</strong> — tracks move right after each call (@ 1m / @ 5m), early hit rate at 5m, plus EOD final grades.</li>
           <li><strong>Discord</strong> — only extra-clear signals (≥82% confidence, ≥0.2%/min aligned speed). WAIT/SKIP never notify.</li>
       <li><strong>History and Journal tabs</strong> — past alerts (with the verdict then vs now), stats, and your personal trade log.</li>
     </ol>
