@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { scanHeaders } from "@/hooks/useScanner";
 import type { LiveTape, LiveTapeRow } from "@/hooks/useLiveTapeMap";
 import { liveCtxFor } from "@/hooks/useLiveTapeMap";
+import { TickerIcon } from "@/components/ui";
 import { TickerWithSparkline } from "@/components/TickerSparkline";
 import { useSparklines } from "@/hooks/useSparklines";
 import { TradeVerdictHero } from "@/components/TradeVerdictHero";
