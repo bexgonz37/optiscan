@@ -3,11 +3,14 @@
  */
 
 import { getZeroDteUniverse } from "./universe.js";
-import { fetchOptionChain, fetchQuote } from "./polygon-provider.js";
-import { ivToPct } from "./alert-scoring";
-import { cached } from "./scan-cache";
+import { fetchCandles, fetchOptionChain, fetchQuote } from "./polygon-provider.js";
+import { ivToPct } from "./alert-scoring.js";
+import { cached } from "./scan-cache.ts";
+import { keyLevels, type KeyLevel } from "./chart-indicators.ts";
+import { minutesToClose } from "./trading-session.ts";
 
 const STRIP_IV_TTL_MS = 90_000;
+const NEAR_LEVEL_PCT = 0.2;
 
 export function resolveZeroDteStripSymbols({
   chartSymbol = null,
@@ -22,22 +25,22 @@ export function resolveZeroDteStripSymbols({
 } = {}): string[] {
   const cap = Math.max(1, Math.min(max, 6));
   const norm = (s: string) => String(s ?? "").trim().toUpperCase();
-  const overrideList = (override ?? []).map(norm).filter(Boolean).slice(0, cap);
-
-  if (overrideList.length) {
-    const sel = chartSymbol ? norm(chartSymbol) : null;
-    if (sel && !overrideList.includes(sel)) return [sel, ...overrideList].slice(0, cap);
-    return overrideList;
-  }
-
   const out: string[] = [];
+
   const sel = chartSymbol ? norm(chartSymbol) : null;
   if (sel) out.push(sel);
+
+  for (const sym of (override ?? []).map(norm).filter(Boolean)) {
+    if (out.length >= cap) break;
+    if (!out.includes(sym)) out.push(sym);
+  }
+
   for (const sym of universe) {
     if (out.length >= cap) break;
     const u = norm(sym);
     if (u && !out.includes(u)) out.push(u);
   }
+
   return out.slice(0, cap);
 }
 
@@ -59,28 +62,100 @@ export function atmIvFromContracts(contracts: any[], spot: number | null): numbe
   return iv != null ? Math.round(iv) : null;
 }
 
-export async function fetchStripAtmIv(symbol: string): Promise<{ symbol: string; price: number | null; atmIv: number | null; error?: string }> {
+export function nearestKeyLevel(
+  price: number | null,
+  levels: KeyLevel[],
+): { label: string; price: number; distPct: number } | null {
+  if (price == null || !Number.isFinite(price) || price <= 0 || !levels.length) return null;
+  let best: { label: string; price: number; distPct: number } | null = null;
+  let bestDist = Infinity;
+  for (const l of levels) {
+    const distPct = (Math.abs(l.price - price) / price) * 100;
+    if (distPct < bestDist) {
+      bestDist = distPct;
+      best = { label: l.label, price: l.price, distPct: +distPct.toFixed(3) };
+    }
+  }
+  return best;
+}
+
+export function stripNearLevel(distPct: number | null, threshold = NEAR_LEVEL_PCT): boolean {
+  return distPct != null && distPct <= threshold;
+}
+
+function quotePrice(quoteRes: any): number | null {
+  const q = quoteRes?.quote ?? quoteRes;
+  const p = q?.price ?? q?.last ?? null;
+  return p != null && Number.isFinite(p) ? p : null;
+}
+
+async function fetchStripLevels(symbol: string, spot: number | null, nowMs: number) {
+  const levels: KeyLevel[] = await cached(`strip-lvl:${symbol}`, STRIP_IV_TTL_MS, async () => {
+    const candles = await fetchCandles(symbol, { resolution: "1", timespan: "minute", days: 1 }).catch(() => null);
+    const bars = candles?.available ? candles.bars ?? [] : [];
+    return keyLevels(bars);
+  });
+  const nearest = nearestKeyLevel(spot, levels);
+  const mins = minutesToClose(nowMs);
+  return {
+    nearestLevelLabel: nearest?.label ?? null,
+    nearestLevelDistPct: nearest?.distPct ?? null,
+    nearLevel: stripNearLevel(nearest?.distPct ?? null),
+    minutesToClose: mins,
+  };
+}
+
+export interface StripRow {
+  symbol: string;
+  price: number | null;
+  atmIv: number | null;
+  nearestLevelLabel?: string | null;
+  nearestLevelDistPct?: number | null;
+  nearLevel?: boolean;
+  minutesToClose?: number | null;
+  error?: string;
+}
+
+export async function fetchStripAtmIv(symbol: string, nowMs = Date.now()): Promise<StripRow> {
   const sym = String(symbol).toUpperCase();
   return cached(`strip-iv:${sym}`, STRIP_IV_TTL_MS, async () => {
     const [quoteRes, chainRes]: any[] = await Promise.all([
       fetchQuote(sym).catch(() => null),
-      fetchOptionChain(sym, { dteMin: 0, dteMax: 1, maxPages: 1 }).catch(() => null),
+      fetchOptionChain(sym, { dteMin: 0, dteMax: 1, maxPages: 3 }).catch(() => null),
     ]);
-    const price = quoteRes?.price ?? quoteRes?.last ?? null;
+    const price = quotePrice(quoteRes);
     let chain = chainRes;
     if (!chain?.available || !chain?.contracts?.length) {
-      chain = await fetchOptionChain(sym, { dteMin: 0, dteMax: 5, maxPages: 1 });
+      chain = await fetchOptionChain(sym, { dteMin: 0, dteMax: 5, maxPages: 3 });
     }
+    const spot = price ?? chain?.contracts?.[0]?.underlyingPrice ?? null;
+    const levelCtx = await fetchStripLevels(sym, spot, nowMs).catch(() => ({
+      nearestLevelLabel: null,
+      nearestLevelDistPct: null,
+      nearLevel: false,
+      minutesToClose: minutesToClose(nowMs),
+    }));
+
     if (!chain?.available) {
-      return { symbol: sym, price, atmIv: null, error: chain?.note ?? "chain unavailable" };
+      return {
+        symbol: sym,
+        price: spot,
+        atmIv: null,
+        error: chain?.note ?? "chain unavailable",
+        ...levelCtx,
+      };
     }
-    const spot = price ?? chain.contracts?.[0]?.underlyingPrice ?? null;
-    return { symbol: sym, price: spot, atmIv: atmIvFromContracts(chain.contracts ?? [], spot) };
+    return {
+      symbol: sym,
+      price: spot,
+      atmIv: atmIvFromContracts(chain.contracts ?? [], spot),
+      ...levelCtx,
+    };
   });
 }
 
-export async function fetchStripContext(symbols: string[]) {
+export async function fetchStripContext(symbols: string[], nowMs = Date.now()) {
   const uniq = Array.from(new Set(symbols.map((s) => String(s).toUpperCase()).filter(Boolean))).slice(0, 6);
-  const rows = await Promise.all(uniq.map((s) => fetchStripAtmIv(s)));
+  const rows = await Promise.all(uniq.map((s) => fetchStripAtmIv(s, nowMs)));
   return { symbols: uniq, rows };
 }

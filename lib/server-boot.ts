@@ -21,9 +21,9 @@ export function ensureServerBoot(): void {
   }
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const cleared = require("@/lib/notifications").ensureDiscordPendingCleared();
-    if (cleared > 0) console.info(`[discord] cleared ${cleared} stale pending_confirm event(s)`);
+    const cleared = require("@/lib/notifications").enforceDiscordAutoSend();
+    if (cleared > 0) console.info(`[discord] auto-send enforced; cleared ${cleared} pending_confirm event(s)`);
   } catch (err) {
-    console.warn("[discord] pending cleanup skipped:", (err as Error)?.message);
+    console.warn("[discord] auto-send enforcement skipped:", (err as Error)?.message);
   }
 }

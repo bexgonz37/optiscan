@@ -82,6 +82,7 @@ export function UnusualTable({
             <Th k="iv" label="IV" />
             <Th k="dte" label="DTE" />
             <Th k="score" label="Signal" />
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -89,8 +90,9 @@ export function UnusualTable({
             <tr
               key={`${r.symbol}-${r.optionSymbol ?? `${r.side}${r.strike}${r.expiration}`}`}
               data-sym={r.symbol ?? ""}
-              className={selected === r.symbol ? "sel" : ""}
+              className={`clickable${selected === r.symbol ? " sel" : ""}`}
               onClick={() => r.symbol && onSelect(r.symbol)}
+              title="Open live chart"
             >
               <td>
                 <div className="tkr">
@@ -132,6 +134,11 @@ export function UnusualTable({
                   <ScoreBar score={r.score} />
                   <GradeChip grade={r.grade} />
                 </div>
+              </td>
+              <td onClick={(ev) => ev.stopPropagation()}>
+                <button type="button" className="pill btn btn-xs" onClick={() => r.symbol && onSelect(r.symbol)}>
+                  Chart
+                </button>
               </td>
             </tr>
           ))}

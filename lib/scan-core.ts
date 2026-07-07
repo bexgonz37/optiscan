@@ -46,6 +46,23 @@ import type {
   ScanResult,
   SymbolDetail,
 } from "@/lib/types";
+import { buildVerdictPreview } from "@/lib/verdict-preview";
+import { loopState } from "@/lib/scanner-loop";
+
+function liveTapeContext(symbol: string) {
+  try {
+    const row = loopState().tape?.find((r: any) => r?.symbol === symbol);
+    if (!row) return null;
+    return {
+      shortRate: row.shortRate ?? null,
+      surge: row.surge ?? null,
+      price: row.price ?? null,
+      direction: row.direction ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
 
 interface ScanConfig {
   shortlist: number;
@@ -147,6 +164,11 @@ async function enrichSymbol(symbol: string, quote: any, maxAgeMs: number): Promi
         reasons: opt.reasons ?? [],
         warnings: opt.warnings ?? mom.warnings ?? [],
       };
+      momentumRow.verdictPreview = buildVerdictPreview({
+        symbol,
+        momentum: momentumRow,
+        live: liveTapeContext(symbol),
+      });
 
       return {
         symbol,
@@ -309,6 +331,11 @@ export async function scanSymbol(symbolRaw: string): Promise<SymbolDetail> {
   const quote = qRes?.quote ?? { symbol };
   const e = await enrichSymbol(symbol, quote, cfg.cacheTtlMs);
   if (e.error) base.errors.push({ symbol, message: e.error });
+  const verdictPreview = buildVerdictPreview({
+    symbol,
+    momentum: e.momentum,
+    live: liveTapeContext(symbol),
+  });
 
   return {
     ...base,
@@ -316,6 +343,7 @@ export async function scanSymbol(symbolRaw: string): Promise<SymbolDetail> {
     momentum: e.momentum,
     unusual: e.unusual,
     contracts: e.contracts,
+    verdictPreview,
   };
 }
 

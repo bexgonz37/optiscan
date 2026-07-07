@@ -4,13 +4,10 @@ import { Suspense, useCallback, useEffect, useState } from "react";
 import { AppNav } from "@/components/AppNav";
 import { CompactStatusLine } from "@/components/CompactStatusLine";
 import { LivePageTabs } from "@/components/LivePageTabs";
-import { ChartPanel } from "@/components/ChartPanel";
-import { ZeroDteStrip } from "@/components/ZeroDteStrip";
 import { useScannerStream } from "@/hooks/useScannerStream";
+import { openLiveChart } from "@/lib/open-chart";
 
 function LivePageInner() {
-  const [chartSymbol, setChartSymbol] = useState<string | null>(null);
-  const [chartOpen, setChartOpen] = useState(false);
   const [clock, setClock] = useState("");
   const [loopLive, setLoopLive] = useState(false);
   const { freshness: streamFreshness } = useScannerStream();
@@ -28,19 +25,14 @@ function LivePageInner() {
   }, []);
 
   const onOpenChart = useCallback((symbol: string) => {
-    setChartSymbol(symbol);
-    setChartOpen(true);
+    openLiveChart(symbol);
   }, []);
 
   return (
     <>
       <CompactStatusLine loopLive={loopLive} clock={clock} streamFreshness={streamFreshness} />
 
-      <ZeroDteStrip chartSymbol={chartSymbol} onSelect={onOpenChart} />
-
       <LivePageTabs onOpenChart={onOpenChart} onLoopStatus={setLoopLive} />
-
-      <ChartPanel symbol={chartSymbol} open={chartOpen} onClose={() => setChartOpen(false)} />
     </>
   );
 }
@@ -55,7 +47,7 @@ export default function Page() {
       </Suspense>
 
       <div className="footer">
-        OptiScan · Live watchlist · trade callouts on Alerts
+        OptiScan · 0DTE fast movers · callouts on Alerts
       </div>
     </div>
   );

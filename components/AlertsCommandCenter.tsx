@@ -22,9 +22,10 @@ import { TradeVerdictHero } from "@/components/TradeVerdictHero";
 import { computeTradeVerdict, MIN_SPEED_PCT_PER_MIN, type TradeVerdict } from "@/lib/trade-verdict";
 import { calledAgoLabel, calledAgoLong, sideFromAlert, stillMovingStatus } from "@/lib/signal-live";
 import { useStableSymbolOrder } from "@/lib/stable-order";
-import { fmtPct, fmtPrice, pctClass } from "@/lib/format";
+import { fmtPct, fmtPrice, fmtTime, pctClass } from "@/lib/format";
 import { sessionGroupLabel } from "@/lib/language-modes";
 import { groupAlertsBySession } from "@/lib/alert-session-groups";
+import { marketSession, tradingDay } from "@/lib/trading-session";
 
 interface Entry {
   symbol: string;
@@ -61,28 +62,47 @@ function isRightNowEntry(e: Entry): boolean {
 export function AlertsCommandCenter({
   tape,
   onOpenChart,
+  recentAlerts = [],
+  totalAlerts = 0,
+  accuracySummary,
+  onViewHistory,
 }: {
   tape: LiveTape;
   onOpenChart?: (symbol: string) => void;
+  recentAlerts?: any[];
+  totalAlerts?: number;
+  accuracySummary?: any;
+  onViewHistory?: () => void;
 }) {
-  const [alerts, setAlerts] = useState<Map<string, any>>(new Map());
-  const [recentCalls, setRecentCalls] = useState<any[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [session, setSession] = useState<ReturnType<typeof marketSession> | null>(null);
   const [showAll, setShowAll] = useState(false);
   const [paused, setPaused] = useState(false);
   const pollInFlight = useRef(false);
+
+  useEffect(() => {
+    const update = () => setSession(marketSession());
+    update();
+    const id = setInterval(update, 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const [alerts, setAlerts] = useState<Map<string, any>>(new Map());
+  const [recentCalls, setRecentCalls] = useState<any[]>([]);
+  const [selected, setSelected] = useState<string | null>(null);
+
+  const marketClosed = session === "closed";
 
   const pollAlerts = useCallback(async () => {
     if (pollInFlight.current) return;
     pollInFlight.current = true;
     try {
-      const today = new Date().toISOString().slice(0, 10);
+      const today = tradingDay();
       const res = await fetch(`/api/alerts?date=${today}&limit=100`, { cache: "no-store", headers: scanHeaders() });
       const d = await res.json();
       const nowMs = Date.now();
       const map = new Map<string, any>();
       const recent: any[] = [];
-      const recentCutoff = nowMs - RECENT_CALLS_WINDOW_MS;
+      const recentCutoff = nowMs - (marketClosed ? 24 * 60 * 60_000 : RECENT_CALLS_WINDOW_MS);
       for (const a of d.alerts ?? []) {
         const t = Date.parse(a.alert_time ?? "");
         if (Number.isFinite(t) && t >= recentCutoff) recent.push(a);
@@ -112,7 +132,7 @@ export function AlertsCommandCenter({
       });
     } catch { /* best effort */ }
     finally { pollInFlight.current = false; }
-  }, []);
+  }, [marketClosed]);
 
   useEffect(() => {
     pollAlerts();
@@ -179,13 +199,29 @@ export function AlertsCommandCenter({
   const heroTape = hero?.tapeRow ?? null;
   const tradeCount = entries.filter((e) => e.rank === 0).length;
 
+  const sessionRecap = useMemo(() => {
+    const seen = new Set<string>();
+    const out: any[] = [];
+    for (const a of recentAlerts) {
+      if (seen.has(a.ticker)) continue;
+      seen.add(a.ticker);
+      out.push(a);
+      if (out.length >= 20) break;
+    }
+    return out;
+  }, [recentAlerts]);
+
+  const hitRatePct = accuracySummary?.overallHitRate != null
+    ? Math.round(accuracySummary.overallHitRate * 100)
+    : null;
+
   return (
     <section className="panel main section-live">
       <div className="section-header">
         <div>
-          <h2 className="section-title">Right now</h2>
+          <h2 className="section-title">Live callouts</h2>
           <p className="section-sub">
-            Live BUY signals only — stocks moving the right way this second. Updates every second. Older setups are in History.
+            BUY CALL when moving up · BUY PUT when moving down. Updates every second during market hours.
           </p>
         </div>
         <div className="status-group">
@@ -250,17 +286,96 @@ export function AlertsCommandCenter({
         </div>
       ) : (
         <div className="empty acc-hero-empty">
-          <div className="big">{tape.running ? "No trade signal right now" : "Scanner is off"}</div>
-          {tape.running
-            ? "That's normal — most of the day is waiting. Names appear below as they start moving."
-            : "Start the app during market hours to see live signals."}
+          <div className="big">
+            {marketClosed
+              ? "Market closed — no live callouts"
+              : tape.running
+                ? "No trade signal right now"
+                : "Scanner is off"}
+          </div>
+          {marketClosed ? (
+            <>
+              Live BUY CALL/PUT only fires 9:30–4 ET. Your scanner has logged{" "}
+              <strong>{totalAlerts || sessionRecap.length || "—"}</strong> callouts — see recap below or open Accuracy.
+            </>
+          ) : tape.running ? (
+            "That's normal — most of the day is waiting. Names appear below as they start moving."
+          ) : (
+            "Start the app during market hours to see live signals."
+          )}
+          {onViewHistory && (totalAlerts > 0 || sessionRecap.length > 0) ? (
+            <button type="button" className="pill btn btn-primary" style={{ marginTop: 12 }} onClick={onViewHistory}>
+              View accuracy history{hitRatePct != null ? ` (${hitRatePct}% EOD hit rate)` : ""} →
+            </button>
+          ) : null}
         </div>
       )}
       </div>
 
-      {/* Single ranked list */}
+      {(marketClosed || !displayEntries.length) && sessionRecap.length > 0 ? (
+        <div className="acc-session-recap" style={{ marginTop: marketClosed ? 0 : 16, marginBottom: 16 }}>
+          <div className="acc-list-header">
+            <span className="section-title" style={{ fontSize: 14 }}>
+              {marketClosed ? "Last session" : "Recent callouts"} ({sessionRecap.length}{totalAlerts > sessionRecap.length ? ` of ${totalAlerts}` : ""})
+            </span>
+            {onViewHistory ? (
+              <button type="button" className="pill btn btn-xs" onClick={onViewHistory}>
+                Full history →
+              </button>
+            ) : null}
+          </div>
+          <p className="muted text-sm" style={{ margin: "0 0 10px" }}>
+            {marketClosed
+              ? "Like Robinhood's activity feed — what the scanner flagged last, with outcome. Live callouts return at 9:30 ET."
+              : "Verdict at alert time. Live list above updates every second during market hours."}
+          </p>
+          <div className="tablewrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Ticker</th>
+                  <th>When</th>
+                  <th>Callout</th>
+                  <th>Day move</th>
+                  <th>Peak move</th>
+                  <th>Status</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {sessionRecap.map((a) => {
+                  const v = computeTradeVerdict(a);
+                  const side = String(a.option_side ?? "").toLowerCase().startsWith("p") ? "PUT" : "CALL";
+                  const peak = a.latest_max_move ?? a.eod_move;
+                  return (
+                    <tr key={a.id} className="clickable" onClick={() => pick(a.ticker)}>
+                      <td><div className="tkr"><TickerIcon symbol={a.ticker} /><span className="tname">{a.ticker}</span></div></td>
+                      <td className="muted text-xs">{fmtTime(a.alert_time)}</td>
+                      <td>
+                        <span className={`badge ${v.action === "TRADE" ? (side === "PUT" ? "t-put" : "t-call") : ""}`}>
+                          {v.headline}
+                        </span>
+                      </td>
+                      <td className={`num ${pctClass(a.percent_move_at_alert)}`}>{fmtPct(a.percent_move_at_alert)}</td>
+                      <td className={`num ${pctClass(peak)}`}>{peak != null ? fmtPct(peak) : "—"}</td>
+                      <td className="muted text-xs">{a.status ?? "—"}</td>
+                      <td onClick={(ev) => ev.stopPropagation()}>
+                        <button type="button" className="pill btn btn-xs" onClick={() => pick(a.ticker)}>Chart</button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Single ranked list — live only during market hours */}
+      {marketClosed ? null : (
+      <>
       <div className="acc-list-header">
-        <span className="muted text-sm">Click a row to load it above and open the chart.</span>
+        <span className="muted text-sm">Click a row for chart · TRADE callouts only (toggle for WAIT setups).</span>
         <div className="btn-row gap-2">
           <button
             type="button"
@@ -279,7 +394,11 @@ export function AlertsCommandCenter({
       <div className="table-area">
       {!displayEntries.length ? (
         <div className="empty small table-empty">
-          {tape.running ? "Nothing live right now — a BUY appears here the moment a stock is moving fast enough." : "Scanner offline."}
+          {marketClosed
+            ? "Nothing live while the market is closed."
+            : tape.running
+              ? "Nothing live right now — a BUY appears here the moment a ticker is moving fast enough."
+              : "Scanner offline."}
         </div>
       ) : (
         <div className="tablewrap">
@@ -400,6 +519,9 @@ export function AlertsCommandCenter({
           ))}
         </div>
       ) : null}
+
+      </>
+      )}
     </section>
   );
 }

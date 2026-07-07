@@ -40,6 +40,7 @@ export interface MomentumRow {
   reason: string;
   reasons: string[];
   warnings: string[];
+  verdictPreview?: import("./verdict-preview").VerdictPreviewResult | null;
 }
 
 export interface UnusualRow {
@@ -95,4 +96,5 @@ export interface SymbolDetail extends ScanMeta {
   momentum: MomentumRow | null;
   unusual: UnusualRow[];
   contracts: OptionContract[];
+  verdictPreview?: import("./verdict-preview").VerdictPreviewResult | null;
 }

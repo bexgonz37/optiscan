@@ -252,7 +252,7 @@ export function hasContextSpeed(a: AlertVerdictInput): boolean {
 
 /** One-call helper for popup / Discord / UI filters: should this interrupt the user? */
 export function isTradeEligible(a: AlertVerdictInput, live?: LiveTapeContext, nowMs: number = Date.now()): boolean {
-  if (isStockAlert(a)) return String(a.capture_action ?? "").toUpperCase() === "TRADE";
+  if (isStockAlert(a)) return false;
   // 0DTE popups/notifications are an RTH product — never interrupt after the close.
   if (!isOptionsSession(nowMs)) return false;
   return computeTradeVerdict(a, live).action === "TRADE";
@@ -428,7 +428,7 @@ export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext
         hasSpeedProof: false,
       };
     }
-    const headline = side === "CALL" ? "Buy call option ↑" : side === "PUT" ? "Buy put option ↓" : "TRADE";
+    const headline = side === "CALL" ? "BUY CALL" : side === "PUT" ? "BUY PUT" : "TRADE";
     const confidence = Math.round(setup * 0.35 + worth * 0.35 + contract * 0.2 + (100 - risk) * 0.1);
     return {
       action: "TRADE",

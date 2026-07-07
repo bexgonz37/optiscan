@@ -12,9 +12,9 @@ const ITEMS = [
 ] as const;
 
 const SESSION_HINT: Record<MarketSession, string> = {
-  regular: "Options mode",
-  premarket: "Shares mode",
-  afterhours: "Shares mode",
+  regular: "0DTE live",
+  premarket: "Callouts 9:30 ET",
+  afterhours: "Callouts 9:30 ET",
   closed: "Closed",
 };
 

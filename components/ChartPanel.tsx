@@ -15,7 +15,9 @@ import {
   type LogicalRange,
 } from "lightweight-charts";
 import { scanHeaders } from "@/hooks/useScanner";
-import { fmtPrice, fmtPct, fmtInt, pctClass } from "@/lib/format";
+import { liveCtxFor, useLiveTapeMap } from "@/hooks/useLiveTapeMap";
+import { VerdictPreviewBlock } from "@/components/VerdictPreviewBlock";
+import { fmtPrice, fmtPct, fmtInt, pctClass, fmtPremium, fmtNum } from "@/lib/format";
 import {
   CHART_TIMEFRAMES,
   CHART_INDICATORS,
@@ -50,6 +52,8 @@ const INDICATOR_LABELS: Record<ChartIndicator, string> = {
 };
 
 const MOBILE_MAX = 768;
+/** Refresh candle data while the drawer is open. */
+const CHART_LIVE_POLL_MS = 30_000;
 
 function cssVar(name: string, fallback: string): string {
   if (typeof window === "undefined") return fallback;
@@ -273,6 +277,23 @@ export function ChartPanel({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reality, setReality] = useState<any>(null);
+  const [verdictPreview, setVerdictPreview] = useState<any>(null);
+  const [candleUpdatedAt, setCandleUpdatedAt] = useState<number | null>(null);
+  const tape = useLiveTapeMap();
+  const liveRow = symbol ? tape.map.get(symbol) : undefined;
+
+  useEffect(() => {
+    if (!open || !symbol) {
+      setVerdictPreview(null);
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/scan/${encodeURIComponent(symbol)}`, { cache: "no-store", headers: scanHeaders() })
+      .then((r) => r.json())
+      .then((d) => { if (!cancelled) setVerdictPreview(d?.verdictPreview ?? null); })
+      .catch(() => { if (!cancelled) setVerdictPreview(null); });
+    return () => { cancelled = true; };
+  }, [open, symbol]);
 
   const chartHostRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -321,47 +342,58 @@ export function ChartPanel({
     saveDashboardPrefs({ chartTimeframe: next });
   }, []);
 
-  const fetchTfs = mobile ? [tf] : [...CHART_STACK_TIMEFRAMES];
+  const fetchTfs = useMemo(
+    () => (mobile ? [tf] : [...CHART_STACK_TIMEFRAMES]) as ChartTimeframe[],
+    [mobile, tf],
+  );
+
+  const loadCandles = useCallback(async (cancelled: () => boolean) => {
+    if (!symbol) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const results = await Promise.all(
+        fetchTfs.map(async (t) => {
+          const res = await fetch(`/api/candles/${encodeURIComponent(symbol)}?tf=${t}`, {
+            cache: "no-store",
+            headers: scanHeaders(),
+          });
+          const d = await res.json();
+          return { tf: t, ok: d.ok, bars: d.bars ?? [], error: d.error };
+        }),
+      );
+      if (cancelled()) return;
+      const failed = results.find((r) => !r.ok);
+      if (failed && mobile) {
+        setError(failed.error ?? "candles unavailable");
+        setBarsByTf({});
+      } else {
+        const map: Partial<Record<ChartTimeframe, Bar[]>> = {};
+        for (const r of results) map[r.tf as ChartTimeframe] = r.bars;
+        setBarsByTf(map);
+        if (failed) setError(failed.error ?? null);
+        setCandleUpdatedAt(Date.now());
+      }
+    } catch (e: any) {
+      if (!cancelled()) {
+        setError(e?.message ?? "failed to load candles");
+        setBarsByTf({});
+      }
+    } finally {
+      if (!cancelled()) setLoading(false);
+    }
+  }, [symbol, mobile, tf, fetchTfs]);
 
   useEffect(() => {
     if (!open || !symbol) return;
     let cancelled = false;
-    setLoading(true);
-    setError(null);
-    (async () => {
-      try {
-        const results = await Promise.all(
-          fetchTfs.map(async (t) => {
-            const res = await fetch(`/api/candles/${encodeURIComponent(symbol)}?tf=${t}`, {
-              cache: "no-store",
-              headers: scanHeaders(),
-            });
-            const d = await res.json();
-            return { tf: t, ok: d.ok, bars: d.bars ?? [], error: d.error };
-          }),
-        );
-        if (cancelled) return;
-        const failed = results.find((r) => !r.ok);
-        if (failed && mobile) {
-          setError(failed.error ?? "candles unavailable");
-          setBarsByTf({});
-        } else {
-          const map: Partial<Record<ChartTimeframe, Bar[]>> = {};
-          for (const r of results) map[r.tf as ChartTimeframe] = r.bars;
-          setBarsByTf(map);
-          if (failed) setError(failed.error ?? null);
-        }
-      } catch (e: any) {
-        if (!cancelled) {
-          setError(e?.message ?? "failed to load candles");
-          setBarsByTf({});
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [open, symbol, mobile, tf]);
+    loadCandles(() => cancelled);
+    const id = setInterval(() => loadCandles(() => cancelled), CHART_LIVE_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [open, symbol, loadCandles]);
 
   const bars = mobile ? (barsByTf[tf] ?? []) : (barsByTf["5m"] ?? barsByTf["1m"] ?? []);
 
@@ -418,7 +450,8 @@ export function ChartPanel({
 
   const last = bars.length ? bars[bars.length - 1] : null;
   const first = bars.length ? bars[0] : null;
-  const dayChangePct = last && first && first.c ? ((last.c - first.c) / first.c) * 100 : null;
+  const livePrice = liveRow?.price ?? last?.c ?? null;
+  const dayChangePct = liveRow?.movePct ?? (last && first && first.c ? ((last.c - first.c) / first.c) * 100 : null);
   const stockDirection =
     dayChangePct == null ? undefined : dayChangePct > 0.08 ? "bullish" : dayChangePct < -0.08 ? "bearish" : undefined;
 
@@ -448,20 +481,51 @@ export function ChartPanel({
       <aside className="chart-drawer" role="dialog" aria-label={`${symbol} chart`}>
         <header className="chart-drawer-head">
           <div>
-            <div className="chart-sym">{symbol}</div>
+            <div className="chart-sym">
+              {symbol}
+              {liveRow && tape.running ? (
+                <span className={`chart-live-badge stream-fresh-${tape.freshness}`} title="Price from live scanner tape">
+                  LIVE
+                </span>
+              ) : null}
+            </div>
             <div className="chart-price num">
-              {last ? fmtPrice(last.c) : "—"}
+              {livePrice != null ? fmtPrice(livePrice) : "—"}
               {dayChangePct != null ? (
                 <span className={`num chart-change-inline ${pctClass(dayChangePct)}`}>
                   {fmtPct(dayChangePct)}
                 </span>
               ) : null}
             </div>
+            {candleUpdatedAt ? (
+              <div className="muted text-xs chart-candle-meta">
+                Candles refresh every {CHART_LIVE_POLL_MS / 1000}s
+                {tape.transport === "sse" ? " · tape SSE" : " · tape poll"}
+              </div>
+            ) : null}
           </div>
           <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">
             ✕
           </button>
         </header>
+
+        {verdictPreview?.alertInput ? (
+          <div className="chart-verdict-strip">
+            <VerdictPreviewBlock
+              alertInput={verdictPreview.alertInput}
+              entryPremium={verdictPreview.entryPremium}
+              live={symbol ? liveCtxFor(tape, symbol) : undefined}
+              compact
+              onCopyTicket={() => {
+                const c = verdictPreview.alertInput;
+                if (!symbol || !c?.strike) return;
+                const side = String(c.option_side ?? "call").toUpperCase().slice(0, 1);
+                const line = `BUY 1 ${symbol} ${fmtNum(c.strike, 0)}${side} ${c.expiration ?? "0DTE"} @ ${fmtPremium(verdictPreview.entryPremium)} (mid)`;
+                navigator.clipboard?.writeText(line);
+              }}
+            />
+          </div>
+        ) : null}
 
         {mobile ? (
           <>

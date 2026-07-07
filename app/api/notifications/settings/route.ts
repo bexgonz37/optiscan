@@ -11,6 +11,8 @@ export async function GET(req: Request) {
   if (!checkApiToken(req)) return unauthorized();
   try {
     const { getNotificationSettings, getSetting, getSettingNum } = await import("@/lib/alert-store");
+    const { enforceDiscordAutoSend } = await import("@/lib/notifications");
+    enforceDiscordAutoSend();
     return NextResponse.json({
       ok: true,
       settings: getNotificationSettings(),
@@ -54,8 +56,8 @@ export async function PATCH(req: Request) {
     }
     const settings = updateNotificationSettings(body);
     if (body.discordRequiresManualConfirm === false || body.discordRequiresManualConfirm === 0) {
-      const { ensureDiscordPendingCleared } = await import("@/lib/notifications");
-      ensureDiscordPendingCleared();
+      const { enforceDiscordAutoSend } = await import("@/lib/notifications");
+      enforceDiscordAutoSend();
     }
     return NextResponse.json({ ok: true, settings, languageMode: getSetting("language_mode") ?? "private", discordWebhookConfigured: discordConfigured(), scannerThresholds: {
         alertMinMomentumScore: getSettingNum("alert_min_momentum_score", Number(process.env.ALERT_MIN_MOMENTUM_SCORE ?? 62)),

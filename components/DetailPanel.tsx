@@ -4,8 +4,10 @@ import { useEffect, useState } from "react";
 import type { SymbolDetail } from "@/lib/types";
 import { TickerIcon, Stat } from "@/components/ui";
 import { PayoffChart } from "@/components/PayoffChart";
+import { VerdictPreviewBlock } from "@/components/VerdictPreviewBlock";
 import { useToast } from "@/components/Toasts";
 import { scanHeaders } from "@/hooks/useScanner";
+import { liveCtxFor, useLiveTapeMap } from "@/hooks/useLiveTapeMap";
 import { economics } from "@/lib/economics";
 import {
   fmtExpiry,
@@ -37,6 +39,8 @@ export function DetailPanel({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { push } = useToast();
+  const tape = useLiveTapeMap();
+  const live = symbol ? liveCtxFor(tape, symbol) : undefined;
 
   useEffect(() => {
     if (!symbol) return;
@@ -101,6 +105,18 @@ export function DetailPanel({
                 </button>
               </div>
             </div>
+
+            {data?.verdictPreview?.alertInput ? (
+              <div className="dsection verdict-preview-section">
+                <h4>What to do now</h4>
+                <VerdictPreviewBlock
+                  alertInput={data.verdictPreview.alertInput}
+                  entryPremium={data.verdictPreview.entryPremium}
+                  live={live}
+                  onCopyTicket={copyTicket}
+                />
+              </div>
+            ) : null}
 
             {loading && <div className="detail-empty">Loading chain…</div>}
             {error && (

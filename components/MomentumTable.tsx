@@ -3,6 +3,8 @@
 import { useMemo, useState } from "react";
 import type { MomentumRow } from "@/lib/types";
 import { TickerIcon, ScoreBar, IvBar, GradeChip } from "@/components/ui";
+import { TradeVerdictHero } from "@/components/TradeVerdictHero";
+import { useLiveTapeMap, liveCtxFor } from "@/hooks/useLiveTapeMap";
 import { fmtNum, fmtPct, fmtPremium, fmtPrice, fmtInt, pctClass } from "@/lib/format";
 
 type SortKey = "symbol" | "price" | "chg" | "iv" | "delta" | "entry" | "dte" | "score";
@@ -37,6 +39,7 @@ export function MomentumTable({
 }) {
   const [sort, setSort] = useState<SortKey>("score");
   const [dir, setDir] = useState<-1 | 1>(-1);
+  const tape = useLiveTapeMap();
 
   const sorted = useMemo(() => {
     const copy = [...rows];
@@ -90,6 +93,8 @@ export function MomentumTable({
             <Th k="dte" label="DTE" />
             <th>OI / Vol</th>
             <Th k="score" label="Signal" />
+            <th>Action</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -97,8 +102,9 @@ export function MomentumTable({
             <tr
               key={`${r.symbol}-${r.contract?.optionSymbol ?? r.side}`}
               data-sym={r.symbol ?? ""}
-              className={selected === r.symbol ? "sel" : ""}
+              className={`clickable${selected === r.symbol ? " sel" : ""}`}
               onClick={() => r.symbol && onSelect(r.symbol)}
+              title="Open live chart"
             >
               <td>
                 <div className="tkr">
@@ -136,6 +142,22 @@ export function MomentumTable({
                   <ScoreBar score={r.score} />
                   <GradeChip grade={r.grade} />
                 </div>
+              </td>
+              <td className="momentum-action-col">
+                {r.verdictPreview?.alertInput ? (
+                  <TradeVerdictHero
+                    alert={r.verdictPreview.alertInput}
+                    live={r.symbol ? liveCtxFor(tape, r.symbol) : undefined}
+                    compact
+                  />
+                ) : (
+                  <span className="muted text-xs">—</span>
+                )}
+              </td>
+              <td onClick={(ev) => ev.stopPropagation()}>
+                <button type="button" className="pill btn btn-xs" onClick={() => r.symbol && onSelect(r.symbol)}>
+                  Chart
+                </button>
               </td>
             </tr>
           ))}

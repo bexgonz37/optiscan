@@ -11,15 +11,14 @@
  * Market signals and measurements only — nothing here is a recommendation.
  */
 
-import { Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { scanHeaders } from "@/hooks/useScanner";
 import { useLiveTapeMap, liveCtxFor } from "@/hooks/useLiveTapeMap";
 import { AppNav } from "@/components/AppNav";
-import { ChartPanel } from "@/components/ChartPanel";
 import { AlertsCommandCenter } from "@/components/AlertsCommandCenter";
+import { openLiveChart } from "@/lib/open-chart";
 import { AccuracyCharts } from "@/components/AccuracyCharts";
-import { SystemExplanationSection } from "@/components/SystemExplanationSection";
 import { computeTradeVerdict, formatSpeedLine } from "@/lib/trade-verdict";
 import { calledAgoLabel, sideFromAlert, stillMovingStatus } from "@/lib/signal-live";
 import { earlyMoveWin, pickEarlyMove, EARLY_MOVE_WIN_PCT, EARLY_ON_TRACK_MIN_PCT } from "@/lib/early-accuracy";
@@ -49,13 +48,13 @@ interface AlertRow {
 
 interface JournalRow {
   id: number; alert_id: number | null; ticker: string; side: string | null;
-  entry_price: number | null; exit_price: number | null; quantity: number | null;
-  outcome_pct: number | null; notes: string | null; created_at: string;
+  contract?: string | null; entry_price: number | null; exit_price: number | null;
+  quantity: number | null; pnl?: number | null;
+  outcome_pct: number | null; notes: string | null; created_at: string; source?: string | null;
 }
 
 type Tab = "now" | "history" | "journal";
 type AccFilter = "all" | "on_track" | "open" | "discord";
-type AssetFilter = "" | "options" | "stock";
 
 const CATALYSTS = [
   "earnings", "analyst", "fda_biotech", "partnership", "product_launch",
@@ -73,17 +72,16 @@ function AlertsPageInner() {
   );
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
   const [stats, setStats] = useState<any>(null);
-  const [report, setReport] = useState<any>(null);
   const [accuracy, setAccuracy] = useState<any>(null);
   const [accFilter, setAccFilter] = useState<AccFilter>("all");
   const [journal, setJournal] = useState<JournalRow[]>([]);
+  const [lastImport, setLastImport] = useState<any>(null);
+  const [importMsg, setImportMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [, startTabTransition] = useTransition();
 
   const tape = useLiveTapeMap(1000);
-
-  // Asset class: Options | Stocks | All (affects history list + accuracy KPIs)
-  const [asset, setAsset] = useState<AssetFilter>("");
 
   // Filters (History tab)
   const [ticker, setTicker] = useState("");
@@ -97,13 +95,8 @@ function AlertsPageInner() {
   // Journal edit buffers
   const [edits, setEdits] = useState<Record<number, { exitPrice?: string; outcomePct?: string; notes?: string }>>({});
 
-  // Chart panel
-  const [chartSymbol, setChartSymbol] = useState<string | null>(null);
-  const [chartOpen, setChartOpen] = useState(false);
-
   const openChart = useCallback((symbol: string) => {
-    setChartSymbol(symbol);
-    setChartOpen(true);
+    openLiveChart(symbol);
   }, []);
 
   const query = useMemo(() => {
@@ -115,45 +108,51 @@ function AlertsPageInner() {
     if (maxRisk) q.set("maxRisk", maxRisk);
     if (fp) q.set("falsePositive", fp);
     if (taken) q.set("tradeTaken", taken);
-    if (asset) q.set("asset", asset);
     return q.toString();
-  }, [ticker, date, catalyst, minSignal, maxRisk, fp, taken, asset]);
+  }, [ticker, date, catalyst, minSignal, maxRisk, fp, taken]);
 
   const refresh = useCallback(async (opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true);
     try {
       const headers = scanHeaders();
-      const [aRes, sRes, rRes, accRes, jRes] = await Promise.all([
-        fetch(`/api/alerts?${query}`, { cache: "no-store", headers }),
+      const [aRes, sRes, accRes, jRes] = await Promise.all([
+        fetch(`/api/alerts?limit=200`, { cache: "no-store", headers }),
         fetch(`/api/alerts/stats`, { cache: "no-store", headers }),
-        fetch(`/api/alerts/weekly-report`, { cache: "no-store", headers }),
-        fetch(`/api/alerts/signal-accuracy?days=14${asset ? `&asset=${asset}` : ""}`, { cache: "no-store", headers }),
+        fetch(`/api/alerts/signal-accuracy?days=14&asset=options`, { cache: "no-store", headers }),
         fetch(`/api/trade-journal`, { cache: "no-store", headers }),
       ]);
       const a = await aRes.json();
       const s = await sRes.json();
-      const r = await rRes.json();
       const acc = await accRes.json();
       const j = await jRes.json();
       setAlerts(a.alerts ?? []);
       setStats(s.ok ? s : null);
-      setReport(r.ok ? r.report : null);
       setAccuracy(acc.ok ? acc : null);
       setJournal(j.journal ?? []);
+      setLastImport(j.lastImport ?? null);
       setError(a.ok === false ? a.error : s.ok === false ? s.error : null);
     } catch (err: any) {
       setError(err?.message ?? "Failed to load Alert Lab");
     } finally {
       if (!opts?.silent) setLoading(false);
     }
-  }, [query, asset]);
+  }, []);
+
+  const refreshHistory = useCallback(async () => {
+    try {
+      const headers = scanHeaders();
+      const aRes = await fetch(`/api/alerts?${query}`, { cache: "no-store", headers });
+      const a = await aRes.json();
+      setAlerts(a.alerts ?? []);
+    } catch { /* best effort */ }
+  }, [query]);
 
   const refreshAccuracy = useCallback(async () => {
     try {
-      const acc = await fetch(`/api/alerts/signal-accuracy?days=14${asset ? `&asset=${asset}` : ""}`, { cache: "no-store", headers: scanHeaders() }).then((r) => r.json());
+      const acc = await fetch(`/api/alerts/signal-accuracy?days=14&asset=options`, { cache: "no-store", headers: scanHeaders() }).then((r) => r.json());
       if (acc.ok) setAccuracy(acc);
     } catch { /* best effort */ }
-  }, [asset]);
+  }, []);
 
   useEffect(() => {
     const t = paramTab === "history" || paramTab === "journal" ? paramTab : "now";
@@ -165,6 +164,11 @@ function AlertsPageInner() {
     const id = setInterval(() => refresh({ silent: true }), 60_000);
     return () => clearInterval(id);
   }, [refresh]);
+
+  useEffect(() => {
+    if (tab !== "history") return;
+    refreshHistory();
+  }, [tab, refreshHistory]);
 
   useEffect(() => {
     if (tab !== "history") return;
@@ -242,12 +246,19 @@ function AlertsPageInner() {
       style={{ fontSize: 13, padding: "7px 16px" }}
       onClick={() => {
         setTab(id);
-        router.replace(id === "now" ? "/alerts" : `/alerts?tab=${id}`, { scroll: false });
+        startTabTransition(() => {
+          router.replace(id === "now" ? "/alerts" : `/alerts?tab=${id}`, { scroll: false });
+        });
       }}
     >
       {label}
     </button>
   );
+
+  const goHistory = useCallback(() => {
+    setTab("history");
+    startTabTransition(() => router.replace("/alerts?tab=history", { scroll: false }));
+  }, [router]);
 
   return (
     <div className="app">
@@ -262,38 +273,27 @@ function AlertsPageInner() {
 
       <div className="alerts-tab-header muted">
         {tab === "now"
-          ? "Live buy signals — popups fire here too during the session."
+          ? "Live BUY CALL / BUY PUT callouts during market hours."
           : tab === "history"
-            ? "Track record, past alerts, weekly report, and how the scanner works."
-            : "Your personal trade log."}
+            ? "Signal accuracy — did the callouts work?"
+            : "Your trades — manual log + Robinhood CSV import."}
       </div>
 
       <div className="acc-tabs acc-tabs-primary">
-        {tabBtn("now", "Right now")}
-        {tabBtn("history", "History")}
+        {tabBtn("now", "Live callouts")}
+        {tabBtn("history", "Accuracy")}
         {tabBtn("journal", "Journal")}
       </div>
 
-      {tab !== "now" ? (
-        <div className="acc-tabs acc-tabs-filters">
-          <span className="muted" style={{ fontSize: 11, alignSelf: "center", marginRight: 4 }}>Show:</span>
-          {(["", "options", "stock"] as AssetFilter[]).map((a) => (
-            <button
-              key={a || "all"}
-              type="button"
-              className={`pill btn${asset === a ? " btn-primary" : ""}`}
-              style={{ fontSize: 12, padding: "6px 12px" }}
-              onClick={() => setAsset(a)}
-              title={a === "stock" ? "Premarket / after-hours share callouts" : a === "options" ? "Market-hours 0DTE option callouts" : "Both systems"}
-            >
-              {a === "" ? "All" : a === "options" ? "Options" : "Shares"}
-            </button>
-          ))}
-        </div>
-      ) : null}
-
       {tab === "now" ? (
-        <AlertsCommandCenter tape={tape} onOpenChart={openChart} />
+        <AlertsCommandCenter
+          tape={tape}
+          onOpenChart={openChart}
+          recentAlerts={alerts}
+          totalAlerts={totals?.total ?? alerts.length}
+          accuracySummary={accuracy}
+          onViewHistory={goHistory}
+        />
       ) : null}
 
       {tab === "history" ? (
@@ -335,23 +335,28 @@ function AlertsPageInner() {
                 </div>
               </button>
 
-              <div className="label muted" style={{ fontSize: 11, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.04em" }}>
-                Live session (updates every second)
-              </div>
               <div className="kpis" style={{ marginBottom: 14 }}>
-                {accKpi("open", "Callouts today", accuracy.todayTotal ?? accuracy.total, `${accuracy.todayTracking ?? accuracy.tracking} still open`)}
-                {accKpi("discord", "Discord sent", accuracy.discordSentCount ?? 0, "extra-clear only · not delayed")}
+                {accKpi("on_track", "On track now", accuracy.liveOnTrackOfToday ?? `${accuracy.todayOnTrack ?? 0}/${accuracy.todayTotal ?? 0}`, "≥0.5% favorable @ 5m")}
                 <div className="kpi">
-                  <div className="label">Completed today</div>
-                  <div className="val num">{accuracy.completedToday ?? 0}</div>
-                  <div className="sub">final grades at close</div>
+                  <div className="label">Early hit rate (5m)</div>
+                  <div className="val num">
+                    {accuracy.earlyHitRate != null ? `${Math.round(accuracy.earlyHitRate * 100)}%` : "—"}
+                  </div>
+                  <div className="sub">≥{EARLY_MOVE_WIN_PCT}% favorable move</div>
                 </div>
                 <div className="kpi">
-                  <div className="label">Avg move @ 5m</div>
+                  <div className="label">EOD hit rate</div>
                   <div className="val num">
-                    {accuracy.avgMove5m != null ? `${accuracy.avgMove5m.toFixed(2)}%` : "—"}
+                    {accuracy.overallHitRate != null ? `${Math.round(accuracy.overallHitRate * 100)}%` : accuracy.hitRate != null ? `${Math.round(accuracy.hitRate * 100)}%` : "—"}
                   </div>
-                  <div className="sub">right after the call (today&apos;s graded)</div>
+                  <div className="sub">{accuracy.wins + accuracy.losses > 0 ? `${accuracy.wins}W · ${accuracy.losses}L` : "grades at close"}</div>
+                </div>
+                <div className="kpi">
+                  <div className="label">Option win rate</div>
+                  <div className="val num">
+                    {accuracy.optionWinRate != null ? `${Math.round(accuracy.optionWinRate * 100)}%` : "—"}
+                  </div>
+                  <div className="sub">contract +15% from entry mid</div>
                 </div>
               </div>
 
@@ -362,9 +367,7 @@ function AlertsPageInner() {
                   </div>
                   <div className="acc-on-track-chips">
                     {onTrackRows.map((row: any) => {
-                      const side = row.asset_class === "stock"
-                        ? (row.direction === "bearish" ? "SHORT" : "LONG")
-                        : String(row.option_side ?? "").toLowerCase().startsWith("p") ? "PUT" : "CALL";
+                      const side = String(row.option_side ?? "").toLowerCase().startsWith("p") ? "PUT" : "CALL";
                       return (
                         <button
                           key={row.id}
@@ -400,72 +403,6 @@ function AlertsPageInner() {
                   bySide: accuracy.bySide,
                 }}
               />
-
-              <div className="label muted" style={{ fontSize: 11, margin: "16px 0 6px", textTransform: "uppercase", letterSpacing: "0.04em" }}>
-                Final grades (locks at market close)
-              </div>
-              <div className="kpis" style={{ marginBottom: 14 }}>
-                <div className="kpi">
-                  <div className="label">Early hit rate (5m) — all callouts</div>
-                  <div className="val num">
-                    {accuracy.earlyHitRate != null ? `${Math.round(accuracy.earlyHitRate * 100)}%` : "—"}
-                  </div>
-                  <div className="sub">
-                    {accuracy.earlyGraded
-                      ? `${accuracy.earlyWins} right · ${accuracy.earlyLosses} wrong @ 5m (≥${EARLY_MOVE_WIN_PCT}%)`
-                      : "grades when 5m checkpoint records"}
-                  </div>
-                </div>
-                <div className="kpi">
-                  <div className="label">Early hit rate — TRADE at fire</div>
-                  <div className="val num" style={{ color: (accuracy.tradeCaptureEarlyHitRate ?? 0) >= 0.7 ? "var(--green)" : undefined }}>
-                    {accuracy.tradeCaptureEarlyHitRate != null
-                      ? `${Math.round(accuracy.tradeCaptureEarlyHitRate * 100)}%`
-                      : "—"}
-                  </div>
-                  <div className="sub">
-                    {accuracy.tradeCaptureEarlyGraded
-                      ? `${accuracy.tradeCaptureEarlyWins} right · ${accuracy.tradeCaptureEarlyLosses} wrong · ${accuracy.tradeCaptureTotal} TRADE at capture`
-                      : "BUY gates passed when signal fired"}
-                  </div>
-                </div>
-                <div className="kpi">
-                  <div className="label">Stock hit rate (EOD)</div>
-                  <div className="val num">
-                    {accuracy.hitRate != null ? `${Math.round(accuracy.hitRate * 100)}%` : "—"}
-                  </div>
-                  <div className="sub">
-                    {accuracy.wins + accuracy.losses > 0
-                      ? `${accuracy.wins} right · ${accuracy.losses} wrong`
-                      : `${accuracy.tracking} still tracking — grades at close`}
-                  </div>
-                </div>
-                <div className="kpi">
-                  <div className="label">Option win rate</div>
-                  <div className="val num">
-                    {accuracy.optionWinRate != null ? `${Math.round(accuracy.optionWinRate * 100)}%` : "—"}
-                  </div>
-                  <div className="sub">
-                    {accuracy.optionWins || accuracy.optionLosses
-                      ? `${accuracy.optionWins} up ≥15% · ${accuracy.optionLosses} not`
-                      : "contract mid gain ≥15% · grades at close"}
-                  </div>
-                </div>
-                <div className="kpi">
-                  <div className="label">Avg option return</div>
-                  <div className="val num" style={{ color: changeColor(accuracy.avgOptionReturn) }}>
-                    {accuracy.avgOptionReturn != null ? `${accuracy.avgOptionReturn.toFixed(0)}%` : "—"}
-                  </div>
-                  <div className="sub">entry mid → best mid (final at close)</div>
-                </div>
-                <div className="kpi">
-                  <div className="label">Avg best stock move</div>
-                  <div className="val num">
-                    {accuracy.avgMaxMove != null ? `${accuracy.avgMaxMove.toFixed(1)}%` : "—"}
-                  </div>
-                  <div className="sub">favorable direction after signal (EOD)</div>
-                </div>
-              </div>
 
               <div className="label muted" style={{ fontSize: 11, margin: "16px 0 6px", textTransform: "uppercase", letterSpacing: "0.04em" }}>
                 All callouts
@@ -753,82 +690,78 @@ function AlertsPageInner() {
               </div>
             )}
           </div>
-
-          <div className="panel main">
-            <div className="toolbar"><h2>Weekly report</h2><div className="right muted" style={{ fontSize: 11 }}>{report?.since ? `since ${report.since}` : ""}</div></div>
-            {!report ? (
-              <div className="empty">No report yet.</div>
-            ) : (
-              <div style={{ padding: "4px 14px 14px", fontSize: 13, lineHeight: 1.7 }}>
-                <div className="statgrid" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 10 }}>
-                  <div className="kpi"><div className="label">Alerts</div><div className="val num">{report.totalAlerts}</div></div>
-                  <div className="kpi"><div className="label">Avg signal</div><div className="val num">{report.avgSignalScore != null ? Math.round(report.avgSignalScore) : "—"}</div></div>
-                  <div className="kpi"><div className="label">Avg max move</div><div className="val num">{report.avgMaxMoveAfterAlert != null ? `${report.avgMaxMoveAfterAlert.toFixed(1)}%` : "—"}</div></div>
-                  <div className="kpi"><div className="label">FP rate</div><div className="val num">{report.falsePositiveRate != null ? `${Math.round(report.falsePositiveRate * 100)}%` : "—"}</div></div>
-                  <div className="kpi"><div className="label">Best catalyst</div><div className="val" style={{ fontSize: 13 }}>{catLabel(report.bestCatalystType?.type ?? null)}</div></div>
-                  <div className="kpi"><div className="label">Journal win rate</div><div className="val num">{report.journalWinRate != null ? `${Math.round(report.journalWinRate * 100)}%` : "—"}</div></div>
-                </div>
-                <h4 style={{ margin: "10px 0 4px" }}>Biggest measured moves without a journal entry</h4>
-                {!report.missedOpportunities?.length ? <div className="muted">None yet — needs completed alerts.</div> :
-                  report.missedOpportunities.map((m: any) => (
-                    <div key={m.id}>
-                      <span className="num">{m.ticker}</span> <span className="muted">{m.trading_day} · {catLabel(m.catalyst_type)}</span>
-                      <span className="num" style={{ float: "right", color: "var(--green)" }}>{fmtPct(m.max_move)}</span>
-                    </div>
-                  ))}
-                <h4 style={{ margin: "12px 0 4px" }}>Highest-quality alerts</h4>
-                {!report.topQualityAlerts?.length ? <div className="muted">None yet.</div> :
-                  report.topQualityAlerts.map((m: any) => (
-                    <div key={m.id}>
-                      <span className="num">{m.ticker}</span> <span className="muted">{m.trading_day} · signal {Math.round(m.signal_score ?? 0)} · {catLabel(m.catalyst_type)}</span>
-                      <span className="num" style={{ float: "right", color: changeColor(m.max_move) }}>{fmtPct(m.max_move)}</span>
-                    </div>
-                  ))}
-                <div className="muted" style={{ marginTop: 10, fontSize: 11 }}>
-                  Measurements of scanner output for research — max move is the best favorable print after an alert, not a realized result. Not financial advice.
-                </div>
-              </div>
-            )}
-          </div>
-
-          <SystemExplanationSection />
         </>
       ) : null}
 
       {tab === "journal" ? (
         <div className="panel main">
-          <div className="toolbar"><h2>Trade journal</h2><div className="right muted" style={{ fontSize: 11 }}>{journal.length} entries</div></div>
+          <div className="toolbar">
+            <h2>Trade journal</h2>
+            <div className="right" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              {lastImport ? (
+                <span className="muted" style={{ fontSize: 11 }}>
+                  Last import: {lastImport.row_count} trades · {fmtTime(lastImport.imported_at)}
+                </span>
+              ) : null}
+              <label className="pill btn btn-primary" style={{ cursor: "pointer", margin: 0 }}>
+                Import Robinhood CSV
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  style={{ display: "none" }}
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    setImportMsg(null);
+                    const fd = new FormData();
+                    fd.append("file", file);
+                    const res = await fetch("/api/trade-journal/import", {
+                      method: "POST",
+                      headers: scanHeaders(),
+                      body: fd,
+                    });
+                    const d = await res.json();
+                    setImportMsg(d.ok ? `Imported ${d.inserted} trades (${d.skipped} duplicates skipped).` : d.error ?? "Import failed");
+                    e.target.value = "";
+                    refresh();
+                  }}
+                />
+              </label>
+            </div>
+          </div>
+          {importMsg ? <p className="settings-desc" style={{ padding: "0 14px" }}>{importMsg}</p> : null}
+          <p className="settings-desc" style={{ padding: "0 14px 12px" }}>
+            Export Activity / Transaction History from Robinhood as CSV once a month. Trades auto-link to scanner callouts when timing matches.
+          </p>
           {!journal.length ? (
             <div className="empty">
-              <div className="big">No journal entries.</div>
-              Click “Log” on an alert (History tab) to start a personal record. This is a private log — not advice.
+              <div className="big">No journal entries yet.</div>
+              Import a Robinhood CSV or click Log on a callout in the Accuracy tab.
             </div>
           ) : (
             <div className="tablewrap">
               <table>
                 <thead>
-                  <tr><th>Ticker</th><th>Side</th><th>Entry</th><th>Exit</th><th>Outcome %</th><th>Notes</th><th></th></tr>
+                  <tr><th>Ticker</th><th>Side</th><th>Contract</th><th>Entry</th><th>Exit</th><th>P&amp;L</th><th>Linked</th><th>Notes</th><th></th></tr>
                 </thead>
                 <tbody>
                   {journal.map((j) => (
                     <tr key={j.id}>
                       <td><div className="tkr"><TickerIcon symbol={j.ticker} /><div><div className="tname">{j.ticker}</div><div className="tsub">{fmtTime(j.created_at)}</div></div></div></td>
                       <td>{j.side ? <span className={`badge ${j.side === "put" ? "t-put" : "t-call"}`}>{String(j.side).toUpperCase()}</span> : "—"}</td>
+                      <td className="num muted text-xs">{j.contract ?? "—"}</td>
                       <td className="num">{fmtPrice(j.entry_price)}</td>
                       <td>
                         <input style={{ ...sel, width: 70 }} placeholder={j.exit_price != null ? String(j.exit_price) : "—"}
                           value={edits[j.id]?.exitPrice ?? ""}
-                          onChange={(e) => setEdits((p) => ({ ...p, [j.id]: { ...p[j.id], exitPrice: e.target.value } }))} />
+                          onChange={(ev) => setEdits((p) => ({ ...p, [j.id]: { ...p[j.id], exitPrice: ev.target.value } }))} />
                       </td>
-                      <td>
-                        <input style={{ ...sel, width: 70 }} placeholder={j.outcome_pct != null ? `${j.outcome_pct}%` : "—"}
-                          value={edits[j.id]?.outcomePct ?? ""}
-                          onChange={(e) => setEdits((p) => ({ ...p, [j.id]: { ...p[j.id], outcomePct: e.target.value } }))} />
-                      </td>
+                      <td className="num">{j.pnl != null ? fmtPrice(j.pnl) : "—"}</td>
+                      <td className="muted text-xs">{j.alert_id ? `#${j.alert_id}` : j.source === "robinhood_import" ? "import" : "—"}</td>
                       <td>
                         <input style={{ ...sel, width: 140 }} placeholder={j.notes ?? "notes"}
                           value={edits[j.id]?.notes ?? ""}
-                          onChange={(e) => setEdits((p) => ({ ...p, [j.id]: { ...p[j.id], notes: e.target.value } }))} />
+                          onChange={(ev) => setEdits((p) => ({ ...p, [j.id]: { ...p[j.id], notes: ev.target.value } }))} />
                       </td>
                       <td><button className="pill btn" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => saveJournal(j)}>Save</button></td>
                     </tr>
@@ -839,8 +772,6 @@ function AlertsPageInner() {
           )}
         </div>
       ) : null}
-
-      <ChartPanel symbol={chartSymbol} open={chartOpen} onClose={() => setChartOpen(false)} />
 
       <div className="footer">
         Alerts · records and measures scanner output for research · not financial advice

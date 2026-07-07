@@ -10,6 +10,10 @@ interface StripRow {
   symbol: string;
   price: number | null;
   atmIv: number | null;
+  nearestLevelLabel?: string | null;
+  nearestLevelDistPct?: number | null;
+  nearLevel?: boolean;
+  minutesToClose?: number | null;
   error?: string;
 }
 
@@ -21,10 +25,12 @@ export function ZeroDteStrip({
   onSelect?: (symbol: string) => void;
 }) {
   const [rows, setRows] = useState<StripRow[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
+    setFetchError(null);
     try {
       const prefs = loadDashboardPrefs();
       const override = prefs.zeroDteStripSymbols?.length ? prefs.zeroDteStripSymbols.join(",") : "";
@@ -33,9 +39,16 @@ export function ZeroDteStrip({
       if (override) q.set("symbols", override);
       const res = await fetch(`/api/context/zero-dte?${q}`, { cache: "no-store", headers: scanHeaders() });
       const d = await res.json();
-      if (d.ok) setRows(d.rows ?? []);
-    } catch { /* best effort */ }
-    finally { setLoading(false); }
+      if (d.ok) {
+        setRows(d.rows ?? []);
+      } else {
+        setFetchError(d.error ?? (res.status === 401 ? "Check API token in Settings" : "Failed to load 0DTE context"));
+      }
+    } catch {
+      setFetchError("Network error — check Polygon key / API token");
+    } finally {
+      setLoading(false);
+    }
   }, [chartSymbol]);
 
   useEffect(() => {
@@ -44,29 +57,54 @@ export function ZeroDteStrip({
     return () => clearInterval(id);
   }, [refresh]);
 
-  if (!rows.length && !loading) return null;
+  const minsLabel = (m: number | null | undefined) => {
+    if (m == null) return "—";
+    if (m < 0) return "Closed";
+    return `${m}m`;
+  };
+
+  const levelLabel = (r: StripRow) => {
+    if (r.nearestLevelLabel == null || r.nearestLevelDistPct == null) return "—";
+    return `${r.nearestLevelLabel} ${r.nearestLevelDistPct.toFixed(2)}%`;
+  };
 
   return (
     <section className="zero-dte-strip panel main">
       <div className="zero-dte-strip-head">
         <h2 className="section-title">0DTE context</h2>
-        <span className="muted text-xs">{loading ? "Updating…" : "ATM IV · cached · max 6"}</span>
+        <span className="muted text-xs">
+          {loading ? "Updating…" : `${rows.length} symbols · ATM IV · levels · max 6`}
+        </span>
       </div>
+      {fetchError ? (
+        <div className="banner-warn compact-banner-warn zero-dte-strip-error">{fetchError}</div>
+      ) : null}
+      {!rows.length && !loading && !fetchError ? (
+        <p className="muted text-sm zero-dte-strip-empty">Loading 0DTE symbols…</p>
+      ) : null}
       <div className="zero-dte-strip-grid">
         {rows.map((r) => (
           <button
             key={r.symbol}
             type="button"
-            className={`zero-dte-strip-card pill btn${chartSymbol === r.symbol ? " btn-primary" : ""}`}
+            className={[
+              "zero-dte-strip-card pill btn",
+              chartSymbol === r.symbol ? "btn-primary" : "",
+              r.nearLevel ? "zero-dte-strip-near-level" : "",
+            ].filter(Boolean).join(" ")}
             onClick={() => onSelect?.(r.symbol)}
-            title={r.error ?? "Open chart"}
+            title={r.error ?? `Open ${r.symbol} chart`}
           >
             <span className="tname">{r.symbol}</span>
             <span className="num">{fmtPrice(r.price)}</span>
+            <span className="zero-dte-strip-meta muted text-xs">
+              {levelLabel(r)} · {minsLabel(r.minutesToClose)}
+            </span>
             <span className="zero-dte-strip-iv">
               {r.atmIv != null ? <IvBar iv={r.atmIv} /> : <span className="muted">IV —</span>}
               {r.atmIv != null ? <span className="muted text-xs">{fmtIv(r.atmIv)}</span> : null}
             </span>
+            {r.error ? <span className="zero-dte-strip-err muted text-xs">{r.error}</span> : null}
           </button>
         ))}
       </div>

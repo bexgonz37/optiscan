@@ -9,8 +9,10 @@ import { useCallback, useMemo, useState } from "react";
 import { MomentumTable } from "@/components/MomentumTable";
 import { UnusualTable } from "@/components/UnusualTable";
 import { Toolbar } from "@/components/Toolbar";
+import { VerdictPreviewBlock } from "@/components/VerdictPreviewBlock";
 import type { FilterKey, Tab } from "@/components/Sidebar";
 import { useScanner } from "@/hooks/useScanner";
+import { useLiveTapeMap, liveCtxFor } from "@/hooks/useLiveTapeMap";
 import { DEFAULT_REFRESH_SEC, loadDashboardPrefs } from "@/lib/dashboard-prefs";
 import { filterMomentum, filterUnusual } from "@/lib/scanner-filters";
 
@@ -44,6 +46,13 @@ export function OptionsResearchPanel({
   const filteredMomentum = useMemo(() => filterMomentum(momentum, filters), [momentum, filters]);
   const filteredUnusual = useMemo(() => filterUnusual(unusual, filters), [unusual, filters]);
   const rows = tab === "momentum" ? filteredMomentum : filteredUnusual;
+  const tape = useLiveTapeMap();
+
+  const heroPreview = useMemo(() => {
+    const trades = filteredMomentum.filter((r) => r.verdictPreview?.verdict?.action === "TRADE");
+    if (trades.length) return trades[0].verdictPreview ?? null;
+    return filteredMomentum.find((r) => r.verdictPreview)?.verdictPreview ?? null;
+  }, [filteredMomentum]);
 
   const openChart = useCallback(
     (symbol: string) => {
@@ -61,6 +70,17 @@ export function OptionsResearchPanel({
     <>
       {error ? (
         <div className="banner-warn compact-banner-warn">{error}</div>
+      ) : null}
+
+      {tab === "momentum" && heroPreview?.alertInput ? (
+        <div className="research-verdict-hero panel-inner">
+          <div className="section-sub research-verdict-label">Best setup right now</div>
+          <VerdictPreviewBlock
+            alertInput={heroPreview.alertInput}
+            entryPremium={heroPreview.entryPremium}
+            live={heroPreview.alertInput.ticker ? liveCtxFor(tape, heroPreview.alertInput.ticker) : undefined}
+          />
+        </div>
       ) : null}
 
       <Toolbar

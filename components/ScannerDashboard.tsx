@@ -17,6 +17,7 @@ import {
 } from "@/lib/watch-score";
 import { useStableSymbolOrder } from "@/lib/stable-order";
 import { MIN_SPEED_PCT_PER_MIN } from "@/lib/trade-verdict";
+import { applyFastFilterHysteresis } from "@/lib/tape-filter-hysteresis";
 
 type FilterKey = "all" | "fast";
 
@@ -46,9 +47,11 @@ export function ScannerDashboard({
   const [query, setQuery] = useState("");
   const [paused, setPaused] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const { realtime: loop, lastEventAt: updatedAt, freshness, transport } = useScannerStream();
   const tape = (loop?.tape ?? loop?.movers ?? []) as TapeRow[];
   const [agoText, setAgoText] = useState("");
+  const fastFilterState = useRef(new Map<string, { inList: boolean; pendingSince: number | null }>());
   const onLoopStatusRef = useRef(onLoopStatus);
   onLoopStatusRef.current = onLoopStatus;
 
@@ -72,13 +75,15 @@ export function ScannerDashboard({
     const q = query.trim().toUpperCase();
     let list = [...tape];
     if (q) list = list.filter((r) => r.symbol.includes(q));
-    if (filter === "fast") list = list.filter((r) => Math.abs(r.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN);
+    if (filter === "fast") {
+      list = applyFastFilterHysteresis(list, fastFilterState.current, Date.now());
+    }
     return sortTape(list, sortKey, sortDir).slice(0, 60);
   }, [tape, filter, query, sortKey, sortDir]);
 
   const stableSymbols = useStableSymbolOrder(
     rows.map((r) => r.symbol),
-    { paused, intervalMs: 5000, resetKey: `${filter}:${sortKey}:${sortDir}:${query}` },
+    { paused, intervalMs: 12000, resetKey: `${filter}:${sortKey}:${sortDir}:${query}` },
   );
   const rowMap = useMemo(() => new Map(rows.map((r) => [r.symbol, r])), [rows]);
   const displayRows = useMemo(
@@ -111,15 +116,19 @@ export function ScannerDashboard({
     <section className="panel main section-scanner-dash">
       <div className="section-header">
         <div>
-          <h2 className="section-title">What&apos;s moving</h2>
+          <h2 className="section-title">What&apos;s moving fast</h2>
           <p className="section-sub">
-            Ranked by score — how hot each ticker is right now. Rows reorder every ~5s; hit Pause to freeze.
+            0DTE options universe — ranked by speed. Click a row for live charts. Only names moving ≥0.15%/min.
           </p>
         </div>
         <div className="status-group">
           <span className={`status-dot ${loop?.running && !paused ? "live" : ""} stream-fresh-${freshness}`} />
           <span className="status-text">
-            {paused ? "Paused" : loop?.running ? `${tape.length} symbols${agoText ? ` · ${agoText}` : ""}` : "Loop offline"}
+            {paused
+              ? "Paused"
+              : loop?.running
+                ? `Showing ${displayRows.length} movers · universe ${loop.coreSymbols ?? tape.length}${agoText ? ` · ${agoText}` : ""}`
+                : "Loop offline"}
           </span>
         </div>
       </div>
@@ -130,7 +139,15 @@ export function ScannerDashboard({
         </div>
         <div className="mover-filters">
           {chip("fast", "Moving now")}
-          {chip("all", "All")}
+          {showAdvanced ? chip("all", "All") : null}
+          <button
+            type="button"
+            className={`pill btn btn-xs${showAdvanced ? " btn-primary" : ""}`}
+            onClick={() => setShowAdvanced((v) => !v)}
+            title="Show full universe list"
+          >
+            {showAdvanced ? "Hide advanced" : "Advanced"}
+          </button>
           <button
             type="button"
             className={`pill btn btn-xs${paused ? " btn-primary" : ""}`}

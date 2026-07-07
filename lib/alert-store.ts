@@ -652,6 +652,7 @@ const JOURNAL_FIELDS: Record<string, string> = {
   openedAt: "opened_at", closedAt: "closed_at", outcomePct: "outcome_pct", pnl: "pnl",
   entryReason: "entry_reason", exitReason: "exit_reason", mistakeNotes: "mistake_notes",
   screenshotUrl: "screenshot_url", emotionTag: "emotion_tag", lesson: "lesson", notes: "notes",
+  source: "source", importBatchId: "import_batch_id", dedupKey: "dedup_key",
 };
 
 export function insertJournal(j: Record<string, unknown> & { ticker: string }) {
@@ -685,6 +686,49 @@ export function listJournal(limit = 100) {
     `SELECT j.*, a.signal_score, a.catalyst_type FROM trade_journal j
      LEFT JOIN alerts a ON a.id = j.alert_id ORDER BY j.created_at DESC LIMIT ?`,
   ).all(Math.min(limit, 500));
+}
+
+export function journalDedupExists(dedupKey: string): boolean {
+  if (!dedupKey) return false;
+  return Boolean(getDb().prepare("SELECT 1 FROM trade_journal WHERE dedup_key=?").get(dedupKey));
+}
+
+export function insertBrokerImport(meta: {
+  broker?: string;
+  filename?: string | null;
+  periodStart?: string | null;
+  periodEnd?: string | null;
+  rowCount?: number;
+}): number {
+  const res = getDb().prepare(
+    `INSERT INTO broker_imports (broker, filename, period_start, period_end, row_count) VALUES (?,?,?,?,?)`,
+  ).run(
+    meta.broker ?? "robinhood",
+    meta.filename ?? null,
+    meta.periodStart ?? null,
+    meta.periodEnd ?? null,
+    meta.rowCount ?? 0,
+  );
+  return Number(res.lastInsertRowid);
+}
+
+export function lastBrokerImport() {
+  return getDb().prepare(
+    "SELECT * FROM broker_imports ORDER BY imported_at DESC LIMIT 1",
+  ).get();
+}
+
+/** Match imported trade to a scanner callout within ±15 min. */
+export function findAlertForJournal(ticker: string, openedAt: string | null): number | null {
+  if (!openedAt) return null;
+  const t = Date.parse(openedAt);
+  if (!Number.isFinite(t)) return null;
+  const from = new Date(t - 15 * 60_000).toISOString();
+  const to = new Date(t + 15 * 60_000).toISOString();
+  const row: any = getDb().prepare(
+    `SELECT id FROM alerts WHERE ticker=? AND alert_time BETWEEN ? AND ? ORDER BY id DESC LIMIT 1`,
+  ).get(ticker.toUpperCase(), from, to);
+  return row?.id ?? null;
 }
 
 // ── Scanner settings (key/value overrides, editable from /settings) ─────────
@@ -732,7 +776,12 @@ export function updateNotificationSettings(patch: Record<string, unknown>) {
   const sets: string[] = [];
   const params: unknown[] = [];
   for (const [k, col] of Object.entries(NOTIF_FIELDS)) {
-    if (k in patch) { sets.push(`${col} = ?`); params.push(patch[k] ? 1 : 0); }
+    if (k in patch) {
+      // Discord is auto-send only — ignore attempts to re-enable manual confirm.
+      if (k === "discordRequiresManualConfirm" && patch[k]) continue;
+      sets.push(`${col} = ?`);
+      params.push(patch[k] ? 1 : 0);
+    }
   }
   if (sets.length) {
     sets.push("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')");

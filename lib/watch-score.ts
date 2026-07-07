@@ -20,6 +20,9 @@ export interface TapeRow {
   direction: string;
   confidence: number;
   promoted?: boolean;
+  catalystType?: string | null;
+  catalystFresh?: boolean;
+  haltStatus?: string | null;
 }
 
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));

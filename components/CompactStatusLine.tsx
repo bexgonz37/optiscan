@@ -22,17 +22,17 @@ interface AccessReport {
   summary: string;
 }
 
-const SESSION_LABEL: Record<MarketSession, { text: string; mode: "options" | "stocks" | "off" }> = {
-  regular: { text: "Options mode · market open", mode: "options" },
-  premarket: { text: "Shares mode · premarket", mode: "stocks" },
-  afterhours: { text: "Shares mode · after hours", mode: "stocks" },
+const SESSION_LABEL: Record<MarketSession, { text: string; mode: "options" | "off" }> = {
+  regular: { text: "0DTE live · market open", mode: "options" },
+  premarket: { text: "Callouts at 9:30 ET", mode: "off" },
+  afterhours: { text: "Callouts resume 9:30 ET", mode: "off" },
   closed: { text: "Market closed", mode: "off" },
 };
 
 const SESSION_HINT: Record<MarketSession, string> = {
-  regular: "Watching for 0DTE option signals — check Alerts when one fires.",
-  premarket: "Stocks only until 9:30 AM ET — no option alerts yet.",
-  afterhours: "Stocks only after 4 PM ET — no option alerts until open.",
+  regular: "Fast movers → BUY CALL/PUT when TRADE fires. Check Alerts.",
+  premarket: "Tape runs; option callouts fire at 9:30 AM ET.",
+  afterhours: "Tape runs; option callouts resume at 9:30 AM ET.",
   closed: "Scanning pauses until 4:00 AM ET premarket.",
 };
 

@@ -10,9 +10,9 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   if (!checkApiToken(req)) return unauthorized();
   try {
-    const { listJournal } = await import("@/lib/alert-store");
+    const { listJournal, lastBrokerImport } = await import("@/lib/alert-store");
     const limit = Number(new URL(req.url).searchParams.get("limit") ?? 100);
-    return NextResponse.json({ ok: true, journal: listJournal(limit) });
+    return NextResponse.json({ ok: true, journal: listJournal(limit), lastImport: lastBrokerImport() });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err?.message ?? "journal unavailable", journal: [] }, { status: 500 });
   }

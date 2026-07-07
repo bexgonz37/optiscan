@@ -22,12 +22,18 @@ import {
   getNotificationEvent,
   markNotificationEvent,
   discardAllPendingDiscord,
+  updateNotificationSettings,
   getSetting,
 } from "@/lib/alert-store";
 
 /** True when extended-hours stock notify is disabled (default). */
 export function extendedStockNotifyEnabled(): boolean {
   return getSetting("extended_stock_notify") === "1";
+}
+
+/** True when DISCORD_WEBHOOK_URL is set in env (never expose the URL to clients). */
+export function discordConfigured(): boolean {
+  return Boolean(String(process.env.DISCORD_WEBHOOK_URL ?? "").trim());
 }
 
 function isExtendedStockAlert(alertLike: any): boolean {
@@ -42,6 +48,16 @@ export function ensureDiscordPendingCleared(): number {
   const s = getNotificationSettings();
   if (!s || s.discord_requires_manual_confirm) return 0;
   return discardAllPendingDiscord("superseded: auto-send enabled");
+}
+
+/** Product default: auto-send TRADE alerts. Clears manual-confirm if it was re-enabled. */
+export function enforceDiscordAutoSend(): number {
+  const s = getNotificationSettings();
+  if (!s) return 0;
+  if (s.discord_requires_manual_confirm) {
+    updateNotificationSettings({ discordRequiresManualConfirm: false });
+  }
+  return discardAllPendingDiscord("superseded: auto-send enforced");
 }
 
 async function postToDiscord(content: string, { skipPublicCheck = false } = {}): Promise<void> {
@@ -69,16 +85,16 @@ export async function notifyNewAlert(alertId: number, alertLike: any): Promise<v
       return;
     }
     const isStock = alertLike?.assetClass === "stock" || alertLike?.asset_class === "stock";
-    if (isExtendedStockAlert(alertLike) && !extendedStockNotifyEnabled()) {
+    if (isStock) {
       insertNotificationEvent({
         alertId,
         channel: "discord_webhook",
         status: "skipped",
-        error: "extended-hours stock alerts disabled in settings (still logged to history)",
+        error: "stock alerts removed — options-only product",
       });
       return;
     }
-    if (!isStock && !isOptionsSession()) {
+    if (!isOptionsSession()) {
       insertNotificationEvent({
         alertId,
         channel: "discord_webhook",

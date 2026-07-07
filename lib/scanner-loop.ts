@@ -41,6 +41,7 @@ const DISCOVERY_MS = Number(process.env.SCANNER_DISCOVERY_MS ?? 30_000);
 const DISCOVERY_TOP_N = Number(process.env.SCANNER_DISCOVERY_TOP_N ?? 20);
 const PROMOTION_MS = Number(process.env.SCANNER_PROMOTION_MS ?? 5 * 60_000);
 const DISCOVERY_MIN_VOLUME = Number(process.env.SCANNER_DISCOVERY_MIN_VOLUME ?? 100_000);
+const TAPE_ENRICH_MS = Number(process.env.SCANNER_TAPE_ENRICH_MS ?? 30_000);
 const RING_MAX = 360; // ~6 minutes of 1s ticks
 
 interface Tick { t: number; p: number; v: number }
@@ -72,6 +73,8 @@ interface LoopState {
   lastDiscoveryAt: number;
   discoveryCount: number;
   promoted: Map<string, number>;
+  lastTapeEnrichAt: number;
+  tapeBadgeCache: Map<string, { catalystType?: string; catalystFresh?: boolean; haltStatus?: string | null }>;
 }
 
 type G = typeof globalThis & { __optiscanLoop?: LoopState; __optiscanLoopTimer?: ReturnType<typeof setTimeout> };
@@ -83,6 +86,7 @@ function state(): LoopState {
       running: false, intervalMs: LOOP_MS, targetMs: LOOP_MS, lastTickAt: null,
       ticks: 0, triggers: 0, alerts: 0, errors: 0, note: null, session: null,
       symbols: new Map(), movers: [], tape: [], lastDiscoveryAt: 0, discoveryCount: 0, promoted: new Map(),
+      lastTapeEnrichAt: 0, tapeBadgeCache: new Map(),
     };
   }
   // Survive Next dev hot reloads from pre-discovery loop state.
@@ -90,6 +94,8 @@ function state(): LoopState {
   g.__optiscanLoop.lastDiscoveryAt ??= 0;
   g.__optiscanLoop.discoveryCount ??= 0;
   g.__optiscanLoop.promoted ??= new Map();
+  g.__optiscanLoop.lastTapeEnrichAt ??= 0;
+  g.__optiscanLoop.tapeBadgeCache ??= new Map();
   return g.__optiscanLoop;
 }
 
@@ -133,27 +139,6 @@ async function ensureVwap(ticker: string, st: SymState, nowMs: number) {
   if (res?.available && res.bars?.length) {
     st.vwap = sessionVwap(sessionBars(res.bars));
     st.relVol = relativeVolume(res.bars, nowMs);
-  }
-}
-
-/** Extended-hours trigger: regular-stock callout, NO option chain fetch. */
-async function handleStockTrigger(ticker: string, st: SymState, read: any, quote: any, nowMs: number) {
-  const s = state();
-  st.cooldownUntil = nowMs + TRIGGER_COOLDOWN_MS;
-  s.triggers++;
-  const { captureStockAlert } = await import("@/lib/stock-capture");
-  const id = await captureStockAlert({
-    ticker, price: quote.price, movePct: quote.changePercent ?? 0,
-    shortRate: read.accelRead.shortRate, accel: read.accelRead.accel,
-    surge: read.surge, relVol: st.relVol, efficiency: read.efficiency,
-    vwap: st.vwap, aboveVwap: read.levels.aboveVwap,
-    hodBreak: read.levels.hodBreak, lodBreak: read.levels.lodBreak,
-    direction: read.dir.direction, directionConfidence: read.dir.confidence,
-    shareVolume: quote.volume ?? null, nowMs,
-  });
-  if (id != null) {
-    st.lastAlertAt = nowMs;
-    s.alerts++;
   }
 }
 
@@ -262,13 +247,16 @@ async function tick() {
   s.lastTickAt = nowMs;
   s.ticks++;
 
-  // Session router: premarket/afterhours -> stock callouts, regular -> 0DTE
-  // options, closed -> no scanning at all (tracker still finishes open alerts).
+  // Options-only: scan during regular hours; outside RTH the loop still
+  // updates tape for charts but does not fire callouts.
   const session: MarketSession = marketSession(nowMs);
   s.session = session;
   if (session === "closed") {
     s.note = "market closed — scanning paused (resumes 4:00 AM ET)";
-    return; // no snapshot call: zero API spend while closed
+    return;
+  }
+  if (session !== "regular") {
+    s.note = "0DTE callouts fire 9:30–4:00 ET — tape still live for charts";
   }
 
   const minRate = getSettingNum("scanner_min_rate_pct_min", Number(process.env.SCANNER_MIN_RATE_PCT_MIN ?? 0.18));
@@ -364,12 +352,10 @@ async function tick() {
       })
     ) {
       // fire-and-forget: the 1s heartbeat must never wait on a chain fetch.
-      // Session router: options capture during RTH, stock capture in
-      // premarket/after-hours (never fetches a chain).
-      const fire = session === "regular"
-        ? handleTrigger(q.symbol, st, { accelRead, surge, efficiency, levels, dir }, q, nowMs)
-        : handleStockTrigger(q.symbol, st, { accelRead, surge, efficiency, levels, dir }, q, nowMs);
-      fire.catch((err) => { s.errors++; console.warn(`[${session === "regular" ? "0dte" : "stock"}-loop] trigger failed:`, err?.message); });
+      // Options callouts only during regular hours.
+      if (session !== "regular") continue;
+      const fire = handleTrigger(q.symbol, st, { accelRead, surge, efficiency, levels, dir }, q, nowMs);
+      fire.catch((err) => { s.errors++; console.warn("[0dte-loop] trigger failed:", err?.message); });
     }
   }
   vwapCandidates.sort((a, b) => b.rate - a.rate);
@@ -390,7 +376,27 @@ async function tick() {
   }
 
   s.movers = movers.sort((a, b) => Math.abs(b.shortRate ?? 0) - Math.abs(a.shortRate ?? 0)).slice(0, 20);
-  await enrichTapeContext(tape, nowMs);
+
+  for (const row of tape) {
+    const cached = s.tapeBadgeCache.get(row.symbol);
+    if (cached) {
+      row.catalystType = cached.catalystType;
+      row.catalystFresh = cached.catalystFresh;
+      row.haltStatus = cached.haltStatus;
+    }
+  }
+  if (nowMs - s.lastTapeEnrichAt >= TAPE_ENRICH_MS) {
+    s.lastTapeEnrichAt = nowMs;
+    await enrichTapeContext(tape, nowMs);
+    for (const row of tape) {
+      s.tapeBadgeCache.set(row.symbol, {
+        catalystType: row.catalystType,
+        catalystFresh: row.catalystFresh,
+        haltStatus: row.haltStatus ?? null,
+      });
+    }
+  }
+
   s.tape = tape;
 
   // Live option-quote refresh needs chains — RTH only.

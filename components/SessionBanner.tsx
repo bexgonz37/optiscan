@@ -16,14 +16,14 @@ const MESSAGES: Record<MarketSession, { text: ReactNode }> = {
   premarket: {
     text: (
       <>
-        Premarket — watching <strong>stocks only</strong> (shares ↑/↓). No option alerts until 9:30 AM ET.
+        Premarket — tape is live; <strong>BUY CALL/PUT</strong> callouts fire at 9:30 AM ET.
       </>
     ),
   },
   afterhours: {
     text: (
       <>
-        After hours — watching <strong>stocks only</strong> (shares ↑/↓). No option alerts until 9:30 AM ET.
+        After hours — tape is live; option callouts resume at 9:30 AM ET.
       </>
     ),
   },

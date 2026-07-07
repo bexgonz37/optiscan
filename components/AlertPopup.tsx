@@ -1,13 +1,7 @@
 "use client";
 
 /**
- * AlertPopup — real-time popup stack for newly captured scanner alerts.
- *
- * Interrupts ONLY for confirmed trades: a popup fires only when the verdict —
- * re-checked against the LIVE tape at this moment — is TRADE (BUY CALL /
- * BUY PUT). WAIT and SKIP alerts never popup or beep; they live in the Alerts
- * page history instead. While a popup is on screen its verdict keeps
- * re-computing against the live tape, so a stalled move downgrades in place.
+ * AlertPopup — real-time popup stack for 0DTE TRADE callouts (BUY CALL / BUY PUT).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -15,6 +9,7 @@ import { scanHeaders } from "@/hooks/useScanner";
 import { useLiveTapeMap, liveCtxFor } from "@/hooks/useLiveTapeMap";
 import { computeTradeVerdict, isTradeEligible } from "@/lib/trade-verdict";
 import { isOptionsSession } from "@/lib/trading-session";
+import { OptionAlertCard } from "@/components/alert-cards/OptionAlertCard";
 
 interface PopupAlert {
   id: number; ticker: string; direction: string | null; alert_type: string | null;
@@ -35,30 +30,12 @@ interface PopupAlert {
   alert_tier: string | null;
   alert_time: string | null;
   asset_class: string | null;
-  session: string | null;
   capture_action: string | null;
-}
-
-function alertKind(a: PopupAlert): "stock" | "options" {
-  if (a.asset_class === "stock" || (a.trade_bias ?? "").startsWith("stock_")) return "stock";
-  return "options";
-}
-
-function isExtendedStockAlert(a: PopupAlert): boolean {
-  if (alertKind(a) !== "stock") return false;
-  const s = a.session ?? "";
-  return s === "premarket" || s === "afterhours";
-}
-
-function stockNotifyLabel(a: PopupAlert): string {
-  const session = a.session === "afterhours" ? "After hours" : a.session === "premarket" ? "Premarket" : "Shares";
-  return `${session} · SHARES ONLY`;
 }
 
 const LS_LAST_ID = "optiscan:popup:lastId";
 const LS_SNOOZE = "optiscan:popup:snooze";
 const SNOOZE_MS = 60 * 60 * 1000;
-// Fast pickup — a BUY signal even a few seconds late is a missed entry on 0DTE.
 const POLL_MS = 1_000;
 const MAX_STACK = 3;
 
@@ -97,20 +74,17 @@ function AlertCard({
   onAct: (action: string) => void;
 }) {
   const [showDetails, setShowDetails] = useState(false);
-  const kind = alertKind(a);
+  const verdict = computeTradeVerdict(a, live);
 
   return (
     <div className="panel popup-card">
       <div className="popup-card-head">
+        <span className="verdict-pill verdict-trade">{verdict.headline}</span>
         <span className="spacer flex-1" />
         <button className="pill btn btn-xs" onClick={onDismiss}>✕</button>
       </div>
 
-      {kind === "stock" ? (
-        <StockAlertCard alert={a} mode={mode} showDetails={showDetails} />
-      ) : (
-        <OptionAlertCard alert={a} live={live} mode={mode} showDetails={showDetails} />
-      )}
+      <OptionAlertCard alert={a} live={live} mode={mode} showDetails={showDetails} />
 
       <button
         type="button"
@@ -122,7 +96,7 @@ function AlertCard({
 
       <div className="btn-row mt-2">
         <button className="pill btn btn-primary btn-xs" onClick={() => onAct("open_chart")}>Watch chart</button>
-        {kind === "options" && computeTradeVerdict(a, live).action === "TRADE" ? (
+        {verdict.action === "TRADE" ? (
           <button className="pill btn btn-xs" onClick={() => onAct("trade_taken")}>I took this trade</button>
         ) : null}
         <button className="pill btn btn-xs" onClick={() => onAct("journal")}>Journal</button>
@@ -131,7 +105,7 @@ function AlertCard({
       <div className="muted text-xs mt-1">
         {mode === "public"
           ? "Educational market signal only. Not financial advice."
-          : "Research signal — you decide size and execution."}
+          : "0DTE research signal — you decide size and execution."}
       </div>
     </div>
   );
@@ -171,7 +145,7 @@ export function AlertPopup({
         setMode(langMode);
       }
       if (!settingsRef.current?.browser_popup_enabled) return;
-      const extendedStockNotify = Boolean(s.extendedStockNotify);
+      if (!isOptionsSession()) return;
 
       const lastId = Number(localStorage.getItem(LS_LAST_ID) ?? 0);
       const res = await fetch(`/api/alerts?minId=${lastId}&limit=10`, { cache: "no-store", headers });
@@ -184,14 +158,10 @@ export function AlertPopup({
 
       const snoozed = snoozeMap();
       const now = Date.now();
-      // Popups interrupt ONLY for a live-confirmed BUY CALL / BUY PUT.
-      // Research-tier alerts and WAIT/SKIP verdicts stay in the Alerts history.
       const show = fresh.filter((x) =>
         !(snoozed[x.ticker] && now - snoozed[x.ticker] < SNOOZE_MS) &&
         x.alert_tier !== "research" &&
-        !(isExtendedStockAlert(x) && !extendedStockNotify) &&
-        // Never popup 0DTE options outside regular hours (9:30–16:00 ET).
-        (alertKind(x) === "stock" || isOptionsSession()) &&
+        x.asset_class !== "stock" &&
         isTradeEligible(x, liveCtxFor(tapeRef.current, x.ticker)),
       );
       if (!show.length) return;
@@ -205,16 +175,11 @@ export function AlertPopup({
       if (settingsRef.current?.sound_enabled) beep();
       if (settingsRef.current?.desktop_notification_enabled && typeof Notification !== "undefined" && Notification.permission === "granted") {
         const latest = show[show.length - 1];
-        const kind = alertKind(latest);
         const v = computeTradeVerdict(latest, liveCtxFor(tapeRef.current, latest.ticker));
-        const headline = v.headline;
-        const prefix = kind === "stock" ? `[Stock] ` : `[0DTE] `;
         const title = langMode === "private"
-          ? `${prefix}${latest.ticker}: ${headline}`
-          : `${prefix}${latest.public_label ?? "Alert"}: ${latest.ticker}`;
-        const body = langMode === "private"
-          ? (kind === "stock" ? `${stockNotifyLabel(latest)} — setup ${Math.round(latest.signal_score ?? 0)}/100` : v.reason)
-          : `Setup ${Math.round(latest.signal_score ?? 0)}/100 · Risk ${Math.round(latest.risk_score ?? 0)}/100`;
+          ? `[0DTE] ${latest.ticker}: ${v.headline}`
+          : `${latest.public_label ?? "Alert"}: ${latest.ticker}`;
+        const body = langMode === "private" ? v.reason : `Setup ${Math.round(latest.signal_score ?? 0)}/100 · Risk ${Math.round(latest.risk_score ?? 0)}/100`;
         new Notification(title, { body, tag: `optiscan-${latest.id}` });
       }
     } catch { /* polling is best-effort */ }

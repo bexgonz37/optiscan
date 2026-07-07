@@ -23,7 +23,7 @@ const goodCall = {
 test("computeTradeVerdict: strong call setup -> Buy call option", () => {
   const v = computeTradeVerdict(goodCall);
   assert.equal(v.action, "TRADE");
-  assert.equal(v.headline, "Buy call option ↑");
+  assert.equal(v.headline, "BUY CALL");
   assert.equal(v.side, "CALL");
 });
 
@@ -97,7 +97,7 @@ test("computeTradeVerdict: bearish put candidate -> BUY PUT", () => {
     short_rate_at_alert: -0.4,
   });
   assert.equal(v.action, "TRADE");
-  assert.equal(v.headline, "Buy put option ↓");
+  assert.equal(v.headline, "BUY PUT");
 });
 
 // The AMZN case: barely-moving stock with strong contract scores must not

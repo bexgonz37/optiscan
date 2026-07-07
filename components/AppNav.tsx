@@ -8,15 +8,15 @@ import { marketSession, type MarketSession } from "@/lib/trading-session";
 
 /** Minimal nav: Live · Alerts · Settings. Help lives in Settings. */
 const PAGES = [
-  { href: "/", label: "Live", hint: "What's moving right now — session-aware watchlist" },
-  { href: "/alerts", label: "Alerts", hint: "Signals that fired + track record + journal" },
+  { href: "/", label: "Live", hint: "Fast-moving 0DTE tickers — click for charts" },
+  { href: "/alerts", label: "Alerts", hint: "BUY CALL/PUT callouts, accuracy, journal" },
   { href: "/settings", label: "Settings", hint: "Notifications, preferences, and help" },
 ] as const;
 
-const SESSION_BADGE: Record<MarketSession, { text: string; mode: "options" | "stocks" | "off" }> = {
-  regular: { text: "Options mode · market open", mode: "options" },
-  premarket: { text: "Shares mode · premarket", mode: "stocks" },
-  afterhours: { text: "Shares mode · after hours", mode: "stocks" },
+const SESSION_BADGE: Record<MarketSession, { text: string; mode: "options" | "off" }> = {
+  regular: { text: "0DTE live · market open", mode: "options" },
+  premarket: { text: "Callouts at 9:30 ET", mode: "off" },
+  afterhours: { text: "Callouts resume 9:30 ET", mode: "off" },
   closed: { text: "Market closed", mode: "off" },
 };
 

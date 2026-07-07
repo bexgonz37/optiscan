@@ -1098,6 +1098,7 @@ tbody td:first-child {
   height: 100%;
   border-radius: 4px;
   background: linear-gradient(90deg, var(--amber), var(--green));
+  transition: width 0.4s ease;
 }
 .scoreval {
   font-family: var(--mono);
@@ -1576,6 +1577,21 @@ tr.clickable {
   font-weight: 800;
   font-size: 18px;
   letter-spacing: -0.02em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.chart-live-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0, 214, 143, 0.12);
+  color: var(--green);
+}
+.chart-candle-meta {
+  margin-top: 4px;
 }
 .chart-price {
   font-size: 20px;
@@ -2625,6 +2641,68 @@ table tbody tr {
   align-items: center;
   gap: 6px;
   width: 100%;
+}
+
+.zero-dte-strip-meta {
+  line-height: 1.2;
+}
+
+.zero-dte-strip-near-level {
+  border-color: var(--warn);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--warn) 35%, transparent);
+}
+
+.zero-dte-strip-error {
+  margin-bottom: var(--space-2);
+}
+
+.settings-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.momentum-action-col {
+  min-width: 120px;
+}
+
+.verdict-preview-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.verdict-preview-block-compact {
+  gap: var(--space-1);
+}
+
+.verdict-entry-line {
+  font-size: var(--text-sm);
+}
+
+.verdict-copy-btn {
+  align-self: flex-start;
+}
+
+.research-verdict-hero {
+  margin-bottom: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.research-verdict-label {
+  margin-bottom: var(--space-2);
+}
+
+.chart-verdict-strip {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.verdict-preview-section {
+  border-bottom: 1px solid var(--line);
 }
 
 .tape-badges {

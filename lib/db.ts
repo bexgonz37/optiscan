@@ -218,6 +218,9 @@ const JOURNAL_COLUMN_MIGRATIONS: [string, string][] = [
   ["screenshot_url", "ALTER TABLE trade_journal ADD COLUMN screenshot_url TEXT"],
   ["emotion_tag", "ALTER TABLE trade_journal ADD COLUMN emotion_tag TEXT"],
   ["lesson", "ALTER TABLE trade_journal ADD COLUMN lesson TEXT"],
+  ["source", "ALTER TABLE trade_journal ADD COLUMN source TEXT"],
+  ["import_batch_id", "ALTER TABLE trade_journal ADD COLUMN import_batch_id INTEGER"],
+  ["dedup_key", "ALTER TABLE trade_journal ADD COLUMN dedup_key TEXT"],
 ];
 
 function migrate(db: Database.Database) {
@@ -240,6 +243,18 @@ function migrate(db: Database.Database) {
   const journalCols = cols("trade_journal");
   for (const [col, sql] of JOURNAL_COLUMN_MIGRATIONS) if (!journalCols.has(col)) db.exec(sql);
 
+  db.exec(`
+CREATE TABLE IF NOT EXISTS broker_imports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  broker TEXT NOT NULL DEFAULT 'robinhood',
+  filename TEXT,
+  period_start TEXT,
+  period_end TEXT,
+  row_count INTEGER NOT NULL DEFAULT 0,
+  imported_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_journal_dedup ON trade_journal(dedup_key);
+`);
   // One-time: enable automatic Discord TRADE alerts (BUY CALL/PUT only at capture).
   const autoDiscord: any = db.prepare("SELECT value FROM scanner_settings WHERE key='discord_auto_defaults_v1'").get();
   if (!autoDiscord) {
@@ -259,6 +274,20 @@ function migrate(db: Database.Database) {
     ).run();
     db.prepare(
       `INSERT INTO scanner_settings (key, value) VALUES ('discord_discard_stale_pending_v1', '1')
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+    ).run();
+  }
+
+  // One-time: re-lock Discord to auto-send (manual confirm kept getting re-enabled).
+  const forceAutoV2: any = db.prepare("SELECT value FROM scanner_settings WHERE key='discord_force_auto_v2'").get();
+  if (!forceAutoV2) {
+    db.prepare("UPDATE notification_settings SET discord_enabled=1, discord_requires_manual_confirm=0 WHERE id=1").run();
+    db.prepare(
+      `UPDATE notification_events SET status='skipped', error='superseded: auto-send enforced v2'
+       WHERE channel='discord_webhook' AND status='pending_confirm'`,
+    ).run();
+    db.prepare(
+      `INSERT INTO scanner_settings (key, value) VALUES ('discord_force_auto_v2', '1')
        ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
     ).run();
   }

@@ -1,38 +1,25 @@
 "use client";
 
 /**
- * /settings — language mode, capture thresholds, notification channels,
- * dashboard preferences, Discord controls, and pending manual-confirm queue.
+ * /settings — language mode, capture thresholds, and notification channels.
  */
 
 import { useCallback, useEffect, useState } from "react";
 import { scanHeaders, requestNotifyPermission } from "@/hooks/useScanner";
 import { AppNav } from "@/components/AppNav";
 import { HelpSection } from "@/components/HelpSection";
-import {
-  DEFAULT_REFRESH_SEC,
-  REFRESH_CHOICES,
-  loadDashboardPrefs,
-  saveDashboardPrefs,
-} from "@/lib/dashboard-prefs";
+import { loadDashboardPrefs, saveDashboardPrefs } from "@/lib/dashboard-prefs";
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<any>(null);
   const [languageMode, setLanguageMode] = useState("private");
   const [webhookConfigured, setWebhookConfigured] = useState(false);
-  const [pending, setPending] = useState<any[]>([]);
-  const [minMomentum, setMinMomentum] = useState("62");
-  const [minUnusual, setMinUnusual] = useState("80");
   const [minRate, setMinRate] = useState("0.18");
   const [minSurge, setMinSurge] = useState("1.4");
   const [minAccel, setMinAccel] = useState("0");
   const [minEfficiency, setMinEfficiency] = useState("0.35");
   const [minLevelSurge, setMinLevelSurge] = useState("1.2");
-  const [stockMinScore, setStockMinScore] = useState("66");
-  const [refreshSec, setRefreshSec] = useState(DEFAULT_REFRESH_SEC);
   const [desktopAlerts, setDesktopAlerts] = useState(false);
-  const [extendedStockNotify, setExtendedStockNotify] = useState(false);
-  const [stripSymbols, setStripSymbols] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
   const [testPreview, setTestPreview] = useState<any>(null);
 
@@ -47,24 +34,12 @@ export default function SettingsPage() {
         setWebhookConfigured(Boolean(d.discordWebhookConfigured));
         const t = d.scannerThresholds;
         if (t) {
-          setMinMomentum(String(t.alertMinMomentumScore ?? 62));
-          setMinUnusual(String(t.alertMinUnusualScore ?? 80));
           setMinRate(String(t.scannerMinRatePctMin ?? 0.18));
           setMinSurge(String(t.scannerMinVolSurge ?? 1.4));
           setMinAccel(String(t.scannerMinAccel ?? 0));
           setMinEfficiency(String(t.scannerMinEfficiency ?? 0.35));
           setMinLevelSurge(String(t.scannerMinLevelSurge ?? 1.2));
-          setStockMinScore(String(t.stockMinScore ?? 66));
         }
-        setExtendedStockNotify(Boolean(d.extendedStockNotify));
-      }
-      const manualConfirm = Boolean(d.settings?.discord_requires_manual_confirm);
-      if (manualConfirm) {
-        const p = await fetch("/api/notifications/pending", { cache: "no-store", headers });
-        const pd = await p.json();
-        if (pd.ok) setPending(pd.pending ?? []);
-      } else {
-        setPending([]);
       }
     } catch (e: any) {
       setMsg(e?.message ?? "Failed to load settings");
@@ -74,11 +49,7 @@ export default function SettingsPage() {
   useEffect(() => {
     load();
     const p = loadDashboardPrefs();
-    if (typeof p.refreshSec === "number" && (REFRESH_CHOICES as readonly number[]).includes(p.refreshSec)) {
-      setRefreshSec(p.refreshSec);
-    }
     if (typeof p.desktopAlerts === "boolean") setDesktopAlerts(p.desktopAlerts);
-    if (Array.isArray(p.zeroDteStripSymbols)) setStripSymbols(p.zeroDteStripSymbols.join(", "));
   }, [load]);
 
   async function patch(body: Record<string, unknown>) {
@@ -94,17 +65,6 @@ export default function SettingsPage() {
       setLanguageMode(d.languageMode);
       setMsg("Saved.");
     } else setMsg(d.error ?? "Save failed");
-  }
-
-  async function confirmPending(id: number, discard = false) {
-    const res = await fetch("/api/notifications/pending", {
-      method: "POST",
-      headers: { "content-type": "application/json", ...scanHeaders() },
-      body: JSON.stringify(discard ? { id, action: "discard" } : { id }),
-    });
-    const d = await res.json();
-    setMsg(d.ok ? (discard ? "Discarded." : "Sent to Discord.") : d.error ?? "Failed");
-    load();
   }
 
   async function testChannels() {
@@ -131,12 +91,6 @@ export default function SettingsPage() {
       saveDashboardPrefs({ desktopAlerts: false });
       setMsg("Desktop alerts disabled.");
     }
-  }
-
-  function setIntervalPref(sec: number) {
-    setRefreshSec(sec);
-    saveDashboardPrefs({ refreshSec: sec });
-    setMsg(`Scanner refresh set to ${sec}s.`);
   }
 
   const Toggle = ({ label, field, hint }: { label: string; field: string; hint?: string }) => (
@@ -170,31 +124,13 @@ export default function SettingsPage() {
       <AppNav status={msg ? [{ label: msg }] : undefined} />
 
       <div className="settings-page-header muted">
-        Notifications and optional tuning. Help and how the scanner works are at the bottom.
+        Notifications and speed thresholds. Help and how the scanner works are at the bottom.
       </div>
 
       <div className="settings-grid">
         <div className="panel main settings-panel">
           <h2>Dashboard</h2>
-          <p className="settings-desc">Scanner auto-refreshes on the dashboard. Live movers update every ~1.5s automatically.</p>
-
-          <div className="settings-row">
-            <div className="settings-row-label">
-              Scanner refresh interval
-              <div className="settings-row-hint">How often momentum &amp; unusual scans run</div>
-            </div>
-            <select
-              className="select-sm"
-              value={refreshSec}
-              onChange={(e) => setIntervalPref(Number(e.target.value))}
-            >
-              {REFRESH_CHOICES.map((s) => (
-                <option key={s} value={s}>
-                  {s} seconds
-                </option>
-              ))}
-            </select>
-          </div>
+          <p className="settings-desc">0DTE fast-mover callouts — speed and volume gates for BUY CALL/PUT signals.</p>
 
           <div className="settings-row">
             <div className="settings-row-label">
@@ -206,31 +142,11 @@ export default function SettingsPage() {
             </button>
           </div>
 
-          <div className="settings-row">
-            <div className="settings-row-label">
-              0DTE context strip symbols
-              <div className="settings-row-hint">Up to 6 tickers on Live (comma-separated). Chart symbol is always first.</div>
-            </div>
-            <input
-              className="input-sm"
-              style={{ minWidth: 220 }}
-              placeholder="SPY, QQQ, IWM…"
-              value={stripSymbols}
-              onChange={(e) => setStripSymbols(e.target.value)}
-              onBlur={() => {
-                const list = stripSymbols.split(/[\s,]+/).map((s) => s.trim().toUpperCase()).filter(Boolean).slice(0, 6);
-                setStripSymbols(list.join(", "));
-                saveDashboardPrefs({ zeroDteStripSymbols: list.length ? list : undefined });
-                setMsg(list.length ? "0DTE strip symbols saved." : "0DTE strip reset to universe default.");
-              }}
-            />
-          </div>
-
           <h2>Language mode</h2>
           <p className="settings-desc">
-            Private mode shows trading labels. Public mode is education-safe for screenshots.
+            Private mode shows BUY CALL/PUT labels. Public mode is education-safe for screenshots.
           </p>
-          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
             <button
               type="button"
               className={`btn-toggle${languageMode === "private" ? " on" : ""}`}
@@ -248,13 +164,7 @@ export default function SettingsPage() {
           </div>
 
           <h2>Capture thresholds</h2>
-          <p className="settings-desc">Minimum scores and scanner gates. Higher = fewer but sharper callouts. Run <code>node scripts/calibrate-accuracy.mjs</code> to tune toward 70% early hit rate.</p>
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
-            <span className="settings-desc" style={{ margin: 0 }}>Momentum ≥</span>
-            <input className="input-sm" style={{ width: 64 }} value={minMomentum} onChange={(e) => setMinMomentum(e.target.value)} />
-            <span className="settings-desc" style={{ margin: 0 }}>Unusual ≥</span>
-            <input className="input-sm" style={{ width: 64 }} value={minUnusual} onChange={(e) => setMinUnusual(e.target.value)} />
-          </div>
+          <p className="settings-desc">Scanner speed and volume gates. Higher = fewer callouts.</p>
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
             <span className="settings-desc" style={{ margin: 0 }}>Speed ≥</span>
             <input className="input-sm" style={{ width: 64 }} value={minRate} onChange={(e) => setMinRate(e.target.value)} />
@@ -268,23 +178,16 @@ export default function SettingsPage() {
             <input className="input-sm" style={{ width: 64 }} value={minEfficiency} onChange={(e) => setMinEfficiency(e.target.value)} />
             <span className="settings-desc" style={{ margin: 0 }}>· Level-break surge ≥</span>
             <input className="input-sm" style={{ width: 64 }} value={minLevelSurge} onChange={(e) => setMinLevelSurge(e.target.value)} />
-          </div>
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
-            <span className="settings-desc" style={{ margin: 0 }} title="Premarket/after-hours stock callouts (BUY LONG/SHORT)">Stock score ≥</span>
-            <input className="input-sm" style={{ width: 64 }} value={stockMinScore} onChange={(e) => setStockMinScore(e.target.value)} />
             <button
               type="button"
               className="btn-primary"
               onClick={() =>
                 patch({
-                  alertMinMomentumScore: Number(minMomentum),
-                  alertMinUnusualScore: Number(minUnusual),
                   scannerMinRatePctMin: Number(minRate),
                   scannerMinVolSurge: Number(minSurge),
                   scannerMinAccel: Number(minAccel),
                   scannerMinEfficiency: Number(minEfficiency),
                   scannerMinLevelSurge: Number(minLevelSurge),
-                  stockMinScore: Number(stockMinScore),
                 })
               }
             >
@@ -296,25 +199,6 @@ export default function SettingsPage() {
           <Toggle label="Browser popups" field="browser_popup_enabled" hint="Popup cards with Watch / Journal / Snooze" />
           <Toggle label="Desktop notifications" field="desktop_notification_enabled" hint="Works with popup alerts from the scanner" />
           <Toggle label="Sound" field="sound_enabled" />
-          <div className="settings-row">
-            <div className="settings-row-label">
-              Premarket/after-hours stock alerts
-              <div className="settings-row-hint">
-                Popups and Discord for extended-hours share callouts. Off by default — alerts still appear in History.
-              </div>
-            </div>
-            <button
-              type="button"
-              className={`btn-toggle${extendedStockNotify ? " on" : ""}`}
-              onClick={() => {
-                const next = !extendedStockNotify;
-                setExtendedStockNotify(next);
-                patch({ extendedStockNotify: next });
-              }}
-            >
-              {extendedStockNotify ? "On" : "Off"}
-            </button>
-          </div>
           <div style={{ marginTop: 12 }}>
             <button type="button" className="btn-primary" onClick={testChannels}>
               Preview test alert
@@ -325,8 +209,6 @@ export default function SettingsPage() {
               {JSON.stringify({ private: testPreview.privatePopup, public: testPreview.publicAlert, discord: testPreview.discordPreview }, null, 2)}
             </pre>
           ) : null}
-
-
         </div>
 
         <div className="panel main settings-panel">
@@ -339,10 +221,9 @@ export default function SettingsPage() {
             </strong>
           </p>
           <Toggle label="Discord alerts" field="discord_enabled" hint="Auto-send BUY CALL/PUT when TRADE fires (needs webhook in .env.local)" />
-          <Toggle label="Manual confirmation" field="discord_requires_manual_confirm" hint="Off = instant Discord on every BUY signal" />
-          {!settings?.discord_requires_manual_confirm && settings?.discord_enabled ? (
+          {settings?.discord_enabled ? (
             <p className="settings-desc" style={{ color: "var(--green)", marginTop: 8 }}>
-              Auto-send ON — only extra-clear BUY signals (≥82% confidence, stock moving ≥0.2%/min the right way). No flood.
+              Auto-send ON — TRADE signals post to Discord instantly. No manual confirm queue.
             </p>
           ) : null}
           <div className="settings-row">
@@ -359,37 +240,6 @@ export default function SettingsPage() {
               Send Discord test
             </button>
           </div>
-
-          {settings?.discord_requires_manual_confirm ? (
-            <>
-              <h2>Pending Discord ({pending.length})</h2>
-              {!pending.length ? (
-                <p className="settings-desc">Nothing waiting for confirmation.</p>
-              ) : (
-                pending.map((p) => {
-                  let content = "";
-                  try {
-                    content = JSON.parse(p.payload_json ?? "{}").content ?? "";
-                  } catch {
-                    /* ignore */
-                  }
-                  return (
-                    <div key={p.id} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: 10, marginBottom: 8 }}>
-                      <div style={{ fontSize: 11, whiteSpace: "pre-line", marginBottom: 8 }}>{content}</div>
-                      <div style={{ display: "flex", gap: 8 }}>
-                        <button type="button" className="btn-primary" onClick={() => confirmPending(p.id)}>
-                          Send
-                        </button>
-                        <button type="button" className="btn-toggle" onClick={() => confirmPending(p.id, true)}>
-                          Discard
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </>
-          ) : null}
         </div>
       </div>
 
