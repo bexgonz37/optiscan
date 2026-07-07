@@ -37,6 +37,7 @@ import { optionsPressure } from "@/lib/options-pressure";
 import { buildExplanation } from "@/lib/explain";
 import { cached } from "@/lib/scan-cache";
 import { computeTradeVerdict, hasLiveSpeedProof, isClearTradeSignal, passesQualityGates, resolveAlertTier } from "@/lib/trade-verdict";
+import { evaluateCalloutQuality } from "@/lib/callout-quality";
 import { alertRecentDuplicate, insertAlert, getSettingNum, updateAlertCatalyst, insertNotificationEvent, recentOppositeTradeExists } from "@/lib/alert-store";
 import { isCoreSymbol } from "@/lib/universe";
 import { tradingDay, minutesToClose } from "@/lib/db";
@@ -228,15 +229,55 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
           logicLine: `${rawVerdict.logicLine} Downgraded at capture: ${tradeBlockers.join("; ")}.`,
         }
       : rawVerdict;
+
+  // ── META gold bar (audit winner #436: 0.35%/min, 4.0x surge, early, 93 setup) ──
+  const gold = evaluateCalloutQuality({
+    setupScore: setup.score,
+    shortRate: sig.shortRate,
+    surge: sig.surge,
+    direction: sig.direction,
+    moveStatus: status,
+    callWatch: watch.callWatch,
+    putWatch: watch.putWatch,
+    worthScore: worth.score,
+    contractScore: contractRes.score,
+    liquidityScore,
+    efficiency: sig.efficiency,
+    accel: sig.accel,
+    aboveVwap: sig.aboveVwap,
+    hodBreak: sig.hodBreak,
+    lodBreak: sig.lodBreak,
+    tradeBlockers,
+  });
+  if (gold.tier === "SKIP") return null;
+
+  let finalVerdict = captureVerdict;
+  let finalCaptureAction: "TRADE" | "WAIT" | "SKIP" =
+    captureVerdict.action === "TRADE" && tradeBlockers.length === 0 ? "TRADE" : captureVerdict.action === "SKIP" ? "SKIP" : "WAIT";
+
+  if (gold.tier === "TRADE" && tradeBlockers.length === 0) {
+    finalCaptureAction = "TRADE";
+  } else {
+    finalCaptureAction = "WAIT";
+    if (gold.tier === "WATCH" && captureVerdict.action === "TRADE") {
+      finalVerdict = {
+        ...captureVerdict,
+        action: "WAIT" as const,
+        headline: captureVerdict.side === "PUT" ? "WATCH PUT" : "WATCH CALL",
+        reason: `Strong tape but below META BUY bar: ${gold.failures[0] ?? "needs more conviction"}`,
+        bullets: [...captureVerdict.bullets, `META bar: ${gold.failures.slice(0, 2).join("; ")}`],
+        logicLine: `${captureVerdict.logicLine} Held at WATCH — META reference needs ≥0.28%/min, ≥2.8x surge, early move, side gap ≥30.`,
+      };
+    }
+  }
+
   const qualityGates = passesQualityGates(verdictInput) && tradeBlockers.length === 0;
   const speedOk = hasLiveSpeedProof(verdictInput, side, liveCtx);
-  const tier = resolveAlertTier(captureVerdict, qualityGates, speedOk);
-
-  // Core names always persist as WATCH. Extended names persist on WATCH when
-  // setup is solid (≥64) or when the full TRADE gates pass — no more silent
-  // drops on decent movers that aren't order-ready yet.
-  const extendedWatchMin = getSettingNum("alert_extended_watch_min", Number(process.env.ALERT_EXTENDED_WATCH_MIN ?? 60));
-  if (!isCoreSymbol(sig.ticker) && captureVerdict.action !== "TRADE" && setup.score < extendedWatchMin) return null;
+  const tier = resolveAlertTier(
+    finalCaptureAction === "TRADE" ? { ...finalVerdict, action: "TRADE" as const } : finalVerdict,
+    qualityGates && gold.tier === "TRADE",
+    speedOk,
+  );
 
   const pressure = sig.chainContracts?.length
     ? optionsPressure(sig.chainContracts, { direction: sig.direction ?? undefined })
@@ -269,7 +310,10 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     signalScore: setup.score, riskScore: risk.score,
     optionsLiquidityScore: explainInput.liquidityScore,
     scannerScore: sig.scannerScore ?? null,
-    scoreBreakdownJson: JSON.stringify({ ...setup.breakdown, reasons: setup.reasons, riskReasons: risk.reasons, contractReasons: contractRes.reasons, tradeBlockers }),
+    scoreBreakdownJson: JSON.stringify({
+      ...setup.breakdown, reasons: setup.reasons, riskReasons: risk.reasons, contractReasons: contractRes.reasons,
+      tradeBlockers, goldTier: gold.tier, goldFailures: gold.failures,
+    }),
     aiExplanation: priv.text, publicExplanation: pub.text,
     privateLabel: privateLabel0dte({ bias, setupScore: setup.score, direction: sig.direction, riskFlags: flags } as any),
     publicLabel: publicLabel0dte({ direction: sig.direction, setupScore: setup.score }),
@@ -285,8 +329,8 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     shortRateAtAlert: sig.shortRate,
     volumeSurgeAtAlert: sig.surge,
     alertTier: tier,
-    captureAction: captureVerdict.action,
-    captureConfidence: captureVerdict.confidence,
+    captureAction: finalCaptureAction,
+    captureConfidence: finalVerdict.confidence,
     assetClass: "options", session: "regular",
     optionsPressureLabel: pressure?.label ?? null,
     optionsPressureJson: pressure ? JSON.stringify(pressure) : null,
@@ -331,9 +375,9 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
       try {
         insertNotificationEvent({
           alertId: id, channel: "discord_webhook", status: "skipped",
-          error: captureVerdict.action === "TRADE"
+          error: finalCaptureAction === "TRADE"
             ? "TRADE but not clear enough for Discord (need ≥82% confidence, ≥0.2%/min aligned speed)"
-            : `verdict ${captureVerdict.action} (${tier} tier) — only clear TRADE notifies`,
+            : `verdict ${finalCaptureAction} (${tier} tier) — only clear TRADE notifies`,
         });
       } catch { /* bookkeeping never breaks capture */ }
     }

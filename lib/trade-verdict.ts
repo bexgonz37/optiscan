@@ -288,7 +288,7 @@ export function isTradeEligible(a: AlertVerdictInput, live?: LiveTapeContext, no
   if (isStockAlert(a)) return false;
   // 0DTE popups/notifications are an RTH product — never interrupt after the close.
   if (!isOptionsSession(nowMs)) return false;
-  return computeTradeVerdict(a, live).action === "TRADE";
+  return frozenCalloutVerdict(a, live, nowMs).action === "TRADE";
 }
 
 /** Stricter gate for Discord — only unmistakable, direction-aligned moves. */
@@ -352,14 +352,14 @@ function skipVerdict(
  * BUYs sitting on contracts down 31% from entry, which made wrong calls look
  * confident all session.
  */
-export function frozenCalloutVerdict(a: AlertVerdictInput, live?: LiveTapeContext): TradeVerdict {
-  const v = computeTradeVerdict(a, live);
+export function frozenCalloutVerdict(a: AlertVerdictInput, live?: LiveTapeContext, nowMs = Date.now()): TradeVerdict {
+  const v = computeTradeVerdict(a, live, nowMs);
   if (String(a.capture_action ?? "").toUpperCase() !== "TRADE") return v;
   const side =
     v.side !== "NONE" ? v.side : sideFromBias(a.trade_bias ?? null, a.direction ?? null);
   if (v.action === "TRADE") return v;
 
-  if (shouldLockCapturedTrade(a, side, live)) {
+  if (shouldLockCapturedTrade(a, side, live, nowMs)) {
     const headline = side === "PUT" ? "BUY PUT" : side === "CALL" ? "BUY CALL" : v.headline;
     return {
       ...v,
@@ -389,7 +389,7 @@ export function frozenCalloutVerdict(a: AlertVerdictInput, live?: LiveTapeContex
   };
 }
 
-export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext): TradeVerdict {
+export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext, nowMs = Date.now()): TradeVerdict {
   if (isStockAlert(a)) return stockVerdict(a);
 
   const merged: AlertVerdictInput = {
@@ -454,7 +454,7 @@ export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext
     (bias === "long_call_candidate" || bias === "long_put_candidate");
 
   if (qualityGates && !speedOk) {
-    if (shouldLockCapturedTrade(merged, side, live)) {
+    if (shouldLockCapturedTrade(merged, side, live, nowMs)) {
       const headline = side === "CALL" ? "BUY CALL" : side === "PUT" ? "BUY PUT" : "TRADE";
       return {
         action: "TRADE",
@@ -486,7 +486,7 @@ export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext
 
   if (qualityGates && speedOk) {
     if (live != null && !isLiveTapeAligned(side, live)) {
-      if (shouldLockCapturedTrade(merged, side, live)) {
+      if (shouldLockCapturedTrade(merged, side, live, nowMs)) {
         const headline = side === "CALL" ? "BUY CALL" : side === "PUT" ? "BUY PUT" : "TRADE";
         return {
           action: "TRADE",
@@ -519,8 +519,8 @@ export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext
     // Freshness gate (live re-checks only, never the historical at-alert view):
     // an old BUY was priced off a contract/premium that no longer exists. Even
     // if the tape re-accelerates, demand a NEW alert instead of reviving this one.
-    if (live != null && isStaleForTrade(merged)) {
-      const ageMin = alertAgeMinutes(merged) ?? 0;
+    if (live != null && isStaleForTrade(merged, nowMs)) {
+      const ageMin = alertAgeMinutes(merged, nowMs) ?? 0;
       const staleWhy = `This signal fired ${ageMin} min ago — too old to act on. The contract and entry it was based on are stale; wait for a fresh signal.`;
       return {
         action: "WAIT",
