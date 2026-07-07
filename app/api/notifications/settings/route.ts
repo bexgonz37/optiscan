@@ -21,11 +21,12 @@ export async function GET(req: Request) {
       scannerThresholds: {
         alertMinMomentumScore: getSettingNum("alert_min_momentum_score", Number(process.env.ALERT_MIN_MOMENTUM_SCORE ?? 58)),
         alertMinUnusualScore: getSettingNum("alert_min_unusual_score", Number(process.env.ALERT_MIN_UNUSUAL_SCORE ?? 80)),
-        scannerMinRatePctMin: getSettingNum("scanner_min_rate_pct_min", Number(process.env.SCANNER_MIN_RATE_PCT_MIN ?? 0.12)),
-        scannerMinVolSurge: getSettingNum("scanner_min_vol_surge", Number(process.env.SCANNER_MIN_VOL_SURGE ?? 1.25)),
+        scannerMinRatePctMin: getSettingNum("scanner_min_rate_pct_min", Number(process.env.SCANNER_MIN_RATE_PCT_MIN ?? 0.2)),
+        scannerMinVolSurge: getSettingNum("scanner_min_vol_surge", Number(process.env.SCANNER_MIN_VOL_SURGE ?? 1.4)),
         scannerMinAccel: getSettingNum("scanner_min_accel", Number(process.env.SCANNER_MIN_ACCEL ?? 0)),
-        scannerMinEfficiency: getSettingNum("scanner_min_efficiency", Number(process.env.SCANNER_MIN_EFFICIENCY ?? 0.28)),
-        scannerMinLevelSurge: getSettingNum("scanner_min_level_surge", Number(process.env.SCANNER_MIN_LEVEL_SURGE ?? 1.15)),
+        scannerMinEfficiency: getSettingNum("scanner_min_efficiency", Number(process.env.SCANNER_MIN_EFFICIENCY ?? 0.35)),
+        scannerMinLevelSurge: getSettingNum("scanner_min_level_surge", Number(process.env.SCANNER_MIN_LEVEL_SURGE ?? 1.2)),
+        tradeMaxSpreadPct: getSettingNum("trade_max_spread_pct", Number(process.env.TRADE_MAX_SPREAD_PCT ?? 5)),
         stockMinScore: getSettingNum("stock_min_score", Number(process.env.STOCK_MIN_SCORE ?? 66)),
       },
       extendedStockNotify: getSetting("extended_stock_notify") === "1",
@@ -50,6 +51,7 @@ export async function PATCH(req: Request) {
     if (body.scannerMinAccel != null) setSetting("scanner_min_accel", String(Number(body.scannerMinAccel)));
     if (body.scannerMinEfficiency != null) setSetting("scanner_min_efficiency", String(Number(body.scannerMinEfficiency)));
     if (body.scannerMinLevelSurge != null) setSetting("scanner_min_level_surge", String(Number(body.scannerMinLevelSurge)));
+    if (body.tradeMaxSpreadPct != null) setSetting("trade_max_spread_pct", String(Number(body.tradeMaxSpreadPct)));
     if (body.stockMinScore != null) setSetting("stock_min_score", String(Number(body.stockMinScore)));
     if (typeof body.extendedStockNotify === "boolean") {
       setSetting("extended_stock_notify", body.extendedStockNotify ? "1" : "0");
@@ -62,11 +64,12 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ ok: true, settings, languageMode: getSetting("language_mode") ?? "private", discordWebhookConfigured: discordConfigured(), scannerThresholds: {
         alertMinMomentumScore: getSettingNum("alert_min_momentum_score", Number(process.env.ALERT_MIN_MOMENTUM_SCORE ?? 58)),
         alertMinUnusualScore: getSettingNum("alert_min_unusual_score", Number(process.env.ALERT_MIN_UNUSUAL_SCORE ?? 80)),
-        scannerMinRatePctMin: getSettingNum("scanner_min_rate_pct_min", Number(process.env.SCANNER_MIN_RATE_PCT_MIN ?? 0.12)),
-        scannerMinVolSurge: getSettingNum("scanner_min_vol_surge", Number(process.env.SCANNER_MIN_VOL_SURGE ?? 1.25)),
+        scannerMinRatePctMin: getSettingNum("scanner_min_rate_pct_min", Number(process.env.SCANNER_MIN_RATE_PCT_MIN ?? 0.2)),
+        scannerMinVolSurge: getSettingNum("scanner_min_vol_surge", Number(process.env.SCANNER_MIN_VOL_SURGE ?? 1.4)),
         scannerMinAccel: getSettingNum("scanner_min_accel", Number(process.env.SCANNER_MIN_ACCEL ?? 0)),
-        scannerMinEfficiency: getSettingNum("scanner_min_efficiency", Number(process.env.SCANNER_MIN_EFFICIENCY ?? 0.28)),
-        scannerMinLevelSurge: getSettingNum("scanner_min_level_surge", Number(process.env.SCANNER_MIN_LEVEL_SURGE ?? 1.15)),
+        scannerMinEfficiency: getSettingNum("scanner_min_efficiency", Number(process.env.SCANNER_MIN_EFFICIENCY ?? 0.35)),
+        scannerMinLevelSurge: getSettingNum("scanner_min_level_surge", Number(process.env.SCANNER_MIN_LEVEL_SURGE ?? 1.2)),
+        tradeMaxSpreadPct: getSettingNum("trade_max_spread_pct", Number(process.env.TRADE_MAX_SPREAD_PCT ?? 5)),
         stockMinScore: getSettingNum("stock_min_score", Number(process.env.STOCK_MIN_SCORE ?? 66)),
       },
       extendedStockNotify: getSetting("extended_stock_notify") === "1",

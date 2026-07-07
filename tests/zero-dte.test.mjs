@@ -18,6 +18,9 @@ import {
   shouldTrigger,
   rankZeroDteContracts,
   speedPersistentFromRing,
+  contractEntryGate,
+  trendAlignedForTrade,
+  nearTheMoneyPair,
 } from "../lib/zero-dte.js";
 
 const T0 = Date.parse("2026-07-06T15:00:00Z");
@@ -176,4 +179,85 @@ test("rankZeroDteContracts: composite ranking beats cheapest/most-volume heurist
 test("expectedRemainingMovePct is conservative and bounded", () => {
   assert.ok(expectedRemainingMovePct({ shortRate: 0.4, minsToClose: 120 }) <= 3);
   assert.ok(expectedRemainingMovePct({ shortRate: 0.01, minsToClose: 200 }) >= 0.15);
+});
+
+// ── accuracy-audit gates (2026-07-07): order economics + trend alignment ────
+
+test("contractEntryGate: passes a tight near-ATM contract", () => {
+  const g = contractEntryGate(
+    { mid: 1.2, spreadPct: 3, delta: 0.5 },
+    { underlying: 100, expRemainPct: 1.5 },
+  );
+  assert.equal(g.ok, true);
+});
+
+test("contractEntryGate: blocks wide spreads (the -31% audit ticket was 9.2%)", () => {
+  const g = contractEntryGate({ mid: 1.2, spreadPct: 9.2, delta: 0.5 }, { underlying: 100, expRemainPct: 2 });
+  assert.equal(g.ok, false);
+  assert.ok(g.failures.some((f) => f.includes("spread")));
+});
+
+test("contractEntryGate: blocks lotto deltas and deep ITM", () => {
+  assert.equal(contractEntryGate({ mid: 0.2, spreadPct: 2, delta: 0.12 }, { underlying: 100, expRemainPct: 2 }).ok, false);
+  assert.equal(contractEntryGate({ mid: 8, spreadPct: 2, delta: 0.92 }, { underlying: 100, expRemainPct: 2 }).ok, false);
+});
+
+test("contractEntryGate: blocks premium that prices in more move than remains", () => {
+  // mid 3 on a $100 stock = 3% breakeven vs ~1% plausibly left
+  const g = contractEntryGate({ mid: 3, spreadPct: 2, delta: 0.5 }, { underlying: 100, expRemainPct: 1 });
+  assert.equal(g.ok, false);
+  assert.ok(g.failures.some((f) => f.includes("breakeven")));
+});
+
+test("contractEntryGate: no quote = no BUY", () => {
+  assert.equal(contractEntryGate(null, {}).ok, false);
+  assert.equal(contractEntryGate({ mid: 0 }, {}).ok, false);
+});
+
+test("trendAlignedForTrade: blocks counter-trend flickers (MU call on a -6.8% day)", () => {
+  assert.equal(trendAlignedForTrade({ direction: "bullish", movePct: -6.8 }).ok, false);
+  // +1.25% day is inside the 1.5% tolerance — small reversals are tradeable
+  assert.equal(trendAlignedForTrade({ direction: "bearish", movePct: 1.25 }).ok, true);
+});
+
+test("trendAlignedForTrade: tolerance and level-break exception", () => {
+  // small counter-move is fine
+  assert.equal(trendAlignedForTrade({ direction: "bullish", movePct: -1.0 }).ok, true);
+  // hard counter needs an aligned break
+  assert.equal(trendAlignedForTrade({ direction: "bullish", movePct: -3, hodBreak: false }).ok, false);
+  assert.equal(trendAlignedForTrade({ direction: "bullish", movePct: -3, hodBreak: true }).ok, true);
+  // extended day move needs a fresh aligned break (late-chase guard)
+  assert.equal(trendAlignedForTrade({ direction: "bearish", movePct: -9, lodBreak: false }).ok, false);
+  assert.equal(trendAlignedForTrade({ direction: "bearish", movePct: -9, lodBreak: true }).ok, true);
+});
+
+test("rankZeroDteContracts: prefers delta-zone strikes closest to spot, not score alone", () => {
+  const contracts = [
+    { side: "call", strike: 110, mid: 0.3, spreadPct: 1, volume: 5000, openInterest: 2000, delta: 0.15 }, // far OTM, great liquidity
+    { side: "call", strike: 101, mid: 1.4, spreadPct: 4, volume: 800, openInterest: 300, delta: 0.48 },   // near spot, usable delta
+    { side: "call", strike: 100, mid: 1.8, spreadPct: 5, volume: 500, openInterest: 200, delta: 0.55 },   // at spot
+  ];
+  const ranked = rankZeroDteContracts(contracts, "call", { minsToClose: 200, expRemainPct: 2, max: 3, underlying: 100.2 });
+  assert.equal(ranked[0].contract.strike, 100);
+  assert.equal(ranked[1].contract.strike, 101);
+  assert.equal(ranked[2].contract.strike, 110); // lotto wing last even with best liquidity
+});
+
+test("nearTheMoneyPair: closest usable strike each side with entry economics", () => {
+  const contracts = [
+    { side: "call", strike: 100, mid: 1.5, bid: 1.45, ask: 1.55, spreadPct: 6.6, delta: 0.52, optionSymbol: "C100" },
+    { side: "call", strike: 105, mid: 0.4, bid: 0.35, ask: 0.45, spreadPct: 25, delta: 0.18, optionSymbol: "C105" },
+    { side: "put", strike: 100, mid: 1.6, bid: 1.5, ask: 1.7, spreadPct: 12.5, delta: -0.48, optionSymbol: "P100" },
+  ];
+  const pair = nearTheMoneyPair(contracts, 100.5);
+  assert.equal(pair.call.strike, 100);
+  assert.equal(pair.put.strike, 100);
+  assert.equal(pair.call.breakevenPct, +((1.5 / 100.5) * 100).toFixed(2));
+  assert.ok(pair.put.distFromSpotPct < 1);
+});
+
+test("nearTheMoneyPair: null side when nothing usable", () => {
+  const pair = nearTheMoneyPair([{ side: "call", strike: 100, mid: 0, delta: 0.5 }], 100);
+  assert.equal(pair.call, null);
+  assert.equal(pair.put, null);
 });

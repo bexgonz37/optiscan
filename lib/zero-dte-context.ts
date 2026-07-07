@@ -5,6 +5,7 @@
 import { getZeroDteUniverse } from "./universe.js";
 import { fetchCandles, fetchOptionChain, fetchQuote } from "./polygon-provider.js";
 import { ivToPct } from "./alert-scoring.js";
+import { nearTheMoneyPair } from "./zero-dte.js";
 import { cached } from "./scan-cache.ts";
 import { keyLevels, type KeyLevel } from "./chart-indicators.ts";
 import { minutesToClose } from "./trading-session.ts";
@@ -91,7 +92,7 @@ function quotePrice(quoteRes: any): number | null {
 
 async function fetchStripLevels(symbol: string, spot: number | null, nowMs: number) {
   const levels: KeyLevel[] = await cached(`strip-lvl:${symbol}`, STRIP_IV_TTL_MS, async () => {
-    const candles = await fetchCandles(symbol, { resolution: "1", timespan: "minute", days: 1 }).catch(() => null);
+    const candles: any = await fetchCandles(symbol, { resolution: "1", timespan: "minute", days: 1 }).catch(() => null);
     const bars = candles?.available ? candles.bars ?? [] : [];
     return keyLevels(bars);
   });
@@ -105,10 +106,28 @@ async function fetchStripLevels(symbol: string, spot: number | null, nowMs: numb
   };
 }
 
+export interface StripContract {
+  optionSymbol: string | null;
+  strike: number;
+  side: "call" | "put";
+  bid: number | null;
+  ask: number | null;
+  mid: number;
+  spreadPct: number | null;
+  delta: number | null;
+  /** % move of the underlying needed for the premium to break even. */
+  breakevenPct: number;
+  breakevenOk: boolean | null;
+  distFromSpotPct: number;
+}
+
 export interface StripRow {
   symbol: string;
   price: number | null;
   atmIv: number | null;
+  /** Nearest usable strike each side (delta 0.35-0.65 preferred). */
+  call?: StripContract | null;
+  put?: StripContract | null;
   nearestLevelLabel?: string | null;
   nearestLevelDistPct?: number | null;
   nearLevel?: boolean;
@@ -141,14 +160,23 @@ export async function fetchStripAtmIv(symbol: string, nowMs = Date.now()): Promi
         symbol: sym,
         price: spot,
         atmIv: null,
+        call: null,
+        put: null,
         error: chain?.note ?? "chain unavailable",
         ...levelCtx,
       };
     }
+    // Near-the-money pair: what you'd actually buy. No extra API cost — the
+    // chain is already here for ATM IV.
+    // breakevenOk needs live speed context — the strip shows the raw "needs
+    // X% move" number and lets the callout gates judge feasibility.
+    const pair = nearTheMoneyPair(chain.contracts ?? [], spot);
     return {
       symbol: sym,
       price: spot,
       atmIv: atmIvFromContracts(chain.contracts ?? [], spot),
+      call: pair.call,
+      put: pair.put,
       ...levelCtx,
     };
   });

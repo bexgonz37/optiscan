@@ -1,10 +1,14 @@
 /**
- * audit-accuracy.mjs — bucket today's trade-tier alerts by failure mode vs 5m move.
+ * audit-accuracy.mjs — grade today's trade-tier alerts on BOTH axes:
+ *   1. options ORDER (primary): did THIS contract pay from entry mid, after
+ *      spread? A callout is only right if the ticket was a good fill.
+ *   2. underlying (context): favorable 5m move.
  * Usage: node scripts/audit-accuracy.mjs [YYYY-MM-DD]
  */
 import Database from "better-sqlite3";
 import { computeTradeVerdict, isClearTradeSignal, hasLiveSpeedProof, MIN_SPEED_PCT_PER_MIN } from "../lib/trade-verdict.ts";
 import { EARLY_MOVE_WIN_PCT } from "../lib/early-accuracy.ts";
+import { computeOptionOutcome, OPTION_WIN_THRESHOLD_PCT } from "../lib/signal-outcomes.ts";
 
 const day = process.argv[2] ?? new Date().toISOString().slice(0, 10);
 const dbPath = process.env.ALERT_DB_DIR
@@ -187,6 +191,55 @@ const top = alerts
 console.log("\n--- Early winners ---");
 for (const r of top.slice(0, 10)) {
   console.log(`  ${r.ticker.padEnd(6)} +${r.m5?.toFixed(2)}%  setup=${r.setup}  speed=${r.sr?.toFixed(2) ?? "n/a"}/min`);
+}
+
+// ── OPTIONS-ORDER AXIS (primary) ─────────────────────────────────────────────
+const snapsFor = db.prepare(
+  "SELECT checkpoint, mid, bid, ask, spread_pct FROM options_snapshots WHERE alert_id=? ORDER BY taken_at",
+);
+const tickets = [];
+for (const a of alerts) {
+  if (String(a.capture_action ?? "").toUpperCase() !== "TRADE" || !a.option_symbol) continue;
+  const snaps = snapsFor.all(a.id);
+  const entry = snaps.find((s) => s.checkpoint === "alert" && s.mid > 0) ?? null;
+  const out = computeOptionOutcome(snaps);
+  const m5 = move5m.get(a.id)?.percent_move_from_alert ?? null;
+  // conservative Robinhood-ish fill: buy at the ask, exit at the best mid
+  let askAdjRet = null;
+  if (entry?.ask > 0) {
+    const after = snaps.filter((s) => s.checkpoint !== "alert" && s.mid > 0);
+    if (after.length) askAdjRet = +(((Math.max(...after.map((s) => s.mid)) - entry.ask) / entry.ask) * 100).toFixed(1);
+  }
+  tickets.push({
+    id: a.id, ticker: a.ticker, side: a.option_side, strike: a.strike,
+    spread: entry?.spread_pct ?? null, entryMid: entry?.mid ?? null,
+    ret: out?.returnPct ?? null, win: out ? out.win : null, askAdjRet,
+    m5, stockWin: m5 != null ? m5 >= EARLY_MOVE_WIN_PCT : null,
+  });
+}
+const gradedT = tickets.filter((t) => t.win != null);
+console.log(`\n=== OPTIONS ORDER accuracy (the ticket, not the chart) ===`);
+console.log(`TRADE tickets: ${tickets.length} | gradeable (entry + post-fire quotes): ${gradedT.length}`);
+if (gradedT.length) {
+  const wins = gradedT.filter((t) => t.win).length;
+  const askWins = gradedT.filter((t) => t.askAdjRet != null && t.askAdjRet >= OPTION_WIN_THRESHOLD_PCT).length;
+  console.log(`Option win (mid +${OPTION_WIN_THRESHOLD_PCT}%): ${wins}/${gradedT.length} (${pct(wins, gradedT.length)})`);
+  console.log(`Ask-fill win (buy ask -> best mid): ${askWins}/${gradedT.length} (${pct(askWins, gradedT.length)})`);
+  const both = gradedT.filter((t) => t.stockWin != null);
+  console.log(`Stock✓ but ORDER lost: ${both.filter((t) => t.stockWin && !t.win).length} of ${both.length} graded on both axes`);
+  console.log("\nWin rate by entry spread:");
+  for (const [lo, hi] of [[0, 3], [3, 5], [5, 8], [8, 99]]) {
+    const g = gradedT.filter((t) => t.spread != null && t.spread >= lo && t.spread < hi);
+    const w = g.filter((t) => t.win).length;
+    const avgRet = g.length ? (g.reduce((s, t) => s + t.ret, 0) / g.length).toFixed(0) : "—";
+    console.log(`  ${lo}-${hi}%: ${pct(w, g.length)} (${w}/${g.length}) avg mid return ${avgRet}%`);
+  }
+  console.log("\nWorst tickets:");
+  for (const t of [...gradedT].sort((a, b) => (a.ret ?? 0) - (b.ret ?? 0)).slice(0, 8)) {
+    console.log(`  #${t.id} ${t.ticker} $${t.strike}${String(t.side ?? "?")[0].toUpperCase()} spread=${t.spread?.toFixed(1)}% mid ${t.ret}% askFill ${t.askAdjRet ?? "—"}% | stock5m ${t.m5 ?? "—"}`);
+  }
+} else {
+  console.log("No gradeable tickets — check that the live snapshot refresh is marking open TRADE alerts.");
 }
 
 db.close();

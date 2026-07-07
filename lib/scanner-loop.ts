@@ -36,7 +36,7 @@ import { getSettingNum } from "@/lib/alert-store";
 
 const LOOP_MS = Number(process.env.SCANNER_LOOP_MS ?? 1000);
 const ACTIVE_REFRESH_MS = Number(process.env.SCANNER_ACTIVE_REFRESH_MS ?? 7000);
-const TRIGGER_COOLDOWN_MS = Number(process.env.SCANNER_TRIGGER_COOLDOWN_MS ?? 5 * 60 * 1000);
+const TRIGGER_COOLDOWN_MS = Number(process.env.SCANNER_TRIGGER_COOLDOWN_MS ?? 10 * 60 * 1000);
 const DISCOVERY_MS = Number(process.env.SCANNER_DISCOVERY_MS ?? 30_000);
 const DISCOVERY_TOP_N = Number(process.env.SCANNER_DISCOVERY_TOP_N ?? 20);
 const PROMOTION_MS = Number(process.env.SCANNER_PROMOTION_MS ?? 5 * 60_000);
@@ -158,8 +158,8 @@ async function handleTrigger(ticker: string, st: SymState, read: any, quote: any
 
   const minsToClose = minutesToClose(nowMs);
   const expRemainPct = expectedRemainingMovePct({ shortRate: read.accelRead.shortRate ?? 0, minsToClose });
-  const bestCall = rankZeroDteContracts(chain.contracts, "call", { minsToClose, expRemainPct, max: 1 } as any)[0]?.contract ?? null;
-  const bestPut = rankZeroDteContracts(chain.contracts, "put", { minsToClose, expRemainPct, max: 1 } as any)[0]?.contract ?? null;
+  const bestCall = rankZeroDteContracts(chain.contracts, "call", { minsToClose, expRemainPct, max: 1, underlying: quote.price } as any)[0]?.contract ?? null;
+  const bestPut = rankZeroDteContracts(chain.contracts, "put", { minsToClose, expRemainPct, max: 1, underlying: quote.price } as any)[0]?.contract ?? null;
 
   const { captureZeroDte } = await import("@/lib/alert-capture");
   const id = await captureZeroDte({
@@ -193,16 +193,24 @@ async function refreshActiveAlerts(nowMs: number) {
     try {
       const { getDb } = await import("@/lib/db");
       const db = getDb();
-      const alert: any = db.prepare(
-        "SELECT id, option_symbol FROM alerts WHERE ticker=? AND trading_day=? ORDER BY id DESC LIMIT 1",
-      ).get(ticker, tradingDay(nowMs));
-      if (!alert?.option_symbol) continue;
-      const c = chain.contracts.find((x: any) => x.optionSymbol === alert.option_symbol);
-      if (!c) continue;
-      db.prepare(
+      // Mark EVERY open ticket for this ticker, not just the newest row —
+      // audit found 22/23 TRADE orders had zero live marks (ungradeable)
+      // because marks all attached to the ticker's latest alert.
+      const open: any[] = db.prepare(
+        `SELECT id, option_symbol FROM alerts
+         WHERE ticker=? AND trading_day=? AND option_symbol IS NOT NULL
+           AND status='tracking' AND (capture_action='TRADE' OR id=(SELECT MAX(id) FROM alerts WHERE ticker=? AND trading_day=?))
+         ORDER BY id DESC LIMIT 6`,
+      ).all(ticker, tradingDay(nowMs), ticker, tradingDay(nowMs));
+      const ins = db.prepare(
         `INSERT INTO options_snapshots (alert_id, taken_at, checkpoint, option_symbol, bid, ask, mid, spread_pct, volume, open_interest, iv, delta)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-      ).run(alert.id, new Date(nowMs).toISOString(), "live", c.optionSymbol, c.bid, c.ask, c.mid, c.spreadPct, c.volume, c.openInterest, c.iv, c.delta);
+      );
+      for (const alert of open) {
+        const c = chain.contracts.find((x: any) => x.optionSymbol === alert.option_symbol);
+        if (!c) continue;
+        ins.run(alert.id, new Date(nowMs).toISOString(), "live", c.optionSymbol, c.bid, c.ask, c.mid, c.spreadPct, c.volume, c.openInterest, c.iv, c.delta);
+      }
     } catch { /* snapshot bookkeeping never breaks the loop */ }
   }
 }
@@ -259,11 +267,13 @@ async function tick() {
     s.note = "0DTE callouts fire 9:30–4:00 ET — tape still live for charts";
   }
 
-  const minRate = getSettingNum("scanner_min_rate_pct_min", Number(process.env.SCANNER_MIN_RATE_PCT_MIN ?? 0.12));
-  const minSurge = getSettingNum("scanner_min_vol_surge", Number(process.env.SCANNER_MIN_VOL_SURGE ?? 1.25));
+  // Audit 2026-07-07: 23 TRADEs/34min with 7% hit @5m — 0.12/1.25/0.28 with an
+  // 8s window and no persistence fires on 1-tick noise. Restore strict gates.
+  const minRate = getSettingNum("scanner_min_rate_pct_min", Number(process.env.SCANNER_MIN_RATE_PCT_MIN ?? 0.2));
+  const minSurge = getSettingNum("scanner_min_vol_surge", Number(process.env.SCANNER_MIN_VOL_SURGE ?? 1.4));
   const minAccel = getSettingNum("scanner_min_accel", Number(process.env.SCANNER_MIN_ACCEL ?? 0));
-  const minEfficiency = getSettingNum("scanner_min_efficiency", Number(process.env.SCANNER_MIN_EFFICIENCY ?? 0.28));
-  const minLevelSurge = getSettingNum("scanner_min_level_surge", Number(process.env.SCANNER_MIN_LEVEL_SURGE ?? 1.15));
+  const minEfficiency = getSettingNum("scanner_min_efficiency", Number(process.env.SCANNER_MIN_EFFICIENCY ?? 0.35));
+  const minLevelSurge = getSettingNum("scanner_min_level_surge", Number(process.env.SCANNER_MIN_LEVEL_SURGE ?? 1.2));
 
   if (nowMs - s.lastDiscoveryAt >= DISCOVERY_MS) {
     s.lastDiscoveryAt = nowMs;
@@ -289,7 +299,7 @@ async function tick() {
     st.ring.push({ t: nowMs, p: q.price, v: q.volume ?? 0 });
     if (st.ring.length > RING_MAX) st.ring.shift();
 
-    if (st.ring.length < 5) {
+    if (st.ring.length < 10) { // full warmup: 5 ticks fired on stale half-rings
       const warmLevels = detectLevels({ price: q.price, dayHigh: q.dayHigh, dayLow: q.dayLow, vwap: st.vwap });
       tape.push({
         symbol: q.symbol, price: q.price, movePct: q.changePercent, volume: q.volume ?? null,
@@ -303,8 +313,10 @@ async function tick() {
       continue;
     }
 
-    const accelRead = acceleration(st.ring, { shortMs: 8000, nowMs } as any);
-    const surge = volumeSurge(st.ring, { shortMs: 15000, nowMs } as any);
+    // 15s/30s windows: an 8s speed read is one print on quiet names — it
+    // measured spikes, not moves (m1 reversal signature all over the audit).
+    const accelRead = acceleration(st.ring, { shortMs: 15000, nowMs } as any);
+    const surge = volumeSurge(st.ring, { shortMs: 30000, nowMs } as any);
     const efficiency = pathEfficiency(st.ring, { nowMs } as any);
     const nearTrigger = accelRead.shortRate != null && Math.abs(accelRead.shortRate) >= minRate * 0.7;
     if (nearTrigger) await ensureVwap(q.symbol, st, nowMs);
@@ -336,11 +348,13 @@ async function tick() {
       movers.push(row);
     }
 
+    // Real persistence: 3 of the last 5 seconds must independently clear
+    // minRate. minHits:1/3s made this gate a no-op (single blip fired).
     const persistOk = speedPersistentFromRing(st.ring, {
       minRate,
       direction: dir.direction === "bearish" ? "bearish" : "bullish",
-      minHits: 1,
-      subWindowMs: 3000,
+      minHits: 3,
+      subWindowMs: 4000,
     });
     const accelOk = minAccel <= 0 || (accelRead.accel != null && accelRead.accel > minAccel);
 

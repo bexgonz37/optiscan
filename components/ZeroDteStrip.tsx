@@ -6,10 +6,24 @@ import { fmtIv, fmtPrice } from "@/lib/format";
 import { loadDashboardPrefs } from "@/lib/dashboard-prefs";
 import { IvBar } from "@/components/ui";
 
+interface StripContract {
+  strike: number;
+  side: "call" | "put";
+  bid: number | null;
+  ask: number | null;
+  mid: number;
+  spreadPct: number | null;
+  delta: number | null;
+  breakevenPct: number;
+  distFromSpotPct: number;
+}
+
 interface StripRow {
   symbol: string;
   price: number | null;
   atmIv: number | null;
+  call?: StripContract | null;
+  put?: StripContract | null;
   nearestLevelLabel?: string | null;
   nearestLevelDistPct?: number | null;
   nearLevel?: boolean;
@@ -104,6 +118,20 @@ export function ZeroDteStrip({
               {r.atmIv != null ? <IvBar iv={r.atmIv} /> : <span className="muted">IV —</span>}
               {r.atmIv != null ? <span className="muted text-xs">{fmtIv(r.atmIv)}</span> : null}
             </span>
+            {r.call || r.put ? (
+              <span className="zero-dte-strip-pair">
+                {([["C", r.call], ["P", r.put]] as const).map(([label, c]) =>
+                  c ? (
+                    <span key={label} className="zero-dte-strip-contract text-xs" title={`$${c.strike}${label} · delta ${c.delta ?? "—"} · bid ${c.bid ?? "—"} / ask ${c.ask ?? "—"} · needs ${c.breakevenPct}% move to break even`}>
+                      <span className={label === "C" ? "t-call" : "t-put"}>{`$${c.strike}${label}`}</span>
+                      {` ${c.mid.toFixed(2)} · ${c.spreadPct != null ? `${c.spreadPct.toFixed(1)}%` : "—"} spr · needs ${c.breakevenPct}%`}
+                    </span>
+                  ) : (
+                    <span key={label} className="zero-dte-strip-contract text-xs muted">{label === "C" ? "no usable call" : "no usable put"}</span>
+                  ),
+                )}
+              </span>
+            ) : null}
             {r.error ? <span className="zero-dte-strip-err muted text-xs">{r.error}</span> : null}
           </button>
         ))}

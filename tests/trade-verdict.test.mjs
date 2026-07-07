@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { computeTradeVerdict, isTradeEligible, hasLiveSpeedProof, isClearTradeSignal, passesQualityGates, resolveAlertTier, shouldLockCapturedTrade } from "../lib/trade-verdict.ts";
+import { computeTradeVerdict, isTradeEligible, hasLiveSpeedProof, isClearTradeSignal, passesQualityGates, resolveAlertTier, shouldLockCapturedTrade, frozenCalloutVerdict } from "../lib/trade-verdict.ts";
 
 const goodCall = {
   ticker: "SMCI",
@@ -243,4 +243,54 @@ test("resolveAlertTier: TRADE or quality+speed fallback", () => {
 test("passesQualityGates: setup/worth/contract/liquidity + bias", () => {
   assert.equal(passesQualityGates(goodCall), true);
   assert.equal(passesQualityGates({ ...goodCall, signal_score: 65 }), false);
+});
+
+// ── accuracy-audit additions (2026-07-07) ────────────────────────────────────
+
+test("passesQualityGates: bars restored to 75/70/55/45 after the loosening audit", () => {
+  assert.equal(passesQualityGates({ ...goodCall, signal_score: 72 }), false);
+  assert.equal(passesQualityGates({ ...goodCall, option_worth_score: 67 }), false);
+  assert.equal(passesQualityGates({ ...goodCall, zero_dte_contract_score: 52 }), false);
+  assert.equal(passesQualityGates({ ...goodCall, options_liquidity_score: 42 }), false);
+});
+
+test("frozenCalloutVerdict: BUY holds while fresh and intact", () => {
+  const a = { ...goodCall, capture_action: "TRADE", alert_time: new Date(Date.now() - 60_000).toISOString() };
+  const v = frozenCalloutVerdict(a, { shortRate: 0.05, direction: "choppy" }); // stalled but not reversed
+  assert.equal(v.action, "TRADE");
+  assert.equal(v.headline, "BUY CALL");
+});
+
+test("frozenCalloutVerdict: downgrades when the contract bled >20% from entry", () => {
+  const a = {
+    ...goodCall, capture_action: "TRADE",
+    alert_time: new Date(Date.now() - 60_000).toISOString(),
+    entry_mid: 1.0, live_option_mid: 0.69, // -31%, the audit ticket
+  };
+  const v = frozenCalloutVerdict(a, { shortRate: 0.05, direction: "choppy" });
+  assert.notEqual(v.action, "TRADE");
+  assert.ok(v.reason.includes("Was BUY"), v.reason);
+});
+
+test("frozenCalloutVerdict: downgrades when the 5m move went the wrong way", () => {
+  const a = {
+    ...goodCall, capture_action: "TRADE",
+    alert_time: new Date(Date.now() - 60_000).toISOString(),
+    move_5m: -0.4,
+  };
+  const v = frozenCalloutVerdict(a, { shortRate: 0.05, direction: "choppy" });
+  assert.notEqual(v.action, "TRADE");
+});
+
+test("frozenCalloutVerdict: expires after the lock window", () => {
+  const a = { ...goodCall, capture_action: "TRADE", alert_time: new Date(Date.now() - 20 * 60_000).toISOString() };
+  const v = frozenCalloutVerdict(a, { shortRate: 0.02, direction: "choppy" });
+  assert.notEqual(v.action, "TRADE"); // stale + stalled never re-arms as BUY
+  assert.ok(v.bullets.some((b) => b.includes("Was BUY")), v.bullets.join(" | "));
+});
+
+test("WAIT verdicts read as WATCH CALL / WATCH PUT (one side, never both-as-BUY)", () => {
+  const v = computeTradeVerdict({ ...goodCall, signal_score: 72 }); // below TRADE bar
+  assert.equal(v.action, "WAIT");
+  assert.equal(v.headline, "WATCH CALL");
 });

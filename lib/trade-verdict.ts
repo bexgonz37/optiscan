@@ -47,6 +47,11 @@ export interface AlertVerdictInput {
   asset_class?: string | null;
   /** Frozen verdict at capture — used for stock callouts (BUY LONG/SHORT). */
   capture_action?: string | null;
+  /** Order P&L context for the frozen-headline check (from options_snapshots). */
+  entry_mid?: number | null;
+  live_option_mid?: number | null;
+  /** Favorable-signed underlying move 5 min after fire (alert_performance). */
+  move_5m?: number | null;
   capture_confidence?: number | null;
   session?: string | null;
 }
@@ -78,11 +83,13 @@ export function passesQualityGates(a: AlertVerdictInput): boolean {
   const contract = Number(a.zero_dte_contract_score ?? 0);
   const liq = Number(a.options_liquidity_score ?? 0);
   const bias = a.trade_bias ?? "";
+  // Restored to pre-loosening bars (audit: 70/65/50/40 passed 23 TRADEs in
+  // 34 min at a 7% hit rate — the extra volume was all noise).
   return (
-    setup >= 70 &&
-    worth >= 65 &&
-    contract >= 50 &&
-    liq >= 40 &&
+    setup >= 75 &&
+    worth >= 70 &&
+    contract >= 55 &&
+    liq >= 45 &&
     (bias === "long_call_candidate" || bias === "long_put_candidate")
   );
 }
@@ -218,6 +225,9 @@ export function shouldLockCapturedTrade(
   if (!a.alert_time) return false;
   const t = Date.parse(a.alert_time);
   if (!Number.isFinite(t) || nowMs - t > VERDICT_LOCK_MS) return false;
+  // Hard invalidation regardless of tape: the ORDER already failed.
+  if (a.entry_mid != null && a.entry_mid > 0 && a.live_option_mid != null && a.live_option_mid <= a.entry_mid * 0.8) return false;
+  if (a.move_5m != null && a.move_5m < 0) return false;
   if (!live) return true;
   if (side === "CALL" && (live.shortRate ?? 0) < -REVERSAL_SPEED) return false;
   if (side === "PUT" && (live.shortRate ?? 0) > REVERSAL_SPEED) return false;
@@ -334,20 +344,48 @@ function skipVerdict(
   };
 }
 
-/** Verdict for list/chart UI — never downgrade a captured TRADE callout. */
+/**
+ * Verdict for list/chart UI. A captured BUY stays frozen only while it is
+ * still defensible: within VERDICT_LOCK_MS, tape not hard-reversed, contract
+ * mid not bleeding (>20% below entry), 5m move not negative. After that the
+ * LIVE verdict shows, annotated with what was called — the audit found frozen
+ * BUYs sitting on contracts down 31% from entry, which made wrong calls look
+ * confident all session.
+ */
 export function frozenCalloutVerdict(a: AlertVerdictInput, live?: LiveTapeContext): TradeVerdict {
   const v = computeTradeVerdict(a, live);
   if (String(a.capture_action ?? "").toUpperCase() !== "TRADE") return v;
   const side =
     v.side !== "NONE" ? v.side : sideFromBias(a.trade_bias ?? null, a.direction ?? null);
-  const headline = side === "PUT" ? "BUY PUT" : side === "CALL" ? "BUY CALL" : v.headline;
+  if (v.action === "TRADE") return v;
+
+  if (shouldLockCapturedTrade(a, side, live)) {
+    const headline = side === "PUT" ? "BUY PUT" : side === "CALL" ? "BUY CALL" : v.headline;
+    return {
+      ...v,
+      action: "TRADE",
+      side,
+      headline,
+      reason: "Scanner called BUY — headline held while the call is still fresh and intact.",
+      hasSpeedProof: v.hasSpeedProof,
+    };
+  }
+
+  // No longer defensible — show the live verdict, but say what was called.
+  const ageMin = alertAgeMinutes(a) ?? null;
+  const bled = a.entry_mid != null && a.entry_mid > 0 && a.live_option_mid != null && a.live_option_mid <= a.entry_mid * 0.8;
+  const why = bled
+    ? "contract is down >20% from entry"
+    : a.move_5m != null && a.move_5m < 0
+      ? "the 5-min move went the wrong way"
+      : ageMin != null && ageMin * 60_000 > VERDICT_LOCK_MS
+        ? `the call is ${ageMin} min old`
+        : "the tape reversed";
+  const wasLine = `Was BUY ${side === "NONE" ? "" : side} at fire — no longer valid (${why}). Don't chase this one.`;
   return {
     ...v,
-    action: "TRADE",
-    side,
-    headline,
-    reason: v.action === "TRADE" ? v.reason : "Scanner called BUY — headline frozen at fire time.",
-    hasSpeedProof: v.hasSpeedProof || shouldLockCapturedTrade(a, side, live),
+    bullets: [wasLine, ...v.bullets],
+    reason: `${wasLine} ${v.reason}`,
   };
 }
 
@@ -409,10 +447,10 @@ export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext
   }
 
   const qualityGates =
-    setup >= 70 &&
-    worth >= 65 &&
-    contract >= 50 &&
-    liq >= 40 &&
+    setup >= 75 &&
+    worth >= 70 &&
+    contract >= 55 &&
+    liq >= 45 &&
     (bias === "long_call_candidate" || bias === "long_put_candidate");
 
   if (qualityGates && !speedOk) {
@@ -436,7 +474,7 @@ export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext
     return {
       action: "WAIT",
       side: side !== "NONE" ? side : sideFromDirection(merged.direction),
-      headline: side === "PUT" ? "Watch put setup" : side === "CALL" ? "Watch call setup" : "WAIT",
+      headline: side === "PUT" ? "WATCH PUT" : side === "CALL" ? "WATCH CALL" : "WAIT",
       reason: why,
       confidence: Math.round(setup * 0.4 + worth * 0.4 + contract * 0.2),
       contractLine: contractLine(merged),
@@ -469,7 +507,7 @@ export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext
       return {
         action: "WAIT",
         side,
-        headline: side === "PUT" ? "Watch put setup" : side === "CALL" ? "Watch call setup" : "WAIT",
+        headline: side === "PUT" ? "WATCH PUT" : side === "CALL" ? "WATCH CALL" : "WAIT",
         reason: against,
         confidence: Math.round(setup * 0.35 + worth * 0.35 + contract * 0.2),
         contractLine: contractLine(merged),
@@ -487,7 +525,7 @@ export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext
       return {
         action: "WAIT",
         side,
-        headline: side === "PUT" ? "Watch put setup" : side === "CALL" ? "Watch call setup" : "WAIT",
+        headline: side === "PUT" ? "WATCH PUT" : side === "CALL" ? "WATCH CALL" : "WAIT",
         reason: staleWhy,
         confidence: Math.round(setup * 0.3 + worth * 0.3 + contract * 0.2),
         contractLine: contractLine(merged),
@@ -515,7 +553,7 @@ export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext
 
   const waitSide = side !== "NONE" ? side : sideFromDirection(merged.direction);
   const waitHeadline =
-    waitSide === "CALL" ? "Watch call setup" : waitSide === "PUT" ? "Watch put setup" : "WAIT";
+    waitSide === "CALL" ? "WATCH CALL" : waitSide === "PUT" ? "WATCH PUT" : "WAIT";
 
   let waitReason = "Setup forming — does not pass all entry gates yet.";
   if (bias === "wait_for_pullback" || verdict === "Wait for Pullback") {
@@ -524,12 +562,12 @@ export function computeTradeVerdict(a: AlertVerdictInput, live?: LiveTapeContext
     waitReason = "Move may be chasing — wait for confirmation or a better entry.";
   } else if (bias === "watch_only") {
     waitReason = "Watch only — contract or side score not strong enough to enter.";
-  } else if (setup < 70) {
-    waitReason = `Setup ${Math.round(setup)}/100 is below the 70 trade threshold.`;
-  } else if (worth < 65) {
-    waitReason = `Worth-it ${Math.round(worth)}/100 is below the 65 trade threshold.`;
-  } else if (contract < 50) {
-    waitReason = `Contract score ${Math.round(contract)}/100 is too low (need 50+).`;
+  } else if (setup < 75) {
+    waitReason = `Setup ${Math.round(setup)}/100 is below the 75 trade threshold.`;
+  } else if (worth < 70) {
+    waitReason = `Worth-it ${Math.round(worth)}/100 is below the 70 trade threshold.`;
+  } else if (contract < 55) {
+    waitReason = `Contract score ${Math.round(contract)}/100 is too low (need 55+).`;
   }
 
   return {

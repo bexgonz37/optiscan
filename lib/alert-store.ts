@@ -190,6 +190,17 @@ export interface AlertFilters {
 }
 
 /** Latest options alert capture fields — keeps chart verdict locked after BUY fires. */
+/** True when the OPPOSITE side of this ticker was a TRADE callout within windowMs. */
+export function recentOppositeTradeExists(ticker: string, side: "call" | "put", day: string, nowMs: number, windowMs = 30 * 60_000): boolean {
+  const opposite = side === "call" ? "put" : "call";
+  const sinceIso = new Date(nowMs - windowMs).toISOString();
+  const row = getDb().prepare(
+    `SELECT 1 FROM alerts WHERE ticker=? AND trading_day=? AND capture_action='TRADE'
+       AND option_side=? AND alert_time>=? LIMIT 1`,
+  ).get(ticker, day, opposite, sinceIso);
+  return Boolean(row);
+}
+
 export function getLatestAlertCapture(ticker: string) {
   const row: any = getDb().prepare(
     `SELECT capture_action, capture_confidence, alert_time, short_rate_at_alert, volume_surge_at_alert,
@@ -244,6 +255,10 @@ export function listAlerts(f: AlertFilters = {}) {
 
   const sql = `
     SELECT a.*,
+      (SELECT p.percent_move_from_alert FROM alert_performance p WHERE p.alert_id=a.id AND p.checkpoint='5m') AS move_5m,
+      (SELECT s.mid FROM options_snapshots s WHERE s.alert_id=a.id AND s.checkpoint='alert' AND s.mid>0 LIMIT 1) AS entry_mid,
+      (SELECT s.mid FROM options_snapshots s WHERE s.alert_id=a.id AND s.checkpoint IN ('live','eod') AND s.mid>0 ORDER BY s.taken_at DESC LIMIT 1) AS live_option_mid,
+      (SELECT MAX(s.mid) FROM options_snapshots s WHERE s.alert_id=a.id AND s.checkpoint IN ('live','eod') AND s.mid>0) AS best_mid,
       (SELECT max_percent_move_after_alert FROM alert_performance p WHERE p.alert_id=a.id ORDER BY p.checked_at DESC LIMIT 1) AS latest_max_move,
       (SELECT percent_move_from_alert FROM alert_performance p WHERE p.alert_id=a.id AND p.checkpoint='eod') AS eod_move,
       EXISTS (SELECT 1 FROM trade_journal j WHERE j.alert_id = a.id) AS trade_taken

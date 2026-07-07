@@ -2647,6 +2647,20 @@ table tbody tr {
   line-height: 1.2;
 }
 
+.zero-dte-strip-pair {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+}
+.zero-dte-strip-contract {
+  font-family: var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
 .zero-dte-strip-near-level {
   border-color: var(--warn);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--warn) 35%, transparent);

@@ -14,11 +14,12 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<any>(null);
   const [languageMode, setLanguageMode] = useState("private");
   const [webhookConfigured, setWebhookConfigured] = useState(false);
-  const [minRate, setMinRate] = useState("0.12");
-  const [minSurge, setMinSurge] = useState("1.25");
+  const [minRate, setMinRate] = useState("0.2");
+  const [minSurge, setMinSurge] = useState("1.4");
   const [minAccel, setMinAccel] = useState("0");
-  const [minEfficiency, setMinEfficiency] = useState("0.28");
-  const [minLevelSurge, setMinLevelSurge] = useState("1.15");
+  const [minEfficiency, setMinEfficiency] = useState("0.35");
+  const [minLevelSurge, setMinLevelSurge] = useState("1.2");
+  const [maxSpread, setMaxSpread] = useState("5");
   const [desktopAlerts, setDesktopAlerts] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [testPreview, setTestPreview] = useState<any>(null);
@@ -34,11 +35,12 @@ export default function SettingsPage() {
         setWebhookConfigured(Boolean(d.discordWebhookConfigured));
         const t = d.scannerThresholds;
         if (t) {
-          setMinRate(String(t.scannerMinRatePctMin ?? 0.12));
-          setMinSurge(String(t.scannerMinVolSurge ?? 1.25));
+          setMinRate(String(t.scannerMinRatePctMin ?? 0.2));
+          setMinSurge(String(t.scannerMinVolSurge ?? 1.4));
           setMinAccel(String(t.scannerMinAccel ?? 0));
-          setMinEfficiency(String(t.scannerMinEfficiency ?? 0.28));
-          setMinLevelSurge(String(t.scannerMinLevelSurge ?? 1.15));
+          setMinEfficiency(String(t.scannerMinEfficiency ?? 0.35));
+          setMinLevelSurge(String(t.scannerMinLevelSurge ?? 1.2));
+          setMaxSpread(String(t.tradeMaxSpreadPct ?? 5));
         }
       }
     } catch (e: any) {
@@ -164,7 +166,11 @@ export default function SettingsPage() {
           </div>
 
           <h2>Capture thresholds</h2>
-          <p className="settings-desc">Scanner speed and volume gates. Higher = fewer callouts.</p>
+          <p className="settings-desc">
+            Scanner speed and volume gates — higher = fewer, better callouts. Recommended (from the 2026-07-07 accuracy
+            audit): Speed 0.18–0.25 · Surge 1.4–1.8 · Efficiency 0.35–0.45 · Max spread 4–6%. Going below Speed 0.15 or
+            Surge 1.3 fires on single-tick noise.
+          </p>
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
             <span className="settings-desc" style={{ margin: 0 }}>Speed ≥</span>
             <input className="input-sm" style={{ width: 64 }} value={minRate} onChange={(e) => setMinRate(e.target.value)} />
@@ -178,6 +184,13 @@ export default function SettingsPage() {
             <input className="input-sm" style={{ width: 64 }} value={minEfficiency} onChange={(e) => setMinEfficiency(e.target.value)} />
             <span className="settings-desc" style={{ margin: 0 }}>· Level-break surge ≥</span>
             <input className="input-sm" style={{ width: 64 }} value={minLevelSurge} onChange={(e) => setMinLevelSurge(e.target.value)} />
+          </div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+            <span className="settings-desc" style={{ margin: 0 }} title="A BUY callout requires the contract's bid-ask spread at or under this — wider than ~6% and the spread eats the move.">
+              BUY max spread ≤
+            </span>
+            <input className="input-sm" style={{ width: 64 }} value={maxSpread} onChange={(e) => setMaxSpread(e.target.value)} />
+            <span className="settings-desc" style={{ margin: 0 }}>%</span>
             <button
               type="button"
               className="btn-primary"
@@ -188,6 +201,7 @@ export default function SettingsPage() {
                   scannerMinAccel: Number(minAccel),
                   scannerMinEfficiency: Number(minEfficiency),
                   scannerMinLevelSurge: Number(minLevelSurge),
+                  tradeMaxSpreadPct: Number(maxSpread),
                 })
               }
             >

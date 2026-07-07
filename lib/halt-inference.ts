@@ -25,16 +25,17 @@ export function catalystFresh(publishedAt: string | null | undefined, nowMs = Da
 /** Pick catalyst type from the freshest headline in a news batch. */
 export function catalystFromNews(
   articles: Array<{ title?: string | null; publishedAt?: string | null; published_utc?: string | null }>,
-  classifyHeadline: (title: string) => string,
+  // classifyHeadline returns { type, strength, keyword } | null (lib/catalysts.js)
+  classifyHeadline: (title: string) => { type: string; strength?: number; keyword?: string } | null,
   nowMs = Date.now(),
 ): { catalystType: string; catalystFresh: boolean } {
   let best: { type: string; t: number } | null = null;
   for (const a of articles ?? []) {
     const title = a.title ?? "";
     const ts = Date.parse(a.publishedAt ?? a.published_utc ?? "");
-    const type = classifyHeadline(title);
+    const cls = classifyHeadline(title);
     if (!Number.isFinite(ts)) continue;
-    if (!best || ts > best.t) best = { type, t: ts };
+    if (!best || ts > best.t) best = { type: cls?.type ?? "no_clear_catalyst", t: ts };
   }
   if (!best) return { catalystType: "no_clear_catalyst", catalystFresh: false };
   return { catalystType: best.type, catalystFresh: nowMs - best.t <= 30 * 60_000 };

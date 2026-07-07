@@ -29,13 +29,15 @@ import {
   riskFlags0dte,
   expectedRemainingMovePct,
   level,
+  contractEntryGate,
+  trendAlignedForTrade,
 } from "@/lib/zero-dte";
 import { privateLabel0dte, publicLabel0dte, riskLabel } from "@/lib/language-modes";
 import { optionsPressure } from "@/lib/options-pressure";
 import { buildExplanation } from "@/lib/explain";
 import { cached } from "@/lib/scan-cache";
 import { computeTradeVerdict, hasLiveSpeedProof, isClearTradeSignal, passesQualityGates, resolveAlertTier } from "@/lib/trade-verdict";
-import { alertExists, insertAlert, getSettingNum, updateAlertCatalyst, insertNotificationEvent } from "@/lib/alert-store";
+import { alertExists, insertAlert, getSettingNum, updateAlertCatalyst, insertNotificationEvent, recentOppositeTradeExists } from "@/lib/alert-store";
 import { tradingDay, minutesToClose } from "@/lib/db";
 import { isOptionsSession } from "@/lib/trading-session";
 import { notifyNewAlert } from "@/lib/notifications";
@@ -127,7 +129,7 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     moveStatus: status, riskScore: risk.score,
   });
 
-  const minScore = getSettingNum("alert_min_momentum_score", Number(process.env.ALERT_MIN_MOMENTUM_SCORE ?? 58));
+  const minScore = getSettingNum("alert_min_momentum_score", Number(process.env.ALERT_MIN_MOMENTUM_SCORE ?? 62));
   if (setup.score < minScore) return null;
 
   const minEfficiency = getSettingNum("scanner_min_efficiency", Number(process.env.SCANNER_MIN_EFFICIENCY ?? 0.28));
@@ -172,8 +174,39 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     long_call_score: watch.callWatch, long_put_score: watch.putWatch,
   };
 
-  const captureVerdict = computeTradeVerdict(verdictInput, liveCtx);
-  const qualityGates = passesQualityGates(verdictInput);
+  // ── TRADE-tier hard gates (audit 2026-07-07) ─────────────────────────────
+  // A BUY callout is an ORDER: this exact contract at this premium. Scores
+  // alone let 9% spreads, lotto deltas, and counter-trend flickers through.
+  // Failing a gate never blocks the alert — it downgrades BUY to WAIT so the
+  // accuracy lab still records it with the reason visible.
+  const tradeBlockers: string[] = [];
+  const maxSpreadPct = getSettingNum("trade_max_spread_pct", Number(process.env.TRADE_MAX_SPREAD_PCT ?? 5));
+  const entryGate = contractEntryGate(sideContract, { underlying: sig.price, expRemainPct, maxSpreadPct });
+  if (!entryGate.ok) tradeBlockers.push(...entryGate.failures.map((f: string) => `order economics: ${f}`));
+  const trend = trendAlignedForTrade({
+    direction: sig.direction, movePct: sig.movePct,
+    hodBreak: sig.hodBreak, lodBreak: sig.lodBreak,
+  });
+  if (!trend.ok && trend.why) tradeBlockers.push(`trend: ${trend.why}`);
+  try {
+    if (sideContract?.side && recentOppositeTradeExists(sig.ticker, sideContract.side, day, nowMs)) {
+      tradeBlockers.push("whipsaw guard: opposite-side BUY on this ticker <30 min ago");
+    }
+  } catch { /* dedup check never blocks capture */ }
+
+  const rawVerdict = computeTradeVerdict(verdictInput, liveCtx);
+  const captureVerdict =
+    rawVerdict.action === "TRADE" && tradeBlockers.length
+      ? {
+          ...rawVerdict,
+          action: "WAIT" as const,
+          headline: rawVerdict.side === "PUT" ? "WATCH PUT" : "WATCH CALL",
+          reason: `Tape qualified but the order didn't: ${tradeBlockers[0]}`,
+          bullets: [...rawVerdict.bullets, ...tradeBlockers.map((b) => `Blocked: ${b}`)],
+          logicLine: `${rawVerdict.logicLine} Downgraded at capture: ${tradeBlockers.join("; ")}.`,
+        }
+      : rawVerdict;
+  const qualityGates = passesQualityGates(verdictInput) && tradeBlockers.length === 0;
   const speedOk = hasLiveSpeedProof(verdictInput, side, liveCtx);
   const tier = resolveAlertTier(captureVerdict, qualityGates, speedOk);
 
@@ -208,7 +241,7 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     signalScore: setup.score, riskScore: risk.score,
     optionsLiquidityScore: explainInput.liquidityScore,
     scannerScore: sig.scannerScore ?? null,
-    scoreBreakdownJson: JSON.stringify({ ...setup.breakdown, reasons: setup.reasons, riskReasons: risk.reasons, contractReasons: contractRes.reasons }),
+    scoreBreakdownJson: JSON.stringify({ ...setup.breakdown, reasons: setup.reasons, riskReasons: risk.reasons, contractReasons: contractRes.reasons, tradeBlockers }),
     aiExplanation: priv.text, publicExplanation: pub.text,
     privateLabel: privateLabel0dte({ bias, setupScore: setup.score, direction: sig.direction, riskFlags: flags } as any),
     publicLabel: publicLabel0dte({ direction: sig.direction, setupScore: setup.score }),

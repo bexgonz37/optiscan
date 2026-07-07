@@ -11,7 +11,7 @@
  * Market signals and measurements only — nothing here is a recommendation.
  */
 
-import { Suspense, useCallback, useEffect, useMemo, useState, useTransition } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState, useTransition, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { scanHeaders } from "@/hooks/useScanner";
 import { useLiveTapeMap, liveCtxFor } from "@/hooks/useLiveTapeMap";

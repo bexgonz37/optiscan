@@ -16,7 +16,9 @@ test("catalystFresh within 30 minutes", () => {
 
 test("catalystFromNews picks freshest headline type", () => {
   const now = Date.now();
-  const classify = (t) => (/\bearnings\b/i.test(t) ? "earnings" : "no_clear_catalyst");
+  // Real classifyHeadline returns { type, strength, keyword } | null — the
+  // old string-returning mock hid a bug where catalystType became an object.
+  const classify = (t) => (/\bearnings\b/i.test(t) ? { type: "earnings", strength: 3, keyword: "earnings" } : null);
   const out = catalystFromNews(
     [
       { title: "Old analyst note", publishedAt: new Date(now - 2 * 3600_000).toISOString() },
