@@ -57,7 +57,9 @@ export interface StockSignal {
 export async function captureStockAlert(sig: StockSignal): Promise<number | null> {
   const nowMs = sig.nowMs ?? Date.now();
   const session = marketSession(nowMs);
-  if (session !== "premarket" && session !== "afterhours") return null; // stock callouts are extended-hours only
+  const stockEnabled = process.env.STOCK_CALLOUTS === "1";
+  if (!stockEnabled) return null;
+  if (session === "closed") return null;
 
   const minScore = getSettingNum("stock_min_score", Number(process.env.STOCK_MIN_SCORE ?? STOCK_DEFAULT_MIN_SCORE));
   const v = computeStockVerdict({

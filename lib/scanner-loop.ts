@@ -170,6 +170,28 @@ function prefetchChain(ticker: string, st: SymState, nowMs: number) {
     .catch(() => {});
 }
 
+/** Extended-hours trigger: regular-stock callout, NO option chain fetch. */
+async function handleStockTrigger(ticker: string, st: SymState, read: any, quote: any, nowMs: number) {
+  if (process.env.STOCK_CALLOUTS !== "1") return;
+  const s = state();
+  st.cooldownUntil = nowMs + TRIGGER_COOLDOWN_MS;
+  s.triggers++;
+  const { captureStockAlert } = await import("@/lib/stock-capture");
+  const id = await captureStockAlert({
+    ticker, price: quote.price, movePct: quote.changePercent ?? 0,
+    shortRate: read.accelRead.shortRate, accel: read.accelRead.accel,
+    surge: read.surge, relVol: st.relVol, efficiency: read.efficiency,
+    vwap: st.vwap, aboveVwap: read.levels.aboveVwap,
+    hodBreak: read.levels.hodBreak, lodBreak: read.levels.lodBreak,
+    direction: read.dir.direction, directionConfidence: read.dir.confidence,
+    shareVolume: quote.volume ?? null, nowMs,
+  });
+  if (id != null) {
+    st.lastAlertAt = nowMs;
+    s.alerts++;
+  }
+}
+
 async function handleTrigger(ticker: string, st: SymState, read: any, quote: any, nowMs: number) {
   const s = state();
   if (nowMs < st.cooldownUntil) return;
@@ -429,10 +451,15 @@ async function tick() {
       })
     ) {
       // fire-and-forget: the 1s heartbeat must never wait on a chain fetch.
-      // Options callouts only during regular hours.
-      if (session !== "regular") continue;
-      const fire = handleTrigger(q.symbol, st, { accelRead, surge, efficiency, levels, dir }, q, nowMs);
-      fire.catch((err) => { s.errors++; console.warn("[0dte-loop] trigger failed:", err?.message); });
+      const fire = session === "regular"
+        ? handleTrigger(q.symbol, st, { accelRead, surge, efficiency, levels, dir }, q, nowMs)
+        : process.env.STOCK_CALLOUTS === "1"
+          ? handleStockTrigger(q.symbol, st, { accelRead, surge, efficiency, levels, dir }, q, nowMs)
+          : Promise.resolve();
+      fire.catch((err) => {
+        s.errors++;
+        console.warn(`[${session === "regular" ? "0dte" : "stock"}-loop] trigger failed:`, err?.message);
+      });
     }
   }
   vwapCandidates.sort((a, b) => b.rate - a.rate);

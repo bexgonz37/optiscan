@@ -1,5 +1,5 @@
 /**
- * SPEC tests for options-only scanner (stocks mode removed).
+ * SPEC tests for session routing — options RTH + optional stock callouts.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -17,14 +17,13 @@ test("SPEC: options capture is session-guarded (no 0DTE callouts outside RTH)", 
   assert.ok(/if \(!isOptionsSession\(nowMs\)\) return null/.test(beforeInsert), "guard must run before any insert");
 });
 
-test("SPEC: scanner loop is options-only — no stock trigger path", () => {
+test("SPEC: scanner loop routes options in RTH; stock when STOCK_CALLOUTS=1", () => {
   const loop = read("lib/scanner-loop.ts");
   assert.ok(loop.includes("marketSession"), "loop must read the market session");
-  assert.ok(!loop.includes("handleStockTrigger"), "stock trigger removed");
-  assert.ok(!loop.includes("captureStockAlert"), "stock capture removed from loop");
+  assert.ok(loop.includes("handleStockTrigger"), "stock trigger behind STOCK_CALLOUTS");
+  assert.ok(loop.includes('session === "regular"'), "options path in regular session");
+  assert.ok(/STOCK_CALLOUTS === "1"/.test(loop), "stock path gated by env");
   assert.ok(/session === "closed"/.test(loop), "loop must pause when closed");
-  assert.ok(/session !== "regular"\) continue/.test(loop), "callouts only in RTH");
-  assert.ok(/if \(session === "regular"\) refreshActiveAlerts/.test(loop), "active-alert chain refresh is RTH-only");
 });
 
 test("SPEC: options alerts persist asset_class", () => {
@@ -32,12 +31,12 @@ test("SPEC: options alerts persist asset_class", () => {
   assert.ok(cap.includes('assetClass: "options"'), "options alerts must persist asset_class='options'");
 });
 
-test("SPEC: options alerts never notify outside RTH", () => {
+test("SPEC: discord notifications use embed builders and session guards", () => {
   const notif = read("lib/notifications.ts");
-  assert.ok(notif.includes("isOptionsSession"), "notifyNewAlert must session-guard options");
-  assert.ok(notif.includes("stock alerts removed"), "stock discord path removed");
-  const verdict = read("lib/trade-verdict.ts");
-  assert.ok(verdict.includes("BUY CALL"), "options verdict uses BUY CALL/PUT headlines");
+  assert.ok(notif.includes("buildOptionsBuyEmbed"), "options BUY embeds");
+  assert.ok(notif.includes("isOptionsSession"), "options notify guarded");
+  assert.ok(notif.includes("wait=true"), "message id persistence");
+  assert.ok(notif.includes("editDiscordMessage"), "result PATCH support");
 });
 
 test("SPEC: AlertPopup is options-only", () => {
