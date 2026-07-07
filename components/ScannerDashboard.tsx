@@ -135,8 +135,24 @@ export function ScannerDashboard({
 
       <div className="scanner-toolbar">
         <div className="search search-inline search-narrow">
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter ticker" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter or chart ticker"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && query.trim()) onOpenChart?.(query.trim().toUpperCase());
+            }}
+          />
         </div>
+        {query.trim() ? (
+          <button
+            type="button"
+            className="pill btn btn-primary btn-xs"
+            onClick={() => onOpenChart?.(query.trim().toUpperCase())}
+          >
+            Open chart
+          </button>
+        ) : null}
         <div className="mover-filters">
           {chip("fast", "Moving now")}
           {showAdvanced ? chip("all", "All") : null}
@@ -186,6 +202,7 @@ export function ScannerDashboard({
                 <th title="Price direction right now">Direction</th>
                 <Th k="move" label="Today %" title="Day's percent change" />
                 <Th k="speed" label="Speed" title="How fast price is moving per minute" />
+                <th aria-label="Chart" />
                 {showDetails ? (
                   <>
                     <Th k="rvol" label="RVOL" title="Volume vs normal today" />
@@ -236,6 +253,11 @@ export function ScannerDashboard({
                     <td className={`num ${pctClass(r.movePct)}`}>{fmtPct(r.movePct)}</td>
                     <td className={`num ${Math.abs(r.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN ? "fw-strong" : "fw-normal"}`}>
                       {r.shortRate != null ? `${r.shortRate > 0 ? "+" : ""}${r.shortRate.toFixed(2)}%/m` : "—"}
+                    </td>
+                    <td onClick={(ev) => ev.stopPropagation()}>
+                      <button type="button" className="pill btn btn-primary btn-xs" onClick={() => onOpenChart?.(r.symbol)}>
+                        Chart
+                      </button>
                     </td>
                     {showDetails ? (
                       <>

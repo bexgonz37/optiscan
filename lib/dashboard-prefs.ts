@@ -16,11 +16,11 @@ export type ChartStackTimeframe = (typeof CHART_STACK_TIMEFRAMES)[number];
 export const CHART_INDICATORS = ["vwap", "ema9", "ema21", "sma50", "rsi", "macd"] as const;
 export type ChartIndicator = (typeof CHART_INDICATORS)[number];
 
-export const DEFAULT_CHART_INDICATORS: ChartIndicator[] = ["vwap", "ema9", "ema21"];
+export const DEFAULT_CHART_INDICATORS: ChartIndicator[] = ["vwap", "ema9"];
 
 export const DEFAULT_STACK_INDICATORS: Record<ChartStackTimeframe, ChartIndicator[]> = {
-  "1m": ["vwap", "ema9", "ema21"],
-  "5m": ["vwap", "ema9", "ema21"],
+  "1m": ["vwap", "ema9"],
+  "5m": ["vwap", "ema9"],
   "15m": ["vwap"],
 };
 

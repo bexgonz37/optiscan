@@ -19,9 +19,8 @@ import type { LiveTape, LiveTapeRow } from "@/hooks/useLiveTapeMap";
 import { liveCtxFor } from "@/hooks/useLiveTapeMap";
 import { TickerIcon } from "@/components/ui";
 import { TradeVerdictHero } from "@/components/TradeVerdictHero";
-import { computeTradeVerdict, MIN_SPEED_PCT_PER_MIN, type TradeVerdict } from "@/lib/trade-verdict";
+import { computeTradeVerdict, frozenCalloutVerdict, MIN_SPEED_PCT_PER_MIN, type TradeVerdict } from "@/lib/trade-verdict";
 import { calledAgoLabel, calledAgoLong, sideFromAlert, stillMovingStatus } from "@/lib/signal-live";
-import { useStableSymbolOrder } from "@/lib/stable-order";
 import { fmtPct, fmtPrice, fmtTime, pctClass } from "@/lib/format";
 import { sessionGroupLabel } from "@/lib/language-modes";
 import { groupAlertsBySession } from "@/lib/alert-session-groups";
@@ -36,13 +35,32 @@ interface Entry {
   rank: number;
 }
 
+function alertTimeMs(alert: { alert_time?: string | null } | null | undefined): number {
+  if (!alert?.alert_time) return 0;
+  const t = Date.parse(alert.alert_time);
+  return Number.isFinite(t) ? t : 0;
+}
+
+/** Newest callout first; fast movers without a callout sort last. */
+function sortEntriesByRecency(a: Entry, b: Entry): number {
+  const ta = alertTimeMs(a.alert);
+  const tb = alertTimeMs(b.alert);
+  if (ta && tb && tb !== ta) return tb - ta;
+  if (ta && !tb) return -1;
+  if (!ta && tb) return 1;
+  const sa = Math.abs(a.tapeRow?.shortRate ?? 0);
+  const sb = Math.abs(b.tapeRow?.shortRate ?? 0);
+  if (sb !== sa) return sb - sa;
+  return a.symbol.localeCompare(b.symbol);
+}
+
 function speedText(r: LiveTapeRow | null): string {
   if (r?.shortRate == null) return "—";
   return `${r.shortRate > 0 ? "+" : ""}${r.shortRate.toFixed(2)}%/min`;
 }
 
 /** Only alerts from the last few minutes attach to Right now — older ones live in History. */
-const RIGHT_NOW_WINDOW_MS = 5 * 60_000;
+const RIGHT_NOW_WINDOW_MS = 15 * 60_000;
 /** Recent calls strip — session memory for "what was called and is it still moving". */
 const RECENT_CALLS_WINDOW_MS = 45 * 60_000;
 
@@ -52,9 +70,10 @@ function isFreshAlert(alert: { alert_time?: string | null }, nowMs = Date.now())
   return Number.isFinite(t) && nowMs - t <= RIGHT_NOW_WINDOW_MS;
 }
 
-/** Default list: live BUY only, or a stock moving fast with no stale alert attached. */
+/** Default list: TRADE, forming WAIT with alert, or fast mover with no stale alert. */
 function isRightNowEntry(e: Entry): boolean {
   if (e.verdict?.action === "TRADE") return true;
+  if (e.verdict?.action === "WAIT" && e.alert) return true;
   const fast = Math.abs(e.tapeRow?.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN;
   return fast && !e.alert;
 }
@@ -89,6 +108,7 @@ export function AlertsCommandCenter({
   const [alerts, setAlerts] = useState<Map<string, any>>(new Map());
   const [recentCalls, setRecentCalls] = useState<any[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
+  const [chartTicker, setChartTicker] = useState("");
 
   const marketClosed = session === "closed";
 
@@ -147,7 +167,7 @@ export function AlertsCommandCenter({
       const tapeRow = tape.map.get(symbol) ?? null;
       const alert = alerts.get(symbol) ?? null;
       const live = liveCtxFor(tape, symbol);
-      const verdict = alert ? computeTradeVerdict(alert, live) : null;
+      const verdict = alert ? frozenCalloutVerdict(alert, live) : null;
       const fast = Math.abs(tapeRow?.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN;
       let rank: number;
       if (verdict?.action === "TRADE") rank = 0;
@@ -156,38 +176,26 @@ export function AlertsCommandCenter({
       else rank = 3;
       out.push({ symbol, tapeRow, alert, verdict, rank });
     }
-    out.sort((a, b) => {
-      if (a.rank !== b.rank) return a.rank - b.rank;
-      if (a.rank === 0) return (b.verdict?.confidence ?? 0) - (a.verdict?.confidence ?? 0);
-      const sa = Math.abs(a.tapeRow?.shortRate ?? 0);
-      const sb = Math.abs(b.tapeRow?.shortRate ?? 0);
-      if (sb !== sa) return sb - sa;
-      return a.symbol.localeCompare(b.symbol);
-    });
+    out.sort(sortEntriesByRecency);
     return out;
   }, [tape, alerts]);
 
-  const visible = useMemo(
-    () => (showAll ? entries.filter((e) => e.rank < 3) : entries.filter(isRightNowEntry)).slice(0, 30),
-    [entries, showAll],
-  );
+  const sortedVisible = useMemo(() => {
+    const list = showAll ? entries.filter((e) => e.rank < 3) : entries.filter(isRightNowEntry);
+    return [...list].sort(sortEntriesByRecency).slice(0, 30);
+  }, [entries, showAll]);
 
-  const stableSymbols = useStableSymbolOrder(
-    visible.map((e) => e.symbol),
-    { paused, intervalMs: 5000, resetKey: showAll ? "all" : "active" },
-  );
-  const entryMap = useMemo(() => new Map(visible.map((e) => [e.symbol, e])), [visible]);
-  const displayEntries = useMemo(
-    () => stableSymbols.map((s) => entryMap.get(s)).filter(Boolean) as Entry[],
-    [stableSymbols, entryMap],
-  );
+  const [pausedSnapshot, setPausedSnapshot] = useState<Entry[] | null>(null);
+  const displayEntries = paused && pausedSnapshot ? pausedSnapshot : sortedVisible;
 
   const hero = useMemo(() => {
+    const trades = entries.filter((e) => e.verdict?.action === "TRADE" && e.alert);
+    trades.sort(sortEntriesByRecency);
     if (selected) {
-      const found = entries.find((e) => e.symbol === selected && e.verdict?.action === "TRADE");
+      const found = trades.find((e) => e.symbol === selected);
       if (found) return found;
     }
-    return entries.find((e) => e.verdict?.action === "TRADE") ?? null;
+    return trades[0] ?? null;
   }, [entries, selected]);
 
   function pick(symbol: string) {
@@ -208,6 +216,11 @@ export function AlertsCommandCenter({
       out.push(a);
       if (out.length >= 20) break;
     }
+    out.sort((a, b) => {
+      const ta = Date.parse(a.alert_time ?? "");
+      const tb = Date.parse(b.alert_time ?? "");
+      return (Number.isFinite(tb) ? tb : 0) - (Number.isFinite(ta) ? ta : 0);
+    });
     return out;
   }, [recentAlerts]);
 
@@ -215,13 +228,20 @@ export function AlertsCommandCenter({
     ? Math.round(accuracySummary.overallHitRate * 100)
     : null;
 
+  const tapeMovers = useMemo(() => {
+    return [...tape.rows]
+      .filter((r) => r?.symbol)
+      .sort((a, b) => Math.abs(b.shortRate ?? 0) - Math.abs(a.shortRate ?? 0))
+      .slice(0, 10);
+  }, [tape.rows]);
+
   return (
     <section className="panel main section-live">
       <div className="section-header">
         <div>
           <h2 className="section-title">Live callouts</h2>
           <p className="section-sub">
-            BUY CALL when moving up · BUY PUT when moving down. Updates every second during market hours.
+            Newest callouts first — check &quot;Called&quot; for how long ago. BUY CALL/PUT when TRADE.
           </p>
         </div>
         <div className="status-group">
@@ -229,6 +249,30 @@ export function AlertsCommandCenter({
           <span className="status-text">
             {tape.running ? (tradeCount ? `${tradeCount} live trade signal${tradeCount === 1 ? "" : "s"}` : "Watching — no trade yet") : "Scanner offline"}
           </span>
+        </div>
+      </div>
+
+      <div className="acc-list-header" style={{ marginBottom: 10 }}>
+        <span className="muted text-sm">Type a ticker to open its chart anytime.</span>
+        <div className="btn-row gap-2" style={{ alignItems: "center" }}>
+          <input
+            className="input-sm"
+            style={{ width: 88 }}
+            placeholder="e.g. NVDA"
+            value={chartTicker}
+            onChange={(e) => setChartTicker(e.target.value.toUpperCase())}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && chartTicker.trim()) pick(chartTicker.trim());
+            }}
+          />
+          <button
+            type="button"
+            className="pill btn btn-primary btn-xs"
+            disabled={!chartTicker.trim()}
+            onClick={() => chartTicker.trim() && pick(chartTicker.trim())}
+          >
+            Open chart
+          </button>
         </div>
       </div>
 
@@ -360,7 +404,7 @@ export function AlertsCommandCenter({
                       <td className={`num ${pctClass(peak)}`}>{peak != null ? fmtPct(peak) : "—"}</td>
                       <td className="muted text-xs">{a.status ?? "—"}</td>
                       <td onClick={(ev) => ev.stopPropagation()}>
-                        <button type="button" className="pill btn btn-xs" onClick={() => pick(a.ticker)}>Chart</button>
+                        <button type="button" className="pill btn btn-primary btn-xs" onClick={() => pick(a.ticker)}>Chart</button>
                       </td>
                     </tr>
                   );
@@ -371,16 +415,22 @@ export function AlertsCommandCenter({
         </div>
       ) : null}
 
-      {/* Single ranked list — live only during market hours */}
-      {marketClosed ? null : (
+      {/* Live callouts + movers — charts work any time */}
       <>
       <div className="acc-list-header">
-        <span className="muted text-sm">Click a row for chart · TRADE callouts only (toggle for WAIT setups).</span>
+        <span className="muted text-sm">Newest first · &quot;Called&quot; = when the scanner fired · click row or Chart</span>
         <div className="btn-row gap-2">
           <button
             type="button"
             className={`pill btn btn-xs${paused ? " btn-primary" : ""}`}
-            onClick={() => setPaused((v) => !v)}
+            onClick={() => {
+              setPaused((v) => {
+                const next = !v;
+                if (next) setPausedSnapshot(sortedVisible);
+                else setPausedSnapshot(null);
+                return next;
+              });
+            }}
             title="Freeze list order while you read"
           >
             {paused ? "▶ Resume" : "⏸ Pause"}
@@ -394,11 +444,26 @@ export function AlertsCommandCenter({
       <div className="table-area">
       {!displayEntries.length ? (
         <div className="empty small table-empty">
-          {marketClosed
-            ? "Nothing live while the market is closed."
-            : tape.running
-              ? "Nothing live right now — a BUY appears here the moment a ticker is moving fast enough."
-              : "Scanner offline."}
+          {tapeMovers.length > 0 ? (
+            <>
+              <div className="big">No callouts right now — tap a mover for chart</div>
+              <div className="acc-on-track-chips" style={{ marginTop: 12, justifyContent: "center" }}>
+                {tapeMovers.map((r) => (
+                  <button key={r.symbol} type="button" className="pill btn acc-on-track-chip" onClick={() => pick(r.symbol)}>
+                    <span className="tname">{r.symbol}</span>
+                    <span className="num">{r.shortRate != null ? `${r.shortRate > 0 ? "+" : ""}${r.shortRate.toFixed(2)}%/m` : "—"}</span>
+                    <span className="muted">Chart →</span>
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : marketClosed ? (
+            "Nothing live while the market is closed — use Last session above or type a ticker."
+          ) : tape.running ? (
+            "Nothing live right now — type a ticker above or wait for a mover."
+          ) : (
+            "Scanner offline — type a ticker above to open chart history."
+          )}
         </div>
       ) : (
         <div className="tablewrap">
@@ -469,7 +534,7 @@ export function AlertsCommandCenter({
                     <td className="num muted text-sm">{v?.contractLine ?? "—"}</td>
                     <td className="num">{v ? `${v.confidence}%` : "—"}</td>
                     <td onClick={(ev) => ev.stopPropagation()}>
-                      <button className="pill btn btn-xs" onClick={() => pick(e.symbol)}>
+                      <button type="button" className="pill btn btn-primary btn-xs" onClick={() => pick(e.symbol)}>
                         Chart
                       </button>
                     </td>
@@ -498,7 +563,7 @@ export function AlertsCommandCenter({
                   const side = sideFromAlert(a);
                   const momentum = stillMovingStatus(side, tapeRow);
                   const live = liveCtxFor(tape, a.ticker);
-                  const nowVerdict = computeTradeVerdict(a, live);
+                  const nowVerdict = frozenCalloutVerdict(a, live);
                   return (
                     <button
                       key={a.id}
@@ -521,7 +586,6 @@ export function AlertsCommandCenter({
       ) : null}
 
       </>
-      )}
     </section>
   );
 }

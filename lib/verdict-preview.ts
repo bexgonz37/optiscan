@@ -37,6 +37,7 @@ export function buildVerdictPreview(input: {
   momentum: MomentumRow | null;
   live?: LiveTapeContext | null;
   nowMs?: number;
+  capture?: Partial<AlertVerdictInput> | null;
 }): VerdictPreviewResult | null {
   const mom = input.momentum;
   if (!mom?.contract) return null;
@@ -163,7 +164,10 @@ export function buildVerdictPreview(input: {
     long_put_score: watch.putWatch,
     alert_tier: live?.shortRate != null ? "trade" : "research",
     asset_class: "options",
+    ...(input.capture ?? {}),
   };
+  if (input.capture?.alert_time) alertInput.alert_time = input.capture.alert_time;
+  if (input.capture?.capture_action) alertInput.capture_action = input.capture.capture_action;
 
   const side = dirUp ? "CALL" : "PUT";
   const qualityGates = passesQualityGates(alertInput);

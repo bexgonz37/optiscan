@@ -330,8 +330,8 @@ function AlertsPageInner() {
                   ) : null}
                 </div>
                 <div className="sub">
-                  Move within 5 min of call (≥{EARLY_ON_TRACK_MIN_PCT}% favorable) · {accuracy.liveOnTrackOfOpen ?? `${accuracy.todayOnTrack ?? 0} of ${accuracy.todayTracking ?? 0}`} still open
-                  {accFilter === "on_track" ? " · filtered" : " · click to view list"}
+                  Move building after call (≥{EARLY_ON_TRACK_MIN_PCT}% @ 5m or peak) · {accuracy.liveOnTrackOfOpen ?? `${accuracy.todayOnTrack ?? 0} of ${accuracy.todayTracking ?? 0}`} still open
+                  {accFilter === "on_track" ? " · filtered" : onTrackRows.length ? " · click to view list" : ""}
                 </div>
               </button>
 

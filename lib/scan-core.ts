@@ -331,10 +331,16 @@ export async function scanSymbol(symbolRaw: string): Promise<SymbolDetail> {
   const quote = qRes?.quote ?? { symbol };
   const e = await enrichSymbol(symbol, quote, cfg.cacheTtlMs);
   if (e.error) base.errors.push({ symbol, message: e.error });
+  let capture: Partial<import("./trade-verdict.ts").AlertVerdictInput> | null = null;
+  try {
+    const { getLatestAlertCapture } = await import("@/lib/alert-store");
+    capture = getLatestAlertCapture(symbol);
+  } catch { /* db optional in some envs */ }
   const verdictPreview = buildVerdictPreview({
     symbol,
     momentum: e.momentum,
     live: liveTapeContext(symbol),
+    capture,
   });
 
   return {

@@ -127,10 +127,10 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     moveStatus: status, riskScore: risk.score,
   });
 
-  const minScore = getSettingNum("alert_min_momentum_score", Number(process.env.ALERT_MIN_MOMENTUM_SCORE ?? 62));
+  const minScore = getSettingNum("alert_min_momentum_score", Number(process.env.ALERT_MIN_MOMENTUM_SCORE ?? 58));
   if (setup.score < minScore) return null;
 
-  const minEfficiency = getSettingNum("scanner_min_efficiency", Number(process.env.SCANNER_MIN_EFFICIENCY ?? 0.35));
+  const minEfficiency = getSettingNum("scanner_min_efficiency", Number(process.env.SCANNER_MIN_EFFICIENCY ?? 0.28));
   if (sig.efficiency != null && sig.efficiency < minEfficiency) return null;
 
   const watch = watchScores({

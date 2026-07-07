@@ -1,6 +1,6 @@
 "use client";
 
-import { computeTradeVerdict, type AlertVerdictInput, type LiveTapeContext, type TradeVerdict } from "@/lib/trade-verdict";
+import { frozenCalloutVerdict, type AlertVerdictInput, type LiveTapeContext, type TradeVerdict } from "@/lib/trade-verdict";
 
 const ACTION_CLASS: Record<string, string> = {
   TRADE: "verdict-trade",
@@ -18,7 +18,7 @@ export function TradeVerdictHero({
   live?: LiveTapeContext;
   compact?: boolean;
 }) {
-  const v = computeTradeVerdict(alert, live);
+  const v = frozenCalloutVerdict(alert, live);
   const cls = ACTION_CLASS[v.action] ?? "verdict-wait";
   const sideClass =
     v.side === "CALL" ? "verdict-side-call" : v.side === "PUT" ? "verdict-side-put" : "muted";
@@ -49,5 +49,5 @@ export function TradeVerdictHero({
 }
 
 export function useTradeVerdict(alert: AlertVerdictInput, live?: LiveTapeContext): TradeVerdict {
-  return computeTradeVerdict(alert, live);
+  return frozenCalloutVerdict(alert, live);
 }

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { computeTradeVerdict, isTradeEligible, hasLiveSpeedProof, isClearTradeSignal, passesQualityGates, resolveAlertTier } from "../lib/trade-verdict.ts";
+import { computeTradeVerdict, isTradeEligible, hasLiveSpeedProof, isClearTradeSignal, passesQualityGates, resolveAlertTier, shouldLockCapturedTrade } from "../lib/trade-verdict.ts";
 
 const goodCall = {
   ticker: "SMCI",
@@ -202,9 +202,20 @@ test("computeTradeVerdict: fresh alert (2 min) with fast aligned tape still TRAD
 test("isTradeEligible: popup filter matches TRADE verdicts only", () => {
   const rthMs = Date.parse("2026-07-07T14:00:00-04:00"); // Tue 2:00 PM ET (regular hours)
   assert.equal(isTradeEligible(goodCall, undefined, rthMs), true);
+  assert.equal(isTradeEligible({ ...goodCall, capture_action: "TRADE", alert_time: new Date(rthMs - 60_000).toISOString() }, { shortRate: 0.02, surge: 0.8 }, rthMs), true);
   assert.equal(isTradeEligible(goodCall, { shortRate: 0.02, surge: 0.8 }, rthMs), false);
   assert.equal(isTradeEligible({ ...goodCall, alert_tier: "research" }, undefined, rthMs), false);
   assert.equal(isTradeEligible(goodCall, undefined, Date.parse("2026-07-07T17:00:00-04:00")), false);
+});
+
+test("shouldLockCapturedTrade: fresh TRADE locks through brief stall", () => {
+  const fresh = {
+    ...goodCall,
+    capture_action: "TRADE",
+    alert_time: new Date(Date.now() - 90_000).toISOString(),
+  };
+  assert.equal(shouldLockCapturedTrade(fresh, "CALL", { shortRate: 0.02, surge: 0.8 }), true);
+  assert.equal(shouldLockCapturedTrade(fresh, "CALL", { shortRate: -0.25, surge: 0.8 }), false);
 });
 
 test("hasLiveSpeedProof: direction-aligned only", () => {
@@ -231,5 +242,5 @@ test("resolveAlertTier: TRADE or quality+speed fallback", () => {
 
 test("passesQualityGates: setup/worth/contract/liquidity + bias", () => {
   assert.equal(passesQualityGates(goodCall), true);
-  assert.equal(passesQualityGates({ ...goodCall, signal_score: 70 }), false);
+  assert.equal(passesQualityGates({ ...goodCall, signal_score: 65 }), false);
 });

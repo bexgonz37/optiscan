@@ -1,8 +1,8 @@
 "use client";
 
 /**
- * ChartPanel — right-side drawer with stacked synced 1m/5m/15m charts (desktop)
- * or a single chart on mobile (≤768px). Toggleable indicators per timeframe.
+ * ChartPanel — right-side drawer with one live chart (1m/5m/15m/1D tabs).
+ * Candles refresh every 1s while open; price header uses the live scanner tape.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -12,7 +12,7 @@ import {
   HistogramSeries,
   LineSeries,
   type IChartApi,
-  type LogicalRange,
+  type ISeriesApi,
 } from "lightweight-charts";
 import { scanHeaders } from "@/hooks/useScanner";
 import { liveCtxFor, useLiveTapeMap } from "@/hooks/useLiveTapeMap";
@@ -21,14 +21,11 @@ import { fmtPrice, fmtPct, fmtInt, pctClass, fmtPremium, fmtNum } from "@/lib/fo
 import {
   CHART_TIMEFRAMES,
   CHART_INDICATORS,
-  CHART_STACK_TIMEFRAMES,
   DEFAULT_CHART_INDICATORS,
-  DEFAULT_STACK_INDICATORS,
   loadDashboardPrefs,
   saveDashboardPrefs,
   type ChartTimeframe,
   type ChartIndicator,
-  type ChartStackTimeframe,
 } from "@/lib/dashboard-prefs";
 import {
   emaSeries,
@@ -51,9 +48,8 @@ const INDICATOR_LABELS: Record<ChartIndicator, string> = {
   macd: "MACD",
 };
 
-const MOBILE_MAX = 768;
-/** Refresh candle data while the drawer is open. */
-const CHART_LIVE_POLL_MS = 30_000;
+const CHART_LIVE_POLL_MS = 1000;
+const VERDICT_POLL_MS = 2000;
 
 function cssVar(name: string, fallback: string): string {
   if (typeof window === "undefined") return fallback;
@@ -61,42 +57,54 @@ function cssVar(name: string, fallback: string): string {
   return v || fallback;
 }
 
-function useMobileChart(): boolean {
-  const [mobile, setMobile] = useState(false);
-  useEffect(() => {
-    const mq = window.matchMedia(`(max-width: ${MOBILE_MAX}px)`);
-    const update = () => setMobile(mq.matches);
-    update();
-    mq.addEventListener("change", update);
-    return () => mq.removeEventListener("change", update);
-  }, []);
-  return mobile;
+function chartLevels(bars: Bar[], indicators: ChartIndicator[]): KeyLevel[] {
+  const levels = keyLevels(bars);
+  if (indicators.includes("vwap")) return levels.filter((l) => l.id !== "vwap");
+  return levels;
 }
 
-function applyKeyLevelLines(candle: ReturnType<IChartApi["addSeries"]>, levels: KeyLevel[]) {
+function applyKeyLevelLines(candle: ISeriesApi<"Candlestick">, levels: KeyLevel[]) {
   const amber = cssVar("--amber", "#ffb020");
   const cyan = cssVar("--cyan", "#3ad0ff");
   const muted = cssVar("--muted", "#8798a8");
   const colorFor = (id: string) => (id === "vwap" ? amber : id === "hod" || id === "lod" ? cyan : muted);
   for (const lvl of levels) {
+    const showAxis = lvl.id === "hod" || lvl.id === "lod";
     candle.createPriceLine({
       price: lvl.price,
       color: colorFor(lvl.id),
-      lineWidth: 1,
+      lineWidth: lvl.id === "hod" || lvl.id === "lod" ? 2 : 1,
       lineStyle: lvl.lineStyle === "dashed" ? 2 : 0,
-      axisLabelVisible: true,
-      title: lvl.label,
+      axisLabelVisible: showAxis,
+      title: showAxis ? lvl.label : "",
     });
   }
 }
 
-function applyIndicators(chart: IChartApi, bars: Bar[], indicators: ChartIndicator[], tf: ChartTimeframe) {
+interface ChartBundle {
+  chart: IChartApi;
+  candle: ISeriesApi<"Candlestick">;
+  volume: ISeriesApi<"Histogram">;
+  lines: ISeriesApi<"Line">[];
+}
+
+function mountChart(host: HTMLDivElement, bars: Bar[], indicators: ChartIndicator[], tf: ChartTimeframe): ChartBundle {
   const muted = cssVar("--muted", "#8798a8");
+  const line = cssVar("--line", "#1f2a37");
   const green = cssVar("--green", "#00d68f");
   const red = cssVar("--red", "#ff5a72");
   const violet = cssVar("--violet", "#8b7dff");
   const cyan = cssVar("--cyan", "#3ad0ff");
   const amber = cssVar("--amber", "#ffb020");
+
+  const chart = createChart(host, {
+    layout: { background: { color: "transparent" }, textColor: muted, attributionLogo: false },
+    grid: { vertLines: { color: line }, horzLines: { color: line } },
+    rightPriceScale: { borderColor: line },
+    timeScale: { borderColor: line, timeVisible: tf !== "1D", secondsVisible: false },
+    crosshair: { mode: 0 },
+    autoSize: true,
+  });
 
   const candle = chart.addSeries(CandlestickSeries, {
     upColor: green,
@@ -109,29 +117,34 @@ function applyIndicators(chart: IChartApi, bars: Bar[], indicators: ChartIndicat
   candle.setData(
     bars.map((b) => ({ time: Math.floor(b.t / 1000) as any, open: b.o, high: b.h, low: b.l, close: b.c })),
   );
-  applyKeyLevelLines(candle, keyLevels(bars));
+  applyKeyLevelLines(candle, chartLevels(bars, indicators));
 
   const closes = bars.map((b) => b.c);
+  const lines: ISeriesApi<"Line">[] = [];
 
   if (indicators.includes("vwap")) {
     const s = chart.addSeries(LineSeries, { color: amber, lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
     s.setData(toLine(bars, vwapSeries(bars)) as any);
+    lines.push(s);
   }
   if (indicators.includes("ema9")) {
     const s = chart.addSeries(LineSeries, { color: cyan, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
     s.setData(toLine(bars, emaSeries(closes, 9)) as any);
+    lines.push(s);
   }
   if (indicators.includes("ema21")) {
     const s = chart.addSeries(LineSeries, { color: violet, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
     s.setData(toLine(bars, emaSeries(closes, 21)) as any);
+    lines.push(s);
   }
   if (indicators.includes("sma50")) {
     const s = chart.addSeries(LineSeries, { color: muted, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
     s.setData(toLine(bars, smaSeries(closes, 50)) as any);
+    lines.push(s);
   }
 
-  const vol = chart.addSeries(HistogramSeries, { priceFormat: { type: "volume" }, priceScaleId: "" }, 1);
-  vol.setData(
+  const volume = chart.addSeries(HistogramSeries, { priceFormat: { type: "volume" }, priceScaleId: "" }, 1);
+  volume.setData(
     bars.map((b) => ({
       time: Math.floor(b.t / 1000) as any,
       value: b.v,
@@ -165,99 +178,44 @@ function applyIndicators(chart: IChartApi, bars: Bar[], indicators: ChartIndicat
 
   try {
     const panes = chart.panes();
-    if (panes[0]) panes[0].setHeight(tf === "1D" ? 260 : 180);
+    if (panes[0]) panes[0].setHeight(tf === "1D" ? 280 : 220);
     for (let i = 1; i < panes.length; i++) panes[i].setHeight(70);
   } catch { /* best effort */ }
 
   chart.timeScale().fitContent();
+  return { chart, candle, volume, lines };
 }
 
-function StackedCharts({
-  barsByTf,
-  indicatorsByTf,
-  onToggleIndicator,
-}: {
-  barsByTf: Partial<Record<ChartStackTimeframe, Bar[]>>;
-  indicatorsByTf: Record<ChartStackTimeframe, ChartIndicator[]>;
-  onToggleIndicator: (tf: ChartStackTimeframe, id: ChartIndicator) => void;
-}) {
-  const hostsRef = useRef<Partial<Record<ChartStackTimeframe, HTMLDivElement | null>>>({});
-  const chartsRef = useRef<Partial<Record<ChartStackTimeframe, IChartApi>>>({});
-  const syncing = useRef(false);
-
-  useEffect(() => {
-    const muted = cssVar("--muted", "#8798a8");
-    const line = cssVar("--line", "#1f2a37");
-    const charts: Partial<Record<ChartStackTimeframe, IChartApi>> = {};
-
-    for (const tf of CHART_STACK_TIMEFRAMES) {
-      const host = hostsRef.current[tf];
-      const bars = barsByTf[tf];
-      if (!host || !bars?.length) continue;
-      const chart = createChart(host, {
-        layout: { background: { color: "transparent" }, textColor: muted, attributionLogo: false },
-        grid: { vertLines: { color: line }, horzLines: { color: line } },
-        rightPriceScale: { borderColor: line },
-        timeScale: { borderColor: line, timeVisible: true, secondsVisible: false },
-        crosshair: { mode: 0 },
-        autoSize: true,
-      });
-      applyIndicators(chart, bars, indicatorsByTf[tf] ?? DEFAULT_STACK_INDICATORS[tf], tf);
-      charts[tf] = chart;
-    }
-    chartsRef.current = charts;
-
-    const syncRange = (source: ChartStackTimeframe, range: LogicalRange | null) => {
-      if (syncing.current || !range) return;
-      syncing.current = true;
-      for (const stackTf of CHART_STACK_TIMEFRAMES) {
-        if (stackTf === source) continue;
-        chartsRef.current[stackTf]?.timeScale().setVisibleLogicalRange(range);
-      }
-      syncing.current = false;
-    };
-
-    for (const stackTf of CHART_STACK_TIMEFRAMES) {
-      const chart = charts[stackTf];
-      if (!chart) continue;
-      chart.timeScale().subscribeVisibleLogicalRangeChange((range) => syncRange(stackTf, range));
-    }
-
-    return () => {
-      for (const c of Object.values(chartsRef.current)) c?.remove();
-      chartsRef.current = {};
-    };
-  }, [barsByTf, indicatorsByTf]);
-
-  return (
-    <div className="chart-stack">
-      {CHART_STACK_TIMEFRAMES.map((stackTf) => {
-        const bars = barsByTf[stackTf] ?? [];
-        const inds = indicatorsByTf[stackTf] ?? DEFAULT_STACK_INDICATORS[stackTf];
-        return (
-          <div key={stackTf} className="chart-stack-pane">
-            <div className="chart-stack-head">
-              <span className="chart-stack-label">{stackTf}</span>
-              <div className="ind-group">
-                {CHART_INDICATORS.map((id) => (
-                  <button
-                    key={id}
-                    type="button"
-                    className={`chip${inds.includes(id) ? " on" : ""}`}
-                    onClick={() => onToggleIndicator(stackTf, id)}
-                  >
-                    {INDICATOR_LABELS[id]}
-                  </button>
-                ))}
-              </div>
-            </div>
-            {!bars.length ? <div className="chart-msg muted">No {stackTf} data.</div> : null}
-            <div ref={(el) => { hostsRef.current[stackTf] = el; }} className="chart-host chart-host-stack" />
-          </div>
-        );
-      })}
-    </div>
+function refreshChartData(bundle: ChartBundle, bars: Bar[], indicators: ChartIndicator[]) {
+  bundle.candle.setData(
+    bars.map((b) => ({ time: Math.floor(b.t / 1000) as any, open: b.o, high: b.h, low: b.l, close: b.c })),
   );
+  const closes = bars.map((b) => b.c);
+  const green = cssVar("--green", "#00d68f");
+  const red = cssVar("--red", "#ff5a72");
+  bundle.volume.setData(
+    bars.map((b) => ({
+      time: Math.floor(b.t / 1000) as any,
+      value: b.v,
+      color: b.c >= b.o ? green : red,
+    })),
+  );
+  let lineIdx = 0;
+  if (indicators.includes("vwap") && bundle.lines[lineIdx]) {
+    bundle.lines[lineIdx].setData(toLine(bars, vwapSeries(bars)) as any);
+    lineIdx++;
+  }
+  if (indicators.includes("ema9") && bundle.lines[lineIdx]) {
+    bundle.lines[lineIdx].setData(toLine(bars, emaSeries(closes, 9)) as any);
+    lineIdx++;
+  }
+  if (indicators.includes("ema21") && bundle.lines[lineIdx]) {
+    bundle.lines[lineIdx].setData(toLine(bars, emaSeries(closes, 21)) as any);
+    lineIdx++;
+  }
+  if (indicators.includes("sma50") && bundle.lines[lineIdx]) {
+    bundle.lines[lineIdx].setData(toLine(bars, smaSeries(closes, 50)) as any);
+  }
 }
 
 export function ChartPanel({
@@ -269,12 +227,10 @@ export function ChartPanel({
   open: boolean;
   onClose: () => void;
 }) {
-  const mobile = useMobileChart();
-  const [tf, setTf] = useState<ChartTimeframe>("5m");
+  const [tf, setTf] = useState<ChartTimeframe>("1m");
   const [indicators, setIndicators] = useState<ChartIndicator[]>(DEFAULT_CHART_INDICATORS);
-  const [indicatorsByTf, setIndicatorsByTf] = useState<Record<ChartStackTimeframe, ChartIndicator[]>>(DEFAULT_STACK_INDICATORS);
-  const [barsByTf, setBarsByTf] = useState<Partial<Record<ChartTimeframe, Bar[]>>>({});
-  const [loading, setLoading] = useState(false);
+  const [bars, setBars] = useState<Bar[]>([]);
+  const [initialLoading, setInitialLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reality, setReality] = useState<any>(null);
   const [verdictPreview, setVerdictPreview] = useState<any>(null);
@@ -282,21 +238,33 @@ export function ChartPanel({
   const tape = useLiveTapeMap();
   const liveRow = symbol ? tape.map.get(symbol) : undefined;
 
+  const chartHostRef = useRef<HTMLDivElement | null>(null);
+  const bundleRef = useRef<ChartBundle | null>(null);
+  const chartConfigRef = useRef("");
+
+  const loadVerdict = useCallback(async (sym: string, cancelled: () => boolean) => {
+    try {
+      const res = await fetch(`/api/scan/${encodeURIComponent(sym)}`, { cache: "no-store", headers: scanHeaders() });
+      const d = await res.json();
+      if (!cancelled()) setVerdictPreview(d?.verdictPreview ?? null);
+    } catch {
+      if (!cancelled()) setVerdictPreview(null);
+    }
+  }, []);
+
   useEffect(() => {
     if (!open || !symbol) {
       setVerdictPreview(null);
       return;
     }
     let cancelled = false;
-    fetch(`/api/scan/${encodeURIComponent(symbol)}`, { cache: "no-store", headers: scanHeaders() })
-      .then((r) => r.json())
-      .then((d) => { if (!cancelled) setVerdictPreview(d?.verdictPreview ?? null); })
-      .catch(() => { if (!cancelled) setVerdictPreview(null); });
-    return () => { cancelled = true; };
-  }, [open, symbol]);
-
-  const chartHostRef = useRef<HTMLDivElement | null>(null);
-  const chartRef = useRef<IChartApi | null>(null);
+    loadVerdict(symbol, () => cancelled);
+    const id = setInterval(() => loadVerdict(symbol, () => cancelled), VERDICT_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [open, symbol, loadVerdict]);
 
   useEffect(() => {
     const p = loadDashboardPrefs();
@@ -304,18 +272,6 @@ export function ChartPanel({
     if (Array.isArray(p.chartIndicators)) {
       const valid = p.chartIndicators.filter((i): i is ChartIndicator => (CHART_INDICATORS as readonly string[]).includes(i));
       if (valid.length) setIndicators(valid);
-    }
-    if (p.chartIndicatorsByTf) {
-      setIndicatorsByTf((cur) => {
-        const next = { ...cur };
-        for (const stackTf of CHART_STACK_TIMEFRAMES) {
-          const saved = p.chartIndicatorsByTf?.[stackTf];
-          if (Array.isArray(saved)) {
-            next[stackTf] = saved.filter((i): i is ChartIndicator => (CHART_INDICATORS as readonly string[]).includes(i));
-          }
-        }
-        return next;
-      });
     }
   }, []);
 
@@ -327,75 +283,91 @@ export function ChartPanel({
     });
   }, []);
 
-  const toggleStackIndicator = useCallback((stackTf: ChartStackTimeframe, id: ChartIndicator) => {
-    setIndicatorsByTf((cur) => {
-      const list = cur[stackTf] ?? DEFAULT_STACK_INDICATORS[stackTf];
-      const nextList = list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
-      const next = { ...cur, [stackTf]: nextList };
-      saveDashboardPrefs({ chartIndicatorsByTf: next });
-      return next;
-    });
-  }, []);
-
   const changeTf = useCallback((next: ChartTimeframe) => {
     setTf(next);
     saveDashboardPrefs({ chartTimeframe: next });
   }, []);
 
-  const fetchTfs = useMemo(
-    () => (mobile ? [tf] : [...CHART_STACK_TIMEFRAMES]) as ChartTimeframe[],
-    [mobile, tf],
+  const loadCandles = useCallback(
+    async (cancelled: () => boolean, silent: boolean) => {
+      if (!symbol) return;
+      if (!silent) {
+        setInitialLoading(true);
+        setError(null);
+      }
+      try {
+        const res = await fetch(`/api/candles/${encodeURIComponent(symbol)}?tf=${tf}`, {
+          cache: "no-store",
+          headers: scanHeaders(),
+        });
+        const d = await res.json();
+        if (cancelled()) return;
+        if (!d.ok) {
+          if (!silent) {
+            setError(d.error ?? "candles unavailable");
+            setBars([]);
+          }
+        } else {
+          setBars(d.bars ?? []);
+          setError(null);
+          setCandleUpdatedAt(Date.now());
+        }
+      } catch (e: any) {
+        if (!cancelled() && !silent) {
+          setError(e?.message ?? "failed to load candles");
+          setBars([]);
+        }
+      } finally {
+        if (!cancelled() && !silent) setInitialLoading(false);
+      }
+    },
+    [symbol, tf],
   );
 
-  const loadCandles = useCallback(async (cancelled: () => boolean) => {
-    if (!symbol) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const results = await Promise.all(
-        fetchTfs.map(async (t) => {
-          const res = await fetch(`/api/candles/${encodeURIComponent(symbol)}?tf=${t}`, {
-            cache: "no-store",
-            headers: scanHeaders(),
-          });
-          const d = await res.json();
-          return { tf: t, ok: d.ok, bars: d.bars ?? [], error: d.error };
-        }),
-      );
-      if (cancelled()) return;
-      const failed = results.find((r) => !r.ok);
-      if (failed && mobile) {
-        setError(failed.error ?? "candles unavailable");
-        setBarsByTf({});
-      } else {
-        const map: Partial<Record<ChartTimeframe, Bar[]>> = {};
-        for (const r of results) map[r.tf as ChartTimeframe] = r.bars;
-        setBarsByTf(map);
-        if (failed) setError(failed.error ?? null);
-        setCandleUpdatedAt(Date.now());
-      }
-    } catch (e: any) {
-      if (!cancelled()) {
-        setError(e?.message ?? "failed to load candles");
-        setBarsByTf({});
-      }
-    } finally {
-      if (!cancelled()) setLoading(false);
-    }
-  }, [symbol, mobile, tf, fetchTfs]);
-
   useEffect(() => {
-    if (!open || !symbol) return;
+    if (!open || !symbol) {
+      setBars([]);
+      setInitialLoading(false);
+      return;
+    }
     let cancelled = false;
-    loadCandles(() => cancelled);
-    const id = setInterval(() => loadCandles(() => cancelled), CHART_LIVE_POLL_MS);
+    loadCandles(() => cancelled, false);
+    const id = setInterval(() => loadCandles(() => cancelled, true), CHART_LIVE_POLL_MS);
     return () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [open, symbol, loadCandles]);
+  }, [open, symbol, tf, loadCandles]);
 
-  const bars = mobile ? (barsByTf[tf] ?? []) : (barsByTf["5m"] ?? barsByTf["1m"] ?? []);
+  const configKey = useMemo(() => `${tf}|${indicators.join(",")}`, [tf, indicators]);
+
+  useEffect(() => {
+    bundleRef.current?.chart.remove();
+    bundleRef.current = null;
+    chartConfigRef.current = "";
+  }, [symbol, tf]);
+
+  useEffect(() => {
+    if (!open || !symbol) return;
+    const host = chartHostRef.current;
+    if (!host || !bars.length) return;
+
+    if (configKey !== chartConfigRef.current || !bundleRef.current) {
+      bundleRef.current?.chart.remove();
+      bundleRef.current = mountChart(host, bars, indicators, tf);
+      chartConfigRef.current = configKey;
+    } else {
+      refreshChartData(bundleRef.current, bars, indicators);
+    }
+  }, [open, symbol, bars, indicators, tf, configKey]);
+
+  useEffect(() => {
+    if (!open) {
+      bundleRef.current?.chart.remove();
+      bundleRef.current = null;
+      chartConfigRef.current = "";
+    }
+  }, [open]);
 
   useEffect(() => {
     if (!open || !symbol) {
@@ -422,31 +394,10 @@ export function ChartPanel({
         if (!cancelled) setReality({ error: e?.message ?? "failed" });
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [open, symbol, bars]);
-
-  useEffect(() => {
-    if (mobile && open && chartHostRef.current && bars.length) {
-      const host = chartHostRef.current;
-      const muted = cssVar("--muted", "#8798a8");
-      const line = cssVar("--line", "#1f2a37");
-      const chart = createChart(host, {
-        layout: { background: { color: "transparent" }, textColor: muted, attributionLogo: false },
-        grid: { vertLines: { color: line }, horzLines: { color: line } },
-        rightPriceScale: { borderColor: line },
-        timeScale: { borderColor: line, timeVisible: tf !== "1D", secondsVisible: false },
-        crosshair: { mode: 0 },
-        autoSize: true,
-      });
-      chartRef.current = chart;
-      applyIndicators(chart, bars, indicators, tf);
-      return () => {
-        chart.remove();
-        chartRef.current = null;
-      };
-    }
-    return undefined;
-  }, [mobile, open, bars, indicators, tf]);
 
   const last = bars.length ? bars[bars.length - 1] : null;
   const first = bars.length ? bars[0] : null;
@@ -527,36 +478,23 @@ export function ChartPanel({
           </div>
         ) : null}
 
-        {mobile ? (
-          <>
-            <div className="chart-controls">
-              <div className="tf-group">
-                {CHART_TIMEFRAMES.map((t) => (
-                  <button key={t} type="button" className={`chip${tf === t ? " on" : ""}`} onClick={() => changeTf(t)}>
-                    {t}
-                  </button>
-                ))}
-              </div>
-              <div className="ind-group">{indicatorChips}</div>
-            </div>
-            <div className="chart-host-wrap">
-              {loading ? <div className="chart-msg muted">Loading candles…</div> : null}
-              {error ? <div className="chart-msg warn">⚠ {error}</div> : null}
-              {!loading && !error && !bars.length ? <div className="chart-msg muted">No candle data.</div> : null}
-              <div ref={chartHostRef} className="chart-host" />
-            </div>
-          </>
-        ) : (
-          <div className="chart-host-wrap chart-host-wrap-stack">
-            {loading ? <div className="chart-msg muted">Loading stacked charts…</div> : null}
-            {error ? <div className="chart-msg warn">⚠ {error}</div> : null}
-            <StackedCharts
-              barsByTf={barsByTf as Partial<Record<ChartStackTimeframe, Bar[]>>}
-              indicatorsByTf={indicatorsByTf}
-              onToggleIndicator={toggleStackIndicator}
-            />
+        <div className="chart-controls">
+          <div className="tf-group">
+            {CHART_TIMEFRAMES.map((t) => (
+              <button key={t} type="button" className={`chip${tf === t ? " on" : ""}`} onClick={() => changeTf(t)}>
+                {t}
+              </button>
+            ))}
           </div>
-        )}
+          <div className="ind-group">{indicatorChips}</div>
+        </div>
+
+        <div className="chart-host-wrap">
+          {initialLoading ? <div className="chart-msg muted">Loading candles…</div> : null}
+          {error ? <div className="chart-msg warn">⚠ {error}</div> : null}
+          {!initialLoading && !error && !bars.length ? <div className="chart-msg muted">No candle data.</div> : null}
+          <div ref={chartHostRef} className="chart-host" />
+        </div>
 
         <div className="chart-reality">
           <div className="chart-reality-title">0DTE reality check</div>

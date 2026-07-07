@@ -7,6 +7,7 @@
  */
 
 import { getDb } from "@/lib/db";
+import { tradingDay } from "@/lib/trading-session";
 import { formatOnTrackRatio, mapDailyTrendRow, onTrackPct } from "./accuracy-ratios";
 import {
   EARLY_1M_ON_TRACK_MIN_PCT,
@@ -19,11 +20,19 @@ const SQL_MOVE_3M = `(SELECT p.percent_move_from_alert FROM alert_performance p 
 const SQL_MOVE_5M = `(SELECT p.percent_move_from_alert FROM alert_performance p WHERE p.alert_id = a.id AND p.checkpoint = '5m')`;
 
 function sqlEarlyOnTrack(): string {
+  const peakFav = `(SELECT MAX(p.max_percent_move_after_alert) FROM alert_performance p WHERE p.alert_id = a.id)`;
   return `(
     COALESCE(${SQL_MOVE_5M}, -999) >= ${EARLY_ON_TRACK_MIN_PCT}
     OR (${SQL_MOVE_5M} IS NULL AND COALESCE(${SQL_MOVE_1M}, -999) >= ${EARLY_1M_ON_TRACK_MIN_PCT})
+    OR (a.status = 'tracking' AND COALESCE(${peakFav}, -999) >= ${EARLY_1M_ON_TRACK_MIN_PCT})
   )`;
 }
+
+const SQL_WINNER = `(
+  (a.status = 'complete' AND a.is_false_positive = 0)
+  OR COALESCE(${SQL_MOVE_5M}, -999) >= ${EARLY_MOVE_WIN_PCT}
+  OR a.option_outcome_win = 1
+)`;
 
 export interface NewAlert {
   ticker: string;
@@ -178,6 +187,44 @@ export interface AlertFilters {
   minId?: number; // for popup polling: only alerts newer than this id
   limit?: number;
   offset?: number;
+}
+
+/** Latest options alert capture fields — keeps chart verdict locked after BUY fires. */
+export function getLatestAlertCapture(ticker: string) {
+  const row: any = getDb().prepare(
+    `SELECT capture_action, capture_confidence, alert_time, short_rate_at_alert, volume_surge_at_alert,
+            alert_tier, option_side, strike, expiration, dte, trade_bias, direction, signal_score,
+            option_worth_score, worth_verdict, zero_dte_contract_score, options_liquidity_score,
+            move_status, risk_flags, risk_score, long_call_score, long_put_score
+     FROM alerts
+     WHERE ticker = ? AND coalesce(asset_class, 'options') = 'options'
+     ORDER BY id DESC LIMIT 1`,
+  ).get(String(ticker).toUpperCase());
+  if (!row) return null;
+  return {
+    capture_action: row.capture_action ?? null,
+    capture_confidence: row.capture_confidence ?? null,
+    alert_time: row.alert_time ?? null,
+    short_rate_at_alert: row.short_rate_at_alert ?? null,
+    volume_surge_at_alert: row.volume_surge_at_alert ?? null,
+    alert_tier: row.alert_tier ?? null,
+    option_side: row.option_side ?? null,
+    strike: row.strike ?? null,
+    expiration: row.expiration ?? null,
+    dte: row.dte ?? null,
+    trade_bias: row.trade_bias ?? null,
+    direction: row.direction ?? null,
+    signal_score: row.signal_score ?? null,
+    option_worth_score: row.option_worth_score ?? null,
+    worth_verdict: row.worth_verdict ?? null,
+    zero_dte_contract_score: row.zero_dte_contract_score ?? null,
+    options_liquidity_score: row.options_liquidity_score ?? null,
+    move_status: row.move_status ?? null,
+    risk_flags: row.risk_flags ?? null,
+    risk_score: row.risk_score ?? null,
+    long_call_score: row.long_call_score ?? null,
+    long_put_score: row.long_put_score ?? null,
+  };
 }
 
 export function listAlerts(f: AlertFilters = {}) {
@@ -387,7 +434,7 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number; asset
     : "";
   const days = Math.max(1, Number(opts.days ?? 14));
   const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = tradingDay();
   const limit = Math.min(Number(opts.limit ?? 50), 200);
 
   const summary: any = db.prepare(
@@ -464,6 +511,25 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number; asset
      ORDER BY a.id DESC LIMIT ?`,
   ).all(since, limit);
 
+  const recentWinners = db.prepare(
+    `SELECT a.id, a.ticker, a.option_side, a.strike, a.dte, a.alert_time, a.trading_day,
+            a.direction, a.signal_score, a.capture_action,
+            a.status, a.is_false_positive, a.option_return_pct, a.option_outcome_win,
+            (SELECT p.max_percent_move_after_alert FROM alert_performance p
+             WHERE p.alert_id = a.id ORDER BY p.checked_at DESC LIMIT 1) AS latest_max_move,
+            ${SQL_MOVE_5M} AS move_5m,
+            (SELECT p.percent_move_from_alert FROM alert_performance p
+             WHERE p.alert_id = a.id AND p.checkpoint = 'eod') AS eod_move
+     FROM alerts a
+     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'${assetClause} AND ${SQL_WINNER}
+     ORDER BY COALESCE(${SQL_MOVE_5M}, latest_max_move, eod_move, 0) DESC, a.id DESC LIMIT 25`,
+  ).all(since);
+
+  const winnersToday: any = db.prepare(
+    `SELECT COUNT(*) AS cnt FROM alerts a
+     WHERE a.trading_day = ? AND a.alert_tier = 'trade'${assetClause} AND ${SQL_WINNER}`,
+  ).get(today);
+
   const onTrackNow = db.prepare(
     `SELECT a.id, a.ticker, a.option_side, a.strike, a.dte, a.alert_time, a.trading_day,
             a.direction, coalesce(a.asset_class,'options') AS asset_class, a.session,
@@ -536,6 +602,7 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number; asset
     todayTotal,
     todayTracking,
     todayOnTrack: todayOnTrackCount,
+    winnersToday: winnersToday?.cnt ?? 0,
     completedToday: completedToday?.cnt ?? 0,
     wins: summary?.wins ?? 0,
     losses: summary?.losses ?? 0,
@@ -569,8 +636,9 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number; asset
     bySide,
     recent,
     onTrackNow,
+    recentWinners,
     dailyTrend,
-    note: "Accuracy uses stock % move right after the call (1m/5m checkpoints). On-track = ≥0.5% favorable by 5m. Early win = ≥0.75% at 5m. TRADE-at-capture rate uses signals that passed all BUY gates when fired.",
+    note: "On-track = favorable move building (1m/5m or peak). Winners = completed win, early 5m hit, or option +15%. TRADE headline locks 3 min after fire unless tape reverses.",
   };
 }
 

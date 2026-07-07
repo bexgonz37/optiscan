@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { scanHeaders } from "@/hooks/useScanner";
 import { useLiveTapeMap, liveCtxFor } from "@/hooks/useLiveTapeMap";
 import { computeTradeVerdict, isTradeEligible } from "@/lib/trade-verdict";
+import { stillMovingStatus } from "@/lib/signal-live";
 import { isOptionsSession } from "@/lib/trading-session";
 import { OptionAlertCard } from "@/components/alert-cards/OptionAlertCard";
 
@@ -31,6 +32,9 @@ interface PopupAlert {
   alert_time: string | null;
   asset_class: string | null;
   capture_action: string | null;
+  /** Frozen at popup show time — headline never flips BUY → WATCH mid-popup. */
+  frozenHeadline?: string;
+  frozenReason?: string;
 }
 
 const LS_LAST_ID = "optiscan:popup:lastId";
@@ -75,16 +79,29 @@ function AlertCard({
 }) {
   const [showDetails, setShowDetails] = useState(false);
   const verdict = computeTradeVerdict(a, live);
+  const headline = a.frozenHeadline ?? verdict.headline;
+  const displayVerdict = a.frozenHeadline
+    ? { ...verdict, headline: a.frozenHeadline, reason: a.frozenReason ?? verdict.reason }
+    : verdict;
 
   return (
     <div className="panel popup-card">
       <div className="popup-card-head">
-        <span className="verdict-pill verdict-trade">{verdict.headline}</span>
+        <span className="verdict-pill verdict-trade">{headline}</span>
         <span className="spacer flex-1" />
         <button className="pill btn btn-xs" onClick={onDismiss}>✕</button>
       </div>
 
       <OptionAlertCard alert={a} live={live} mode={mode} showDetails={showDetails} />
+
+      {live && verdict.headline !== headline ? (
+        <div className="muted text-xs mb-1">
+          Momentum now: {stillMovingStatus(
+            String(a.option_side ?? "").toLowerCase().startsWith("p") ? "PUT" : "CALL",
+            { shortRate: live.shortRate, direction: live.direction },
+          ).label}
+        </div>
+      ) : null}
 
       <button
         type="button"
@@ -96,7 +113,7 @@ function AlertCard({
 
       <div className="btn-row mt-2">
         <button className="pill btn btn-primary btn-xs" onClick={() => onAct("open_chart")}>Watch chart</button>
-        {verdict.action === "TRADE" ? (
+        {displayVerdict.action === "TRADE" ? (
           <button className="pill btn btn-xs" onClick={() => onAct("trade_taken")}>I took this trade</button>
         ) : null}
         <button className="pill btn btn-xs" onClick={() => onAct("journal")}>Journal</button>
@@ -168,7 +185,12 @@ export function AlertPopup({
 
       setStack((prev) => {
         const ids = new Set(prev.map((x) => x.id));
-        const merged = [...prev, ...show.filter((x) => !ids.has(x.id))];
+        const withFrozen = show.filter((x) => !ids.has(x.id)).map((x) => {
+          const live = liveCtxFor(tapeRef.current, x.ticker);
+          const v = computeTradeVerdict(x, live);
+          return { ...x, frozenHeadline: v.headline, frozenReason: v.reason };
+        });
+        const merged = [...prev, ...withFrozen];
         return merged.slice(-MAX_STACK);
       });
       for (const x of show) logEvent(x.id, x.ticker, "shown");

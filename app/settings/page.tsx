@@ -14,11 +14,11 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<any>(null);
   const [languageMode, setLanguageMode] = useState("private");
   const [webhookConfigured, setWebhookConfigured] = useState(false);
-  const [minRate, setMinRate] = useState("0.18");
-  const [minSurge, setMinSurge] = useState("1.4");
+  const [minRate, setMinRate] = useState("0.12");
+  const [minSurge, setMinSurge] = useState("1.25");
   const [minAccel, setMinAccel] = useState("0");
-  const [minEfficiency, setMinEfficiency] = useState("0.35");
-  const [minLevelSurge, setMinLevelSurge] = useState("1.2");
+  const [minEfficiency, setMinEfficiency] = useState("0.28");
+  const [minLevelSurge, setMinLevelSurge] = useState("1.15");
   const [desktopAlerts, setDesktopAlerts] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [testPreview, setTestPreview] = useState<any>(null);
@@ -34,11 +34,11 @@ export default function SettingsPage() {
         setWebhookConfigured(Boolean(d.discordWebhookConfigured));
         const t = d.scannerThresholds;
         if (t) {
-          setMinRate(String(t.scannerMinRatePctMin ?? 0.18));
-          setMinSurge(String(t.scannerMinVolSurge ?? 1.4));
+          setMinRate(String(t.scannerMinRatePctMin ?? 0.12));
+          setMinSurge(String(t.scannerMinVolSurge ?? 1.25));
           setMinAccel(String(t.scannerMinAccel ?? 0));
-          setMinEfficiency(String(t.scannerMinEfficiency ?? 0.35));
-          setMinLevelSurge(String(t.scannerMinLevelSurge ?? 1.2));
+          setMinEfficiency(String(t.scannerMinEfficiency ?? 0.28));
+          setMinLevelSurge(String(t.scannerMinLevelSurge ?? 1.15));
         }
       }
     } catch (e: any) {

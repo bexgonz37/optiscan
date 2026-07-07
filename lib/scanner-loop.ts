@@ -259,11 +259,11 @@ async function tick() {
     s.note = "0DTE callouts fire 9:30–4:00 ET — tape still live for charts";
   }
 
-  const minRate = getSettingNum("scanner_min_rate_pct_min", Number(process.env.SCANNER_MIN_RATE_PCT_MIN ?? 0.18));
-  const minSurge = getSettingNum("scanner_min_vol_surge", Number(process.env.SCANNER_MIN_VOL_SURGE ?? 1.4));
+  const minRate = getSettingNum("scanner_min_rate_pct_min", Number(process.env.SCANNER_MIN_RATE_PCT_MIN ?? 0.12));
+  const minSurge = getSettingNum("scanner_min_vol_surge", Number(process.env.SCANNER_MIN_VOL_SURGE ?? 1.25));
   const minAccel = getSettingNum("scanner_min_accel", Number(process.env.SCANNER_MIN_ACCEL ?? 0));
-  const minEfficiency = getSettingNum("scanner_min_efficiency", Number(process.env.SCANNER_MIN_EFFICIENCY ?? 0.35));
-  const minLevelSurge = getSettingNum("scanner_min_level_surge", Number(process.env.SCANNER_MIN_LEVEL_SURGE ?? 1.2));
+  const minEfficiency = getSettingNum("scanner_min_efficiency", Number(process.env.SCANNER_MIN_EFFICIENCY ?? 0.28));
+  const minLevelSurge = getSettingNum("scanner_min_level_surge", Number(process.env.SCANNER_MIN_LEVEL_SURGE ?? 1.15));
 
   if (nowMs - s.lastDiscoveryAt >= DISCOVERY_MS) {
     s.lastDiscoveryAt = nowMs;
@@ -289,7 +289,7 @@ async function tick() {
     st.ring.push({ t: nowMs, p: q.price, v: q.volume ?? 0 });
     if (st.ring.length > RING_MAX) st.ring.shift();
 
-    if (st.ring.length < 10) {
+    if (st.ring.length < 5) {
       const warmLevels = detectLevels({ price: q.price, dayHigh: q.dayHigh, dayLow: q.dayLow, vwap: st.vwap });
       tape.push({
         symbol: q.symbol, price: q.price, movePct: q.changePercent, volume: q.volume ?? null,
@@ -303,8 +303,8 @@ async function tick() {
       continue;
     }
 
-    const accelRead = acceleration(st.ring, { nowMs } as any);
-    const surge = volumeSurge(st.ring, { nowMs } as any);
+    const accelRead = acceleration(st.ring, { shortMs: 8000, nowMs } as any);
+    const surge = volumeSurge(st.ring, { shortMs: 15000, nowMs } as any);
     const efficiency = pathEfficiency(st.ring, { nowMs } as any);
     const nearTrigger = accelRead.shortRate != null && Math.abs(accelRead.shortRate) >= minRate * 0.7;
     if (nearTrigger) await ensureVwap(q.symbol, st, nowMs);
@@ -339,6 +339,8 @@ async function tick() {
     const persistOk = speedPersistentFromRing(st.ring, {
       minRate,
       direction: dir.direction === "bearish" ? "bearish" : "bullish",
+      minHits: 1,
+      subWindowMs: 3000,
     });
     const accelOk = minAccel <= 0 || (accelRead.accel != null && accelRead.accel > minAccel);
 
