@@ -16,7 +16,7 @@ export interface ScannerStreamSnapshot {
   transport: "sse" | "poll";
 }
 
-const UI_DEBOUNCE_MS = 300;
+const UI_DEBOUNCE_MS = 1200;
 
 export function streamFreshness(lastEventAt: number | null, nowMs = Date.now()): StreamFreshness {
   if (lastEventAt == null) return "red";

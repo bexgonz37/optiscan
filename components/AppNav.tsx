@@ -45,28 +45,40 @@ export function AppNav({
   return (
     <header className="chrome-header">
       <Link href="/" className="chrome-brand">OPTISCAN</Link>
-      <nav className="chrome-nav" aria-label="Main">
-        {PAGES.map((p) => (
-          <Link key={p.href} href={p.href} className={`chrome-link${isActive(pathname, p.href) ? " active" : ""}`}>
-            {p.label}
-          </Link>
-        ))}
-      </nav>
-      {!hideSessionBadge && session ? (
-        <span className="chrome-clock muted" style={{ marginLeft: "auto" }}>
-          <span className="dot" />{session}{clock ? ` · ${clock} ET` : ""}
-        </span>
-      ) : clock ? (
-        <span className="chrome-clock"><span className="dot" />{clock} ET</span>
-      ) : null}
-      {status?.length ? (
-        <span className="chrome-clock muted">{status.map((s) => s.label).join(" · ")}</span>
-      ) : null}
-      {onRefresh ? (
-        <button type="button" className="chrome-link" onClick={onRefresh} style={{ border: 0, background: "transparent", cursor: "pointer" }}>↻</button>
-      ) : null}
-      <ThemeToggle />
-      {children}
+
+      <div className="chrome-header-end">
+        <nav className="chrome-nav" aria-label="Main">
+          {PAGES.map((p) => (
+            <Link
+              key={p.href}
+              href={p.href}
+              prefetch
+              className={`chrome-link${isActive(pathname, p.href) ? " active" : ""}`}
+            >
+              {p.label}
+            </Link>
+          ))}
+        </nav>
+
+        {!hideSessionBadge && session ? (
+          <span className="chrome-clock muted">
+            <span className="dot" />{session}{clock ? ` · ${clock} ET` : ""}
+          </span>
+        ) : clock ? (
+          <span className="chrome-clock"><span className="dot" />{clock} ET</span>
+        ) : null}
+
+        {status?.length ? (
+          <span className="chrome-status muted">{status.map((s) => s.label).join(" · ")}</span>
+        ) : null}
+
+        {onRefresh ? (
+          <button type="button" className="chrome-icon-btn" onClick={onRefresh} aria-label="Refresh">↻</button>
+        ) : null}
+
+        <ThemeToggle />
+        {children}
+      </div>
     </header>
   );
 }

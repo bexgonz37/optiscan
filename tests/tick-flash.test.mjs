@@ -7,6 +7,8 @@ test("tickDirection returns up/down/empty", () => {
   assert.equal(tickDirection(1, 2), "down");
   assert.equal(tickDirection(1, 1), "");
   assert.equal(tickDirection(null, 1), "");
+  assert.equal(tickDirection(1.02, 1, 0.05), "");
+  assert.equal(tickDirection(1.1, 1, 0.05), "up");
 });
 
 test("applyHotLinger keeps cooled symbols within window", () => {

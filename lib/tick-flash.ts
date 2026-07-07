@@ -5,8 +5,10 @@ export type TickDirection = "up" | "down" | "";
 export function tickDirection(
   next: number | null | undefined,
   prev: number | null | undefined,
+  minDelta = 0,
 ): TickDirection {
   if (next == null || prev == null || next === prev) return "";
+  if (minDelta > 0 && Math.abs(next - prev) < minDelta) return "";
   return next > prev ? "up" : "down";
 }
 
