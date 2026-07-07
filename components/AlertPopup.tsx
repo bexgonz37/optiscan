@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * AlertPopup — real-time popup stack for 0DTE TRADE callouts (BUY CALL / BUY PUT).
+ * AlertPopup — real-time popup stack for 0DTE callouts (BUY CALL/PUT and WATCH CALL/PUT).
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -42,6 +42,18 @@ const LS_SNOOZE = "optiscan:popup:snooze";
 const SNOOZE_MS = 60 * 60 * 1000;
 const POLL_MS = 1_000;
 const MAX_STACK = 3;
+
+function isPopupEligible(a: PopupAlert, live: ReturnType<typeof liveCtxFor>): boolean {
+  if (a.alert_tier === "research" || a.asset_class === "stock") return false;
+  const cap = String(a.capture_action ?? "").toUpperCase();
+  if (cap === "SKIP") return false;
+  if (cap === "TRADE") return isTradeEligible(a, live);
+  if (cap === "WAIT") {
+    const v = computeTradeVerdict(a, live);
+    return v.action === "WAIT" && (v.side === "CALL" || v.side === "PUT");
+  }
+  return false;
+}
 
 function beep() {
   try {
@@ -177,9 +189,7 @@ export function AlertPopup({
       const now = Date.now();
       const show = fresh.filter((x) =>
         !(snoozed[x.ticker] && now - snoozed[x.ticker] < SNOOZE_MS) &&
-        x.alert_tier !== "research" &&
-        x.asset_class !== "stock" &&
-        isTradeEligible(x, liveCtxFor(tapeRef.current, x.ticker)),
+        isPopupEligible(x, liveCtxFor(tapeRef.current, x.ticker)),
       );
       if (!show.length) return;
 

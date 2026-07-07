@@ -73,7 +73,7 @@ const BLOCKING_FLAGS = new Set([
   "Spread Too Wide",
   "Premium Too Expensive",
   "Move Exhausted",
-  "Fake Breakout Risk",
+  // Fake Breakout → WATCH at capture, not a hard SKIP (user still wants the level break heads-up).
 ]);
 
 /** Quality gates for TRADE — exported for tier assignment at capture. */

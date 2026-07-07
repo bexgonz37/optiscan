@@ -45,8 +45,8 @@ CREATE TABLE IF NOT EXISTS alerts (
   is_false_positive INTEGER,          -- null until EOD checkpoint decides
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_dedup
-  ON alerts(ticker, source, coalesce(option_symbol,''), coalesce(session,''), trading_day);
+CREATE INDEX IF NOT EXISTS idx_alerts_dedup_lookup
+  ON alerts(ticker, source, trading_day, alert_time);
 CREATE INDEX IF NOT EXISTS idx_alerts_day ON alerts(trading_day);
 CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status);
 
@@ -242,6 +242,17 @@ function migrate(db: Database.Database) {
   for (const [col, sql] of ALERT_COLUMN_MIGRATIONS) if (!alertCols.has(col)) db.exec(sql);
   const journalCols = cols("trade_journal");
   for (const [col, sql] of JOURNAL_COLUMN_MIGRATIONS) if (!journalCols.has(col)) db.exec(sql);
+
+  // v3: day-long unique dedup blocked re-callouts on the same ticker; use time-window dedup instead.
+  const dedupV3: any = db.prepare("SELECT value FROM scanner_settings WHERE key='alerts_dedup_v3'").get();
+  if (!dedupV3) {
+    db.exec("DROP INDEX IF EXISTS idx_alerts_dedup");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_alerts_dedup_lookup ON alerts(ticker, source, trading_day, alert_time)");
+    db.prepare(
+      `INSERT INTO scanner_settings (key, value) VALUES ('alerts_dedup_v3', '1')
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+    ).run();
+  }
 
   db.exec(`
 CREATE TABLE IF NOT EXISTS broker_imports (

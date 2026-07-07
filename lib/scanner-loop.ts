@@ -9,8 +9,9 @@
  *      deterministic, no AI, no news.
  *   2. TRIGGER-GATED OPTIONS FETCH: chains are NEVER pulled wholesale. Only a
  *      symbol that passes shouldTrigger() gets a 0DTE chain fetch (dte<=1,
- *      falling back to <=5 when no same-day expiry exists), throttled to one
- *      chain per symbol per 60s, with a 5-minute re-trigger cooldown.
+ *      falling back to <=5 when no same-day expiry exists). Chains are
+ *      prefetched while a symbol is near-trigger so the alert isn't delayed
+ *      by a cold fetch. Active-alert refresh uses a separate throttle.
  *   3. ACTIVE-ALERT REFRESH: symbols alerted in the last 30 min get their
  *      chain re-quoted every SCANNER_ACTIVE_REFRESH_MS (default 7s, max 3
  *      symbols per beat) into options_snapshots (checkpoint 'live').
@@ -37,6 +38,7 @@ import { getSettingNum } from "@/lib/alert-store";
 const LOOP_MS = Number(process.env.SCANNER_LOOP_MS ?? 1000);
 const ACTIVE_REFRESH_MS = Number(process.env.SCANNER_ACTIVE_REFRESH_MS ?? 7000);
 const TRIGGER_COOLDOWN_MS = Number(process.env.SCANNER_TRIGGER_COOLDOWN_MS ?? 10 * 60 * 1000);
+const CORE_TRIGGER_COOLDOWN_MS = Number(process.env.SCANNER_CORE_TRIGGER_COOLDOWN_MS ?? 4 * 60 * 1000);
 const DISCOVERY_MS = Number(process.env.SCANNER_DISCOVERY_MS ?? 30_000);
 const DISCOVERY_TOP_N = Number(process.env.SCANNER_DISCOVERY_TOP_N ?? 20);
 const PROMOTION_MS = Number(process.env.SCANNER_PROMOTION_MS ?? 5 * 60_000);
@@ -49,7 +51,10 @@ interface SymState {
   ring: Tick[];
   recentRates: number[];
   cooldownUntil: number;
+  /** Throttle for active-alert quote refresh only — never block new triggers. */
   lastChainFetch: number;
+  prefetchedChain: any | null;
+  prefetchAt: number;
   vwap: number | null;
   vwapAt: number;
   relVol: number | null;
@@ -125,7 +130,11 @@ function realtimeUniverse(nowMs: number) {
 function sym(s: LoopState, ticker: string): SymState {
   let st = s.symbols.get(ticker);
   if (!st) {
-    st = { ring: [], recentRates: [], cooldownUntil: 0, lastChainFetch: 0, vwap: null, vwapAt: 0, relVol: null, lastAlertAt: 0 };
+    st = {
+      ring: [], recentRates: [], cooldownUntil: 0, lastChainFetch: 0,
+      prefetchedChain: null, prefetchAt: 0,
+      vwap: null, vwapAt: 0, relVol: null, lastAlertAt: 0,
+    };
     s.symbols.set(ticker, st);
   }
   return st;
@@ -142,18 +151,41 @@ async function ensureVwap(ticker: string, st: SymState, nowMs: number) {
   }
 }
 
+/** Warm chain fetch while a symbol is heating up — shaves 1–3s off callout latency. */
+function prefetchChain(ticker: string, st: SymState, nowMs: number) {
+  if (nowMs - st.prefetchAt < 8_000) return;
+  if (st.prefetchedChain?.available && st.prefetchedChain?.contracts?.length) return;
+  st.prefetchAt = nowMs;
+  fetchOptionChain(ticker, { dteMin: 0, dteMax: 1, maxPages: 2 })
+    .then((chain: any) => {
+      if (chain?.available && chain.contracts?.length) {
+        st.prefetchedChain = chain;
+        return null;
+      }
+      return fetchOptionChain(ticker, { dteMin: 0, dteMax: 5, maxPages: 2 });
+    })
+    .then((chain: any) => {
+      if (chain?.available) st.prefetchedChain = chain;
+    })
+    .catch(() => {});
+}
+
 async function handleTrigger(ticker: string, st: SymState, read: any, quote: any, nowMs: number) {
   const s = state();
-  if (nowMs - st.lastChainFetch < 60_000) return; // chain throttle
-  st.lastChainFetch = nowMs;
-  st.cooldownUntil = nowMs + TRIGGER_COOLDOWN_MS;
+  if (nowMs < st.cooldownUntil) return;
+  const cooldownMs = isCoreSymbol(ticker) ? CORE_TRIGGER_COOLDOWN_MS : TRIGGER_COOLDOWN_MS;
+  st.cooldownUntil = nowMs + cooldownMs;
   s.triggers++;
 
-  // 0DTE first; if no same-day expiry (non-Friday single names), nearest week.
-  let chain: any = await fetchOptionChain(ticker, { dteMin: 0, dteMax: 1, maxPages: 2 });
-  if (!chain?.available || !chain.contracts?.length) {
-    chain = await fetchOptionChain(ticker, { dteMin: 0, dteMax: 5, maxPages: 2 });
+  let chain: any = st.prefetchedChain;
+  const prefetchFresh = chain?.available && chain?.contracts?.length && nowMs - st.prefetchAt < 25_000;
+  if (!prefetchFresh) {
+    chain = await fetchOptionChain(ticker, { dteMin: 0, dteMax: 1, maxPages: 2 });
+    if (!chain?.available || !chain.contracts?.length) {
+      chain = await fetchOptionChain(ticker, { dteMin: 0, dteMax: 5, maxPages: 2 });
+    }
   }
+  st.prefetchedChain = null;
   if (!chain?.available) return;
 
   const minsToClose = minutesToClose(nowMs);
@@ -267,13 +299,13 @@ async function tick() {
     s.note = "0DTE callouts fire 9:30–4:00 ET — tape still live for charts";
   }
 
-  // Audit 2026-07-07: 23 TRADEs/34min with 7% hit @5m — 0.12/1.25/0.28 with an
-  // 8s window and no persistence fires on 1-tick noise. Restore strict gates.
-  const minRate = getSettingNum("scanner_min_rate_pct_min", Number(process.env.SCANNER_MIN_RATE_PCT_MIN ?? 0.2));
-  const minSurge = getSettingNum("scanner_min_vol_surge", Number(process.env.SCANNER_MIN_VOL_SURGE ?? 1.4));
+  // Core: 10s/20s — early enough to catch the move, long enough to skip 1-tick
+  // flickers (audit: 8s fired 6 TRADEs with 0% stock follow-through @ 5m).
+  const minRate = getSettingNum("scanner_min_rate_pct_min", Number(process.env.SCANNER_MIN_RATE_PCT_MIN ?? 0.17));
+  const minSurge = getSettingNum("scanner_min_vol_surge", Number(process.env.SCANNER_MIN_VOL_SURGE ?? 1.32));
   const minAccel = getSettingNum("scanner_min_accel", Number(process.env.SCANNER_MIN_ACCEL ?? 0));
-  const minEfficiency = getSettingNum("scanner_min_efficiency", Number(process.env.SCANNER_MIN_EFFICIENCY ?? 0.35));
-  const minLevelSurge = getSettingNum("scanner_min_level_surge", Number(process.env.SCANNER_MIN_LEVEL_SURGE ?? 1.2));
+  const minEfficiency = getSettingNum("scanner_min_efficiency", Number(process.env.SCANNER_MIN_EFFICIENCY ?? 0.30));
+  const minLevelSurge = getSettingNum("scanner_min_level_surge", Number(process.env.SCANNER_MIN_LEVEL_SURGE ?? 1.25));
 
   if (nowMs - s.lastDiscoveryAt >= DISCOVERY_MS) {
     s.lastDiscoveryAt = nowMs;
@@ -299,7 +331,10 @@ async function tick() {
     st.ring.push({ t: nowMs, p: q.price, v: q.volume ?? 0 });
     if (st.ring.length > RING_MAX) st.ring.shift();
 
-    if (st.ring.length < 10) { // full warmup: 5 ticks fired on stale half-rings
+    const core = isCoreSymbol(q.symbol);
+    const warmupMin = core ? 8 : 10;
+
+    if (st.ring.length < warmupMin) {
       const warmLevels = detectLevels({ price: q.price, dayHigh: q.dayHigh, dayLow: q.dayLow, vwap: st.vwap });
       tape.push({
         symbol: q.symbol, price: q.price, movePct: q.changePercent, volume: q.volume ?? null,
@@ -314,13 +349,22 @@ async function tick() {
       continue;
     }
 
-    // 15s/30s windows: an 8s speed read is one print on quiet names — it
-    // measured spikes, not moves (m1 reversal signature all over the audit).
-    const accelRead = acceleration(st.ring, { shortMs: 15000, nowMs } as any);
-    const surge = volumeSurge(st.ring, { shortMs: 30000, nowMs } as any);
+    // Core: 10s speed / 15s volume burst vs 90s baseline. Extended: 12s / 24s.
+    const shortMs = core ? 10_000 : 12_000;
+    const surgeShortMs = core ? 15_000 : 20_000;
+    const surgeLongMs = core ? 90_000 : 120_000;
+    const accelRead = acceleration(st.ring, { shortMs, nowMs } as any);
+    const instantRead = acceleration(st.ring, { shortMs: 5000, nowMs } as any);
+    const surge = volumeSurge(st.ring, { shortMs: surgeShortMs, longMs: surgeLongMs, nowMs } as any);
     const efficiency = pathEfficiency(st.ring, { nowMs } as any);
-    const nearTrigger = accelRead.shortRate != null && Math.abs(accelRead.shortRate) >= minRate * 0.7;
-    if (nearTrigger) await ensureVwap(q.symbol, st, nowMs);
+    const triggerMinRate = core ? minRate * 0.9 : minRate;
+    const triggerMinSurge = core ? Math.max(1.22, minSurge - 0.08) : minSurge;
+    const triggerMinEff = core ? minEfficiency * 0.9 : minEfficiency;
+    const nearTrigger = accelRead.shortRate != null && Math.abs(accelRead.shortRate) >= triggerMinRate * 0.6;
+    if (nearTrigger) {
+      await ensureVwap(q.symbol, st, nowMs);
+      prefetchChain(q.symbol, st, nowMs);
+    }
     if (accelRead.shortRate != null) {
       vwapCandidates.push({ symbol: q.symbol, st, rate: Math.abs(accelRead.shortRate) });
     }
@@ -350,23 +394,38 @@ async function tick() {
       movers.push(row);
     }
 
-    // Real persistence: 3 of the last 5 seconds must independently clear
-    // minRate. minHits:1/3s made this gate a no-op (single blip fired).
+    const levelBreak = levels.hodBreak || levels.lodBreak;
+    const dirBear = dir.direction === "bearish";
+    const instantRate = instantRead.shortRate;
+    const sustainedOk =
+      accelRead.shortRate != null &&
+      instantRate != null &&
+      Math.sign(accelRead.shortRate) === Math.sign(instantRate) &&
+      Math.abs(instantRate) >= triggerMinRate * 0.75 &&
+      Math.abs(accelRead.shortRate) >= triggerMinRate * 0.85;
     const persistOk = speedPersistentFromRing(st.ring, {
-      minRate,
-      direction: dir.direction === "bearish" ? "bearish" : "bullish",
-      minHits: 3,
-      subWindowMs: 4000,
+      minRate: triggerMinRate * 0.9,
+      direction: dirBear ? "bearish" : "bullish",
+      minHits: levelBreak ? 1 : 2,
+      subWindowMs: core ? 3500 : 4000,
     });
     const accelOk = minAccel <= 0 || (accelRead.accel != null && accelRead.accel > minAccel);
+    const tapeMoving =
+      levelBreak ||
+      sustainedOk ||
+      (accelRead.shortRate != null &&
+        Math.abs(accelRead.shortRate) >= triggerMinRate * 0.85 &&
+        surge != null &&
+        surge >= triggerMinSurge * 0.88);
 
     if (
       persistOk &&
       accelOk &&
+      tapeMoving &&
       shouldTrigger({
         shortRate: accelRead.shortRate, surge, hodBreak: levels.hodBreak, lodBreak: levels.lodBreak,
         efficiency, nowMs, cooldownUntil: st.cooldownUntil,
-        minRate, minSurge, minLevelSurge, minEfficiency,
+        minRate: triggerMinRate, minSurge: triggerMinSurge, minLevelSurge, minEfficiency: triggerMinEff,
       })
     ) {
       // fire-and-forget: the 1s heartbeat must never wait on a chain fetch.

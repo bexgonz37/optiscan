@@ -37,7 +37,7 @@ import { optionsPressure } from "@/lib/options-pressure";
 import { buildExplanation } from "@/lib/explain";
 import { cached } from "@/lib/scan-cache";
 import { computeTradeVerdict, hasLiveSpeedProof, isClearTradeSignal, passesQualityGates, resolveAlertTier } from "@/lib/trade-verdict";
-import { alertExists, insertAlert, getSettingNum, updateAlertCatalyst, insertNotificationEvent, recentOppositeTradeExists } from "@/lib/alert-store";
+import { alertRecentDuplicate, insertAlert, getSettingNum, updateAlertCatalyst, insertNotificationEvent, recentOppositeTradeExists } from "@/lib/alert-store";
 import { isCoreSymbol } from "@/lib/universe";
 import { tradingDay, minutesToClose } from "@/lib/db";
 import { isOptionsSession } from "@/lib/trading-session";
@@ -100,8 +100,8 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
   const sideContract = sig.direction === "bearish" ? sig.bestPut : sig.bestCall;
 
   const source = sig.source ?? "momentum";
-  const dedupKey = sideContract?.optionSymbol ?? null;
-  if (alertExists(sig.ticker, source, dedupKey, day)) return null;
+  const dedupMs = isCoreSymbol(sig.ticker) ? 8 * 60_000 : 10 * 60_000;
+  if (alertRecentDuplicate(sig.ticker, source, day, sig.direction, dedupMs, nowMs)) return null;
 
   const expRemainPct = expectedRemainingMovePct({ shortRate: sig.shortRate ?? 0, minsToClose });
   const status = calcMoveStatus({
@@ -130,11 +130,14 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     moveStatus: status, riskScore: risk.score,
   });
 
-  const minScore = getSettingNum("alert_min_momentum_score", Number(process.env.ALERT_MIN_MOMENTUM_SCORE ?? 62));
+  const minScoreDefault = isCoreSymbol(sig.ticker)
+    ? Number(process.env.ALERT_MIN_MOMENTUM_SCORE_CORE ?? 58)
+    : Number(process.env.ALERT_MIN_MOMENTUM_SCORE ?? 62);
+  const minScore = getSettingNum("alert_min_momentum_score", minScoreDefault);
   if (setup.score < minScore) return null;
 
   const minEfficiency = getSettingNum("scanner_min_efficiency", Number(process.env.SCANNER_MIN_EFFICIENCY ?? 0.28));
-  if (sig.efficiency != null && sig.efficiency < minEfficiency) return null;
+  // Efficiency gates TRADE at capture — don't silently drop WATCH callouts on chop.
 
   const watch = watchScores({
     shortRate: sig.shortRate, accel: sig.accel, aboveVwap: sig.aboveVwap,
@@ -155,8 +158,8 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     hodBreak: sig.hodBreak, lodBreak: sig.lodBreak, surge: sig.surge, direction: sig.direction,
   });
 
-  if (flags.includes("Fake Breakout Risk")) return null;
   if (status === "exhausted" || (status as string) === "extended_risky") return null;
+  // Fake breakout → WATCH with flag, not a silent drop (user still wants the heads-up).
 
   const liquidityScore = optionsLiquidityScore(sideContract ?? {}).score;
   const liveCtx = { shortRate: sig.shortRate, surge: sig.surge, direction: sig.direction };
@@ -196,6 +199,24 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
   } catch { /* dedup check never blocks capture */ }
 
   const rawVerdict = computeTradeVerdict(verdictInput, liveCtx);
+  const accelAligned = dirUp ? (sig.accel ?? 0) > 0 : (sig.accel ?? 0) < 0;
+  const vwapAligned = sig.aboveVwap == null ? true : dirUp ? sig.aboveVwap : !sig.aboveVwap;
+  const levelBreak = dirUp ? sig.hodBreak : sig.lodBreak;
+  if (rawVerdict.action === "TRADE") {
+    if (!accelAligned && !levelBreak) {
+      tradeBlockers.push("follow-through: speed without acceleration — likely a flicker");
+    }
+    if (!vwapAligned && !levelBreak) {
+      tradeBlockers.push("structure: counter-VWAP without a level break");
+    }
+    const minEffTrade = Math.max(minEfficiency, 0.32);
+    if (sig.efficiency != null && sig.efficiency < minEffTrade) {
+      tradeBlockers.push("tape too choppy for a BUY entry");
+    }
+    if (flags.includes("Fake Breakout Risk")) {
+      tradeBlockers.push("level break without volume confirmation");
+    }
+  }
   const captureVerdict =
     rawVerdict.action === "TRADE" && tradeBlockers.length
       ? {
@@ -211,11 +232,11 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
   const speedOk = hasLiveSpeedProof(verdictInput, side, liveCtx);
   const tier = resolveAlertTier(captureVerdict, qualityGates, speedOk);
 
-  // Core Watch policy: core names always persist (WATCH or TRADE — the user
-  // wants to see which side to watch on their list). Extended-universe names
-  // only earn a row when the signal is a FULL post-gate TRADE — anything less
-  // is discovery noise and never clutters the list.
-  if (!isCoreSymbol(sig.ticker) && captureVerdict.action !== "TRADE") return null;
+  // Core names always persist as WATCH. Extended names persist on WATCH when
+  // setup is solid (≥64) or when the full TRADE gates pass — no more silent
+  // drops on decent movers that aren't order-ready yet.
+  const extendedWatchMin = getSettingNum("alert_extended_watch_min", Number(process.env.ALERT_EXTENDED_WATCH_MIN ?? 60));
+  if (!isCoreSymbol(sig.ticker) && captureVerdict.action !== "TRADE" && setup.score < extendedWatchMin) return null;
 
   const pressure = sig.chainContracts?.length
     ? optionsPressure(sig.chainContracts, { direction: sig.direction ?? undefined })

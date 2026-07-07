@@ -109,6 +109,29 @@ export function alertExists(ticker: string, source: string, optionSymbol: string
   return Boolean(row);
 }
 
+/** Block re-firing the same ticker too soon; allow a new row after the window (or on direction flip). */
+export function alertRecentDuplicate(
+  ticker: string,
+  source: string,
+  day: string,
+  direction: string | null | undefined,
+  windowMs = 10 * 60_000,
+  nowMs = Date.now(),
+): boolean {
+  const row: any = getDb()
+    .prepare(
+      `SELECT alert_time, direction FROM alerts
+       WHERE ticker=? AND source=? AND trading_day=?
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(ticker, source, day);
+  if (!row?.alert_time) return false;
+  const t = Date.parse(row.alert_time);
+  if (!Number.isFinite(t) || nowMs - t >= windowMs) return false;
+  if (direction && row.direction && row.direction !== direction) return false;
+  return true;
+}
+
 /** Insert alert + at-alert snapshot + catalyst records + score breakdown in
  * one transaction. Returns new id, or null when the dedup index rejects it. */
 export function insertAlert(a: NewAlert): number | null {
