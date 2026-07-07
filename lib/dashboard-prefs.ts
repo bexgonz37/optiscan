@@ -6,6 +6,7 @@ export const DASHBOARD_PREFS_KEY = "optiscan:prefs";
 
 export type DashboardTab = "momentum" | "unusual";
 export type Theme = "dark" | "light";
+export type LiveSort = "speed" | "volume" | "move" | "level" | "symbol";
 
 export const CHART_TIMEFRAMES = ["1m", "5m", "15m", "1D"] as const;
 export type ChartTimeframe = (typeof CHART_TIMEFRAMES)[number];
@@ -29,6 +30,7 @@ export interface DashboardPrefs {
   tab?: DashboardTab;
   desktopAlerts?: boolean;
   theme?: Theme;
+  liveSort?: LiveSort;
   chartTimeframe?: ChartTimeframe;
   chartIndicators?: ChartIndicator[];
   /** Per-timeframe indicator toggles for stacked layout. */

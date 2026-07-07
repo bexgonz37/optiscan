@@ -7,11 +7,12 @@ import { scanHeaders } from "@/hooks/useScanner";
 import { useStableSymbolOrder } from "@/lib/stable-order";
 import { applyFastFilterHysteresis } from "@/lib/tape-filter-hysteresis";
 import { tickDirection } from "@/lib/tick-flash";
-import { computeWatchScore, sortTape, type TapeRow } from "@/lib/watch-score";
+import { sortTape, type TapeRow, type WatchSortKey } from "@/lib/watch-score";
 import { frozenCalloutVerdict } from "@/lib/trade-verdict";
 import { fmtPct, pctClass } from "@/lib/format";
 import { tradingDay } from "@/lib/trading-session";
 import { liveCtxFor, useLiveTapeMap } from "@/hooks/useLiveTapeMap";
+import { loadDashboardPrefs, saveDashboardPrefs } from "@/lib/dashboard-prefs";
 
 const HOT_LINGER_MS = 20_000;
 const STABLE_ORDER_MS = 20_000;
@@ -19,6 +20,15 @@ const TICK_FLASH_MS = 900;
 
 type ScannerColumn = { title: string; rows: TapeRow[] };
 type StripItem = { k: string; v: string | number; s: string };
+type LiveSortKey = Extract<WatchSortKey, "speed" | "volume" | "move" | "level" | "symbol">;
+
+const SORTS: { key: LiveSortKey; label: string }[] = [
+  { key: "speed", label: "Speed" },
+  { key: "volume", label: "Volume" },
+  { key: "move", label: "% move" },
+  { key: "level", label: "Level break" },
+  { key: "symbol", label: "Symbol" },
+];
 
 function TickValue({
   value,
@@ -62,21 +72,11 @@ function whyLine(r: TapeRow, scope: Scope): string {
   return `${speed} · vol ${r.surge != null ? `${r.surge.toFixed(1)}×` : "—"}`;
 }
 
-function buildColumns(displayRows: TapeRow[], scope: Scope): ScannerColumn[] {
-  const bySpeed = [...displayRows].sort((a, b) => Math.abs(b.shortRate ?? 0) - Math.abs(a.shortRate ?? 0)).slice(0, 5);
-  const bySurge = [...displayRows].sort((a, b) => (b.surge ?? 0) - (a.surge ?? 0)).slice(0, 5);
-  const byLevel = displayRows.filter((r) => r.hodBreak || r.lodBreak).slice(0, 5);
-  if (scope === "options") {
-    return [
-      { title: "Unusual volume vs OI", rows: bySurge },
-      { title: "Premium sweeps", rows: bySpeed },
-      { title: "Best entries now", rows: bySpeed.filter((r) => computeWatchScore(r) >= 70).concat(bySpeed).slice(0, 5) },
-    ];
-  }
+function buildColumns(displayRows: TapeRow[], sortLabel: string): ScannerColumn[] {
   return [
-    { title: "Fastest right now", rows: bySpeed },
-    { title: "Volume surges", rows: bySurge },
-    { title: "Level breaks", rows: byLevel.length ? byLevel : bySpeed.slice(0, 3) },
+    { title: `${sortLabel} leaders`, rows: displayRows.slice(0, 5) },
+    { title: "Next up", rows: displayRows.slice(5, 10) },
+    { title: "On deck", rows: displayRows.slice(10, 15) },
   ];
 }
 
@@ -112,11 +112,24 @@ function useFrozenSnapshot<T>(live: T, active: boolean, resetKey: string): T {
   return frozen.current.value;
 }
 
+function useSampledSnapshot<T>(live: T, intervalMs: number, resetKey: string): T {
+  const [sample, setSample] = useState(live);
+  const latest = useRef(live);
+  useEffect(() => { latest.current = live; }, [live]);
+  useEffect(() => {
+    setSample(latest.current);
+    const id = setInterval(() => setSample(latest.current), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs, resetKey]);
+  return sample;
+}
+
 export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
   onOpenChart?: (symbol: string) => void;
   onLoopStatus?: (running: boolean) => void;
 }) {
   const [scope, setScope] = useState<Scope>("market");
+  const [sortKey, setSortKey] = useState<LiveSortKey>("speed");
   const [hovering, setHovering] = useState(false);
   const [holdPinned, setHoldPinned] = useState(false);
   const [heroAlert, setHeroAlert] = useState<any | null>(null);
@@ -127,6 +140,11 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
   const tapeMap = useLiveTapeMap(1000);
   const tape = (loop?.tape ?? loop?.movers ?? []) as TapeRow[];
   const readingHold = hovering || holdPinned;
+
+  useEffect(() => {
+    const saved = loadDashboardPrefs().liveSort;
+    if (saved && SORTS.some((sort) => sort.key === saved)) setSortKey(saved);
+  }, []);
 
   useEffect(() => { onLoopStatus?.(Boolean(loop?.running)); }, [loop?.running, onLoopStatus]);
 
@@ -169,12 +187,12 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
       return false;
     });
     list = applyFastFilterHysteresis(list, fastFilterState.current, now);
-    return sortTape(list, "speed", -1).slice(0, 60);
-  }, [tape]);
+    return sortTape(list, sortKey, sortKey === "symbol" ? 1 : -1).slice(0, 60);
+  }, [tape, sortKey]);
 
   const stableSymbols = useStableSymbolOrder(
     rows.map((r) => r.symbol),
-    { paused: readingHold, intervalMs: STABLE_ORDER_MS, resetKey: scope },
+    { paused: readingHold, intervalMs: STABLE_ORDER_MS, resetKey: `${scope}-${sortKey}` },
   );
   const rowMap = useMemo(() => new Map(rows.map((r) => [r.symbol, r])), [rows]);
   const fullMap = useMemo(() => new Map(tape.map((r) => [r.symbol, r])), [tape]);
@@ -183,26 +201,24 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
     [stableSymbols, rowMap, fullMap, readingHold],
   );
 
-  const liveColumns = useMemo(() => buildColumns(displayRows, scope), [displayRows, scope]);
+  const sortLabel = SORTS.find((s) => s.key === sortKey)?.label ?? "Speed";
+  const liveColumns = useMemo(() => buildColumns(displayRows, sortLabel), [displayRows, sortLabel]);
   const liveStrip = useMemo(() => buildStrip(displayRows, scope, loop, tape.length), [displayRows, scope, loop, tape.length]);
+  const calmStrip = useSampledSnapshot(liveStrip, 5000, `${scope}-${sortKey}`);
   const holdKey = `${scope}-${readingHold ? "hold" : "live"}`;
   const columns = useFrozenSnapshot(liveColumns, readingHold, holdKey);
-  const strip = useFrozenSnapshot(liveStrip, readingHold, holdKey);
+  const strip = useFrozenSnapshot(calmStrip, readingHold, holdKey);
 
   const heroVerdict = heroAlert ? frozenCalloutVerdict(heroAlert, liveCtxFor(tapeMap, heroAlert.ticker)) : null;
   const heroSide = String(heroAlert?.option_side ?? "").toLowerCase().startsWith("p") ? "put" : "call";
   const heroCls = heroSide === "put" ? "dn" : "up";
 
   const holdNote = readingHold
-    ? "Hold on — list frozen while you read · prices still tick"
-    : "Live · hover or tap Hold · click a name for chart";
+    ? "Held · membership frozen · prices still tick"
+    : "Ranks refresh every 20s · hover scanners or tap Hold";
 
   return (
-    <div
-      className={`chrome-live${readingHold ? " reading-hold" : ""}`}
-      onMouseEnter={() => setHovering(true)}
-      onMouseLeave={() => setHovering(false)}
-    >
+    <div className={`chrome-live${readingHold ? " reading-hold" : ""}`}>
       <section className="callout">
         {heroAlert && heroVerdict?.action === "TRADE" ? (
           <>
@@ -223,8 +239,8 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
         ) : (
           <>
             <p className="callout-kicker">Waiting for the next <b>BUY</b></p>
-            <h1 className="callout-say">Nothing firing yet — tape is live</h1>
-            <p className="callout-why">When a TRADE clears every gate, the ticket lands here first. Research signals only — not financial advice.</p>
+            <h1 className="callout-say">{loop?.running ? "Nothing firing yet — tape is live" : "Scanner paused — market is closed"}</h1>
+            <p className="callout-why">{loop?.running ? "When a TRADE clears every gate, the ticket lands here first." : "Live ranking resumes with the scanner session."} Research signals only — not financial advice.</p>
           </>
         )}
       </section>
@@ -233,6 +249,16 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
         <span className="section-title">Scanners</span>
         <span className="section-head-actions">
           <span className="section-note">{holdNote}</span>
+          <label className="sort-control">
+            <span>Sort</span>
+            <select value={sortKey} onChange={(e) => {
+              const next = e.target.value as LiveSortKey;
+              setSortKey(next);
+              saveDashboardPrefs({ liveSort: next });
+            }} aria-label="Sort scanner names">
+              {SORTS.map((s) => <option value={s.key} key={s.key}>{s.label}</option>)}
+            </select>
+          </label>
           <button
             type="button"
             className={`hold-btn${readingHold ? " on" : ""}`}
@@ -258,7 +284,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
         ))}
       </div>
 
-      <div className="scanners">
+      <div className="scanners" onMouseEnter={() => setHovering(true)} onMouseLeave={() => setHovering(false)}>
         {columns.map((col) => (
           <div className="scanner" key={col.title}>
             <h3>{col.title}</h3>

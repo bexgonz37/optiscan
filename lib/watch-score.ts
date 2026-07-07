@@ -56,7 +56,7 @@ export function computeWatchScore(r: TapeRow): number {
   return Math.round(clamp(s, 0, 100));
 }
 
-export type WatchSortKey = "watch" | "speed" | "volume" | "move" | "rvol" | "vwap" | "symbol";
+export type WatchSortKey = "watch" | "speed" | "volume" | "move" | "level" | "rvol" | "vwap" | "symbol";
 
 export function sortTape(rows: TapeRow[], key: WatchSortKey, dir: -1 | 1): TapeRow[] {
   const scored = rows.map((r) => ({ r, watch: computeWatchScore(r) }));
@@ -66,6 +66,7 @@ export function sortTape(rows: TapeRow[], key: WatchSortKey, dir: -1 | 1): TapeR
       case "speed": return Math.abs(r.shortRate ?? 0);
       case "volume": return r.volume ?? 0;
       case "move": return Math.abs(r.movePct ?? 0);
+      case "level": return r.hodBreak || r.lodBreak ? 1 : 0;
       case "rvol": return r.relVol ?? 0;
       case "vwap": return Math.abs(r.vwapDistPct ?? 0);
       default: return 0;

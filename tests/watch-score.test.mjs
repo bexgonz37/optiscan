@@ -45,3 +45,12 @@ test("sortTape: default watch sort orders by score", () => {
   ], "watch", -1);
   assert.equal(sorted[0].symbol, "HIGH");
 });
+
+test("sortTape: level break ranks breaks first and symbol sort is alphabetical", () => {
+  const rows = [
+    { ...hot, symbol: "ZZZ", hodBreak: false, lodBreak: false },
+    { ...hot, symbol: "AAA", hodBreak: true, lodBreak: false },
+  ];
+  assert.equal(sortTape(rows, "level", -1)[0].symbol, "AAA");
+  assert.deepEqual(sortTape(rows, "symbol", 1).map((row) => row.symbol), ["AAA", "ZZZ"]);
+});

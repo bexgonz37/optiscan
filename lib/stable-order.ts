@@ -5,6 +5,15 @@
 
 import { useEffect, useRef, useState } from "react";
 
+export function mergeStableSymbolOrder(previous: string[], ranked: string[], resort: boolean): string[] {
+  if (resort || !previous.length) return [...ranked];
+  const rankedSet = new Set(ranked);
+  const kept = previous.filter((symbol) => rankedSet.has(symbol));
+  const previousSet = new Set(previous);
+  const added = ranked.filter((symbol) => !previousSet.has(symbol));
+  return [...kept, ...added];
+}
+
 export function useStableSymbolOrder(
   symbols: string[],
   { intervalMs = 5000, paused = false, resetKey = "" }: { intervalMs?: number; paused?: boolean; resetKey?: string },
@@ -45,23 +54,19 @@ export function useStableSymbolOrder(
 
     if (paused) return;
 
-    const symSet = new Set(symbols);
     const now = Date.now();
-    const keyChanged = symbolsKey !== prevSymbolsKey.current;
-
     setOrder((prev) => {
       const resort = !prev.length || now - lastSortAt.current >= intervalMs;
 
-      if (resort || keyChanged) {
+      if (resort) {
         lastSortAt.current = now;
         prevSymbolsKey.current = symbolsKey;
-        if (prev.length === symbols.length && prev.every((s, i) => s === symbols[i])) return prev;
-        return symbols;
+        const next = mergeStableSymbolOrder(prev, symbols, true);
+        if (prev.length === next.length && prev.every((s, i) => s === next[i])) return prev;
+        return next;
       }
 
-      const kept = prev.filter((s) => symSet.has(s));
-      const added = symbols.filter((s) => !prev.includes(s));
-      const next = [...kept, ...added];
+      const next = mergeStableSymbolOrder(prev, symbols, false);
       prevSymbolsKey.current = symbolsKey;
       if (next.length === prev.length && next.every((s, i) => s === prev[i])) return prev;
       return next;
@@ -69,10 +74,7 @@ export function useStableSymbolOrder(
   }, [symbolsKey, paused, intervalMs, resetKey, symbols]);
 
   if (paused) {
-    const base = frozenOrder.current ?? order;
-    const symSet = new Set(symbols);
-    const kept = base.filter((s) => symSet.has(s));
-    return kept.length ? kept : base;
+    return frozenOrder.current ?? order;
   }
 
   const symSet = new Set(symbols);
