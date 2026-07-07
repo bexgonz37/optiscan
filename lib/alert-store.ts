@@ -930,6 +930,28 @@ export function getNotificationEvent(id: number) {
   return getDb().prepare("SELECT * FROM notification_events WHERE id=?").get(id) as any;
 }
 
+/** Latest sent Discord BUY for an alert (for result PATCH). */
+export function getSentDiscordForAlert(alertId: number) {
+  return getDb().prepare(
+    `SELECT * FROM notification_events
+     WHERE alert_id=? AND channel='discord_webhook' AND status='sent'
+       AND payload_json LIKE '%messageId%'
+     ORDER BY id DESC LIMIT 1`,
+  ).get(alertId) as any;
+}
+
+/** True if a WATCH was sent for this ticker within the dedup window. */
+export function recentWatchDiscordForTicker(ticker: string, withinMs: number): boolean {
+  const since = new Date(Date.now() - withinMs).toISOString();
+  const row: any = getDb().prepare(
+    `SELECT 1 FROM notification_events
+     WHERE channel='discord_webhook' AND status='sent' AND created_at >= ?
+       AND payload_json LIKE '%"kind":"watch"%' AND payload_json LIKE ?
+     LIMIT 1`,
+  ).get(since, `%"ticker":"${ticker}"%`);
+  return Boolean(row);
+}
+
 export function markNotificationEvent(id: number, status: string, error?: string | null) {
   getDb().prepare(
     "UPDATE notification_events SET status=?, error=?, sent_at=CASE WHEN ?='sent' THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE sent_at END WHERE id=?",
