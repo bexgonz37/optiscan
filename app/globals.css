@@ -3149,3 +3149,34 @@ textarea {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ── Tick choreography: values change, layout never does ───────────────── */
+.tick {
+  display: inline-block;
+  border-radius: 6px;
+  padding: 1px 4px;
+  margin: -1px -4px;
+  transition: background 0.5s ease, color 0.5s ease;
+}
+.tick.tick-up {
+  background: color-mix(in srgb, var(--green) 22%, transparent);
+  color: var(--green);
+  transition: none;
+}
+.tick.tick-down {
+  background: color-mix(in srgb, var(--red) 22%, transparent);
+  color: var(--red);
+  transition: none;
+}
+td.num,
+.tick {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.scanner-table td:nth-child(5),
+.scanner-table td:nth-child(6) {
+  min-width: 84px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tick { transition: none; }
+}

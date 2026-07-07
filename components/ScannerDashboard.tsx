@@ -23,6 +23,26 @@ import { applyFastFilterHysteresis } from "@/lib/tape-filter-hysteresis";
 
 type FilterKey = "core" | "all" | "fast";
 
+/** Robinhood-style tick: value updates in place with a brief up/down flash so
+ * the eye can track WHAT changed instead of the whole table repainting. */
+function TickValue({ value, children }: { value: number | null | undefined; children: React.ReactNode }) {
+  const prev = useRef<number | null | undefined>(value);
+  const [cls, setCls] = useState("");
+  useEffect(() => {
+    const was = prev.current;
+    prev.current = value;
+    if (value == null || was == null || value === was) return;
+    setCls(value > was ? "tick-up" : "tick-down");
+    const t = setTimeout(() => setCls(""), 650);
+    return () => clearTimeout(t);
+  }, [value]);
+  return <span className={`tick ${cls}`}>{children}</span>;
+}
+
+/** How long a hot extended-universe name lingers after cooling off — rows
+ * leaving the instant they dip under the bar is what made the list churn. */
+const HOT_LINGER_MS = 20_000;
+
 /** Extended-universe rows only surface on the default view when genuinely
  * hot — matching the TRADE trigger gates so discovery names never clutter. */
 function isHotExtended(r: TapeRow): boolean {
@@ -57,6 +77,8 @@ export function ScannerDashboard({
   const [filter, setFilter] = useState<FilterKey>("core");
   const [query, setQuery] = useState("");
   const [paused, setPaused] = useState(false);
+  const [hovering, setHovering] = useState(false);
+  const hotSince = useRef(new Map<string, number>());
   const [showDetails, setShowDetails] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const { realtime: loop, lastEventAt: updatedAt, freshness, transport } = useScannerStream();
@@ -84,25 +106,44 @@ export function ScannerDashboard({
 
   const rows = useMemo(() => {
     const q = query.trim().toUpperCase();
+    const now = Date.now();
     let list = [...tape];
     if (q) list = list.filter((r) => r.symbol.includes(q));
     if (filter === "core") {
-      // Default: the Core Watch list, plus extended names ONLY when hot.
-      list = list.filter((r) => r.core || isHotExtended(r));
+      // Default: the Core Watch list, plus extended names when hot — with a
+      // linger window so a name that cools for a beat doesn't pop out.
+      list = list.filter((r) => {
+        if (r.core) return true;
+        if (isHotExtended(r)) {
+          hotSince.current.set(r.symbol, now);
+          return true;
+        }
+        const last = hotSince.current.get(r.symbol);
+        if (last != null && now - last < HOT_LINGER_MS) return true;
+        hotSince.current.delete(r.symbol);
+        return false;
+      });
     } else if (filter === "fast") {
       list = applyFastFilterHysteresis(list, fastFilterState.current, Date.now());
     }
     return sortTape(list, sortKey, sortDir).slice(0, 60);
   }, [tape, filter, query, sortKey, sortDir]);
 
+  // Reading = holding. Hovering freezes membership + order (Robinhood never
+  // moves a row under your cursor); the values inside keep ticking live.
+  const holdList = paused || hovering;
+
   const stableSymbols = useStableSymbolOrder(
     rows.map((r) => r.symbol),
-    { paused, intervalMs: 12000, resetKey: `${filter}:${sortKey}:${sortDir}:${query}` },
+    { paused: holdList, intervalMs: 12000, resetKey: `${filter}:${sortKey}:${sortDir}:${query}` },
   );
   const rowMap = useMemo(() => new Map(rows.map((r) => [r.symbol, r])), [rows]);
+  // Fall back to the raw tape while holding: a symbol that leaves the filtered
+  // set keeps its row (with live values) until the hold ends.
+  const tapeMap = useMemo(() => new Map(tape.map((r) => [r.symbol, r])), [tape]);
   const displayRows = useMemo(
-    () => stableSymbols.map((s) => rowMap.get(s)).filter(Boolean) as TapeRow[],
-    [stableSymbols, rowMap],
+    () => stableSymbols.map((s) => rowMap.get(s) ?? (holdList ? tapeMap.get(s) : undefined)).filter(Boolean) as TapeRow[],
+    [stableSymbols, rowMap, tapeMap, holdList],
   );
   const sparklines = useSparklines(displayRows.map((r) => r.symbol));
 
@@ -141,9 +182,11 @@ export function ScannerDashboard({
           <span className="status-text">
             {paused
               ? "Paused"
-              : loop?.running
-                ? `Showing ${displayRows.length} movers · universe ${loop.coreSymbols ?? tape.length}${agoText ? ` · ${agoText}` : ""}`
-                : "Loop offline"}
+              : hovering
+                ? "Holding while you read — prices still live"
+                : loop?.running
+                  ? `Showing ${displayRows.length} movers · universe ${loop.coreSymbols ?? tape.length}${agoText ? ` · ${agoText}` : ""}`
+                  : "Loop offline"}
           </span>
         </div>
       </div>
@@ -199,7 +242,11 @@ export function ScannerDashboard({
         </div>
       </div>
 
-      <div className="table-area">
+      <div
+        className="table-area"
+        onMouseEnter={() => setHovering(true)}
+        onMouseLeave={() => setHovering(false)}
+      >
       {!displayRows.length ? (
         <div className="empty table-empty">
           <div className="big">{loop?.running ? (filter === "fast" ? "Nothing moving fast right now" : "Warming up tape…") : "Scanner offline"}</div>
@@ -244,7 +291,7 @@ export function ScannerDashboard({
                         direction={r.direction}
                         sub={
                           <>
-                            {fmtPrice(r.price)}
+                            <TickValue value={r.price}>{fmtPrice(r.price)}</TickValue>
                             {(r.catalystFresh && r.catalystType && r.catalystType !== "no_clear_catalyst") ||
                             r.haltStatus === "halted" ||
                             r.haltStatus === "resumed" ? (
@@ -274,9 +321,13 @@ export function ScannerDashboard({
                         </span>
                       </span>
                     </td>
-                    <td className={`num ${pctClass(r.movePct)}`}>{fmtPct(r.movePct)}</td>
+                    <td className={`num ${pctClass(r.movePct)}`}>
+                      <TickValue value={r.movePct}>{fmtPct(r.movePct)}</TickValue>
+                    </td>
                     <td className={`num ${Math.abs(r.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN ? "fw-strong" : "fw-normal"}`}>
-                      {r.shortRate != null ? `${r.shortRate > 0 ? "+" : ""}${r.shortRate.toFixed(2)}%/m` : "—"}
+                      <TickValue value={r.shortRate}>
+                        {r.shortRate != null ? `${r.shortRate > 0 ? "+" : ""}${r.shortRate.toFixed(2)}%/m` : "—"}
+                      </TickValue>
                     </td>
                     <td onClick={(ev) => ev.stopPropagation()}>
                       <button type="button" className="pill btn btn-primary btn-xs" onClick={() => onOpenChart?.(r.symbol)}>
