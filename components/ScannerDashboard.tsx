@@ -7,7 +7,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useScannerStream } from "@/hooks/useScannerStream";
-import { TickerIcon, ScoreBar } from "@/components/ui";
+import { ScoreBar } from "@/components/ui";
+import { TickerWithSparkline } from "@/components/TickerSparkline";
+import { useSparklines } from "@/hooks/useSparklines";
 import { changeColor, fmtPct, fmtPrice, pctClass } from "@/lib/format";
 import {
   computeWatchScore,
@@ -102,6 +104,7 @@ export function ScannerDashboard({
     () => stableSymbols.map((s) => rowMap.get(s)).filter(Boolean) as TapeRow[],
     [stableSymbols, rowMap],
   );
+  const sparklines = useSparklines(displayRows.map((r) => r.symbol));
 
   function toggleSort(k: WatchSortKey) {
     if (sortKey === k) setSortDir((d) => (d === -1 ? 1 : -1));
@@ -234,25 +237,33 @@ export function ScannerDashboard({
                   <tr key={r.symbol} className="clickable" onClick={() => onOpenChart?.(r.symbol)} title="Open chart">
                     <td className="num muted">{i + 1}</td>
                     <td>
-                      <div className="tkr">
-                        <TickerIcon symbol={r.symbol} />
-                        <div>
-                          <div className="tname">{r.symbol}</div>
-                          <div className="tsub">{fmtPrice(r.price)}</div>
-                          <div className="tape-badges">
-                            {r.catalystFresh && r.catalystType && r.catalystType !== "no_clear_catalyst" ? (
-                              <span className="tag t-vol" title="Fresh catalyst (<30m)">
-                                {String(r.catalystType).replace(/_/g, " ")}
-                              </span>
+                      <TickerWithSparkline
+                        symbol={r.symbol}
+                        price={r.price}
+                        closes={sparklines[r.symbol]}
+                        direction={r.direction}
+                        sub={
+                          <>
+                            {fmtPrice(r.price)}
+                            {(r.catalystFresh && r.catalystType && r.catalystType !== "no_clear_catalyst") ||
+                            r.haltStatus === "halted" ||
+                            r.haltStatus === "resumed" ? (
+                              <div className="tape-badges">
+                                {r.catalystFresh && r.catalystType && r.catalystType !== "no_clear_catalyst" ? (
+                                  <span className="tag t-vol" title="Fresh catalyst (&lt;30m)">
+                                    {String(r.catalystType).replace(/_/g, " ")}
+                                  </span>
+                                ) : null}
+                                {r.haltStatus === "halted" ? (
+                                  <span className="tag t-put" title="Trading halt detected in news">HALT</span>
+                                ) : r.haltStatus === "resumed" ? (
+                                  <span className="tag t-call" title="Trading resumed">RESUME</span>
+                                ) : null}
+                              </div>
                             ) : null}
-                            {r.haltStatus === "halted" ? (
-                              <span className="tag t-put" title="Trading halt detected in news">HALT</span>
-                            ) : r.haltStatus === "resumed" ? (
-                              <span className="tag t-call" title="Trading resumed">RESUME</span>
-                            ) : null}
-                          </div>
-                        </div>
-                      </div>
+                          </>
+                        }
+                      />
                     </td>
                     <td><ScoreBar score={watch} /></td>
                     <td>

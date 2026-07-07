@@ -20,9 +20,11 @@ import { AlertsCommandCenter } from "@/components/AlertsCommandCenter";
 import { openLiveChart } from "@/lib/open-chart";
 import { AccuracyCharts } from "@/components/AccuracyCharts";
 import { computeTradeVerdict, formatSpeedLine } from "@/lib/trade-verdict";
-import { calledAgoLabel, sideFromAlert, stillMovingStatus } from "@/lib/signal-live";
+import { calledAgoLabel, sideFromAlert } from "@/lib/signal-live";
 import { earlyMoveWin, pickEarlyMove, EARLY_MOVE_WIN_PCT, EARLY_ON_TRACK_MIN_PCT } from "@/lib/early-accuracy";
 import { TickerIcon, GradeChip, ScoreBar } from "@/components/ui";
+import { TickerWithSparkline } from "@/components/TickerSparkline";
+import { useSparklines } from "@/hooks/useSparklines";
 import { changeColor, fmtPct, fmtPrice, fmtTime } from "@/lib/format";
 import { sessionGroupLabel } from "@/lib/language-modes";
 import { groupAlertsBySession } from "@/lib/alert-session-groups";
@@ -223,6 +225,12 @@ function AlertsPageInner() {
     if (accFilter === "discord") return rows.filter((r: any) => r.discord_sent);
     return rows;
   }, [accuracy, accFilter]);
+
+  const accSparkSymbols = useMemo(
+    () => filteredAccuracyRows.map((r: any) => r.ticker as string),
+    [filteredAccuracyRows],
+  );
+  const accSparklines = useSparklines(accSparkSymbols);
 
   const accKpi = (id: AccFilter, label: string, val: ReactNode, sub: string) => (
     <button
@@ -436,16 +444,15 @@ function AlertsPageInner() {
                       <tr>
                         <th>Called</th>
                         <th>Ticker</th>
-                        <th>Signal</th>
-                        <th>Momentum</th>
+                        <th>Callout</th>
                         <th>Speed @ fire</th>
                         <th title="The ticket: entry mid -> best mid after fire">Order entry → best</th>
                         <th title="Contract P&L on the mid — the number that matters">Order P&L</th>
                         <th>Order result</th>
                         <th>Move @ 1m</th>
                         <th>Move @ 5m</th>
-                        <th>Peak move</th>
-                        <th>Stock</th>
+                        <th>Peak</th>
+                        <th>Grade</th>
                         <th>Discord</th>
                       </tr>
                     </thead>
@@ -467,8 +474,6 @@ function AlertsPageInner() {
                             : null);
                         const optionDone = row.option_outcome_win != null;
                         const tapeRow = tape.map.get(row.ticker);
-                        // LONG/SHORT map onto the CALL/PUT direction check.
-                        const momentum = stillMovingStatus(side === "LONG" ? "CALL" : side === "SHORT" ? "PUT" : side, tapeRow);
                         return (
                           <tr key={row.id} className={`clickable${onTrack ? " acc-row-on-track" : ""}`} onClick={() => openChart(row.ticker)}>
                             <td className="num muted">
@@ -477,25 +482,15 @@ function AlertsPageInner() {
                               <span style={{ fontSize: 10 }}>{fmtTime(row.alert_time)}</span>
                             </td>
                             <td>
-                              <div className="tkr">
-                                <TickerIcon symbol={row.ticker} />
-                                <div>
-                                  <div className="tname">{row.ticker}</div>
-                                  <div className="tsub">
-                                    {isStock ? `stock · ${row.session ?? "extended"}` : row.strike ? `$${row.strike}${side[0]} · ${row.dte ?? 0}DTE` : "—"}
-                                  </div>
-                                </div>
-                              </div>
+                              <TickerWithSparkline
+                                symbol={row.ticker}
+                                closes={accSparklines[row.ticker]}
+                                direction={tapeRow?.direction ?? (row.direction === "bearish" ? "bearish" : row.direction === "bullish" ? "bullish" : null)}
+                                sub={isStock ? `stock · ${row.session ?? "extended"}` : row.strike ? `$${row.strike}${side[0]} · ${row.dte ?? 0}DTE` : "—"}
+                              />
                             </td>
                             <td>
                               <span className={`verdict-pill verdict-trade`}>BUY {side}</span>
-                            </td>
-                            <td>
-                              {!done ? (
-                                <span className={`signal-momentum signal-momentum-${momentum.tone}`}>{momentum.label}</span>
-                              ) : (
-                                <span className="muted">closed</span>
-                              )}
                             </td>
                             <td className="num muted">
                               {row.short_rate_at_alert != null

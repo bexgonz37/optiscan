@@ -1038,6 +1038,32 @@ tbody td:first-child {
   font-size: 11px;
   color: var(--dim);
 }
+.tkr-with-spark {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.tkr-with-spark .tkr-text {
+  flex: 1;
+  min-width: 0;
+}
+.ticker-sparkline {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+.sparkline-placeholder {
+  display: inline-block;
+  flex-shrink: 0;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--panel2) 0%, var(--line) 50%, var(--panel2) 100%);
+  opacity: 0.45;
+}
+.sparkline {
+  display: block;
+  vertical-align: middle;
+}
 .badge {
   display: inline-block;
   font-size: 10px;

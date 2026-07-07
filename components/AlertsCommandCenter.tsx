@@ -17,7 +17,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { scanHeaders } from "@/hooks/useScanner";
 import type { LiveTape, LiveTapeRow } from "@/hooks/useLiveTapeMap";
 import { liveCtxFor } from "@/hooks/useLiveTapeMap";
-import { TickerIcon } from "@/components/ui";
+import { TickerWithSparkline } from "@/components/TickerSparkline";
+import { useSparklines } from "@/hooks/useSparklines";
 import { TradeVerdictHero } from "@/components/TradeVerdictHero";
 import { computeTradeVerdict, frozenCalloutVerdict, MIN_SPEED_PCT_PER_MIN, type TradeVerdict } from "@/lib/trade-verdict";
 import { calledAgoLabel, calledAgoLong, sideFromAlert, stillMovingStatus } from "@/lib/signal-live";
@@ -52,6 +53,13 @@ function sortEntriesByRecency(a: Entry, b: Entry): number {
   const sb = Math.abs(b.tapeRow?.shortRate ?? 0);
   if (sb !== sa) return sb - sa;
   return a.symbol.localeCompare(b.symbol);
+}
+
+function fallbackCalloutLabel(e: Entry): { text: string; cls: string } {
+  const d = e.tapeRow?.direction;
+  if (d === "bullish") return { text: "▲ Up", cls: "stock-dir-bullish" };
+  if (d === "bearish") return { text: "▼ Down", cls: "stock-dir-bearish" };
+  return { text: "— Flat", cls: "muted" };
 }
 
 function speedText(r: LiveTapeRow | null): string {
@@ -187,6 +195,8 @@ export function AlertsCommandCenter({
 
   const [pausedSnapshot, setPausedSnapshot] = useState<Entry[] | null>(null);
   const displayEntries = paused && pausedSnapshot ? pausedSnapshot : sortedVisible;
+  const sparkSymbols = useMemo(() => displayEntries.map((e) => e.symbol), [displayEntries]);
+  const sparklines = useSparklines(sparkSymbols);
 
   const hero = useMemo(() => {
     const trades = entries.filter((e) => e.verdict?.action === "TRADE" && e.alert);
@@ -418,7 +428,7 @@ export function AlertsCommandCenter({
       {/* Live callouts + movers — charts work any time */}
       <>
       <div className="acc-list-header">
-        <span className="muted text-sm">Newest first · &quot;Called&quot; = when the scanner fired · click row or Chart</span>
+        <span className="muted text-sm">Newest first · Callout = BUY / WATCH · mini chart = today</span>
         <div className="btn-row gap-2">
           <button
             type="button"
@@ -472,58 +482,45 @@ export function AlertsCommandCenter({
               <tr>
                 <th>#</th>
                 <th>Ticker</th>
-                <th>Signal</th>
+                <th>Callout</th>
                 <th>Called</th>
-                <th>Momentum</th>
-                <th>Stock</th>
-                <th>Speed now</th>
-                <th>Day move</th>
+                <th>Speed</th>
+                <th>Today</th>
                 <th>Contract</th>
-                <th>Confidence</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {displayEntries.map((e, i) => {
                 const v = e.verdict;
-                const side = e.alert ? sideFromAlert(e.alert) : "NONE";
-                const momentum = stillMovingStatus(side, e.tapeRow);
+                const fallback = fallbackCalloutLabel(e);
                 return (
                   <tr
                     key={e.symbol}
                     className={`clickable${hero?.symbol === e.symbol ? " acc-row-selected" : ""}`}
                     onClick={() => pick(e.symbol)}
-                    title="Load above and open chart"
+                    title="Open chart"
                   >
                     <td className="num muted">{i + 1}</td>
                     <td>
-                      <div className="tkr">
-                        <TickerIcon symbol={e.symbol} />
-                        <div>
-                          <div className="tname">{e.symbol}</div>
-                          <div className="tsub">{fmtPrice(e.tapeRow?.price ?? e.alert?.price_at_alert ?? null)}</div>
-                        </div>
-                      </div>
+                      <TickerWithSparkline
+                        symbol={e.symbol}
+                        price={e.tapeRow?.price ?? e.alert?.price_at_alert ?? null}
+                        closes={sparklines[e.symbol]}
+                        direction={e.tapeRow?.direction}
+                      />
                     </td>
                     <td>
                       {v ? (
-                        <span className={`verdict-pill verdict-${v.action.toLowerCase()}`} title={v.reason}>{v.headline}</span>
-                      ) : (
-                        <span className="verdict-pill verdict-wait">
-                          {e.tapeRow?.direction === "bullish" ? "MOVING UP" : e.tapeRow?.direction === "bearish" ? "MOVING DOWN" : "MOVING"}
+                        <span className={`verdict-pill verdict-${v.action.toLowerCase()}`} title={v.reason}>
+                          {v.headline}
                         </span>
+                      ) : (
+                        <span className={`stock-dir ${fallback.cls}`}>{fallback.text}</span>
                       )}
                     </td>
                     <td className="num muted text-xs">
                       {e.alert ? calledAgoLabel(e.alert.alert_time) ?? "—" : "—"}
-                    </td>
-                    <td>
-                      <span className={`signal-momentum signal-momentum-${momentum.tone}`}>{momentum.label}</span>
-                    </td>
-                    <td>
-                      <span className={`stock-dir stock-dir-${e.tapeRow?.direction ?? "chop"}`}>
-                        {e.tapeRow?.direction === "bullish" ? "▲ Up" : e.tapeRow?.direction === "bearish" ? "▼ Down" : "—"}
-                      </span>
                     </td>
                     <td className={`num ${Math.abs(e.tapeRow?.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN ? "speed-strong" : "speed-normal"}`}>
                       {speedText(e.tapeRow)}
@@ -532,7 +529,6 @@ export function AlertsCommandCenter({
                       {fmtPct(e.tapeRow?.movePct ?? e.alert?.percent_move_at_alert)}
                     </td>
                     <td className="num muted text-sm">{v?.contractLine ?? "—"}</td>
-                    <td className="num">{v ? `${v.confidence}%` : "—"}</td>
                     <td onClick={(ev) => ev.stopPropagation()}>
                       <button type="button" className="pill btn btn-primary btn-xs" onClick={() => pick(e.symbol)}>
                         Chart
