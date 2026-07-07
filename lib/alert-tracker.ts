@@ -33,12 +33,15 @@ import {
   alertOptionSnapshots,
   recordOptionOutcome,
   insertOptionSnapshot,
+  tradeSignalAccuracy,
 } from "@/lib/alert-store";
+import { scheduleDiscordResultEdit, postScoreboardEmbed } from "@/lib/notifications";
 
 const CHECKPOINTS: { key: string; mins: number | null }[] = [
   { key: "1m", mins: 1 },
   { key: "3m", mins: 3 },
   { key: "5m", mins: 5 },
+  { key: "10m", mins: 10 },
   { key: "15m", mins: 15 },
   { key: "30m", mins: 30 },
   { key: "1h", mins: 60 },
@@ -150,6 +153,105 @@ async function barsForAlert(ticker: string, alertDay: string, cache: Map<string,
   return bars;
 }
 
+function discordEditAfterCheckpoint(a: any, key: string, cp: { percentMoveFromAlert: number | null }) {
+  const isStock = a.asset_class === "stock";
+  if (key === "5m" && !isStock) {
+    const snaps = alertOptionSnapshots(a.id);
+    const live = snaps.filter((s) => s.checkpoint === "live" || s.checkpoint === "alert");
+    const entry = snaps.find((s) => s.checkpoint === "alert")?.mid;
+    const best = live.length ? Math.max(...live.map((s) => s.mid ?? 0)) : null;
+    const returnPct = entry && best ? +(((best - entry) / entry) * 100).toFixed(1) : null;
+    scheduleDiscordResultEdit(a.id, "5m", { mid: best, returnPct, paid: false });
+    return;
+  }
+  if (key === "10m") {
+    const outcome = computeOptionOutcome(alertOptionSnapshots(a.id));
+    if (outcome) {
+      scheduleDiscordResultEdit(a.id, "10m", {
+        mid: outcome.bestMid,
+        returnPct: outcome.returnPct,
+        paid: outcome.win,
+        paidInMin: outcome.win ? 10 : null,
+      });
+      return;
+    }
+    if (isStock) {
+      const paid = cp.percentMoveFromAlert != null && cp.percentMoveFromAlert >= 0.75;
+      scheduleDiscordResultEdit(a.id, "10m", {
+        mid: a.price_at_alert,
+        returnPct: cp.percentMoveFromAlert,
+        paid,
+        paidInMin: paid ? 10 : null,
+      });
+    }
+  }
+}
+
+function scoreboardRowsFromAccuracy(acc: any) {
+  return (acc.recent ?? []).slice(0, 6).map((r: any) => {
+    const isStock = r.asset_class === "stock";
+    const side = isStock
+      ? (r.direction === "bearish" ? "short" : "long")
+      : `${r.strike ?? ""}${String(r.option_side ?? "").toUpperCase().slice(0, 1)}`;
+    const ret = r.option_return_pct;
+    const paid = r.option_outcome_win === 1;
+    const emoji = paid ? "🟢" : ret != null && ret < 0 ? "🔴" : "🔴";
+    const label = isStock ? `${r.ticker} shares` : `${r.ticker} $${side}`;
+    const value = ret != null
+      ? `${ret > 0 ? "+" : ""}${Math.round(ret)}%${paid ? " · paid" : " · never paid"}`
+      : "pending";
+    return { emoji, label, value };
+  });
+}
+
+let lastDailyScoreboardDay: string | null = null;
+let lastWeeklyScoreboardWeek: string | null = null;
+
+async function maybePostScoreboards(nowMs: number, finalized: number) {
+  if (finalized <= 0 || process.env.DISCORD_SCOREBOARD === "0") return;
+  const et = new Date(nowMs).toLocaleString("en-US", { timeZone: "America/New_York", hour12: false });
+  const day = et.slice(0, 10);
+  const hour = Number(et.split(", ")[1]?.split(":")[0] ?? -1);
+  const minute = Number(et.split(", ")[1]?.split(":")[1] ?? -1);
+  const weekday = new Date(nowMs).toLocaleString("en-US", { timeZone: "America/New_York", weekday: "short" });
+
+  if (hour === 16 && minute >= 5 && lastDailyScoreboardDay !== day) {
+    lastDailyScoreboardDay = day;
+    const acc = tradeSignalAccuracy({ days: 1, asset: "options" });
+    const rows = scoreboardRowsFromAccuracy(acc);
+    const title = new Date(nowMs).toLocaleDateString("en-US", {
+      timeZone: "America/New_York", weekday: "long", month: "long", day: "numeric",
+    }) + " — scoreboard";
+    void postScoreboardEmbed(
+      {
+        ...acc,
+        wins: acc.optionWins ?? acc.wins,
+        losses: acc.optionLosses ?? acc.losses,
+        title,
+        paybackWithin10mPct: acc.earlyHitRate,
+      },
+      rows,
+    );
+  }
+
+  if (weekday === "Sun" && hour === 12 && minute < 10 && lastWeeklyScoreboardWeek !== day) {
+    lastWeeklyScoreboardWeek = day;
+    const acc = tradeSignalAccuracy({ days: 7, asset: "options" });
+    const rows = scoreboardRowsFromAccuracy(acc);
+    void postScoreboardEmbed(
+      {
+        ...acc,
+        wins: acc.optionWins ?? acc.wins,
+        losses: acc.optionLosses ?? acc.losses,
+        title: "Weekly recap",
+        paybackWithin10mPct: acc.earlyHitRate,
+      },
+      rows,
+      { weekly: true },
+    );
+  }
+}
+
 /** One sweep over all tracking alerts. Returns what it did (for /track). */
 export async function runTrackerSweep(nowMs = Date.now()) {
   const alerts: any[] = trackingAlerts();
@@ -195,6 +297,9 @@ export async function runTrackerSweep(nowMs = Date.now()) {
         drawdownAfterAlert: cp.drawdownAfterAlert, isFalsePositive: fp,
       });
       recorded++;
+      if (key === "5m" || key === "10m") {
+        try { discordEditAfterCheckpoint(a, key, cp); } catch { /* discord never blocks sweep */ }
+      }
       if (key === "eod") {
         finalizeAlert(a.id, Boolean(fp));
         // Outcome facts beyond price: which SIDE worked, spread health, reversal.
@@ -218,6 +323,7 @@ export async function runTrackerSweep(nowMs = Date.now()) {
       }
     }
   }
+  await maybePostScoreboards(nowMs, finalized);
   return { checked: alerts.length, recorded, finalized };
 }
 

@@ -42,9 +42,9 @@ test("SPEC: scanner is AI-free — no model calls anywhere in lib/", () => {
   }
 });
 
-test("SPEC: Alert Lab tracks 1m/3m/5m/15m/30m/1h/eod checkpoints", () => {
+test("SPEC: Alert Lab tracks 1m/3m/5m/10m/15m/30m/1h/eod checkpoints", () => {
   const tr = read("lib/alert-tracker.ts");
-  for (const cp of ['"1m"', '"3m"', '"5m"', '"15m"', '"30m"', '"1h"', '"eod"']) {
+  for (const cp of ['"1m"', '"3m"', '"5m"', '"10m"', '"15m"', '"30m"', '"1h"', '"eod"']) {
     assert.ok(tr.includes(cp), `missing checkpoint ${cp}`);
   }
   assert.ok(tr.includes("recordAlertOutcomes"), "EOD must record side-worked/spread/reversal outcomes");

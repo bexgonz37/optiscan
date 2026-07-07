@@ -36,7 +36,7 @@ import { privateLabel0dte, publicLabel0dte, riskLabel } from "@/lib/language-mod
 import { optionsPressure } from "@/lib/options-pressure";
 import { buildExplanation } from "@/lib/explain";
 import { cached } from "@/lib/scan-cache";
-import { computeTradeVerdict, hasLiveSpeedProof, isClearTradeSignal, passesQualityGates, resolveAlertTier } from "@/lib/trade-verdict";
+import { computeTradeVerdict, hasLiveSpeedProof, isClearTradeSignal, MIN_SPEED_PCT_PER_MIN, passesQualityGates, resolveAlertTier } from "@/lib/trade-verdict";
 import { evaluateCalloutQuality } from "@/lib/callout-quality";
 import { alertRecentDuplicate, insertAlert, getSettingNum, updateAlertCatalyst, insertNotificationEvent, recentOppositeTradeExists } from "@/lib/alert-store";
 import { isCoreSymbol } from "@/lib/universe";
@@ -366,10 +366,27 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
         expiration: sideContract?.expiration ?? null,
         dte: sideContract?.dte ?? null,
         movePct: sig.movePct,
+        price: sig.price,
         longCallScore: watch.callWatch,
         longPutScore: watch.putWatch,
         shortRate: sig.shortRate,
         volumeSurge: sig.surge,
+        optionMid: sideContract?.mid ?? null,
+        spreadPct: sideContract?.spreadPct ?? null,
+        delta: sideContract?.delta ?? null,
+        captureAction: "TRADE",
+      });
+    } else if (finalCaptureAction === "WAIT" && tier === "trade") {
+      const { notifyWatchAlert } = await import("@/lib/notifications");
+      void notifyWatchAlert(id, {
+        ticker: sig.ticker,
+        direction: sig.direction,
+        optionSide: sideContract?.side ?? null,
+        strike: sideContract?.strike ?? null,
+        spreadPct: sideContract?.spreadPct ?? null,
+        delta: sideContract?.delta ?? null,
+        shortRate: sig.shortRate,
+        minSpeed: MIN_SPEED_PCT_PER_MIN,
       });
     } else {
       try {
