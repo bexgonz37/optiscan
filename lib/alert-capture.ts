@@ -38,6 +38,7 @@ import { buildExplanation } from "@/lib/explain";
 import { cached } from "@/lib/scan-cache";
 import { computeTradeVerdict, hasLiveSpeedProof, isClearTradeSignal, passesQualityGates, resolveAlertTier } from "@/lib/trade-verdict";
 import { alertExists, insertAlert, getSettingNum, updateAlertCatalyst, insertNotificationEvent, recentOppositeTradeExists } from "@/lib/alert-store";
+import { isCoreSymbol } from "@/lib/universe";
 import { tradingDay, minutesToClose } from "@/lib/db";
 import { isOptionsSession } from "@/lib/trading-session";
 import { notifyNewAlert } from "@/lib/notifications";
@@ -209,6 +210,12 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
   const qualityGates = passesQualityGates(verdictInput) && tradeBlockers.length === 0;
   const speedOk = hasLiveSpeedProof(verdictInput, side, liveCtx);
   const tier = resolveAlertTier(captureVerdict, qualityGates, speedOk);
+
+  // Core Watch policy: core names always persist (WATCH or TRADE — the user
+  // wants to see which side to watch on their list). Extended-universe names
+  // only earn a row when the signal is a FULL post-gate TRADE — anything less
+  // is discovery noise and never clutters the list.
+  if (!isCoreSymbol(sig.ticker) && captureVerdict.action !== "TRADE") return null;
 
   const pressure = sig.chainContracts?.length
     ? optionsPressure(sig.chainContracts, { direction: sig.direction ?? undefined })

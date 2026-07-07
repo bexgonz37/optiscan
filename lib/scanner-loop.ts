@@ -30,7 +30,7 @@ import {
   shouldTrigger, rankZeroDteContracts, expectedRemainingMovePct,
   speedPersistentFromRing,
 } from "@/lib/zero-dte";
-import { getZeroDteUniverse, getZeroDteDiscoveryUniverse } from "@/lib/universe";
+import { getZeroDteUniverse, getZeroDteDiscoveryUniverse, isCoreSymbol } from "@/lib/universe";
 import { tradingDay, minutesToClose, marketSession, type MarketSession } from "@/lib/trading-session";
 import { getSettingNum } from "@/lib/alert-store";
 
@@ -309,6 +309,7 @@ async function tick() {
         hodBreak: warmLevels.hodBreak, lodBreak: warmLevels.lodBreak,
         aboveVwap: warmLevels.aboveVwap, vwapDistPct: warmLevels.vwapDistPct, relVol: st.relVol,
         promoted: s.promoted.has(q.symbol),
+        core: isCoreSymbol(q.symbol),
       });
       continue;
     }
@@ -341,6 +342,7 @@ async function tick() {
       hodBreak: levels.hodBreak, lodBreak: levels.lodBreak, aboveVwap: levels.aboveVwap,
       vwapDistPct: levels.vwapDistPct, relVol: st.relVol,
       promoted: s.promoted.has(q.symbol),
+      core: isCoreSymbol(q.symbol),
     };
 
     tape.push(row);

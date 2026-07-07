@@ -20,6 +20,8 @@ export interface TapeRow {
   direction: string;
   confidence: number;
   promoted?: boolean;
+  /** True when the symbol is in the Core Watch universe (default UI list). */
+  core?: boolean;
   catalystType?: string | null;
   catalystFresh?: boolean;
   haltStatus?: string | null;

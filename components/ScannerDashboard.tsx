@@ -19,7 +19,16 @@ import { useStableSymbolOrder } from "@/lib/stable-order";
 import { MIN_SPEED_PCT_PER_MIN } from "@/lib/trade-verdict";
 import { applyFastFilterHysteresis } from "@/lib/tape-filter-hysteresis";
 
-type FilterKey = "all" | "fast";
+type FilterKey = "core" | "all" | "fast";
+
+/** Extended-universe rows only surface on the default view when genuinely
+ * hot — matching the TRADE trigger gates so discovery names never clutter. */
+function isHotExtended(r: TapeRow): boolean {
+  const speed = Math.abs(r.shortRate ?? 0);
+  const surge = r.surge ?? 0;
+  const eff = r.efficiency;
+  return speed >= 0.2 && surge >= 1.4 && (eff == null || eff >= 0.35);
+}
 
 function dirChip(d: string) {
   if (d === "bullish") return <span className="dir-bull">▲</span>;
@@ -43,7 +52,7 @@ export function ScannerDashboard({
 }) {
   const [sortKey, setSortKey] = useState<WatchSortKey>("watch");
   const [sortDir, setSortDir] = useState<-1 | 1>(-1);
-  const [filter, setFilter] = useState<FilterKey>("fast");
+  const [filter, setFilter] = useState<FilterKey>("core");
   const [query, setQuery] = useState("");
   const [paused, setPaused] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
@@ -75,7 +84,10 @@ export function ScannerDashboard({
     const q = query.trim().toUpperCase();
     let list = [...tape];
     if (q) list = list.filter((r) => r.symbol.includes(q));
-    if (filter === "fast") {
+    if (filter === "core") {
+      // Default: the Core Watch list, plus extended names ONLY when hot.
+      list = list.filter((r) => r.core || isHotExtended(r));
+    } else if (filter === "fast") {
       list = applyFastFilterHysteresis(list, fastFilterState.current, Date.now());
     }
     return sortTape(list, sortKey, sortDir).slice(0, 60);
@@ -154,6 +166,7 @@ export function ScannerDashboard({
           </button>
         ) : null}
         <div className="mover-filters">
+          {chip("core", "Core Watch")}
           {chip("fast", "Moving now")}
           {showAdvanced ? chip("all", "All") : null}
           <button

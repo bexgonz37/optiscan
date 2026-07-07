@@ -439,13 +439,13 @@ function AlertsPageInner() {
                         <th>Signal</th>
                         <th>Momentum</th>
                         <th>Speed @ fire</th>
+                        <th title="The ticket: entry mid -> best mid after fire">Order entry → best</th>
+                        <th title="Contract P&L on the mid — the number that matters">Order P&L</th>
+                        <th>Order result</th>
                         <th>Move @ 1m</th>
                         <th>Move @ 5m</th>
                         <th>Peak move</th>
-                        <th>Option entry → best</th>
-                        <th>Option %</th>
                         <th>Stock</th>
-                        <th>Option</th>
                         <th>Discord</th>
                       </tr>
                     </thead>
@@ -502,6 +502,23 @@ function AlertsPageInner() {
                                 ? `${row.short_rate_at_alert > 0 ? "+" : ""}${row.short_rate_at_alert.toFixed(2)}%/m`
                                 : "—"}
                             </td>
+                            <td className="num" style={{ fontSize: 11 }}>
+                              {row.entry_mid != null
+                                ? `$${row.entry_mid.toFixed(2)} → ${row.best_mid != null ? `$${row.best_mid.toFixed(2)}` : "…"}`
+                                : "—"}
+                            </td>
+                            <td className="num" style={{ color: changeColor(liveOptionPct), fontWeight: 600 }}>
+                              {liveOptionPct != null ? `${liveOptionPct > 0 ? "+" : ""}${liveOptionPct.toFixed(0)}%` : "—"}
+                            </td>
+                            <td>
+                              {optionDone
+                                ? (row.option_outcome_win === 1
+                                  ? <span className="tag t-call">WIN</span>
+                                  : <span className="tag t-put">LOSS</span>)
+                                : liveOptionPct != null
+                                  ? <span className="tag t-vol">LIVE</span>
+                                  : <span className="muted">no quotes yet</span>}
+                            </td>
                             <td className="num" style={{ color: changeColor(row.move_1m) }}>
                               {row.move_1m != null ? fmtPct(row.move_1m) : <span className="muted">pending</span>}
                             </td>
@@ -510,14 +527,6 @@ function AlertsPageInner() {
                             </td>
                             <td className="num muted" style={{ fontSize: 11 }}>
                               {fmtPct(row.latest_max_move)}
-                            </td>
-                            <td className="num muted" style={{ fontSize: 11 }}>
-                              {row.entry_mid != null
-                                ? `$${row.entry_mid.toFixed(2)} → ${row.best_mid != null ? `$${row.best_mid.toFixed(2)}` : "…"}`
-                                : "—"}
-                            </td>
-                            <td className="num" style={{ color: changeColor(liveOptionPct) }}>
-                              {liveOptionPct != null ? `${liveOptionPct > 0 ? "+" : ""}${liveOptionPct.toFixed(0)}%` : "—"}
                             </td>
                             <td>
                               {!done ? (
@@ -532,15 +541,6 @@ function AlertsPageInner() {
                                 : win ? <span className="tag t-call">RIGHT EOD</span>
                                 : loss ? <span className="tag t-put">WRONG EOD</span>
                                 : <span className="muted">—</span>}
-                            </td>
-                            <td>
-                              {optionDone
-                                ? (row.option_outcome_win === 1
-                                  ? <span className="tag t-call">WIN</span>
-                                  : <span className="tag t-put">LOSS</span>)
-                                : liveOptionPct != null
-                                  ? <span className="tag t-vol">LIVE</span>
-                                  : <span className="muted">—</span>}
                             </td>
                             <td>
                               {row.discord_sent ? (
