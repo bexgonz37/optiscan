@@ -2778,3 +2778,374 @@ table tbody tr {
 .stream-fresh-label {
   font-size: 10px;
 }
+
+/* ════════════════════════════════════════════════════════════════════════
+   RH LAYER — flat, confident, whitespace-first restyle (frontend only).
+   Robinhood-coded: one true green, near-black canvas, big bold tabular
+   numbers, hairline rows instead of boxed panels, pill controls, calm motion.
+   Appended last so it overrides the legacy skin without touching components.
+   ════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --sans: "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  --bg: #0c0e10;
+  --bg2: #101315;
+  --panel: #131719;
+  --panel2: #191e21;
+  --line: #1d2327;
+  --line2: #262d32;
+  --txt: #f5f8f7;
+  --muted: #8b9598;
+  --dim: #5b6567;
+  --green: #00c805;
+  --green-dim: #0a2e12;
+  --red: #ff5000;
+  --red-dim: #33130a;
+  --accent: #00c805;
+  --bull: var(--green);
+  --bear: var(--red);
+  --radius: 14px;
+  --radius-sm: 10px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --row-h: 44px;
+  --glow1: transparent;
+  --glow2: transparent;
+}
+
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --bg2: #fafbfb;
+  --panel: #f6f8f8;
+  --panel2: #eef1f1;
+  --line: #e8ecec;
+  --line2: #d9dfdf;
+  --txt: #0c0e10;
+  --muted: #6f7a7d;
+  --dim: #9aa4a6;
+  --green: #00a305;
+  --green-dim: #e2f6e3;
+  --red: #e64500;
+  --red-dim: #fde8e0;
+  --accent: #00a305;
+  --glow1: transparent;
+  --glow2: transparent;
+}
+
+body {
+  background: var(--bg);
+  font-family: var(--sans);
+  letter-spacing: 0.005em;
+  -webkit-font-smoothing: antialiased;
+}
+
+.num,
+.kpi .val,
+td.num,
+.tname,
+.acc-hero-ratio-val {
+  font-family: var(--sans);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* ── Panels: whitespace over boxes ─────────────────────────────────────── */
+.panel,
+.panel.main {
+  background: var(--panel);
+  border: none;
+  border-radius: 16px;
+  box-shadow: none;
+}
+.panel .toolbar {
+  border-bottom: 1px solid var(--line);
+}
+.panel h2,
+.section-title {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+/* ── Nav: flat sticky bar, bold active tab ─────────────────────────────── */
+.app-nav {
+  position: sticky;
+  top: 0;
+  z-index: 60;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--line);
+  box-shadow: none;
+}
+.app-nav-logo .mark {
+  background: var(--green);
+  color: #04210a;
+  border-radius: 10px;
+  font-weight: 700;
+}
+:root[data-theme="light"] .app-nav-logo .mark { color: #ffffff; }
+.nav-tab {
+  font-weight: 500;
+  font-size: 14px;
+  color: var(--dim);
+  border-radius: 999px;
+  padding: 8px 18px;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.nav-tab:hover {
+  color: var(--txt);
+  background: var(--panel2);
+}
+.nav-tab.active {
+  color: var(--txt);
+  background: var(--panel2);
+  border: none;
+  font-weight: 700;
+}
+
+/* ── KPIs: big bold numbers, no chrome ─────────────────────────────────── */
+.kpi {
+  background: var(--panel);
+  border: none;
+  border-radius: 16px;
+}
+.kpi .label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+.kpi .val {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.kpi .sub {
+  color: var(--dim);
+}
+.kpi-clickable {
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+.kpi-clickable:hover {
+  background: var(--panel2);
+  border: none;
+  transform: translateY(-1px);
+}
+.kpi-clickable.kpi-active {
+  background: var(--green-dim);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 45%, transparent);
+}
+
+/* ── Tables: hairline rows, tall, airy ─────────────────────────────────── */
+.tablewrap {
+  border: none;
+  border-radius: 0;
+}
+table {
+  border-collapse: collapse;
+}
+thead th {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--panel);
+}
+tbody td {
+  border-bottom: 1px solid var(--line);
+  height: var(--row-h);
+  font-size: 14px;
+}
+tbody tr:last-child td {
+  border-bottom: none;
+}
+tbody tr.clickable {
+  transition: background 0.12s ease;
+}
+tbody tr.clickable:hover {
+  background: var(--panel2);
+}
+.tname {
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: -0.01em;
+}
+.tsub {
+  color: var(--dim);
+  font-size: 12px;
+}
+
+/* ── Pills, buttons, chips: fully rounded, flat ────────────────────────── */
+.pill,
+.btn {
+  border-radius: 999px;
+  border: 1px solid var(--line2);
+  background: transparent;
+  color: var(--muted);
+  font-weight: 500;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.pill:hover,
+.btn:hover {
+  background: var(--panel2);
+  color: var(--txt);
+}
+.btn-primary,
+.pill.btn-primary,
+.btn.btn-primary {
+  background: var(--green);
+  border-color: var(--green);
+  color: #04210a;
+  font-weight: 700;
+}
+:root[data-theme="light"] .btn-primary,
+:root[data-theme="light"] .pill.btn-primary,
+:root[data-theme="light"] .btn.btn-primary { color: #ffffff; }
+.btn-primary:hover {
+  background: color-mix(in srgb, var(--green) 85%, #ffffff 15%);
+  color: #04210a;
+}
+.btn-toggle.on {
+  background: var(--green);
+  border-color: var(--green);
+  color: #04210a;
+  font-weight: 700;
+}
+
+/* ── Verdicts: the signal owns the color ───────────────────────────────── */
+.verdict-pill {
+  border-radius: 999px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  padding: 6px 14px;
+}
+.verdict-pill.verdict-trade {
+  background: var(--green);
+  color: #04210a;
+  border: none;
+  animation: rh-breathe 2.6s ease-in-out infinite;
+}
+:root[data-theme="light"] .verdict-pill.verdict-trade { color: #ffffff; }
+.verdict-pill.verdict-wait {
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--amber) 55%, transparent);
+  color: var(--amber);
+}
+.verdict-pill.verdict-skip {
+  background: transparent;
+  border: 1px solid var(--line2);
+  color: var(--dim);
+}
+@keyframes rh-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 45%, transparent); }
+  50% { box-shadow: 0 0 0 5px transparent; }
+}
+
+.tag {
+  border-radius: 999px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.tag.t-call { background: var(--green-dim); color: var(--green); border: none; }
+.tag.t-put { background: var(--red-dim); color: var(--red); border: none; }
+.tag.t-vol { background: var(--panel2); color: var(--muted); border: none; }
+
+/* ── Live indicators ───────────────────────────────────────────────────── */
+.status-dot.live {
+  background: var(--green);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 60%, transparent);
+  animation: rh-pulse 2s ease-out infinite;
+}
+@keyframes rh-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--green) 55%, transparent); }
+  70% { box-shadow: 0 0 0 6px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.session-badge {
+  border-radius: 999px;
+  border: 1px solid var(--line2);
+  font-family: var(--sans);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+.session-badge.session-options {
+  color: var(--green);
+  border-color: color-mix(in srgb, var(--green) 45%, transparent);
+  background: var(--green-dim);
+}
+
+/* ── Strip cards / contract lines ──────────────────────────────────────── */
+.zero-dte-strip-card {
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+.zero-dte-strip-card:hover {
+  border-color: var(--line2);
+  background: var(--panel2);
+}
+.zero-dte-strip-contract {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.zero-dte-strip-contract .t-call { color: var(--green); background: transparent; }
+.zero-dte-strip-contract .t-put { color: var(--red); background: transparent; }
+
+/* ── Inputs, focus, selection, scrollbars ──────────────────────────────── */
+.input-sm,
+input,
+select,
+textarea {
+  border-radius: 10px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--green) 55%, transparent);
+  border-radius: 6px;
+}
+::selection {
+  background: color-mix(in srgb, var(--green) 30%, transparent);
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line2) transparent;
+}
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: var(--line2); border-radius: 999px; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* ── Footer + empty states: quieter ────────────────────────────────────── */
+.footer {
+  color: var(--dim);
+  border-top: 1px solid var(--line);
+}
+.empty {
+  color: var(--muted);
+}
+.empty .big {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--txt);
+}
+
+/* ── Calm by request ───────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .verdict-pill.verdict-trade,
+  .status-dot.live {
+    animation: none;
+  }
+  * {
+    transition-duration: 0.01ms !important;
+  }
+}
