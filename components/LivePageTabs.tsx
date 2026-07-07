@@ -1,9 +1,9 @@
 ﻿"use client";
 
 import { useCallback } from "react";
-import { ScannerDashboard } from "@/components/ScannerDashboard";
+import { OptiscanLiveView } from "@/components/OptiscanLiveView";
 
-/** Live page — fast movers tape only (no research tab). */
+/** Live page — chrome-noir terminal layout. */
 export function LivePageTabs({
   onOpenChart,
   onLoopStatus,
@@ -12,15 +12,13 @@ export function LivePageTabs({
   onLoopStatus?: (running: boolean) => void;
 }) {
   const handleLoopStatus = useCallback(
-    (running: boolean) => {
-      onLoopStatus?.(running);
-    },
+    (running: boolean) => onLoopStatus?.(running),
     [onLoopStatus],
   );
 
   return (
-    <div className="live-page-tabs">
-      <ScannerDashboard onOpenChart={onOpenChart} onLoopStatus={handleLoopStatus} />
+    <div className="live-page-tabs chrome-app">
+      <OptiscanLiveView onOpenChart={onOpenChart} onLoopStatus={handleLoopStatus} />
     </div>
   );
 }

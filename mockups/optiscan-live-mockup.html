@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OPTISCAN</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&family=Hanken+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+/* ═══════════════════════════════════════════════════════════════
+   OPTISCAN — chrome-noir 0DTE terminal (Sedglifts vocabulary).
+   Tokens first: edit, save, refresh.
+   ═══════════════════════════════════════════════════════════════ */
+:root {
+  --black: #060607;
+  --white: #f5f7f6;
+  --chrome: #e4e9ea;
+  --silver: #b6bec1;
+  --steel: #737b7e;
+  --soft: rgba(245, 247, 246, 0.68);
+  --muted: rgba(245, 247, 246, 0.4);
+  --line: rgba(222, 230, 231, 0.12);
+  --line-strong: rgba(222, 230, 231, 0.3);
+  /* silver chrome — the brand shine */
+  --chrome-grad: linear-gradient(180deg, #ffffff 0%, #d6dcde 38%, #8e979b 64%, #eef2f3 100%);
+  /* green shine — same metal, minted. Use it on the money moments. */
+  --green-grad: linear-gradient(180deg, #e7fff2 0%, #8beeb6 38%, #23a35f 66%, #d3f9e4 100%);
+  --green: #35d07f;          /* calm mint, not neon */
+  --red: #f2635a;            /* coral, not alarm-red */
+  --amber: #e8b64c;
+  --edge: max(clamp(28px, 5vw, 84px), calc((100% - 1280px) / 2));
+  --font: "Hanken Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --display: "Bricolage Grotesque", "Hanken Grotesk", sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background:
+    radial-gradient(circle at 78% 6%, rgba(222, 230, 231, 0.07), transparent 28rem),
+    radial-gradient(circle at 8% 90%, rgba(53, 208, 127, 0.045), transparent 30rem),
+    linear-gradient(125deg, #020203 0%, #0b0c0d 52%, #060607 100%);
+  color: var(--white);
+  font-family: var(--font);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+}
+body::before {
+  content: ''; position: fixed; inset: 0; z-index: 2; pointer-events: none;
+  background: radial-gradient(circle at 50% 50%, transparent 56%, rgba(0,0,0,.55) 100%);
+}
+body::after {
+  content: ''; position: fixed; inset: .9rem; z-index: 3;
+  border: 1px solid rgba(222, 230, 231, 0.08); pointer-events: none;
+}
+.num { font-variant-numeric: tabular-nums; }
+button { font: inherit; border: 0; background: transparent; cursor: pointer; color: inherit; }
+.pos { color: var(--green); } .neg { color: var(--red); }
+
+/* ── header ── */
+header {
+  position: sticky; top: 0; z-index: 30;
+  display: flex; align-items: center; gap: 2rem;
+  padding: 1.6rem var(--edge) 1rem;
+  background: linear-gradient(180deg, rgba(4,4,4,.94), rgba(4,4,4,0));
+}
+.brand {
+  font-family: var(--display);
+  font-size: 1rem; font-weight: 700; letter-spacing: 0.16em;
+  background: var(--chrome-grad); -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+nav.main { display: flex; gap: 1.1rem; margin-left: auto; }
+.chapter-link {
+  position: relative; padding: .3rem 0; color: var(--muted);
+  font-size: .58rem; font-weight: 700; letter-spacing: .15em; text-transform: uppercase;
+  transition: color 180ms ease;
+}
+.chapter-link::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 1px;
+  background: var(--chrome-grad); transform: scaleX(0); transform-origin: left; transition: transform 220ms ease;
+}
+.chapter-link:hover, .chapter-link.active { color: var(--white); }
+.chapter-link.active::after { transform: scaleX(1); }
+.clock { margin-left: 1.2rem; color: var(--steel); font-size: .58rem; font-weight: 700; letter-spacing: .15em; }
+.clock .dot {
+  display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--green); margin-right: 6px; vertical-align: 1px;
+  animation: pulse 2.4s ease-out infinite;
+}
+@keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(46,224,106,.5)} 70%{box-shadow:0 0 0 6px transparent} 100%{box-shadow:0 0 0 0 transparent} }
+
+main { position: relative; z-index: 5; padding: 0 var(--edge) 7rem; }
+.page { display: none; } .page.show { display: block; }
+
+/* ── section heads ── */
+.section-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: .8rem;
+  margin: 4rem 0 0; padding-bottom: .45rem; border-bottom: 1px solid var(--line-strong);
+}
+.section-title { color: var(--chrome); font-size: .74rem; font-weight: 700; letter-spacing: .2em; text-transform: uppercase; }
+.section-note { color: var(--steel); font-size: .6rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+
+/* chrome segment control */
+.seg { display: inline-flex; border: 1px solid var(--line-strong); }
+.seg button {
+  padding: .5rem 1.05rem; color: var(--steel);
+  font-size: .6rem; font-weight: 760; letter-spacing: .16em; text-transform: uppercase;
+  transition: 160ms ease;
+}
+.seg button:hover { color: var(--soft); }
+.seg button.on { color: var(--black); background: var(--chrome-grad); }
+.seg.mini button { padding: .34rem .7rem; font-size: .54rem; }
+
+/* ── callout hero ── */
+.callout { padding-top: 4.2rem; max-width: 900px; }
+.callout-kicker { color: var(--steel); font-size: .62rem; font-weight: 700; letter-spacing: .2em; text-transform: uppercase; margin-bottom: 1rem; }
+.callout-kicker b { color: var(--green); }
+.callout-say {
+  font-family: var(--display);
+  font-size: clamp(2.1rem, 4.6vw, 3.4rem); font-weight: 600; line-height: 1.08;
+  letter-spacing: -.02em; text-wrap: balance;
+  background: var(--chrome-grad); -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.callout-say .dn { -webkit-text-fill-color: var(--red); }
+.callout-say .up { -webkit-text-fill-color: var(--green); }
+.callout-why { max-width: 700px; margin-top: 1.2rem; color: var(--soft); font-size: .96rem; line-height: 1.6; }
+.ticket {
+  display: flex; flex-wrap: wrap; gap: 2rem; margin-top: 1.8rem; padding: 1rem 0;
+  border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); max-width: 700px;
+}
+.ticket div { display: grid; gap: .26rem; }
+.ticket .k { color: var(--steel); font-size: .56rem; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; }
+.ticket .v { font-size: 1.02rem; font-weight: 700; }
+.gates { margin-top: .9rem; color: var(--steel); font-size: .6rem; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; }
+.gates b { color: var(--green); }
+
+/* live value flash — in place, layout frozen */
+.live { transition: color .6s ease; }
+.live.up { color: var(--green) !important; transition: none; }
+.live.dn { color: var(--red) !important; transition: none; }
+
+/* ── indices / options stats strip ── */
+.strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); border-bottom: 1px solid var(--line); }
+.strip > div { padding: 1.05rem 1.4rem 1.05rem 0; border-right: 1px solid var(--line); }
+.strip > div:last-child { border-right: none; }
+.strip > div + div { padding-left: 1.4rem; }
+.strip .k { color: var(--steel); font-size: .56rem; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; }
+.strip .v { margin-top: .32rem; font-size: 1.42rem; font-weight: 600; letter-spacing: -.02em; }
+.strip .d { margin-top: .08rem; font-size: .76rem; font-weight: 600; }
+
+/* ── scanner columns ── */
+.scanners { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2.6rem; margin-top: 1.6rem; }
+.scanner h3 {
+  color: var(--silver); font-size: .6rem; font-weight: 760; letter-spacing: .2em; text-transform: uppercase;
+  padding-bottom: .5rem; border-bottom: 1px solid var(--line-strong);
+}
+.scanner ul { list-style: none; }
+.scanner li {
+  display: grid; grid-template-columns: 3.6rem minmax(0,1fr) auto; gap: .8rem; align-items: baseline;
+  padding: .68rem 0; border-bottom: 1px solid var(--line); cursor: pointer;
+  transition: padding-left 160ms ease;
+}
+.scanner li:hover { padding-left: .4rem; }
+.scanner .sym { font-size: .88rem; font-weight: 760; letter-spacing: .05em; }
+.scanner .why { color: var(--muted); font-size: .72rem; line-height: 1.35; }
+.scanner .why b { color: var(--soft); font-weight: 600; }
+.scanner .m { text-align: right; font-size: .84rem; font-weight: 700; }
+.scanner .m small { display: block; color: var(--steel); font-size: .62rem; font-weight: 600; text-align: right; }
+.hold-note { margin-top: .7rem; color: var(--steel); font-size: .56rem; font-weight: 600; letter-spacing: .16em; text-transform: uppercase; }
+
+/* ── ledger rows ── */
+.ledger { list-style: none; }
+.ledger li {
+  display: grid; grid-template-columns: 4.5rem minmax(0,1fr) auto; gap: 1.2rem; align-items: baseline;
+  padding: .95rem 0; border-bottom: 1px solid var(--line);
+}
+.ledger .t { color: var(--steel); font-size: .62rem; font-weight: 700; letter-spacing: .14em; }
+.ledger .what { font-size: .96rem; font-weight: 700; }
+.ledger .what small { display: block; margin-top: .16rem; color: var(--muted); font-size: .79rem; font-weight: 400; line-height: 1.45; }
+.ledger .res { font-size: .95rem; font-weight: 800; }
+.ledger .res.open { color: var(--steel); font-weight: 600; font-size: .7rem; letter-spacing: .12em; text-transform: uppercase; }
+
+/* ── alerts dashboard ── */
+.scoreline { padding-top: 4.2rem; }
+.score-big {
+  font-family: var(--display);
+  font-size: clamp(2.6rem, 6vw, 4.2rem); font-weight: 600; letter-spacing: -.02em; line-height: 1.06;
+  background: var(--chrome-grad); -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.score-big em {
+  font-style: normal;
+  background: var(--green-grad); -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.score-sub { max-width: 620px; margin-top: .9rem; color: var(--soft); font-size: .94rem; line-height: 1.6; }
+.kpi-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); border-bottom: 1px solid var(--line); margin-top: 1.4rem; }
+.kpi-strip > div { padding: 1rem 1.4rem 1rem 0; border-right: 1px solid var(--line); }
+.kpi-strip > div:last-child { border-right: none; }
+.kpi-strip > div + div { padding-left: 1.4rem; }
+.kpi-strip .k { color: var(--steel); font-size: .56rem; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; }
+.kpi-strip .v { margin-top: .3rem; font-size: 1.35rem; font-weight: 600; letter-spacing: -.015em; }
+.kpi-strip .s { margin-top: .06rem; color: var(--muted); font-size: .7rem; }
+.trend { margin-top: 1.6rem; }
+.trend svg { display: block; width: 100%; height: 120px; }
+.payback { display: flex; gap: 3rem; align-items: center; flex-wrap: wrap; margin-top: 1.6rem; }
+.payback svg { width: 190px; height: 190px; flex-shrink: 0; }
+.pb-center-n { font-family: var(--display); font-size: 26px; font-weight: 700; fill: var(--green); }
+.pb-center-t { font-size: 8.5px; font-weight: 600; letter-spacing: .14em; fill: var(--steel); text-transform: uppercase; }
+.pb-legend { display: grid; gap: .9rem; }
+.pb-row { display: grid; grid-template-columns: 12px minmax(0,1fr); gap: .8rem; align-items: baseline; }
+.pb-row i { width: 10px; height: 10px; display: inline-block; }
+.pb-row b { font-size: .95rem; font-weight: 700; }
+.pb-row small { display: block; margin-top: .12rem; color: var(--muted); font-size: .76rem; line-height: 1.45; }
+.breakdown { display: grid; grid-template-columns: 1fr 1fr; gap: 2.6rem; margin-top: 1.6rem; }
+.bk h3 { color: var(--silver); font-size: .6rem; font-weight: 760; letter-spacing: .2em; text-transform: uppercase; padding-bottom: .5rem; border-bottom: 1px solid var(--line-strong); }
+.bk .row { display: grid; grid-template-columns: 6rem 1fr auto; gap: 1rem; align-items: center; padding: .62rem 0; border-bottom: 1px solid var(--line); }
+.bk .lab { font-size: .8rem; font-weight: 700; letter-spacing: .04em; }
+.bk .bar { height: 3px; background: var(--line); position: relative; }
+.bk .bar i { position: absolute; inset: 0 auto 0 0; background: var(--green); }
+.bk .val { font-size: .8rem; font-weight: 700; color: var(--soft); }
+
+/* ── pillars (settings) ── */
+.pillar {
+  display: grid; grid-template-columns: 13rem minmax(0,1fr) auto; gap: 1rem; align-items: center;
+  padding: 1.15rem 0; border-bottom: 1px solid var(--line);
+}
+.pillar-name { color: var(--chrome); font-size: .86rem; font-weight: 740; }
+.pillar-text { color: var(--soft); font-size: .84rem; line-height: 1.5; max-width: 34rem; }
+
+.foot { margin-top: 4rem; max-width: 640px; color: var(--muted); font-size: .72rem; line-height: 1.7; }
+
+/* ── chart sheet ── */
+#sheet {
+  position: fixed; inset: 0; z-index: 50; display: none;
+  background: rgba(2,2,2,.78); backdrop-filter: blur(6px);
+}
+#sheet.open { display: block; }
+.sheet-panel {
+  position: absolute; inset: 4.5rem var(--edge);
+  background: linear-gradient(125deg, #060606 0%, #0c0c0e 60%, #050505 100%);
+  border: 1px solid var(--line-strong);
+  display: flex; flex-direction: column;
+  padding: 1.6rem 2rem 1.4rem;
+}
+.sheet-head { display: flex; align-items: baseline; gap: 1.6rem; flex-wrap: wrap; }
+.sheet-sym { font-family: var(--display); font-size: 1.7rem; font-weight: 700; letter-spacing: .03em;
+  background: var(--chrome-grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.sheet-px { font-size: 1.25rem; font-weight: 700; }
+.sheet-chg { font-size: .9rem; font-weight: 700; }
+.sheet-close { margin-left: auto; color: var(--steel); font-size: .62rem; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; padding: .4rem 0; }
+.sheet-close:hover { color: var(--white); }
+.sheet-tools { display: flex; align-items: center; gap: 1.6rem; flex-wrap: wrap; margin-top: 1rem; padding-bottom: .8rem; border-bottom: 1px solid var(--line); }
+.tool-label { color: var(--steel); font-size: .54rem; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; margin-right: -.9rem; }
+.ind { display: flex; gap: .35rem; flex-wrap: wrap; }
+.ind button {
+  padding: .34rem .75rem; border: 1px solid var(--line);
+  color: var(--steel); font-size: .56rem; font-weight: 740; letter-spacing: .14em; text-transform: uppercase;
+  transition: 150ms ease;
+}
+.ind button:hover { color: var(--soft); border-color: var(--line-strong); }
+.ind button.on { color: var(--black); background: var(--chrome-grad); border-color: transparent; }
+.sheet-chart { flex: 1; min-height: 0; position: relative; margin-top: .8rem; }
+.sheet-chart svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.sheet-note { margin-top: .7rem; color: var(--steel); font-size: .56rem; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; }
+
+@media (max-width: 900px) {
+  .scanners { grid-template-columns: 1fr; gap: 2rem; }
+  .breakdown { grid-template-columns: 1fr; }
+  .pillar { grid-template-columns: 1fr; gap: .5rem; }
+  .sheet-panel { inset: 3rem 1rem; padding: 1.1rem 1.2rem; }
+}
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition-duration: .01ms !important; } }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="brand">OPTISCAN</span>
+  <nav class="main">
+    <button class="chapter-link active" data-tab="live">Live</button>
+    <button class="chapter-link" data-tab="alerts">Alerts</button>
+    <button class="chapter-link" data-tab="settings">Settings</button>
+  </nav>
+  <span class="clock"><span class="dot"></span><span id="clock" class="num">--:--</span> ET</span>
+</header>
+
+<main>
+
+<!-- ════════ LIVE ════════ -->
+<div class="page show" id="page-live">
+
+  <section class="callout">
+    <p class="callout-kicker">The callout · 11:20 AM · <b>still valid</b></p>
+    <h1 class="callout-say">Buy the <span class="dn">TSLA&nbsp;$400&nbsp;put</span></h1>
+    <p class="callout-why">
+      Tesla is falling fast with real volume behind it — down 0.30% a minute with sellers
+      in control. The $400 strike sits closest to price, the spread is tight, and the
+      premium needs just a 0.6% move to pay.
+    </p>
+    <div class="ticket">
+      <div><span class="k">Contract</span><span class="v">TSLA $400P · 0DTE</span></div>
+      <div><span class="k">Mid</span><span class="v live num" id="mid">$2.52</span></div>
+      <div><span class="k">Spread</span><span class="v num">1.2%</span></div>
+      <div><span class="k">Needs</span><span class="v num">0.62% move</span></div>
+      <div><span class="k">Delta</span><span class="v num">−0.48</span></div>
+    </div>
+    <p class="gates">Every gate passed — <b>speed</b> · <b>volume</b> · <b>trend</b> · <b>fillable</b></p>
+  </section>
+
+  <div class="section-head">
+    <span class="section-title">Scanners</span>
+    <span style="display:flex; align-items:center; gap:1.2rem">
+      <span class="section-note" id="holdnote">Live · hover to hold · click any name for its chart</span>
+      <span class="seg" id="scope">
+        <button class="on" data-scope="market">Market</button>
+        <button data-scope="options">Options</button>
+      </span>
+    </span>
+  </div>
+
+  <div class="strip" id="strip"></div>
+  <div class="scanners" id="scanners"></div>
+  <p class="hold-note" id="scopenote">Whole market · every name your feed sees, distilled to what's actually moving</p>
+
+  <div class="section-head">
+    <span class="section-title">Earlier today</span>
+    <span class="section-note">Settled — never moves</span>
+  </div>
+  <ul class="ledger">
+    <li><span class="t num">10:47</span><span class="what">Bought the RIVN $17 put<small>caught −0.78% in five minutes</small></span><span class="res pos num">+31%</span></li>
+    <li><span class="t num">10:12</span><span class="what">Watched PLTR calls<small>never got fast enough to fire — correctly skipped</small></span><span class="res open">no trade</span></li>
+    <li><span class="t num">9:41</span><span class="what">Bought the QQQ $707 put<small>opening drive with the market selling off</small></span><span class="res pos num">+18%</span></li>
+  </ul>
+
+  <p class="foot">Research signals, never orders. Not financial advice.</p>
+</div>
+
+<!-- ════════ ALERTS ════════ -->
+<div class="page" id="page-alerts">
+  <section class="scoreline">
+    <div class="score-big num"><em>71%</em> order win rate</div>
+    <p class="score-sub">
+      Graded on the actual option order — entry mid to best mid after the call.
+      The ticket, not the chart.
+    </p>
+  </section>
+
+  <div class="kpi-strip">
+    <div><div class="k">This week</div><div class="v num"><span class="pos">5</span> / 7</div><div class="s">callouts paid</div></div>
+    <div><div class="k">Avg winner</div><div class="v num pos">+24%</div><div class="s">on the contract mid</div></div>
+    <div><div class="k">Avg loser</div><div class="v num neg">−19%</div><div class="s">frozen headline expires at 5 min</div></div>
+    <div><div class="k">Callouts / day</div><div class="v num">2.3</div><div class="s">picky by design</div></div>
+    <div><div class="k">Avg entry spread</div><div class="v num">2.1%</div><div class="s">BUY requires ≤ 5%</div></div>
+  </div>
+
+  <div class="section-head">
+    <span class="section-title">Paid within ten minutes</span>
+    <span class="section-note">Every alert sent · graded ten minutes after the ping</span>
+  </div>
+  <div class="payback">
+    <svg viewBox="0 0 120 120" role="img" aria-label="Payback within ten minutes donut chart">
+      <circle cx="60" cy="60" r="46" fill="none" stroke="rgba(222,230,231,.1)" stroke-width="11"/>
+      <circle cx="60" cy="60" r="46" fill="none" stroke="var(--green)" stroke-width="11"
+              stroke-dasharray="179.2 289" stroke-linecap="butt" transform="rotate(-90 60 60)"/>
+      <circle cx="60" cy="60" r="46" fill="none" stroke="var(--silver)" stroke-width="11" opacity=".55"
+              stroke-dasharray="40.5 289" stroke-dashoffset="-179.2" transform="rotate(-90 60 60)"/>
+      <circle cx="60" cy="60" r="46" fill="none" stroke="var(--red)" stroke-width="11" opacity=".65"
+              stroke-dasharray="69.4 289" stroke-dashoffset="-219.7" transform="rotate(-90 60 60)"/>
+      <text x="60" y="58" text-anchor="middle" class="pb-center-n">62%</text>
+      <text x="60" y="74" text-anchor="middle" class="pb-center-t">paid ≤ 10 min</text>
+    </svg>
+    <div class="pb-legend">
+      <div class="pb-row"><i style="background:var(--green)"></i>
+        <span><b class="num">62% · paid inside ten minutes</b>
+        <small>the contract was up 15%+ from the called price before the ping was ten minutes old</small></span></div>
+      <div class="pb-row"><i style="background:var(--silver);opacity:.55"></i>
+        <span><b class="num">14% · paid, but later</b>
+        <small>took longer than ten minutes to work — fine if you're patient, dangerous if you chase</small></span></div>
+      <div class="pb-row"><i style="background:var(--red);opacity:.65"></i>
+        <span><b class="num">24% · never paid</b>
+        <small>headline expires at five minutes so these never sit around looking confident</small></span></div>
+    </div>
+  </div>
+
+  <div class="section-head">
+    <span class="section-title">Daily win rate</span>
+    <span class="section-note">Last 14 sessions · green = day ended ≥ 50%</span>
+  </div>
+  <div class="trend"><svg id="trendsvg" preserveAspectRatio="none"></svg></div>
+
+  <div class="breakdown">
+    <div class="bk">
+      <h3>By side</h3>
+      <div class="row"><span class="lab">Puts</span><span class="bar"><i style="width:78%"></i></span><span class="val num">78% · 9 of 12</span></div>
+      <div class="row"><span class="lab">Calls</span><span class="bar"><i style="width:60%"></i></span><span class="val num">60% · 6 of 10</span></div>
+    </div>
+    <div class="bk">
+      <h3>Best names</h3>
+      <div class="row"><span class="lab">TSLA</span><span class="bar"><i style="width:83%"></i></span><span class="val num">83% · 5 of 6</span></div>
+      <div class="row"><span class="lab">QQQ</span><span class="bar"><i style="width:75%"></i></span><span class="val num">75% · 3 of 4</span></div>
+      <div class="row"><span class="lab">SPY</span><span class="bar"><i style="width:67%"></i></span><span class="val num">67% · 2 of 3</span></div>
+      <div class="row"><span class="lab">NVDA</span><span class="bar"><i style="width:40%"></i></span><span class="val num">40% · 2 of 5</span></div>
+    </div>
+  </div>
+
+  <div class="section-head">
+    <span class="section-title">Every call this week</span>
+    <span class="section-note">Wins = contract gained 15%+ from the called price</span>
+  </div>
+  <ul class="ledger">
+    <li><span class="t num">TUE</span><span class="what">TSLA $400 put<small>called at $2.52 · topped at $3.31</small></span><span class="res pos num">+31%</span></li>
+    <li><span class="t num">TUE</span><span class="what">QQQ $707 put<small>called at $2.18 · topped at $2.58</small></span><span class="res pos num">+18%</span></li>
+    <li><span class="t num">MON</span><span class="what">NVDA $189 call<small>called at $1.14 · never recovered</small></span><span class="res neg num">−22%</span></li>
+    <li><span class="t num">MON</span><span class="what">META $715 call<small>called at $3.30 · topped at $4.10</small></span><span class="res pos num">+24%</span></li>
+    <li><span class="t num">MON</span><span class="what">SPY $706 put<small>called at $1.95 · topped at $2.41</small></span><span class="res pos num">+23%</span></li>
+  </ul>
+  <p class="foot">Skipped setups count against nothing — skipping is free.</p>
+</div>
+
+<!-- ════════ SETTINGS ════════ -->
+<div class="page" id="page-settings">
+  <div class="section-head" style="margin-top:4.2rem">
+    <span class="section-title">Preferences</span>
+    <span class="section-note">Three choices — thresholds live in Advanced</span>
+  </div>
+  <div class="pillar">
+    <span class="pillar-name">Selectivity</span>
+    <span class="pillar-text">Picky waits for every formula to agree — fewer callouts, better ones. Balanced loosens the speed gate a touch.</span>
+    <span class="seg" data-seg><button class="on">Picky</button><button>Balanced</button></span>
+  </div>
+  <div class="pillar">
+    <span class="pillar-name">Phone ping</span>
+    <span class="pillar-text">Discord message the moment a BUY fires, with the exact ticket. Watch-only setups stay quiet.</span>
+    <span class="seg" data-seg><button class="on">On</button><button>Off</button></span>
+  </div>
+  <div class="pillar">
+    <span class="pillar-name">Sound</span>
+    <span class="pillar-text">One soft chime when a callout lands. Never for anything else.</span>
+    <span class="seg" data-seg><button class="on">On</button><button>Off</button></span>
+  </div>
+  <p class="foot">That's the whole settings page.</p>
+</div>
+
+</main>
+
+<!-- ════════ CHART SHEET ════════ -->
+<div id="sheet">
+  <div class="sheet-panel">
+    <div class="sheet-head">
+      <span class="sheet-sym" id="sh-sym">TSLA</span>
+      <span class="sheet-px num live" id="sh-px">$401.22</span>
+      <span class="sheet-chg num" id="sh-chg">−3.21%</span>
+      <button class="sheet-close" id="sh-close">Close ✕</button>
+    </div>
+    <div class="sheet-tools">
+      <span class="tool-label">Frame</span>
+      <span class="seg mini" id="tf">
+        <button class="on">1M</button><button>5M</button><button>15M</button>
+      </span>
+      <span class="tool-label">Indicators</span>
+      <span class="ind" id="ind">
+        <button data-ind="vwap" class="on">VWAP</button>
+        <button data-ind="ema9" class="on">EMA 9</button>
+        <button data-ind="ema21">EMA 21</button>
+        <button data-ind="levels">HOD / LOD</button>
+        <button data-ind="rsi">RSI</button>
+      </span>
+    </div>
+    <div class="sheet-chart"><svg id="chartsvg" preserveAspectRatio="none"></svg></div>
+    <p class="sheet-note" id="sh-note">Your indicator picks are remembered per session · candles keep painting live</p>
+  </div>
+</div>
+
+<script>
+/* ═══ tabs / segs / clock ═══ */
+document.querySelectorAll("[data-tab]").forEach(a => a.addEventListener("click", () => {
+  document.querySelectorAll("[data-tab]").forEach(x => x.classList.remove("active"));
+  a.classList.add("active");
+  document.querySelectorAll(".page").forEach(p => p.classList.remove("show"));
+  document.getElementById("page-" + a.dataset.tab).classList.add("show");
+}));
+document.querySelectorAll("[data-seg]").forEach(seg => seg.querySelectorAll("button").forEach(b =>
+  b.addEventListener("click", () => { seg.querySelectorAll("button").forEach(x => x.classList.remove("on")); b.classList.add("on"); })));
+setInterval(() => { document.getElementById("clock").textContent =
+  new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" }); }, 1000);
+
+const fmt = n => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const sign = n => (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
+function flash(el, dir) { el.classList.remove("up","dn"); void el.offsetWidth; el.classList.add(dir); setTimeout(() => el.classList.remove("up","dn"), 650); }
+
+/* ═══ SCANNER DATA — two scopes, same skin. Cursor swaps in real feeds. ═══ */
+const SCOPES = {
+  market: {
+    note: "Whole market · every name your feed sees, distilled to what's actually moving",
+    strip: [
+      { k: "S&P 500 · SPY", v: 707.80, d: -2.31 }, { k: "Nasdaq · QQQ", v: 601.12, d: -2.64 },
+      { k: "Small caps · IWM", v: 268.40, d: -1.88 }, { k: "Breadth", v: 22, d: null, s: "% of names green" },
+    ],
+    cols: [
+      { title: "Fastest right now", rows: [
+        { sym: "RKLB", why: "<b>−1.49%/min</b> · heavy sell program", m: -10.51, s: "$71.20" },
+        { sym: "SMCI", why: "<b>−1.15%/min</b> · broke low of day", m: -5.29, s: "$25.74" },
+        { sym: "MU",   why: "<b>+0.80%/min</b> · bounce attempt", m: -6.82, s: "$918.40" },
+        { sym: "MSTR", why: "<b>+0.77%/min</b> · reclaiming VWAP", m: -0.88, s: "$103.90" },
+        { sym: "AMD",  why: "<b>−0.59%/min</b> · trend continuation", m: -8.19, s: "$208.11" },
+      ]},
+      { title: "Volume surges", rows: [
+        { sym: "TSLA", why: "<b>4.4×</b> normal · sellers pressing", m: -3.21, s: "$401.22" },
+        { sym: "NFLX", why: "<b>4.4×</b> · fighting the tape", m: 1.25, s: "$78.13" },
+        { sym: "PLTR", why: "<b>4.1×</b> · buyers stacking", m: 2.17, s: "$134.52" },
+        { sym: "GME",  why: "<b>3.1×</b> · no direction yet", m: -2.42, s: "$21.88" },
+        { sym: "COIN", why: "<b>2.8×</b> · tracking bitcoin down", m: -1.42, s: "$342.18" },
+      ]},
+      { title: "Level breaks", rows: [
+        { sym: "SMCI", why: "broke <b>low of day</b> with volume", m: -5.29, s: "LOD" },
+        { sym: "PLTR", why: "broke <b>high of day</b> · held it", m: 2.17, s: "HOD" },
+        { sym: "SQQQ", why: "new <b>high of day</b> (inverse)", m: 6.74, s: "HOD" },
+        { sym: "RIVN", why: "broke <b>low of day</b> · extended", m: -13.88, s: "LOD" },
+      ]},
+    ],
+  },
+  options: {
+    note: "Options only · same lists, but ranked by what the chains are doing",
+    strip: [
+      { k: "Put / call flow", v: 1.84, d: null, s: "puts dominating" },
+      { k: "Call premium", v: 41.2, d: null, s: "$M today · 0DTE" },
+      { k: "Put premium", v: 75.8, d: null, s: "$M today · 0DTE" },
+      { k: "0DTE share", v: 61, d: null, s: "% of all volume" },
+    ],
+    cols: [
+      { title: "Unusual volume vs OI", rows: [
+        { sym: "TSLA", why: "$400P · <b>18×</b> open interest", m: -3.21, s: "8.2× OI" },
+        { sym: "AMD",  why: "$510P · <b>11×</b> open interest", m: -8.19, s: "5.4× OI" },
+        { sym: "META", why: "$715C · <b>7×</b> open interest", m: 0.63, s: "3.1× OI" },
+        { sym: "QQQ",  why: "$707P · steady accumulation", m: -2.26, s: "2.8× OI" },
+      ]},
+      { title: "Premium sweeps", rows: [
+        { sym: "TSLA", why: "<b>$2.1M</b> in $400 puts · 40 min", m: -3.21, s: "PUTS" },
+        { sym: "SPY",  why: "<b>$1.4M</b> in $707 puts", m: -2.31, s: "PUTS" },
+        { sym: "PLTR", why: "<b>$0.9M</b> in $134 calls", m: 2.17, s: "CALLS" },
+        { sym: "NVDA", why: "<b>$0.7M</b> in $189 calls · early", m: 1.12, s: "CALLS" },
+      ]},
+      { title: "Best entries now", rows: [
+        { sym: "TSLA", why: "$400P · <b>1.2% spread</b> · needs 0.62%", m: -3.21, s: "READY" },
+        { sym: "QQQ",  why: "$707P · 0.9% spread · needs 0.31%", m: -2.26, s: "READY" },
+        { sym: "SPY",  why: "$707P · 0.7% spread · needs 0.28%", m: -2.31, s: "READY" },
+        { sym: "AAPL", why: "$315C · 0.7% spread · quiet tape", m: 0.41, s: "ARMED" },
+      ]},
+    ],
+  },
+};
+
+let scope = "market", holding = false;
+const stripEl = document.getElementById("strip");
+const scanEl = document.getElementById("scanners");
+
+function renderScope() {
+  const s = SCOPES[scope];
+  document.getElementById("scopenote").textContent = s.note;
+  stripEl.innerHTML = s.strip.map((x, i) => `
+    <div><div class="k">${x.k}</div>
+      <div class="v num" data-strip="${i}">${typeof x.v === "number" && x.v > 100 ? fmt(x.v) : x.v}</div>
+      <div class="d num ${x.d == null ? "" : x.d >= 0 ? "pos" : "neg"}">${x.d == null ? (x.s ?? "") : sign(x.d)}</div>
+    </div>`).join("");
+  scanEl.innerHTML = s.cols.map((c, ci) => `
+    <div class="scanner"><h3>${c.title}</h3><ul>
+      ${c.rows.map((r, ri) => `
+        <li data-open="${r.sym}">
+          <span class="sym">${r.sym}</span>
+          <span class="why">${r.why}</span>
+          <span class="m num ${r.m >= 0 ? "pos" : "neg"}" data-m="${ci}:${ri}">${sign(r.m)}<small>${r.s}</small></span>
+        </li>`).join("")}
+    </ul></div>`).join("");
+  scanEl.querySelectorAll("[data-open]").forEach(li => li.addEventListener("click", () => openChart(li.dataset.open)));
+}
+renderScope();
+
+document.querySelectorAll("#scope button").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll("#scope button").forEach(x => x.classList.remove("on"));
+  b.classList.add("on"); scope = b.dataset.scope; renderScope();
+}));
+
+/* hover-hold + gentle in-place ticks (numbers only — rows never move) */
+[scanEl, stripEl].forEach(el => {
+  el.addEventListener("mouseenter", () => { holding = true; document.getElementById("holdnote").textContent = "Holding while you read — prices still live"; });
+  el.addEventListener("mouseleave", () => { holding = false; document.getElementById("holdnote").textContent = "Live · hover to hold · click any name for its chart"; });
+});
+setInterval(() => {
+  const s = SCOPES[scope];
+  s.cols.forEach((c, ci) => c.rows.forEach((r, ri) => {
+    if (Math.random() < 0.75) return;
+    const prev = r.m;
+    r.m = +(r.m + (Math.random() - 0.5) * 0.08).toFixed(2);
+    const el = scanEl.querySelector(`[data-m="${ci}:${ri}"]`);
+    if (!el) return;
+    el.firstChild.textContent = sign(r.m);
+    el.classList.toggle("pos", r.m >= 0); el.classList.toggle("neg", r.m < 0);
+    flash(el, r.m > prev ? "up" : "dn");
+  }));
+}, 1000);
+
+/* hero live mid */
+let mid = 2.52;
+setInterval(() => {
+  const prev = mid;
+  mid = Math.max(.05, +(mid * (1 + (Math.random() - .44) * .012)).toFixed(2));
+  const el = document.getElementById("mid");
+  if (mid === prev) return;
+  el.textContent = "$" + mid.toFixed(2); flash(el, mid > prev ? "up" : "dn");
+}, 1000);
+
+/* ═══ ALERTS: daily win-rate bars ═══ */
+(function trend() {
+  const days = [67,50,33,71,60,75,80,44,67,71,57,83,60,71];
+  const svg = document.getElementById("trendsvg");
+  const W = 1000, H = 120, bw = W / days.length;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.innerHTML =
+    `<line x1="0" y1="${H - 60}" x2="${W}" y2="${H - 60}" stroke="rgba(220,228,233,.18)" stroke-dasharray="3 5" stroke-width="1"/>` +
+    days.map((d, i) => {
+      const h = (d / 100) * (H - 22);
+      const x = i * bw + bw * 0.28, w = bw * 0.44;
+      const c = d >= 50 ? "var(--green)" : "var(--red)";
+      return `<rect x="${x}" y="${H - h}" width="${w}" height="${h}" fill="${c}" opacity="${d >= 50 ? .85 : .6}"/>
+              <text x="${x + w/2}" y="${H - h - 6}" fill="rgba(246,248,249,.5)" font-size="11" font-family="Inter Tight" text-anchor="middle">${d}</text>`;
+    }).join("");
+})();
+
+/* ═══ CHART SHEET — candles + selectable indicators ═══ */
+const sheet = document.getElementById("sheet");
+const IND = { vwap: true, ema9: true, ema21: false, levels: false, rsi: false };
+let chartSym = "TSLA", candles = [], chartPx = 0, chartChg = 0, chartTimer = null;
+
+function genCandles(n = 90) {
+  let p = 100 + Math.random() * 500; const out = [];
+  for (let i = 0; i < n; i++) {
+    const drift = (Math.random() - 0.52) * p * 0.004;
+    const o = p, c = p + drift;
+    out.push({ o, c, h: Math.max(o, c) + Math.random() * p * .0018, l: Math.min(o, c) - Math.random() * p * .0018, v: 500 + Math.random() * 1500 });
+    p = c;
+  }
+  return out;
+}
+function ema(vals, k) { let e = vals[0]; return vals.map(v => (e = v * (2/(k+1)) + e * (1 - 2/(k+1)))); }
+function drawChart() {
+  const svg = document.getElementById("chartsvg");
+  const W = 1200, mainH = IND.rsi ? 330 : 430, H = 460;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const closes = candles.map(c => c.c);
+  const lo = Math.min(...candles.map(c => c.l)), hi = Math.max(...candles.map(c => c.h)), rg = hi - lo || 1;
+  const X = i => (i / (candles.length - 1)) * (W - 70) + 10;
+  const Y = v => 14 + (1 - (v - lo) / rg) * (mainH - 28);
+  let g = "";
+  /* grid + right axis */
+  for (let i = 0; i <= 4; i++) {
+    const v = lo + rg * i / 4, y = Y(v);
+    g += `<line x1="0" y1="${y}" x2="${W-62}" y2="${y}" stroke="rgba(220,228,233,.07)" stroke-width="1"/>
+          <text x="${W-56}" y="${y+4}" fill="rgba(246,248,249,.4)" font-size="12" font-family="Inter Tight">${v.toFixed(2)}</text>`;
+  }
+  /* candles */
+  const cw = Math.max(2, (W - 80) / candles.length * 0.55);
+  candles.forEach((c, i) => {
+    const x = X(i), up = c.c >= c.o, col = up ? "var(--green)" : "var(--red)";
+    g += `<line x1="${x}" y1="${Y(c.h)}" x2="${x}" y2="${Y(c.l)}" stroke="${col}" stroke-width="1" opacity=".85"/>
+          <rect x="${x - cw/2}" y="${Y(Math.max(c.o,c.c))}" width="${cw}" height="${Math.max(1, Math.abs(Y(c.o)-Y(c.c)))}" fill="${col}" opacity="${up ? .95 : .8}"/>`;
+  });
+  const line = (vals, col, dash = "") =>
+    `<polyline points="${vals.map((v,i) => `${X(i)},${Y(v)}`).join(" ")}" fill="none" stroke="${col}" stroke-width="1.4" ${dash ? `stroke-dasharray="${dash}"` : ""} opacity=".9"/>`;
+  if (IND.vwap) { const vw = closes.map((_, i) => closes.slice(0, i+1).reduce((a,b) => a+b, 0) / (i+1)); g += line(vw, "#8d949b", "5 4"); }
+  if (IND.ema9)  g += line(ema(closes, 9), "#e6eaed");
+  if (IND.ema21) g += line(ema(closes, 21), "#6f767d");
+  if (IND.levels) {
+    g += `<line x1="0" y1="${Y(hi)}" x2="${W-62}" y2="${Y(hi)}" stroke="var(--green)" stroke-width="1" stroke-dasharray="2 5" opacity=".7"/>
+          <line x1="0" y1="${Y(lo)}" x2="${W-62}" y2="${Y(lo)}" stroke="var(--red)" stroke-width="1" stroke-dasharray="2 5" opacity=".7"/>
+          <text x="6" y="${Y(hi)-5}" fill="var(--green)" font-size="11" font-family="Inter Tight" letter-spacing="2">HOD</text>
+          <text x="6" y="${Y(lo)+14}" fill="var(--red)" font-size="11" font-family="Inter Tight" letter-spacing="2">LOD</text>`;
+  }
+  if (IND.rsi) {
+    const rTop = mainH + 26, rH = H - rTop - 8;
+    let gains = 0, losses = 0; const rsi = closes.map((c, i) => {
+      if (i === 0) return 50;
+      const ch = c - closes[i-1]; gains = (gains * 13 + Math.max(ch, 0)) / 14; losses = (losses * 13 + Math.max(-ch, 0)) / 14;
+      return losses === 0 ? 100 : 100 - 100 / (1 + gains / losses);
+    });
+    const RY = v => rTop + (1 - v / 100) * rH;
+    g += `<text x="10" y="${rTop - 8}" fill="rgba(246,248,249,.45)" font-size="11" font-family="Inter Tight" letter-spacing="2">RSI 14</text>
+          <line x1="0" y1="${RY(70)}" x2="${W-62}" y2="${RY(70)}" stroke="rgba(255,90,77,.35)" stroke-width="1" stroke-dasharray="2 5"/>
+          <line x1="0" y1="${RY(30)}" x2="${W-62}" y2="${RY(30)}" stroke="rgba(46,224,106,.35)" stroke-width="1" stroke-dasharray="2 5"/>
+          <polyline points="${rsi.map((v,i) => `${X(i)},${RY(v)}`).join(" ")}" fill="none" stroke="#b3bac0" stroke-width="1.3"/>`;
+  }
+  svg.innerHTML = g;
+}
+function openChart(sym) {
+  chartSym = sym; candles = genCandles();
+  chartPx = candles[candles.length-1].c; chartChg = (chartPx / candles[0].o - 1) * 100;
+  document.getElementById("sh-sym").textContent = sym;
+  updateSheetHead(); drawChart();
+  sheet.classList.add("open");
+  clearInterval(chartTimer);
+  chartTimer = setInterval(() => {   /* live candle painting */
+    const last = candles[candles.length-1];
+    const prev = last.c;
+    last.c = +(last.c * (1 + (Math.random()-.5) * .0015)).toFixed(2);
+    last.h = Math.max(last.h, last.c); last.l = Math.min(last.l, last.c);
+    if (Math.random() < .12) { candles.push({ o: last.c, c: last.c, h: last.c, l: last.c, v: 600 }); candles.shift(); }
+    chartPx = last.c; chartChg = (chartPx / candles[0].o - 1) * 100;
+    updateSheetHead(flash ? (last.c > prev ? "up" : "dn") : null);
+    drawChart();
+  }, 1000);
+}
+function updateSheetHead(dir) {
+  const px = document.getElementById("sh-px"), chg = document.getElementById("sh-chg");
+  px.textContent = "$" + fmt(chartPx);
+  chg.textContent = sign(chartChg);
+  chg.className = "sheet-chg num " + (chartChg >= 0 ? "pos" : "neg");
+  if (dir) flash(px, dir);
+}
+document.getElementById("sh-close").addEventListener("click", () => { sheet.classList.remove("open"); clearInterval(chartTimer); });
+sheet.addEventListener("click", e => { if (e.target === sheet) { sheet.classList.remove("open"); clearInterval(chartTimer); } });
+document.querySelectorAll("#ind button").forEach(b => b.addEventListener("click", () => {
+  b.classList.toggle("on"); IND[b.dataset.ind] = b.classList.contains("on"); drawChart();
+}));
+document.querySelectorAll("#tf button").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll("#tf button").forEach(x => x.classList.remove("on"));
+  b.classList.add("on"); candles = genCandles(); drawChart();
+}));
+</script>
+</body>
+</html>
