@@ -265,10 +265,10 @@ export function AlertsCommandCenter({
 
       <div className="acc-list-header" style={{ marginBottom: 10 }}>
         <span className="muted text-sm">Type a ticker to open its chart anytime.</span>
-        <div className="btn-row gap-2" style={{ alignItems: "center" }}>
+        <div className="btn-row gap-2 alerts-chart-open" style={{ alignItems: "center" }}>
           <input
             className="input-sm"
-            style={{ width: 88 }}
+            style={{ width: 112 }}
             placeholder="e.g. NVDA"
             value={chartTicker}
             onChange={(e) => setChartTicker(e.target.value.toUpperCase())}
@@ -430,7 +430,7 @@ export function AlertsCommandCenter({
       <>
       <div className="acc-list-header">
         <span className="muted text-sm">Newest first · Callout = BUY / WATCH · mini chart = today</span>
-        <div className="btn-row gap-2">
+        <div className="btn-row gap-2 alerts-list-actions">
           <button
             type="button"
             className={`pill btn btn-xs${paused ? " btn-primary" : ""}`}
