@@ -5,11 +5,54 @@ import {
   parseAggregates,
   parseOptionsSnapshot,
   fetchOptionChain,
+  normalizeDayChangePercent,
+  isRecapNoiseSymbol,
 } from "../lib/polygon-provider.js";
+
+test("normalizeDayChangePercent uses session move when prev close is a spin-off stub", () => {
+  const pct = normalizeDayChangePercent({
+    price: 36.6,
+    dayOpen: 35.5,
+    prevClose: 6.59,
+    changePercent: 455.39,
+  });
+  assert.ok(Math.abs(pct - 3.1) < 0.15);
+});
+
+test("normalizeDayChangePercent keeps regular prev-close day change", () => {
+  const pct = normalizeDayChangePercent({
+    price: 13.84,
+    dayOpen: 9.59,
+    prevClose: 7,
+    changePercent: 107.86,
+  });
+  assert.ok(Math.abs(pct - 97.71) < 0.2);
+});
+
+test("isRecapNoiseSymbol flags warrants and class shares", () => {
+  assert.equal(isRecapNoiseSymbol("ONFOW", 0.02), true);
+  assert.equal(isRecapNoiseSymbol("TE.WS", 0.01), true);
+  assert.equal(isRecapNoiseSymbol("CLRO", 14.55), false);
+  assert.equal(isRecapNoiseSymbol("MFP", 36.6), false);
+});
+
+test("parseSnapshotTickers uses session close for day change when last trade is extended", () => {
+  const [clro] = parseSnapshotTickers([
+    {
+      ticker: "CLRO",
+      lastTrade: { p: 14.55 },
+      day: { o: 9.59, c: 13.84, v: 1e7 },
+      prevDay: { c: 7 },
+      todaysChangePerc: 107.86,
+    },
+  ]);
+  assert.ok(Math.abs(clro.changePercent - 97.71) < 0.2);
+  assert.equal(clro.price, 14.55);
+});
 
 test("parseSnapshotTickers normalizes and falls back through price sources", () => {
   const out = parseSnapshotTickers([
-    { ticker: "aapl", lastTrade: { p: 190.5 }, day: { v: 1e6 }, todaysChangePerc: 1.2, todaysChange: 2.3 },
+    { ticker: "aapl", lastTrade: { p: 190.5 }, day: { o: 188, v: 1e6 }, prevDay: { c: 188.2 }, todaysChangePerc: 1.2, todaysChange: 2.3 },
     { ticker: "MSFT", min: { c: 410, av: 5e5 }, day: {} },
     { notATicker: true },
     null,
@@ -17,7 +60,7 @@ test("parseSnapshotTickers normalizes and falls back through price sources", () 
   assert.equal(out.length, 2);
   assert.equal(out[0].symbol, "AAPL");
   assert.equal(out[0].price, 190.5);
-  assert.equal(out[0].changePercent, 1.2);
+  assert.ok(Math.abs(out[0].changePercent - 1.22) < 0.1);
   assert.equal(out[1].price, 410); // min.c fallback
 });
 

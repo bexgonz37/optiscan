@@ -24,7 +24,7 @@
  * nothing beyond the single shared snapshot call.
  */
 
-import { fetchBulkQuotes, fetchCandles, fetchOptionChain, fetchTopMovers } from "@/lib/polygon-provider";
+import { fetchBulkQuotes, fetchCandles, fetchOptionChain, fetchTopMovers, isRecapNoiseSymbol } from "@/lib/polygon-provider";
 import { vwap as sessionVwap, sessionBars, relativeVolume } from "@/lib/momentum-signals";
 import {
   acceleration, volumeSurge, pathEfficiency, detectLevels, directionRead,
@@ -123,8 +123,9 @@ async function refreshClosedRecap(nowMs: number) {
   const seen = new Set<string>();
   const quotes = [...(gainers?.quotes ?? []), ...(losers?.quotes ?? [])].filter((q: any) => {
     if (!q?.symbol || seen.has(q.symbol)) return false;
+    if (isRecapNoiseSymbol(q.symbol, q.price)) return false;
     seen.add(q.symbol);
-    return q.price != null;
+    return q.price != null && q.changePercent != null;
   });
   quotes.sort((a: any, b: any) => Math.abs(b.changePercent ?? 0) - Math.abs(a.changePercent ?? 0));
   s.tape = quotes.slice(0, 40).map((q: any) => ({
