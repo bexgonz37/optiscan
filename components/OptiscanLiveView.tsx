@@ -354,7 +354,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
   const liveTapeLead = useMemo((): TapeRow | null => {
     if (scope === "options") return null;
     if (liveSession === "closed" || streamFresh === "red") return null;
-    const pool = scope === "options" ? coreTapeRows : scannedRows;
+    const pool = scannedRows; // scope === "options" already returned above
     const best = pool
       .filter((r) => tapeSpeed(r) >= MIN_SPEED_PCT_PER_MIN * 0.85)
       .sort((a, b) => tapeSpeed(b) - tapeSpeed(a))[0] ?? null;
@@ -661,7 +661,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
 
       {displayRows.length && scope !== "options" ? (
         <div className="hot-names-row" aria-label="Runners speed board">
-          <span className="hot-names-label">{scope === "options" ? "0DTE universe movers" : "Runners"} · click for chart</span>
+          <span className="hot-names-label">Runners · click for chart</span>
           {displayRows.filter((r) => !r.core).slice(0, 8).map((r) => (
             <button
               key={r.symbol}
@@ -689,7 +689,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
         </p>
       ) : null}
 
-      {scope !== "options" ? (
+      {scope !== "options" ? (<>
       <div className="section-head scanner-head">
         <span className="section-title">Scanners</span>
         <span className="section-head-actions">
@@ -741,7 +741,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
           </div>
         ))}
       </div>
-      ) : null}
+      </>) : null}
 
       <div className="section-head">
         <span className="section-title">{scope === "options" ? "Discord callouts today" : "Recent callouts"}</span>

@@ -49,6 +49,12 @@ const DISCOVERY_TOP_N = Number(process.env.SCANNER_DISCOVERY_TOP_N ?? 12);
 const PROMOTION_MS = Number(process.env.SCANNER_PROMOTION_MS ?? 5 * 60_000);
 const DISCOVERY_MIN_VOLUME = Number(process.env.SCANNER_DISCOVERY_MIN_VOLUME ?? 100_000);
 const TAPE_ENRICH_MS = Number(process.env.SCANNER_TAPE_ENRICH_MS ?? 30_000);
+// When a trigger's capture returns null (SKIP tier / dedup) the full cooldown
+// is intentionally NOT consumed (so an improving setup can still fire), but a
+// short retry window is required: with no cooldown at all, a hot symbol that
+// keeps SKIPping re-triggers EVERY TICK, each with a chain fetch — a 1/s
+// quota burn. 45s caps that at ~1 fetch/min/symbol.
+const SKIP_RETRY_COOLDOWN_MS = Number(process.env.SCANNER_SKIP_RETRY_COOLDOWN_MS ?? 45_000);
 const RING_MAX = 360; // ~6 minutes of 1s ticks
 
 interface Tick { t: number; p: number; v: number }
@@ -257,6 +263,8 @@ async function handleStockTrigger(ticker: string, st: SymState, read: any, quote
     st.lastAlertAt = nowMs;
     st.stockCooldownUntil = nowMs + cooldownMs;
     s.alerts++;
+  } else {
+    st.stockCooldownUntil = Math.max(st.stockCooldownUntil, nowMs + SKIP_RETRY_COOLDOWN_MS);
   }
 }
 
@@ -275,7 +283,11 @@ async function handleTrigger(ticker: string, st: SymState, read: any, quote: any
     }
   }
   st.prefetchedChain = null;
-  if (!chain?.available) return;
+  if (!chain?.available) {
+    // Provider hiccup — short retry window, not a 1/s chain-fetch hammer.
+    st.optionsCooldownUntil = Math.max(st.optionsCooldownUntil, nowMs + SKIP_RETRY_COOLDOWN_MS);
+    return;
+  }
 
   const minsToClose = minutesToClose(nowMs);
   const expRemainPct = expectedRemainingMovePct({ shortRate: read.accelRead.shortRate ?? 0, minsToClose });
@@ -299,6 +311,8 @@ async function handleTrigger(ticker: string, st: SymState, read: any, quote: any
     st.lastOptionsAlertAt = nowMs;
     st.optionsCooldownUntil = nowMs + cooldownMs;
     s.alerts++;
+  } else {
+    st.optionsCooldownUntil = Math.max(st.optionsCooldownUntil, nowMs + SKIP_RETRY_COOLDOWN_MS);
   }
 }
 
