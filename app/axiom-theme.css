@@ -359,6 +359,334 @@
   background: linear-gradient(180deg, rgba(11, 20, 31, 0.74), rgba(7, 12, 20, 0.68));
 }
 
+/* Secondary pages (alerts, settings) */
+.axiom-terminal .page-deck {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 2px 5rem;
+  max-width: 1180px;
+}
+
+.axiom-terminal .page-deck-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.axiom-terminal .page-deck-foot {
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(70, 180, 232, 0.1);
+  font-family: var(--font-mono);
+}
+
+.axiom-terminal .axiom-alert-banner {
+  border: 1px solid rgba(255, 184, 77, 0.35);
+  background: rgba(255, 184, 77, 0.06);
+  border-radius: 4px;
+  padding: 10px 14px;
+}
+
+.axiom-terminal .axiom-alert-banner .label {
+  color: #ffb84d;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.axiom-terminal .acc-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.axiom-terminal .acc-tabs .pill.btn-primary {
+  background: rgba(32, 227, 154, 0.16);
+  color: #2ff0a6;
+  border-color: rgba(47, 240, 166, 0.35);
+}
+
+.axiom-terminal .alerts-tab-header,
+.axiom-terminal .settings-page-header {
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: 640px;
+}
+
+.axiom-terminal .settings-status-msg {
+  font-family: var(--font-mono);
+  color: #2ff0a6;
+}
+
+.axiom-terminal .axiom-acc-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.axiom-terminal .acc-hero {
+  padding: 16px 18px;
+}
+
+.axiom-terminal .acc-hero-score {
+  font-family: var(--font-display);
+  font-size: clamp(1.8rem, 4vw, 2.6rem);
+  line-height: 1.1;
+  background: var(--display-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.axiom-terminal .acc-hero-score em {
+  font-style: normal;
+}
+
+.axiom-terminal .acc-hero-score span {
+  display: block;
+  font-size: 0.45em;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin-top: 6px;
+}
+
+.axiom-terminal .acc-hero-sub {
+  margin: 10px 0 0;
+  max-width: 620px;
+  color: var(--soft);
+  line-height: 1.6;
+  font-size: 13px;
+}
+
+.axiom-terminal .acc-payback-row {
+  display: flex;
+  gap: 2rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.axiom-terminal .acc-payback-legend {
+  display: grid;
+  gap: 0.75rem;
+  font-size: 13px;
+}
+
+.axiom-terminal .acc-breakdown-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.axiom-terminal .acc-breakdown-row {
+  display: grid;
+  grid-template-columns: 5rem minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(70, 180, 232, 0.1);
+  font-size: 13px;
+}
+
+.axiom-terminal .acc-bar-track {
+  height: 3px;
+  background: rgba(70, 180, 232, 0.12);
+  position: relative;
+}
+
+.axiom-terminal .acc-bar-track i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: #20e39a;
+}
+
+.axiom-terminal .acc-foot {
+  margin-top: 12px;
+}
+
+.axiom-terminal .acc-perf-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(240px, 0.8fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.axiom-terminal .axiom-share-card {
+  border: 1px solid rgba(70, 180, 232, 0.2);
+  border-radius: 4px;
+  background: linear-gradient(145deg, rgba(11, 20, 31, 0.9), rgba(7, 12, 20, 0.85));
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 220px;
+}
+
+.axiom-terminal .axiom-share-empty {
+  justify-content: center;
+}
+
+.axiom-terminal .axiom-share-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.axiom-terminal .axiom-share-badge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  color: #2ff0a6;
+  border: 1px solid rgba(47, 240, 166, 0.35);
+  padding: 3px 8px;
+  border-radius: 2px;
+}
+
+.axiom-terminal .axiom-share-discord {
+  font-size: 10px;
+  color: #46b4e8;
+  font-family: var(--font-mono);
+}
+
+.axiom-terminal .axiom-share-ticker {
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  color: #c3e4f4;
+}
+
+.axiom-terminal .axiom-share-side {
+  margin-left: 8px;
+  font-size: 0.55em;
+  letter-spacing: 0.12em;
+}
+
+.axiom-terminal .axiom-share-side.bull { color: #2ff0a6; }
+.axiom-terminal .axiom-share-side.bear { color: #ff5162; }
+
+.axiom-terminal .axiom-share-ret {
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+.axiom-terminal .axiom-kpis .kpi,
+.axiom-terminal .page-deck .kpi {
+  border: 1px solid rgba(70, 180, 232, 0.15);
+  border-radius: 4px;
+  background: linear-gradient(180deg, rgba(11, 20, 31, 0.74), rgba(7, 12, 20, 0.68));
+}
+
+.axiom-terminal .page-deck .panel.main,
+.axiom-terminal .page-deck .axiom-panel {
+  border: 1px solid rgba(70, 180, 232, 0.15);
+  border-radius: 4px;
+  background: linear-gradient(180deg, rgba(11, 20, 31, 0.74), rgba(7, 12, 20, 0.68));
+}
+
+.axiom-terminal .page-deck .panel.main h2,
+.axiom-terminal .page-deck .settings-panel h2 {
+  font-family: var(--font-display);
+  color: #c3e4f4;
+  font-size: 14px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.axiom-terminal .page-deck .toolbar h2 {
+  font-family: var(--font-display);
+  color: #c3e4f4;
+}
+
+.axiom-terminal .page-deck .tablewrap table {
+  font-size: 12px;
+}
+
+.axiom-terminal .page-deck .tablewrap th {
+  color: var(--dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-bottom-color: rgba(70, 180, 232, 0.15);
+}
+
+.axiom-terminal .page-deck .tablewrap td {
+  border-bottom-color: rgba(70, 180, 232, 0.08);
+}
+
+.axiom-terminal .page-deck .acc-charts-grid {
+  gap: 12px;
+}
+
+.axiom-terminal .page-deck .acc-chart-panel {
+  border: 1px solid rgba(70, 180, 232, 0.12);
+  border-radius: 4px;
+  background: rgba(5, 8, 15, 0.5);
+}
+
+.axiom-terminal .page-deck .acc-chart-title {
+  font-family: var(--font-mono);
+  color: var(--dim);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.axiom-terminal .page-deck .settings-grid {
+  gap: 12px;
+}
+
+.axiom-terminal .page-deck .settings-row {
+  border-bottom-color: rgba(70, 180, 232, 0.1);
+}
+
+.axiom-terminal .page-deck .btn-toggle.on {
+  background: rgba(32, 227, 154, 0.16);
+  color: #2ff0a6;
+  border-color: rgba(47, 240, 166, 0.35);
+}
+
+.axiom-terminal .page-deck .system-explanation-section {
+  margin-top: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.axiom-terminal .page-deck .system-explanation-title {
+  font-family: var(--font-display);
+  color: #c3e4f4;
+}
+
+.axiom-terminal .page-deck .system-explanation-heading {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #46b4e8;
+}
+
+.axiom-terminal .acc-command-wrap .acc-list-header {
+  margin-top: 8px;
+}
+
+.axiom-terminal .acc-session-recap {
+  border: 1px solid rgba(70, 180, 232, 0.15);
+  border-radius: 4px;
+  padding: 12px;
+  background: rgba(7, 12, 20, 0.5);
+}
+
+@media (max-width: 900px) {
+  .axiom-terminal .acc-breakdown-grid,
+  .axiom-terminal .acc-perf-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 .axiom-terminal .ringnum.bear {
   text-shadow: 0 0 24px rgba(255, 81, 98, 0.4);
 }

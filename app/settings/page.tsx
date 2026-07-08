@@ -7,7 +7,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { scanHeaders, requestNotifyPermission } from "@/hooks/useScanner";
 import { invalidateLanguageMode } from "@/hooks/useLanguageMode";
-import { AppNav } from "@/components/AppNav";
 import { HelpSection } from "@/components/HelpSection";
 import { loadDashboardPrefs, saveDashboardPrefs } from "@/lib/dashboard-prefs";
 
@@ -135,15 +134,16 @@ export default function SettingsPage() {
   );
 
   return (
-    <div className="app">
-      <AppNav status={msg ? [{ label: msg }] : undefined} />
-
-      <div className="settings-page-header muted">
-        Notifications and speed thresholds. Help and how the scanner works are at the bottom.
+    <div className="page-deck">
+      <div className="page-deck-toolbar">
+        <div className="settings-page-header muted">
+          Notifications and speed thresholds. Help and how the scanner works are at the bottom.
+        </div>
+        {msg ? <span className="settings-status-msg muted text-xs">{msg}</span> : null}
       </div>
 
       <div className="settings-grid">
-        <div className="panel main settings-panel">
+        <div className="panel main settings-panel axiom-panel">
           <h2>Dashboard</h2>
           <p className="settings-desc">0DTE fast-mover callouts — speed and volume gates for BUY CALL/PUT signals.</p>
 
@@ -255,7 +255,7 @@ export default function SettingsPage() {
           ) : null}
         </div>
 
-        <div className="panel main settings-panel">
+        <div className="panel main settings-panel axiom-panel">
           <h2>Discord</h2>
           <p className="settings-desc">
             Webhook in <code>.env.local</code> only — never exposed to the browser.
@@ -295,7 +295,7 @@ export default function SettingsPage() {
         <HelpSection />
       </div>
 
-      <div className="footer">Settings · alerts are research signals, never recommendations · not financial advice</div>
+      <div className="page-deck-foot muted text-xs">Settings · alerts are research signals, never recommendations · not financial advice</div>
     </div>
   );
 }

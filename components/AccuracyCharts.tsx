@@ -33,11 +33,11 @@ export interface AccuracyChartData {
   bySide?: { side: string; total: number; wins: number; losses: number }[];
 }
 
-const GREEN = "rgba(80, 200, 120, 0.85)";
-const RED = "rgba(255, 100, 100, 0.85)";
-const AMBER = "rgba(255, 176, 32, 0.85)";
-const BLUE = "rgba(100, 160, 255, 0.85)";
-const MUTED = "rgba(120, 140, 160, 0.5)";
+const GREEN = "#20e39a";
+const RED = "#ff5162";
+const AMBER = "#ffb84d";
+const BLUE = "#46b4e8";
+const MUTED = "rgba(70, 180, 232, 0.18)";
 
 function fmtDay(day: string) {
   const d = day.slice(5);

@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 
 const ITEMS = [
   { href: "/", label: "Live", icon: "◎" },
-  { href: "/alerts", label: "Alerts", icon: "⚡" },
+  { href: "/alerts", label: "Accuracy", icon: "⚡" },
   { href: "/settings", label: "Settings", icon: "⚙" },
 ] as const;
 

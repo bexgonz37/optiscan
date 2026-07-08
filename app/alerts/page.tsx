@@ -17,10 +17,14 @@ import { scanHeaders } from "@/hooks/useScanner";
 import { useLanguageMode } from "@/hooks/useLanguageMode";
 import { uiDirectiveLabel } from "@/lib/language-modes";
 import { useLiveTapeMap, liveCtxFor } from "@/hooks/useLiveTapeMap";
-import { AppNav } from "@/components/AppNav";
 import { AlertsCommandCenter } from "@/components/AlertsCommandCenter";
 import { openLiveChart } from "@/lib/open-chart";
 import { OptiscanAlertsDashboard } from "@/components/OptiscanAlertsDashboard";
+import { SystemExplanationSection } from "@/components/SystemExplanationSection";
+import { CalibrationChart } from "@/components/ui/CalibrationChart";
+import { EquityCurve } from "@/components/ui/EquityCurve";
+import { Panel } from "@/components/ui/Panel";
+import { ShareCard } from "@/components/ui/ShareCard";
 import { computeTradeVerdict, formatSpeedLine } from "@/lib/trade-verdict";
 import { calledAgoLabel, sideFromAlert } from "@/lib/signal-live";
 import { earlyMoveWin, pickEarlyMove, EARLY_MOVE_WIN_PCT, EARLY_ON_TRACK_MIN_PCT } from "@/lib/early-accuracy";
@@ -81,6 +85,7 @@ function AlertsPageInner() {
   const [accuracy, setAccuracy] = useState<any>(null);
   const [accFilter, setAccFilter] = useState<AccFilter>("all");
   const [journal, setJournal] = useState<JournalRow[]>([]);
+  const [performance, setPerformance] = useState<any[]>([]);
   const [lastImport, setLastImport] = useState<any>(null);
   const [importMsg, setImportMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -123,20 +128,23 @@ function AlertsPageInner() {
     if (!opts?.silent) setLoading(true);
     try {
       const headers = scanHeaders();
-      const [aRes, sRes, accRes, jRes] = await Promise.all([
+      const [aRes, sRes, accRes, jRes, pRes] = await Promise.all([
         fetch(`/api/alerts?limit=200`, { cache: "no-store", headers }),
         fetch(`/api/alerts/stats`, { cache: "no-store", headers }),
         fetch(`/api/alerts/signal-accuracy?days=14&asset=options`, { cache: "no-store", headers }),
         fetch(`/api/trade-journal`, { cache: "no-store", headers }),
+        fetch(`/api/alerts/performance?limit=500`, { cache: "no-store", headers }),
       ]);
       const a = await aRes.json();
       const s = await sRes.json();
       const acc = await accRes.json();
       const j = await jRes.json();
+      const p = await pRes.json();
       setAlerts(a.alerts ?? []);
       setStats(s.ok ? s : null);
       setAccuracy(acc.ok ? acc : null);
       setJournal(j.journal ?? []);
+      setPerformance(p.ok ? p.performance ?? [] : []);
       setLastImport(j.lastImport ?? null);
       setError(a.ok === false ? a.error : s.ok === false ? s.error : null);
     } catch (err: any) {
@@ -238,6 +246,12 @@ function AlertsPageInner() {
   );
   const accSparklines = useSparklines(accSparkSymbols);
 
+  const bestCallout = useMemo(() => {
+    const rows = accuracy?.recent ?? [];
+    if (!rows.length) return null;
+    return [...rows].sort((a: any, b: any) => (b.option_return_pct ?? -999) - (a.option_return_pct ?? -999))[0];
+  }, [accuracy]);
+
   const accKpi = (id: AccFilter, label: string, val: ReactNode, sub: string) => (
     <button
       type="button"
@@ -275,23 +289,26 @@ function AlertsPageInner() {
   }, [router]);
 
   return (
-    <div className="app chrome-app">
-      <AppNav status={[{ label: loading ? "Loading…" : `${alerts.length} alerts` }]} onRefresh={refresh} />
+    <div className="page-deck">
+      <div className="page-deck-toolbar">
+        <div className="alerts-tab-header muted">
+          {tab === "now"
+            ? (isPublic ? "Live call/put momentum watches during market hours." : "Live BUY CALL / BUY PUT callouts during market hours.")
+            : tab === "history"
+              ? "Signal accuracy — did the callouts work?"
+              : "Your trades — manual log + Robinhood CSV import."}
+        </div>
+        <button type="button" className="pill btn btn-xs" onClick={() => refresh()} disabled={loading}>
+          {loading ? "Loading…" : "Refresh"}
+        </button>
+      </div>
 
       {error && (
-        <div className="kpi" style={{ marginBottom: 16, borderColor: "var(--amber)", background: "rgba(255,176,32,.06)" }}>
-          <div className="label" style={{ color: "var(--amber)" }}>Alerts unavailable</div>
+        <div className="axiom-alert-banner">
+          <div className="label">Alerts unavailable</div>
           <div className="sub">{error} — run <code>npm install</code> (better-sqlite3) and restart.</div>
         </div>
       )}
-
-      <div className="alerts-tab-header muted">
-        {tab === "now"
-          ? (isPublic ? "Live call/put momentum watches during market hours." : "Live BUY CALL / BUY PUT callouts during market hours.")
-          : tab === "history"
-            ? "Signal accuracy — did the callouts work?"
-            : "Your trades — manual log + Robinhood CSV import."}
-      </div>
 
       <div className="acc-tabs acc-tabs-primary">
         {tabBtn("now", "Live callouts")}
@@ -300,6 +317,7 @@ function AlertsPageInner() {
       </div>
 
       {tab === "now" ? (
+        <div className="acc-command-wrap">
         <AlertsCommandCenter
           tape={tape}
           onOpenChart={openChart}
@@ -308,12 +326,21 @@ function AlertsPageInner() {
           accuracySummary={accuracy}
           onViewHistory={goHistory}
         />
+        </div>
       ) : null}
 
       {tab === "history" ? (
         <>
         <OptiscanAlertsDashboard accuracy={accuracy} />
-        <div className="kpis" style={{ marginBottom: 14, marginTop: 24 }}>
+
+        <div className="acc-perf-row">
+          <Panel title="Checkpoint calibration" meta="Avg move from alert by checkpoint">
+            <CalibrationChart rows={performance} />
+          </Panel>
+          <ShareCard alert={bestCallout} />
+        </div>
+
+        <div className="kpis axiom-kpis" style={{ marginBottom: 14, marginTop: 24 }}>
             <div className="kpi"><div className="label">Alerts today</div><div className="val num">{todayCount}</div><div className="sub">{totals?.total ?? 0} all-time</div></div>
             <div className="kpi"><div className="label">Avg signal score</div><div className="val num">{totals?.avg_signal != null ? Math.round(totals.avg_signal) : "—"}</div><div className="sub">risk {totals?.avg_risk != null ? Math.round(totals.avg_risk) : "—"} · liq {totals?.avg_liquidity != null ? Math.round(totals.avg_liquidity) : "—"}</div></div>
             <div className="kpi"><div className="label">Avg max move after alert</div><div className="val num">{stats?.avgMove?.avg_max_move != null ? `${stats.avgMove.avg_max_move.toFixed(1)}%` : "—"}</div><div className="sub">best move in your direction</div></div>
@@ -445,11 +472,20 @@ function AlertsPageInner() {
               </div>
             )}
           </div>
+
+          <SystemExplanationSection />
         </>
       ) : null}
 
       {tab === "journal" ? (
-        <div className="panel main">
+        <>
+        <div className="acc-perf-row journal-perf-row">
+          <Panel title="Equity curve" meta="Cumulative P&L from journal">
+            <EquityCurve journal={journal} />
+          </Panel>
+          <ShareCard alert={bestCallout} />
+        </div>
+        <div className="panel main axiom-panel">
           <div className="toolbar">
             <h2>Trade journal</h2>
             <div className="right" style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -526,9 +562,10 @@ function AlertsPageInner() {
             </div>
           )}
         </div>
+        </>
       ) : null}
 
-      <div className="footer">
+      <div className="page-deck-foot muted text-xs">
         Alerts · records and measures scanner output for research · not financial advice
       </div>
     </div>
