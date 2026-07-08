@@ -14,12 +14,16 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<any>(null);
   const [languageMode, setLanguageMode] = useState("private");
   const [webhookConfigured, setWebhookConfigured] = useState(false);
+  const [discordWebhooks, setDiscordWebhooks] = useState({ options: false, stocks: false, recap: false });
+  const [stockCalloutsEnabled, setStockCalloutsEnabled] = useState(false);
+  const [extendedStockNotify, setExtendedStockNotify] = useState(false);
   const [minRate, setMinRate] = useState("0.2");
   const [minSurge, setMinSurge] = useState("1.4");
   const [minAccel, setMinAccel] = useState("0");
   const [minEfficiency, setMinEfficiency] = useState("0.35");
   const [minLevelSurge, setMinLevelSurge] = useState("1.2");
   const [maxSpread, setMaxSpread] = useState("5");
+  const [stockMinScore, setStockMinScore] = useState("66");
   const [desktopAlerts, setDesktopAlerts] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [testPreview, setTestPreview] = useState<any>(null);
@@ -33,6 +37,9 @@ export default function SettingsPage() {
         setSettings(d.settings);
         setLanguageMode(d.languageMode);
         setWebhookConfigured(Boolean(d.discordWebhookConfigured));
+        setDiscordWebhooks(d.discordWebhooks ?? { options: false, stocks: false, recap: false });
+        setStockCalloutsEnabled(Boolean(d.stockCalloutsEnabled));
+        setExtendedStockNotify(Boolean(d.extendedStockNotify));
         const t = d.scannerThresholds;
         if (t) {
           setMinRate(String(t.scannerMinRatePctMin ?? 0.2));
@@ -41,6 +48,7 @@ export default function SettingsPage() {
           setMinEfficiency(String(t.scannerMinEfficiency ?? 0.35));
           setMinLevelSurge(String(t.scannerMinLevelSurge ?? 1.2));
           setMaxSpread(String(t.tradeMaxSpreadPct ?? 5));
+          setStockMinScore(String(t.stockMinScore ?? 66));
         }
       }
     } catch (e: any) {
@@ -65,6 +73,9 @@ export default function SettingsPage() {
     if (d.ok) {
       setSettings(d.settings);
       setLanguageMode(d.languageMode);
+      if (d.discordWebhooks) setDiscordWebhooks(d.discordWebhooks);
+      setStockCalloutsEnabled(Boolean(d.stockCalloutsEnabled));
+      setExtendedStockNotify(Boolean(d.extendedStockNotify));
       setMsg("Saved.");
     } else setMsg(d.error ?? "Save failed");
   }
@@ -76,10 +87,10 @@ export default function SettingsPage() {
     setMsg(d.ok ? "Test payloads rendered below." : d.error ?? "Test failed");
   }
 
-  async function testDiscord() {
-    const res = await fetch("/api/notifications/discord/test", { method: "POST", headers: scanHeaders() });
+  async function testDiscord(kind: "options" | "stocks") {
+    const res = await fetch(`/api/notifications/discord/test?kind=${kind}`, { method: "POST", headers: scanHeaders() });
     const d = await res.json();
-    setMsg(d.ok ? "Discord test sent." : d.error ?? "Discord test failed");
+    setMsg(d.ok ? `Discord ${kind} test sent.` : d.error ?? "Discord test failed");
   }
 
   async function toggleDesktopAlerts() {
@@ -179,6 +190,7 @@ export default function SettingsPage() {
             <span className="settings-desc" style={{ margin: 0 }}>x · Accel &gt;</span>
             <input className="input-sm" style={{ width: 64 }} value={minAccel} onChange={(e) => setMinAccel(e.target.value)} />
           </div>
+
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
             <span className="settings-desc" style={{ margin: 0 }}>Efficiency ≥</span>
             <input className="input-sm" style={{ width: 64 }} value={minEfficiency} onChange={(e) => setMinEfficiency(e.target.value)} />
@@ -209,6 +221,22 @@ export default function SettingsPage() {
             </button>
           </div>
 
+          <h2>Market momentum</h2>
+          <p className="settings-desc">
+            Shares-only LONG/SHORT callouts in premarket, regular hours, and after-hours. Engine: {stockCalloutsEnabled ? "enabled" : "disabled — set STOCK_CALLOUTS=1"}.
+          </p>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+            <span className="settings-desc" style={{ margin: 0 }}>Stock score ≥</span>
+            <input aria-label="Minimum stock callout score" className="input-sm" style={{ width: 64 }} value={stockMinScore} onChange={(e) => setStockMinScore(e.target.value)} />
+            <button type="button" className="btn-primary" onClick={() => patch({ stockMinScore: Number(stockMinScore) })}>Save stock threshold</button>
+          </div>
+          <div className="settings-row">
+            <div className="settings-row-label">Extended-hours Discord<div className="settings-row-hint">Allow stock BUYs in premarket and after-hours</div></div>
+            <button type="button" className={`btn-toggle${extendedStockNotify ? " on" : ""}`} onClick={() => patch({ extendedStockNotify: !extendedStockNotify })}>
+              {extendedStockNotify ? "On" : "Off"}
+            </button>
+          </div>
+
           <h2>Notifications</h2>
           <Toggle label="Browser popups" field="browser_popup_enabled" hint="Popup cards with Watch / Journal / Snooze" />
           <Toggle label="Desktop notifications" field="desktop_notification_enabled" hint="Works with popup alerts from the scanner" />
@@ -234,6 +262,11 @@ export default function SettingsPage() {
               {webhookConfigured ? "configured" : "not configured"}
             </strong>
           </p>
+          <div className="discord-channel-status">
+            <div><span>Options</span><strong className={discordWebhooks.options ? "pos" : "muted"}>{discordWebhooks.options ? "connected" : "missing"}</strong></div>
+            <div><span>Stocks</span><strong className={discordWebhooks.stocks ? "pos" : "muted"}>{discordWebhooks.stocks ? "connected" : "missing"}</strong></div>
+            <div><span>Recap</span><strong className={discordWebhooks.recap ? "pos" : "muted"}>{discordWebhooks.recap ? "connected" : "optional"}</strong></div>
+          </div>
           <Toggle label="Discord alerts" field="discord_enabled" hint="Auto-send BUY CALL/PUT when TRADE fires (needs webhook in .env.local)" />
           {settings?.discord_enabled ? (
             <p className="settings-desc" style={{ color: "var(--green)", marginTop: 8 }}>
@@ -249,10 +282,9 @@ export default function SettingsPage() {
               Locked
             </span>
           </div>
-          <div style={{ marginTop: 12 }}>
-            <button type="button" className="btn-primary" onClick={testDiscord}>
-              Send Discord test
-            </button>
+          <div className="btn-row" style={{ marginTop: 12 }}>
+            <button type="button" className="btn-primary" onClick={() => testDiscord("options")}>Test options webhook</button>
+            <button type="button" className="btn-primary" onClick={() => testDiscord("stocks")}>Test stocks webhook</button>
           </div>
         </div>
       </div>

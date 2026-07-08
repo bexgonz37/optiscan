@@ -280,6 +280,8 @@ export function listAlerts(f: AlertFilters = {}) {
     SELECT a.*,
       (SELECT p.percent_move_from_alert FROM alert_performance p WHERE p.alert_id=a.id AND p.checkpoint='5m') AS move_5m,
       (SELECT s.mid FROM options_snapshots s WHERE s.alert_id=a.id AND s.checkpoint='alert' AND s.mid>0 LIMIT 1) AS entry_mid,
+      (SELECT s.spread_pct FROM options_snapshots s WHERE s.alert_id=a.id AND s.checkpoint='alert' LIMIT 1) AS entry_spread_pct,
+      (SELECT s.delta FROM options_snapshots s WHERE s.alert_id=a.id AND s.checkpoint='alert' LIMIT 1) AS entry_delta,
       (SELECT s.mid FROM options_snapshots s WHERE s.alert_id=a.id AND s.checkpoint IN ('live','eod') AND s.mid>0 ORDER BY s.taken_at DESC LIMIT 1) AS live_option_mid,
       (SELECT MAX(s.mid) FROM options_snapshots s WHERE s.alert_id=a.id AND s.checkpoint IN ('live','eod') AND s.mid>0) AS best_mid,
       (SELECT max_percent_move_after_alert FROM alert_performance p WHERE p.alert_id=a.id ORDER BY p.checked_at DESC LIMIT 1) AS latest_max_move,

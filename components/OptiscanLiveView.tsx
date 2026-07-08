@@ -20,11 +20,11 @@ const TICK_FLASH_MS = 900;
 
 type ScannerColumn = { title: string; rows: TapeRow[] };
 type StripItem = { k: string; v: string | number; s: string };
-type LiveSortKey = Extract<WatchSortKey, "speed" | "volume" | "move" | "level" | "symbol">;
+type LiveSortKey = Extract<WatchSortKey, "speed" | "surge" | "move" | "level" | "symbol">;
 
 const SORTS: { key: LiveSortKey; label: string }[] = [
   { key: "speed", label: "Speed" },
-  { key: "volume", label: "Volume" },
+  { key: "surge", label: "Volume surge" },
   { key: "move", label: "% move" },
   { key: "level", label: "Level break" },
   { key: "symbol", label: "Symbol" },
@@ -72,11 +72,14 @@ function whyLine(r: TapeRow, scope: Scope): string {
   return `${speed} · vol ${r.surge != null ? `${r.surge.toFixed(1)}×` : "—"}`;
 }
 
-function buildColumns(displayRows: TapeRow[], sortLabel: string): ScannerColumn[] {
+function buildColumns(displayRows: TapeRow[], sortLabel: string, scope: Scope): ScannerColumn[] {
+  const titles = scope === "options"
+    ? [`${sortLabel} underlyings`, "Volume-confirmed", "Best entries forming"]
+    : [`${sortLabel} movers`, "Volume surges", "Level breaks"];
   return [
-    { title: `${sortLabel} leaders`, rows: displayRows.slice(0, 5) },
-    { title: "Next up", rows: displayRows.slice(5, 10) },
-    { title: "On deck", rows: displayRows.slice(10, 15) },
+    { title: titles[0], rows: displayRows.slice(0, 5) },
+    { title: titles[1], rows: displayRows.slice(5, 10) },
+    { title: titles[2], rows: displayRows.slice(10, 15) },
   ];
 }
 
@@ -128,7 +131,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
   onOpenChart?: (symbol: string) => void;
   onLoopStatus?: (running: boolean) => void;
 }) {
-  const [scope, setScope] = useState<Scope>("market");
+  const [scope, setScope] = useState<Scope>("options");
   const [sortKey, setSortKey] = useState<LiveSortKey>("speed");
   const [hovering, setHovering] = useState(false);
   const [holdPinned, setHoldPinned] = useState(false);
@@ -142,8 +145,9 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
   const readingHold = hovering || holdPinned;
 
   useEffect(() => {
-    const saved = loadDashboardPrefs().liveSort;
-    if (saved && SORTS.some((sort) => sort.key === saved)) setSortKey(saved);
+    const saved = loadDashboardPrefs();
+    if (saved.liveSort && SORTS.some((sort) => sort.key === saved.liveSort)) setSortKey(saved.liveSort);
+    if (saved.liveScope === "market" || saved.liveScope === "options") setScope(saved.liveScope);
   }, []);
 
   useEffect(() => { onLoopStatus?.(Boolean(loop?.running)); }, [loop?.running, onLoopStatus]);
@@ -156,14 +160,16 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
         const d = await res.json();
         const now = Date.now();
         const alerts = (d.alerts ?? []) as any[];
-        const trades = alerts.filter((a) => a.capture_action === "TRADE" && a.asset_class !== "stock");
+        const isCurrentProduct = (a: any) => scope === "market" ? a.asset_class === "stock" : a.asset_class !== "stock";
+        const productAlerts = alerts.filter(isCurrentProduct);
+        const trades = productAlerts.filter((a) => a.capture_action === "TRADE");
         trades.sort((a, b) => b.id - a.id);
         const fresh = trades.find((a) => {
           const t = Date.parse(a.alert_time ?? "");
-          return Number.isFinite(t) && now - t < 5 * 60_000;
+          return Number.isFinite(t) && now - t < (scope === "market" ? 10 : 5) * 60_000;
         });
         if (!cancelled) setHeroAlert(fresh ?? trades[0] ?? null);
-        const earlier = alerts.filter((a) => {
+        const earlier = productAlerts.filter((a) => {
           const t = Date.parse(a.alert_time ?? "");
           return Number.isFinite(t) && now - t > 15 * 60_000;
         }).slice(0, 8);
@@ -173,7 +179,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
     poll();
     const id = setInterval(poll, 5000);
     return () => { cancelled = true; clearInterval(id); };
-  }, []);
+  }, [scope]);
 
   const rows = useMemo(() => {
     const now = Date.now();
@@ -202,16 +208,25 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
   );
 
   const sortLabel = SORTS.find((s) => s.key === sortKey)?.label ?? "Speed";
-  const liveColumns = useMemo(() => buildColumns(displayRows, sortLabel), [displayRows, sortLabel]);
+  const liveColumns = useMemo(() => buildColumns(displayRows, sortLabel, scope), [displayRows, sortLabel, scope]);
   const liveStrip = useMemo(() => buildStrip(displayRows, scope, loop, tape.length), [displayRows, scope, loop, tape.length]);
   const calmStrip = useSampledSnapshot(liveStrip, 5000, `${scope}-${sortKey}`);
   const holdKey = `${scope}-${readingHold ? "hold" : "live"}`;
   const columns = useFrozenSnapshot(liveColumns, readingHold, holdKey);
   const strip = useFrozenSnapshot(calmStrip, readingHold, holdKey);
 
-  const heroVerdict = heroAlert ? frozenCalloutVerdict(heroAlert, liveCtxFor(tapeMap, heroAlert.ticker)) : null;
+  const heroVerdict = scope === "options" && heroAlert ? frozenCalloutVerdict(heroAlert, liveCtxFor(tapeMap, heroAlert.ticker)) : null;
   const heroSide = String(heroAlert?.option_side ?? "").toLowerCase().startsWith("p") ? "put" : "call";
   const heroCls = heroSide === "put" ? "dn" : "up";
+  const stockSide = heroAlert?.trade_bias === "stock_short_candidate" || heroAlert?.direction === "bearish" ? "SHORT" : "LONG";
+  const stockCls = stockSide === "SHORT" ? "dn" : "up";
+  const stockPrice = Number(heroAlert?.price_at_alert ?? 0);
+  const entryLow = stockPrice > 0 ? stockPrice * 0.998 : null;
+  const entryHigh = stockPrice > 0 ? stockPrice * 1.002 : null;
+  const stockSession = heroAlert?.session === "premarket" ? "Premarket" : heroAlert?.session === "afterhours" ? "After-hours" : "Regular hours";
+  const productNote = scope === "options"
+    ? "0DTE · regular hours · options only"
+    : "Share momentum · LONG/SHORT · no options";
 
   const holdNote = readingHold
     ? "Held · membership frozen · prices still tick"
@@ -220,7 +235,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
   return (
     <div className={`chrome-live${readingHold ? " reading-hold" : ""}`}>
       <section className="callout">
-        {heroAlert && heroVerdict?.action === "TRADE" ? (
+        {scope === "options" && heroAlert && heroVerdict?.action === "TRADE" ? (
           <>
             <p className="callout-kicker">
               The callout · {new Date(heroAlert.alert_time).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })} · <b>still valid</b>
@@ -231,14 +246,29 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
             <p className="callout-why">{heroVerdict.reason}</p>
             <div className="ticket">
               <div><span className="k">Contract</span><span className="v">{heroAlert.ticker} ${heroAlert.strike}{heroSide[0].toUpperCase()} · {heroAlert.dte ?? 0}DTE</span></div>
-              <div><span className="k">Mid</span><TickValue value={null} className="v" minDelta={0}>—</TickValue></div>
+              <div><span className="k">Mid</span><TickValue value={heroAlert.entry_mid} className="v" minDelta={0}>{heroAlert.entry_mid != null ? `$${Number(heroAlert.entry_mid).toFixed(2)}` : "—"}</TickValue></div>
+              <div><span className="k">Spread</span><span className="v num">{heroAlert.entry_spread_pct != null ? `${Number(heroAlert.entry_spread_pct).toFixed(1)}%` : "—"}</span></div>
+              <div><span className="k">Delta</span><span className="v num">{heroAlert.entry_delta != null ? Number(heroAlert.entry_delta).toFixed(2) : "—"}</span></div>
               <div><span className="k">Speed</span><span className="v num">{heroAlert.short_rate_at_alert != null ? `${heroAlert.short_rate_at_alert > 0 ? "+" : ""}${heroAlert.short_rate_at_alert.toFixed(2)}%/min` : "—"}</span></div>
             </div>
             <p className="gates">Every gate passed — <b>speed</b> · <b>volume</b> · <b>trend</b> · <b>fillable</b></p>
           </>
+        ) : scope === "market" && heroAlert ? (
+          <>
+            <p className="callout-kicker">Share momentum · {stockSession} · latest callout</p>
+            <h1 className="callout-say"><span className={stockCls}>{stockSide} {heroAlert.ticker} shares</span></h1>
+            <p className="callout-why">{heroAlert.ai_explanation ?? heroAlert.private_label ?? "Clean directional tape with share-volume confirmation."}</p>
+            <div className="ticket">
+              <div><span className="k">Entry area</span><span className="v num">{entryLow != null && entryHigh != null ? `$${entryLow.toFixed(2)}–${entryHigh.toFixed(2)}` : "—"}</span></div>
+              <div><span className="k">Speed</span><span className="v num">{heroAlert.short_rate_at_alert != null ? `${heroAlert.short_rate_at_alert > 0 ? "+" : ""}${heroAlert.short_rate_at_alert.toFixed(2)}%/min` : "—"}</span></div>
+              <div><span className="k">Volume</span><span className="v num">{heroAlert.volume_surge_at_alert != null ? `${heroAlert.volume_surge_at_alert.toFixed(1)}×` : "—"}</span></div>
+              <div><span className="k">Session</span><span className="v">{stockSession}</span></div>
+            </div>
+            <p className="gates">Risk line — <b>{stockSide === "SHORT" ? "move back above entry area" : "move back below entry area"}</b> invalidates the momentum read</p>
+          </>
         ) : (
           <>
-            <p className="callout-kicker">Waiting for the next <b>BUY</b></p>
+            <p className="callout-kicker">Waiting for the next <b>{scope === "options" ? "0DTE BUY" : "SHARE CALLOUT"}</b></p>
             <h1 className="callout-say">{loop?.running ? "Nothing firing yet — tape is live" : "Scanner paused — market is closed"}</h1>
             <p className="callout-why">{loop?.running ? "When a TRADE clears every gate, the ticket lands here first." : "Live ranking resumes with the scanner session."} Research signals only — not financial advice.</p>
           </>
@@ -248,7 +278,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
       <div className="section-head">
         <span className="section-title">Scanners</span>
         <span className="section-head-actions">
-          <span className="section-note">{holdNote}</span>
+          <span className="section-note">{productNote} · {holdNote}</span>
           <label className="sort-control">
             <span>Sort</span>
             <select value={sortKey} onChange={(e) => {
@@ -268,8 +298,8 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
             {readingHold ? "Holding" : "Hold"}
           </button>
           <span className="seg">
-            <button type="button" className={scope === "market" ? "on" : ""} onClick={() => setScope("market")}>Market</button>
-            <button type="button" className={scope === "options" ? "on" : ""} onClick={() => setScope("options")}>Options</button>
+            <button type="button" className={scope === "options" ? "on" : ""} onClick={() => { setScope("options"); saveDashboardPrefs({ liveScope: "options" }); }}>Options</button>
+            <button type="button" className={scope === "market" ? "on" : ""} onClick={() => { setScope("market"); saveDashboardPrefs({ liveScope: "market" }); }}>Market</button>
           </span>
         </span>
       </div>
@@ -319,13 +349,15 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
       </div>
       <ul className="ledger">
         {settled.length ? settled.map((a) => {
-          const ret = a.option_return_pct;
+          const ret = scope === "market" ? (a.latest_max_move ?? a.move_5m ?? a.eod_move) : a.option_return_pct;
           const side = String(a.option_side ?? "").toLowerCase().startsWith("p") ? "put" : "call";
           return (
             <li key={a.id}>
               <span className="t num">{new Date(a.alert_time).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })}</span>
               <span className="what">
-                {a.capture_action === "TRADE" ? `Bought the ${a.ticker} $${a.strike} ${side}` : `Watched ${a.ticker}`}
+                {scope === "market"
+                  ? `${a.trade_bias === "stock_short_candidate" || a.direction === "bearish" ? "SHORT" : "LONG"} ${a.ticker} shares`
+                  : a.capture_action === "TRADE" ? `Bought the ${a.ticker} $${a.strike} ${side}` : `Watched ${a.ticker}`}
                 <small>{a.ai_explanation?.slice(0, 80) ?? "scanner callout"}</small>
               </span>
               <span className={`res num ${ret != null && ret > 0 ? "pos" : ret != null ? "neg" : "open"}`}>
@@ -334,7 +366,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
             </li>
           );
         }) : (
-          <li><span className="t">—</span><span className="what muted">No settled callouts yet today</span><span className="res open">waiting</span></li>
+          <li><span className="t">—</span><span className="what muted">No settled {scope === "market" ? "share" : "options"} callouts yet today</span><span className="res open">waiting</span></li>
         )}
       </ul>
 

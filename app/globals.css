@@ -3302,6 +3302,8 @@ td.num,
 .section-head-actions {
   display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; justify-content: flex-end;
 }
+.discord-channel-status { display: grid; gap: 8px; margin: 12px 0; }
+.discord-channel-status > div { display: flex; justify-content: space-between; gap: 20px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
 .alerts-chart-open, .alerts-list-actions { flex-shrink: 0; gap: 8px; }
 .alerts-list-actions .btn { min-height: 32px; padding-inline: 10px; }
 .sort-control {

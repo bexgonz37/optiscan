@@ -54,3 +54,11 @@ test("sortTape: level break ranks breaks first and symbol sort is alphabetical",
   assert.equal(sortTape(rows, "level", -1)[0].symbol, "AAA");
   assert.deepEqual(sortTape(rows, "symbol", 1).map((row) => row.symbol), ["AAA", "ZZZ"]);
 });
+
+test("sortTape: volume surge uses relative burst, not absolute share volume", () => {
+  const rows = [
+    { ...hot, symbol: "BIG", volume: 20_000_000, surge: 1.2 },
+    { ...hot, symbol: "BURST", volume: 500_000, surge: 4.5 },
+  ];
+  assert.equal(sortTape(rows, "surge", -1)[0].symbol, "BURST");
+});

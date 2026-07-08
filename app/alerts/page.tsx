@@ -93,6 +93,7 @@ function AlertsPageInner() {
   const [maxRisk, setMaxRisk] = useState("");
   const [fp, setFp] = useState("");
   const [taken, setTaken] = useState("");
+  const [asset, setAsset] = useState<"options" | "stock">("options");
 
   // Journal edit buffers
   const [edits, setEdits] = useState<Record<number, { exitPrice?: string; outcomePct?: string; notes?: string }>>({});
@@ -110,8 +111,9 @@ function AlertsPageInner() {
     if (maxRisk) q.set("maxRisk", maxRisk);
     if (fp) q.set("falsePositive", fp);
     if (taken) q.set("tradeTaken", taken);
+    q.set("asset", asset);
     return q.toString();
-  }, [ticker, date, catalyst, minSignal, maxRisk, fp, taken]);
+  }, [ticker, date, catalyst, minSignal, maxRisk, fp, taken, asset]);
 
   const refresh = useCallback(async (opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true);
@@ -151,10 +153,10 @@ function AlertsPageInner() {
 
   const refreshAccuracy = useCallback(async () => {
     try {
-      const acc = await fetch(`/api/alerts/signal-accuracy?days=14&asset=options`, { cache: "no-store", headers: scanHeaders() }).then((r) => r.json());
+      const acc = await fetch(`/api/alerts/signal-accuracy?days=14&asset=${asset}`, { cache: "no-store", headers: scanHeaders() }).then((r) => r.json());
       if (acc.ok) setAccuracy(acc);
     } catch { /* best effort */ }
-  }, []);
+  }, [asset]);
 
   useEffect(() => {
     const t = paramTab === "history" || paramTab === "journal" ? paramTab : "now";
@@ -319,6 +321,10 @@ function AlertsPageInner() {
             <div className="toolbar">
               <h2>Alert history</h2>
               <div className="chips">
+                <select style={sel} value={asset} onChange={(e) => setAsset(e.target.value as "options" | "stock")}>
+                  <option value="options">Options 0DTE</option>
+                  <option value="stock">Market shares</option>
+                </select>
                 <input style={sel} placeholder="Ticker" value={ticker} onChange={(e) => setTicker(e.target.value)} />
                 <input style={sel} type="date" value={date} onChange={(e) => setDate(e.target.value)} />
                 <select style={sel} value={catalyst} onChange={(e) => setCatalyst(e.target.value)}>
