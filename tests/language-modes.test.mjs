@@ -12,7 +12,17 @@ import {
   containsBannedPublicLanguage,
   alertKindExplanation,
   sessionGroupLabel,
+  UI_DIRECTIVE_LABELS,
+  uiDirectiveLabel,
+  publicizeDirectiveText,
+  showOrderTicket,
+  PUBLIC_MODE_DISCLAIMER,
 } from "../lib/language-modes.js";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 test("banned-language checker catches every unsafe phrase", () => {
   const unsafe = [
@@ -90,4 +100,83 @@ test("sessionGroupLabel for history dividers", () => {
   assert.equal(sessionGroupLabel("premarket", "stock"), "Premarket · Shares");
   assert.equal(sessionGroupLabel("afterhours", "stock"), "After hours · Shares");
   assert.equal(sessionGroupLabel("regular", "options"), "Regular hours · 0DTE options");
+});
+
+
+// ── UI language-mode enforcement (audit P0-4/T5) ─────────────────────────────
+
+test("every public UI directive label passes the banned-language guard", () => {
+  for (const [kind, label] of Object.entries(UI_DIRECTIVE_LABELS.public)) {
+    assert.equal(containsBannedPublicLanguage(label), false, `public label for ${kind} leaked: "${label}"`);
+  }
+});
+
+test("private UI labels keep the owner's directive wording", () => {
+  assert.equal(uiDirectiveLabel("buy_call", "private"), "BUY CALL");
+  assert.equal(uiDirectiveLabel("buy_put", "private"), "BUY PUT");
+  assert.equal(uiDirectiveLabel("long", "private"), "LONG");
+  assert.equal(uiDirectiveLabel("short", "private"), "SHORT");
+});
+
+test("public UI labels use the audit's replacement table", () => {
+  assert.equal(uiDirectiveLabel("buy_call", "public"), "Call Momentum Watch");
+  assert.equal(uiDirectiveLabel("buy_put", "public"), "Put Momentum Watch");
+  assert.equal(uiDirectiveLabel("long", "public"), "Bullish Share Momentum Watch");
+  assert.equal(uiDirectiveLabel("short", "public"), "Bearish Share Momentum Watch");
+  assert.equal(uiDirectiveLabel("trade_tier", "public"), "High-conviction watch");
+});
+
+test("publicizeDirectiveText scrubs every known directive headline", () => {
+  const samples = [
+    "BUY CALL",
+    "BUY PUT",
+    "BUY CALL/PUT when TRADE fires",
+    "Buy stock \u2191",
+    "Bet stock \u2193",
+    "Buy call option ripping",
+    "shares-only LONG/SHORT hero",
+  ];
+  for (const s of samples) {
+    const out = publicizeDirectiveText(s);
+    assert.equal(containsBannedPublicLanguage(out), false, `"${s}" -> "${out}" still banned`);
+  }
+});
+
+test("publicizeDirectiveText backstop collapses unknown directives to a neutral label", () => {
+  assert.equal(publicizeDirectiveText("strong buy right now"), "Momentum Watch");
+});
+
+test("order-ticket UI is private-mode only", () => {
+  assert.equal(showOrderTicket("private"), true);
+  assert.equal(showOrderTicket("public"), false);
+});
+
+test("public disclaimer exists and is itself banned-language clean", () => {
+  assert.ok(PUBLIC_MODE_DISCLAIMER.length > 40);
+  assert.equal(containsBannedPublicLanguage(PUBLIC_MODE_DISCLAIMER), false);
+  assert.match(PUBLIC_MODE_DISCLAIMER, /financial advice/i);
+});
+
+test("flagged components are wired to language mode (source spec)", () => {
+  const mustBeModeAware = [
+    "components/AlertsCommandCenter.tsx",
+    "components/CompactStatusLine.tsx",
+    "components/SessionBanner.tsx",
+    "components/OptiscanLiveView.tsx",
+    "components/DetailPanel.tsx",
+    "components/TradeVerdictHero.tsx",
+    "components/VerdictPreviewBlock.tsx",
+    "components/HelpSection.tsx",
+    "app/alerts/page.tsx",
+  ];
+  for (const f of mustBeModeAware) {
+    const src = readFileSync(join(repoRoot, f), "utf8");
+    const wired = src.includes("useLanguageMode") || src.includes('mode === "public"');
+    assert.ok(wired, `${f} must consume the language mode`);
+  }
+});
+
+test("app layout renders the compliance footer", () => {
+  const src = readFileSync(join(repoRoot, "app/layout.tsx"), "utf8");
+  assert.ok(src.includes("ComplianceFooter"), "layout must mount ComplianceFooter");
 });

@@ -3,9 +3,11 @@
 import { AccuracyCharts } from "@/components/AccuracyCharts";
 import { EARLY_MOVE_WIN_PCT } from "@/lib/early-accuracy";
 import { fmtPct } from "@/lib/format";
+import { useLanguageMode } from "@/hooks/useLanguageMode";
 
 /** Alerts accuracy dashboard — chrome-noir layout from mockup spec. */
 export function OptiscanAlertsDashboard({ accuracy }: { accuracy: any }) {
+  const isPublic = useLanguageMode() === "public";
   if (!accuracy) return <div className="empty">Loading accuracy…</div>;
 
   const orderWinPct = accuracy.optionWinRate != null
@@ -38,7 +40,7 @@ export function OptiscanAlertsDashboard({ accuracy }: { accuracy: any }) {
         <div><div className="k">Avg winner</div><div className="v num pos">{accuracy.avgOptionReturn != null ? fmtPct(accuracy.avgOptionReturn) : "—"}</div><div className="s">on the contract mid</div></div>
         <div><div className="k">Avg loser</div><div className="v num neg">—</div><div className="s">frozen headline expires at 5 min</div></div>
         <div><div className="k">Callouts / day</div><div className="v num">{accuracy.todayTotal ?? "—"}</div><div className="s">today</div></div>
-        <div><div className="k">Discord sent</div><div className="v num">{accuracy.discordSentCount ?? 0}</div><div className="s">BUY pings only</div></div>
+        <div><div className="k">Discord sent</div><div className="v num">{accuracy.discordSentCount ?? 0}</div><div className="s">{isPublic ? "high-conviction pings only" : "BUY pings only"}</div></div>
       </div>
 
       <div className="section-head">

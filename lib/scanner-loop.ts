@@ -34,6 +34,11 @@ import {
 import { getZeroDteUniverse, getZeroDteDiscoveryUniverse, isCoreSymbol } from "@/lib/universe";
 import { tradingDay, minutesToClose, marketSession, type MarketSession } from "@/lib/trading-session";
 import { getSettingNum } from "@/lib/alert-store";
+import { getCallStats } from "@/lib/polygon-provider";
+import {
+  firstFailedGate, recordNearMiss, shouldRecordNearMiss, nearMinuteBudget,
+  type NearMissEntry,
+} from "@/lib/near-miss";
 
 const LOOP_MS = Number(process.env.SCANNER_LOOP_MS ?? 1000);
 const ACTIVE_REFRESH_MS = Number(process.env.SCANNER_ACTIVE_REFRESH_MS ?? 7000);
@@ -62,6 +67,7 @@ interface SymState {
   relVol: number | null;
   lastAlertAt: number;
   lastOptionsAlertAt: number;
+  lastNearMissAt: number;
 }
 
 interface LoopState {
@@ -84,6 +90,7 @@ interface LoopState {
   lastTapeEnrichAt: number;
   lastRecapAt: number;
   tapeBadgeCache: Map<string, { catalystType?: string; catalystFresh?: boolean; haltStatus?: string | null }>;
+  nearMisses: NearMissEntry[];
 }
 
 type G = typeof globalThis & { __optiscanLoop?: LoopState; __optiscanLoopTimer?: ReturnType<typeof setTimeout> };
@@ -96,6 +103,7 @@ function state(): LoopState {
       ticks: 0, triggers: 0, alerts: 0, errors: 0, note: null, session: null,
       symbols: new Map(), movers: [], tape: [], lastDiscoveryAt: 0, discoveryCount: 0, promoted: new Map(),
       lastTapeEnrichAt: 0, lastRecapAt: 0, tapeBadgeCache: new Map(),
+      nearMisses: [],
     };
   }
   // Survive Next dev hot reloads from pre-discovery loop state.
@@ -106,6 +114,7 @@ function state(): LoopState {
   g.__optiscanLoop.lastTapeEnrichAt ??= 0;
   g.__optiscanLoop.lastRecapAt ??= 0;
   g.__optiscanLoop.tapeBadgeCache ??= new Map();
+  g.__optiscanLoop.nearMisses ??= [];
   return g.__optiscanLoop;
 }
 
@@ -182,13 +191,14 @@ function sym(s: LoopState, ticker: string): SymState {
     st = {
       ring: [], recentRates: [], cooldownUntil: 0, optionsCooldownUntil: 0, stockCooldownUntil: 0, lastChainFetch: 0,
       prefetchedChain: null, prefetchAt: 0,
-      vwap: null, vwapAt: 0, relVol: null, lastAlertAt: 0, lastOptionsAlertAt: 0,
+      vwap: null, vwapAt: 0, relVol: null, lastAlertAt: 0, lastOptionsAlertAt: 0, lastNearMissAt: 0,
     };
     s.symbols.set(ticker, st);
   }
   st.optionsCooldownUntil ??= st.cooldownUntil ?? 0;
   st.stockCooldownUntil ??= 0;
   st.lastOptionsAlertAt ??= st.lastAlertAt ?? 0;
+  st.lastNearMissAt ??= 0;
   return st;
 }
 
@@ -397,7 +407,8 @@ async function tick() {
   if (!res?.available) {
     s.errors++;
     s.note = res?.note ?? "snapshot unavailable";
-    if (String(s.note).includes("429")) s.intervalMs = Math.min(s.intervalMs * 2, 60_000); // backoff
+    // quota_exceeded (central call-cap guard) backs off exactly like a 429.
+    if (String(s.note).includes("429") || String(s.note).includes("quota_exceeded")) s.intervalMs = Math.min(s.intervalMs * 2, 60_000); // backoff
     return;
   }
   s.note = null;
@@ -445,7 +456,9 @@ async function tick() {
     const nearTrigger = accelRead.shortRate != null && Math.abs(accelRead.shortRate) >= triggerMinRate * 0.6;
     if (nearTrigger) {
       await ensureVwap(q.symbol, st, nowMs);
-      if (session === "regular") prefetchChain(q.symbol, st, nowMs);
+      // Warm prefetch is an optimization; near the minute cap the budget is
+      // saved for real triggers (audit P1-8). Trigger fetches are never deferred.
+      if (session === "regular" && !nearMinuteBudget(getCallStats(nowMs))) prefetchChain(q.symbol, st, nowMs);
     }
     if (accelRead.shortRate != null) {
       vwapCandidates.push({ symbol: q.symbol, st, rate: Math.abs(accelRead.shortRate) });
@@ -505,16 +518,38 @@ async function tick() {
       ? Math.min(st.optionsCooldownUntil, stockEnabled ? st.stockCooldownUntil : Number.POSITIVE_INFINITY)
       : st.stockCooldownUntil;
 
-    if (
-      persistOk &&
-      accelOk &&
-      tapeMoving &&
-      shouldTrigger({
-        shortRate: accelRead.shortRate, surge, hodBreak: levels.hodBreak, lodBreak: levels.lodBreak,
-        efficiency, nowMs, cooldownUntil: routeCooldownUntil,
-        minRate: triggerMinRate, minSurge: triggerMinSurge, minLevelSurge, minEfficiency: triggerMinEff,
-      })
-    ) {
+    // Gate evaluation is UNCHANGED (audit hard constraint) — shouldTrigger is
+    // called with the exact same inputs; its result is captured so a blocked
+    // near-trigger symbol leaves a "why not" trace (audit P1-5/T8).
+    const shouldTriggerOk = shouldTrigger({
+      shortRate: accelRead.shortRate, surge, hodBreak: levels.hodBreak, lodBreak: levels.lodBreak,
+      efficiency, nowMs, cooldownUntil: routeCooldownUntil,
+      minRate: triggerMinRate, minSurge: triggerMinSurge, minLevelSurge, minEfficiency: triggerMinEff,
+    });
+    const fired = persistOk && accelOk && tapeMoving && shouldTriggerOk;
+
+    if (nearTrigger && !fired && shouldRecordNearMiss(st.lastNearMissAt, nowMs)) {
+      st.lastNearMissAt = nowMs;
+      const gates = {
+        persistOk, accelOk, tapeMoving, shouldTrigger: shouldTriggerOk,
+        cooldownBlocked: nowMs < routeCooldownUntil,
+      };
+      recordNearMiss(s.nearMisses, {
+        t: nowMs, symbol: q.symbol, session,
+        failedGate: firstFailedGate(gates) ?? "unknown",
+        gates,
+        values: {
+          shortRate: accelRead.shortRate, accel: accelRead.accel, surge, efficiency,
+          hodBreak: levels.hodBreak, lodBreak: levels.lodBreak,
+        },
+        thresholds: {
+          minRate: triggerMinRate, minSurge: triggerMinSurge,
+          minEfficiency: triggerMinEff, minAccel,
+        },
+      });
+    }
+
+    if (fired) {
       // fire-and-forget: the 1s heartbeat must never wait on a chain fetch.
       const read = { accelRead, surge, efficiency, levels, dir };
       const tasks: Promise<unknown>[] = [];
@@ -557,7 +592,7 @@ async function tick() {
       row.haltStatus = cached.haltStatus;
     }
   }
-  if (nowMs - s.lastTapeEnrichAt >= TAPE_ENRICH_MS) {
+  if (nowMs - s.lastTapeEnrichAt >= TAPE_ENRICH_MS && !nearMinuteBudget(getCallStats(nowMs))) {
     s.lastTapeEnrichAt = nowMs;
     await enrichTapeContext(tape, nowMs);
     for (const row of tape) {
@@ -575,17 +610,52 @@ async function tick() {
   if (session === "regular") refreshActiveAlerts(nowMs).catch(() => {});
 }
 
+const LOCK_HEARTBEAT_MS = 15_000;
+
 export function startScannerLoop() {
   const g = globalThis as G;
   const s = state();
   if (s.running) return;
   if (process.env.SCANNER_REALTIME === "0") { console.log("[0dte-loop] disabled (SCANNER_REALTIME=0)"); return; }
+
+  // Single-instance advisory lock (audit P1-3): a second process sharing the
+  // data volume (stray `next dev`, accidental replica) must NOT start a
+  // second loop — it would double Polygon spend and double-fire triggers.
+  // DB unavailability fails OPEN (loop starts) so a fresh install still runs.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getDb } = require("@/lib/db");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { acquireScannerLock } = require("@/lib/instance-lock");
+    const lock = acquireScannerLock(getDb(), { pid: process.pid });
+    if (!lock.acquired) {
+      s.note = `scanner loop NOT started: advisory lock held by pid ${lock.holder?.pid} (heartbeat ${lock.holder?.heartbeat_at}) — single-instance design, see docs/VPS.md`;
+      console.warn(`[0dte-loop] ${s.note}`);
+      return;
+    }
+  } catch (err: any) {
+    console.warn("[0dte-loop] advisory lock unavailable (starting anyway):", err?.message);
+  }
+
   s.running = true;
   let busy = false;
+  let lastLockBeatAt = 0;
   const beat = async () => {
     if (!busy) {
       busy = true;
       try { await tick(); } catch (err: any) { s.errors++; console.warn("[0dte-loop] tick failed:", err?.message); }
+      // Keep the advisory lock fresh (throttled; never breaks the heartbeat).
+      const hbNow = Date.now();
+      if (hbNow - lastLockBeatAt >= LOCK_HEARTBEAT_MS) {
+        lastLockBeatAt = hbNow;
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { getDb } = require("@/lib/db");
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { heartbeatScannerLock } = require("@/lib/instance-lock");
+          heartbeatScannerLock(getDb(), process.pid, hbNow);
+        } catch { /* lock heartbeat is best-effort */ }
+      }
       busy = false;
     }
     g.__optiscanLoopTimer = setTimeout(beat, s.intervalMs);
@@ -605,5 +675,6 @@ export function loopState() {
     coreSymbols: getZeroDteUniverse().length,
     discoverySymbols: s.discoveryCount,
     promotedSymbols: [...s.promoted.keys()],
+    nearMisses: s.nearMisses.slice(0, 25),
   };
 }

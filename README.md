@@ -328,7 +328,7 @@ ALERT_DB_DIR=              # default ./data
 | `/api/notifications/discord/test` | POST | `?kind=options\|stocks` |
 | `/api/trade-journal` | GET/POST | Personal trade log |
 
-Most routes accept optional `SCAN_API_TOKEN` via `x-scan-token` header, `Authorization: Bearer`, or `?token=`.
+Most routes require `SCAN_API_TOKEN` (when set) via the `x-scan-token` header or `Authorization: Bearer`. Query-string `?token=` is **not** accepted — URL tokens leak into access logs and Referer headers. Generate a token with `openssl rand -hex 24` and set it in both `.env.local` (dev) and `.env.production` (VPS).
 
 ---
 
@@ -489,6 +489,28 @@ optiscan/
 ```
 
 ---
+
+## Health & monitoring
+
+`/api/health` returns deep liveness info and **HTTP 503** when the scanner
+loop is stalled (no tick within 3× its interval) during a non-closed session —
+point uptime monitors and the Docker healthcheck at it.
+
+Disclosure choice (documented per audit): when `SCAN_API_TOKEN` is set,
+unauthenticated callers get a **shallow** body (ok, provider, keyPresent,
+loopRunning, lastTickAgeMs, session, quotaExceeded — no error strings or
+counters). Requests with the token (or any request when no token is
+configured) get full stats: `ticks/triggers/alerts/errors/intervalMs/note`,
+`callsToday`/`callsThisMinute` vs `dailyCap`/`minuteCap`, and `dbWritable`.
+
+Polygon spend is hard-capped by a central call meter
+(`POLYGON_DAILY_CALL_CAP`, `POLYGON_MINUTE_CALL_CAP`); at the cap requests
+short-circuit with a typed `quota_exceeded` and the loop backs off like a 429.
+Near the minute cap, non-critical calls (news enrichment, warm chain prefetch)
+defer automatically — trigger-path fetches never defer.
+
+"Why didn't it alert?" — near-trigger symbols that fail a gate leave a trace
+(which gate, values vs. thresholds) in `nearMisses` on `/api/scanner/live`.
 
 ## Disclaimer
 

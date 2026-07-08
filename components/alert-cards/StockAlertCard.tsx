@@ -1,7 +1,7 @@
 "use client";
 
 import { fmtPct, fmtPrice, pctClass } from "@/lib/format";
-import { alertKindExplanation } from "@/lib/language-modes";
+import { alertKindExplanation, uiDirectiveLabel } from "@/lib/language-modes";
 
 export interface StockAlertLike {
   ticker: string;
@@ -38,7 +38,11 @@ export function StockAlertCard({
   const label = mode === "public" ? alert.public_label : alert.private_label;
   const kindHint = alertKindExplanation({ asset_class: "stock", session: alert.session ?? "premarket" });
   const action = (alert.capture_action ?? "wait").toLowerCase();
-  const headline = label ?? (alert.direction === "bearish" ? "SHORT setup" : "LONG setup");
+  const headline =
+    label ??
+    (mode === "public"
+      ? uiDirectiveLabel(alert.direction === "bearish" ? "short" : "long", "public")
+      : alert.direction === "bearish" ? "SHORT setup" : "LONG setup");
 
   return (
     <div className={`alert-card alert-card-stock${compact ? " alert-card-compact" : ""}`}>

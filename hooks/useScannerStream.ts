@@ -30,7 +30,6 @@ let snapshot: ScannerStreamSnapshot = { realtime: null, lastEventAt: null, trans
 const listeners = new Set<(s: ScannerStreamSnapshot) => void>();
 let started = false;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
-let eventSource: EventSource | null = null;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingRealtime: any | null = null;
 
@@ -74,34 +73,52 @@ function startPollFallback() {
   pollTimer = setInterval(pollOnce, 1000);
 }
 
+/**
+ * SSE via fetch-streaming (not EventSource): the API token must ride in the
+ * x-scan-token header — EventSource cannot send headers and ?token= is no
+ * longer accepted server-side (URL tokens leak into logs/referrers; audit
+ * P0-3). Any stream failure degrades to the 1s poll fallback, same as before.
+ */
 function ensureScannerStream() {
   if (started) return;
   started = true;
 
-  if (typeof window === "undefined" || typeof EventSource === "undefined") {
+  if (typeof window === "undefined" || typeof fetch === "undefined") {
     startPollFallback();
     return;
   }
 
-  try {
-    let token = "";
-    try { token = localStorage.getItem("optiscan:token") ?? ""; } catch { /* ignore */ }
-    const q = token ? `?token=${encodeURIComponent(token)}` : "";
-    eventSource = new EventSource(`/api/scanner/stream${q}`);
-    eventSource.onmessage = (ev) => {
-      try {
-        const d = JSON.parse(ev.data);
-        if (d?.ok) emit({ realtime: d.realtime, lastEventAt: d.ts ?? Date.now(), transport: "sse" });
-      } catch { /* ignore malformed */ }
-    };
-    eventSource.onerror = () => {
-      eventSource?.close();
-      eventSource = null;
+  (async () => {
+    try {
+      const res = await fetch("/api/scanner/stream", {
+        cache: "no-store",
+        headers: { Accept: "text/event-stream", ...scanHeaders() },
+      });
+      if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let sep;
+        while ((sep = buf.indexOf("\n\n")) >= 0) {
+          const chunk = buf.slice(0, sep);
+          buf = buf.slice(sep + 2);
+          const line = chunk.split("\n").find((l) => l.startsWith("data: "));
+          if (!line) continue;
+          try {
+            const d = JSON.parse(line.slice(6));
+            if (d?.ok) emit({ realtime: d.realtime, lastEventAt: d.ts ?? Date.now(), transport: "sse" });
+          } catch { /* ignore malformed */ }
+        }
+      }
+      startPollFallback(); // server closed the stream
+    } catch {
       startPollFallback();
-    };
-  } catch {
-    startPollFallback();
-  }
+    }
+  })();
 }
 
 export function useScannerStream() {

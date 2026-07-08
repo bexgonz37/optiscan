@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { scanHeaders } from "@/hooks/useScanner";
 import { marketSession, type MarketSession } from "@/lib/trading-session";
+import { useLanguageMode, type LanguageMode } from "@/hooks/useLanguageMode";
 
 const DISMISS_KEY = "optiscan:status-line:dismissed";
 
@@ -29,12 +30,16 @@ const SESSION_LABEL: Record<MarketSession, { text: string; mode: "options" | "of
   closed: { text: "Market closed", mode: "off" },
 };
 
-const SESSION_HINT: Record<MarketSession, string> = {
-  regular: "Fast movers → BUY CALL/PUT when TRADE fires. Check Alerts.",
-  premarket: "Tape runs; option callouts fire at 9:30 AM ET.",
-  afterhours: "Tape runs; option callouts resume at 9:30 AM ET.",
-  closed: "Scanning pauses until 4:00 AM ET premarket.",
-};
+function sessionHint(session: MarketSession, mode: LanguageMode): string {
+  if (session === "regular") {
+    return mode === "public"
+      ? "Fast movers → call/put momentum watches when a high-conviction signal fires. Check Alerts."
+      : "Fast movers → BUY CALL/PUT when TRADE fires. Check Alerts.";
+  }
+  if (session === "premarket") return "Tape runs; option callouts fire at 9:30 AM ET.";
+  if (session === "afterhours") return "Tape runs; option callouts resume at 9:30 AM ET.";
+  return "Scanning pauses until 4:00 AM ET premarket.";
+}
 
 export function CompactStatusLine({
   loopLive,
@@ -46,6 +51,7 @@ export function CompactStatusLine({
   streamFreshness?: "green" | "yellow" | "red";
 }) {
   const [session, setSession] = useState<MarketSession | null>(null);
+  const languageMode = useLanguageMode();
   const [report, setReport] = useState<AccessReport | null>(null);
   const [dismissed, setDismissed] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -77,7 +83,7 @@ export function CompactStatusLine({
   if (dismissed) return null;
 
   const badge = session ? SESSION_LABEL[session] : null;
-  const hint = session ? SESSION_HINT[session] : "";
+  const hint = session ? sessionHint(session, languageMode) : "";
   const dataWarn = report && report.keyPresent && !report.allOk;
   const blockedCritical = report?.probes?.filter((p) => p.critical && !p.allowed) ?? [];
 

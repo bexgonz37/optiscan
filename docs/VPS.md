@@ -169,3 +169,67 @@ docker compose exec optiscan node scripts/calibrate-accuracy.mjs
 
 `calibrate-accuracy.mjs` suggests threshold changes toward the ≥70% early
 hit-rate target; apply them in Settings → Capture thresholds.
+
+
+## 9. Quota guard + deep health endpoint
+
+Every Polygon/Massive request now passes a central call meter with hard caps
+(`POLYGON_DAILY_CALL_CAP`, default 200000; `POLYGON_MINUTE_CALL_CAP`, default
+280). Past a cap the request is refused with a `quota_exceeded` error and the
+loop backs off exactly like a 429 — a stuck loop can no longer spend the plan.
+
+`/api/health` is the ops surface:
+
+- **HTTP 503** whenever the loop is stalled (no tick within 3× its interval)
+  during any non-closed session, or not running at all. Point an uptime
+  monitor at it; Docker's healthcheck reacts automatically.
+- Unauthenticated (with `SCAN_API_TOKEN` set) the body is shallow — liveness
+  only. With the `x-scan-token` header you also get `ticks/triggers/alerts/
+  errors`, `callsToday`/`callsThisMinute` vs caps, and `dbWritable`.
+
+Pre-market check:
+
+```bash
+curl -s -H "x-scan-token: $SCAN_API_TOKEN" localhost:8780/api/health | jq
+# expect: ok:true, loopRunning:true, lastTickAgeMs < 3000, dbWritable:true,
+#         callsToday well under dailyCap
+```
+
+## 10. Single instance only
+
+The scanner takes a DB advisory lock (`scanner_lock` row) on boot and
+heartbeats it every 15s. A second process sharing the data volume (a stray
+`next dev`, an accidental second replica) will refuse to start its loop and
+say so in logs + `/api/health` note. **Never scale this app to multiple
+replicas or serverless** — cooldowns and call budgets are per-process by
+design. A crashed holder's lock expires on its own after ~2 minutes.
+
+## 11. Backups (nightly, 14-day retention)
+
+```bash
+# host crontab — 02:30 nightly, WAL-safe online backup
+30 2 * * * docker compose -f /opt/optiscan/docker-compose.yml exec -T optiscan /app/scripts/backup-db.sh >> /var/log/optiscan-backup.log 2>&1
+```
+
+Backups land in `data/backups/optiscan-YYYY-MM-DD.db` (the named volume, so
+they survive redeploys). Restore: stop the app, replace `data/optiscan.db`
+with the dated file, delete `optiscan.db-wal`/`optiscan.db-shm`, start.
+**Test a restore quarterly.**
+
+## 12. Nightly integrity check
+
+```bash
+# 20:30 ET — alerts if any TRADE callout is ungradeable or trackers are stuck
+30 20 * * 1-5 docker compose -f /opt/optiscan/docker-compose.yml exec -T optiscan node scripts/integrity-check.mjs || echo "OPTISCAN INTEGRITY FAILURE" | mail -s optiscan you@example.com
+```
+
+Exit 1 means: a TRADE alert has zero option snapshots (would be silently
+unmeasurable), an alert is stuck `tracking` >2 days (survivorship guard), or
+the scanner-lock heartbeat is stale. Wire the failure into whatever pings you.
+
+## 13. Market holidays
+
+Full-day NYSE closures for 2025–2027 are built in — `marketSession()` returns
+`closed`, so the recap throttle applies and the UI stops implying a live
+session. Extend without a deploy: `MARKET_HOLIDAYS=2028-01-17,2028-02-21`.
+Half-days (13:00 closes) are not modeled; the afternoon is just quiet.

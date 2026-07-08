@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { marketSession, isOptionsSession, isStockSession } from "../lib/trading-session.ts";
+import { marketSession, isOptionsSession, isStockSession, isMarketHoliday } from "../lib/trading-session.ts";
 
 // Fixed ET timestamps (offsets pin the instant regardless of runner TZ).
 const et = (iso) => Date.parse(iso);
@@ -57,4 +57,46 @@ test("sessions partition every weekday moment: options XOR stocks XOR closed", (
     const flags = [isOptionsSession(ms), isStockSession(ms), s === "closed"];
     assert.equal(flags.filter(Boolean).length, 1, `hour ${h} ET must be exactly one mode (got ${s})`);
   }
+});
+
+
+// ── Exchange holidays (audit P1-7/T9) ───────────────────────────────────────
+
+test("full-day holidays are closed all day", () => {
+  // Fri 2026-07-03 — Independence Day observed
+  assert.equal(marketSession(et("2026-07-03T10:30:00-04:00")), "closed");
+  assert.equal(marketSession(et("2026-07-03T05:00:00-04:00")), "closed");
+  assert.equal(marketSession(et("2026-07-03T17:00:00-04:00")), "closed");
+  // Thu 2026-11-26 — Thanksgiving (EST)
+  assert.equal(marketSession(et("2026-11-26T11:00:00-05:00")), "closed");
+  // Fri 2026-12-25 — Christmas
+  assert.equal(marketSession(et("2026-12-25T10:00:00-05:00")), "closed");
+});
+
+test("adjacent normal weekdays are unaffected", () => {
+  assert.equal(marketSession(et("2026-07-02T10:30:00-04:00")), "regular");
+  assert.equal(marketSession(et("2026-07-06T10:30:00-04:00")), "regular");
+  assert.equal(marketSession(et("2026-11-27T11:00:00-05:00")), "regular"); // day after Thanksgiving (half-day traded, not modeled)
+});
+
+test("no options or stock sessions on a holiday", () => {
+  assert.equal(isOptionsSession(et("2026-07-03T10:30:00-04:00")), false);
+  assert.equal(isStockSession(et("2026-07-03T07:00:00-04:00")), false);
+});
+
+test("MARKET_HOLIDAYS env extends the set without a deploy", () => {
+  const prev = process.env.MARKET_HOLIDAYS;
+  process.env.MARKET_HOLIDAYS = "2026-08-14, 2026-08-17";
+  assert.equal(isMarketHoliday("2026-08-14"), true);
+  assert.equal(isMarketHoliday("2026-08-17"), true);
+  assert.equal(marketSession(et("2026-08-14T10:30:00-04:00")), "closed");
+  if (prev == null) delete process.env.MARKET_HOLIDAYS; else process.env.MARKET_HOLIDAYS = prev;
+  assert.equal(isMarketHoliday("2026-08-14"), false);
+});
+
+test("built-in holiday table covers 2025-2027", () => {
+  for (const d of ["2025-12-25", "2026-01-01", "2026-09-07", "2027-11-25"]) {
+    assert.equal(isMarketHoliday(d), true, d);
+  }
+  assert.equal(isMarketHoliday("2026-07-07"), false);
 });

@@ -25,6 +25,7 @@ import { computeTradeVerdict, frozenCalloutVerdict, MIN_SPEED_PCT_PER_MIN, type 
 import { calledAgoLabel, calledAgoLong, sideFromAlert, stillMovingStatus } from "@/lib/signal-live";
 import { fmtPct, fmtPrice, fmtTime, pctClass } from "@/lib/format";
 import { sessionGroupLabel } from "@/lib/language-modes";
+import { useLanguageMode } from "@/hooks/useLanguageMode";
 import { groupAlertsBySession } from "@/lib/alert-session-groups";
 import { marketSession, tradingDay } from "@/lib/trading-session";
 
@@ -103,6 +104,8 @@ export function AlertsCommandCenter({
   onViewHistory?: () => void;
 }) {
   const [session, setSession] = useState<ReturnType<typeof marketSession> | null>(null);
+  const languageMode = useLanguageMode();
+  const isPublic = languageMode === "public";
   const [showAll, setShowAll] = useState(false);
   const [paused, setPaused] = useState(false);
   const pollInFlight = useRef(false);
@@ -252,7 +255,8 @@ export function AlertsCommandCenter({
         <div>
           <h2 className="section-title">Live callouts</h2>
           <p className="section-sub">
-            Newest callouts first — check &quot;Called&quot; for how long ago. BUY CALL/PUT when TRADE.
+            Newest callouts first — check &quot;Called&quot; for how long ago.{" "}
+            {isPublic ? "Call/put momentum watches on high-conviction signals." : "BUY CALL/PUT when TRADE."}
           </p>
         </div>
         <div className="status-group">
@@ -350,7 +354,7 @@ export function AlertsCommandCenter({
           </div>
           {marketClosed ? (
             <>
-              Live BUY CALL/PUT only fires 9:30–4 ET. Your scanner has logged{" "}
+              {isPublic ? "Live call/put momentum watches only fire 9:30–4 ET." : "Live BUY CALL/PUT only fires 9:30–4 ET."} Your scanner has logged{" "}
               <strong>{totalAlerts || sessionRecap.length || "—"}</strong> callouts — see recap below or open Accuracy.
             </>
           ) : tape.running ? (
@@ -429,7 +433,7 @@ export function AlertsCommandCenter({
       {/* Live callouts + movers — charts work any time */}
       <>
       <div className="acc-list-header">
-        <span className="muted text-sm">Newest first · Callout = BUY / WATCH · mini chart = today</span>
+        <span className="muted text-sm">{isPublic ? "Newest first · momentum watches · mini chart = today" : "Newest first · Callout = BUY / WATCH · mini chart = today"}</span>
         <div className="btn-row gap-2 alerts-list-actions">
           <button
             type="button"

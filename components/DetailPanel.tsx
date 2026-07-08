@@ -5,6 +5,8 @@ import type { SymbolDetail } from "@/lib/types";
 import { TickerIcon, Stat } from "@/components/ui";
 import { PayoffChart } from "@/components/PayoffChart";
 import { VerdictPreviewBlock } from "@/components/VerdictPreviewBlock";
+import { showOrderTicket } from "@/lib/language-modes";
+import { useLanguageMode } from "@/hooks/useLanguageMode";
 import { useToast } from "@/components/Toasts";
 import { scanHeaders } from "@/hooks/useScanner";
 import { liveCtxFor, useLiveTapeMap } from "@/hooks/useLiveTapeMap";
@@ -39,6 +41,7 @@ export function DetailPanel({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { push } = useToast();
+  const languageMode = useLanguageMode();
   const tape = useLiveTapeMap();
   const live = symbol ? liveCtxFor(tape, symbol) : undefined;
 
@@ -142,7 +145,7 @@ export function DetailPanel({
                     </div>
                     <div className="legs">
                       <div>
-                        <span className="buy">BUY</span> {symbol} {fmtNum(contract.strike, 0)}{" "}
+                        <span className="buy">{showOrderTicket(languageMode) ? "BUY" : "Contract"}</span> {symbol} {fmtNum(contract.strike, 0)}{" "}
                         {String(contract.side).toUpperCase()} {fmtExpiry(contract.expiration)}
                         <span className="legs-dim-right">{fmtPremium(contract.entry)}</span>
                       </div>
@@ -210,9 +213,11 @@ export function DetailPanel({
                 </div>
 
                 <div className="cta">
-                  <button className="btn-p" onClick={copyTicket}>
-                    Copy contract
-                  </button>
+                  {showOrderTicket(languageMode) ? (
+                    <button className="btn-p" onClick={copyTicket}>
+                      Copy contract
+                    </button>
+                  ) : null}
                   <button className="btn-s" onClick={() => push("Signal noted", `${symbol} ${String(contract.side).toUpperCase()} added to your watch — alerts will ping on STRONG.`, "info")}>
                     Watch
                   </button>

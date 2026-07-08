@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useLanguageMode } from "@/hooks/useLanguageMode";
 
 const LS_KEY = "optiscan:guide:";
 
 export function UsageGuide({ page }: { page: "dashboard" | "scanner" | "alerts" }) {
+  const isPublic = useLanguageMode() === "public";
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
@@ -42,7 +44,7 @@ export function UsageGuide({ page }: { page: "dashboard" | "scanner" | "alerts" 
   const alerts = (
     <ol className="guide-list">
       <li><strong>Right now</strong> — one list, best first. The big card is the strongest live signal.</li>
-      <li><strong>Signals</strong> — buy signals only show while the stock is actually moving the right way. Watch = forming, not ready.</li>
+      <li><strong>Signals</strong> — {isPublic ? "high-conviction signals" : "buy signals"} only show while the stock is actually moving the right way. Watch = forming, not ready.</li>
       <li><strong>Track record</strong> — did signals work 1m/5m after they fired?</li>
       <li><strong>Popups</strong> — only fire for a live buy signal. Everything else stays in history.</li>
     </ol>

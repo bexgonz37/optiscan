@@ -3,9 +3,12 @@ import { timingSafeEqual } from "node:crypto";
 /**
  * Optional single-token gate for the scan API.
  *
- * Set SCAN_API_TOKEN in .env.local and every /api/scan/* request must carry it
- * (x-scan-token header, Authorization: Bearer, or ?token=). Unset = open, as
- * before. The UI reads the token from localStorage("optiscan:token").
+ * Set SCAN_API_TOKEN in .env.local (generate: openssl rand -hex 24) and every
+ * /api/scan/* request must carry it as the x-scan-token header or
+ * Authorization: Bearer. Query-string ?token= is deliberately NOT accepted —
+ * tokens in URLs leak into access logs, browser history, and Referer headers
+ * (audit P0-3). Unset = open, as before. The UI reads the token from
+ * localStorage("optiscan:token") and sends it as a header.
  *
  * Scope: this stops drive-by quota burn if the URL leaks. It is NOT user auth —
  * anyone you give the page + token to has full access. For a truly public
@@ -15,11 +18,9 @@ import { timingSafeEqual } from "node:crypto";
 export function checkApiToken(req: Request): boolean {
   const expected = process.env.SCAN_API_TOKEN;
   if (!expected) return true;
-  const url = new URL(req.url);
   const got =
     req.headers.get("x-scan-token") ??
     req.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ??
-    url.searchParams.get("token") ??
     "";
   const a = Buffer.from(String(got));
   const b = Buffer.from(String(expected));

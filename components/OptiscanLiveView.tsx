@@ -13,6 +13,8 @@ import { fmtPct, pctClass } from "@/lib/format";
 import { tradingDay } from "@/lib/trading-session";
 import { liveCtxFor, useLiveTapeMap } from "@/hooks/useLiveTapeMap";
 import { loadDashboardPrefs, saveDashboardPrefs } from "@/lib/dashboard-prefs";
+import { uiDirectiveLabel } from "@/lib/language-modes";
+import { useLanguageMode } from "@/hooks/useLanguageMode";
 
 const HOT_LINGER_MS = 20_000;
 const STABLE_ORDER_MS = 20_000;
@@ -145,6 +147,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
   const hotSince = useRef(new Map<string, number>());
   const fastFilterState = useRef(new Map<string, { inList: boolean; pendingSince: number | null }>());
   const { realtime: loop } = useScannerStream();
+  const languageMode = useLanguageMode();
   const tapeMap = useLiveTapeMap(1000);
   const tape = (loop?.tape ?? loop?.movers ?? []) as TapeRow[];
   const readingHold = hovering || holdPinned;
@@ -230,6 +233,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
   const heroSide = String(heroAlert?.option_side ?? "").toLowerCase().startsWith("p") ? "put" : "call";
   const heroCls = heroSide === "put" ? "dn" : "up";
   const stockSide = heroAlert?.trade_bias === "stock_short_candidate" || heroAlert?.direction === "bearish" ? "SHORT" : "LONG";
+  const stockSideLabel = uiDirectiveLabel(stockSide === "SHORT" ? "short" : "long", languageMode);
   const stockCls = stockSide === "SHORT" ? "dn" : "up";
   const stockPrice = Number(heroAlert?.price_at_alert ?? 0);
   const entryLow = stockPrice > 0 ? stockPrice * 0.998 : null;
@@ -255,7 +259,11 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
       : optionsOpeningWatch
         ? "Opening watch live · underlying momentum only · contracts validate at 9:30"
         : "0DTE options closed · opening watch resumes 4:00 AM ET"
-    : marketActive ? "Share momentum live · LONG/SHORT · no options" : "Share momentum closed · resumes 4:00 AM ET";
+    : marketActive
+      ? languageMode === "public"
+        ? "Share momentum live · bullish/bearish watches · no options"
+        : "Share momentum live · LONG/SHORT · no options"
+      : "Share momentum closed · resumes 4:00 AM ET";
 
   const holdNote = readingHold
     ? "Held · membership frozen · prices still tick"
@@ -327,7 +335,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
         ) : scope === "market" && marketActive && heroAlert ? (
           <>
             <p className="callout-kicker">Share momentum · {stockSession} · latest callout</p>
-            <h1 className="callout-say"><span className={stockCls}>{stockSide} {heroAlert.ticker} shares</span></h1>
+            <h1 className="callout-say"><span className={stockCls}>{languageMode === "public" ? `${stockSideLabel} · ${heroAlert.ticker}` : `${stockSideLabel} ${heroAlert.ticker} shares`}</span></h1>
             <p className="callout-why">{heroAlert.ai_explanation ?? heroAlert.private_label ?? "Clean directional tape with share-volume confirmation."}</p>
             <div className="ticket">
               <div><span className="k">Entry area</span><span className="v num">{entryLow != null && entryHigh != null ? `$${entryLow.toFixed(2)}–${entryHigh.toFixed(2)}` : "—"}</span></div>
@@ -345,7 +353,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
           </>
         ) : (
           <>
-            <p className="callout-kicker">Waiting for the next <b>{scope === "options" ? "0DTE BUY" : "SHARE CALLOUT"}</b></p>
+            <p className="callout-kicker">Waiting for the next <b>{scope === "options" ? (languageMode === "public" ? "0DTE momentum watch" : "0DTE BUY") : "SHARE CALLOUT"}</b></p>
             <h1 className="callout-say">{scope === "market" && !marketActive ? "Share scanner closed" : "Nothing firing yet — tape is live"}</h1>
             <p className="callout-why">{scope === "market" && !marketActive ? "Premarket share scanning resumes at 4:00 AM ET." : "When a callout clears every gate, the ticket lands here first."} Research signals only — not financial advice.</p>
           </>
@@ -430,8 +438,12 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
               <span className="t num">{new Date(a.alert_time).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })}{sess ? ` · ${sess}` : ""}</span>
               <span className="what">
                 {scope === "market"
-                  ? `${a.trade_bias === "stock_short_candidate" || a.direction === "bearish" ? "SHORT" : "LONG"} ${a.ticker} shares`
-                  : a.capture_action === "TRADE" ? `Bought the ${a.ticker} $${a.strike} ${side}` : `Watched ${a.ticker}`}
+                  ? `${uiDirectiveLabel(a.trade_bias === "stock_short_candidate" || a.direction === "bearish" ? "short" : "long", languageMode)}${languageMode === "public" ? " · " : " "}${a.ticker}${languageMode === "public" ? "" : " shares"}`
+                  : a.capture_action === "TRADE"
+                    ? languageMode === "public"
+                      ? `Signal: ${a.ticker} $${a.strike} ${side}`
+                      : `Bought the ${a.ticker} $${a.strike} ${side}`
+                    : `Watched ${a.ticker}`}
                 <small>{a.ai_explanation?.slice(0, 80) ?? "scanner callout"}</small>
               </span>
               <span className={`res num ${ret != null && ret > 0 ? "pos" : ret != null ? "neg" : "open"}`}>

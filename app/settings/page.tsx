@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { scanHeaders, requestNotifyPermission } from "@/hooks/useScanner";
+import { invalidateLanguageMode } from "@/hooks/useLanguageMode";
 import { AppNav } from "@/components/AppNav";
 import { HelpSection } from "@/components/HelpSection";
 import { loadDashboardPrefs, saveDashboardPrefs } from "@/lib/dashboard-prefs";
@@ -73,6 +74,7 @@ export default function SettingsPage() {
     if (d.ok) {
       setSettings(d.settings);
       setLanguageMode(d.languageMode);
+      invalidateLanguageMode(); // update mode-aware views without reload
       if (d.discordWebhooks) setDiscordWebhooks(d.discordWebhooks);
       setStockCalloutsEnabled(Boolean(d.stockCalloutsEnabled));
       setExtendedStockNotify(Boolean(d.extendedStockNotify));

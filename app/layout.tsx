@@ -3,6 +3,7 @@ import "./globals.css";
 import { ToastProvider } from "@/components/Toasts";
 import { GlobalAlerts } from "@/components/GlobalAlerts";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
+import { ComplianceFooter } from "@/components/ComplianceFooter";
 
 export const metadata: Metadata = {
   title: "OptiScan — Live scanner & alerts",
@@ -34,6 +35,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <div className="app-shell">
             {children}
           </div>
+          <ComplianceFooter />
           <GlobalAlerts />
           <MobileBottomNav />
         </ToastProvider>

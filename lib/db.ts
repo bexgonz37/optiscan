@@ -312,8 +312,19 @@ export function getDb(): Database.Database {
   const dir = process.env.ALERT_DB_DIR || path.join(process.cwd(), "data");
   fs.mkdirSync(dir, { recursive: true });
   const db = new Database(path.join(dir, "optiscan.db"));
+  // Concurrency hardening (audit P1-2). The 1s loop, the tracker sweep, and
+  // API reads all share this file from one process:
+  //  - WAL: readers never block the writer.
+  //  - busy_timeout 5000: a colliding write waits instead of throwing
+  //    "database is locked".
+  //  - synchronous NORMAL: safe with WAL, much faster than FULL.
+  //  - wal_autocheckpoint 1000 pages: keeps the -wal file bounded on a
+  //    long-running VPS (audit found a -wal larger than the DB itself).
   db.pragma("journal_mode = WAL");
+  db.pragma("busy_timeout = 5000");
+  db.pragma("synchronous = NORMAL");
   db.pragma("foreign_keys = ON");
+  db.pragma("wal_autocheckpoint = 1000");
   migrate(db);
   g.__optiscanDb = db;
   return db;

@@ -14,6 +14,8 @@
 import { Suspense, useCallback, useEffect, useMemo, useState, useTransition, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { scanHeaders } from "@/hooks/useScanner";
+import { useLanguageMode } from "@/hooks/useLanguageMode";
+import { uiDirectiveLabel } from "@/lib/language-modes";
 import { useLiveTapeMap, liveCtxFor } from "@/hooks/useLiveTapeMap";
 import { AppNav } from "@/components/AppNav";
 import { AlertsCommandCenter } from "@/components/AlertsCommandCenter";
@@ -43,7 +45,7 @@ interface AlertRow {
   short_rate_at_alert?: number | null; volume_surge_at_alert?: number | null;
   alert_tier?: string | null;
   asset_class?: string | null; session?: string | null;
-  private_label?: string | null; capture_action?: string | null; capture_confidence?: number | null;
+  private_label?: string | null; public_label?: string | null; capture_action?: string | null; capture_confidence?: number | null;
   status: string; is_false_positive: number | null;
   latest_max_move: number | null; eod_move: number | null; trade_taken: number;
 }
@@ -66,6 +68,8 @@ const CATALYSTS = [
 const catLabel = (t: string | null) => (t ?? "—").replace(/_/g, " ");
 
 function AlertsPageInner() {
+  const languageMode = useLanguageMode();
+  const isPublic = languageMode === "public";
   const router = useRouter();
   const searchParams = useSearchParams();
   const paramTab = searchParams.get("tab");
@@ -283,7 +287,7 @@ function AlertsPageInner() {
 
       <div className="alerts-tab-header muted">
         {tab === "now"
-          ? "Live BUY CALL / BUY PUT callouts during market hours."
+          ? (isPublic ? "Live call/put momentum watches during market hours." : "Live BUY CALL / BUY PUT callouts during market hours.")
           : tab === "history"
             ? "Signal accuracy — did the callouts work?"
             : "Your trades — manual log + Robinhood CSV import."}
@@ -397,7 +401,9 @@ function AlertsPageInner() {
                                 className={`verdict-pill verdict-${(a.capture_action ?? "wait").toLowerCase() === "trade" ? "trade" : "wait"}`}
                                 title={`${a.session ?? "extended"} stock callout`}
                               >
-                                {a.private_label ?? (a.direction === "bearish" ? "SHORT setup" : "LONG setup")}
+                                {isPublic
+                                  ? (a.public_label ?? uiDirectiveLabel(a.direction === "bearish" ? "short" : "long", "public"))
+                                  : (a.private_label ?? (a.direction === "bearish" ? "SHORT setup" : "LONG setup"))}
                               </span>
                             ) : atAlert ? (
                               <span className={`verdict-pill verdict-${atAlert.action.toLowerCase()}`} title={atAlert.reason}>{atAlert.headline}</span>

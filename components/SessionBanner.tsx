@@ -3,8 +3,10 @@
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 import { marketSession, type MarketSession } from "@/lib/trading-session";
+import { useLanguageMode } from "@/hooks/useLanguageMode";
 
-const MESSAGES: Record<MarketSession, { text: ReactNode }> = {
+function messages(isPublic: boolean): Record<MarketSession, { text: ReactNode }> {
+  return {
   regular: {
     text: (
       <>
@@ -14,7 +16,11 @@ const MESSAGES: Record<MarketSession, { text: ReactNode }> = {
     ),
   },
   premarket: {
-    text: (
+    text: isPublic ? (
+      <>
+        Premarket — tape is live; <strong>call/put momentum watches</strong> begin at 9:30 AM ET.
+      </>
+    ) : (
       <>
         Premarket — tape is live; <strong>BUY CALL/PUT</strong> callouts fire at 9:30 AM ET.
       </>
@@ -30,10 +36,12 @@ const MESSAGES: Record<MarketSession, { text: ReactNode }> = {
   closed: {
     text: <>Market closed — scanning pauses until 4:00 AM ET premarket.</>,
   },
-};
+  };
+}
 
 export function SessionBanner() {
   const [session, setSession] = useState<MarketSession | null>(null);
+  const languageMode = useLanguageMode();
   useEffect(() => {
     const update = () => setSession(marketSession());
     update();
@@ -42,7 +50,7 @@ export function SessionBanner() {
   }, []);
 
   if (!session) return null;
-  const msg = MESSAGES[session];
+  const msg = messages(languageMode === "public")[session];
 
   const bannerClass =
     session === "regular"

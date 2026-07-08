@@ -2,6 +2,8 @@
 
 import { TradeVerdictHero } from "@/components/TradeVerdictHero";
 import { fmtPremium } from "@/lib/format";
+import { showOrderTicket } from "@/lib/language-modes";
+import { useLanguageMode } from "@/hooks/useLanguageMode";
 import type { AlertVerdictInput, LiveTapeContext } from "@/lib/trade-verdict";
 
 export function VerdictPreviewBlock({
@@ -17,6 +19,7 @@ export function VerdictPreviewBlock({
   compact?: boolean;
   onCopyTicket?: () => void;
 }) {
+  const mode = useLanguageMode();
   if (!alertInput) return null;
 
   return (
@@ -27,7 +30,7 @@ export function VerdictPreviewBlock({
           Entry @ <span className="num">{fmtPremium(entryPremium)}</span> (mid)
         </div>
       ) : null}
-      {onCopyTicket ? (
+      {onCopyTicket && showOrderTicket(mode) ? (
         <button type="button" className="pill btn btn-xs verdict-copy-btn" onClick={onCopyTicket}>
           Copy ticket
         </button>
