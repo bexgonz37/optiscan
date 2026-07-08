@@ -1,50 +1,70 @@
 @import "tailwindcss";
 
-/* ═══ OPTISCAN chrome-noir (mockup spec) ═══ */
+@theme {
+  --color-axiom-bg: #05080f;
+  --color-axiom-chrome: #46b4e8;
+  --color-axiom-bull: #20e39a;
+  --color-axiom-bull-bright: #2ff0a6;
+  --color-axiom-bear: #ff5162;
+  --color-axiom-bear-bright: #ff6b78;
+  --color-axiom-amber: #ffb64a;
+  --color-axiom-purple: #c79bf0;
+  --color-axiom-text: #d3e4ef;
+  --color-axiom-dim: #7f9db0;
+  --color-axiom-label: #5f7d93;
+  --font-display: "Chakra Petch", "Hanken Grotesk", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+/* ═══ OPTISCAN — Axiom HUD tokens (dark primary) ═══ */
 :root {
-  --black: #060607;
-  --white: #f5f7f6;
-  --chrome: #e4e9ea;
-  --silver: #b6bec1;
-  --steel: #737b7e;
-  --soft: rgba(245, 247, 246, 0.68);
-  --muted: rgba(245, 247, 246, 0.4);
-  --line: rgba(222, 230, 231, 0.12);
-  --line-strong: rgba(222, 230, 231, 0.3);
-  --chrome-grad: linear-gradient(180deg, #ffffff 0%, #d6dcde 38%, #8e979b 64%, #eef2f3 100%);
-  /* Robinhood-style metallic green — same shine structure as chrome, clearly green */
-  --green-shine-grad: linear-gradient(180deg, #c5ffd6 0%, #00c805 34%, #007a34 58%, #8af5b2 100%);
+  --black: #05080f;
+  --white: #d3e4ef;
+  --chrome: #46b4e8;
+  --silver: #bcdcec;
+  --steel: #7f9db0;
+  --soft: rgba(211, 228, 239, 0.68);
+  --muted: #7f9db0;
+  --dim: #5f7d93;
+  --line: rgba(70, 180, 232, 0.15);
+  --line-strong: rgba(70, 180, 232, 0.28);
+  --chrome-grad: linear-gradient(180deg, #eaf5fd 0%, #46b4e8 100%);
+  --green-shine-grad: linear-gradient(180deg, #8fffd0 0%, #20e39a 40%, #0a8f5c 100%);
   --green-grad: var(--green-shine-grad);
-  --display-grad: var(--green-shine-grad);
-  --green: #00c805;
-  --red: #f2635a;
-  --amber: #e8b64c;
-  --edge: max(clamp(28px, 5vw, 84px), calc((100% - 1280px) / 2));
-  --font: "Hanken Grotesk", "Helvetica Neue", Arial, sans-serif;
-  --display: "Bricolage Grotesque", "Hanken Grotesk", sans-serif;
-  /* legacy aliases for existing components */
+  --display-grad: linear-gradient(180deg, #eaf5fd 0%, #2ff0a6 100%);
+  --green: #20e39a;
+  --red: #ff5162;
+  --amber: #ffb64a;
+  --edge: max(clamp(16px, 2vw, 28px), calc((100% - 1440px) / 2));
+  --font: var(--font-display);
+  --display: var(--font-display);
   --bg: var(--black);
-  --bg2: #0b0c0d;
-  --panel: #0b0c0d;
-  --panel2: #101112;
+  --bg2: #0b141f;
+  --panel: linear-gradient(180deg, rgba(11, 20, 31, 0.74), rgba(7, 12, 20, 0.68));
+  --panel-solid: #0b141f;
+  --panel2: #07121c;
   --line2: var(--line-strong);
   --txt: var(--white);
-  --dim: var(--steel);
-  --bull: var(--green);
-  --bear: var(--red);
-  --accent: var(--green);
-  --green-dim: rgba(53, 208, 127, 0.12);
-  --red-dim: rgba(242, 99, 90, 0.12);
-  --violet: #8b7dff;
-  --cyan: var(--silver);
-  --radius: 0;
-  --radius-sm: 0;
+  --bull: #2ff0a6;
+  --bear: #ff5162;
+  --accent: #46b4e8;
+  --green-dim: rgba(47, 240, 166, 0.12);
+  --red-dim: rgba(255, 81, 98, 0.12);
+  --violet: #c79bf0;
+  --cyan: #46b4e8;
+  --radius: 4px;
+  --radius-sm: 4px;
   --shadow: none;
   --sans: var(--font);
-  --mono: var(--font);
-  --glow1: rgba(222, 230, 231, 0.06);
-  --glow2: rgba(53, 208, 127, 0.04);
+  --mono: var(--font-mono);
+  --glow1: rgba(70, 180, 232, 0.06);
+  --glow2: rgba(47, 240, 166, 0.04);
   --row-h: 36px;
+  --warn: var(--amber);
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --text-xs: 0.625rem;
 }
 
 :root[data-theme="light"] {
@@ -83,9 +103,9 @@ body {
 body {
   font-family: var(--font);
   background:
-    radial-gradient(circle at 78% 6%, rgba(222, 230, 231, 0.07), transparent 28rem),
-    radial-gradient(circle at 8% 90%, rgba(53, 208, 127, 0.045), transparent 30rem),
-    linear-gradient(125deg, #020203 0%, #0b0c0d 52%, #060607 100%);
+    radial-gradient(circle at 12% 0%, rgba(70, 180, 232, 0.08), transparent 40%),
+    radial-gradient(circle at 88% 100%, rgba(47, 240, 166, 0.05), transparent 35%),
+    linear-gradient(180deg, #03050a 0%, var(--black) 45%, #03060c 100%);
   background-attachment: fixed;
   color: var(--white);
   -webkit-font-smoothing: antialiased;
@@ -96,16 +116,21 @@ body::before {
   content: "";
   position: fixed;
   inset: 0;
-  z-index: 2;
+  z-index: 0;
   pointer-events: none;
-  background: radial-gradient(circle at 50% 50%, transparent 56%, rgba(0, 0, 0, 0.55) 100%);
+  background:
+    linear-gradient(rgba(70, 180, 232, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(70, 180, 232, 0.03) 1px, transparent 1px);
+  background-size: 46px 46px;
+  opacity: 0.35;
 }
 body::after {
   content: "";
   position: fixed;
-  inset: 0.9rem;
-  z-index: 3;
-  border: 1px solid rgba(222, 230, 231, 0.08);
+  inset: 8px;
+  z-index: 1;
+  border: 1px solid rgba(70, 180, 232, 0.1);
+  border-radius: 8px;
   pointer-events: none;
 }
 

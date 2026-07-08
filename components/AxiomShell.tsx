@@ -1,27 +1,30 @@
 "use client";
 
-import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { marketSession, type MarketSession } from "@/lib/trading-session";
+import { NavRail } from "@/components/ui/NavRail";
 
-const NAV = [
-  { href: "/", label: "Live", sub: "Scanner" },
-  { href: "/alerts", label: "Alerts", sub: "Track record" },
-  { href: "/settings", label: "Settings", sub: "Config" },
-  { href: "/review", label: "Review", sub: "How it works" },
-] as const;
+const SCANNER_NAV = [{ href: "/", label: "Live / Options" }];
+
+const INTEL_NAV = [
+  { href: "/alerts", label: "Accuracy" },
+  { href: "/alerts?tab=history", label: "Performance" },
+  { href: "/settings", label: "Settings" },
+  { href: "/review", label: "Review" },
+];
 
 const PAGE_META: Record<string, { title: string; sub: string }> = {
   "/": { title: "Live Scanner", sub: "0DTE · share momentum" },
-  "/alerts": { title: "Alerts", sub: "Track record · performance" },
+  "/alerts": { title: "Accuracy", sub: "Track record · calibration" },
   "/settings": { title: "Settings", sub: "Thresholds · Discord" },
   "/review": { title: "Review", sub: "Methodology · limits" },
 };
 
 function isActive(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
-  if (href === "/alerts") return pathname === "/alerts" || pathname.startsWith("/alert-lab");
+  if (href.startsWith("/alerts")) return pathname === "/alerts" || pathname.startsWith("/alert-lab");
+  if (href.startsWith("/?")) return false;
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
@@ -74,35 +77,31 @@ export function AxiomShell({ children }: { children: ReactNode }) {
     <div className="axiom-viewport">
       <div className="deck axiom-deck">
         <div className="appshell">
-          <aside className="rail" aria-label="Main navigation">
-            <Link href="/" className="raillogo">
-              OPTI<span>SCAN</span>
-            </Link>
-            <div className="railtag">LIVE TERMINAL</div>
-
-            <nav className="railnav">
-              <div className="railsec">WORKSPACE</div>
-              {NAV.map((item) => (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  prefetch
-                  className={`navitem${isActive(pathname, item.href) ? " on" : ""}`}
-                >
-                  <span className="ni" aria-hidden />
-                  {item.label}
-                </Link>
-              ))}
-            </nav>
-
-            <div className="railfoot">
-              <div className="scanpill">
-                <span className="dot" style={liveOk === false ? { background: "#ff5162", boxShadow: "0 0 10px #ff5162" } : undefined} />
-                {liveOk === null ? "Checking…" : liveOk ? "Scanner online" : "Check failed"}
-              </div>
-              <div className="railu">{session ?? "—"} · {clock} ET</div>
-            </div>
-          </aside>
+          <NavRail
+            logo={
+              <>
+                OPTI<span>SCAN</span>
+              </>
+            }
+            tagline="LIVE TERMINAL"
+            sections={[
+              { title: "SCANNERS", items: SCANNER_NAV },
+              { title: "INTELLIGENCE", items: INTEL_NAV },
+            ]}
+            isActive={(href) => isActive(pathname, href)}
+            footer={
+              <>
+                <div className="scanpill">
+                  <span
+                    className="dot"
+                    style={liveOk === false ? { background: "#ff5162", boxShadow: "0 0 10px #ff5162" } : undefined}
+                  />
+                  {liveOk === null ? "Checking Polygon…" : liveOk ? "Polygon live" : "Health check failed"}
+                </div>
+                <div className="railu">{session ?? "—"} · {clock} ET</div>
+              </>
+            }
+          />
 
           <div className="maincol">
             {!isLive ? (
@@ -112,7 +111,7 @@ export function AxiomShell({ children }: { children: ReactNode }) {
                 <div className="clk" style={{ marginLeft: "auto" }}>{clock} ET</div>
               </div>
             ) : null}
-            <div className={`pagewrap${isLive ? "" : " scroll-page"}`}>{children}</div>
+            <div className="pagewrap">{children}</div>
           </div>
         </div>
       </div>

@@ -1,6 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { ConvictionRing } from "@/components/ui/ConvictionRing";
+import { Panel } from "@/components/ui/Panel";
+import { SignalCard } from "@/components/ui/SignalCard";
+import { StatTile } from "@/components/ui/StatTile";
+import { TrackingRow } from "@/components/ui/TrackingRow";
 import { useScannerStream } from "@/hooks/useScannerStream";
 import { scanHeaders } from "@/hooks/useScanner";
 import { useStableSymbolOrder } from "@/lib/stable-order";
@@ -133,35 +139,6 @@ function useSampledSnapshot<T>(live: T, intervalMs: number, resetKey: string): T
   return sample;
 }
 
-function stripHtml(html: string): string {
-  return html.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
-}
-
-function ConvictionRing({ value }: { value: number }) {
-  const r = 88;
-  const c = 2 * Math.PI * r;
-  const v = Math.min(100, Math.max(0, value));
-  const offset = c * (1 - v / 100);
-  return (
-    <div className="ringwrap">
-      <svg className="ring" viewBox="0 0 200 200" aria-hidden>
-        <circle className="ringbg" cx="100" cy="100" r={r} />
-        <circle className="ringfg" cx="100" cy="100" r={r} strokeDasharray={c} strokeDashoffset={offset} />
-      </svg>
-      <div className="ringctr">
-        <div className="ringnum">{Math.round(v)}</div>
-        <div className="ringlbl">SCORE</div>
-      </div>
-    </div>
-  );
-}
-
-function heatCellStyle(val: number | null | undefined): React.CSSProperties {
-  if (val == null) return { background: "rgba(255,255,255,.04)", color: "#5f7d93" };
-  const t = Math.min(1, Math.abs(val) / 4);
-  if (val >= 0) return { background: `rgba(47,240,166,${0.12 + t * 0.45})`, color: "#2ff0a6", borderColor: "rgba(47,240,166,.25)" };
-  return { background: `rgba(255,81,98,${0.12 + t * 0.45})`, color: "#ff6b78", borderColor: "rgba(255,81,98,.25)" };
-}
 
 function computeConviction(
   scope: Scope,
@@ -193,6 +170,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
   const [holdPinned, setHoldPinned] = useState(false);
   const [heroAlert, setHeroAlert] = useState<any | null>(null);
   const [settled, setSettled] = useState<any[]>([]);
+  const [trackingAlerts, setTrackingAlerts] = useState<any[]>([]);
   const hotSince = useRef(new Map<string, number>());
   const fastFilterState = useRef(new Map<string, { inList: boolean; pendingSince: number | null }>());
   const { realtime: loop } = useScannerStream();
@@ -232,6 +210,11 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
           .sort((a, b) => b.id - a.id)
           .slice(0, 10);
         if (!cancelled) setSettled(recent);
+        const tracking = productAlerts
+          .filter((a) => a.status === "tracking")
+          .sort((a, b) => b.id - a.id)
+          .slice(0, 8);
+        if (!cancelled) setTrackingAlerts(tracking);
       } catch { /* best effort */ }
     };
     poll();
@@ -321,256 +304,233 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
       : "Ranks refresh every 20s · hover scanners or tap Hold";
 
   const conviction = computeConviction(scope, heroAlert, heroVerdict, openingCandidate);
-  const primeBear = scope === "options"
-    ? (heroSide === "put" || openingSide === "put")
+  const heroBear = scope === "options"
+    ? (heroSide === "put" || (optionsOpeningWatch && openingSide === "put"))
     : stockSide === "SHORT";
-  const flowRows = displayRows.slice(0, 8);
-  const momRows = displayRows.slice(0, 12);
-  const heatRows = displayRows.slice(0, 6);
+  const trackingList = trackingAlerts.length ? trackingAlerts : settled.slice(0, 6);
+  const heroLive = Boolean(
+    (scope === "options" && optionsActive && heroAlert && heroVerdict?.action === "TRADE")
+    || (scope === "market" && marketActive && heroAlert),
+  );
 
   return (
-    <div className={`grid1a chrome-live${readingHold ? " reading-hold" : ""}${liveSession === "closed" ? " session-closed" : ""}`}>
-      <div className="topbar">
-        <div>
-          <div className="brand">OPTI<b>SCAN</b></div>
-          <div className="brandsub">LIVE TERMINAL</div>
+    <div className={`axiom-live chrome-live${readingHold ? " reading-hold" : ""}${liveSession === "closed" ? " session-closed" : ""}`}>
+      <div className="axiom-scan-sweep" aria-hidden />
+
+      <div className="product-bar" aria-label="Scanner product">
+        <div className="product-tabs">
+          <button type="button" className={scope === "options" ? "on" : ""} onClick={() => { setScope("options"); saveDashboardPrefs({ liveScope: "options" }); }}>
+            <span>Options</span><small>Opening watch 4:00–9:30 · live 9:30–4:00</small>
+          </button>
+          <button type="button" className={scope === "market" ? "on" : ""} onClick={() => { setScope("market"); saveDashboardPrefs({ liveScope: "market" }); }}>
+            <span>Market</span><small>Shares · 4:00 AM–8:00 PM ET</small>
+          </button>
         </div>
-        <div className="seg" role="tablist" aria-label="Scanner product">
-          <button type="button" className={`segb${scope === "options" ? " on" : ""}`} onClick={() => { setScope("options"); saveDashboardPrefs({ liveScope: "options" }); }}>Options</button>
-          <button type="button" className={`segb${scope === "market" ? " on" : ""}`} onClick={() => { setScope("market"); saveDashboardPrefs({ liveScope: "market" }); }}>Market</button>
-        </div>
-        {strip.slice(0, 3).map((s) => (
-          <div className="chip" key={s.k}>
-            <div className="chipk">{s.k}</div>
-            <div className="chipv num">{s.v}</div>
-          </div>
-        ))}
-        <div className="scanpill">
-          <span className="dot" />
-          {marketActive ? "Scanner live" : "Session closed"} · {clockFromLoop(liveSession)}
+        <div className={`product-session ${marketActive ? "live" : "closed"}`}>
+          <span className="product-session-dot" />{sessionLabel}
         </div>
       </div>
 
-      <div className="rstack">
-        <div className="panel">
-          <div className="ph">
-            <div className="pht"><i aria-hidden />Tape flow</div>
-            <div className="phc rec">Live</div>
-          </div>
-          <div className="pb">
-            {flowRows.length ? flowRows.map((r, i) => (
-              <div
-                key={r.symbol}
-                className={`frow ${(r.shortRate ?? r.movePct ?? 0) >= 0 ? "c" : "p"}`}
-                role="button"
-                tabIndex={0}
-                onClick={() => onOpenChart?.(r.symbol)}
-                onKeyDown={(e) => e.key === "Enter" && onOpenChart?.(r.symbol)}
-              >
-                <span className="ftime num">{String(i + 1).padStart(2, "0")}</span>
-                <span className="fsym">{r.symbol}</span>
-                <span className="fstrike">{stripHtml(whyLine(readingHold ? r : (rowMap.get(r.symbol) ?? r), scope)).slice(0, 42)}</span>
-                <span className="fprem num">{fmtPct(r.movePct)}</span>
+      <div className="axiom-hero-row">
+        <SignalCard
+          bear={heroBear}
+          live={heroLive}
+          kicker={
+            scope === "options" && optionsActive && heroAlert && heroVerdict?.action === "TRADE"
+              ? <>The callout · {new Date(heroAlert.alert_time).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })} · still valid</>
+              : scope === "options" && optionsOpeningWatch
+                ? <>Opening watch · premarket · not executable yet</>
+                : scope === "market" && marketActive && heroAlert
+                  ? <>Share momentum · {stockSession}</>
+                  : <>Waiting for the next {scope === "options" ? "0DTE BUY" : "SHARE CALLOUT"}</>
+          }
+          action={
+            scope === "options" && optionsActive && heroAlert && heroVerdict?.action === "TRADE"
+              ? <>BUY {heroSide.toUpperCase()}</>
+              : scope === "options" && optionsOpeningWatch && openingCandidate
+                ? <>WATCH {openingSide.toUpperCase()}</>
+                : scope === "market" && marketActive && heroAlert
+                  ? <>{stockSideLabel}</>
+                  : <>{marketActive ? "SCANNING" : "CLOSED"}</>
+          }
+          contract={
+            scope === "options" && optionsActive && heroAlert && heroVerdict?.action === "TRADE"
+              ? <>{heroAlert.ticker} ${heroAlert.strike} {heroSide} · {heroAlert.dte ?? 0}DTE</>
+              : scope === "options" && optionsOpeningWatch && openingCandidate
+                ? <>{openingCandidate.symbol} · premarket bias</>
+                : scope === "market" && marketActive && heroAlert
+                  ? <>{heroAlert.ticker} shares</>
+                  : <>{scope === "options" ? "0DTE desk" : "Share momentum desk"}</>
+          }
+          reason={
+            scope === "options" && optionsActive && heroAlert && heroVerdict?.action === "TRADE"
+              ? heroVerdict.reason
+              : scope === "options" && optionsOpeningWatch && openingCandidate
+                ? <>Premarket {fmtPct(openingCandidate.movePct)} · speed {openingCandidate.shortRate != null ? `${openingCandidate.shortRate.toFixed(2)}%/min` : "—"} · contracts validate at 9:30</>
+                : scope === "market" && marketActive && heroAlert
+                  ? heroAlert.ai_explanation ?? heroAlert.private_label ?? "Clean directional tape with share-volume confirmation."
+                  : productNote
+          }
+          footer={
+            <>
+              <div className="convbar"><div className="convfill" style={{ width: `${conviction}%` }} /></div>
+              <div className="sigmeta">
+                {scope === "options" && heroAlert && heroVerdict?.action === "TRADE" ? (
+                  <>
+                    <div className="mm"><div className="mmk">Entry</div><div className="mmv num">{heroAlert.entry_mid != null ? `$${Number(heroAlert.entry_mid).toFixed(2)}` : "—"}</div></div>
+                    <div className="mm"><div className="mmk">Spread</div><div className="mmv num">{heroAlert.entry_spread_pct != null ? `${Number(heroAlert.entry_spread_pct).toFixed(1)}%` : "—"}</div></div>
+                    <div className="mm"><div className="mmk">Delta</div><div className="mmv num">{heroAlert.entry_delta != null ? Number(heroAlert.entry_delta).toFixed(2) : "—"}</div></div>
+                    <div className="mm"><div className="mmk">Speed</div><div className="mmv num">{heroAlert.short_rate_at_alert != null ? `${heroAlert.short_rate_at_alert > 0 ? "+" : ""}${heroAlert.short_rate_at_alert.toFixed(2)}%/m` : "—"}</div></div>
+                  </>
+                ) : scope === "market" && heroAlert ? (
+                  <>
+                    <div className="mm"><div className="mmk">Entry</div><div className="mmv num">{entryLow != null && entryHigh != null ? `$${entryLow.toFixed(2)}–${entryHigh.toFixed(2)}` : "—"}</div></div>
+                    <div className="mm"><div className="mmk">Speed</div><div className="mmv num">{heroAlert.short_rate_at_alert != null ? `${heroAlert.short_rate_at_alert > 0 ? "+" : ""}${heroAlert.short_rate_at_alert.toFixed(2)}%/m` : "—"}</div></div>
+                    <div className="mm"><div className="mmk">Volume</div><div className="mmv num">{heroAlert.volume_surge_at_alert != null ? `${heroAlert.volume_surge_at_alert.toFixed(1)}×` : "—"}</div></div>
+                  </>
+                ) : null}
               </div>
-            )) : (
-              <div className="frow"><span className="fstrike" style={{ gridColumn: "1 / -1", color: "#5f7d93" }}>Building tape…</span></div>
-            )}
-          </div>
+              <p className="gates" style={{ marginTop: 10 }}>Every gate passed — <b>speed</b> · <b>volume</b> · <b>trend</b> · <b>fillable</b></p>
+            </>
+          }
+        />
+
+        <div className="axiom-hero-ring">
+          <ConvictionRing value={conviction} bear={heroBear} label="TODAY" />
+          <div className="axiom-today">Scoreline · {tradingDay()}</div>
         </div>
 
-        <div className="panel">
-          <div className="ph">
-            <div className="pht"><i aria-hidden />Session pulse</div>
-            <div className="phc">{productNote.slice(0, 28)}</div>
-          </div>
-          <div className="pb">
-            {strip.map((s) => (
-              <div className="ivrow" key={s.k}>
-                <span className="ivsym">{s.k.slice(0, 12)}</span>
-                <div className="ivtrk"><div className="ivfill" style={{ width: `${Math.min(100, typeof s.v === "number" ? s.v : 55)}%`, background: "linear-gradient(90deg,#46b4e8,#2ff0a6)" }} /></div>
-                <span className="ivr num">{s.v}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="cencol">
-        <div className={`prime${primeBear ? " bear" : ""}${readingHold ? " reading-hold" : ""}`}>
-          <div className="primebody">
-            <ConvictionRing value={conviction} />
-            <div>
-              {scope === "options" && optionsActive && heroAlert && heroVerdict?.action === "TRADE" ? (
-                <>
-                  <div className="primeact">
-                    BUY {heroSide.toUpperCase()}
-                    <span className="nowchip">LIVE</span>
-                  </div>
-                  <div className="primecon">{heroAlert.ticker} ${heroAlert.strike} · {heroAlert.dte ?? 0}DTE</div>
-                  <div className="primewhy">{heroVerdict.reason}</div>
-                  <div className="primelevels">
-                    <div className="pl"><div className="plk">Mid</div><div className="plv g num">{heroAlert.entry_mid != null ? `$${Number(heroAlert.entry_mid).toFixed(2)}` : "—"}</div></div>
-                    <div className="pl"><div className="plk">Spread</div><div className="plv num">{heroAlert.entry_spread_pct != null ? `${Number(heroAlert.entry_spread_pct).toFixed(1)}%` : "—"}</div></div>
-                    <div className="pl"><div className="plk">Speed</div><div className="plv num">{heroAlert.short_rate_at_alert != null ? `${heroAlert.short_rate_at_alert > 0 ? "+" : ""}${heroAlert.short_rate_at_alert.toFixed(2)}%/m` : "—"}</div></div>
-                  </div>
-                </>
-              ) : scope === "options" && optionsOpeningWatch && openingCandidate ? (
-                <>
-                  <div className="primeact">OPEN WATCH<span className="nowchip">PRE</span></div>
-                  <div className="primecon">{openingCandidate.symbol} · {openingSide} bias</div>
-                  <div className="primewhy">Premarket {fmtPct(openingCandidate.movePct)} · speed {openingCandidate.shortRate != null ? `${openingCandidate.shortRate.toFixed(2)}%/m` : "—"} · validates at 9:30 ET</div>
-                </>
-              ) : scope === "market" && marketActive && heroAlert ? (
-                <>
-                  <div className="primeact">{stockSideLabel}<span className="nowchip">LIVE</span></div>
-                  <div className="primecon">{heroAlert.ticker} shares · {stockSession}</div>
-                  <div className="primewhy">{heroAlert.ai_explanation ?? heroAlert.private_label ?? "Clean directional tape with share-volume confirmation."}</div>
-                  <div className="primelevels">
-                    <div className="pl"><div className="plk">Entry</div><div className="plv num">{entryLow != null && entryHigh != null ? `$${entryLow.toFixed(2)}–${entryHigh.toFixed(2)}` : "—"}</div></div>
-                    <div className="pl"><div className="plk">Speed</div><div className="plv num">{heroAlert.short_rate_at_alert != null ? `${heroAlert.short_rate_at_alert > 0 ? "+" : ""}${heroAlert.short_rate_at_alert.toFixed(2)}%/m` : "—"}</div></div>
-                    <div className="pl"><div className="plk">Volume</div><div className="plv num">{heroAlert.volume_surge_at_alert != null ? `${heroAlert.volume_surge_at_alert.toFixed(1)}×` : "—"}</div></div>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="primeact">{marketActive ? "SCANNING" : "CLOSED"}</div>
-                  <div className="primecon">{scope === "options" ? "0DTE options desk" : "Share momentum desk"}</div>
-                  <div className="primewhy">{scope === "market" && !marketActive ? "Premarket resumes 4:00 AM ET." : "When a callout clears every gate, the ticket lands here first."} Research signals only.</div>
-                </>
-              )}
-            </div>
-          </div>
-          {settled.length ? (
-            <div className="ondeck">
-              <div className="ondeckl"><b />On deck</div>
-              {settled.slice(0, 3).map((a) => {
-                const ret = scope === "market" ? (a.latest_max_move ?? a.move_5m ?? a.eod_move) : a.option_return_pct;
-                const side = String(a.option_side ?? "").toLowerCase().startsWith("p") ? "bear" : "bull";
-                return (
-                  <div key={a.id} className={`tmini${ret != null && ret > 0 ? " win" : ret != null && ret < 0 ? " loss" : ""}`}>
-                    <span className={`miniact ${side}`}>{scope === "market" ? "SH" : side === "bear" ? "PUT" : "CALL"}</span>
-                    <b>{a.ticker}</b>
-                    <span className="num">{ret != null ? `${ret > 0 ? "+" : ""}${Math.round(ret)}%` : "open"}</span>
-                  </div>
-                );
-              })}
-            </div>
-          ) : null}
-        </div>
-
-        <div className="panel">
-          <div className="ph">
-            <div className="pht"><i aria-hidden />Signal queue</div>
-            <div className="phc">{settled.length ? `${settled.length} recent` : "Waiting"}</div>
-          </div>
-          <div className="pb sigwrap">
-            {settled.slice(0, 3).map((a) => {
-              const side = String(a.option_side ?? "").toLowerCase().startsWith("p") ? "bear" : "bull";
-              const ret = scope === "market" ? (a.latest_max_move ?? a.move_5m) : a.option_return_pct;
-              return (
-                <div key={a.id} className={`sig ${side}`}>
-                  <div className="sigtop">
-                    <div className="sigact">{a.ticker}{scope === "options" && a.strike ? ` $${a.strike}` : ""}</div>
-                    <div className="sigconv num">{ret != null ? `${ret > 0 ? "+" : ""}${Math.round(ret)}%` : "—"}<span> ret</span></div>
-                  </div>
-                  <div className="sigwhy">{(a.ai_explanation ?? "scanner callout").slice(0, 90)}</div>
-                </div>
-              );
-            })}
-            {!settled.length ? <div className="sigwhy" style={{ padding: "8px 4px" }}>No {scope === "market" ? "share" : "options"} callouts yet today.</div> : null}
-          </div>
-        </div>
-      </div>
-
-      <div className="panel">
-        <div className="ph">
-          <div className="pht"><i aria-hidden />Active tracking</div>
-          <div className="phc rec">Today</div>
-        </div>
-        <div className="pb">
-          {settled.length ? settled.slice(0, 6).map((a) => {
+        <Panel title="Live tracking" meta={`${trackingList.length} open`} live>
+          {trackingList.length ? trackingList.map((a) => {
             const ret = scope === "market" ? (a.latest_max_move ?? a.move_5m ?? a.eod_move) : a.option_return_pct;
-            const side = a.trade_bias === "stock_short_candidate" || a.direction === "bearish" || String(a.option_side ?? "").toLowerCase().startsWith("p") ? "bear" : "bull";
+            const bear = a.trade_bias === "stock_short_candidate" || a.direction === "bearish" || String(a.option_side ?? "").toLowerCase().startsWith("p");
+            const cp = checkpointMeta(a.alert_time);
             return (
-              <div key={a.id} className={`trow${ret != null && ret > 0 ? " win" : ret != null && ret < 0 ? " loss" : ""}`}>
-                <span className={`ttag ${side}`}>{side === "bear" ? "PUT" : scope === "market" ? "SH" : "CALL"}</span>
-                <span className="tsym"><b>{a.ticker}</b><span className="tpx">{new Date(a.alert_time).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })} ET</span></span>
-                <span className={`tpnl num ${ret != null && ret > 0 ? "g" : ret != null ? "r" : ""}`}>{ret != null ? `${ret > 0 ? "+" : ""}${Math.round(ret)}%` : "open"}</span>
-                <span className="ttimer"><span className="ttime">{a.capture_action === "TRADE" ? "TRADE" : "WATCH"}</span></span>
-              </div>
+              <TrackingRow
+                key={a.id}
+                tag={bear ? (scope === "market" ? "SHORT" : "PUT") : (scope === "market" ? "LONG" : "CALL")}
+                tagTone={bear ? "bear" : "bull"}
+                symbol={a.ticker}
+                sub={new Date(a.alert_time).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })}
+                pnl={ret != null ? `${ret > 0 ? "+" : ""}${Math.round(ret)}%` : "open"}
+                pnlTone={ret != null && ret > 0 ? "g" : ret != null ? "r" : ""}
+                win={ret != null && ret > 0}
+                loss={ret != null && ret < 0}
+                right={
+                  <>
+                    <span className="ttime">{cp.label}</span>
+                    <div className="tbar"><div className="tfill" style={{ width: `${cp.pct}%` }} /></div>
+                  </>
+                }
+              />
             );
           }) : (
-            <div className="trow"><span className="tsym"><b>—</b><span className="tpx">Waiting for first callout</span></span></div>
+            <div className="sigwhy">No open callouts tracking right now.</div>
           )}
-        </div>
+        </Panel>
       </div>
 
-      <div className="botgrid">
-        <div className="panel">
-          <div className="ph">
-            <div className="pht"><i aria-hidden />Momentum tape</div>
-            <div className="phc">
-              <label className="sort-control" style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
-                <span>Sort</span>
-                <select value={sortKey} onChange={(e) => { const next = e.target.value as LiveSortKey; setSortKey(next); saveDashboardPrefs({ liveSort: next }); }} aria-label="Sort scanner">
-                  {SORTS.map((s) => <option value={s.key} key={s.key}>{s.label}</option>)}
-                </select>
-              </label>
-              <button type="button" className={`hold-btn${readingHold ? " on" : ""}`} style={{ marginLeft: 8 }} onClick={() => setHoldPinned((v) => !v)}>{readingHold ? "Holding" : "Hold"}</button>
-            </div>
-          </div>
-          <div className="pb" onMouseEnter={() => setHovering(true)} onMouseLeave={() => setHovering(false)}>
-            {momRows.map((r, i) => {
-              const liveRow = rowMap.get(r.symbol) ?? r;
-              const spd = Math.abs(liveRow.shortRate ?? 0);
-              const barW = Math.min(100, spd * 180);
-              return (
-                <div key={r.symbol} className="mrow" role="button" tabIndex={0} onClick={() => onOpenChart?.(r.symbol)} onKeyDown={(e) => e.key === "Enter" && onOpenChart?.(r.symbol)}>
-                  <span className="mrank num">{i + 1}</span>
-                  <span className="msym">{r.symbol}</span>
-                  <div className="mtrk"><div className="mfill" style={{ width: `${barW}%` }} /></div>
-                  <span className="mrvol num">{liveRow.surge != null ? `${liveRow.surge.toFixed(1)}×` : "—"}</span>
-                  <span className={`mchg num ${pctClass(liveRow.movePct)}`}><TickValue value={liveRow.movePct} minDelta={0.08}>{fmtPct(liveRow.movePct)}</TickValue></span>
-                </div>
-              );
-            })}
-            <div className="phc" style={{ marginTop: 6 }}>{holdNote}</div>
-          </div>
-        </div>
+      <div className="axiom-strip">
+        {strip.map((s) => (
+          <StatTile key={s.k} label={s.k} value={s.v} hint={s.s} />
+        ))}
+      </div>
 
-        <div className="panel">
-          <div className="ph">
-            <div className="pht"><i aria-hidden />Tape heatmap</div>
-            <div className="phc">{sortLabel}</div>
-          </div>
-          <div className="pb">
-            <div className="hmhead">
-              <span>SYM</span><span>SPD</span><span>MOVE</span><span>SURGE</span><span>LVL</span>
-            </div>
-            <div className="hm">
-              {heatRows.map((r) => {
+      <div className="section-head scanner-head">
+        <span className="section-title">Scanners</span>
+        <span className="section-head-actions">
+          <span className="section-note">{productNote} · {holdNote}</span>
+          <label className="sort-control">
+            <span>Sort</span>
+            <select value={sortKey} onChange={(e) => {
+              const next = e.target.value as LiveSortKey;
+              setSortKey(next);
+              saveDashboardPrefs({ liveSort: next });
+            }} aria-label="Sort scanner names">
+              {SORTS.map((s) => <option value={s.key} key={s.key}>{s.label}</option>)}
+            </select>
+          </label>
+          <button type="button" className={`hold-btn${readingHold ? " on" : ""}`} onClick={() => setHoldPinned((v) => !v)} aria-pressed={readingHold}>
+            {readingHold ? "Holding" : "Hold"}
+          </button>
+        </span>
+      </div>
+
+      <div className="scanners axiom-scanners" onMouseEnter={() => setHovering(true)} onMouseLeave={() => setHovering(false)}>
+        {columns.map((col) => (
+          <div className="scanner" key={col.title}>
+            <h3>{col.title}</h3>
+            <ul>
+              {col.rows.map((r) => {
                 const liveRow = rowMap.get(r.symbol) ?? r;
                 return (
-                  <div className="hmrow" key={r.symbol}>
-                    <span className="hmsym">{r.symbol}</span>
-                    <span className="hmcell num" style={heatCellStyle(liveRow.shortRate)}>{liveRow.shortRate != null ? liveRow.shortRate.toFixed(1) : "—"}</span>
-                    <span className="hmcell num" style={heatCellStyle(liveRow.movePct)}>{liveRow.movePct != null ? `${liveRow.movePct > 0 ? "+" : ""}${liveRow.movePct.toFixed(1)}` : "—"}</span>
-                    <span className="hmcell num" style={heatCellStyle((liveRow.surge ?? 1) - 1)}>{liveRow.surge != null ? liveRow.surge.toFixed(1) : "—"}</span>
-                    <span className="hmcell num" style={heatCellStyle(liveRow.hodBreak ? 2 : liveRow.lodBreak ? -2 : 0)}>{liveRow.hodBreak ? "HOD" : liveRow.lodBreak ? "LOD" : "—"}</span>
-                  </div>
+                  <li
+                    key={r.symbol}
+                    onClick={() => onOpenChart?.(r.symbol)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => e.key === "Enter" && onOpenChart?.(r.symbol)}
+                  >
+                    <span className="sym">{r.symbol}</span>
+                    <span className="why" dangerouslySetInnerHTML={{ __html: readingHold ? whyLine(r, scope) : whyLine(liveRow, scope) }} />
+                    <span className={`m num ${pctClass(liveRow.movePct)}`}>
+                      <TickValue value={liveRow.movePct} minDelta={0.08}>{fmtPct(liveRow.movePct)}</TickValue>
+                      <small>{liveRow.price != null ? `$${liveRow.price.toFixed(2)}` : "—"}</small>
+                    </span>
+                  </li>
                 );
               })}
-            </div>
+            </ul>
           </div>
-        </div>
+        ))}
       </div>
+
+      <div className="section-head">
+        <span className="section-title">Recent callouts</span>
+        <span className="section-note">Newest first · today&apos;s {scope === "market" ? "share" : "options"} signals</span>
+      </div>
+      <ul className="ledger axiom-ledger">
+        {settled.length ? settled.map((a) => {
+          const ret = scope === "market" ? (a.latest_max_move ?? a.move_5m ?? a.eod_move) : a.option_return_pct;
+          const side = String(a.option_side ?? "").toLowerCase().startsWith("p") ? "put" : "call";
+          const sess = a.session === "afterhours" ? "AH" : a.session === "premarket" ? "Pre" : a.session === "regular" ? "RTH" : "";
+          return (
+            <li key={a.id}>
+              <span className="t num">{new Date(a.alert_time).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })}{sess ? ` · ${sess}` : ""}</span>
+              <span className="what">
+                {scope === "market"
+                  ? `${uiDirectiveLabel(a.trade_bias === "stock_short_candidate" || a.direction === "bearish" ? "short" : "long", languageMode)}${languageMode === "public" ? " · " : " "}${a.ticker}${languageMode === "public" ? "" : " shares"}`
+                  : a.capture_action === "TRADE"
+                    ? languageMode === "public"
+                      ? `Signal: ${a.ticker} $${a.strike} ${side}`
+                      : `Bought the ${a.ticker} $${a.strike} ${side}`
+                    : `Watched ${a.ticker}`}
+                <small>{a.ai_explanation?.slice(0, 80) ?? "scanner callout"}</small>
+              </span>
+              <span className={`res num ${ret != null && ret > 0 ? "pos" : ret != null ? "neg" : "open"}`}>
+                {ret != null ? `${ret > 0 ? "+" : ""}${Math.round(ret)}%` : "open"}
+              </span>
+            </li>
+          );
+        }) : (
+          <li><span className="t">—</span><span className="what muted">No {scope === "market" ? "share" : "options"} callouts yet today</span><span className="res open">waiting</span></li>
+        )}
+      </ul>
+
+      <p className="foot" style={{ marginTop: "1rem", color: "var(--muted)", fontSize: ".72rem" }}>
+        Research signals, never orders. Not financial advice. · <Link href="/alerts" className="chrome-link inline-link">Accuracy dashboard</Link>
+      </p>
     </div>
   );
 }
 
-function clockFromLoop(session: string): string {
-  if (session === "premarket") return "Pre 4:00–9:30";
-  if (session === "regular") return "RTH 9:30–4:00";
-  if (session === "afterhours") return "AH until 8 PM";
-  return "Closed";
+function checkpointMeta(alertTime: string): { label: string; pct: number } {
+  const start = Date.parse(alertTime);
+  if (!Number.isFinite(start)) return { label: "open", pct: 0 };
+  const mins = (Date.now() - start) / 60_000;
+  if (mins < 5) return { label: "5m checkpoint", pct: Math.min(100, (mins / 5) * 100) };
+  if (mins < 15) return { label: "15m checkpoint", pct: Math.min(100, ((mins - 5) / 10) * 100) };
+  if (mins < 30) return { label: "30m checkpoint", pct: Math.min(100, ((mins - 15) / 15) * 100) };
+  if (mins < 60) return { label: "1h checkpoint", pct: Math.min(100, ((mins - 30) / 30) * 100) };
+  return { label: "EOD track", pct: 100 };
 }

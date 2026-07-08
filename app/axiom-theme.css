@@ -1,49 +1,15 @@
-/* OptiScan — Axiom Terminal visual system */
+/* OptiScan — Axiom shell + live layout (visual only) */
 @import "./axiom-deck.css";
 
-:root {
-  --axiom-bg: #05080f;
-  --axiom-cyan: #46b4e8;
-  --axiom-green: #2ff0a6;
-  --axiom-red: #ff5162;
-  --axiom-rail-w: 214px;
-}
-
 .axiom-terminal {
-  --black: #05080f;
-  --white: #eaf5fd;
-  --chrome: #eaf5fd;
-  --silver: #bcdcec;
-  --steel: #7f9db0;
-  --muted: #7f9db0;
-  --dim: #5f7d93;
-  --green: #2ff0a6;
+  --green: #20e39a;
   --red: #ff5162;
+  --bull: #2ff0a6;
+  --bear: #ff5162;
+  --accent: #46b4e8;
   --cyan: #46b4e8;
-  --line: rgba(70, 180, 232, 0.15);
-  --line-strong: rgba(70, 180, 232, 0.28);
-  --bg: #05080f;
-  --bg2: #0b141f;
-  --panel: rgba(11, 20, 31, 0.74);
-  --panel2: #07121c;
-  --txt: #eaf5fd;
-  --font: "Chakra Petch", "Hanken Grotesk", sans-serif;
-  --display: "Chakra Petch", "Hanken Grotesk", sans-serif;
-  --mono: "JetBrains Mono", ui-monospace, monospace;
-  --green-shine-grad: linear-gradient(180deg, #8fffd0 0%, #2ff0a6 40%, #0a8f5c 100%);
-  --display-grad: linear-gradient(180deg, #eaf5fd 0%, #46b4e8 100%);
-}
-
-.axiom-terminal body {
-  background: #03050a;
-  color: #eaf5fd;
-  min-height: 100vh;
-  overflow: hidden;
-}
-
-.axiom-terminal body::before,
-.axiom-terminal body::after {
-  display: none;
+  --display-grad: linear-gradient(180deg, #eaf5fd 0%, #2ff0a6 100%);
+  --green-shine-grad: linear-gradient(180deg, #8fffd0 0%, #20e39a 40%, #0a8f5c 100%);
 }
 
 .axiom-viewport {
@@ -74,27 +40,14 @@
 .axiom-terminal .pagewrap {
   min-height: 0;
   height: 100%;
-  overflow: hidden;
-}
-
-.axiom-terminal .pagewrap.scroll-page {
   overflow: auto;
   overscroll-behavior: contain;
+  padding: 2px 4px 12px;
 }
 
 .axiom-terminal .rail a.navitem {
   text-decoration: none;
   color: inherit;
-}
-
-.axiom-terminal .seg button,
-.axiom-terminal .segb {
-  cursor: pointer;
-}
-
-.axiom-terminal .chrome-app {
-  padding: 0;
-  max-width: none;
 }
 
 .axiom-terminal .app-shell {
@@ -107,19 +60,280 @@
   display: none;
 }
 
-.axiom-terminal .chrome-live {
+.axiom-terminal .chrome-app,
+.axiom-terminal .live-page-tabs {
+  padding: 0;
+  max-width: none;
   height: 100%;
-  min-height: 0;
+}
+
+.axiom-scan-sweep {
+  pointer-events: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 32%;
+  transform: translateY(-120%);
+  background: linear-gradient(180deg, transparent, rgba(70, 180, 232, 0.04) 55%, rgba(140, 235, 255, 0.1));
+  animation: axiom-sweep 7.5s cubic-bezier(0.55, 0, 0.45, 1) infinite;
+  z-index: 0;
+}
+
+@keyframes axiom-sweep {
+  0% { transform: translateY(-120%); }
+  72%, 100% { transform: translateY(440%); }
+}
+
+.axiom-live {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 100%;
+}
+
+.axiom-hero-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) auto minmax(280px, 0.9fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.axiom-hero-ring {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(70, 180, 232, 0.15);
+  border-radius: 4px;
+  background: var(--panel);
+}
+
+.axiom-today {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--dim);
+  text-transform: uppercase;
+}
+
+.axiom-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.axiom-stat {
+  border: 1px solid rgba(70, 180, 232, 0.15);
+  border-radius: 4px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.012);
+}
+
+.axiom-stat-k {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.axiom-stat-v {
+  font-size: 22px;
+  font-weight: 700;
+  color: #eaf5fd;
+  margin-top: 4px;
+  text-shadow: 0 0 18px rgba(47, 240, 166, 0.25);
+}
+
+.axiom-stat-h {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.axiom-panel.panel {
+  background: linear-gradient(180deg, rgba(11, 20, 31, 0.74), rgba(7, 12, 20, 0.68));
+}
+
+.axiom-signal .callout-kicker {
+  color: var(--dim);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.axiom-signal .convbar {
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.07);
+  margin-top: 12px;
   overflow: hidden;
 }
 
-.axiom-terminal .live-page-tabs {
+.axiom-signal .convfill {
   height: 100%;
-  min-height: 0;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #46b4e8, #2ff0a6);
+  box-shadow: 0 0 12px rgba(32, 227, 154, 0.6);
+}
+
+.axiom-signal.bear .convfill {
+  background: linear-gradient(90deg, #ff5162, #ff9a4c);
+}
+
+.axiom-signal .sigmeta {
+  display: flex;
+  gap: 16px;
+  margin-top: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.axiom-signal .mmk {
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  color: var(--dim);
+  text-transform: uppercase;
+}
+
+.axiom-signal .mmv {
+  font-weight: 700;
+  color: #e2f1fa;
+}
+
+.axiom-signal .mmv.g { color: #2ff0a6; }
+.axiom-signal .mmv.r { color: #ff6b78; }
+
+.axiom-scanners {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.axiom-scanners .scanner {
+  border: 1px solid rgba(70, 180, 232, 0.15);
+  border-radius: 4px;
+  padding: 10px 12px;
+  background: linear-gradient(180deg, rgba(11, 20, 31, 0.74), rgba(7, 12, 20, 0.68));
+  position: relative;
+}
+
+.axiom-scanners .scanner::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 13px;
+  height: 13px;
+  border-top: 1px solid rgba(70, 180, 232, 0.55);
+  border-left: 1px solid rgba(70, 180, 232, 0.55);
+}
+
+.axiom-scanners .scanner h3 {
+  font-family: var(--font-display);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #c3e4f4;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(70, 180, 232, 0.12);
+  margin-bottom: 4px;
+}
+
+.axiom-scanners .scanner li {
+  display: grid;
+  grid-template-columns: 3.2rem minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(70, 180, 232, 0.1);
+  list-style: none;
+  cursor: pointer;
+}
+
+.axiom-scanners .scanner li:hover {
+  background: rgba(70, 180, 232, 0.04);
+}
+
+.axiom-scanners .scanner .sym {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: #eaf5fd;
+}
+
+.axiom-scanners .scanner .why {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.axiom-scanners .scanner .m {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.axiom-ledger {
+  list-style: none;
+  border: 1px solid rgba(70, 180, 232, 0.15);
+  border-radius: 4px;
+  background: linear-gradient(180deg, rgba(11, 20, 31, 0.74), rgba(7, 12, 20, 0.68));
+  padding: 0 12px;
+}
+
+.axiom-ledger li {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: baseline;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(70, 180, 232, 0.1);
+}
+
+.axiom-ledger li:last-child {
+  border-bottom: 0;
+}
+
+.axiom-terminal .product-bar {
+  margin-top: 0;
+  padding-bottom: 0;
+  border-bottom: 1px solid rgba(70, 180, 232, 0.15);
+}
+
+.axiom-terminal .product-tabs button.on {
+  background: rgba(32, 227, 154, 0.16);
+  color: #2ff0a6;
+}
+
+.axiom-terminal .product-tabs button.on small {
+  color: rgba(47, 240, 166, 0.75);
+}
+
+.axiom-terminal .section-head {
+  margin-top: 0;
+  border-bottom-color: rgba(70, 180, 232, 0.15);
+}
+
+.axiom-terminal .section-title {
+  font-family: var(--font-display);
+  color: #c3e4f4;
+}
+
+.axiom-terminal .hold-btn.on {
+  color: #04140d;
+  background: #2ff0a6;
 }
 
 .axiom-terminal .compliance-footer {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 10px;
   color: var(--dim);
   border-top: 1px solid rgba(70, 180, 232, 0.1);
@@ -134,113 +348,41 @@
 }
 
 .axiom-terminal .mobile-bottom-link.active {
-  color: var(--green);
+  color: #2ff0a6;
 }
 
-/* Inner pages — panel scroll */
-.axiom-terminal .page-deck {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  height: 100%;
-  min-height: 0;
-  overflow: auto;
-  padding: 2px 4px 12px;
-}
-
-.axiom-terminal .page-deck .panel {
-  flex: none;
-}
-
-.axiom-terminal .pagewrap:has(.grid1a) {
-  height: 100%;
-  overflow: hidden;
-}
-
-.axiom-terminal .grid1a {
-  height: 100%;
-  min-height: 0;
-}
-
-.axiom-terminal .sort-control select {
-  min-height: 28px;
-  padding: 2px 8px;
-  border: 1px solid rgba(70, 180, 232, 0.24);
-  border-radius: 4px;
-  background: rgba(5, 8, 15, 0.8);
-  color: #bcdcec;
-  font-family: var(--mono);
-  font-size: 10px;
-}
-
-.axiom-terminal .hold-btn {
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  padding: 4px 10px;
-  border: 1px solid rgba(70, 180, 232, 0.24);
-  border-radius: 4px;
-  background: transparent;
-  color: #8fb3c6;
-  cursor: pointer;
-}
-
-.axiom-terminal .hold-btn.on {
-  color: #04140d;
-  background: #2ff0a6;
-  border-color: #2ff0a6;
-}
-
+.axiom-terminal .page-deck .settings-card,
 .axiom-terminal .page-deck .card,
 .axiom-terminal .page-deck .acc-hero {
   border: 1px solid rgba(70, 180, 232, 0.15);
-  border-radius: 6px;
+  border-radius: 4px;
   background: linear-gradient(180deg, rgba(11, 20, 31, 0.74), rgba(7, 12, 20, 0.68));
 }
 
+.axiom-terminal .ringnum.bear {
+  text-shadow: 0 0 24px rgba(255, 81, 98, 0.4);
+}
+
 @media (max-width: 1100px) {
-  .axiom-terminal .grid1a,
-  .axiom-terminal .grid1b,
-  .axiom-terminal .grid1c {
+  .axiom-hero-row {
     grid-template-columns: 1fr;
-    grid-template-rows: auto auto auto auto auto;
-    height: auto;
-    overflow: auto;
   }
 
-  .axiom-terminal .pagewrap.grid1a {
-    overflow: auto;
+  .axiom-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .axiom-terminal .botgrid {
+  .axiom-scanners {
     grid-template-columns: 1fr;
   }
 
   .axiom-terminal .appshell {
     grid-template-columns: 1fr;
-    overflow: auto;
   }
 
-  .axiom-terminal .rail {
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-  }
-
-  .axiom-terminal .railnav {
-    flex-direction: row;
-    flex-wrap: wrap;
-  }
-
-  .axiom-terminal .railsec,
-  .axiom-terminal .railfoot {
-    display: none;
-  }
-
-  .axiom-terminal .axiom-viewport {
+  .axiom-viewport {
     height: auto;
     min-height: calc(100vh - 42px);
-    overflow: auto;
   }
 
   .axiom-terminal body {

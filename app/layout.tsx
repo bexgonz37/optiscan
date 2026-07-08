@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { Chakra_Petch, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import "./axiom-theme.css";
 import { ToastProvider } from "@/components/Toasts";
@@ -6,6 +7,18 @@ import { GlobalAlerts } from "@/components/GlobalAlerts";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { ComplianceFooter } from "@/components/ComplianceFooter";
 import { AxiomShell } from "@/components/AxiomShell";
+
+const chakra = Chakra_Petch({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-display",
+});
+
+const jetbrains = JetBrains_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-mono",
+});
 
 export const metadata: Metadata = {
   title: "OptiScan — Live scanner & alerts",
@@ -22,15 +35,9 @@ const THEME_INIT = `(function(){try{var p=JSON.parse(localStorage.getItem('optis
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="axiom-terminal">
+    <html lang="en" className={`axiom-terminal ${chakra.variable} ${jetbrains.variable}`}>
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT }} />
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
-        <link
-          href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
-          rel="stylesheet"
-        />
       </head>
       <body>
         <ToastProvider>
