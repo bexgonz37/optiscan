@@ -1,0 +1,97 @@
+/* Data Core + Copilot pages — append to app/axiom-theme.css */
+
+.axiom-terminal .pg-data .data-core-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.75fr);
+  grid-template-rows: auto minmax(320px, 1fr);
+  gap: 12px;
+  min-height: 0;
+}
+
+.axiom-terminal .pg-data .data-firehose-panel {
+  grid-column: 1 / -1;
+  min-height: 360px;
+}
+
+.axiom-terminal .pg-data .data-firehose {
+  max-height: 420px;
+  overflow: auto;
+  padding: 4px 2px;
+}
+
+.axiom-terminal .pg-data .data-core-note,
+.axiom-terminal .pg-data .data-core-foot {
+  margin-top: 10px;
+}
+
+.axiom-terminal .pg-data .data-quota-stat {
+  border: 0;
+  background: transparent;
+  padding: 4px 0 0;
+}
+
+.axiom-terminal .pg-data .data-quota-stat::before {
+  display: none;
+}
+
+.axiom-terminal .pg-data .dqv.neg {
+  color: #ff5162;
+}
+
+.axiom-terminal .pg-copilot .copilot-layout {
+  min-height: calc(100vh - 220px);
+}
+
+.axiom-terminal .pg-copilot .copilot-console {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+.axiom-terminal .pg-copilot .copilot-callout-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.axiom-terminal .pg-copilot .copilot-ticker {
+  font-family: var(--font-display);
+  font-size: 1.6rem;
+  color: #c3e4f4;
+}
+
+.axiom-terminal .pg-copilot .copilot-verdict {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.axiom-terminal .pg-copilot .copilot-verdict.verdict-trade {
+  color: #2ff0a6;
+}
+
+.axiom-terminal .pg-copilot .copilot-verdict.verdict-wait {
+  color: #46b4e8;
+}
+
+.axiom-terminal .pg-copilot .copilot-verdict.verdict-skip {
+  color: #ff5162;
+}
+
+.axiom-terminal .pg-copilot .copilot-meta {
+  margin-top: 4px;
+}
+
+@media (max-width: 1100px) {
+  .axiom-terminal .pg-data .data-core-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .axiom-terminal .pg-copilot .pgcop {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+    height: auto;
+  }
+}

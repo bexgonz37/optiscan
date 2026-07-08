@@ -10,6 +10,8 @@ const SCANNER_NAV = [{ href: "/", label: "Live / Options" }];
 const INTEL_NAV = [
   { href: "/alerts", label: "Accuracy" },
   { href: "/alerts?tab=history", label: "Performance" },
+  { href: "/data", label: "Data Core" },
+  { href: "/copilot", label: "Copilot" },
   { href: "/settings", label: "Settings" },
   { href: "/review", label: "Review" },
 ];
@@ -17,6 +19,8 @@ const INTEL_NAV = [
 const PAGE_META: Record<string, { title: string; sub: string }> = {
   "/": { title: "Live Scanner", sub: "0DTE · share momentum" },
   "/alerts": { title: "Accuracy", sub: "Track record · calibration" },
+  "/data": { title: "Data Core", sub: "Health · quota · firehose" },
+  "/copilot": { title: "Copilot", sub: "Explain latest callout" },
   "/settings": { title: "Settings", sub: "Thresholds · Discord" },
   "/review": { title: "Review", sub: "Methodology · limits" },
 };
