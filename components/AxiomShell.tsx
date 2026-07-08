@@ -12,6 +12,13 @@ const NAV = [
   { href: "/review", label: "Review", sub: "How it works" },
 ] as const;
 
+const PAGE_META: Record<string, { title: string; sub: string }> = {
+  "/": { title: "Live Scanner", sub: "0DTE · share momentum" },
+  "/alerts": { title: "Alerts", sub: "Track record · performance" },
+  "/settings": { title: "Settings", sub: "Thresholds · Discord" },
+  "/review": { title: "Review", sub: "Methodology · limits" },
+};
+
 function isActive(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
   if (href === "/alerts") return pathname === "/alerts" || pathname.startsWith("/alert-lab");
@@ -23,6 +30,10 @@ export function AxiomShell({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<MarketSession | null>(null);
   const [clock, setClock] = useState("");
   const [liveOk, setLiveOk] = useState<boolean | null>(null);
+
+  const pageKey = pathname === "/" ? "/" : `/${pathname.split("/").filter(Boolean)[0]}`;
+  const pageMeta = PAGE_META[pageKey] ?? { title: "OptiScan", sub: "Live terminal" };
+  const isLive = pathname === "/";
 
   useEffect(() => {
     const tick = () => {
@@ -60,44 +71,50 @@ export function AxiomShell({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <div className="axiom-app">
-      <aside className="axiom-rail" aria-label="Main navigation">
-        <div className="axiom-rail-brand">
-          <Link href="/" className="axiom-brand">
-            OPTI<b>SCAN</b>
-          </Link>
-          <div className="axiom-brandsub">LIVE TERMINAL</div>
-        </div>
-
-        <nav className="axiom-railnav">
-          <div className="axiom-railsec">WORKSPACE</div>
-          {NAV.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              prefetch
-              className={`axiom-navitem${isActive(pathname, item.href) ? " on" : ""}`}
-            >
-              <span className="axiom-ni" aria-hidden />
-              <span>
-                {item.label}
-                <small>{item.sub}</small>
-              </span>
+    <div className="axiom-viewport">
+      <div className="deck axiom-deck">
+        <div className="appshell">
+          <aside className="rail" aria-label="Main navigation">
+            <Link href="/" className="raillogo">
+              OPTI<span>SCAN</span>
             </Link>
-          ))}
-        </nav>
+            <div className="railtag">LIVE TERMINAL</div>
 
-        <div className="axiom-railfoot">
-          <div className="axiom-scanpill">
-            <span className={`axiom-dot${liveOk === false ? " warn" : ""}`} />
-            {liveOk === null ? "Checking…" : liveOk ? "Scanner online" : "Scanner check failed"}
+            <nav className="railnav">
+              <div className="railsec">WORKSPACE</div>
+              {NAV.map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  prefetch
+                  className={`navitem${isActive(pathname, item.href) ? " on" : ""}`}
+                >
+                  <span className="ni" aria-hidden />
+                  {item.label}
+                </Link>
+              ))}
+            </nav>
+
+            <div className="railfoot">
+              <div className="scanpill">
+                <span className="dot" style={liveOk === false ? { background: "#ff5162", boxShadow: "0 0 10px #ff5162" } : undefined} />
+                {liveOk === null ? "Checking…" : liveOk ? "Scanner online" : "Check failed"}
+              </div>
+              <div className="railu">{session ?? "—"} · {clock} ET</div>
+            </div>
+          </aside>
+
+          <div className="maincol">
+            {!isLive ? (
+              <div className="pgtop">
+                <div className="pgtitle">{pageMeta.title}</div>
+                <div className="pgsub">{pageMeta.sub}</div>
+                <div className="clk" style={{ marginLeft: "auto" }}>{clock} ET</div>
+              </div>
+            ) : null}
+            <div className={`pagewrap${isLive ? "" : " scroll-page"}`}>{children}</div>
           </div>
-          <div className="axiom-railu">{session ?? "—"} · {clock} ET</div>
         </div>
-      </aside>
-
-      <div className="axiom-main">
-        <div className="axiom-main-scroll">{children}</div>
       </div>
     </div>
   );
