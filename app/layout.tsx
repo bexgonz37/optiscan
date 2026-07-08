@@ -1,9 +1,11 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import "./axiom-theme.css";
 import { ToastProvider } from "@/components/Toasts";
 import { GlobalAlerts } from "@/components/GlobalAlerts";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { ComplianceFooter } from "@/components/ComplianceFooter";
+import { AxiomShell } from "@/components/AxiomShell";
 
 export const metadata: Metadata = {
   title: "OptiScan — Live scanner & alerts",
@@ -11,7 +13,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#060607",
+  themeColor: "#05080f",
   width: "device-width",
   initialScale: 1,
 };
@@ -20,21 +22,23 @@ const THEME_INIT = `(function(){try{var p=JSON.parse(localStorage.getItem('optis
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" className="axiom-terminal">
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT }} />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link
-          href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700&family=Hanken+Grotesk:wght@400;500;600;700&display=swap"
+          href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
           rel="stylesheet"
         />
       </head>
       <body>
         <ToastProvider>
-          <div className="app-shell">
-            {children}
-          </div>
+          <AxiomShell>
+            <div className="app-shell">
+              {children}
+            </div>
+          </AxiomShell>
           <ComplianceFooter />
           <GlobalAlerts />
           <MobileBottomNav />
