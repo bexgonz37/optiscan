@@ -3334,7 +3334,32 @@ td.num,
 }
 .seg button.on { color: #021408; background: var(--green-shine-grad); }
 .seg.mini button { padding: .34rem .7rem; font-size: .54rem; }
-.callout { padding-top: 4.2rem; max-width: 900px; }
+.product-bar {
+  display: flex; align-items: stretch; justify-content: space-between; gap: 1.5rem;
+  margin-top: 2.2rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line-strong);
+}
+.product-tabs { display: grid; grid-template-columns: repeat(2, minmax(190px, 1fr)); border: 1px solid var(--line-strong); }
+.product-tabs button {
+  display: grid; gap: .28rem; min-width: 220px; padding: .8rem 1rem; text-align: left;
+  color: var(--steel); border: 0; border-right: 1px solid var(--line-strong); background: rgba(255,255,255,.015); cursor: pointer;
+}
+.product-tabs button:last-child { border-right: 0; }
+.product-tabs button span { font-size: .72rem; font-weight: 780; letter-spacing: .15em; text-transform: uppercase; }
+.product-tabs button small { color: var(--muted); font-size: .58rem; font-weight: 650; letter-spacing: .06em; }
+.product-tabs button.on { color: #021408; background: var(--green-shine-grad); }
+.product-tabs button.on small { color: rgba(2,20,8,.72); }
+.product-session {
+  display: flex; align-items: center; gap: .55rem; color: var(--steel);
+  font-size: .6rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; text-align: right;
+}
+.product-session-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); box-shadow: 0 0 0 3px rgba(255,255,255,.035); }
+.product-session.live { color: var(--silver); }
+.product-session.live .product-session-dot { background: var(--green); box-shadow: 0 0 10px rgba(0,200,5,.5); }
+.last-callout {
+  display: inline-block; margin-top: 1.3rem; padding: .62rem .8rem; border-left: 2px solid var(--line-strong);
+  color: var(--steel); background: rgba(255,255,255,.02); font-size: .62rem; font-weight: 650; letter-spacing: .08em; text-transform: uppercase;
+}
+.callout { padding-top: 2.8rem; max-width: 900px; }
 .callout-kicker { color: var(--steel); font-size: .62rem; font-weight: 700; letter-spacing: .2em; text-transform: uppercase; margin-bottom: 1rem; }
 .callout-say {
   font-family: var(--display);

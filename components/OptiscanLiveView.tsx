@@ -95,11 +95,12 @@ function buildStrip(displayRows: TapeRow[], scope: Scope, loop: any, tapeLen: nu
     ];
   }
   const green = displayRows.filter((r) => (r.movePct ?? 0) > 0).length;
+  const sessionActive = loop?.session === "premarket" || loop?.session === "regular" || loop?.session === "afterhours";
   return [
     { k: "Movers tracked", v: displayRows.length, s: "core + hot extended" },
     { k: "Breadth", v: displayRows.length ? Math.round((green / displayRows.length) * 100) : 0, s: "% green in list" },
     { k: "Top speed", v: displayRows[0]?.shortRate != null ? `${displayRows[0].shortRate!.toFixed(2)}%/m` : "—", s: displayRows[0]?.symbol ?? "—" },
-    { k: "Loop", v: loop?.running ? "LIVE" : "OFF", s: loop?.session ?? "—" },
+    { k: "Session", v: sessionActive ? "LIVE" : "CLOSED", s: loop?.session ?? "—" },
   ];
 }
 
@@ -224,9 +225,19 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
   const entryLow = stockPrice > 0 ? stockPrice * 0.998 : null;
   const entryHigh = stockPrice > 0 ? stockPrice * 1.002 : null;
   const stockSession = heroAlert?.session === "premarket" ? "Premarket" : heroAlert?.session === "afterhours" ? "After-hours" : "Regular hours";
+  const liveSession = String(loop?.session ?? "closed");
+  const marketActive = liveSession === "premarket" || liveSession === "regular" || liveSession === "afterhours";
+  const optionsActive = liveSession === "regular";
+  const sessionLabel = liveSession === "premarket"
+    ? "Premarket shares live · 4:00–9:30 AM ET"
+    : liveSession === "regular"
+      ? "Regular session live · options + shares"
+      : liveSession === "afterhours"
+        ? "After-hours shares live · until 8:00 PM ET"
+        : "Market closed · shares resume 4:00 AM ET";
   const productNote = scope === "options"
-    ? "0DTE · regular hours · options only"
-    : "Share momentum · LONG/SHORT · no options";
+    ? optionsActive ? "0DTE options live · regular hours only" : "0DTE options closed · resumes 9:30 AM ET"
+    : marketActive ? "Share momentum live · LONG/SHORT · no options" : "Share momentum closed · resumes 4:00 AM ET";
 
   const holdNote = readingHold
     ? "Held · membership frozen · prices still tick"
@@ -234,8 +245,21 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
 
   return (
     <div className={`chrome-live${readingHold ? " reading-hold" : ""}`}>
+      <div className="product-bar" aria-label="Scanner product">
+        <div className="product-tabs">
+          <button type="button" className={scope === "options" ? "on" : ""} onClick={() => { setScope("options"); saveDashboardPrefs({ liveScope: "options" }); }}>
+            <span>Options</span><small>0DTE · 9:30–4:00 ET</small>
+          </button>
+          <button type="button" className={scope === "market" ? "on" : ""} onClick={() => { setScope("market"); saveDashboardPrefs({ liveScope: "market" }); }}>
+            <span>Market</span><small>Shares · 4:00 AM–8:00 PM ET</small>
+          </button>
+        </div>
+        <div className={`product-session ${marketActive ? "live" : "closed"}`}>
+          <span className="product-session-dot" />{sessionLabel}
+        </div>
+      </div>
       <section className="callout">
-        {scope === "options" && heroAlert && heroVerdict?.action === "TRADE" ? (
+        {scope === "options" && optionsActive && heroAlert && heroVerdict?.action === "TRADE" ? (
           <>
             <p className="callout-kicker">
               The callout · {new Date(heroAlert.alert_time).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })} · <b>still valid</b>
@@ -253,7 +277,16 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
             </div>
             <p className="gates">Every gate passed — <b>speed</b> · <b>volume</b> · <b>trend</b> · <b>fillable</b></p>
           </>
-        ) : scope === "market" && heroAlert ? (
+        ) : scope === "options" && !optionsActive ? (
+          <>
+            <p className="callout-kicker">Options desk · regular hours only</p>
+            <h1 className="callout-say">0DTE options are closed</h1>
+            <p className="callout-why">The options scanner and callouts resume at 9:30 AM ET. Switch to <b>Market</b> for premarket and after-hours share momentum.</p>
+            {heroAlert ? (
+              <p className="last-callout">Last regular-session callout · {heroAlert.ticker} ${heroAlert.strike} {heroSide} · {new Date(heroAlert.alert_time).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })} ET · historical, not live</p>
+            ) : null}
+          </>
+        ) : scope === "market" && marketActive && heroAlert ? (
           <>
             <p className="callout-kicker">Share momentum · {stockSession} · latest callout</p>
             <h1 className="callout-say"><span className={stockCls}>{stockSide} {heroAlert.ticker} shares</span></h1>
@@ -269,8 +302,8 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
         ) : (
           <>
             <p className="callout-kicker">Waiting for the next <b>{scope === "options" ? "0DTE BUY" : "SHARE CALLOUT"}</b></p>
-            <h1 className="callout-say">{loop?.running ? "Nothing firing yet — tape is live" : "Scanner paused — market is closed"}</h1>
-            <p className="callout-why">{loop?.running ? "When a TRADE clears every gate, the ticket lands here first." : "Live ranking resumes with the scanner session."} Research signals only — not financial advice.</p>
+            <h1 className="callout-say">{scope === "market" && !marketActive ? "Share scanner closed" : "Nothing firing yet — tape is live"}</h1>
+            <p className="callout-why">{scope === "market" && !marketActive ? "Premarket share scanning resumes at 4:00 AM ET." : "When a callout clears every gate, the ticket lands here first."} Research signals only — not financial advice.</p>
           </>
         )}
       </section>
@@ -297,10 +330,6 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
           >
             {readingHold ? "Holding" : "Hold"}
           </button>
-          <span className="seg">
-            <button type="button" className={scope === "options" ? "on" : ""} onClick={() => { setScope("options"); saveDashboardPrefs({ liveScope: "options" }); }}>Options</button>
-            <button type="button" className={scope === "market" ? "on" : ""} onClick={() => { setScope("market"); saveDashboardPrefs({ liveScope: "market" }); }}>Market</button>
-          </span>
         </span>
       </div>
 
