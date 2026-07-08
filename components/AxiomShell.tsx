@@ -5,30 +5,34 @@ import { useEffect, useState, type ReactNode } from "react";
 import { marketSession, type MarketSession } from "@/lib/trading-session";
 import { NavRail } from "@/components/ui/NavRail";
 
-const SCANNER_NAV = [{ href: "/", label: "Live / Options" }];
+const SCANNER_NAV = [
+  { href: "/", label: "Live / Options" },
+  { href: "/data", label: "Data Core" },
+];
 
 const INTEL_NAV = [
+  { href: "/copilot", label: "AI" },
   { href: "/alerts", label: "Accuracy" },
-  { href: "/alerts?tab=history", label: "Performance" },
-  { href: "/data", label: "Data Core" },
-  { href: "/copilot", label: "Copilot" },
   { href: "/settings", label: "Settings" },
   { href: "/review", label: "Review" },
 ];
 
 const PAGE_META: Record<string, { title: string; sub: string }> = {
   "/": { title: "Live Scanner", sub: "0DTE · share momentum" },
-  "/alerts": { title: "Accuracy", sub: "Track record · calibration" },
-  "/data": { title: "Data Core", sub: "Health · quota · firehose" },
-  "/copilot": { title: "Copilot", sub: "Explain latest callout" },
+  "/data": { title: "Data Core", sub: "Massive feed health · live tick stream" },
+  "/copilot": { title: "AI", sub: "Coming soon" },
+  "/alerts": { title: "Accuracy", sub: "Live callouts · track record · journal" },
   "/settings": { title: "Settings", sub: "Thresholds · Discord" },
   "/review": { title: "Review", sub: "Methodology · limits" },
 };
 
 function isActive(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
-  if (href.startsWith("/alerts")) return pathname === "/alerts" || pathname.startsWith("/alert-lab");
-  if (href.startsWith("/?")) return false;
+  if (href === "/data") return pathname === "/data";
+  if (href === "/copilot") return pathname === "/copilot";
+  if (href === "/settings") return pathname === "/settings";
+  if (href === "/review") return pathname === "/review";
+  if (href === "/alerts") return pathname === "/alerts" || pathname.startsWith("/alert-lab");
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
@@ -37,6 +41,7 @@ export function AxiomShell({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<MarketSession | null>(null);
   const [clock, setClock] = useState("");
   const [liveOk, setLiveOk] = useState<boolean | null>(null);
+  const [liveLabel, setLiveLabel] = useState("Checking Massive…");
 
   const pageKey = pathname === "/" ? "/" : `/${pathname.split("/").filter(Boolean)[0]}`;
   const pageMeta = PAGE_META[pageKey] ?? { title: "OptiScan", sub: "Live terminal" };
@@ -64,9 +69,34 @@ export function AxiomShell({ children }: { children: ReactNode }) {
     const poll = async () => {
       try {
         const res = await fetch("/api/health", { cache: "no-store" });
-        if (!cancelled) setLiveOk(res.ok);
+        const body = await res.json().catch(() => null);
+        if (cancelled) return;
+        const loopUp = Boolean(body?.ok ?? body?.loopRunning);
+        const serverMs = Number(body?.serverTimeMs ?? Date.parse(body?.time ?? ""));
+        const skewMs = Number.isFinite(serverMs) ? Date.now() - serverMs : 0;
+        const tickAge = Number(body?.lastTickAgeMs);
+        setLiveOk(loopUp);
+        if (Math.abs(skewMs) > 120_000) {
+          setLiveLabel(`Clock skew ${Math.round(Math.abs(skewMs) / 1000)}s — times unreliable`);
+        } else if (loopUp && tickAge != null && tickAge > 12_000 && body?.session !== "closed") {
+          setLiveLabel(`Tape ${Math.round(tickAge / 1000)}s stale — wait before trading`);
+        } else if (loopUp) {
+          setLiveLabel("Massive live");
+        } else if (body?.loopRunning === false && String(body?.note ?? "").includes("advisory lock")) {
+          setLiveLabel("Scanner lock — restart dev or wait ~2 min");
+        } else if (body?.session === "closed") {
+          setLiveLabel("Market closed · Massive OK");
+          setLiveOk(true);
+        } else if (body?.keyPresent === false) {
+          setLiveLabel("No Massive key in .env.local");
+        } else {
+          setLiveLabel("Scanner loop offline");
+        }
       } catch {
-        if (!cancelled) setLiveOk(false);
+        if (!cancelled) {
+          setLiveOk(false);
+          setLiveLabel("Cannot reach server");
+        }
       }
     };
     poll();
@@ -100,14 +130,14 @@ export function AxiomShell({ children }: { children: ReactNode }) {
                     className="dot"
                     style={liveOk === false ? { background: "#ff5162", boxShadow: "0 0 10px #ff5162" } : undefined}
                   />
-                  {liveOk === null ? "Checking Polygon…" : liveOk ? "Polygon live" : "Health check failed"}
+                  {liveLabel}
                 </div>
                 <div className="railu">{session ?? "—"} · {clock} ET</div>
               </>
             }
           />
 
-          <div className="maincol">
+          <div className={`maincol${isLive ? " maincol-live" : ""}`}>
             {!isLive ? (
               <div className="pgtop">
                 <div className="pgtitle">{pageMeta.title}</div>

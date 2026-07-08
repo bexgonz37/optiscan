@@ -33,6 +33,7 @@ import { TickerWithSparkline } from "@/components/TickerSparkline";
 import { useSparklines } from "@/hooks/useSparklines";
 import { changeColor, fmtPct, fmtPrice, fmtTime } from "@/lib/format";
 import { sessionGroupLabel } from "@/lib/language-modes";
+import { formatOptionsContract, formatCalloutHeadline } from "@/lib/format-contract";
 import { groupAlertsBySession } from "@/lib/alert-session-groups";
 
 interface AlertRow {
@@ -288,6 +289,10 @@ function AlertsPageInner() {
     startTabTransition(() => router.replace("/alerts?tab=history", { scroll: false }));
   }, [router]);
 
+  const toggleOnTrackFilter = useCallback(() => {
+    setAccFilter((f) => (f === "on_track" ? "all" : "on_track"));
+  }, []);
+
   return (
     <div className="page-deck">
       <div className="page-deck-toolbar">
@@ -331,7 +336,37 @@ function AlertsPageInner() {
 
       {tab === "history" ? (
         <>
-        <OptiscanAlertsDashboard accuracy={accuracy} />
+        <OptiscanAlertsDashboard accuracy={accuracy} onOnTrackClick={toggleOnTrackFilter} />
+
+        <div className="kpis axiom-kpis" style={{ marginBottom: 14, marginTop: 8 }}>
+          {accKpi("all", "Graded callouts", accuracy?.recent?.length ?? 0, "all tracked signals")}
+          {accKpi("on_track", "On track now", onTrackRows.length, "early move building · click to drill in")}
+          {accKpi("open", "Still tracking", (accuracy?.recent ?? []).filter((r: any) => r.status === "tracking").length, "not finished yet")}
+          {accKpi("discord", "Discord sent", accuracy?.discordSentCount ?? 0, "high-conviction pings")}
+        </div>
+
+        {accFilter === "on_track" && onTrackRows.length ? (
+          <Panel title="On track right now" meta="Click a row for chart · favorable move within 5 min">
+            {onTrackRows.map((r: any) => (
+              <div
+                key={r.id}
+                className="on-track-row"
+                role="button"
+                tabIndex={0}
+                onClick={() => openChart(r.ticker)}
+                onKeyDown={(e) => e.key === "Enter" && openChart(r.ticker)}
+                title={`Open ${r.ticker} chart`}
+              >
+                <span className={`ttag ${String(r.option_side ?? "").toLowerCase().startsWith("p") ? "bear" : "bull"}`}>
+                  {formatCalloutHeadline(r)}
+                </span>
+                <span className="tsym"><b>{r.ticker}</b></span>
+                <span className="muted text-sm">{formatOptionsContract(r) ?? "—"}</span>
+                <span className="num pos">{r.move_5m != null ? `${r.move_5m > 0 ? "+" : ""}${Number(r.move_5m).toFixed(2)}% @ 5m` : "building…"}</span>
+              </div>
+            ))}
+          </Panel>
+        ) : null}
 
         <div className="acc-perf-row">
           <Panel title="Checkpoint calibration" meta="Avg move from alert by checkpoint">

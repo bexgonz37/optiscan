@@ -3,12 +3,21 @@
  */
 
 import { alertAgeMinutes, MIN_SPEED_PCT_PER_MIN, type OptionSide } from "./trade-verdict";
+import { fmtMarketTime } from "./format";
 
 export function calledAgoLabel(alertTime?: string | null, nowMs = Date.now()): string | null {
   const m = alertAgeMinutes({ alert_time: alertTime ?? null }, nowMs);
   if (m == null) return null;
   if (m < 1) return "just now";
   return `${m}m ago`;
+}
+
+/** Short label with explicit ET clock for disambiguation. */
+export function calledAgoWithEt(alertTime?: string | null, nowMs = Date.now()): string | null {
+  if (!alertTime) return null;
+  const ago = calledAgoLabel(alertTime, nowMs);
+  if (!ago) return null;
+  return `${ago} · ${fmtMarketTime(alertTime)}`;
 }
 
 export function calledAgoLong(alertTime?: string | null, nowMs = Date.now()): string | null {

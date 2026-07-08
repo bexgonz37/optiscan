@@ -22,12 +22,17 @@ import { TickerWithSparkline } from "@/components/TickerSparkline";
 import { useSparklines } from "@/hooks/useSparklines";
 import { TradeVerdictHero } from "@/components/TradeVerdictHero";
 import { computeTradeVerdict, frozenCalloutVerdict, MIN_SPEED_PCT_PER_MIN, type TradeVerdict } from "@/lib/trade-verdict";
-import { calledAgoLabel, calledAgoLong, sideFromAlert, stillMovingStatus } from "@/lib/signal-live";
+import { calledAgoLabel, calledAgoLong, calledAgoWithEt, sideFromAlert, stillMovingStatus } from "@/lib/signal-live";
 import { fmtPct, fmtPrice, fmtTime, pctClass } from "@/lib/format";
 import { sessionGroupLabel } from "@/lib/language-modes";
 import { useLanguageMode } from "@/hooks/useLanguageMode";
 import { groupAlertsBySession } from "@/lib/alert-session-groups";
 import { marketSession, tradingDay } from "@/lib/trading-session";
+import { formatOptionsContract, formatCalloutHeadline, isFillableOptionsSetup } from "@/lib/format-contract";
+import { isWinnerCandidate } from "@/lib/core-vs-winner";
+import { CORE_WATCH } from "@/lib/universe";
+
+const CORE_TICKERS = new Set(CORE_WATCH);
 
 interface Entry {
   symbol: string;
@@ -118,6 +123,7 @@ export function AlertsCommandCenter({
   }, []);
 
   const [alerts, setAlerts] = useState<Map<string, any>>(new Map());
+  const [stockAlerts, setStockAlerts] = useState<any[]>([]);
   const [recentCalls, setRecentCalls] = useState<any[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [chartTicker, setChartTicker] = useState("");
@@ -133,15 +139,26 @@ export function AlertsCommandCenter({
       const d = await res.json();
       const nowMs = Date.now();
       const map = new Map<string, any>();
+      const stocks: any[] = [];
       const recent: any[] = [];
       const recentCutoff = nowMs - (marketClosed ? 24 * 60 * 60_000 : RECENT_CALLS_WINDOW_MS);
       for (const a of d.alerts ?? []) {
         const t = Date.parse(a.alert_time ?? "");
         if (Number.isFinite(t) && t >= recentCutoff) recent.push(a);
+        if (a.asset_class === "stock") {
+          if (a.capture_action === "TRADE" || a.capture_action === "WAIT") stocks.push(a);
+          if (a.capture_action === "TRADE" && isFreshAlert(a, nowMs)) {
+            const prev = map.get(a.ticker);
+            if (!prev || a.id > prev.id) map.set(a.ticker, a);
+          }
+          continue;
+        }
         if (!isFreshAlert(a, nowMs)) continue;
         const prev = map.get(a.ticker);
         if (!prev || a.id > prev.id) map.set(a.ticker, a);
       }
+      stocks.sort((a, b) => b.id - a.id);
+      setStockAlerts(stocks.slice(0, 12));
       recent.sort((a, b) => b.id - a.id);
       const dedupedRecent: any[] = [];
       const seen = new Set<string>();
@@ -194,7 +211,17 @@ export function AlertsCommandCenter({
 
   const sortedVisible = useMemo(() => {
     const list = showAll ? entries.filter((e) => e.rank < 3) : entries.filter(isRightNowEntry);
-    return [...list].sort(sortEntriesByRecency).slice(0, 30);
+    return [...list]
+      .filter((e) => {
+        if (e.alert?.capture_action === "TRADE") return true;
+        if (e.alert?.asset_class === "stock") return true;
+        if (isFillableOptionsSetup(e.alert ?? {})) return true;
+        if (CORE_TICKERS.has(e.symbol)) return true;
+        if (e.tapeRow && isWinnerCandidate(e.tapeRow)) return true;
+        return false;
+      })
+      .sort(sortEntriesByRecency)
+      .slice(0, 30);
   }, [entries, showAll]);
 
   const [pausedSnapshot, setPausedSnapshot] = useState<Entry[] | null>(null);
@@ -202,15 +229,48 @@ export function AlertsCommandCenter({
   const sparkSymbols = useMemo(() => displayEntries.map((e) => e.symbol), [displayEntries]);
   const sparklines = useSparklines(sparkSymbols);
 
+  const stockMomentum = useMemo(
+    () => stockAlerts.filter((a) => a.capture_action === "TRADE").slice(0, 8),
+    [stockAlerts],
+  );
+  const optionsFillable = useMemo(
+    () => entries.filter((e) => e.alert && e.alert.asset_class !== "stock" && isFillableOptionsSetup(e.alert)),
+    [entries],
+  );
+
   const hero = useMemo(() => {
-    const trades = entries.filter((e) => e.verdict?.action === "TRADE" && e.alert);
-    trades.sort(sortEntriesByRecency);
+    const optionTrades = entries.filter((e) => e.verdict?.action === "TRADE" && e.alert && e.alert.asset_class !== "stock");
+    const stockTrades = stockAlerts.filter((a) => a.capture_action === "TRADE");
+    const fillableExtra = entries.filter(
+      (e) => e.alert
+        && e.alert.asset_class !== "stock"
+        && isFillableOptionsSetup(e.alert)
+        && !optionTrades.some((t) => t.symbol === e.symbol),
+    );
+    const pool = [...optionTrades, ...fillableExtra];
+    pool.sort((a, b) => {
+      const ac = CORE_TICKERS.has(a.symbol) ? 1 : 0;
+      const bc = CORE_TICKERS.has(b.symbol) ? 1 : 0;
+      if (ac !== bc) return bc - ac;
+      return sortEntriesByRecency(a, b);
+    });
     if (selected) {
-      const found = trades.find((e) => e.symbol === selected);
+      const found = pool.find((e) => e.symbol === selected);
       if (found) return found;
     }
-    return trades[0] ?? null;
-  }, [entries, selected]);
+    if (pool[0]) return pool[0];
+    if (stockTrades[0]) {
+      const sym = stockTrades[0].ticker;
+      return {
+        symbol: sym,
+        tapeRow: tape.map.get(sym) ?? null,
+        alert: stockTrades[0],
+        verdict: { action: "TRADE", headline: stockTrades[0].private_label ?? "BUY shares", reason: stockTrades[0].ai_explanation ?? "" },
+        rank: 0,
+      } as Entry;
+    }
+    return null;
+  }, [entries, stockAlerts, selected, tape]);
 
   function pick(symbol: string) {
     setSelected(symbol);
@@ -219,7 +279,9 @@ export function AlertsCommandCenter({
 
   const heroLive = hero ? liveCtxFor(tape, hero.symbol) : undefined;
   const heroTape = hero?.tapeRow ?? null;
-  const tradeCount = entries.filter((e) => e.rank === 0).length;
+  const tradeCount =
+    entries.filter((e) => e.rank === 0 && e.alert?.asset_class !== "stock").length
+    + stockMomentum.length;
 
   const sessionRecap = useMemo(() => {
     const seen = new Set<string>();
@@ -255,8 +317,7 @@ export function AlertsCommandCenter({
         <div>
           <h2 className="section-title">Live callouts</h2>
           <p className="section-sub">
-            Newest callouts first — check &quot;Called&quot; for how long ago.{" "}
-            {isPublic ? "Call/put momentum watches on high-conviction signals." : "BUY CALL/PUT when TRADE."}
+            {isPublic ? "Share momentum + 0DTE call/put when spread is tight." : "BUY LONG/SHORT shares · BUY CALL/PUT when fillable (spread ≤ 5%)."}
           </p>
         </div>
         <div className="status-group">
@@ -302,7 +363,7 @@ export function AlertsCommandCenter({
                 <div className="tname text-lg">{hero.symbol}</div>
                 <div className="tsub">
                   {fmtPrice(heroLive?.price ?? hero.alert.price_at_alert)}
-                  {calledAgoLong(hero.alert.alert_time) ? ` · ${calledAgoLong(hero.alert.alert_time)}` : ""}
+                  {calledAgoWithEt(hero.alert.alert_time) ?? "—"}
                 </div>
                 {heroTape ? (
                   <div className={`signal-momentum signal-momentum-${stillMovingStatus(sideFromAlert(hero.alert), heroTape).tone} text-xs mt-1`}>
@@ -312,6 +373,9 @@ export function AlertsCommandCenter({
               </div>
             </div>
             <TradeVerdictHero alert={hero.alert} live={heroLive} />
+            {formatOptionsContract(hero.alert) ? (
+              <div className="acc-hero-contract num muted text-sm">{formatOptionsContract(hero.alert)}</div>
+            ) : null}
           </div>
           <div className="acc-hero-side">
             <div className="acc-stat">
@@ -370,6 +434,68 @@ export function AlertsCommandCenter({
         </div>
       )}
       </div>
+
+      {stockMomentum.length > 0 ? (
+        <div className="acc-stock-momentum" style={{ marginBottom: 16 }}>
+          <div className="acc-list-header">
+            <span className="section-title" style={{ fontSize: 14 }}>
+              Share momentum ({stockMomentum.length})
+            </span>
+            <span className="muted text-sm">BUY LONG/SHORT · in/out on shares</span>
+          </div>
+          <div className="acc-on-track-chips">
+            {stockMomentum.map((a) => {
+              const liveRow = tape.map.get(a.ticker);
+              const headline = formatCalloutHeadline(a);
+              return (
+                <button
+                  key={a.id}
+                  type="button"
+                  className={`pill btn acc-on-track-chip${hero?.symbol === a.ticker ? " btn-primary" : ""}`}
+                  onClick={() => pick(a.ticker)}
+                  title={a.ai_explanation ?? headline}
+                >
+                  <TickerIcon symbol={a.ticker} />
+                  <span className="tname">{a.ticker}</span>
+                  <span className={`verdict-pill verdict-trade text-xs`}>{headline}</span>
+                  <span className="num">{liveRow?.shortRate != null ? `${liveRow.shortRate > 0 ? "+" : ""}${liveRow.shortRate.toFixed(2)}%/m` : calledAgoLabel(a.alert_time)}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      {optionsFillable.length > 0 ? (
+        <div className="acc-options-fillable" style={{ marginBottom: 16 }}>
+          <div className="acc-list-header">
+            <span className="section-title" style={{ fontSize: 14 }}>
+              0DTE fillable ({optionsFillable.length})
+            </span>
+            <span className="muted text-sm">Spread ≤ 5% · score ≥ 82</span>
+          </div>
+          <div className="acc-on-track-chips">
+            {optionsFillable.slice(0, 8).map((e) => {
+              const headline = formatCalloutHeadline(e.alert);
+              const contract = formatOptionsContract(e.alert);
+              return (
+                <button
+                  key={e.symbol}
+                  type="button"
+                  className={`pill btn acc-on-track-chip${hero?.symbol === e.symbol ? " btn-primary" : ""}`}
+                  onClick={() => pick(e.symbol)}
+                  title={e.verdict?.reason ?? contract ?? headline}
+                >
+                  <TickerIcon symbol={e.symbol} />
+                  <span className="tname">{e.symbol}</span>
+                  <span className={`verdict-pill verdict-${(e.verdict?.action ?? "wait").toLowerCase()} text-xs`}>{headline}</span>
+                  <span className="num muted text-xs">{contract?.split("·").slice(-2).join("·").trim() ?? "—"}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
 
       {(marketClosed || !displayEntries.length) && sessionRecap.length > 0 ? (
         <div className="acc-session-recap" style={{ marginTop: marketClosed ? 0 : 16, marginBottom: 16 }}>
@@ -491,7 +617,7 @@ export function AlertsCommandCenter({
                 <th>Called</th>
                 <th>Speed</th>
                 <th>Today</th>
-                <th>Contract</th>
+                <th>Contract · spread</th>
                 <th></th>
               </tr>
             </thead>
@@ -518,7 +644,7 @@ export function AlertsCommandCenter({
                     <td>
                       {v ? (
                         <span className={`verdict-pill verdict-${v.action.toLowerCase()}`} title={v.reason}>
-                          {v.headline}
+                          {e.alert ? formatCalloutHeadline(e.alert) : v.headline}
                         </span>
                       ) : (
                         <span className={`stock-dir ${fallback.cls}`}>{fallback.text}</span>
@@ -533,7 +659,7 @@ export function AlertsCommandCenter({
                     <td className={`num ${pctClass(e.tapeRow?.movePct ?? e.alert?.percent_move_at_alert)}`}>
                       {fmtPct(e.tapeRow?.movePct ?? e.alert?.percent_move_at_alert)}
                     </td>
-                    <td className="num muted text-sm">{v?.contractLine ?? "—"}</td>
+                    <td className="num muted text-sm">{e.alert ? (formatOptionsContract(e.alert) ?? v?.contractLine ?? "—") : "—"}</td>
                     <td onClick={(ev) => ev.stopPropagation()}>
                       <button type="button" className="pill btn btn-primary btn-xs" onClick={() => pick(e.symbol)}>
                         Chart

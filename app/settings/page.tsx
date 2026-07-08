@@ -182,7 +182,8 @@ export default function SettingsPage() {
           <p className="settings-desc">
             Scanner speed and volume gates — higher = fewer, better callouts. Recommended (from the 2026-07-07 accuracy
             audit): Speed 0.18–0.25 · Surge 1.4–1.8 · Efficiency 0.35–0.45 · Max spread 4–6%. Going below Speed 0.15 or
-            Surge 1.3 fires on single-tick noise.
+            Surge 1.3 fires on single-tick noise. The live list shows <b>core names</b> (AAPL, NVDA, TSLA, SPY, etc.) always;
+            smaller names only appear when speed + volume + level break look like a real winner.
           </p>
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
             <span className="settings-desc" style={{ margin: 0 }}>Speed ≥</span>

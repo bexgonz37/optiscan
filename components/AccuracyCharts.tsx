@@ -49,7 +49,13 @@ function pct(v: number | null | undefined) {
   return `${Math.round(v * 100)}%`;
 }
 
-export function AccuracyCharts({ data }: { data: AccuracyChartData }) {
+export function AccuracyCharts({
+  data,
+  onOnTrackClick,
+}: {
+  data: AccuracyChartData;
+  onOnTrackClick?: () => void;
+}) {
   const trend = data.dailyTrend ?? [];
   const calloutBars = trend.map((d) => ({
     day: fmtDay(d.day),
@@ -109,8 +115,15 @@ export function AccuracyCharts({ data }: { data: AccuracyChartData }) {
         </ResponsiveContainer>
       </div>
 
-      <div className="acc-chart-panel acc-chart-gauge">
+      <div className={`acc-chart-panel acc-chart-gauge${onOnTrackClick ? " acc-chart-click" : ""}`}>
         <div className="acc-chart-title">On-track rate today</div>
+        <button
+          type="button"
+          className="acc-gauge-hit"
+          onClick={onOnTrackClick}
+          disabled={!onOnTrackClick}
+          title={onOnTrackClick ? "Click to see which callouts are on track" : undefined}
+        >
         <div className="acc-gauge-center">
           <span className="acc-gauge-num">{data.todayOnTrack ?? 0}</span>
           <span className="acc-gauge-of">of {data.todayTotal ?? 0} callouts</span>
@@ -125,8 +138,9 @@ export function AccuracyCharts({ data }: { data: AccuracyChartData }) {
             </Pie>
           </PieChart>
         </ResponsiveContainer>
+        </button>
         <div className="muted text-xs text-center">
-          Stock move within 5 min of call (≥{data.earlyOnTrackMinPct ?? 0.5}% favorable)
+          Favorable move building within 5 min of call (≥{data.earlyOnTrackMinPct ?? 0.5}%){onOnTrackClick ? " · click gauge to drill in" : ""}
         </div>
       </div>
 

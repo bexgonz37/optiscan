@@ -73,6 +73,7 @@ export function buildHealth(input: HealthInput): { status: number; body: Record<
     provider,
     keyPresent,
     time: new Date(nowMs).toISOString(),
+    serverTimeMs: nowMs,
     loopRunning: loop.running,
     lastTickAgeMs: age,
     session,

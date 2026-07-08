@@ -8,7 +8,13 @@ import { fmtPct } from "@/lib/format";
 import { useLanguageMode } from "@/hooks/useLanguageMode";
 
 /** Alerts accuracy dashboard — Axiom HUD layout. */
-export function OptiscanAlertsDashboard({ accuracy }: { accuracy: any }) {
+export function OptiscanAlertsDashboard({
+  accuracy,
+  onOnTrackClick,
+}: {
+  accuracy: any;
+  onOnTrackClick?: () => void;
+}) {
   const isPublic = useLanguageMode() === "public";
   if (!accuracy) return <div className="empty">Loading accuracy…</div>;
 
@@ -76,7 +82,7 @@ export function OptiscanAlertsDashboard({ accuracy }: { accuracy: any }) {
           overallHitRate: accuracy.overallHitRate ?? accuracy.hitRate,
           todayOnTrack: accuracy.todayOnTrack,
           todayTotal: accuracy.todayTotal,
-        }} />
+        }} onOnTrackClick={onOnTrackClick} />
       </Panel>
 
       <div className="acc-breakdown-grid">

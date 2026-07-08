@@ -28,8 +28,179 @@
 }
 
 .axiom-terminal .appshell {
+  position: relative;
+  z-index: 10;
   height: 100%;
   min-height: 0;
+}
+
+.axiom-terminal .deck.axiom-deck::before {
+  z-index: 0;
+}
+
+.axiom-terminal .rail {
+  position: relative;
+  z-index: 12;
+  pointer-events: auto;
+}
+
+.axiom-terminal .railnav a.navitem {
+  pointer-events: auto;
+  cursor: pointer;
+  position: relative;
+  z-index: 1;
+  text-decoration: none;
+  color: inherit;
+}
+
+.axiom-terminal .deck::before,
+.axiom-terminal .deck::after {
+  pointer-events: none !important;
+}
+
+.axiom-terminal .live-guide {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--dim);
+  line-height: 1.55;
+  padding: 0 2px 10px;
+  border-bottom: 1px solid rgba(70, 180, 232, 0.1);
+  margin-bottom: 4px;
+}
+
+.axiom-terminal .live-guide b {
+  color: #8fb3c6;
+  font-weight: 600;
+}
+
+.axiom-terminal .live-stale-warn {
+  color: #ffb347;
+  border-bottom-color: rgba(255, 179, 71, 0.25);
+  margin-top: -6px;
+}
+
+.axiom-terminal .live-ticker-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.axiom-terminal .product-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.axiom-terminal .hot-names-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 2px 12px;
+  border-bottom: 1px solid rgba(70, 180, 232, 0.1);
+  margin-bottom: 8px;
+}
+
+.axiom-terminal .hot-names-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--dim);
+  margin-right: 4px;
+}
+
+.axiom-terminal .hot-name-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(70, 180, 232, 0.22);
+  background: rgba(255, 255, 255, 0.02);
+  color: #dbeef8;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.axiom-terminal .hot-name-chip:hover {
+  border-color: rgba(47, 240, 166, 0.45);
+  background: rgba(32, 227, 154, 0.08);
+}
+
+.axiom-terminal .hot-name-chip.runner-chip {
+  border-color: rgba(255, 182, 74, 0.35);
+}
+
+.axiom-terminal .hot-name-chip.core-chip {
+  border-color: rgba(47, 240, 166, 0.28);
+}
+
+.axiom-terminal .spd-strong {
+  color: #2ff0a6;
+  font-weight: 700;
+}
+
+.axiom-terminal .hero-click {
+  cursor: pointer;
+  border-radius: 6px;
+}
+
+.axiom-terminal .hero-click:hover {
+  outline: 1px solid rgba(47, 240, 166, 0.35);
+}
+
+.axiom-terminal .trow-click {
+  cursor: pointer;
+}
+
+.axiom-terminal .trow-click:hover {
+  border-color: rgba(47, 240, 166, 0.45);
+}
+
+.axiom-terminal .ledger-click {
+  cursor: pointer;
+}
+
+.axiom-terminal .ledger-click:hover {
+  background: rgba(70, 180, 232, 0.05);
+}
+
+.axiom-terminal .axiom-today small {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--dim);
+  letter-spacing: 0.06em;
+  margin-top: 4px;
+  font-weight: 400;
+}
+
+.axiom-terminal .on-track-row {
+  display: grid;
+  grid-template-columns: 88px 72px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 4px;
+  border-bottom: 1px solid rgba(70, 180, 232, 0.08);
+  cursor: pointer;
+}
+
+.axiom-terminal .on-track-row:hover {
+  background: rgba(32, 227, 154, 0.06);
+}
+
+.axiom-terminal .acc-gauge-hit {
+  all: unset;
+  display: block;
+  width: 100%;
+  cursor: pointer;
+}
+
+.axiom-terminal .acc-chart-click .acc-gauge-hit:hover .acc-gauge-num {
+  color: #2ff0a6;
 }
 
 .axiom-terminal .maincol {
@@ -248,13 +419,19 @@
 
 .axiom-scanners .scanner li {
   display: grid;
-  grid-template-columns: 3.2rem minmax(0, 1fr) auto;
+  grid-template-columns: 3.2rem 4.2rem minmax(0, 1fr) auto;
   gap: 8px;
   align-items: baseline;
   padding: 8px 0;
   border-bottom: 1px solid rgba(70, 180, 232, 0.1);
   list-style: none;
   cursor: pointer;
+}
+
+.axiom-scanners .scanner .spd {
+  font-size: 11px;
+  font-weight: 700;
+  color: #2ff0a6;
 }
 
 .axiom-scanners .scanner li:hover {
@@ -724,100 +901,119 @@
   }
 }
 
-/* Data Core + Copilot pages — append to app/axiom-theme.css */
+/* ===== Data Core + Copilot + Scanner builder (part 2 patch) ===== */
 
-.axiom-terminal .pg-data .data-core-grid {
+.axiom-terminal .clrow {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.75fr);
-  grid-template-rows: auto minmax(320px, 1fr);
+  grid-template-columns: 12px 1fr 60px;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 4px;
+  border-bottom: 1px solid rgba(70, 180, 232, 0.08);
+}
+.axiom-terminal .cldot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: #20e39a; box-shadow: 0 0 9px #20e39a;
+  animation: axiom-blink 1.3s steps(2) infinite;
+}
+@keyframes axiom-blink { 50% { opacity: .25; } }
+.axiom-terminal .clnamewrap { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.axiom-terminal .clname { font-weight: 600; letter-spacing: .05em; color: #dbeef8; font-size: 13px; }
+.axiom-terminal .clch { font-family: var(--font-mono); font-size: 10px; color: var(--muted); letter-spacing: .06em; }
+.axiom-terminal .clstat { font-family: var(--font-mono); font-size: 9px; color: #2ff0a6; text-align: right; letter-spacing: .06em; }
+
+.axiom-terminal .fh { display: flex; flex-direction: column; gap: 2px; font-family: var(--font-mono); font-size: 11px; }
+.axiom-terminal .fhl { display: grid; grid-template-columns: 22px 68px 1fr; gap: 8px; align-items: center; padding: 2px 3px; border-radius: 3px; }
+.axiom-terminal .fhl:first-child { background: rgba(70, 180, 232, 0.05); }
+.axiom-terminal .fhch { font-weight: 700; text-align: center; border-radius: 2px; font-size: 9px; padding: 2px 0; line-height: 1; }
+.axiom-terminal .fhch.t { color: #2ff0a6; background: rgba(32, 227, 154, 0.14); }
+.axiom-terminal .fhch.q { color: #7cc8ec; background: rgba(70, 180, 232, 0.14); }
+.axiom-terminal .fhch.a { color: #ffc879; background: rgba(255, 182, 74, 0.14); }
+.axiom-terminal .fhch.o { color: #c79bf0; background: rgba(160, 110, 240, 0.18); }
+.axiom-terminal .fhsym { color: #c3d8e5; font-weight: 500; }
+.axiom-terminal .fhtxt { color: var(--muted); }
+.axiom-terminal .fhtxt.up { color: #2ff0a6; }
+.axiom-terminal .fhtxt.dn { color: #ff6b78; }
+
+.axiom-terminal .aihead { display: flex; gap: 16px; padding: 11px 2px; font-family: var(--font-display); font-size: 11px; letter-spacing: .04em; color: var(--soft); border-bottom: 1px solid rgba(70,180,232,.1); flex-wrap: wrap; }
+.axiom-terminal .aihead b { color: #dbeef8; font-weight: 600; }
+.axiom-terminal .aihead b.mdl { color: #2ff0a6; }
+.axiom-terminal .thread { display: flex; flex-direction: column; gap: 13px; padding: 16px 2px 8px; }
+.axiom-terminal .bubble { max-width: 90%; padding: 12px 15px; border-radius: 13px; font-size: 13.5px; line-height: 1.5; }
+.axiom-terminal .bubble.user { align-self: flex-end; background: rgba(70,180,232,.12); border: 1px solid rgba(70,180,232,.24); color: #e6f2fb; border-bottom-right-radius: 4px; }
+.axiom-terminal .bubble.ai { align-self: flex-start; background: linear-gradient(180deg, rgba(255,255,255,.028), rgba(255,255,255,.01)); border: 1px solid rgba(70,180,232,.16); color: #cfe3ee; border-bottom-left-radius: 4px; }
+.axiom-terminal .brole { font-family: var(--font-mono); font-size: 9px; letter-spacing: .16em; color: var(--dim); margin-bottom: 6px; display: block; }
+.axiom-terminal .bubble.ai .brole { color: #2ff0a6; }
+.axiom-terminal .evrow { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 11px; }
+.axiom-terminal .evchip { font-family: var(--font-mono); font-size: 10px; padding: 4px 9px; border-radius: 6px; border: 1px solid rgba(47,240,166,.28); color: #8ef0c6; background: rgba(32,227,154,.07); display: flex; flex-direction: column; gap: 1px; line-height: 1.25; }
+.axiom-terminal .evchip .src { color: #5f9e86; font-size: 8px; letter-spacing: .04em; }
+.axiom-terminal .aitype { align-self: flex-start; font-family: var(--font-mono); font-size: 11px; color: var(--dim); display: flex; gap: 9px; align-items: center; padding-left: 4px; }
+.axiom-terminal .aitype .d { width: 6px; height: 6px; border-radius: 50%; background: #2ff0a6; box-shadow: 0 0 8px #2ff0a6; animation: axiom-blink .8s steps(2) infinite; }
+.axiom-terminal .cpfoot { border-top: 1px solid rgba(70,180,232,.14); padding: 13px 2px 2px; margin-top: 10px; }
+.axiom-terminal .cmd { display: flex; align-items: center; gap: 9px; border: 1px solid rgba(70,180,232,.24); border-radius: 8px; padding: 10px 12px; background: rgba(255,255,255,.02); }
+.axiom-terminal .cmd .car { color: #20e39a; font-family: var(--font-mono); font-weight: 700; }
+.axiom-terminal .cmd input { flex: 1; background: transparent; border: none; outline: none; color: #dbeef8; font-family: var(--font-mono); font-size: 12px; }
+.axiom-terminal .cmd input::placeholder { color: var(--dim); }
+
+.axiom-terminal .scanlist { display: flex; flex-direction: column; gap: 8px; }
+.axiom-terminal .scanitem { padding: 11px 12px; border: 1px solid rgba(70,180,232,.14); border-radius: 8px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; background: rgba(255,255,255,.012); }
+.axiom-terminal .scanitem.on { border-color: rgba(32,227,154,.42); background: rgba(32,227,154,.06); }
+.axiom-terminal .scantop { display: flex; align-items: center; gap: 8px; }
+.axiom-terminal .scandot { width: 8px; height: 8px; border-radius: 50%; background: #2ff0a6; flex: none; }
+.axiom-terminal .scanname { font-size: 13px; font-weight: 700; color: #eaf5fd; letter-spacing: .03em; flex: 1; }
+.axiom-terminal .scan-edit { background: transparent; border: none; color: #46b4e8; font-family: var(--font-mono); font-size: 10px; cursor: pointer; }
+.axiom-terminal .scandesc { font-family: var(--font-mono); font-size: 10px; color: var(--muted); line-height: 1.4; }
+.axiom-terminal .defadd { margin-top: 8px; width: 100%; font-family: var(--font-mono); font-size: 11px; padding: 9px 12px; border: 1px dashed rgba(70,180,232,.3); border-radius: 6px; color: var(--muted); background: transparent; cursor: pointer; }
+.axiom-terminal .scan-editor { display: flex; flex-direction: column; gap: 9px; }
+.axiom-terminal .scan-field { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-family: var(--font-mono); font-size: 11px; color: var(--soft); }
+.axiom-terminal .scan-field input { width: 110px; background: rgba(255,255,255,.03); border: 1px solid rgba(70,180,232,.2); border-radius: 5px; color: #dbeef8; padding: 6px 8px; font-family: var(--font-mono); font-size: 12px; }
+.axiom-terminal .scan-check { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 11px; color: var(--soft); }
+.axiom-terminal .scan-actions { display: flex; gap: 8px; margin-top: 4px; }
+.axiom-terminal .scan-save { flex: 1; background: #2ff0a6; color: #04140d; border: none; border-radius: 6px; padding: 9px; font-family: var(--font-mono); font-weight: 700; font-size: 11px; cursor: pointer; }
+.axiom-terminal .scan-del { background: transparent; border: 1px solid rgba(255,81,98,.4); color: #ff8f9a; border-radius: 6px; padding: 9px 12px; font-family: var(--font-mono); font-size: 11px; cursor: pointer; }
+.axiom-terminal .scan-cancel { background: transparent; border: 1px solid rgba(70,180,232,.25); color: var(--muted); border-radius: 6px; padding: 9px 12px; font-family: var(--font-mono); font-size: 11px; cursor: pointer; }
+.axiom-terminal .maincol {
+  display: grid;
+  grid-template-rows: auto 1fr;
   gap: 12px;
   min-height: 0;
 }
 
-.axiom-terminal .pg-data .data-firehose-panel {
-  grid-column: 1 / -1;
-  min-height: 360px;
+.axiom-terminal .maincol-live {
+  grid-template-rows: 1fr;
 }
 
-.axiom-terminal .pg-data .data-firehose {
-  max-height: 420px;
-  overflow: auto;
-  padding: 4px 2px;
-}
-
-.axiom-terminal .pg-data .data-core-note,
-.axiom-terminal .pg-data .data-core-foot {
-  margin-top: 10px;
-}
-
-.axiom-terminal .pg-data .data-quota-stat {
-  border: 0;
-  background: transparent;
-  padding: 4px 0 0;
-}
-
-.axiom-terminal .pg-data .data-quota-stat::before {
-  display: none;
-}
-
-.axiom-terminal .pg-data .dqv.neg {
-  color: #ff5162;
-}
-
-.axiom-terminal .pg-copilot .copilot-layout {
-  min-height: calc(100vh - 220px);
-}
-
-.axiom-terminal .pg-copilot .copilot-console {
-  display: flex;
-  flex-direction: column;
+.axiom-terminal .maincol-live .pagewrap {
   min-height: 0;
   height: 100%;
 }
 
-.axiom-terminal .pg-copilot .copilot-callout-card {
+.axiom-terminal .page-deck.axiom-copilot,
+.axiom-terminal .page-deck.axiom-data {
+  width: 100%;
+  min-height: 0;
+}
+
+.axiom-terminal .page-deck.axiom-copilot .axiom-panel {
+  min-height: 520px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
 }
 
-.axiom-terminal .pg-copilot .copilot-ticker {
-  font-family: var(--font-display);
-  font-size: 1.6rem;
-  color: #c3e4f4;
+.axiom-terminal .page-deck.axiom-copilot .pb {
+  flex: 1;
+  min-height: 400px;
+  overflow: auto;
 }
 
-.axiom-terminal .pg-copilot .copilot-verdict {
-  font-family: var(--font-mono);
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
+.axiom-terminal .page-deck.axiom-copilot .thread {
+  overflow: visible;
+  min-height: 240px;
+  flex: 1;
 }
 
-.axiom-terminal .pg-copilot .copilot-verdict.verdict-trade {
-  color: #2ff0a6;
+.axiom-terminal .page-deck.axiom-data .axiom-hero-row {
+  min-height: 320px;
 }
 
-.axiom-terminal .pg-copilot .copilot-verdict.verdict-wait {
-  color: #46b4e8;
-}
-
-.axiom-terminal .pg-copilot .copilot-verdict.verdict-skip {
-  color: #ff5162;
-}
-
-.axiom-terminal .pg-copilot .copilot-meta {
-  margin-top: 4px;
-}
-
-@media (max-width: 1100px) {
-  .axiom-terminal .pg-data .data-core-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .axiom-terminal .pg-copilot .pgcop {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
-    height: auto;
-  }
-}
+.axiom-terminal .axiom-scanner-builder { max-width: 320px; margin-bottom: 12px; }

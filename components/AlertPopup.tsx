@@ -10,6 +10,7 @@ import { useLiveTapeMap, liveCtxFor } from "@/hooks/useLiveTapeMap";
 import { computeTradeVerdict, isTradeEligible } from "@/lib/trade-verdict";
 import { stillMovingStatus } from "@/lib/signal-live";
 import { isOptionsSession } from "@/lib/trading-session";
+import { fmtMarketFreshness, isAlertFresh } from "@/lib/format";
 import { OptionAlertCard } from "@/components/alert-cards/OptionAlertCard";
 
 interface PopupAlert {
@@ -32,6 +33,7 @@ interface PopupAlert {
   alert_time: string | null;
   asset_class: string | null;
   capture_action: string | null;
+  entry_spread_pct?: number | null;
   /** Frozen at popup show time — headline never flips BUY → WATCH mid-popup. */
   frozenHeadline?: string;
   frozenReason?: string;
@@ -42,8 +44,15 @@ const LS_SNOOZE = "optiscan:popup:snooze";
 const SNOOZE_MS = 60 * 60 * 1000;
 const POLL_MS = 1_000;
 const MAX_STACK = 3;
+/** Never popup/notify for callouts older than this — prevents stale replays after tab sleep. */
+const POPUP_MAX_AGE_MS = 5 * 60_000;
 
-function isPopupEligible(a: PopupAlert, live: ReturnType<typeof liveCtxFor>): boolean {
+function isRecentAlert(a: PopupAlert, nowMs = Date.now()): boolean {
+  return isAlertFresh(a.alert_time, POPUP_MAX_AGE_MS, nowMs);
+}
+
+function isPopupEligible(a: PopupAlert, live: ReturnType<typeof liveCtxFor>, nowMs = Date.now()): boolean {
+  if (!isRecentAlert(a, nowMs)) return false;
   if (a.alert_tier === "research" || a.asset_class === "stock") return false;
   const cap = String(a.capture_action ?? "").toUpperCase();
   if (cap === "SKIP") return false;
@@ -100,6 +109,9 @@ function AlertCard({
     <div className="panel popup-card">
       <div className="popup-card-head">
         <span className="verdict-pill verdict-trade">{headline}</span>
+        {a.alert_time ? (
+          <span className="muted text-xs num">{fmtMarketFreshness(a.alert_time) ?? "—"}</span>
+        ) : null}
         <span className="spacer flex-1" />
         <button className="pill btn btn-xs" onClick={onDismiss}>✕</button>
       </div>
@@ -185,11 +197,12 @@ export function AlertPopup({
       localStorage.setItem(LS_LAST_ID, String(Math.max(lastId, ...fresh.map((x) => x.id))));
       if (!lastId) return;
 
-      const snoozed = snoozeMap();
       const now = Date.now();
+      const snoozed = snoozeMap();
       const show = fresh.filter((x) =>
+        isRecentAlert(x, now) &&
         !(snoozed[x.ticker] && now - snoozed[x.ticker] < SNOOZE_MS) &&
-        isPopupEligible(x, liveCtxFor(tapeRef.current, x.ticker)),
+        isPopupEligible(x, liveCtxFor(tapeRef.current, x.ticker), now),
       );
       if (!show.length) return;
 
@@ -211,7 +224,11 @@ export function AlertPopup({
         const title = langMode === "private"
           ? `[0DTE] ${latest.ticker}: ${v.headline}`
           : `${latest.public_label ?? "Alert"}: ${latest.ticker}`;
-        const body = langMode === "private" ? v.reason : `Setup ${Math.round(latest.signal_score ?? 0)}/100 · Risk ${Math.round(latest.risk_score ?? 0)}/100`;
+        const when = fmtMarketFreshness(latest.alert_time, now) ?? "time unknown";
+        const spread = latest.entry_spread_pct != null ? ` · spr ${Number(latest.entry_spread_pct).toFixed(1)}%` : "";
+        const body = langMode === "private"
+          ? `${when}${spread} · ${v.reason.slice(0, 120)}`
+          : `${when} · Setup ${Math.round(latest.signal_score ?? 0)}/100 · Risk ${Math.round(latest.risk_score ?? 0)}/100`;
         new Notification(title, { body, tag: `optiscan-${latest.id}` });
       }
     } catch { /* polling is best-effort */ }

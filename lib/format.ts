@@ -45,11 +45,46 @@ export function fmtIv(n: number | null | undefined): string {
   return `${Math.round(pct)}%`;
 }
 
-export function fmtTime(iso: string | null | undefined): string {
+export const MARKET_TZ = "America/New_York";
+
+/** Parse alert ISO timestamp to epoch ms, or null when invalid. */
+export function alertTimeMs(iso: string | null | undefined): number | null {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? t : null;
+}
+
+/** US market clock — always labeled ET so CA/ET never get mixed up. */
+export function fmtMarketTime(iso: string | null | undefined, opts?: { seconds?: boolean }): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const base = d.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    second: opts?.seconds ? "2-digit" : undefined,
+    timeZone: MARKET_TZ,
+  });
+  return `${base} ET`;
+}
+
+export function isAlertFresh(iso: string | null | undefined, maxAgeMs: number, nowMs = Date.now()): boolean {
+  const t = alertTimeMs(iso);
+  if (t == null) return false;
+  return nowMs - t <= maxAgeMs;
+}
+
+/** Human freshness for callouts: "3m ago · 12:08 PM ET" */
+export function fmtMarketFreshness(iso: string | null | undefined, nowMs = Date.now()): string | null {
+  const t = alertTimeMs(iso);
+  if (t == null) return null;
+  const ageMin = Math.max(0, Math.round((nowMs - t) / 60_000));
+  const ago = ageMin < 1 ? "just now" : `${ageMin}m ago`;
+  return `${ago} · ${fmtMarketTime(iso)}`;
+}
+
+export function fmtTime(iso: string | null | undefined): string {
+  return fmtMarketTime(iso, { seconds: true });
 }
 
 export function gradeClasses(grade: Grade | string): string {

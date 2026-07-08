@@ -1,167 +1,121 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { scanHeaders } from "@/hooks/useScanner";
-import { useLiveTapeMap, liveCtxFor } from "@/hooks/useLiveTapeMap";
-import { computeTradeVerdict } from "@/lib/trade-verdict";
-import { fmtPct, fmtPrice, fmtTime } from "@/lib/format";
-import { calledAgoLabel } from "@/lib/signal-live";
+import { useEffect, useState } from "react";
 import { Panel } from "@/components/ui/Panel";
+import { scanHeaders } from "@/hooks/useScanner";
+import { tradingDay } from "@/lib/trading-session";
 
-interface AlertRow {
-  id: number;
-  ticker: string;
-  option_side: string | null;
-  strike: number | null;
-  signal_score: number | null;
-  risk_score: number | null;
-  options_liquidity_score: number | null;
-  percent_move_at_alert: number | null;
-  price_at_alert: number | null;
-  catalyst_type: string | null;
-  alert_time: string;
-  short_rate_at_alert?: number | null;
-  volume_surge_at_alert?: number | null;
-  status: string;
-}
+/**
+ * AI — READ-ONLY stub. Explains the latest callout using stored data.
+ * Wire Claude later; never creates or gates signals.
+ */
 
-function buildStubExplanation(alert: AlertRow, verdict: ReturnType<typeof computeTradeVerdict>) {
-  const side = String(alert.option_side ?? "call").toLowerCase().startsWith("p") ? "put" : "call";
-  return [
-    `Latest callout: ${alert.ticker} ${side.toUpperCase()} scored ${alert.signal_score ?? "—"} with ${verdict.action} verdict right now.`,
-    verdict.reason,
-    "This panel is read-only — wire Claude API later for dynamic narration. Evidence chips below mirror the stored alert + live tape.",
-  ].join(" ");
+type Chip = { t: string; s: string };
+
+function buildChips(a: any): Chip[] {
+  if (!a) return [];
+  const chips: Chip[] = [];
+  const side = String(a.option_side ?? "").toLowerCase().startsWith("p") ? "puts" : "calls";
+  if (a.short_rate_at_alert != null)
+    chips.push({ t: `${a.short_rate_at_alert > 0 ? "+" : ""}${Number(a.short_rate_at_alert).toFixed(2)}%/min`, s: `A.${a.ticker} · aggregates` });
+  if (a.volume_surge_at_alert != null)
+    chips.push({ t: `RVOL ${Number(a.volume_surge_at_alert).toFixed(1)}×`, s: `A.${a.ticker} · volume` });
+  if (a.entry_spread_pct != null)
+    chips.push({ t: `spread ${Number(a.entry_spread_pct).toFixed(1)}%`, s: `O:${a.ticker} ${side} · NBBO` });
+  if (a.entry_delta != null)
+    chips.push({ t: `Δ ${Number(a.entry_delta).toFixed(2)}`, s: "options snapshot" });
+  if (a.signal_score != null)
+    chips.push({ t: `score ${Math.round(Number(a.signal_score))}`, s: "alert-scoring" });
+  return chips;
 }
 
 export default function CopilotPage() {
-  const tape = useLiveTapeMap(1000);
-  const [alert, setAlert] = useState<AlertRow | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await fetch("/api/alerts?limit=20", { cache: "no-store", headers: scanHeaders() });
-      const data = await res.json();
-      const rows = (data.alerts ?? []) as AlertRow[];
-      const pick =
-        rows.find((a) => a.status === "tracking") ??
-        rows[0] ??
-        null;
-      setAlert(pick);
-      setError(data.ok === false ? data.error : null);
-    } catch (err: any) {
-      setError(err?.message ?? "Alerts unavailable");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const [alert, setAlert] = useState<any | null>(null);
 
   useEffect(() => {
-    refresh();
-    const id = setInterval(refresh, 15_000);
-    return () => clearInterval(id);
-  }, [refresh]);
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/alerts?date=${tradingDay()}&limit=40`, { cache: "no-store", headers: scanHeaders() });
+        const d = await res.json();
+        const trades = ((d.alerts ?? []) as any[]).filter((a) => a.capture_action === "TRADE").sort((a, b) => b.id - a.id);
+        if (!cancelled) setAlert(trades[0] ?? null);
+      } catch {
+        /* best effort */
+      }
+    };
+    poll();
+    const id = setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
 
-  const live = alert ? liveCtxFor(tape, alert.ticker) : undefined;
-  const verdict = alert ? computeTradeVerdict(alert, live) : null;
-
-  const evidence = useMemo(() => {
-    if (!alert) return [];
-    return [
-      { label: "Signal", value: alert.signal_score ?? "—", src: "alert" },
-      { label: "Risk", value: alert.risk_score ?? "—", src: "alert" },
-      { label: "Liquidity", value: alert.options_liquidity_score ?? "—", src: "alert" },
-      { label: "Speed @ call", value: alert.short_rate_at_alert != null ? `${alert.short_rate_at_alert.toFixed(2)}%/m` : "—", src: "alert" },
-      { label: "Surge @ call", value: alert.volume_surge_at_alert?.toFixed(2) ?? "—", src: "alert" },
-      { label: "Live speed", value: live?.shortRate != null ? `${live.shortRate.toFixed(2)}%/m` : "—", src: "tape" },
-      { label: "Day @ call", value: fmtPct(alert.percent_move_at_alert), src: "alert" },
-      { label: "Catalyst", value: (alert.catalyst_type ?? "none").replace(/_/g, " "), src: "alert" },
-    ];
-  }, [alert, live]);
-
-  const explanation = alert && verdict ? buildStubExplanation(alert, verdict) : null;
+  const chips = buildChips(alert);
+  const side = String(alert?.option_side ?? "").toLowerCase().startsWith("p") ? "PUT" : "CALL";
+  const explanation =
+    alert?.ai_explanation ??
+    alert?.private_label ??
+    "No explanation stored for this callout yet.";
 
   return (
-    <div className="page-deck pg-copilot">
-      <div className="page-deck-toolbar">
-        <div className="alerts-tab-header muted">
-          AI Copilot — read-only explainer for the latest callout. Claude API stub; no trades placed.
-        </div>
-        <button type="button" className="pill btn btn-xs" onClick={refresh} disabled={loading}>
-          {loading ? "Loading…" : "Refresh"}
-        </button>
-      </div>
+    <div className="page-deck axiom-copilot">
+      <div className="axiom-scan-sweep" aria-hidden />
 
-      {error ? (
-        <div className="axiom-alert-banner">
-          <div className="label">Copilot data unavailable</div>
-          <div className="sub">{error}</div>
-        </div>
-      ) : null}
-
-      <div className="pgcop copilot-layout">
-        <div className="copleft">
-          <Panel title="Latest callout" meta={alert ? calledAgoLabel(alert.alert_time) ?? "recent" : "none"} live={alert?.status === "tracking"}>
-            {!alert ? (
-              <div className="empty small">No callouts yet — copilot narrates the newest alert once the scanner fires.</div>
-            ) : (
-              <div className="copilot-callout-card">
-                <div className="copilot-ticker num">{alert.ticker}</div>
-                <div className={`copilot-verdict verdict-${verdict?.action.toLowerCase() ?? "wait"}`}>
-                  {verdict?.headline ?? "—"}
-                </div>
-                <div className="muted text-xs">{verdict?.contractLine ?? "—"}</div>
-                <div className="copilot-meta muted text-xs">
-                  {fmtTime(alert.alert_time)} · entry {fmtPrice(alert.price_at_alert)} · {alert.status}
-                </div>
-              </div>
-            )}
-          </Panel>
+      <Panel title="AI" meta="READ-ONLY · COMING SOON" live>
+        <div className="aihead">
+          <span>SOURCE <b className="mdl">OptiScan rules engine</b></span>
+          <span>CONTEXT <b>latest TRADE callout</b></span>
         </div>
 
-        <section className="axiom-panel panel aiconsole copilot-console">
-          <div className="aihead">
-            <span>Model</span>
-            <b className="mdl">Claude stub</b>
-            <span>Mode</span>
-            <b>Explain callout</b>
-            <span>Trade</span>
-            <b>Off</b>
+        <div className="thread">
+          <div className="bubble user">
+            <span className="brole">YOU</span>
+            Why did the last callout fire?
           </div>
-          <div className="thread">
-            <div className="bubble user">
-              <span className="brole">YOU</span>
-              Explain the latest scanner callout with evidence only — no recommendation.
-            </div>
-            {explanation ? (
-              <div className="bubble ai">
-                <span className="brole">COPILOT</span>
-                {explanation}
-                <div className="evrow">
-                  {evidence.map((chip) => (
-                    <span key={chip.label} className="evchip">
-                      <span>{chip.label}: {chip.value}</span>
-                      <span className="src">{chip.src}</span>
-                    </span>
-                  ))}
-                </div>
-              </div>
+
+          <div className={`bubble ai`}>
+            <span className="brole">AXIOM</span>
+            {alert ? (
+              <>
+                <b>{alert.capture_action === "TRADE" ? `BUY ${side}` : "WATCH"} {alert.ticker}</b>
+                {alert.strike ? ` $${alert.strike} ${side.toLowerCase()}` : ""} — {explanation}
+                {chips.length ? (
+                  <div className="evrow">
+                    {chips.map((c, i) => (
+                      <span className="evchip" key={i}>
+                        {c.t}
+                        <span className="src">{c.s}</span>
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+              </>
             ) : (
-              <div className="bubble ai">
-                <span className="brole">COPILOT</span>
-                Waiting for a callout to explain…
-              </div>
+              <>No TRADE callouts yet today. When one fires, its gate breakdown appears here.</>
             )}
-            <div className="aitype">
-              <span className="d" aria-hidden />
-              Read-only · connect ANTHROPIC_API_KEY to enable live responses
-            </div>
           </div>
-        </section>
-      </div>
+
+          <div className="aitype">
+            <span className="d" />
+            Explanations are rules-based (lib/explain.js) — AI never generates or gates signals.
+          </div>
+        </div>
+
+        <div className="cpfoot">
+          <div className="cmd">
+            <span className="car">›</span>
+            <input
+              placeholder="Ask about a callout… (AI wiring coming soon)"
+              onKeyDown={(e) => {
+                // TODO: wire to Claude API — POST question + alert context, render reply as an .ai bubble.
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
+            />
+          </div>
+        </div>
+      </Panel>
     </div>
   );
 }

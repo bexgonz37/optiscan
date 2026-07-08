@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * ChartPanel — right-side drawer with one live chart (1m/5m/15m/1D tabs).
+ * ChartPanel — right-side drawer with one live chart (1s/1m/5m/15m/1D tabs).
  * Candles refresh every 1s while open; price header uses the live scanner tape.
  */
 
@@ -48,10 +48,25 @@ const INDICATOR_LABELS: Record<ChartIndicator, string> = {
   macd: "MACD",
 };
 
-const CHART_LIVE_POLL_MS = 1000;
 const VERDICT_DEFER_MS = 700;
 const VERDICT_POLL_MS = 5000;
 const OPTIONS_DEFER_MS = 500;
+
+/** Chart candle refresh — slower than live tape so scanner keeps API budget. */
+function chartPollMs(tf: ChartTimeframe): number {
+  if (tf === "1s") return 10_000;
+  if (tf === "1m") return 20_000;
+  if (tf === "5m") return 45_000;
+  if (tf === "15m") return 60_000;
+  return 120_000;
+}
+
+function friendlyChartError(raw: string | undefined, quotaBusy?: boolean): string {
+  if (quotaBusy || String(raw ?? "").includes("quota")) {
+    return "Massive API budget busy — scanner has priority. Live price still updates above. Retry in ~30s or switch to 1m.";
+  }
+  return raw ?? "candles unavailable";
+}
 
 function cssVar(name: string, fallback: string): string {
   if (typeof window === "undefined") return fallback;
@@ -103,7 +118,7 @@ function mountChart(host: HTMLDivElement, bars: Bar[], indicators: ChartIndicato
     layout: { background: { color: "transparent" }, textColor: muted, attributionLogo: false },
     grid: { vertLines: { color: line }, horzLines: { color: line } },
     rightPriceScale: { borderColor: line },
-    timeScale: { borderColor: line, timeVisible: tf !== "1D", secondsVisible: false },
+    timeScale: { borderColor: line, timeVisible: tf !== "1D", secondsVisible: tf === "1s" },
     crosshair: { mode: 0 },
     autoSize: true,
   });
@@ -234,6 +249,7 @@ export function ChartPanel({
   const [bars, setBars] = useState<Bar[]>([]);
   const [initialLoading, setInitialLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [quotaNotice, setQuotaNotice] = useState<string | null>(null);
   const [reality, setReality] = useState<any>(null);
   const [verdictPreview, setVerdictPreview] = useState<any>(null);
   const [candleUpdatedAt, setCandleUpdatedAt] = useState<number | null>(null);
@@ -300,6 +316,7 @@ export function ChartPanel({
       if (!silent) {
         setInitialLoading(true);
         setError(null);
+        setQuotaNotice(null);
       }
       try {
         const res = await fetch(`/api/candles/${encodeURIComponent(symbol)}?tf=${tf}`, {
@@ -309,20 +326,33 @@ export function ChartPanel({
         const d = await res.json();
         if (cancelled()) return;
         if (!d.ok) {
-          if (!silent) {
-            setError(d.error ?? "candles unavailable");
-            setBars([]);
+          const msg = friendlyChartError(d.error, d.quotaBusy);
+          if (silent) {
+            setQuotaNotice(msg);
+            return;
           }
-        } else {
-          setBars(d.bars ?? []);
+          setError(msg);
+          setBars([]);
+          return;
+        }
+        setBars(d.bars ?? []);
+        setCandleUpdatedAt(Date.now());
+        if (d.stale || d.quotaBusy) {
+          setQuotaNotice(d.note ?? friendlyChartError(undefined, true));
           setError(null);
-          setCandleUpdatedAt(Date.now());
+        } else {
+          setQuotaNotice(null);
+          setError(null);
         }
       } catch (e: any) {
-        if (!cancelled() && !silent) {
-          setError(e?.message ?? "failed to load candles");
-          setBars([]);
+        if (cancelled()) return;
+        const msg = friendlyChartError(e?.message);
+        if (silent) {
+          setQuotaNotice(msg);
+          return;
         }
+        setError(msg);
+        setBars([]);
       } finally {
         if (!cancelled() && !silent) setInitialLoading(false);
       }
@@ -330,20 +360,23 @@ export function ChartPanel({
     [symbol, tf],
   );
 
+  const pollMs = chartPollMs(tf);
+
   useEffect(() => {
     if (!open || !symbol) {
       setBars([]);
       setInitialLoading(false);
+      setQuotaNotice(null);
       return;
     }
     let cancelled = false;
     loadCandles(() => cancelled, false);
-    const id = setInterval(() => loadCandles(() => cancelled, true), CHART_LIVE_POLL_MS);
+    const id = setInterval(() => loadCandles(() => cancelled, true), pollMs);
     return () => {
       cancelled = true;
       clearInterval(id);
     };
-  }, [open, symbol, tf, loadCandles]);
+  }, [open, symbol, tf, loadCandles, pollMs]);
 
   const configKey = useMemo(() => `${tf}|${indicators.join(",")}`, [tf, indicators]);
 
@@ -461,8 +494,7 @@ export function ChartPanel({
             </div>
             {candleUpdatedAt ? (
               <div className="muted text-xs chart-candle-meta">
-                Candles refresh every {CHART_LIVE_POLL_MS / 1000}s
-                {tape.transport === "sse" ? " · tape SSE" : " · tape poll"}
+                Candles refresh every {pollMs / 1000}s · live price from scanner tape
               </div>
             ) : null}
           </div>
@@ -503,6 +535,7 @@ export function ChartPanel({
         <div className="chart-host-wrap">
           {initialLoading ? <div className="chart-msg muted">Loading candles…</div> : null}
           {error ? <div className="chart-msg warn">⚠ {error}</div> : null}
+          {!error && quotaNotice ? <div className="chart-msg warn">⚠ {quotaNotice}</div> : null}
           {!initialLoading && !error && !bars.length ? <div className="chart-msg muted">No candle data.</div> : null}
           <div ref={chartHostRef} className="chart-host" />
         </div>

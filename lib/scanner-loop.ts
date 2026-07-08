@@ -45,7 +45,7 @@ const ACTIVE_REFRESH_MS = Number(process.env.SCANNER_ACTIVE_REFRESH_MS ?? 7000);
 const TRIGGER_COOLDOWN_MS = Number(process.env.SCANNER_TRIGGER_COOLDOWN_MS ?? 10 * 60 * 1000);
 const CORE_TRIGGER_COOLDOWN_MS = Number(process.env.SCANNER_CORE_TRIGGER_COOLDOWN_MS ?? 4 * 60 * 1000);
 const DISCOVERY_MS = Number(process.env.SCANNER_DISCOVERY_MS ?? 30_000);
-const DISCOVERY_TOP_N = Number(process.env.SCANNER_DISCOVERY_TOP_N ?? 20);
+const DISCOVERY_TOP_N = Number(process.env.SCANNER_DISCOVERY_TOP_N ?? 5);
 const PROMOTION_MS = Number(process.env.SCANNER_PROMOTION_MS ?? 5 * 60_000);
 const DISCOVERY_MIN_VOLUME = Number(process.env.SCANNER_DISCOVERY_MIN_VOLUME ?? 100_000);
 const TAPE_ENRICH_MS = Number(process.env.SCANNER_TAPE_ENRICH_MS ?? 30_000);
@@ -235,8 +235,11 @@ function prefetchChain(ticker: string, st: SymState, nowMs: number) {
 /** Extended-hours trigger: regular-stock callout, NO option chain fetch. */
 async function handleStockTrigger(ticker: string, st: SymState, read: any, quote: any, nowMs: number) {
   if (process.env.STOCK_CALLOUTS !== "1") return;
-  if (nowMs < st.stockCooldownUntil) return;
   const s = state();
+  const core = isCoreSymbol(ticker);
+  const promoted = s.promoted.has(ticker);
+  if (!core && !promoted) return;
+  if (nowMs < st.stockCooldownUntil) return;
   const cooldownMs = isCoreSymbol(ticker) ? CORE_TRIGGER_COOLDOWN_MS : TRIGGER_COOLDOWN_MS;
   st.stockCooldownUntil = nowMs + cooldownMs;
   s.triggers++;

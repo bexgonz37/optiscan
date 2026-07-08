@@ -1,199 +1,166 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { scanHeaders } from "@/hooks/useScanner";
-import { useLiveTapeMap } from "@/hooks/useLiveTapeMap";
+import { useEffect, useState } from "react";
 import { Panel } from "@/components/ui/Panel";
-import { fmtPct } from "@/lib/format";
+import { StatTile } from "@/components/ui/StatTile";
+import { useScannerStream } from "@/hooks/useScannerStream";
 
-interface HealthBody {
+/**
+ * Polygon Data Core + Firehose (read-only telemetry).
+ * No new Polygon calls — reads existing /api/health + the live scanner stream.
+ */
+
+type Health = {
   ok?: boolean;
   provider?: string;
   keyPresent?: boolean;
   loopRunning?: boolean;
-  lastTickAgeMs?: number | null;
-  session?: string | null;
+  lastTickAgeMs?: number;
+  session?: string;
+  ticks?: number;
+  triggers?: number;
+  alerts?: number;
+  errors?: number;
+  intervalMs?: number;
+  callsToday?: number;
+  dailyCap?: number;
+  callsThisMinute?: number;
+  minuteCap?: number;
   quotaExceeded?: boolean;
-  ticks?: number | null;
-  triggers?: number | null;
-  alerts?: number | null;
-  errors?: number | null;
-  intervalMs?: number | null;
-  note?: string | null;
-  callsToday?: number | null;
-  callsThisMinute?: number | null;
-  dailyCap?: number | null;
-  minuteCap?: number | null;
-  dbWritable?: boolean | null;
-}
+};
 
-type FhKind = "t" | "q" | "a" | "o";
+type Line = { id: string; ch: "T" | "Q" | "A" | "O"; sym: string; txt: string; tone: "up" | "dn" | "" };
 
-interface FhLine {
-  id: string;
-  kind: FhKind;
-  sym: string;
-  text: string;
-}
-
-function fmtAge(ms: number | null | undefined) {
-  if (ms == null) return "—";
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
-}
+const FIREHOSE_MAX = 16;
 
 export default function DataCorePage() {
-  const tape = useLiveTapeMap(1000);
-  const [health, setHealth] = useState<HealthBody | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const refreshHealth = useCallback(async () => {
-    try {
-      const res = await fetch("/api/health", { cache: "no-store", headers: scanHeaders() });
-      const body = (await res.json()) as HealthBody;
-      setHealth(body);
-      setError(body.ok === false ? "Health check degraded" : null);
-    } catch (err: any) {
-      setError(err?.message ?? "Health unavailable");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const { realtime: loop } = useScannerStream();
+  const [health, setHealth] = useState<Health | null>(null);
+  const [lines, setLines] = useState<Line[]>([]);
 
   useEffect(() => {
-    refreshHealth();
-    const id = setInterval(refreshHealth, 5000);
-    return () => clearInterval(id);
-  }, [refreshHealth]);
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch("/api/health", { cache: "no-store" });
+        const d = (await res.json()) as Health;
+        if (!cancelled) setHealth(d);
+      } catch {
+        /* best effort */
+      }
+    };
+    poll();
+    const id = setInterval(poll, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
 
-  const quotaPct = useMemo(() => {
-    if (health?.callsToday == null || health?.dailyCap == null || !health.dailyCap) return null;
-    return Math.min(100, Math.round((health.callsToday / health.dailyCap) * 100));
-  }, [health]);
-
-  const firehose = useMemo(() => {
-    const lines: FhLine[] = [];
+  // Firehose = the real live tape, rendered as raw channel messages.
+  const tape = ((loop?.tape ?? loop?.movers ?? []) as any[]) ?? [];
+  useEffect(() => {
+    if (!tape.length) return;
     const now = Date.now();
-    for (const r of tape.rows.slice(0, 24)) {
-      const rate = r.shortRate ?? 0;
-      const kind: FhKind = Math.abs(rate) >= 0.25 ? "t" : r.surge != null && r.surge >= 1.4 ? "q" : "o";
-      lines.push({
-        id: `${r.symbol}-${kind}`,
-        kind,
+    const next: Line[] = tape.slice(0, 6).map((r: any, i: number) => {
+      const move = typeof r.movePct === "number" ? r.movePct : 0;
+      const tone: Line["tone"] = move > 0 ? "up" : move < 0 ? "dn" : "";
+      const ch: Line["ch"] = r.hodBreak || r.lodBreak ? "A" : "T";
+      const price = r.price != null ? `$${Number(r.price).toFixed(2)}` : "—";
+      const spd = r.shortRate != null ? `${r.shortRate > 0 ? "+" : ""}${r.shortRate.toFixed(2)}%/m` : "";
+      return {
+        id: `${r.symbol}-${now}-${i}`,
+        ch,
         sym: r.symbol,
-        text: `${rate > 0 ? "+" : ""}${rate.toFixed(2)}%/min · surge ${r.surge?.toFixed(2) ?? "—"} · ${fmtPct(r.movePct)} day`,
-      });
-    }
-    if (health?.lastTickAgeMs != null) {
-      lines.unshift({
-        id: `loop-${now}`,
-        kind: "a",
-        sym: "LOOP",
-        text: `tick ${fmtAge(health.lastTickAgeMs)} ago · ${health.ticks ?? 0} ticks · ${health.triggers ?? 0} triggers`,
-      });
-    }
-    return lines.slice(0, 28);
-  }, [tape.rows, health]);
+        txt: `${price} · ${move > 0 ? "+" : ""}${move.toFixed(2)}% ${spd ? `· ${spd}` : ""}`,
+        tone,
+      };
+    });
+    setLines((prev) => [...next, ...prev].slice(0, FIREHOSE_MAX));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loop?.lastTickAt, tape.length]);
+
+  const rate = health?.callsThisMinute != null ? `${health.callsThisMinute}/${health.minuteCap ?? "—"}` : "—";
+  const loopUp = Boolean(health?.loopRunning ?? loop?.running);
+  const hasKey = Boolean(health?.keyPresent);
+  const loopHint =
+    loopUp
+      ? "streaming ticks"
+      : hasKey
+        ? "idle — usually starts within ~2 min after dev restart"
+        : "add MASSIVE/POLYGON_API_KEY to .env.local";
+  const providerLabel = health?.provider === "polygon" ? "massive" : (health?.provider ?? "—");
+  const clusterStat = (live: boolean) => (live ? "● LIVE" : hasKey ? "○ IDLE" : "○ DOWN");
+  const clusters = [
+    { name: "STOCKS", ch: "T · Q · A", ok: loopUp && hasKey },
+    { name: "OPTIONS", ch: "O · A", ok: loopUp && hasKey },
+    { name: "SCANNER LOOP", ch: `${health?.intervalMs ?? 1000}ms`, ok: loopUp },
+  ];
 
   return (
-    <div className="page-deck pg-data">
-      <div className="page-deck-toolbar">
-        <div className="alerts-tab-header muted">
-          Data Core — Polygon health, loop counters, and live scanner firehose. Read-only telemetry.
-        </div>
-        <button type="button" className="pill btn btn-xs" onClick={refreshHealth} disabled={loading}>
-          {loading ? "Loading…" : "Refresh"}
-        </button>
+    <div className="page-deck axiom-data">
+      <div className="axiom-scan-sweep" aria-hidden />
+
+      <div className="axiom-strip">
+        <StatTile label="Provider" value={providerLabel} hint={health?.keyPresent ? "Massive key present" : "no key"} />
+        <StatTile label="Loop" value={loopUp ? "RUNNING" : "IDLE"} hint={loopHint} />
+        <StatTile label="Calls today" value={health?.callsToday != null ? `${health.callsToday}` : "—"} hint={`cap ${health?.dailyCap ?? "—"}`} />
+        <StatTile label="Rate / min" value={rate} hint={health?.quotaExceeded ? "QUOTA HIT" : "within cap"} />
       </div>
 
-      {error ? (
-        <div className="axiom-alert-banner">
-          <div className="label">Data core warning</div>
-          <div className="sub">{error}</div>
-        </div>
-      ) : null}
+      <p className="live-guide" style={{ marginBottom: 12 }}>
+        <b>Feed health</b> = is the Massive data pipe + scanner loop running?
+        <b> Live tick stream</b> = raw price ticks as they arrive (like a terminal tape).
+      </p>
 
-      <div className="data-core-grid">
-        <Panel title="Data core" meta={health?.provider ?? "Polygon"} live={Boolean(health?.loopRunning)}>
-          <div className="dqgrid">
-            <div className="dqtile">
-              <div className="dqk">Provider</div>
-              <div className="dqv">{health?.provider ?? "—"}</div>
-            </div>
-            <div className="dqtile">
-              <div className="dqk">Session</div>
-              <div className="dqv">{health?.session ?? "—"}</div>
-            </div>
-            <div className="dqtile">
-              <div className="dqk">Loop</div>
-              <div className={`dqv ${health?.loopRunning ? "" : "neg"}`}>{health?.loopRunning ? "RUN" : "OFF"}</div>
-            </div>
-            <div className="dqtile">
-              <div className="dqk">Last tick</div>
-              <div className="dqv">{fmtAge(health?.lastTickAgeMs)}</div>
-            </div>
-            <div className="dqtile">
-              <div className="dqk">Alerts fired</div>
-              <div className="dqv">{health?.alerts ?? "—"}</div>
-            </div>
-            <div className="dqtile">
-              <div className="dqk">DB</div>
-              <div className={`dqv ${health?.dbWritable === false ? "neg" : ""}`}>
-                {health?.dbWritable == null ? "—" : health.dbWritable ? "OK" : "ERR"}
+      <div className="axiom-hero-row" style={{ gridTemplateColumns: "minmax(0,0.9fr) minmax(0,1.1fr)" }}>
+        <Panel title="Feed health" meta={`Massive · ${health?.session ?? "—"}`} live={loopUp}>
+          {clusters.map((c) => (
+            <div className="clrow" key={c.name}>
+              <span className="cldot" style={c.ok ? undefined : { background: hasKey ? "#ffc879" : "#ff5162", boxShadow: hasKey ? "0 0 9px #ffc879" : "0 0 9px #ff5162" }} />
+              <div className="clnamewrap">
+                <span className="clname">{c.name}</span>
+                <span className="clch">{c.ch}</span>
               </div>
+              <span className="clstat">{clusterStat(c.ok)}</span>
             </div>
-          </div>
-          {health?.note ? <p className="muted text-xs data-core-note">{health.note}</p> : null}
-        </Panel>
-
-        <Panel
-          title="API quota"
-          meta={
-            health?.callsToday != null && health?.dailyCap != null
-              ? `${health.callsToday} / ${health.dailyCap} today`
-              : "Polygon calls"
-          }
-        >
-          <div className="bigstat data-quota-stat">
-            <div className="bsk">Daily usage</div>
-            <div className="bsv blue">{quotaPct != null ? `${quotaPct}%` : "—"}</div>
-            <div className="bssub">
-              {health?.callsThisMinute ?? "—"} / {health?.minuteCap ?? "—"} this minute
-              {health?.quotaExceeded ? " · quota exceeded" : ""}
+          ))}
+          <div className="clrow">
+            <span className="cldot" />
+            <div className="clnamewrap">
+              <span className="clname">THROUGHPUT</span>
+              <span className="clch">ticks {health?.ticks ?? 0} · triggers {health?.triggers ?? 0} · alerts {health?.alerts ?? 0}</span>
             </div>
-            {quotaPct != null ? (
-              <div className="bsbar">
-                <div className="bsfill" style={{ width: `${quotaPct}%` }} />
-              </div>
-            ) : null}
+            <span className="clstat">{health?.errors ? `${health.errors} err` : "OK"}</span>
           </div>
         </Panel>
 
-        <Panel
-          title="Live firehose"
-          meta={`${tape.transport.toUpperCase()} · ${tape.rows.length} movers`}
-          live={tape.running}
-          className="data-firehose-panel"
-        >
-          <div className="fh data-firehose">
-            {firehose.length ? (
-              firehose.map((line) => (
-                <div key={line.id} className="fhl">
-                  <span className={`fhch ${line.kind}`}>{line.kind.toUpperCase()}</span>
-                  <span className="fhsym">{line.sym}</span>
-                  <span className="fhtxt">{line.text}</span>
+        <Panel title="Live tick stream" meta="TICKS AS THEY ARRIVE" live>
+          <div className="fh">
+            {lines.length ? (
+              lines.map((l) => (
+                <div className="fhl" key={l.id}>
+                  <span className={`fhch ${l.ch.toLowerCase()}`}>{l.ch}</span>
+                  <span className="fhsym">{l.sym}</span>
+                  <span className={`fhtxt ${l.tone}`}>{l.txt}</span>
                 </div>
               ))
             ) : (
-              <div className="empty small">Firehose fills once the scanner loop publishes movers.</div>
+              <div className="sigwhy">
+                {loopUp
+                  ? "Waiting for first tick on the tape…"
+                  : hasKey
+                    ? "Scanner loop is idle — start dev server or wait ~2 min for the lock to clear."
+                    : "No Polygon key — add POLYGON_API_KEY to .env.local"}
+              </div>
             )}
           </div>
-          <p className="muted text-xs data-core-foot">
-            T = trigger-grade speed · Q = quote/surge · A = alert/loop · O = other · Tape via existing SSE stream
-          </p>
         </Panel>
       </div>
+
+      <p className="foot" style={{ marginTop: "1rem", color: "var(--muted)", fontSize: ".72rem" }}>
+        Read-only telemetry from your Massive feed. No extra API calls.
+      </p>
     </div>
   );
 }

@@ -55,23 +55,30 @@ function structureOk(input: CalloutQualityInput): boolean {
   return input.direction === "bearish" ? !input.aboveVwap : input.aboveVwap;
 }
 
-/** META #436 profile — the bar for BUY CALL/PUT. */
+/** META #436 profile — the bar for BUY CALL/PUT. Tunable via env (in/out scalps). */
 export function passesGoldTrade(input: CalloutQualityInput): string[] {
   const failures: string[] = [];
   const speed = Math.abs(input.shortRate ?? 0);
   const surge = input.surge ?? 0;
   const gap = sideGap(input);
+  const minSetup = Number(process.env.GOLD_TRADE_MIN_SETUP ?? 84);
+  const minSpeed = Number(process.env.GOLD_TRADE_MIN_SPEED ?? 0.24);
+  const minSurge = Number(process.env.GOLD_TRADE_MIN_SURGE ?? 2.4);
+  const minWorth = Number(process.env.GOLD_TRADE_MIN_WORTH ?? 76);
+  const minContract = Number(process.env.GOLD_TRADE_MIN_CONTRACT ?? 68);
+  const minLiq = Number(process.env.GOLD_TRADE_MIN_LIQUIDITY ?? 60);
+  const minGap = Number(process.env.GOLD_TRADE_MIN_SIDE_GAP ?? 22);
 
-  if (input.setupScore < 88) failures.push(`setup ${Math.round(input.setupScore)} < 88`);
-  if (speed < 0.28) failures.push(`speed ${speed.toFixed(2)}%/min < 0.28 (META had 0.35)`);
-  if (surge < 2.8) failures.push(`surge ${surge.toFixed(1)}x < 2.8 (META had 4.0x)`);
-  if (!["early", "extended_tradable"].includes(input.moveStatus)) {
-    failures.push(`move ${input.moveStatus} — META fired on an early rip`);
+  if (input.setupScore < minSetup) failures.push(`setup ${Math.round(input.setupScore)} < ${minSetup}`);
+  if (speed < minSpeed) failures.push(`speed ${speed.toFixed(2)}%/min < ${minSpeed}`);
+  if (surge < minSurge) failures.push(`surge ${surge.toFixed(1)}x < ${minSurge}`);
+  if (!["early", "extended_tradable", "continuing"].includes(input.moveStatus)) {
+    failures.push(`move ${input.moveStatus} — need early/tradable momentum`);
   }
-  if (input.worthScore < 80) failures.push(`worth-it ${Math.round(input.worthScore)} < 80`);
-  if (input.contractScore < 75) failures.push(`contract ${Math.round(input.contractScore)} < 75`);
-  if (input.liquidityScore < 65) failures.push(`liquidity ${Math.round(input.liquidityScore)} < 65`);
-  if (gap < 30) failures.push(`side conviction gap ${Math.round(gap)} < 30 (META call 75 vs put 33)`);
+  if (input.worthScore < minWorth) failures.push(`worth-it ${Math.round(input.worthScore)} < ${minWorth}`);
+  if (input.contractScore < minContract) failures.push(`contract ${Math.round(input.contractScore)} < ${minContract}`);
+  if (input.liquidityScore < minLiq) failures.push(`liquidity ${Math.round(input.liquidityScore)} < ${minLiq}`);
+  if (gap < minGap) failures.push(`side conviction gap ${Math.round(gap)} < ${minGap}`);
   if (input.efficiency != null && input.efficiency < 0.32) failures.push("tape efficiency < 0.32");
   if (!accelAligned(input) && !(input.hodBreak || input.lodBreak)) {
     failures.push("speed without acceleration follow-through");

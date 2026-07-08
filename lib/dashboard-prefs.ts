@@ -9,10 +9,10 @@ export type Theme = "dark" | "light";
 export type LiveSort = "speed" | "surge" | "move" | "level" | "symbol";
 export type LiveScope = "options" | "market";
 
-export const CHART_TIMEFRAMES = ["1m", "5m", "15m", "1D"] as const;
+export const CHART_TIMEFRAMES = ["1s", "1m", "5m", "15m", "1D"] as const;
 export type ChartTimeframe = (typeof CHART_TIMEFRAMES)[number];
 
-export const CHART_STACK_TIMEFRAMES = ["1m", "5m", "15m"] as const;
+export const CHART_STACK_TIMEFRAMES = ["1s", "1m", "5m", "15m"] as const;
 export type ChartStackTimeframe = (typeof CHART_STACK_TIMEFRAMES)[number];
 
 export const CHART_INDICATORS = ["vwap", "ema9", "ema21", "sma50", "rsi", "macd"] as const;
@@ -21,6 +21,7 @@ export type ChartIndicator = (typeof CHART_INDICATORS)[number];
 export const DEFAULT_CHART_INDICATORS: ChartIndicator[] = ["vwap", "ema9"];
 
 export const DEFAULT_STACK_INDICATORS: Record<ChartStackTimeframe, ChartIndicator[]> = {
+  "1s": ["vwap"],
   "1m": ["vwap", "ema9"],
   "5m": ["vwap", "ema9"],
   "15m": ["vwap"],

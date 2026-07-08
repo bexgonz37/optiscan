@@ -2,6 +2,7 @@ export { CalibrationChart } from "./CalibrationChart";
 export { ConvictionRing } from "./ConvictionRing";
 export { EquityCurve } from "./EquityCurve";
 export { Panel } from "./Panel";
+export { ScannerBuilder } from "./ScannerBuilder";
 export { ShareCard } from "./ShareCard";
 export { StatTile } from "./StatTile";
 export { SignalCard } from "./SignalCard";
