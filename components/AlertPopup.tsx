@@ -44,7 +44,7 @@ interface PopupAlert {
 const LS_LAST_ID = "optiscan:popup:lastId";
 const LS_SNOOZE = "optiscan:popup:snooze";
 const SNOOZE_MS = 60 * 60 * 1000;
-const POLL_MS = 1_000;
+const POLL_MS = 2000;
 const MAX_STACK = 3;
 /** Never popup/notify for callouts older than this — prevents stale replays after tab sleep. */
 const POPUP_MAX_AGE_MS = 5 * 60_000;
@@ -59,11 +59,7 @@ function isPopupEligible(a: PopupAlert, live: ReturnType<typeof liveCtxFor>, now
   const cap = String(a.capture_action ?? "").toUpperCase();
   if (cap === "SKIP") return false;
   if (cap === "TRADE") return isTradeEligible(a, live);
-  if (cap === "WAIT") {
-    if (isMetaShapedAlert(a) && isFillableOptionsSetup(a)) return true;
-    const v = computeTradeVerdict(a, live);
-    return v.action === "WAIT" && (v.side === "CALL" || v.side === "PUT");
-  }
+  if (cap === "WAIT") return isFillableOptionsSetup(a) && isMetaShapedAlert(a);
   return false;
 }
 
@@ -240,8 +236,16 @@ export function AlertPopup({
 
   useEffect(() => {
     poll();
-    const id = setInterval(poll, POLL_MS);
-    return () => clearInterval(id);
+    const id = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      poll();
+    }, POLL_MS);
+    const onVis = () => { if (!document.hidden) poll(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+    };
   }, [poll]);
 
   function dismiss(a: PopupAlert) {

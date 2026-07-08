@@ -11,6 +11,7 @@
  * Market signals and measurements only — nothing here is a recommendation.
  */
 
+import dynamic from "next/dynamic";
 import { Suspense, useCallback, useEffect, useMemo, useState, useTransition, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { scanHeaders } from "@/hooks/useScanner";
@@ -21,10 +22,17 @@ import { AlertsCommandCenter } from "@/components/AlertsCommandCenter";
 import { openLiveChart } from "@/lib/open-chart";
 import { OptiscanAlertsDashboard } from "@/components/OptiscanAlertsDashboard";
 import { SystemExplanationSection } from "@/components/SystemExplanationSection";
-import { CalibrationChart } from "@/components/ui/CalibrationChart";
-import { EquityCurve } from "@/components/ui/EquityCurve";
+const CalibrationChart = dynamic(
+  () => import("@/components/ui/CalibrationChart").then((m) => m.CalibrationChart),
+  { ssr: false, loading: () => <div className="muted text-sm">Loading chart…</div> },
+);
+const EquityCurve = dynamic(
+  () => import("@/components/ui/EquityCurve").then((m) => m.EquityCurve),
+  { ssr: false, loading: () => <div className="muted text-sm">Loading chart…</div> },
+);
 import { Panel } from "@/components/ui/Panel";
 import { ShareCard } from "@/components/ui/ShareCard";
+import { DailyPostPack } from "@/components/DailyPostPack";
 import { computeTradeVerdict, formatSpeedLine } from "@/lib/trade-verdict";
 import { calledAgoLabel, sideFromAlert } from "@/lib/signal-live";
 import { earlyMoveWin, pickEarlyMove, EARLY_MOVE_WIN_PCT, EARLY_ON_TRACK_MIN_PCT } from "@/lib/early-accuracy";
@@ -125,34 +133,48 @@ function AlertsPageInner() {
     return q.toString();
   }, [ticker, date, catalyst, minSignal, maxRisk, fp, taken, asset]);
 
-  const refresh = useCallback(async (opts?: { silent?: boolean }) => {
+  const refreshNow = useCallback(async (opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true);
     try {
-      const headers = scanHeaders();
-      const [aRes, sRes, accRes, jRes, pRes] = await Promise.all([
-        fetch(`/api/alerts?limit=200`, { cache: "no-store", headers }),
-        fetch(`/api/alerts/stats`, { cache: "no-store", headers }),
-        fetch(`/api/alerts/signal-accuracy?days=14&asset=options`, { cache: "no-store", headers }),
-        fetch(`/api/trade-journal`, { cache: "no-store", headers }),
-        fetch(`/api/alerts/performance?limit=500`, { cache: "no-store", headers }),
-      ]);
-      const a = await aRes.json();
-      const s = await sRes.json();
-      const acc = await accRes.json();
-      const j = await jRes.json();
-      const p = await pRes.json();
+      const a = await fetch(`/api/alerts?limit=200`, { cache: "no-store", headers: scanHeaders() }).then((r) => r.json());
       setAlerts(a.alerts ?? []);
-      setStats(s.ok ? s : null);
-      setAccuracy(acc.ok ? acc : null);
-      setJournal(j.journal ?? []);
-      setPerformance(p.ok ? p.performance ?? [] : []);
-      setLastImport(j.lastImport ?? null);
-      setError(a.ok === false ? a.error : s.ok === false ? s.error : null);
+      setError(a.ok === false ? a.error : null);
     } catch (err: any) {
-      setError(err?.message ?? "Failed to load Alert Lab");
+      setError(err?.message ?? "Failed to load alerts");
     } finally {
       if (!opts?.silent) setLoading(false);
     }
+  }, []);
+
+  const refreshHistoryBundle = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
+    try {
+      const headers = scanHeaders();
+      const [sRes, accRes, pRes] = await Promise.all([
+        fetch(`/api/alerts/stats`, { cache: "no-store", headers }),
+        fetch(`/api/alerts/signal-accuracy?days=14&asset=options`, { cache: "no-store", headers }),
+        fetch(`/api/alerts/performance?limit=500`, { cache: "no-store", headers }),
+      ]);
+      const s = await sRes.json();
+      const acc = await accRes.json();
+      const p = await pRes.json();
+      setStats(s.ok ? s : null);
+      setAccuracy(acc.ok ? acc : null);
+      setPerformance(p.ok ? p.performance ?? [] : []);
+      setError(s.ok === false ? s.error : null);
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to load history");
+    } finally {
+      if (!opts?.silent) setLoading(false);
+    }
+  }, []);
+
+  const refreshJournal = useCallback(async () => {
+    try {
+      const j = await fetch(`/api/trade-journal`, { cache: "no-store", headers: scanHeaders() }).then((r) => r.json());
+      setJournal(j.journal ?? []);
+      setLastImport(j.lastImport ?? null);
+    } catch { /* best effort */ }
   }, []);
 
   const refreshHistory = useCallback(async () => {
@@ -163,6 +185,12 @@ function AlertsPageInner() {
       setAlerts(a.alerts ?? []);
     } catch { /* best effort */ }
   }, [query]);
+
+  const refresh = useCallback(async (opts?: { silent?: boolean }) => {
+    if (tab === "now") await refreshNow(opts);
+    else if (tab === "history") await Promise.all([refreshHistoryBundle(opts), refreshHistory()]);
+    else await refreshJournal();
+  }, [tab, refreshNow, refreshHistoryBundle, refreshHistory, refreshJournal]);
 
   const refreshAccuracy = useCallback(async () => {
     try {
@@ -177,10 +205,18 @@ function AlertsPageInner() {
   }, [paramTab]);
 
   useEffect(() => {
-    refresh();
-    const id = setInterval(() => refresh({ silent: true }), 60_000);
-    return () => clearInterval(id);
-  }, [refresh]);
+    if (tab === "now") {
+      refreshNow();
+      const id = setInterval(() => refreshNow({ silent: true }), 30_000);
+      return () => clearInterval(id);
+    }
+    if (tab === "history") {
+      refreshHistoryBundle();
+      refreshHistory();
+      return;
+    }
+    refreshJournal();
+  }, [tab, refreshNow, refreshHistoryBundle, refreshHistory, refreshJournal]);
 
   useEffect(() => {
     if (tab !== "history") return;
@@ -190,7 +226,7 @@ function AlertsPageInner() {
   useEffect(() => {
     if (tab !== "history") return;
     refreshAccuracy();
-    const id = setInterval(refreshAccuracy, 1000);
+    const id = setInterval(refreshAccuracy, 3000);
     return () => clearInterval(id);
   }, [tab, refreshAccuracy]);
 
@@ -242,8 +278,8 @@ function AlertsPageInner() {
   }, [accuracy, accFilter]);
 
   const accSparkSymbols = useMemo(
-    () => filteredAccuracyRows.map((r: any) => r.ticker as string),
-    [filteredAccuracyRows],
+    () => (tab === "history" ? filteredAccuracyRows.map((r: any) => r.ticker as string) : []),
+    [tab, filteredAccuracyRows],
   );
   const accSparklines = useSparklines(accSparkSymbols);
 
@@ -337,6 +373,8 @@ function AlertsPageInner() {
       {tab === "history" ? (
         <>
         <OptiscanAlertsDashboard accuracy={accuracy} onOnTrackClick={toggleOnTrackFilter} />
+
+        <DailyPostPack alerts={alerts} tradingDay={today} />
 
         <div className="kpis axiom-kpis" style={{ marginBottom: 14, marginTop: 8 }}>
           {accKpi("all", "Graded callouts", accuracy?.recent?.length ?? 0, "all tracked signals")}

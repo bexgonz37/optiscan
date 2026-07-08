@@ -25,11 +25,18 @@ import { useLanguageMode } from "@/hooks/useLanguageMode";
 import { formatOptionsContract, formatCalloutHeadline, isFillableOptionsSetup } from "@/lib/format-contract";
 import { rankAlertForHero, isMetaShapedAlert, META_REFERENCE } from "@/lib/meta-bar";
 import { MetaBarPanel } from "@/components/MetaBarPanel";
-import { filterCoreAndWinners } from "@/lib/core-vs-winner";
+import { filterCoreAndWinners, sortCoreFirstThenSpeed } from "@/lib/core-vs-winner";
 import { CORE_WATCH } from "@/lib/universe";
+import { isDiscordRelevantAlert, HERO_STICKY_MS } from "@/lib/discord-desk";
 
-const HOT_LINGER_MS = 30_000;
-const STABLE_ORDER_MS = 20_000;
+const CORE_SET = new Set(CORE_WATCH);
+
+function tapeSpeed(r: { instantRate?: number | null; shortRate?: number | null } | null | undefined): number {
+  return Math.abs(r?.instantRate ?? r?.shortRate ?? 0);
+}
+
+const HOT_LINGER_MS = 90_000;
+const STABLE_ORDER_MS = 120_000;
 const TICK_FLASH_MS = 900;
 
 type ScannerColumn = { title: string; rows: TapeRow[] };
@@ -185,7 +192,8 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
   const [scope, setScope] = useState<Scope>("options");
   const [sortKey, setSortKey] = useState<LiveSortKey>("speed");
   const [hovering, setHovering] = useState(false);
-  const [holdPinned, setHoldPinned] = useState(false);
+  const [holdPinned, setHoldPinned] = useState(true);
+  const heroLockRef = useRef<{ alertId: number; until: number } | null>(null);
   const [heroAlert, setHeroAlert] = useState<any | null>(null);
   const [settled, setSettled] = useState<any[]>([]);
   const [trackingAlerts, setTrackingAlerts] = useState<any[]>([]);
@@ -202,10 +210,13 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
   useEffect(() => {
     const saved = loadDashboardPrefs();
     if (saved.liveSort && SORTS.some((sort) => sort.key === saved.liveSort)) setSortKey(saved.liveSort);
+    else if (saved.liveScope !== "market") setSortKey("symbol");
     if (saved.liveScope === "market" || saved.liveScope === "options") setScope(saved.liveScope);
   }, []);
 
   useEffect(() => { onLoopStatus?.(Boolean(loop?.running)); }, [loop?.running, onLoopStatus]);
+
+  const [allProductAlerts, setAllProductAlerts] = useState<any[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -213,48 +224,81 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
       try {
         const res = await fetch(`/api/alerts?date=${tradingDay()}&limit=80`, { cache: "no-store", headers: scanHeaders() });
         const d = await res.json();
-        const now = Date.now();
-        const alerts = (d.alerts ?? []) as any[];
-        const isCurrentProduct = (a: any) => scope === "market" ? a.asset_class === "stock" : a.asset_class !== "stock";
-        const productAlerts = alerts.filter(isCurrentProduct);
-        const trades = productAlerts.filter((a) => a.capture_action === "TRADE");
-        trades.sort((a, b) => {
-          const core = prefersCore(a, b);
-          if (core !== 0) return core;
-          return b.id - a.id;
-        });
-        const freshMs = scope === "market" ? HERO_CALLOUT_FRESH_MARKET_MS : HERO_CALLOUT_FRESH_MS;
-        const freshPool = productAlerts.filter((a) => isAlertFresh(a.alert_time, freshMs, now));
-        freshPool.sort((a, b) => {
-          const core = prefersCore(a, b);
-          if (core !== 0) return core;
-          return rankAlertForHero(b) - rankAlertForHero(a) || b.id - a.id;
-        });
-        const hero = freshPool.find((a) =>
-          a.capture_action === "TRADE"
-          || isFillableOptionsSetup(a)
-          || (scope === "market" && a.capture_action === "TRADE")
-          || (scope === "options" && isMetaShapedAlert(a)),
-        ) ?? freshPool[0] ?? null;
-        if (!cancelled) setHeroAlert(hero);
-        const heroId = hero?.id ?? null;
-        const recent = productAlerts
-          .filter((a) => a.id !== heroId)
-          .sort((a, b) => b.id - a.id)
-          .slice(0, 10);
-        if (!cancelled) setSettled(recent);
-        const tracking = productAlerts
-          .filter((a) => a.status === "tracking")
-          .sort((a, b) => b.id - a.id)
-          .slice(0, 8);
-        if (!cancelled) setTrackingAlerts(tracking);
+        if (!cancelled) setAllProductAlerts((d.alerts ?? []) as any[]);
       } catch { /* best effort */ }
     };
     poll();
     const pollMs = loop?.session === "regular" || loop?.session === "premarket" ? 2000 : 5000;
     const id = setInterval(poll, pollMs);
     return () => { cancelled = true; clearInterval(id); };
-  }, [scope, loop?.session]);
+  }, [loop?.session]);
+
+  const heroFromAlerts = useMemo(() => {
+    const now = Date.now();
+    const isCurrentProduct = (a: any) => scope === "market" ? a.asset_class === "stock" : a.asset_class !== "stock";
+    const productAlerts = allProductAlerts.filter(isCurrentProduct);
+    const freshMs = scope === "market" ? HERO_CALLOUT_FRESH_MARKET_MS : HERO_CALLOUT_FRESH_MS;
+    const freshPool = productAlerts.filter((a) => isAlertFresh(a.alert_time, freshMs, now));
+    const coreSymbols = new Set(CORE_WATCH);
+    freshPool.sort((a, b) => {
+      const ac = coreSymbols.has(a.ticker) ? 1 : 0;
+      const bc = coreSymbols.has(b.ticker) ? 1 : 0;
+      if (ac !== bc) return bc - ac;
+      const at = new Date(a.alert_time ?? 0).getTime();
+      const bt = new Date(b.alert_time ?? 0).getTime();
+      if (bt !== at) return bt - at;
+      return rankAlertForHero(b) - rankAlertForHero(a) || b.id - a.id;
+    });
+    return freshPool.find((a) =>
+      scope === "options"
+        ? (a.capture_action === "TRADE" && isFillableOptionsSetup(a))
+          || (isFillableOptionsSetup(a) && isMetaShapedAlert(a))
+        : a.capture_action === "TRADE",
+    ) ?? null;
+  }, [allProductAlerts, scope]);
+
+  const stableHero = useMemo(() => {
+    const candidate = heroFromAlerts;
+    if (!candidate) {
+      heroLockRef.current = null;
+      return null;
+    }
+    const now = Date.now();
+    const lock = heroLockRef.current;
+    if (lock && now < lock.until) {
+      const locked = allProductAlerts.find((a) => a.id === lock.alertId);
+      if (locked && isAlertFresh(locked.alert_time, HERO_CALLOUT_FRESH_MS, now)) {
+        const upgraded =
+          candidate.id !== locked.id
+          && candidate.capture_action === "TRADE"
+          && locked.capture_action !== "TRADE"
+          && CORE_SET.has(candidate.ticker);
+        if (!upgraded) return locked;
+      }
+    }
+    heroLockRef.current = { alertId: candidate.id, until: now + HERO_STICKY_MS };
+    return candidate;
+  }, [heroFromAlerts, allProductAlerts]);
+
+  useEffect(() => {
+    setHeroAlert(stableHero);
+  }, [stableHero]);
+
+  useEffect(() => {
+    const productAlerts = allProductAlerts.filter(
+      (a) => scope === "market" ? a.asset_class === "stock" : a.asset_class !== "stock",
+    );
+    const relevant = scope === "options"
+      ? productAlerts.filter(isDiscordRelevantAlert)
+      : productAlerts.filter((a) => a.capture_action === "TRADE");
+    const heroId = stableHero?.id ?? null;
+    setSettled(
+      relevant.filter((a) => a.id !== heroId).sort((a, b) => b.id - a.id).slice(0, 12),
+    );
+    setTrackingAlerts(
+      relevant.filter((a) => a.status === "tracking").sort((a, b) => b.id - a.id).slice(0, 8),
+    );
+  }, [allProductAlerts, scope, stableHero?.id]);
 
   const rows = useMemo(() => {
     const closedRecap = loop?.session === "closed";
@@ -263,10 +307,17 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
       return sortTape([...tape], effectiveSort, effectiveSort === "symbol" ? 1 : -1).slice(0, 60);
     }
     const now = Date.now();
+    if (scope === "options") {
+      return sortTape(
+        tape.filter((r) => r.core || CORE_SET.has(r.symbol)),
+        sortKey === "speed" ? "symbol" : sortKey,
+        1,
+      ).slice(0, 20);
+    }
     let list = filterCoreAndWinners([...tape], hotSince.current, now, HOT_LINGER_MS);
-    list = applyFastFilterHysteresis(list, fastFilterState.current, now);
+    list = sortCoreFirstThenSpeed(list);
     return sortTape(list, sortKey, sortKey === "symbol" ? 1 : -1).slice(0, 60);
-  }, [tape, sortKey, loop?.session]);
+  }, [tape, sortKey, loop?.session, scope]);
 
   const stableSymbols = useStableSymbolOrder(
     rows.map((r) => r.symbol),
@@ -291,6 +342,40 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
   const columns = useFrozenSnapshot(liveColumns, readingHold, holdKey);
   const strip = useFrozenSnapshot(calmStrip, readingHold, holdKey);
 
+  const liveSession = String(loop?.session ?? "closed");
+  const marketActive = liveSession === "premarket" || liveSession === "regular" || liveSession === "afterhours";
+  const optionsActive = liveSession === "regular";
+  const optionsOpeningWatch = liveSession === "premarket";
+  const coreTapeRows = useMemo(() => {
+    const fromTape = [...tape].filter((r) => r.core || CORE_SET.has(r.symbol));
+    return sortCoreFirstThenSpeed(fromTape);
+  }, [tape]);
+
+  const liveTapeLead = useMemo((): TapeRow | null => {
+    if (scope === "options") return null;
+    if (liveSession === "closed" || streamFresh === "red") return null;
+    const pool = scope === "options" ? coreTapeRows : scannedRows;
+    const best = pool
+      .filter((r) => tapeSpeed(r) >= MIN_SPEED_PCT_PER_MIN * 0.85)
+      .sort((a, b) => tapeSpeed(b) - tapeSpeed(a))[0] ?? null;
+    if (!best || !heroAlert) return best;
+
+    const heroAgeMs = heroAlert.alert_time
+      ? Date.now() - new Date(heroAlert.alert_time).getTime()
+      : Infinity;
+    const heroRow = tape.find((r) => r.symbol === heroAlert.ticker);
+    const heroSpeed = tapeSpeed(heroRow) || Math.abs(Number(heroAlert.short_rate_at_alert ?? 0));
+    const bestSpeed = tapeSpeed(best);
+
+    if (heroAgeMs > 30_000 && bestSpeed >= MIN_SPEED_PCT_PER_MIN) return best;
+    if (
+      best.symbol !== heroAlert.ticker
+      && (best.core || CORE_SET.has(best.symbol))
+      && bestSpeed > Math.max(heroSpeed, MIN_SPEED_PCT_PER_MIN) * 1.12
+    ) return best;
+    return null;
+  }, [heroAlert, liveSession, scannedRows, coreTapeRows, streamFresh, scope, tape]);
+
   const heroVerdict = scope === "options" && heroAlert ? frozenCalloutVerdict(heroAlert, liveCtxFor(tapeMap, heroAlert.ticker)) : null;
   const heroSide = String(heroAlert?.option_side ?? "").toLowerCase().startsWith("p") ? "put" : "call";
   const heroCls = heroSide === "put" ? "dn" : "up";
@@ -301,20 +386,12 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
   const entryLow = stockPrice > 0 ? stockPrice * 0.998 : null;
   const entryHigh = stockPrice > 0 ? stockPrice * 1.002 : null;
   const stockSession = heroAlert?.session === "premarket" ? "Premarket" : heroAlert?.session === "afterhours" ? "After-hours" : "Regular hours";
-  const liveSession = String(loop?.session ?? "closed");
-  const marketActive = liveSession === "premarket" || liveSession === "regular" || liveSession === "afterhours";
-  const optionsActive = liveSession === "regular";
-  const optionsOpeningWatch = liveSession === "premarket";
   const heroFillable = scope === "options" && heroAlert ? isFillableOptionsSetup(heroAlert) : false;
-  const heroOptionsActive = scope === "options" && optionsActive && heroAlert && (
+  const heroOptionsActive = scope === "options" && optionsActive && heroAlert && !liveTapeLead && (
     heroVerdict?.action === "TRADE" || heroFillable || isMetaShapedAlert(heroAlert)
   );
-  const liveTapeLead = useMemo((): TapeRow | null => {
-    if (heroAlert || liveSession === "closed" || streamFresh === "red") return null;
-    return scannedRows.find((r) => Math.abs(r.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN) ?? null;
-  }, [heroAlert, liveSession, scannedRows, streamFresh]);
   const heroTapeRow = heroAlert ? tapeMap.map.get(heroAlert.ticker) : liveTapeLead;
-  const heroSpeedNow = heroTapeRow?.shortRate ?? heroAlert?.short_rate_at_alert ?? null;
+  const heroSpeedNow = heroTapeRow?.instantRate ?? heroTapeRow?.shortRate ?? heroAlert?.short_rate_at_alert ?? null;
   const tapeTickAgeMs = loop?.lastTickAt != null ? Math.max(0, Date.now() - loop.lastTickAt) : null;
   const streamAgeSec = streamLastAt != null ? Math.round((Date.now() - streamLastAt) / 1000) : null;
   const openingCandidate = displayRows[0] ?? null;
@@ -340,10 +417,12 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
       : "Share momentum closed · resumes 4:00 AM ET";
 
   const holdNote = readingHold
-    ? "Held · membership frozen · prices still tick"
-    : liveSession === "closed"
-      ? "Market closed · showing latest snapshot movers"
-      : "Ranks refresh every 20s · hover scanners or tap Hold";
+    ? "Held · list frozen · prices still tick"
+    : scope === "options"
+      ? "Core names only · callouts stick 5 min · Hold freezes the list"
+      : liveSession === "closed"
+        ? "Market closed · showing latest snapshot movers"
+        : "Ranks refresh every 2 min · hover or tap Hold to freeze";
 
   const conviction = computeConviction(scope, heroAlert, heroVerdict, liveTapeLead ?? openingCandidate);
   const heroBear = heroAlert
@@ -364,7 +443,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
 
       <div className="product-bar" aria-label="Scanner product">
         <div className="product-tabs">
-          <button type="button" className={scope === "options" ? "on" : ""} onClick={() => { setScope("options"); saveDashboardPrefs({ liveScope: "options" }); }}>
+          <button type="button" className={scope === "options" ? "on" : ""} onClick={() => { setScope("options"); setSortKey("symbol"); saveDashboardPrefs({ liveScope: "options", liveSort: "symbol" }); }}>
             <span>Options</span><small>Opening watch 4:00–9:30 · live 9:30–4:00</small>
           </button>
           <button type="button" className={scope === "market" ? "on" : ""} onClick={() => { setScope("market"); saveDashboardPrefs({ liveScope: "market" }); }}>
@@ -433,7 +512,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
                   {heroFillable && heroVerdict?.action !== "TRADE" ? ` · spr ${Number(heroAlert!.entry_spread_pct).toFixed(1)}%` : ""}
                 </>
               : liveTapeLead
-                ? <>Live tape · tick {tapeTickAgeMs != null ? `${Math.round(tapeTickAgeMs / 1000)}s ago` : "now"} · no callout in last {scope === "market" ? "10" : "5"}m</>
+                ? <>Live spike · tick {tapeTickAgeMs != null ? `${Math.round(tapeTickAgeMs / 1000)}s ago` : "now"} · scanner firing…</>
               : scope === "options" && optionsOpeningWatch
                 ? <>Opening watch · premarket · not executable yet</>
                 : scope === "market" && marketActive && heroAlert
@@ -444,7 +523,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
             heroOptionsActive
               ? <>{formatCalloutHeadline(heroAlert!)}</>
               : liveTapeLead
-                ? <>{liveTapeLead.symbol} · {speedLabel(liveTapeLead.shortRate)}</>
+                ? <>{liveTapeLead.symbol} · {speedLabel(liveTapeLead.instantRate ?? liveTapeLead.shortRate)}</>
               : scope === "options" && optionsOpeningWatch && openingCandidate
                 ? <>WATCH {openingSide.toUpperCase()}</>
                 : scope === "market" && marketActive && heroAlert
@@ -466,7 +545,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
             heroOptionsActive
               ? heroVerdict?.reason ?? heroAlert!.ai_explanation ?? "Tight spread + momentum — scalping setup."
               : liveTapeLead
-                ? <>Fastest mover on live tape — not a confirmed callout. Speed {speedLabel(liveTapeLead.shortRate)} · waiting for scanner to fire.</>
+                ? <>Fastest core mover right now — callout lands in ~5–15s once chain validates. Speed {speedLabel(liveTapeLead.instantRate ?? liveTapeLead.shortRate)} · surge {liveTapeLead.surge != null ? `${liveTapeLead.surge.toFixed(1)}×` : "—"}</>
               : scope === "options" && optionsOpeningWatch && openingCandidate
                 ? <>Premarket {fmtPct(openingCandidate.movePct)} · speed {openingCandidate.shortRate != null ? `${openingCandidate.shortRate.toFixed(2)}%/min` : "—"} · contracts validate at 9:30</>
                 : scope === "market" && marketActive && heroAlert
@@ -562,10 +641,28 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
         ))}
       </div>
 
-      {displayRows.length ? (
-        <div className="hot-names-row" aria-label="Hot names speed board">
-          <span className="hot-names-label">Core + runners · click for chart</span>
-          {displayRows.slice(0, 10).map((r) => (
+      {coreTapeRows.length ? (
+        <div className="hot-names-row core-names-row" aria-label="Core watch speed board">
+          <span className="hot-names-label">Core watch · NVDA SPY TSLA… · click for chart</span>
+          {coreTapeRows.slice(0, 12).map((r) => (
+            <button
+              key={r.symbol}
+              type="button"
+              className={`hot-name-chip core-chip${tapeSpeed(r) >= MIN_SPEED_PCT_PER_MIN ? " core-hot" : ""}`}
+              onClick={() => onOpenChart?.(r.symbol)}
+              title={`${r.symbol} · ${speedLabel(r.shortRate)} · day ${fmtPct(r.movePct)}`}
+            >
+              <span className="sym">{r.symbol}</span>
+              <span className={`num ${tapeSpeed(r) >= MIN_SPEED_PCT_PER_MIN ? "spd-strong" : ""}`}>{speedLabel(r.shortRate)}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {displayRows.length && scope !== "options" ? (
+        <div className="hot-names-row" aria-label="Runners speed board">
+          <span className="hot-names-label">{scope === "options" ? "0DTE universe movers" : "Runners"} · click for chart</span>
+          {displayRows.filter((r) => !r.core).slice(0, 8).map((r) => (
             <button
               key={r.symbol}
               type="button"
@@ -586,6 +683,13 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
         </div>
       ) : null}
 
+      {scope === "options" ? (
+        <p className="discord-desk-note muted text-sm">
+          Scanner watches core names (NVDA, SPY, TSLA, META…). When a setup passes the quality bar, it appears in <b>Recent callouts</b> — copy from Alerts → Accuracy for Discord.
+        </p>
+      ) : null}
+
+      {scope !== "options" ? (
       <div className="section-head scanner-head">
         <span className="section-title">Scanners</span>
         <span className="section-head-actions">
@@ -637,10 +741,11 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
           </div>
         ))}
       </div>
+      ) : null}
 
       <div className="section-head">
-        <span className="section-title">Recent callouts</span>
-        <span className="section-note">Newest first · today&apos;s {scope === "market" ? "share" : "options"} signals</span>
+        <span className="section-title">{scope === "options" ? "Discord callouts today" : "Recent callouts"}</span>
+        <span className="section-note">{scope === "options" ? "Only verified BUY / META-shaped setups · newest first" : `Newest first · today\u2019s ${scope === "market" ? "share" : "options"} signals`}</span>
       </div>
       <ul className="ledger axiom-ledger">
         {settled.length ? settled.map((a) => {

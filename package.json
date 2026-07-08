@@ -5,7 +5,7 @@
   "type": "module",
   "description": "OptiScan — standalone options scanner (momentum + unusual activity) powered by Polygon/Massive.",
   "scripts": {
-    "dev": "next dev -p 8780",
+    "dev": "next dev --turbo -p 8780",
     "build": "next build",
     "start": "next start -p 8780",
     "test": "node --experimental-strip-types --test \"tests/*.test.mjs\""

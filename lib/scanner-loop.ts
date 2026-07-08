@@ -43,7 +43,7 @@ import {
 const LOOP_MS = Number(process.env.SCANNER_LOOP_MS ?? 1000);
 const ACTIVE_REFRESH_MS = Number(process.env.SCANNER_ACTIVE_REFRESH_MS ?? 7000);
 const TRIGGER_COOLDOWN_MS = Number(process.env.SCANNER_TRIGGER_COOLDOWN_MS ?? 10 * 60 * 1000);
-const CORE_TRIGGER_COOLDOWN_MS = Number(process.env.SCANNER_CORE_TRIGGER_COOLDOWN_MS ?? 4 * 60 * 1000);
+const CORE_TRIGGER_COOLDOWN_MS = Number(process.env.SCANNER_CORE_TRIGGER_COOLDOWN_MS ?? 3 * 60 * 1000);
 const DISCOVERY_MS = Number(process.env.SCANNER_DISCOVERY_MS ?? 30_000);
 const DISCOVERY_TOP_N = Number(process.env.SCANNER_DISCOVERY_TOP_N ?? 12);
 const PROMOTION_MS = Number(process.env.SCANNER_PROMOTION_MS ?? 5 * 60_000);
@@ -215,7 +215,8 @@ async function ensureVwap(ticker: string, st: SymState, nowMs: number) {
 
 /** Warm chain fetch while a symbol is heating up — shaves 1–3s off callout latency. */
 function prefetchChain(ticker: string, st: SymState, nowMs: number) {
-  if (nowMs - st.prefetchAt < 8_000) return;
+  const minGap = isCoreSymbol(ticker) ? 5_000 : 8_000;
+  if (nowMs - st.prefetchAt < minGap) return;
   if (st.prefetchedChain?.available && st.prefetchedChain?.contracts?.length) return;
   st.prefetchAt = nowMs;
   fetchOptionChain(ticker, { dteMin: 0, dteMax: 1, maxPages: 2 })
@@ -241,7 +242,6 @@ async function handleStockTrigger(ticker: string, st: SymState, read: any, quote
   if (!core && !promoted) return;
   if (nowMs < st.stockCooldownUntil) return;
   const cooldownMs = isCoreSymbol(ticker) ? CORE_TRIGGER_COOLDOWN_MS : TRIGGER_COOLDOWN_MS;
-  st.stockCooldownUntil = nowMs + cooldownMs;
   s.triggers++;
   const { captureStockAlert } = await import("@/lib/stock-capture");
   const id = await captureStockAlert({
@@ -255,6 +255,7 @@ async function handleStockTrigger(ticker: string, st: SymState, read: any, quote
   });
   if (id != null) {
     st.lastAlertAt = nowMs;
+    st.stockCooldownUntil = nowMs + cooldownMs;
     s.alerts++;
   }
 }
@@ -263,7 +264,6 @@ async function handleTrigger(ticker: string, st: SymState, read: any, quote: any
   const s = state();
   if (nowMs < st.optionsCooldownUntil) return;
   const cooldownMs = isCoreSymbol(ticker) ? CORE_TRIGGER_COOLDOWN_MS : TRIGGER_COOLDOWN_MS;
-  st.optionsCooldownUntil = nowMs + cooldownMs;
   s.triggers++;
 
   let chain: any = st.prefetchedChain;
@@ -297,6 +297,7 @@ async function handleTrigger(ticker: string, st: SymState, read: any, quote: any
   if (id != null) {
     st.lastAlertAt = nowMs;
     st.lastOptionsAlertAt = nowMs;
+    st.optionsCooldownUntil = nowMs + cooldownMs;
     s.alerts++;
   }
 }
@@ -421,14 +422,16 @@ async function tick() {
   const tape: any[] = [];
   const vwapCandidates: { symbol: string; st: SymState; rate: number }[] = [];
 
-  for (const q of res.quotes ?? []) {
+  const quotes = [...(res.quotes ?? [])];
+  quotes.sort((a, b) => (isCoreSymbol(a.symbol) ? 0 : 1) - (isCoreSymbol(b.symbol) ? 0 : 1));
+  for (const q of quotes) {
     if (q.price == null) continue;
     const st = sym(s, q.symbol);
     st.ring.push({ t: nowMs, p: q.price, v: q.volume ?? 0 });
     if (st.ring.length > RING_MAX) st.ring.shift();
 
     const core = isCoreSymbol(q.symbol);
-    const warmupMin = core ? 8 : 10;
+    const warmupMin = core ? 6 : 10;
 
     if (st.ring.length < warmupMin) {
       const warmLevels = detectLevels({ price: q.price, dayHigh: q.dayHigh, dayLow: q.dayLow, vwap: st.vwap });
@@ -445,9 +448,9 @@ async function tick() {
       continue;
     }
 
-    // Core: 10s speed / 15s volume burst vs 90s baseline. Extended: 12s / 24s.
-    const shortMs = core ? 10_000 : 12_000;
-    const surgeShortMs = core ? 15_000 : 20_000;
+    // Core: 9s speed window — responsive but filters 1-tick flickers.
+    const shortMs = core ? 9_000 : 12_000;
+    const surgeShortMs = core ? 14_000 : 20_000;
     const surgeLongMs = core ? 90_000 : 120_000;
     const accelRead = acceleration(st.ring, { shortMs, nowMs } as any);
     const instantRead = acceleration(st.ring, { shortMs: 5000, nowMs } as any);
@@ -456,7 +459,9 @@ async function tick() {
     const triggerMinRate = core ? minRate * 0.9 : minRate;
     const triggerMinSurge = core ? Math.max(1.22, minSurge - 0.08) : minSurge;
     const triggerMinEff = core ? minEfficiency * 0.9 : minEfficiency;
-    const nearTrigger = accelRead.shortRate != null && Math.abs(accelRead.shortRate) >= triggerMinRate * 0.6;
+    const nearTrigger =
+      (accelRead.shortRate != null && Math.abs(accelRead.shortRate) >= triggerMinRate * 0.6)
+      || (core && instantRead.shortRate != null && Math.abs(instantRead.shortRate) >= triggerMinRate * 0.55);
     if (nearTrigger) {
       await ensureVwap(q.symbol, st, nowMs);
       // Warm prefetch is an optimization; near the minute cap the budget is
@@ -479,7 +484,7 @@ async function tick() {
 
     const row = {
       symbol: q.symbol, price: q.price, movePct: q.changePercent, volume: q.volume ?? null,
-      shortRate: accelRead.shortRate, accel: accelRead.accel, surge, efficiency,
+      shortRate: accelRead.shortRate, instantRate: instantRead.shortRate, accel: accelRead.accel, surge, efficiency,
       direction: dir.direction, confidence: dir.confidence,
       hodBreak: levels.hodBreak, lodBreak: levels.lodBreak, aboveVwap: levels.aboveVwap,
       vwapDistPct: levels.vwapDistPct, relVol: st.relVol,
@@ -517,8 +522,9 @@ async function tick() {
         surge >= triggerMinSurge * 0.88);
 
     const stockEnabled = process.env.STOCK_CALLOUTS === "1";
+    // Options and stock use separate cooldowns — stock must not block 0DTE re-fire.
     const routeCooldownUntil = session === "regular"
-      ? Math.min(st.optionsCooldownUntil, stockEnabled ? st.stockCooldownUntil : Number.POSITIVE_INFINITY)
+      ? st.optionsCooldownUntil
       : st.stockCooldownUntil;
 
     // Gate evaluation is UNCHANGED (audit hard constraint) — shouldTrigger is

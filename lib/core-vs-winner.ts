@@ -49,3 +49,11 @@ export function filterCoreAndWinners(
     return false;
   });
 }
+
+/** Core names first (by best speed), then runners — keeps NVDA/SPY above random promoted junk. */
+export function sortCoreFirstThenSpeed(rows: TapeRow[]): TapeRow[] {
+  const bestSpeed = (r: TapeRow) => Math.abs(r.instantRate ?? r.shortRate ?? 0);
+  const core = rows.filter((r) => r.core).sort((a, b) => bestSpeed(b) - bestSpeed(a));
+  const rest = rows.filter((r) => !r.core).sort((a, b) => bestSpeed(b) - bestSpeed(a));
+  return [...core, ...rest];
+}

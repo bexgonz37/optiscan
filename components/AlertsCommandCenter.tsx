@@ -33,6 +33,7 @@ import { marketSession, tradingDay } from "@/lib/trading-session";
 import { formatOptionsContract, formatCalloutHeadline, isFillableOptionsSetup } from "@/lib/format-contract";
 import { isWinnerCandidate } from "@/lib/core-vs-winner";
 import { CORE_WATCH } from "@/lib/universe";
+import { isDiscordRelevantAlert, HERO_STICKY_MS } from "@/lib/discord-desk";
 
 const CORE_TICKERS = new Set(CORE_WATCH);
 
@@ -187,23 +188,28 @@ export function AlertsCommandCenter({
 
   useEffect(() => {
     pollAlerts();
-    const id = setInterval(pollAlerts, 1000);
+    const id = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      pollAlerts();
+    }, 2000);
     return () => clearInterval(id);
   }, [pollAlerts]);
 
+  const heroLockRef = useRef<{ alertId: number; until: number } | null>(null);
+
   const entries = useMemo<Entry[]>(() => {
-    const symbols = new Set<string>([...tape.map.keys(), ...alerts.keys()]);
+    const symbols = new Set<string>([...CORE_TICKERS, ...alerts.keys()]);
     const out: Entry[] = [];
     for (const symbol of symbols) {
       const tapeRow = tape.map.get(symbol) ?? null;
       const alert = alerts.get(symbol) ?? null;
+      if (!alert && !CORE_TICKERS.has(symbol)) continue;
+      if (alert && alert.asset_class !== "stock" && !isDiscordRelevantAlert(alert)) continue;
       const live = liveCtxFor(tape, symbol);
       const verdict = alert ? frozenCalloutVerdict(alert, live) : null;
-      const fast = Math.abs(tapeRow?.shortRate ?? 0) >= MIN_SPEED_PCT_PER_MIN;
       let rank: number;
       if (verdict?.action === "TRADE") rank = 0;
       else if (verdict?.action === "WAIT") rank = 1;
-      else if (!verdict && fast) rank = 2;
       else rank = 3;
       out.push({ symbol, tapeRow, alert, verdict, rank });
     }
@@ -212,19 +218,9 @@ export function AlertsCommandCenter({
   }, [tape, alerts]);
 
   const sortedVisible = useMemo(() => {
-    const list = showAll ? entries.filter((e) => e.rank < 3) : entries.filter(isRightNowEntry);
-    return [...list]
-      .filter((e) => {
-        if (e.alert?.capture_action === "TRADE") return true;
-        if (e.alert?.asset_class === "stock") return true;
-        if (isFillableOptionsSetup(e.alert ?? {})) return true;
-        if (CORE_TICKERS.has(e.symbol)) return true;
-        if (e.tapeRow && isWinnerCandidate(e.tapeRow)) return true;
-        return false;
-      })
-      .sort(sortEntriesByRecency)
-      .slice(0, 30);
-  }, [entries, showAll]);
+    const list = entries.filter((e) => e.alert && isDiscordRelevantAlert(e.alert));
+    return [...list].sort(sortEntriesByRecency).slice(0, 20);
+  }, [entries]);
 
   const [pausedSnapshot, setPausedSnapshot] = useState<Entry[] | null>(null);
   const displayEntries = paused && pausedSnapshot ? pausedSnapshot : sortedVisible;
@@ -248,7 +244,7 @@ export function AlertsCommandCenter({
     const fillableExtra = entries.filter(
       (e) => e.alert
         && e.alert.asset_class !== "stock"
-        && isFillableOptionsSetup(e.alert)
+        && isDiscordRelevantAlert(e.alert)
         && isFresh(e.alert)
         && !optionTrades.some((t) => t.symbol === e.symbol),
     );
@@ -266,7 +262,16 @@ export function AlertsCommandCenter({
       const found = pool.find((e) => e.symbol === selected);
       if (found) return found;
     }
-    if (pool[0]) return pool[0];
+    if (pool[0]) {
+      const now = Date.now();
+      const lock = heroLockRef.current;
+      if (lock && now < lock.until) {
+        const locked = pool.find((e) => e.alert?.id === lock.alertId);
+        if (locked) return locked;
+      }
+      heroLockRef.current = { alertId: pool[0].alert?.id ?? 0, until: now + HERO_STICKY_MS };
+      return pool[0];
+    }
     if (stockTrades[0]) {
       const sym = stockTrades[0].ticker;
       return {

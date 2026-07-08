@@ -26,6 +26,9 @@ export interface CalloutQualityInput {
   hodBreak: boolean;
   lodBreak: boolean;
   tradeBlockers: string[];
+  /** NBBO spread at capture — wide spreads never post. */
+  spreadPct?: number | null;
+  isCore?: boolean;
 }
 
 export interface CalloutQualityResult {
@@ -55,12 +58,22 @@ function structureOk(input: CalloutQualityInput): boolean {
   return input.direction === "bearish" ? !input.aboveVwap : input.aboveVwap;
 }
 
+function spreadFailures(input: CalloutQualityInput): string[] {
+  const maxSpread = Number(process.env.GOLD_MAX_SPREAD_PCT ?? 5);
+  const spread = input.spreadPct;
+  if (spread != null && spread > maxSpread) {
+    return [`spread ${spread.toFixed(1)}% > ${maxSpread}% — not fillable`];
+  }
+  return [];
+}
+
 /** META #436 profile — the bar for BUY CALL/PUT. Tunable via env (in/out scalps). */
 export function passesGoldTrade(input: CalloutQualityInput): string[] {
-  const failures: string[] = [];
+  const failures: string[] = [...spreadFailures(input)];
   const speed = Math.abs(input.shortRate ?? 0);
   const surge = input.surge ?? 0;
   const gap = sideGap(input);
+  const levelBreak = input.hodBreak || input.lodBreak;
   const minSetup = Number(process.env.GOLD_TRADE_MIN_SETUP ?? 84);
   const minSpeed = Number(process.env.GOLD_TRADE_MIN_SPEED ?? 0.22);
   const minSurge = Number(process.env.GOLD_TRADE_MIN_SURGE ?? 2.2);
@@ -72,21 +85,22 @@ export function passesGoldTrade(input: CalloutQualityInput): string[] {
   if (input.setupScore < minSetup) failures.push(`setup ${Math.round(input.setupScore)} < ${minSetup}`);
   if (speed < minSpeed) failures.push(`speed ${speed.toFixed(2)}%/min < ${minSpeed}`);
   if (surge < minSurge) failures.push(`surge ${surge.toFixed(1)}x < ${minSurge}`);
-  if (!["early", "extended_tradable", "continuing"].includes(input.moveStatus)) {
-    failures.push(`move ${input.moveStatus} — need early/tradable momentum`);
+  if (!["early", "extended_tradable"].includes(input.moveStatus)) {
+    if (input.moveStatus === "continuing" && levelBreak && surge >= 3.0 && speed >= 0.26) {
+      /* fresh continuation through HOD/LOD with strong tape */
+    } else {
+      failures.push(`move ${input.moveStatus} — BUY needs early/tradable entry, not a chase`);
+    }
   }
   if (input.worthScore < minWorth) failures.push(`worth-it ${Math.round(input.worthScore)} < ${minWorth}`);
   if (input.contractScore < minContract) failures.push(`contract ${Math.round(input.contractScore)} < ${minContract}`);
   if (input.liquidityScore < minLiq) failures.push(`liquidity ${Math.round(input.liquidityScore)} < ${minLiq}`);
   if (gap < minGap) failures.push(`side conviction gap ${Math.round(gap)} < ${minGap}`);
-  if (input.efficiency != null && input.efficiency < 0.28) failures.push("tape efficiency < 0.28");
-  if (!accelAligned(input) && !(input.hodBreak || input.lodBreak)) {
+  if (input.efficiency != null && input.efficiency < 0.30) failures.push("tape efficiency < 0.30");
+  if (!accelAligned(input) && !levelBreak) {
     failures.push("speed without acceleration follow-through");
   }
   if (!structureOk(input)) failures.push("counter-VWAP without level break");
-  if (input.moveStatus === "continuing" && surge < 2.5) {
-    failures.push("continuing move needs ≥2.5x surge (PLTR-class fade risk)");
-  }
   if (input.tradeBlockers.length) failures.push(`order gates: ${input.tradeBlockers[0]}`);
 
   return failures;
@@ -94,24 +108,37 @@ export function passesGoldTrade(input: CalloutQualityInput): string[] {
 
 /** Strong WATCH — popup-worthy, still below META BUY bar. */
 export function passesGoldWatch(input: CalloutQualityInput): string[] {
-  const failures: string[] = [];
+  const failures: string[] = [...spreadFailures(input)];
   const speed = Math.abs(input.shortRate ?? 0);
   const surge = input.surge ?? 0;
   const gap = sideGap(input);
+  const levelBreak = input.hodBreak || input.lodBreak;
+  const minSetup = Number(process.env.GOLD_WATCH_MIN_SETUP ?? 78);
+  const minSpeed = Number(process.env.GOLD_WATCH_MIN_SPEED ?? 0.20);
+  const minSurge = Number(process.env.GOLD_WATCH_MIN_SURGE ?? 2.2);
+  const minWorth = Number(process.env.GOLD_WATCH_MIN_WORTH ?? 72);
+  const minContract = Number(process.env.GOLD_WATCH_MIN_CONTRACT ?? 60);
+  const minLiq = Number(process.env.GOLD_WATCH_MIN_LIQUIDITY ?? 55);
+  const minGap = Number(process.env.GOLD_WATCH_MIN_SIDE_GAP ?? 18);
 
-  if (input.setupScore < 78) failures.push(`setup ${Math.round(input.setupScore)} < 78`);
-  if (speed < 0.20) failures.push(`speed ${speed.toFixed(2)}%/min < 0.20`);
-  if (surge < 2.2) failures.push(`surge ${surge.toFixed(1)}x < 2.2`);
+  if (input.setupScore < minSetup) failures.push(`setup ${Math.round(input.setupScore)} < ${minSetup}`);
+  if (speed < minSpeed) failures.push(`speed ${speed.toFixed(2)}%/min < ${minSpeed}`);
+  if (surge < minSurge) failures.push(`surge ${surge.toFixed(1)}x < ${minSurge}`);
   if (["exhausted", "extended_risky"].includes(input.moveStatus)) {
     failures.push(`move ${input.moveStatus}`);
   }
-  if (input.worthScore < 72) failures.push(`worth-it ${Math.round(input.worthScore)} < 72`);
-  if (input.contractScore < 60) failures.push(`contract ${Math.round(input.contractScore)} < 60`);
-  if (input.liquidityScore < 55) failures.push(`liquidity ${Math.round(input.liquidityScore)} < 55`);
-  if (gap < 18) failures.push(`side gap ${Math.round(gap)} < 18`);
-  if (input.moveStatus === "continuing" && surge < 2.5) {
+  if (input.moveStatus === "continuing" && !levelBreak) {
+    failures.push("continuing without fresh level break — likely late");
+  }
+  if (input.moveStatus === "continuing" && levelBreak && surge < 2.5) {
     failures.push("continuing + weak surge (PLTR pattern)");
   }
+  if (input.worthScore < minWorth) failures.push(`worth-it ${Math.round(input.worthScore)} < ${minWorth}`);
+  if (input.contractScore < minContract) failures.push(`contract ${Math.round(input.contractScore)} < ${minContract}`);
+  if (input.liquidityScore < minLiq) failures.push(`liquidity ${Math.round(input.liquidityScore)} < ${minLiq}`);
+  if (gap < minGap) failures.push(`side gap ${Math.round(gap)} < ${minGap}`);
+  if (input.efficiency != null && input.efficiency < 0.28) failures.push("tape efficiency < 0.28");
+  if (!accelAligned(input) && !levelBreak) failures.push("no acceleration follow-through");
 
   return failures;
 }

@@ -248,6 +248,8 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     hodBreak: sig.hodBreak,
     lodBreak: sig.lodBreak,
     tradeBlockers,
+    spreadPct: sideContract?.spreadPct ?? null,
+    isCore: isCoreSymbol(sig.ticker),
   });
   if (gold.tier === "SKIP") return null;
 

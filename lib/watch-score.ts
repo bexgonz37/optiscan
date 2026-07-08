@@ -9,6 +9,8 @@ export interface TapeRow {
   movePct: number | null;
   volume: number | null;
   shortRate: number | null;
+  /** 5s window speed — surfaces spikes before the 7–12s shortRate window. */
+  instantRate?: number | null;
   accel: number | null;
   surge: number | null;
   efficiency: number | null;

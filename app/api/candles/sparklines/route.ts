@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { fetchCandles } from "@/lib/polygon-provider";
 import { checkApiToken, unauthorized } from "@/lib/auth";
-import { mapLimit } from "@/lib/scan-cache";
+import { cached, mapLimit } from "@/lib/scan-cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,12 +18,16 @@ export async function GET(req: Request) {
   }
 
   try {
-    const series: Record<string, number[]> = {};
-    await mapLimit(symbols, 4, async (symbol) => {
-      const out: any = await fetchCandles(symbol, { resolution: "5", timespan: "minute", days: 1, countback: 40 });
-      if (out?.available === false || !out?.bars?.length) return;
-      const closes = out.bars.map((b: { c: number }) => b.c).filter((c: number) => Number.isFinite(c));
-      if (closes.length >= 2) series[symbol] = closes.slice(-36);
+    const cacheKey = `sparklines:${symbols.join(",")}`;
+    const series = await cached(cacheKey, 60_000, async () => {
+      const out: Record<string, number[]> = {};
+      await mapLimit(symbols, 4, async (symbol) => {
+        const res: any = await fetchCandles(symbol, { resolution: "5", timespan: "minute", days: 1, countback: 40 });
+        if (res?.available === false || !res?.bars?.length) return;
+        const closes = res.bars.map((b: { c: number }) => b.c).filter((c: number) => Number.isFinite(c));
+        if (closes.length >= 2) out[symbol] = closes.slice(-36);
+      });
+      return out;
     });
     return NextResponse.json({ ok: true, series });
   } catch (err: any) {

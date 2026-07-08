@@ -2,7 +2,7 @@
 
 /**
  * useScannerStream — SSE subscription to /api/scanner/stream with poll fallback.
- * Debounces tape payload updates (~750ms) while freshness stays immediate.
+ * Debounces tape payload updates (~400ms, max 900ms) while freshness stays immediate.
  */
 
 import { useEffect, useState } from "react";
@@ -16,7 +16,8 @@ export interface ScannerStreamSnapshot {
   transport: "sse" | "poll";
 }
 
-const UI_DEBOUNCE_MS = 1200;
+const UI_DEBOUNCE_MS = 400;
+const UI_FLUSH_MAX_MS = 900;
 
 export function streamFreshness(lastEventAt: number | null, nowMs = Date.now()): StreamFreshness {
   if (lastEventAt == null) return "red";
@@ -31,7 +32,15 @@ const listeners = new Set<(s: ScannerStreamSnapshot) => void>();
 let started = false;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+let flushMaxTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingRealtime: any | null = null;
+
+function flushPendingRealtime() {
+  if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
+  if (flushMaxTimer) { clearTimeout(flushMaxTimer); flushMaxTimer = null; }
+  snapshot = { ...snapshot, realtime: pendingRealtime };
+  notifyAll();
+}
 
 function notifyAll() {
   for (const fn of listeners) fn(snapshot);
@@ -49,12 +58,10 @@ function emit(next: Partial<ScannerStreamSnapshot>) {
 
   if (next.realtime !== undefined) {
     pendingRealtime = next.realtime;
-    if (debounceTimer) return;
-    debounceTimer = setTimeout(() => {
-      snapshot = { ...snapshot, realtime: pendingRealtime };
-      debounceTimer = null;
-      notifyAll();
-    }, UI_DEBOUNCE_MS);
+    if (!debounceTimer) {
+      debounceTimer = setTimeout(flushPendingRealtime, UI_DEBOUNCE_MS);
+      flushMaxTimer = setTimeout(flushPendingRealtime, UI_FLUSH_MAX_MS);
+    }
   }
 }
 

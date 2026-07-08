@@ -164,8 +164,15 @@
   margin-top: 2px;
 }
 
-.axiom-terminal .meta-bar-compact .meta-bar-grid {
-  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+.axiom-terminal .hot-name-chip.core-hot {
+  border-color: rgba(46, 204, 113, 0.55);
+  box-shadow: 0 0 12px rgba(46, 204, 113, 0.15);
+}
+
+.axiom-terminal .core-names-row {
+  margin-bottom: 8px;
+  border-bottom: 1px solid rgba(70, 180, 232, 0.12);
+  padding-bottom: 10px;
 }
 
 .axiom-terminal .live-ticker-search {
@@ -836,6 +843,101 @@
 .axiom-terminal .axiom-share-ret {
   font-size: 2rem;
   font-weight: 700;
+}
+
+.axiom-terminal .axiom-share-copy {
+  margin-left: auto;
+}
+
+.axiom-terminal .discord-desk-note {
+  margin: 12px 0 16px;
+  padding: 10px 12px;
+  border: 1px solid rgba(70, 180, 232, 0.12);
+  border-radius: 4px;
+  line-height: 1.5;
+}
+
+.axiom-terminal .daily-post-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.axiom-terminal .daily-post-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.axiom-terminal .daily-post-kpi {
+  border: 1px solid rgba(70, 180, 232, 0.12);
+  border-radius: 4px;
+  padding: 10px 12px;
+  background: rgba(7, 12, 20, 0.5);
+}
+
+.axiom-terminal .daily-post-kpi .k {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-bottom: 4px;
+}
+
+.axiom-terminal .daily-post-kpi .v {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.axiom-terminal .daily-post-recap {
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid rgba(70, 180, 232, 0.12);
+  border-radius: 4px;
+  background: rgba(7, 12, 20, 0.35);
+}
+
+.axiom-terminal .daily-post-recap-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.axiom-terminal .daily-post-pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: #b8d4e8;
+}
+
+.axiom-terminal .daily-post-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.axiom-terminal .daily-post-row {
+  padding: 10px 12px;
+  border: 1px solid rgba(70, 180, 232, 0.1);
+  border-radius: 4px;
+  background: rgba(7, 12, 20, 0.35);
+}
+
+.axiom-terminal .daily-post-row-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.axiom-terminal .daily-post-row .btn {
+  margin-top: 8px;
 }
 
 .axiom-terminal .axiom-kpis .kpi,
