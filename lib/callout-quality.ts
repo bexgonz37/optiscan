@@ -62,12 +62,12 @@ export function passesGoldTrade(input: CalloutQualityInput): string[] {
   const surge = input.surge ?? 0;
   const gap = sideGap(input);
   const minSetup = Number(process.env.GOLD_TRADE_MIN_SETUP ?? 84);
-  const minSpeed = Number(process.env.GOLD_TRADE_MIN_SPEED ?? 0.24);
-  const minSurge = Number(process.env.GOLD_TRADE_MIN_SURGE ?? 2.4);
+  const minSpeed = Number(process.env.GOLD_TRADE_MIN_SPEED ?? 0.22);
+  const minSurge = Number(process.env.GOLD_TRADE_MIN_SURGE ?? 2.2);
   const minWorth = Number(process.env.GOLD_TRADE_MIN_WORTH ?? 76);
   const minContract = Number(process.env.GOLD_TRADE_MIN_CONTRACT ?? 68);
   const minLiq = Number(process.env.GOLD_TRADE_MIN_LIQUIDITY ?? 60);
-  const minGap = Number(process.env.GOLD_TRADE_MIN_SIDE_GAP ?? 22);
+  const minGap = Number(process.env.GOLD_TRADE_MIN_SIDE_GAP ?? 18);
 
   if (input.setupScore < minSetup) failures.push(`setup ${Math.round(input.setupScore)} < ${minSetup}`);
   if (speed < minSpeed) failures.push(`speed ${speed.toFixed(2)}%/min < ${minSpeed}`);
@@ -79,13 +79,13 @@ export function passesGoldTrade(input: CalloutQualityInput): string[] {
   if (input.contractScore < minContract) failures.push(`contract ${Math.round(input.contractScore)} < ${minContract}`);
   if (input.liquidityScore < minLiq) failures.push(`liquidity ${Math.round(input.liquidityScore)} < ${minLiq}`);
   if (gap < minGap) failures.push(`side conviction gap ${Math.round(gap)} < ${minGap}`);
-  if (input.efficiency != null && input.efficiency < 0.32) failures.push("tape efficiency < 0.32");
+  if (input.efficiency != null && input.efficiency < 0.28) failures.push("tape efficiency < 0.28");
   if (!accelAligned(input) && !(input.hodBreak || input.lodBreak)) {
     failures.push("speed without acceleration follow-through");
   }
   if (!structureOk(input)) failures.push("counter-VWAP without level break");
-  if (input.moveStatus === "continuing" && surge < 3.0) {
-    failures.push("continuing move needs ≥3.0x surge (PLTR-class fade risk)");
+  if (input.moveStatus === "continuing" && surge < 2.5) {
+    failures.push("continuing move needs ≥2.5x surge (PLTR-class fade risk)");
   }
   if (input.tradeBlockers.length) failures.push(`order gates: ${input.tradeBlockers[0]}`);
 

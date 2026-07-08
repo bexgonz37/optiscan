@@ -29,7 +29,7 @@ test("META #436 passes gold TRADE bar", () => {
 test("GOOGL-class weak speed fails gold bar (was 0% follow-through @5m)", () => {
   const googl = { ...meta, shortRate: 0.171, surge: 4.45, setupScore: 96 };
   assert.equal(evaluateCalloutQuality(googl).tier, "SKIP");
-  assert.ok(passesGoldTrade(googl).some((f) => f.includes("0.28")));
+  assert.ok(passesGoldTrade(googl).some((f) => f.includes("0.22")));
 });
 
 test("PLTR-class continuing + weak surge is SKIP", () => {

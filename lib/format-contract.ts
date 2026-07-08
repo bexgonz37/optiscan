@@ -46,9 +46,18 @@ export function isFillableOptionsSetup(a: {
   capture_action?: string | null;
   entry_spread_pct?: number | null;
   signal_score?: number | null;
+  short_rate_at_alert?: number | null;
+  volume_surge_at_alert?: number | null;
+  move_status?: string | null;
 }, maxSpread = 5): boolean {
   if (a.asset_class === "stock") return false;
   if (String(a.capture_action ?? "").toUpperCase() === "TRADE") return true;
   const spread = a.entry_spread_pct;
-  return spread != null && spread <= maxSpread && (a.signal_score ?? 0) >= 82;
+  const score = a.signal_score ?? 0;
+  if (spread != null && spread <= maxSpread && score >= 82) return true;
+  // META-shaped fast movers with tight spread — actionable even at WAIT tier
+  const speed = Math.abs(Number(a.short_rate_at_alert ?? 0));
+  const surge = Number(a.volume_surge_at_alert ?? 0);
+  const moveOk = !a.move_status || !["exhausted", "extended_risky"].includes(a.move_status);
+  return spread != null && spread <= maxSpread && speed >= 0.22 && surge >= 2.2 && score >= 80 && moveOk;
 }

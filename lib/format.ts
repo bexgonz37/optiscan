@@ -46,6 +46,8 @@ export function fmtIv(n: number | null | undefined): string {
 }
 
 export const MARKET_TZ = "America/New_York";
+export const HERO_CALLOUT_FRESH_MS = 5 * 60_000;
+export const HERO_CALLOUT_FRESH_MARKET_MS = 10 * 60_000;
 
 /** Parse alert ISO timestamp to epoch ms, or null when invalid. */
 export function alertTimeMs(iso: string | null | undefined): number | null {

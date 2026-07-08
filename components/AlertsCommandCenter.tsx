@@ -23,7 +23,9 @@ import { useSparklines } from "@/hooks/useSparklines";
 import { TradeVerdictHero } from "@/components/TradeVerdictHero";
 import { computeTradeVerdict, frozenCalloutVerdict, MIN_SPEED_PCT_PER_MIN, type TradeVerdict } from "@/lib/trade-verdict";
 import { calledAgoLabel, calledAgoLong, calledAgoWithEt, sideFromAlert, stillMovingStatus } from "@/lib/signal-live";
-import { fmtPct, fmtPrice, fmtTime, pctClass } from "@/lib/format";
+import { fmtPct, fmtPrice, fmtTime, pctClass, fmtMarketFreshness, isAlertFresh, HERO_CALLOUT_FRESH_MS } from "@/lib/format";
+import { isMetaShapedAlert, rankAlertForHero } from "@/lib/meta-bar";
+import { MetaBarPanel } from "@/components/MetaBarPanel";
 import { sessionGroupLabel } from "@/lib/language-modes";
 import { useLanguageMode } from "@/hooks/useLanguageMode";
 import { groupAlertsBySession } from "@/lib/alert-session-groups";
@@ -230,21 +232,24 @@ export function AlertsCommandCenter({
   const sparklines = useSparklines(sparkSymbols);
 
   const stockMomentum = useMemo(
-    () => stockAlerts.filter((a) => a.capture_action === "TRADE").slice(0, 8),
+    () => stockAlerts.filter((a) => a.capture_action === "TRADE" && isAlertFresh(a.alert_time, HERO_CALLOUT_FRESH_MS)).slice(0, 8),
     [stockAlerts],
   );
   const optionsFillable = useMemo(
-    () => entries.filter((e) => e.alert && e.alert.asset_class !== "stock" && isFillableOptionsSetup(e.alert)),
+    () => entries.filter((e) => e.alert && e.alert.asset_class !== "stock" && (isFillableOptionsSetup(e.alert) || isMetaShapedAlert(e.alert)) && isAlertFresh(e.alert.alert_time, HERO_CALLOUT_FRESH_MS)),
     [entries],
   );
 
   const hero = useMemo(() => {
-    const optionTrades = entries.filter((e) => e.verdict?.action === "TRADE" && e.alert && e.alert.asset_class !== "stock");
-    const stockTrades = stockAlerts.filter((a) => a.capture_action === "TRADE");
+    const nowMs = Date.now();
+    const isFresh = (a: { alert_time?: string | null }) => isAlertFresh(a.alert_time, HERO_CALLOUT_FRESH_MS, nowMs);
+    const optionTrades = entries.filter((e) => e.verdict?.action === "TRADE" && e.alert && e.alert.asset_class !== "stock" && isFresh(e.alert));
+    const stockTrades = stockAlerts.filter((a) => a.capture_action === "TRADE" && isFresh(a));
     const fillableExtra = entries.filter(
       (e) => e.alert
         && e.alert.asset_class !== "stock"
         && isFillableOptionsSetup(e.alert)
+        && isFresh(e.alert)
         && !optionTrades.some((t) => t.symbol === e.symbol),
     );
     const pool = [...optionTrades, ...fillableExtra];
@@ -252,6 +257,9 @@ export function AlertsCommandCenter({
       const ac = CORE_TICKERS.has(a.symbol) ? 1 : 0;
       const bc = CORE_TICKERS.has(b.symbol) ? 1 : 0;
       if (ac !== bc) return bc - ac;
+      const ra = rankAlertForHero(a.alert ?? {});
+      const rb = rankAlertForHero(b.alert ?? {});
+      if (rb !== ra) return rb - ra;
       return sortEntriesByRecency(a, b);
     });
     if (selected) {
@@ -373,6 +381,7 @@ export function AlertsCommandCenter({
               </div>
             </div>
             <TradeVerdictHero alert={hero.alert} live={heroLive} />
+            {hero.alert?.asset_class !== "stock" ? <MetaBarPanel alert={hero.alert} compact /> : null}
             {formatOptionsContract(hero.alert) ? (
               <div className="acc-hero-contract num muted text-sm">{formatOptionsContract(hero.alert)}</div>
             ) : null}

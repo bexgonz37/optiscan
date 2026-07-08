@@ -11,6 +11,8 @@ import { computeTradeVerdict, isTradeEligible } from "@/lib/trade-verdict";
 import { stillMovingStatus } from "@/lib/signal-live";
 import { isOptionsSession } from "@/lib/trading-session";
 import { fmtMarketFreshness, isAlertFresh } from "@/lib/format";
+import { isMetaShapedAlert } from "@/lib/meta-bar";
+import { isFillableOptionsSetup } from "@/lib/format-contract";
 import { OptionAlertCard } from "@/components/alert-cards/OptionAlertCard";
 
 interface PopupAlert {
@@ -58,6 +60,7 @@ function isPopupEligible(a: PopupAlert, live: ReturnType<typeof liveCtxFor>, now
   if (cap === "SKIP") return false;
   if (cap === "TRADE") return isTradeEligible(a, live);
   if (cap === "WAIT") {
+    if (isMetaShapedAlert(a) && isFillableOptionsSetup(a)) return true;
     const v = computeTradeVerdict(a, live);
     return v.action === "WAIT" && (v.side === "CALL" || v.side === "PUT");
   }

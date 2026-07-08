@@ -178,6 +178,18 @@ export default function SettingsPage() {
             </button>
           </div>
 
+          <h2>META BUY bar (0DTE)</h2>
+          <p className="settings-desc">
+            The gold standard from audit winner <b>META #436</b> (+82% option mid @5m): Speed ≥ 0.22%/min · Surge ≥ 2.2× ·
+            Setup ≥ 84 · Worth-it ≥ 76 · Contract ≥ 68 · Spread ≤ 5% · Side conviction gap ≥ 18. When every gate is green
+            and order economics pass, capture tier = <b>TRADE (BUY CALL/PUT)</b>. One miss = <b>WATCH</b> but still shown if
+            META-shaped (fast speed + volume like yesterday&apos;s META).
+          </p>
+          <p className="settings-desc muted text-sm">
+            Trigger gates above control <em>when</em> the scanner fires. META bar controls <em>whether</em> it becomes a BUY
+            vs WATCH. Tune via env: GOLD_TRADE_MIN_SPEED, GOLD_TRADE_MIN_SURGE, etc.
+          </p>
+
           <h2>Capture thresholds</h2>
           <p className="settings-desc">
             Scanner speed and volume gates — higher = fewer, better callouts. Recommended (from the 2026-07-07 accuracy

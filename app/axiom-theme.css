@@ -79,6 +79,95 @@
   margin-top: -6px;
 }
 
+.axiom-terminal .meta-bar-panel {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(70, 180, 232, 0.15);
+  border-radius: 6px;
+  background: rgba(0, 12, 24, 0.45);
+}
+
+.axiom-terminal .meta-bar-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.axiom-terminal .meta-bar-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: #8fb3c6;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.axiom-terminal .meta-bar-badge {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 179, 71, 0.15);
+  color: #ffb347;
+}
+
+.axiom-terminal .meta-bar-badge.on-shaped {
+  background: rgba(70, 180, 232, 0.2);
+  color: #6ec5ff;
+}
+
+.axiom-terminal .meta-bar-badge.on-trade {
+  background: rgba(46, 204, 113, 0.2);
+  color: #2ecc71;
+}
+
+.axiom-terminal .meta-bar-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 6px 10px;
+}
+
+.axiom-terminal .meta-bar-grid li {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.axiom-terminal .meta-bar-grid li.pass {
+  border-color: rgba(46, 204, 113, 0.25);
+}
+
+.axiom-terminal .meta-bar-grid li.fail {
+  border-color: rgba(255, 81, 98, 0.3);
+}
+
+.axiom-terminal .meta-bar-k {
+  display: block;
+  color: var(--dim);
+}
+
+.axiom-terminal .meta-bar-v {
+  display: block;
+  color: #dce8f0;
+  font-weight: 600;
+}
+
+.axiom-terminal .meta-bar-t {
+  display: block;
+  font-size: 9px;
+  margin-top: 2px;
+}
+
+.axiom-terminal .meta-bar-compact .meta-bar-grid {
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+}
+
 .axiom-terminal .live-ticker-search {
   display: flex;
   align-items: center;
