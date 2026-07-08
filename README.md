@@ -11,6 +11,16 @@ Two products run in parallel:
 
 Data comes from [Polygon / Massive](https://polygon.io/) (one API key covers stocks + options). Alerts persist to local SQLite, track outcomes automatically, and can ping Discord with separate webhooks per product.
 
+## The core contract
+
+Three rules define this product (full spec: [docs/PRD.md](docs/PRD.md)):
+
+1. **Speed** — watch how fast every name is moving in **% per minute**; past the tunable threshold (`SCANNER_MIN_RATE_PCT_MIN`, or Settings → Capture thresholds), it triggers.
+2. **Discord** — a passing TRADE-tier trigger is sent to the product's Discord webhook. Always.
+3. **Spread** — an options callout must have a fillable spread (`TRADE_MAX_SPREAD_PCT`, default 5%). Spread too wide → it is never posted as a BUY, no matter how fast the tape is.
+
+Nothing in the codebase may bypass these three gates.
+
 ---
 
 ## Table of contents
