@@ -228,6 +228,10 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
   const liveSession = String(loop?.session ?? "closed");
   const marketActive = liveSession === "premarket" || liveSession === "regular" || liveSession === "afterhours";
   const optionsActive = liveSession === "regular";
+  const optionsOpeningWatch = liveSession === "premarket";
+  const openingCandidate = displayRows[0] ?? null;
+  const openingSide = (openingCandidate?.shortRate ?? openingCandidate?.movePct ?? 0) < 0 ? "put" : "call";
+  const openingCls = openingSide === "put" ? "dn" : "up";
   const sessionLabel = liveSession === "premarket"
     ? "Premarket shares live · 4:00–9:30 AM ET"
     : liveSession === "regular"
@@ -236,7 +240,11 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
         ? "After-hours shares live · until 8:00 PM ET"
         : "Market closed · shares resume 4:00 AM ET";
   const productNote = scope === "options"
-    ? optionsActive ? "0DTE options live · regular hours only" : "0DTE options closed · resumes 9:30 AM ET"
+    ? optionsActive
+      ? "0DTE options live · contracts validated now"
+      : optionsOpeningWatch
+        ? "Opening watch live · underlying momentum only · contracts validate at 9:30"
+        : "0DTE options closed · opening watch resumes 4:00 AM ET"
     : marketActive ? "Share momentum live · LONG/SHORT · no options" : "Share momentum closed · resumes 4:00 AM ET";
 
   const holdNote = readingHold
@@ -248,7 +256,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
       <div className="product-bar" aria-label="Scanner product">
         <div className="product-tabs">
           <button type="button" className={scope === "options" ? "on" : ""} onClick={() => { setScope("options"); saveDashboardPrefs({ liveScope: "options" }); }}>
-            <span>Options</span><small>0DTE · 9:30–4:00 ET</small>
+            <span>Options</span><small>Opening watch 4:00–9:30 · live 9:30–4:00</small>
           </button>
           <button type="button" className={scope === "market" ? "on" : ""} onClick={() => { setScope("market"); saveDashboardPrefs({ liveScope: "market" }); }}>
             <span>Market</span><small>Shares · 4:00 AM–8:00 PM ET</small>
@@ -277,11 +285,29 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
             </div>
             <p className="gates">Every gate passed — <b>speed</b> · <b>volume</b> · <b>trend</b> · <b>fillable</b></p>
           </>
+        ) : scope === "options" && optionsOpeningWatch ? (
+          <>
+            <p className="callout-kicker">Opening watch · premarket · not executable yet</p>
+            {openingCandidate ? (
+              <>
+                <h1 className="callout-say">Watch <span className={openingCls}>{openingCandidate.symbol} for a {openingSide} at the open</span></h1>
+                <p className="callout-why">
+                  Premarket move {fmtPct(openingCandidate.movePct)} · speed {openingCandidate.shortRate != null ? `${openingCandidate.shortRate > 0 ? "+" : ""}${openingCandidate.shortRate.toFixed(2)}%/min` : "—"} · volume {openingCandidate.surge != null ? `${openingCandidate.surge.toFixed(1)}×` : "—"}.
+                </p>
+                <p className="gates">At 9:30 ET the normal option gates validate <b>direction</b> · <b>trend</b> · <b>liquidity</b> · <b>spread</b> before any real callout</p>
+              </>
+            ) : (
+              <>
+                <h1 className="callout-say">Building the opening options watch</h1>
+                <p className="callout-why">Premarket shares are being ranked now. A likely call or put bias appears here when a clean leader develops; no contract is called out until live options quotes arrive.</p>
+              </>
+            )}
+          </>
         ) : scope === "options" && !optionsActive ? (
           <>
             <p className="callout-kicker">Options desk · regular hours only</p>
             <h1 className="callout-say">0DTE options are closed</h1>
-            <p className="callout-why">The options scanner and callouts resume at 9:30 AM ET. Switch to <b>Market</b> for premarket and after-hours share momentum.</p>
+            <p className="callout-why">The opening options watch resumes with premarket shares at 4:00 AM ET. Executable 0DTE callouts still require live option quotes after 9:30.</p>
             {heroAlert ? (
               <p className="last-callout">Last regular-session callout · {heroAlert.ticker} ${heroAlert.strike} {heroSide} · {new Date(heroAlert.alert_time).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })} ET · historical, not live</p>
             ) : null}

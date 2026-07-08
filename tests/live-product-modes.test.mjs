@@ -13,6 +13,9 @@ test("Live defaults to Options and filters hero/history by product", () => {
   assert.ok(live.includes('a.asset_class === "stock"'), "Market mode filters stock alerts");
   assert.ok(live.includes('a.asset_class !== "stock"'), "Options mode filters option alerts");
   assert.ok(live.includes('saveDashboardPrefs({ liveScope: "market" })'), "selected product persists");
+  assert.ok(live.includes('liveSession === "premarket"'), "Options exposes a premarket opening-watch state");
+  assert.ok(live.includes("not executable yet"), "Premarket option bias is never presented as an executable contract callout");
+  assert.ok(live.includes("contracts validate at 9:30"), "Live contract validation remains gated to the open");
   assert.ok(live.includes("LONG/SHORT · no options"), "Market mode is explicitly shares-only");
 });
 
