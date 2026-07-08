@@ -252,7 +252,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
     : "Ranks refresh every 20s · hover scanners or tap Hold";
 
   return (
-    <div className={`chrome-live${readingHold ? " reading-hold" : ""}`}>
+    <div className={`chrome-live${readingHold ? " reading-hold" : ""}${liveSession === "closed" ? " session-closed" : ""}`}>
       <div className="product-bar" aria-label="Scanner product">
         <div className="product-tabs">
           <button type="button" className={scope === "options" ? "on" : ""} onClick={() => { setScope("options"); saveDashboardPrefs({ liveScope: "options" }); }}>
@@ -334,7 +334,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
         )}
       </section>
 
-      <div className="section-head">
+      <div className="section-head scanner-head">
         <span className="section-title">Scanners</span>
         <span className="section-head-actions">
           <span className="section-note">{productNote} · {holdNote}</span>
