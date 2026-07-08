@@ -92,7 +92,7 @@ export async function captureStockAlert(sig: StockSignal): Promise<number | null
     signalScore: v.score, riskScore: null, optionsLiquidityScore: null, scannerScore: null,
     scoreBreakdownJson: JSON.stringify({ reasons: v.reasons, verdict: v.action, side: v.side, confidence: v.confidence }),
     aiExplanation: explanation, publicExplanation: explanation,
-    privateLabel: v.headline, publicLabel: `${session === "premarket" ? "Premarket" : "After-hours"} momentum: ${sig.ticker}`,
+    privateLabel: v.headline, publicLabel: `${session === "premarket" ? "Premarket" : session === "regular" ? "Regular-hours" : "After-hours"} momentum: ${sig.ticker}`,
     tradeBias: v.side === "LONG" ? "stock_long_candidate" : v.side === "SHORT" ? "stock_short_candidate" : null,
     moveStatus: null,
     shortRateAtAlert: sig.shortRate, volumeSurgeAtAlert: sig.surge,

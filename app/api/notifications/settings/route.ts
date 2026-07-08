@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { checkApiToken, unauthorized } from "@/lib/auth";
-import { discordConfigured } from "@/lib/notifications";
+import { discordConfigured, discordWebhookConfigured } from "@/lib/notifications";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,6 +18,12 @@ export async function GET(req: Request) {
       settings: getNotificationSettings(),
       languageMode: getSetting("language_mode") ?? "private",
       discordWebhookConfigured: discordConfigured(),
+      discordWebhooks: {
+        options: discordWebhookConfigured("options"),
+        stocks: discordWebhookConfigured("stocks"),
+        recap: discordWebhookConfigured("recap"),
+      },
+      stockCalloutsEnabled: process.env.STOCK_CALLOUTS === "1",
       scannerThresholds: {
         alertMinMomentumScore: getSettingNum("alert_min_momentum_score", Number(process.env.ALERT_MIN_MOMENTUM_SCORE ?? 58)),
         alertMinUnusualScore: getSettingNum("alert_min_unusual_score", Number(process.env.ALERT_MIN_UNUSUAL_SCORE ?? 80)),
@@ -61,7 +67,9 @@ export async function PATCH(req: Request) {
       const { enforceDiscordAutoSend } = await import("@/lib/notifications");
       enforceDiscordAutoSend();
     }
-    return NextResponse.json({ ok: true, settings, languageMode: getSetting("language_mode") ?? "private", discordWebhookConfigured: discordConfigured(), scannerThresholds: {
+    return NextResponse.json({ ok: true, settings, languageMode: getSetting("language_mode") ?? "private", discordWebhookConfigured: discordConfigured(), discordWebhooks: {
+        options: discordWebhookConfigured("options"), stocks: discordWebhookConfigured("stocks"), recap: discordWebhookConfigured("recap"),
+      }, stockCalloutsEnabled: process.env.STOCK_CALLOUTS === "1", scannerThresholds: {
         alertMinMomentumScore: getSettingNum("alert_min_momentum_score", Number(process.env.ALERT_MIN_MOMENTUM_SCORE ?? 58)),
         alertMinUnusualScore: getSettingNum("alert_min_unusual_score", Number(process.env.ALERT_MIN_UNUSUAL_SCORE ?? 80)),
         scannerMinRatePctMin: getSettingNum("scanner_min_rate_pct_min", Number(process.env.SCANNER_MIN_RATE_PCT_MIN ?? 0.2)),

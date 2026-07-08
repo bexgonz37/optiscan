@@ -17,7 +17,13 @@ verdicts, same accuracy math. Nothing new in the signal path.
 | `#how-it-works` | manual | One pinned post: what fires a callout, what the grades mean, disclaimers |
 
 Env vars: `DISCORD_WEBHOOK_OPTIONS`, `DISCORD_WEBHOOK_STOCKS`,
-`DISCORD_WEBHOOK_RECAP` (all fall back to existing `DISCORD_WEBHOOK_URL`).
+`DISCORD_WEBHOOK_RECAP`. The legacy `DISCORD_WEBHOOK_URL` remains an options
+fallback only. Stocks require their own `DISCORD_WEBHOOK_STOCKS`; recap is
+optional and separate.
+
+With `STOCK_CALLOUTS=1`, shares run in premarket, regular hours, and after-hours.
+During regular hours the unchanged 0DTE path runs in parallel. Each product has
+its own per-symbol cooldown, so one product cannot suppress the other.
 
 Rules that make it worth $15:
 - **BUYs only ping.** WATCH posts are quiet (no @role mention). 2–6 BUYs/day by design.
@@ -161,11 +167,9 @@ says so — the honesty IS the product.
    record for an alert that has a sent Discord message, PATCH the embed with
    the result field (options: option mid return; stocks: favorable move).
    Never blocks the sweep (fire-and-forget like catalysts).
-4. **Stock channel** — re-enable the shares engine: `STOCK_CALLOUTS=1` env →
-   scanner loop routes stock captures in premarket/AH (session router already
-   exists in git history, commit `b13ab5a`) AND a shares tier during RTH for
-   names where the option economics fail but the tape is clean. Stock BUYs
-   notify `DISCORD_WEBHOOK_STOCKS`.
+4. **Stock channel** — `STOCK_CALLOUTS=1` routes stock captures in premarket,
+   RTH, and after-hours. During RTH this runs beside the unchanged 0DTE path.
+   Stock BUYs notify `DISCORD_WEBHOOK_STOCKS` only.
 5. **Scoreboard cron** — after EOD finalize in the tracker: build + post the
    daily embed to `DISCORD_WEBHOOK_RECAP`. Sunday: weekly variant.
 6. **Role mentions** — `DISCORD_ROLE_0DTE`, `DISCORD_ROLE_STOCKS` env vars,

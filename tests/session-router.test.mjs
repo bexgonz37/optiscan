@@ -17,12 +17,17 @@ test("SPEC: options capture is session-guarded (no 0DTE callouts outside RTH)", 
   assert.ok(/if \(!isOptionsSession\(nowMs\)\) return null/.test(beforeInsert), "guard must run before any insert");
 });
 
-test("SPEC: scanner loop routes options in RTH; stock when STOCK_CALLOUTS=1", () => {
+test("SPEC: scanner loop routes options and stock in parallel during RTH", () => {
   const loop = read("lib/scanner-loop.ts");
   assert.ok(loop.includes("marketSession"), "loop must read the market session");
   assert.ok(loop.includes("handleStockTrigger"), "stock trigger behind STOCK_CALLOUTS");
   assert.ok(loop.includes('session === "regular"'), "options path in regular session");
   assert.ok(/STOCK_CALLOUTS === "1"/.test(loop), "stock path gated by env");
+  assert.ok(loop.includes("Promise.allSettled(tasks)"), "RTH paths must run fire-and-forget in parallel");
+  assert.ok(loop.includes("optionsCooldownUntil"), "options path needs an independent cooldown");
+  assert.ok(loop.includes("stockCooldownUntil"), "stock path needs an independent cooldown");
+  assert.ok(/if \(session === "regular"\) tasks\.push\(handleTrigger/.test(loop), "options path runs in RTH");
+  assert.ok(/if \(stockEnabled\) tasks\.push\(handleStockTrigger/.test(loop), "stock path runs in every open session when enabled");
   assert.ok(/session === "closed"/.test(loop), "loop must pause when closed");
 });
 
@@ -37,6 +42,7 @@ test("SPEC: discord notifications use embed builders and session guards", () => 
   assert.ok(notif.includes("isOptionsSession"), "options notify guarded");
   assert.ok(notif.includes("wait=true"), "message id persistence");
   assert.ok(notif.includes("editDiscordMessage"), "result PATCH support");
+  assert.ok(/kind === "stocks"\) return process\.env\.DISCORD_WEBHOOK_STOCKS;/.test(notif), "stocks use the dedicated webhook only");
 });
 
 test("SPEC: AlertPopup is options-only", () => {

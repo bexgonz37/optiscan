@@ -40,9 +40,13 @@ export function extendedStockNotifyEnabled(): boolean {
 
 function webhookEnv(kind: DiscordWebhookKind): string | undefined {
   if (kind === "options") return process.env.DISCORD_WEBHOOK_OPTIONS ?? process.env.DISCORD_WEBHOOK_URL;
-  if (kind === "stocks") return process.env.DISCORD_WEBHOOK_STOCKS ?? process.env.DISCORD_WEBHOOK_URL;
-  if (kind === "recap") return process.env.DISCORD_WEBHOOK_RECAP ?? process.env.DISCORD_WEBHOOK_URL;
+  if (kind === "stocks") return process.env.DISCORD_WEBHOOK_STOCKS;
+  if (kind === "recap") return process.env.DISCORD_WEBHOOK_RECAP;
   return process.env.DISCORD_WEBHOOK_URL;
+}
+
+export function discordWebhookConfigured(kind: DiscordWebhookKind): boolean {
+  return Boolean(String(webhookEnv(kind) ?? "").trim());
 }
 
 /** True when any Discord webhook URL is set in env. */
@@ -325,17 +329,17 @@ export async function confirmAndSendPending(eventId: number): Promise<{ ok: bool
   }
 }
 
-export async function sendDiscordTest(): Promise<{ ok: boolean; error?: string }> {
+export async function sendDiscordTest(kind: "options" | "stocks" = "options"): Promise<{ ok: boolean; error?: string }> {
   const s = getNotificationSettings();
   if (!s?.discord_enabled) return { ok: false, error: "Enable Discord in settings first." };
-  if (!discordConfigured()) return { ok: false, error: "Discord webhook is not set in .env.local." };
+  if (!discordWebhookConfigured(kind)) return { ok: false, error: `Discord ${kind} webhook is not set in .env.local.` };
   try {
     await postToDiscord({
-      content: "OptiScan test: research scanner alert channel is connected. Not financial advice.",
-    });
+      content: `OptiScan ${kind} test: research scanner alert channel is connected. Not financial advice.`,
+    }, { webhook: kind });
     insertNotificationEvent({
       alertId: null, channel: "discord_webhook", status: "sent",
-      payloadJson: JSON.stringify({ test: true }), sentAt: new Date().toISOString(),
+      payloadJson: JSON.stringify({ test: true, kind }), sentAt: new Date().toISOString(),
     });
     return { ok: true };
   } catch (err: any) {

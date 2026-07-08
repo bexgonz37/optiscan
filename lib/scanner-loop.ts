@@ -51,6 +51,8 @@ interface SymState {
   ring: Tick[];
   recentRates: number[];
   cooldownUntil: number;
+  optionsCooldownUntil: number;
+  stockCooldownUntil: number;
   /** Throttle for active-alert quote refresh only — never block new triggers. */
   lastChainFetch: number;
   prefetchedChain: any | null;
@@ -59,6 +61,7 @@ interface SymState {
   vwapAt: number;
   relVol: number | null;
   lastAlertAt: number;
+  lastOptionsAlertAt: number;
 }
 
 interface LoopState {
@@ -131,12 +134,15 @@ function sym(s: LoopState, ticker: string): SymState {
   let st = s.symbols.get(ticker);
   if (!st) {
     st = {
-      ring: [], recentRates: [], cooldownUntil: 0, lastChainFetch: 0,
+      ring: [], recentRates: [], cooldownUntil: 0, optionsCooldownUntil: 0, stockCooldownUntil: 0, lastChainFetch: 0,
       prefetchedChain: null, prefetchAt: 0,
-      vwap: null, vwapAt: 0, relVol: null, lastAlertAt: 0,
+      vwap: null, vwapAt: 0, relVol: null, lastAlertAt: 0, lastOptionsAlertAt: 0,
     };
     s.symbols.set(ticker, st);
   }
+  st.optionsCooldownUntil ??= st.cooldownUntil ?? 0;
+  st.stockCooldownUntil ??= 0;
+  st.lastOptionsAlertAt ??= st.lastAlertAt ?? 0;
   return st;
 }
 
@@ -173,8 +179,10 @@ function prefetchChain(ticker: string, st: SymState, nowMs: number) {
 /** Extended-hours trigger: regular-stock callout, NO option chain fetch. */
 async function handleStockTrigger(ticker: string, st: SymState, read: any, quote: any, nowMs: number) {
   if (process.env.STOCK_CALLOUTS !== "1") return;
+  if (nowMs < st.stockCooldownUntil) return;
   const s = state();
-  st.cooldownUntil = nowMs + TRIGGER_COOLDOWN_MS;
+  const cooldownMs = isCoreSymbol(ticker) ? CORE_TRIGGER_COOLDOWN_MS : TRIGGER_COOLDOWN_MS;
+  st.stockCooldownUntil = nowMs + cooldownMs;
   s.triggers++;
   const { captureStockAlert } = await import("@/lib/stock-capture");
   const id = await captureStockAlert({
@@ -194,9 +202,9 @@ async function handleStockTrigger(ticker: string, st: SymState, read: any, quote
 
 async function handleTrigger(ticker: string, st: SymState, read: any, quote: any, nowMs: number) {
   const s = state();
-  if (nowMs < st.cooldownUntil) return;
+  if (nowMs < st.optionsCooldownUntil) return;
   const cooldownMs = isCoreSymbol(ticker) ? CORE_TRIGGER_COOLDOWN_MS : TRIGGER_COOLDOWN_MS;
-  st.cooldownUntil = nowMs + cooldownMs;
+  st.optionsCooldownUntil = nowMs + cooldownMs;
   s.triggers++;
 
   let chain: any = st.prefetchedChain;
@@ -229,6 +237,7 @@ async function handleTrigger(ticker: string, st: SymState, read: any, quote: any
   });
   if (id != null) {
     st.lastAlertAt = nowMs;
+    st.lastOptionsAlertAt = nowMs;
     s.alerts++;
   }
 }
@@ -237,7 +246,7 @@ async function handleTrigger(ticker: string, st: SymState, read: any, quote: any
 async function refreshActiveAlerts(nowMs: number) {
   const s = state();
   const active = [...s.symbols.entries()]
-    .filter(([, st]) => st.lastAlertAt && nowMs - st.lastAlertAt < 30 * 60_000)
+    .filter(([, st]) => st.lastOptionsAlertAt && nowMs - st.lastOptionsAlertAt < 30 * 60_000)
     .slice(0, 3);
   for (const [ticker, st] of active) {
     if (nowMs - st.lastChainFetch < ACTIVE_REFRESH_MS) continue;
@@ -385,7 +394,7 @@ async function tick() {
     const nearTrigger = accelRead.shortRate != null && Math.abs(accelRead.shortRate) >= triggerMinRate * 0.6;
     if (nearTrigger) {
       await ensureVwap(q.symbol, st, nowMs);
-      prefetchChain(q.symbol, st, nowMs);
+      if (session === "regular") prefetchChain(q.symbol, st, nowMs);
     }
     if (accelRead.shortRate != null) {
       vwapCandidates.push({ symbol: q.symbol, st, rate: Math.abs(accelRead.shortRate) });
@@ -440,25 +449,33 @@ async function tick() {
         surge != null &&
         surge >= triggerMinSurge * 0.88);
 
+    const stockEnabled = process.env.STOCK_CALLOUTS === "1";
+    const routeCooldownUntil = session === "regular"
+      ? Math.min(st.optionsCooldownUntil, stockEnabled ? st.stockCooldownUntil : Number.POSITIVE_INFINITY)
+      : st.stockCooldownUntil;
+
     if (
       persistOk &&
       accelOk &&
       tapeMoving &&
       shouldTrigger({
         shortRate: accelRead.shortRate, surge, hodBreak: levels.hodBreak, lodBreak: levels.lodBreak,
-        efficiency, nowMs, cooldownUntil: st.cooldownUntil,
+        efficiency, nowMs, cooldownUntil: routeCooldownUntil,
         minRate: triggerMinRate, minSurge: triggerMinSurge, minLevelSurge, minEfficiency: triggerMinEff,
       })
     ) {
       // fire-and-forget: the 1s heartbeat must never wait on a chain fetch.
-      const fire = session === "regular"
-        ? handleTrigger(q.symbol, st, { accelRead, surge, efficiency, levels, dir }, q, nowMs)
-        : process.env.STOCK_CALLOUTS === "1"
-          ? handleStockTrigger(q.symbol, st, { accelRead, surge, efficiency, levels, dir }, q, nowMs)
-          : Promise.resolve();
-      fire.catch((err) => {
-        s.errors++;
-        console.warn(`[${session === "regular" ? "0dte" : "stock"}-loop] trigger failed:`, err?.message);
+      const read = { accelRead, surge, efficiency, levels, dir };
+      const tasks: Promise<unknown>[] = [];
+      if (session === "regular") tasks.push(handleTrigger(q.symbol, st, read, q, nowMs));
+      if (stockEnabled) tasks.push(handleStockTrigger(q.symbol, st, read, q, nowMs));
+      const fire = Promise.allSettled(tasks);
+      fire.then((results) => {
+        for (const result of results) {
+          if (result.status !== "rejected") continue;
+          s.errors++;
+          console.warn("[dual-product-loop] trigger failed:", result.reason?.message ?? result.reason);
+        }
       });
     }
   }
