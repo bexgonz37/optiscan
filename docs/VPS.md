@@ -47,9 +47,27 @@ nano /opt/optiscan/.env.production
 
 Set at minimum:
 
-- `POLYGON_API_KEY` — your Massive/Polygon key (top-tier real-time plan)
+- `POLYGON_API_KEY` — your Massive/Polygon key (top-tier real-time plan). **No space after `=`**
 - `SCAN_API_TOKEN` — long random string: `openssl rand -hex 24`
-- `DISCORD_WEBHOOK_URL` — your Discord channel webhook (for TRADE/BUY pings)
+- `STOCK_CALLOUTS=1` — enables share-momentum callouts (Market tab / extended hours)
+- `DISCORD_WEBHOOK_OPTIONS` — Discord webhook for **0DTE BUY CALL/PUT** pings (regular hours)
+- `DISCORD_WEBHOOK_STOCKS` — Discord webhook for **share momentum LONG/SHORT** pings
+- `DISCORD_WEBHOOK_URL` — optional legacy fallback (same as options if you prefer one var)
+- `PUBLIC_APP_URL=https://your-tunnel-or-domain` — used in Discord embed links (optional)
+
+Example `.env.production`:
+
+```bash
+POLYGON_API_KEY=your_key_here
+SCAN_API_TOKEN=your_long_random_token
+STOCK_CALLOUTS=1
+DISCORD_WEBHOOK_OPTIONS=https://discord.com/api/webhooks/...
+DISCORD_WEBHOOK_STOCKS=https://discord.com/api/webhooks/...
+PUBLIC_APP_URL=https://optiscan.yourdomain.com
+NODE_ENV=production
+```
+
+After first boot, open Settings (via SSH tunnel) and turn **Discord alerts** and **Extended-hours Discord** **On** if you want premarket/after-hours stock pings.
 
 Then the script runs `docker compose up -d --build`.
 

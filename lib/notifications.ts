@@ -281,11 +281,16 @@ export async function notifyNewAlert(alertId: number, alertLike: any): Promise<v
       });
       return;
     }
-    if (!discordConfigured()) {
-      insertNotificationEvent({ alertId, channel: "discord_webhook", status: "failed", error: "Discord webhook not set" });
+    const webhook: DiscordWebhookKind = isStock ? "stocks" : "options";
+    if (!discordWebhookConfigured(webhook)) {
+      insertNotificationEvent({
+        alertId,
+        channel: "discord_webhook",
+        status: "failed",
+        error: `Discord ${webhook} webhook not set`,
+      });
       return;
     }
-    const webhook: DiscordWebhookKind = isStock ? "stocks" : "options";
     const { messageId, webhookUrl } = await postToDiscord(payload, { webhook, skipPublicCheck: true });
     insertNotificationEvent({
       alertId,

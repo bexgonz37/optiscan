@@ -43,6 +43,7 @@ export function MobileBottomNav() {
           <Link
             key={item.href}
             href={item.href}
+            prefetch
             className={`mobile-bottom-link${isActive(pathname, item.href) ? " active" : ""}`}
           >
             <span className="mobile-bottom-icon" aria-hidden>{item.icon}</span>

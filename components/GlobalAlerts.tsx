@@ -1,11 +1,16 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useState, useCallback, useEffect } from "react";
 import { AlertPopup } from "@/components/AlertPopup";
-import { ChartPanel } from "@/components/ChartPanel";
 import { OPEN_CHART_EVENT } from "@/lib/open-chart";
 
-/** Alert popups + chart on every page. */
+const ChartPanel = dynamic(
+  () => import("@/components/ChartPanel").then((m) => ({ default: m.ChartPanel })),
+  { ssr: false, loading: () => null },
+);
+
+/** Alert popups + chart on every page. Chart bundle loads only when a symbol is opened. */
 export function GlobalAlerts() {
   const [chartSymbol, setChartSymbol] = useState<string | null>(null);
   const [chartOpen, setChartOpen] = useState(false);
@@ -27,7 +32,9 @@ export function GlobalAlerts() {
   return (
     <>
       <AlertPopup onOpenChart={onOpenChart} />
-      <ChartPanel symbol={chartSymbol} open={chartOpen} onClose={() => setChartOpen(false)} />
+      {chartOpen && chartSymbol ? (
+        <ChartPanel symbol={chartSymbol} open={chartOpen} onClose={() => setChartOpen(false)} />
+      ) : null}
     </>
   );
 }

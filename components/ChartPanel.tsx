@@ -49,7 +49,9 @@ const INDICATOR_LABELS: Record<ChartIndicator, string> = {
 };
 
 const CHART_LIVE_POLL_MS = 1000;
-const VERDICT_POLL_MS = 2000;
+const VERDICT_DEFER_MS = 700;
+const VERDICT_POLL_MS = 5000;
+const OPTIONS_DEFER_MS = 500;
 
 function cssVar(name: string, fallback: string): string {
   if (typeof window === "undefined") return fallback;
@@ -258,10 +260,14 @@ export function ChartPanel({
       return;
     }
     let cancelled = false;
-    loadVerdict(symbol, () => cancelled);
+    const defer = setTimeout(() => {
+      if (cancelled) return;
+      loadVerdict(symbol, () => cancelled);
+    }, VERDICT_DEFER_MS);
     const id = setInterval(() => loadVerdict(symbol, () => cancelled), VERDICT_POLL_MS);
     return () => {
       cancelled = true;
+      clearTimeout(defer);
       clearInterval(id);
     };
   }, [open, symbol, loadVerdict]);
@@ -374,28 +380,33 @@ export function ChartPanel({
       setReality(null);
       return;
     }
+    if (!bars.length) return;
     let cancelled = false;
-    const lastBar = bars.length ? bars[bars.length - 1] : null;
-    const firstBar = bars.length ? bars[0] : null;
+    const lastBar = bars[bars.length - 1];
+    const firstBar = bars[0];
     const dayChg =
       lastBar && firstBar && firstBar.c ? ((lastBar.c - firstBar.c) / firstBar.c) * 100 : null;
     const dir =
       dayChg == null ? undefined : dayChg > 0.08 ? "bullish" : dayChg < -0.08 ? "bearish" : undefined;
-    (async () => {
-      try {
-        const dirQ = dir ? `&dir=${dir}` : "";
-        const res = await fetch(`/api/options/${encodeURIComponent(symbol)}?zero=1${dirQ}`, {
-          cache: "no-store",
-          headers: scanHeaders(),
-        });
-        const d = await res.json();
-        if (!cancelled) setReality(d.ok ? d : { error: d.error });
-      } catch (e: any) {
-        if (!cancelled) setReality({ error: e?.message ?? "failed" });
-      }
-    })();
+    const defer = setTimeout(() => {
+      if (cancelled) return;
+      (async () => {
+        try {
+          const dirQ = dir ? `&dir=${dir}` : "";
+          const res = await fetch(`/api/options/${encodeURIComponent(symbol)}?zero=1${dirQ}`, {
+            cache: "no-store",
+            headers: scanHeaders(),
+          });
+          const d = await res.json();
+          if (!cancelled) setReality(d.ok ? d : { error: d.error });
+        } catch (e: any) {
+          if (!cancelled) setReality({ error: e?.message ?? "failed" });
+        }
+      })();
+    }, OPTIONS_DEFER_MS);
     return () => {
       cancelled = true;
+      clearTimeout(defer);
     };
   }, [open, symbol, bars]);
 

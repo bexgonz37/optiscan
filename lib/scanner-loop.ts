@@ -24,7 +24,7 @@
  * nothing beyond the single shared snapshot call.
  */
 
-import { fetchBulkQuotes, fetchCandles, fetchOptionChain } from "@/lib/polygon-provider";
+import { fetchBulkQuotes, fetchCandles, fetchOptionChain, fetchTopMovers } from "@/lib/polygon-provider";
 import { vwap as sessionVwap, sessionBars, relativeVolume } from "@/lib/momentum-signals";
 import {
   acceleration, volumeSurge, pathEfficiency, detectLevels, directionRead,
@@ -82,6 +82,7 @@ interface LoopState {
   discoveryCount: number;
   promoted: Map<string, number>;
   lastTapeEnrichAt: number;
+  lastRecapAt: number;
   tapeBadgeCache: Map<string, { catalystType?: string; catalystFresh?: boolean; haltStatus?: string | null }>;
 }
 
@@ -94,7 +95,7 @@ function state(): LoopState {
       running: false, intervalMs: LOOP_MS, targetMs: LOOP_MS, lastTickAt: null,
       ticks: 0, triggers: 0, alerts: 0, errors: 0, note: null, session: null,
       symbols: new Map(), movers: [], tape: [], lastDiscoveryAt: 0, discoveryCount: 0, promoted: new Map(),
-      lastTapeEnrichAt: 0, tapeBadgeCache: new Map(),
+      lastTapeEnrichAt: 0, lastRecapAt: 0, tapeBadgeCache: new Map(),
     };
   }
   // Survive Next dev hot reloads from pre-discovery loop state.
@@ -103,8 +104,52 @@ function state(): LoopState {
   g.__optiscanLoop.discoveryCount ??= 0;
   g.__optiscanLoop.promoted ??= new Map();
   g.__optiscanLoop.lastTapeEnrichAt ??= 0;
+  g.__optiscanLoop.lastRecapAt ??= 0;
   g.__optiscanLoop.tapeBadgeCache ??= new Map();
   return g.__optiscanLoop;
+}
+
+/** When the session is closed, show Polygon snapshot movers (Robinhood-style recap). */
+async function refreshClosedRecap(nowMs: number) {
+  const s = state();
+  const [gainers, losers] = await Promise.all([
+    fetchTopMovers("gainers", 20),
+    fetchTopMovers("losers", 20),
+  ]);
+  if (!gainers?.available && !losers?.available) {
+    s.note = gainers?.note ?? losers?.note ?? "market closed — snapshot unavailable";
+    return;
+  }
+  const seen = new Set<string>();
+  const quotes = [...(gainers?.quotes ?? []), ...(losers?.quotes ?? [])].filter((q: any) => {
+    if (!q?.symbol || seen.has(q.symbol)) return false;
+    seen.add(q.symbol);
+    return q.price != null;
+  });
+  quotes.sort((a: any, b: any) => Math.abs(b.changePercent ?? 0) - Math.abs(a.changePercent ?? 0));
+  s.tape = quotes.slice(0, 40).map((q: any) => ({
+    symbol: q.symbol,
+    price: q.price,
+    movePct: q.changePercent,
+    volume: q.volume ?? null,
+    shortRate: null,
+    accel: null,
+    surge: null,
+    efficiency: null,
+    direction: (q.changePercent ?? 0) > 0.15 ? "bullish" : (q.changePercent ?? 0) < -0.15 ? "bearish" : "choppy",
+    confidence: 20,
+    hodBreak: false,
+    lodBreak: false,
+    aboveVwap: null,
+    vwapDistPct: null,
+    relVol: null,
+    promoted: false,
+    core: isCoreSymbol(q.symbol),
+    recap: true,
+  }));
+  s.movers = s.tape.slice(0, 20);
+  s.lastRecapAt = nowMs;
+  s.note = "Market closed — latest snapshot movers (live scan resumes 4:00 AM ET)";
 }
 
 /** Promote broad-universe movers into the fast loop without fetching chains. */
@@ -323,7 +368,12 @@ async function tick() {
   const session: MarketSession = marketSession(nowMs);
   s.session = session;
   if (session === "closed") {
-    s.note = "market closed — scanning paused (resumes 4:00 AM ET)";
+    if (nowMs - s.lastRecapAt >= 60_000 || !s.tape.length) {
+      await refreshClosedRecap(nowMs).catch((err) => {
+        s.errors++;
+        s.note = err?.message ?? "market closed — recap unavailable";
+      });
+    }
     return;
   }
   if (session !== "regular") {
