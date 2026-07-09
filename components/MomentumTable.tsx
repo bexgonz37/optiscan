@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import type { MomentumRow } from "@/lib/types";
 import { TickerIcon, ScoreBar, IvBar, GradeChip } from "@/components/ui";
+import { InfoTip } from "@/components/InfoTip";
 import { TradeVerdictHero } from "@/components/TradeVerdictHero";
 import { useLiveTapeMap, liveCtxFor } from "@/hooks/useLiveTapeMap";
 import { fmtNum, fmtPct, fmtPremium, fmtPrice, fmtInt, pctClass } from "@/lib/format";
@@ -86,12 +87,12 @@ export function MomentumTable({
             <Th k="symbol" label="Ticker" />
             <Th k="price" label="Price" />
             <Th k="chg" label="Chg %" />
-            <th>Setup</th>
+            <th><InfoTip metric="setupScore">Setup</InfoTip></th>
             <Th k="iv" label="IV" />
             <Th k="delta" label="Δ" />
             <Th k="entry" label="Entry" />
             <Th k="dte" label="DTE" />
-            <th>OI / Vol</th>
+            <th><InfoTip metric="openInterest">OI / Vol</InfoTip></th>
             <Th k="score" label="Signal" />
             <th>Action</th>
             <th></th>

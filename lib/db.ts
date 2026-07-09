@@ -50,6 +50,41 @@ CREATE INDEX IF NOT EXISTS idx_alerts_dedup_lookup
 CREATE INDEX IF NOT EXISTS idx_alerts_day ON alerts(trading_day);
 CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status);
 
+CREATE TABLE IF NOT EXISTS paper_trades (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  alert_id INTEGER REFERENCES alerts(id) ON DELETE SET NULL,
+  ticker TEXT NOT NULL,
+  option_symbol TEXT,
+  option_type TEXT NOT NULL,            -- 'call' | 'put'
+  strike REAL,
+  expiration TEXT,                      -- YYYY-MM-DD
+  dte_at_entry INTEGER,
+  contracts INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'READY', -- WATCHING/READY/ENTERED/EXITED/STOPPED_OUT/TAKE_PROFIT/CANCELLED/EXPIRED
+  thesis TEXT,
+  confidence REAL,
+  entry_limit REAL,
+  entry_price REAL,
+  entry_at_ms INTEGER,
+  stop_loss_pct REAL,
+  take_profit_pct REAL,
+  exit_price REAL,
+  exit_at_ms INTEGER,
+  exit_reason TEXT,
+  mfe_pct REAL,
+  mae_pct REAL,
+  last_mark REAL,
+  last_mark_at_ms INTEGER,
+  short_rate_entry REAL,                -- thesis snapshot for smart exits
+  above_vwap_entry INTEGER,
+  rel_vol_entry REAL,
+  lessons TEXT,
+  created_at_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_paper_status ON paper_trades(status);
+CREATE INDEX IF NOT EXISTS idx_paper_ticker ON paper_trades(ticker);
+
 CREATE TABLE IF NOT EXISTS alert_performance (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   alert_id INTEGER NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,

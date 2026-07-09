@@ -3,6 +3,17 @@
 import { frozenCalloutVerdict, type AlertVerdictInput, type LiveTapeContext, type TradeVerdict } from "@/lib/trade-verdict";
 import { publicizeDirectiveText, uiDirectiveLabel } from "@/lib/language-modes";
 import { useLanguageMode } from "@/hooks/useLanguageMode";
+import { InfoTip } from "@/components/InfoTip";
+import { holdVerdict, makeHoldStore } from "@/lib/verdict-hold";
+import type { TradeVerdict as TradeVerdictType } from "@/lib/trade-verdict";
+
+// Display hysteresis (v1.1): downgrades commit only after they persist; the
+// UI explains every weakening/downgrade instead of silently flipping.
+const verdictHolds = makeHoldStore<TradeVerdictType & { action: string; reason: string }>();
+
+function holdKey(alert: AlertVerdictInput): string {
+  return `${alert.ticker ?? "?"}:${alert.option_side ?? ""}:${alert.strike ?? ""}:${alert.expiration ?? ""}`;
+}
 
 const ACTION_CLASS: Record<string, string> = {
   TRADE: "verdict-trade",
@@ -20,7 +31,11 @@ export function TradeVerdictHero({
   live?: LiveTapeContext;
   compact?: boolean;
 }) {
-  const v = frozenCalloutVerdict(alert, live);
+  const fresh = frozenCalloutVerdict(alert, live);
+  // Display hysteresis: verdict math is untouched — only WHEN the screen
+  // commits to a downgrade changes (upgrades always show instantly).
+  const held = holdVerdict(verdictHolds, holdKey(alert), fresh as any);
+  const v = held.shown as typeof fresh;
   // Verdict math is untouched; public mode only remaps the words on screen.
   const mode = useLanguageMode();
   const headline = mode === "public" ? publicizeDirectiveText(v.headline) : v.headline;
@@ -31,8 +46,8 @@ export function TradeVerdictHero({
 
   if (compact) {
     return (
-      <span className={`verdict-pill ${cls}`} title={v.reason}>
-        {headline}
+      <span className={`verdict-pill ${cls}${held.weakening ? " verdict-weakening" : ""}`} title={held.weakening ? `Weakening: ${held.weakeningReason ?? v.reason}` : v.reason}>
+        {headline}{held.weakening ? " ⚠" : ""}
       </span>
     );
   }
@@ -42,12 +57,21 @@ export function TradeVerdictHero({
       <div className="verdict-headline">{headline}</div>
       {v.side !== "NONE" && v.action === "TRADE" ? (
         <div className={`verdict-side ${sideClass}`}>
-          {v.side} · {v.confidence}% confidence
+          <InfoTip metric="tier">{v.side}</InfoTip> · <InfoTip metric="confidence">{`${v.confidence}% confidence`}</InfoTip>
         </div>
       ) : (
-        <div className="verdict-side muted">{actionLabel} · {v.confidence}% confidence</div>
+        <div className="verdict-side muted"><InfoTip metric="tier">{actionLabel}</InfoTip> · <InfoTip metric="confidence">{`${v.confidence}% confidence`}</InfoTip></div>
       )}
       {v.contractLine ? <div className="verdict-contract">{v.contractLine}</div> : null}
+      {held.weakening ? (
+        <div className="verdict-weakening-note">
+          Weakening — {held.weakeningReason ?? "conditions deteriorating"} (downgrades only commit if this persists ~25s)
+        </div>
+      ) : held.downgradedFrom ? (
+        <div className="verdict-downgrade-note">
+          Downgraded from {held.downgradedFrom} — {held.weakeningReason ?? v.reason}
+        </div>
+      ) : null}
       <div className="verdict-reason">{v.reason}</div>
       <div className="verdict-logic muted">{v.logicLine}</div>
     </div>

@@ -21,6 +21,12 @@ export function ensureServerBoot(): void {
   }
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
+    require("@/lib/paper-engine").startPaperEngine();
+  } catch (err) {
+    console.warn("[paper] engine not started:", (err as Error)?.message);
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const cleared = require("@/lib/notifications").enforceDiscordAutoSend();
     if (cleared > 0) console.info(`[discord] auto-send enforced; cleared ${cleared} pending_confirm event(s)`);
   } catch (err) {

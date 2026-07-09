@@ -219,12 +219,34 @@ SCANNER_REALTIME=0               # kill switch for the loop
 - Performance claims in any public/paid channel: realized returns only, peaks labeled, no cherry-picking (full ledger visible, not just winners), standing disclaimer.
 - Before charging subscribers: operator obtains securities-law review (adviser registration / publisher-exclusion analysis is jurisdiction-specific and outside engineering scope).
 
-## 11. Out of scope for v1 / accepted roadmap
+## 11. Roadmap (prioritized 2026-07-09)
 
-- **v1.1 (ops):** Discord ops-webhook push alerts on loop stall / quota cap / DB failure (health 503 exists; nothing pages yet). Structured JSON logging + rotation.
-- **v1.2 (UI consolidation):** merge overlapping status surfaces into one status bar; single ranked table; details drawer; design-system pass; `/alerts` KPI charts (hit rate by score bucket, favorable-vs-drawdown scatter, session heatmap).
-- **v1.3 (signal calibration):** calibrate `expectedRemainingMovePct` and volume-surge fidelity against accumulated checkpoint data; ATR-normalize discovery thresholds; premarket/AH-specific stock gates.
-- **Future:** paid-user mode wording tier, per-user auth if ever multi-tenant (explicitly out of scope today).
+### v1.1 — Core-loop feel + education (current sprint)
+- **Perf:** lazy-mount charts/heavy panels (tab switches must feel instant); measure against the production build, not `next dev`.
+- **Verdict hysteresis:** the hero verdict may only downgrade (TRADE→WAIT/SKIP) on *sustained* invalidation (~20–30 s), and must display the downgrade reason ("fell below VWAP") instead of silently switching. No change to verdict math — presentation stability only.
+- **Latency review:** use the `nearMisses` trace to quantify "callout felt late" before touching any gate threshold; changes only with calibration data.
+- **Tooltips/education (beginner-first):** shared `<InfoTip>` component (hover + tap-friendly info icon) + a single `lib/metric-glossary.ts` containing, for every metric/badge/score: plain-English meaning, why it matters for options, higher-vs-lower guidance, effect on the score, risks/limitations. Wired into hero, table headers, badges, scores, settings. Beginner test: any element on screen explains itself without leaving the app.
+- Ops alerting (Discord ops webhook on stall/quota/DB fail) + structured logging carry over from the prior roadmap.
+
+### v1.2 — Paper trading, phase 1
+- `paper_trades` table + simulated entries/exits (calls + puts, limit-fill simulation at mid with spread awareness, no broker, no 0DTE by default).
+- Track: entry/exit price + timestamps, contracts, ticker, strike, expiration, type, thesis, scanner confidence, stop loss, take profit, exit reason, P/L $ and %, MFE, MAE (reuse the existing checkpoint/marks infrastructure — do not rebuild it).
+- Hard exits only in phase 1: configurable stop loss + profit target, evaluated from existing live marks.
+- Trade states: WATCHING / READY / ENTERED / EXITED / STOPPED_OUT / TAKE_PROFIT / CANCELLED / EXPIRED.
+- Every exit states its reason; every trade keeps a "why it qualified" explanation from the capture pipeline.
+
+### v1.3 — Paper trading, phase 2 + analytics
+- Risk engine: max risk/trade, max daily/weekly loss, max open trades, max exposure per ticker, no averaging down.
+- Smart exits (thesis invalidation): momentum-score deterioration, VWAP break against position, relative-volume fade, spread blowout, trend-structure break — each exit explains itself.
+- Analytics on `/alerts` (extend, don't add a page): win rate, avg gain/loss, profit factor, expectancy, max drawdown, largest win/loss, avg hold time; cuts by setup, expiration length, confidence score, market condition. Auto-updating.
+- Post-trade "lessons learned" summary per closed trade.
+
+### v2 — Swing scanner (deferred deliberately)
+- 1–4 week options scanner with researched, documented scoring (trend strength, momentum, IV rank/percentile, delta/gamma, OI, liquidity/spread, ATR, MAs, support/resistance, earnings proximity, catalysts, sector strength, market regime). Deferred until: (a) the 0DTE track record has ≥1 month of calibrated data, and (b) data requirements (IV history, earnings calendar) are confirmed against the Polygon plan. No arbitrary thresholds — every formula documented with rationale and validated against tracked outcomes.
+
+### Future
+- Broker execution adapter (Robinhood MCP or similar) as a separate module; the scanner stays execution-free forever (§2 non-goals). The boundary already exists — enforce it in review.
+- Paid-user wording tier; per-user auth only if ever multi-tenant (out of scope today).
 
 ## 12. Risks and constraints for any developer touching this
 

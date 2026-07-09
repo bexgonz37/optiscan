@@ -7,7 +7,11 @@ import { Panel } from "@/components/ui/Panel";
 import { SignalCard } from "@/components/ui/SignalCard";
 import { StatTile } from "@/components/ui/StatTile";
 import { TrackingRow } from "@/components/ui/TrackingRow";
-import { ScannerBuilder } from "@/components/ui/ScannerBuilder";
+import dynamic from "next/dynamic";
+const ScannerBuilder = dynamic(
+  () => import("@/components/ui/ScannerBuilder").then((mm) => ({ default: mm.ScannerBuilder })),
+  { ssr: false, loading: () => <div className="muted text-sm">Loading scanner builder…</div> },
+);
 import { applyStockScan, type StockScanPreset } from "@/lib/stock-scanner-presets";
 import { useScannerStream } from "@/hooks/useScannerStream";
 import { scanHeaders } from "@/hooks/useScanner";
@@ -21,6 +25,22 @@ import { tradingDay } from "@/lib/trading-session";
 import { liveCtxFor, useLiveTapeMap } from "@/hooks/useLiveTapeMap";
 import { loadDashboardPrefs, saveDashboardPrefs } from "@/lib/dashboard-prefs";
 import { uiDirectiveLabel } from "@/lib/language-modes";
+import { InfoTip } from "@/components/InfoTip";
+
+/** Beginner tooltips: strip-stat label -> glossary key (lib/metric-glossary). */
+const STRIP_METRIC: Record<string, string> = {
+  "Avg speed": "speed",
+  "Put / call flow": "confidence",
+  "Hot names": "relVol",
+};
+
+/** Scanner column title -> glossary key. */
+const COLUMN_METRIC: Record<string, string> = {
+  "Volume-confirmed": "surge",
+  "Volume surges": "surge",
+  "Level breaks": "hodLod",
+  "Best entries forming": "setupScore",
+};
 import { useLanguageMode } from "@/hooks/useLanguageMode";
 import { formatOptionsContract, formatCalloutHeadline, isFillableOptionsSetup } from "@/lib/format-contract";
 import { rankAlertForHero, isMetaShapedAlert, META_REFERENCE } from "@/lib/meta-bar";
@@ -637,7 +657,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
 
       <div className="axiom-strip">
         {strip.map((s) => (
-          <StatTile key={s.k} label={s.k} value={s.v} hint={s.s} />
+          <StatTile key={s.k} label={s.k} value={s.v} hint={s.s} metric={STRIP_METRIC[s.k]} />
         ))}
       </div>
 
@@ -713,7 +733,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
       <div className="scanners axiom-scanners" onMouseEnter={() => setHovering(true)} onMouseLeave={() => setHovering(false)}>
         {columns.map((col) => (
           <div className="scanner" key={col.title}>
-            <h3>{col.title}</h3>
+            <h3>{COLUMN_METRIC[col.title] ? <InfoTip metric={COLUMN_METRIC[col.title]}>{col.title}</InfoTip> : <InfoTip metric="speed">{col.title}</InfoTip>}</h3>
             <ul>
               {col.rows.map((r) => {
                 const liveRow = rowMap.get(r.symbol) ?? r;

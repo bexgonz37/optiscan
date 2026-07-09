@@ -2,6 +2,7 @@
 
 import { fmtPct, fmtPrice, pctClass } from "@/lib/format";
 import { alertKindExplanation, uiDirectiveLabel } from "@/lib/language-modes";
+import { InfoTip } from "@/components/InfoTip";
 
 export interface StockAlertLike {
   ticker: string;
@@ -67,7 +68,7 @@ export function StockAlertCard({
       {showDetails ? (
         <div className="popup-details">
           <div className="mb-2">
-            Setup {Math.round(alert.signal_score ?? 0)}/100 · Risk {Math.round(alert.risk_score ?? 0)}/100
+            <InfoTip metric="setupScore">{`Setup ${Math.round(alert.signal_score ?? 0)}/100`}</InfoTip> · <InfoTip metric="riskScore">{`Risk ${Math.round(alert.risk_score ?? 0)}/100`}</InfoTip>
           </div>
           <div className="mb-2">Underlying shares only — no option contract on this callout.</div>
         </div>

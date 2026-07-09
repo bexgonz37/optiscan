@@ -12,6 +12,8 @@ const PAGE_TITLES: Record<string, { title: string; sub: string }> = {
   "/review": { title: "Review", sub: "System limits · methodology" },
   "/guide": { title: "Guide", sub: "Quick start" },
   "/scanner": { title: "Scanner", sub: "Legacy dashboard" },
+  "/paper": { title: "Paper Trading", sub: "Simulated fills · risk engine · lessons" },
+  "/swing": { title: "Swing Scanner", sub: "1–4 week candidates · research preview" },
 };
 
 export interface StatusItem { label: string; live?: boolean; warn?: boolean; }

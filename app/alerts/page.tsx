@@ -20,8 +20,16 @@ import { uiDirectiveLabel } from "@/lib/language-modes";
 import { useLiveTapeMap, liveCtxFor } from "@/hooks/useLiveTapeMap";
 import { AlertsCommandCenter } from "@/components/AlertsCommandCenter";
 import { openLiveChart } from "@/lib/open-chart";
-import { OptiscanAlertsDashboard } from "@/components/OptiscanAlertsDashboard";
-import { SystemExplanationSection } from "@/components/SystemExplanationSection";
+// Heavy, below-the-fold / tab-gated panels load lazily so tab switches stay
+// instant (perf v1.1): they mount only when their tab is opened.
+const OptiscanAlertsDashboard = dynamic(
+  () => import("@/components/OptiscanAlertsDashboard").then((m) => ({ default: m.OptiscanAlertsDashboard })),
+  { ssr: false, loading: () => <div className="muted text-sm">Loading dashboard…</div> },
+);
+const SystemExplanationSection = dynamic(
+  () => import("@/components/SystemExplanationSection").then((m) => ({ default: m.SystemExplanationSection })),
+  { ssr: false, loading: () => null },
+);
 const CalibrationChart = dynamic(
   () => import("@/components/ui/CalibrationChart").then((m) => m.CalibrationChart),
   { ssr: false, loading: () => <div className="muted text-sm">Loading chart…</div> },
@@ -32,7 +40,10 @@ const EquityCurve = dynamic(
 );
 import { Panel } from "@/components/ui/Panel";
 import { ShareCard } from "@/components/ui/ShareCard";
-import { DailyPostPack } from "@/components/DailyPostPack";
+const DailyPostPack = dynamic(
+  () => import("@/components/DailyPostPack").then((m) => ({ default: m.DailyPostPack })),
+  { ssr: false, loading: () => <div className="muted text-sm">Loading post pack…</div> },
+);
 import { computeTradeVerdict, formatSpeedLine } from "@/lib/trade-verdict";
 import { calledAgoLabel, sideFromAlert } from "@/lib/signal-live";
 import { earlyMoveWin, pickEarlyMove, EARLY_MOVE_WIN_PCT, EARLY_ON_TRACK_MIN_PCT } from "@/lib/early-accuracy";

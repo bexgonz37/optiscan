@@ -2,6 +2,7 @@
 
 import { fmtExpiry, fmtPct, pctClass } from "@/lib/format";
 import { alertKindExplanation } from "@/lib/language-modes";
+import { InfoTip } from "@/components/InfoTip";
 import { TradeVerdictHero, useTradeVerdict } from "@/components/TradeVerdictHero";
 import type { LiveTapeContext } from "@/lib/trade-verdict";
 
@@ -84,7 +85,7 @@ export function OptionAlertCard({
       {showDetails ? (
         <div className="popup-details">
           <div className="mb-2">
-            Setup {Math.round(alert.signal_score ?? 0)}/100 · Risk {Math.round(alert.risk_score ?? 0)}/100
+            <InfoTip metric="setupScore">{`Setup ${Math.round(alert.signal_score ?? 0)}/100`}</InfoTip> · <InfoTip metric="riskScore">{`Risk ${Math.round(alert.risk_score ?? 0)}/100`}</InfoTip>
             {alert.zero_dte_contract_score != null ? ` · Contract ${Math.round(alert.zero_dte_contract_score)}/100` : ""}
             {alert.option_worth_score != null ? ` · Worth-it ${Math.round(alert.option_worth_score)}/100` : ""}
           </div>

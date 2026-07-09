@@ -35,10 +35,14 @@ test("SPEC: catalyst attach is fire-and-forget after insert — never blocks or 
 });
 
 test("SPEC: scanner is AI-free — no model calls anywhere in lib/", () => {
-  for (const f of readdirSync(join(root, "lib"))) {
-    const src = read(join("lib", f));
+  const walk = (dir) =>
+    readdirSync(join(root, dir), { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)],
+    );
+  for (const f of walk("lib")) {
+    const src = read(f);
     // \b guards: "stillMoving" contains "llm" — match whole tokens only.
-    assert.ok(!/\bopenai\b|anthropic\.com|\bclaude\b|\bgpt-|\bllm\b/i.test(src), `AI reference found in lib/${f}`);
+    assert.ok(!/\bopenai\b|anthropic\.com|\bclaude\b|\bgpt-|\bllm\b/i.test(src), `AI reference found in ${f}`);
   }
 });
 

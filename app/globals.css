@@ -3506,3 +3506,40 @@ td.num,
 .scanner li:active {
   opacity: 0.72;
 }
+
+/* ── InfoTip: beginner-education tooltips (v1.1) ─────────────────────────── */
+.infotip-wrap { position: relative; display: inline-flex; align-items: center; gap: 4px; }
+.infotip-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; padding: 0; margin-left: 2px;
+  border-radius: 50%; border: 1px solid var(--line, rgba(255,255,255,0.25));
+  background: transparent; color: var(--muted, #9aa0aa);
+  font-size: 10px; font-style: italic; font-weight: 700; line-height: 1;
+  cursor: help; flex: none;
+}
+.infotip-icon::after { /* enlarge tap target without changing layout */
+  content: ""; position: absolute; inset: -12px;
+}
+.infotip-icon:hover, .infotip-icon[aria-expanded="true"] { color: var(--fg, #fff); border-color: var(--fg, #fff); }
+.infotip-pop {
+  position: absolute; z-index: 90; left: 50%; transform: translateX(-50%);
+  width: min(320px, 82vw); padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 6px;
+  background: var(--panel-2, #17181c); border: 1px solid var(--line, rgba(255,255,255,0.14));
+  border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,0.5);
+  font-size: 12px; line-height: 1.45; text-align: left; white-space: normal;
+  text-transform: none; letter-spacing: normal; font-weight: 400; cursor: auto;
+}
+.infotip-top { bottom: calc(100% + 8px); }
+.infotip-bottom { top: calc(100% + 8px); }
+.infotip-title { font-weight: 700; font-size: 12px; }
+.infotip-row b { color: var(--muted, #9aa0aa); font-weight: 600; margin-right: 2px; }
+.infotip-risk { color: var(--warn, #e2b93b); }
+@media (max-width: 640px) {
+  .infotip-pop { position: fixed; left: 12px; right: 12px; bottom: 76px; top: auto; transform: none; width: auto; }
+}
+
+/* ── Verdict hysteresis notes (v1.1) ─────────────────────────────────────── */
+.verdict-weakening-note { color: var(--warn, #e2b93b); font-size: 12px; margin: 4px 0; }
+.verdict-downgrade-note { color: var(--muted, #9aa0aa); font-size: 12px; margin: 4px 0; }
+.verdict-pill.verdict-weakening { outline: 1px dashed var(--warn, #e2b93b); outline-offset: 1px; }

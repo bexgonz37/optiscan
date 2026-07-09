@@ -12,6 +12,8 @@ const SCANNER_NAV = [
 
 const INTEL_NAV = [
   { href: "/copilot", label: "AI" },
+  { href: "/paper", label: "Paper Trading" },
+  { href: "/swing", label: "Swing (preview)" },
   { href: "/alerts", label: "Accuracy" },
   { href: "/settings", label: "Settings" },
   { href: "/review", label: "Review" },
