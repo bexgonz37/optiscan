@@ -200,6 +200,22 @@ CREATE TABLE IF NOT EXISTS notification_events (
   sent_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_notif_status ON notification_events(status);
+
+CREATE TABLE IF NOT EXISTS paper_decisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  trade_id INTEGER REFERENCES paper_trades(id) ON DELETE SET NULL,
+  alert_id INTEGER REFERENCES alerts(id) ON DELETE SET NULL,
+  ticker TEXT,
+  decision TEXT NOT NULL,              -- auto_entry_created | risk_refused | entry_filled | exit | sweep_note
+  allowed INTEGER NOT NULL DEFAULT 0,
+  reason TEXT NOT NULL,
+  risk_json TEXT,
+  snapshot_json TEXT,
+  created_at_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_paper_decisions_created ON paper_decisions(created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_paper_decisions_trade ON paper_decisions(trade_id);
 `;
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */

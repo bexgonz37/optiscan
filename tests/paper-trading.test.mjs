@@ -198,6 +198,28 @@ test("daily and weekly loss circuit breakers", () => {
   assert.ok(checkRisk(PROP, { ...CTX, realizedWeekDollars: -1500 }, CFG).failures.some((f) => /weekly loss/.test(f)));
 });
 
+test("kill switch blocks every new paper entry", () => {
+  const r = checkRisk(PROP, CTX, { ...CFG, killSwitch: true });
+  assert.equal(r.allowed, false);
+  assert.ok(r.failures.some((f) => /kill switch/.test(f)));
+});
+
+test("cooldown after a realized loss blocks revenge entries", () => {
+  const r = checkRisk(
+    PROP,
+    { ...CTX, lastLossAtMs: T - 5 * 60_000, nowMs: T },
+    { ...CFG, cooldownAfterLossMinutes: 30 },
+  );
+  assert.equal(r.allowed, false);
+  assert.ok(r.failures.some((f) => /cooldown after loss/.test(f)));
+  const clear = checkRisk(
+    PROP,
+    { ...CTX, lastLossAtMs: T - 45 * 60_000, nowMs: T },
+    { ...CFG, cooldownAfterLossMinutes: 30 },
+  );
+  assert.equal(clear.allowed, true);
+});
+
 // ── Analytics ──
 test("summarize: realized-only stats, drawdown, profit factor", () => {
   const closed = (entry, exit, at, over = {}) => ({

@@ -36,6 +36,14 @@ function dollars(v: number | null | undefined): string {
   return `${v < 0 ? "-" : ""}$${Math.abs(v).toFixed(0)}`;
 }
 
+function timeAgo(ms: number | null | undefined): string {
+  if (!ms) return "never";
+  const mins = Math.max(0, Math.round((Date.now() - ms) / 60_000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  return `${Math.round(mins / 60)}h ago`;
+}
+
 const STATE_CLASS: Record<string, string> = {
   ENTERED: "up", TAKE_PROFIT: "up", READY: "muted", WATCHING: "muted",
   STOPPED_OUT: "dn", EXITED: "", CANCELLED: "muted", EXPIRED: "muted",
@@ -102,8 +110,10 @@ function PaperPageInner() {
   const s: Summary | null = data?.summary ?? null;
   const engine = data?.engine ?? null;
   const trades: any[] = data?.trades ?? [];
+  const decisions: any[] = data?.decisions ?? [];
   const open = trades.filter((t) => ["WATCHING", "READY", "ENTERED"].includes(t.status));
   const closed = trades.filter((t) => !["WATCHING", "READY", "ENTERED"].includes(t.status));
+  const risk = engine?.risk ?? {};
 
   return (
     <div className="page axiom-utility">
@@ -126,10 +136,34 @@ function PaperPageInner() {
               {engine?.autoEntryEnabled && !engine?.allowZeroDte ? (
                 <span className="pill badge badge-warn">Needs PAPER_ALLOW_ZERO_DTE=1</span>
               ) : null}
+              {risk.killSwitch ? <span className="pill badge badge-warn">Kill switch ON</span> : null}
             </div>
             {error ? <div className="alert-error">{error} — is the app running with a token set?</div> : null}
           </section>
         </CardTip>
+
+        <Panel title="Risk rules the agent cannot override" meta="Beginner guardrails · enforced before every entry" tip="paperTrading">
+          <div className="paper-buckets">
+            <div className="paper-bucket">
+              <h4>Position limits</h4>
+              <p className="muted text-xs">
+                Max risk {dollars(risk.maxRiskPerTrade)} per trade · max {risk.maxOpenTrades ?? "—"} open trades · max {dollars(risk.maxExposurePerTicker)} per ticker.
+              </p>
+            </div>
+            <div className="paper-bucket">
+              <h4>Loss circuit breakers</h4>
+              <p className="muted text-xs">
+                Daily loss {dollars(risk.maxDailyLoss)} · weekly loss {dollars(risk.maxWeeklyLoss)} · cooldown after a loss {risk.cooldownAfterLossMinutes ?? 30}m.
+              </p>
+            </div>
+            <div className="paper-bucket">
+              <h4>Execution discipline</h4>
+              <p className="muted text-xs">
+                0DTE {risk.allowZeroDte ? "allowed by env" : "blocked by default"} · averaging down {risk.allowAveragingDown ? "allowed by env" : "blocked"} · kill switch {risk.killSwitch ? "ON" : "off"}.
+              </p>
+            </div>
+          </div>
+        </Panel>
 
         {s ? (
           <div className="axiom-strip paper-strip">
@@ -177,6 +211,28 @@ function PaperPageInner() {
               ))}
             </ul>
           ) : <div className="sigwhy muted text-sm">No open paper trades — auto-entry will populate when TRADE callouts fire.</div>}
+        </Panel>
+
+        <Panel title="Agent decision log" meta={`${decisions.length} latest · entries, refusals, fills, exits`} tip="paperTrading">
+          {decisions.length ? (
+            <ul className="ledger axiom-ledger">
+              {decisions.slice(0, 16).map((d) => (
+                <li key={d.id}>
+                  <span className={`t num ${d.allowed ? "up" : "dn"}`}>{d.allowed ? "PASS" : "BLOCK"}</span>
+                  <span className="what">
+                    <b>{d.ticker ?? "SYSTEM"}</b> {String(d.decision).replaceAll("_", " ")}
+                    <small>{d.reason}</small>
+                    {d.snapshot?.optionSymbol ? (
+                      <small className="muted">
+                        Quote: {d.snapshot.optionSymbol} · bid {d.snapshot.bid ?? "—"} · ask {d.snapshot.ask ?? "—"} · spread {d.snapshot.spreadPct ?? "—"}%
+                      </small>
+                    ) : null}
+                  </span>
+                  <span className="res muted text-xs">{timeAgo(d.createdAtMs)}</span>
+                </li>
+              ))}
+            </ul>
+          ) : <div className="sigwhy muted text-sm">No agent decisions logged yet. The first auto-entry, risk refusal, fill, or exit will appear here.</div>}
         </Panel>
 
         <Panel title="Manual override" meta="Optional — engine runs without this" tip="paperTrading">

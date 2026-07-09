@@ -84,6 +84,78 @@ export function listPaperTrades(limit = 200): Array<PaperTrade & {
   });
 }
 
+export interface PaperDecisionLog {
+  id: number;
+  tradeId: number | null;
+  alertId: number | null;
+  ticker: string | null;
+  decision: string;
+  allowed: boolean;
+  reason: string;
+  risk: Record<string, unknown> | null;
+  snapshot: Record<string, unknown> | null;
+  createdAtMs: number;
+}
+
+function parseJsonObj(raw: string | null | undefined): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function listPaperDecisions(limit = 120): PaperDecisionLog[] {
+  const db = getDb();
+  return (db.prepare("SELECT * FROM paper_decisions ORDER BY id DESC LIMIT ?").all(limit) as any[]).map((r) => ({
+    id: r.id,
+    tradeId: r.trade_id ?? null,
+    alertId: r.alert_id ?? null,
+    ticker: r.ticker ?? null,
+    decision: r.decision,
+    allowed: Boolean(r.allowed),
+    reason: r.reason,
+    risk: parseJsonObj(r.risk_json),
+    snapshot: parseJsonObj(r.snapshot_json),
+    createdAtMs: r.created_at_ms,
+  }));
+}
+
+function logDecision(input: {
+  tradeId?: number | null;
+  alertId?: number | null;
+  ticker?: string | null;
+  decision: string;
+  allowed: boolean;
+  reason: string;
+  risk?: unknown;
+  snapshot?: unknown;
+  nowMs?: number;
+}): void {
+  try {
+    const db = getDb();
+    db.prepare(
+      `INSERT INTO paper_decisions
+        (trade_id, alert_id, ticker, decision, allowed, reason, risk_json, snapshot_json, created_at_ms)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      input.tradeId ?? null,
+      input.alertId ?? null,
+      input.ticker ?? null,
+      input.decision,
+      input.allowed ? 1 : 0,
+      input.reason,
+      input.risk == null ? null : JSON.stringify(input.risk),
+      input.snapshot == null ? null : JSON.stringify(input.snapshot),
+      input.nowMs ?? Date.now(),
+    );
+  } catch (err: any) {
+    console.warn("[paper] decision log skipped:", err?.message);
+  }
+}
+
 function openTrades(): PaperTrade[] {
   const db = getDb();
   return (db.prepare(
@@ -96,7 +168,8 @@ function openTrades(): PaperTrade[] {
 export function riskContext(): RiskContext {
   const db = getDb();
   const dayMs = Date.now() - 24 * 3600_000; // rolling 24h ≈ trading day for paper purposes
-  const weekMs = Date.now() - 7 * 24 * 3600_000;
+  const nowMs = Date.now();
+  const weekMs = nowMs - 7 * 24 * 3600_000;
   const realized = (sinceMs: number): number => {
     const rows = db.prepare(
       `SELECT entry_price, exit_price, contracts FROM paper_trades
@@ -104,10 +177,18 @@ export function riskContext(): RiskContext {
     ).all(sinceMs) as any[];
     return rows.reduce((s, r) => s + (r.exit_price - r.entry_price) * 100 * (r.contracts ?? 1), 0);
   };
+  const recentClosed = db.prepare(
+    `SELECT exit_at_ms, entry_price, exit_price, contracts FROM paper_trades
+     WHERE exit_at_ms IS NOT NULL AND entry_price IS NOT NULL AND exit_price IS NOT NULL
+     ORDER BY exit_at_ms DESC LIMIT 20`,
+  ).all() as any[];
+  const lastLoss = recentClosed.find((r) => (r.exit_price - r.entry_price) * 100 * (r.contracts ?? 1) < 0);
   return {
     openTrades: openTrades(),
     realizedTodayDollars: realized(dayMs),
     realizedWeekDollars: realized(weekMs),
+    lastLossAtMs: lastLoss?.exit_at_ms ?? null,
+    nowMs,
   };
 }
 
@@ -175,7 +256,18 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
     stopLossPct: base.stopLossPct ?? exitCfg.stopLossPct,
   };
   const risk = checkRisk(proposed, riskContext(), defaultRiskConfig());
-  if (!risk.allowed) return { ok: false, risk };
+  if (!risk.allowed) {
+    logDecision({
+      alertId: base.alertId ?? null,
+      ticker: base.ticker,
+      decision: "risk_refused",
+      allowed: false,
+      reason: risk.failures.join("; "),
+      risk,
+      snapshot: proposed,
+    });
+    return { ok: false, risk };
+  }
 
   const nowMs = Date.now();
   const info = db.prepare(
@@ -192,7 +284,19 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
     thesisSnapshot.shortRate, thesisSnapshot.aboveVwap == null ? null : (thesisSnapshot.aboveVwap ? 1 : 0),
     thesisSnapshot.relVol, nowMs,
   );
-  return { ok: true, id: Number(info.lastInsertRowid), risk, note: "entry limit order active (READY)" };
+  const id = Number(info.lastInsertRowid);
+  logDecision({
+    tradeId: id,
+    alertId: base.alertId ?? null,
+    ticker: base.ticker,
+    decision: "entry_order_created",
+    allowed: true,
+    reason: "risk passed; limit buy order is active",
+    risk,
+    snapshot: proposed,
+    nowMs,
+  });
+  return { ok: true, id, risk, note: "entry limit order active (READY)" };
 }
 
 /** Manual cancel/close. Close uses last mark (documented — no fresh fetch). */
@@ -205,12 +309,31 @@ export function manualAction(id: number, action: "cancel" | "close"): { ok: bool
   if (action === "cancel") {
     if (!["WATCHING", "READY"].includes(trade.status)) return { ok: false, note: `cannot cancel a ${trade.status} trade` };
     persist({ ...trade, status: "CANCELLED", exitReason: "manual: cancelled before fill" });
+    logDecision({
+      tradeId: trade.id,
+      alertId: trade.alertId ?? null,
+      ticker: trade.ticker,
+      decision: "manual_cancel",
+      allowed: true,
+      reason: "user cancelled before fill",
+    });
     return { ok: true, note: "cancelled" };
   }
   if (trade.status !== "ENTERED") return { ok: false, note: `cannot close a ${trade.status} trade` };
   const mark = trade.lastMark ?? trade.entryPrice ?? 0;
-  const closed = applyExit(trade, { kind: "manual", reason: `closed by user at last mark ${mark.toFixed(2)}`, fillPrice: mark }, Date.now());
+  const nowMs = Date.now();
+  const closed = applyExit(trade, { kind: "manual", reason: `closed by user at last mark ${mark.toFixed(2)}`, fillPrice: mark }, nowMs);
   persist(closed);
+  logDecision({
+    tradeId: trade.id,
+    alertId: trade.alertId ?? null,
+    ticker: trade.ticker,
+    decision: "manual_close",
+    allowed: true,
+    reason: `closed by user at last mark ${mark.toFixed(2)}`,
+    snapshot: { fillPrice: mark },
+    nowMs,
+  });
   return { ok: true, note: `closed at ${mark.toFixed(2)} (last mark)` };
 }
 
@@ -257,7 +380,29 @@ function advanceOpenTrade(t: PaperTrade, snap: MarketSnap, nowMs: number): boole
     const r = evaluateEntry(t, quote, nowMs);
     if (r.event === "waiting") return false;
     persist(r.trade);
-    if (r.event === "filled") persistMarketSnapshot(t.id, "entry", snap, `filled: ${r.note}`);
+    if (r.event === "filled") {
+      persistMarketSnapshot(t.id, "entry", snap, `filled: ${r.note}`);
+      logDecision({
+        tradeId: t.id,
+        alertId: t.alertId ?? null,
+        ticker: t.ticker,
+        decision: "entry_filled",
+        allowed: true,
+        reason: r.note,
+        snapshot: { optionSymbol: quote.optionSymbol, bid: quote.bid, ask: quote.ask, mid: quote.mid, spreadPct: quote.spreadPct },
+        nowMs,
+      });
+    } else if (r.event === "cancelled") {
+      logDecision({
+        tradeId: t.id,
+        alertId: t.alertId ?? null,
+        ticker: t.ticker,
+        decision: "entry_cancelled",
+        allowed: false,
+        reason: r.note,
+        nowMs,
+      });
+    }
     return true;
   }
   if (t.status !== "ENTERED") return false;
@@ -276,6 +421,16 @@ function advanceOpenTrade(t: PaperTrade, snap: MarketSnap, nowMs: number): boole
   if (exit) {
     marked = applyExit(marked, exit, nowMs);
     persistMarketSnapshot(t.id, "exit", snap);
+    logDecision({
+      tradeId: t.id,
+      alertId: t.alertId ?? null,
+      ticker: t.ticker,
+      decision: `exit_${exit.kind}`,
+      allowed: true,
+      reason: exit.reason,
+      snapshot: { optionSymbol: quote.optionSymbol, bid: quote.bid, ask: quote.ask, mid: quote.mid, spreadPct: quote.spreadPct, fillPrice: exit.fillPrice },
+      nowMs,
+    });
   }
   persist(marked);
   return true;
@@ -410,11 +565,13 @@ type G = typeof globalThis & { __optiscanPaperEngine?: { running: boolean; lastS
 export function paperEngineState() {
   const g = globalThis as G;
   g.__optiscanPaperEngine ??= { running: false, lastSweepAt: 0, sweeps: 0, errors: 0 };
+  const risk = defaultRiskConfig();
   return {
     ...g.__optiscanPaperEngine,
     autoEntryEnabled: process.env.PAPER_AUTO_ENTRY === "1",
     allowZeroDte: process.env.PAPER_ALLOW_ZERO_DTE === "1",
     sweepMs: SWEEP_MS,
+    risk,
   };
 }
 

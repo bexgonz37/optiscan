@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   if (!checkApiToken(req)) return unauthorized();
   ensureServerBoot();
-  const { listPaperTrades, paperEngineState } = await import("@/lib/paper-engine");
+  const { listPaperTrades, listPaperDecisions, paperEngineState } = await import("@/lib/paper-engine");
   const { summarize, byConfidence, byExpirationLength, bySetup, byExitKind } = await import("@/lib/paper-analytics");
   const trades = listPaperTrades();
   return NextResponse.json({
@@ -22,6 +22,7 @@ export async function GET(req: Request) {
       bySetup: bySetup(trades),
       byExitKind: byExitKind(trades),
     },
+    decisions: listPaperDecisions(),
     engine: paperEngineState(),
   });
 }

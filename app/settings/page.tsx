@@ -262,9 +262,18 @@ export default function SettingsPage() {
             </button>
           </div>
           {testPreview ? (
-            <pre style={{ fontSize: 10, background: "#0b0f14", padding: 10, borderRadius: 8, overflow: "auto", maxHeight: 180, marginTop: 10 }}>
-              {JSON.stringify({ private: testPreview.privatePopup, public: testPreview.publicAlert, discord: testPreview.discordPreview }, null, 2)}
-            </pre>
+            <div className="settings-preview-card">
+              <div className="settings-preview-title">Preview ready</div>
+              <p className="settings-desc" style={{ marginBottom: 8 }}>
+                Browser, public alert, and Discord payloads were generated. Use this to sanity-check wording without exposing webhook secrets.
+              </p>
+              <details>
+                <summary className="muted text-xs">Show technical payload</summary>
+                <pre style={{ fontSize: 10, background: "#0b0f14", padding: 10, borderRadius: 8, overflow: "auto", maxHeight: 180, marginTop: 10 }}>
+                  {JSON.stringify({ private: testPreview.privatePopup, public: testPreview.publicAlert, discord: testPreview.discordPreview }, null, 2)}
+                </pre>
+              </details>
+            </div>
           ) : null}
         </div>
 
