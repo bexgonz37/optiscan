@@ -376,6 +376,7 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
         optionMid: sideContract?.mid ?? null,
         spreadPct: sideContract?.spreadPct ?? null,
         delta: sideContract?.delta ?? null,
+        alertTime: new Date(nowMs).toISOString(),
         captureAction: "TRADE",
       });
     } else if (finalCaptureAction === "WAIT" && tier === "trade") {

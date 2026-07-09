@@ -32,6 +32,7 @@ import {
 export type DiscordWebhookKind = "options" | "stocks" | "recap" | "default";
 
 const WATCH_DEDUP_MS = 30 * 60_000;
+const LIVE_OPTIONS_MAX_AGE_MS = Number(process.env.DISCORD_OPTIONS_MAX_ALERT_AGE_MS ?? 90_000);
 
 /** True when extended-hours stock notify is disabled (default). */
 export function extendedStockNotifyEnabled(): boolean {
@@ -261,6 +262,18 @@ export async function notifyNewAlert(alertId: number, alertLike: any): Promise<v
         error: "0DTE options notifications only fire during regular hours (9:30–16:00 ET)",
       });
       return;
+    } else if (LIVE_OPTIONS_MAX_AGE_MS > 0) {
+      const rawAlertTime = alertLike?.alertTime ?? alertLike?.alert_time;
+      const alertMs = rawAlertTime ? Date.parse(String(rawAlertTime)) : Date.now();
+      if (Number.isFinite(alertMs) && Date.now() - alertMs > LIVE_OPTIONS_MAX_AGE_MS) {
+        insertNotificationEvent({
+          alertId,
+          channel: "discord_webhook",
+          status: "skipped",
+          error: `options alert too old for live Discord (${Math.round((Date.now() - alertMs) / 1000)}s)`,
+        });
+        return;
+      }
     }
 
     const languageMode = getSetting("language_mode") === "public" ? "public" : "private";

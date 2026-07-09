@@ -10,13 +10,37 @@
 
 const POST_DISCLAIMER = "Education, not financial advice. Past results don’t guarantee future performance.";
 
-import { formatCalloutHeadline } from "@/lib/format-contract";
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function compactContractLine(a: {
+  ticker?: string | null;
+  option_side?: string | null;
+  strike?: number | null;
+  expiration?: string | null;
+  dte?: number | null;
+  entry_mid?: number | null;
+}): string {
+  const ticker = String(a.ticker ?? "?").replace(/^\$/, "").toUpperCase();
+  const side = String(a.option_side ?? "").toUpperCase().startsWith("P") ? "PUT" : "CALL";
+  const strike = a.strike != null ? `$${Number.isInteger(a.strike) ? a.strike : +a.strike.toFixed(2)}` : "";
+  let exp = "";
+  if (a.expiration) {
+    const [y, m, d] = String(a.expiration).slice(0, 10).split("-").map(Number);
+    if ([y, m, d].every(Number.isFinite)) exp = `${d} ${MONTHS[Math.max(0, Math.min(11, m - 1))]} ${String(y).slice(-2)}`;
+  }
+  if (!exp && a.dte != null) exp = `${a.dte}DTE`;
+  const mid = a.entry_mid != null && a.entry_mid > 0
+    ? (a.entry_mid < 1 ? a.entry_mid.toFixed(2).replace(/^0/, "") : a.entry_mid.toFixed(2))
+    : "";
+  return [`$${ticker}`, exp, strike, side, mid].filter(Boolean).join(" ");
+}
 
 export function formatAlertTweet(a: {
   ticker?: string | null;
   option_side?: string | null;
   strike?: number | null;
   dte?: number | null;
+  expiration?: string | null;
   capture_action?: string | null;
   asset_class?: string | null;
   option_return_pct?: number | null;
@@ -26,8 +50,7 @@ export function formatAlertTweet(a: {
   entry_mid?: number | null;
   entry_spread_pct?: number | null;
 }): string {
-  const side = String(a.option_side ?? "").toUpperCase().startsWith("P") ? "PUT" : "CALL";
-  const headline = formatCalloutHeadline(a);
+  const headline = compactContractLine(a);
   const realized = a.option_return_pct;
   const peak = a.latest_max_move ?? a.eod_move;
   const retLine = realized != null
@@ -35,16 +58,11 @@ export function formatAlertTweet(a: {
     : peak != null
       ? `peak ${peak >= 0 ? "+" : ""}${Math.round(peak)}% after callout (peak move, not a realized return)`
       : "tracking open";
-  const contract =
-    a.strike != null
-      ? `$${a.strike} ${side}${a.dte != null ? ` · ${a.dte}DTE` : ""}`
-      : side;
   const time = a.alert_time
     ? new Date(a.alert_time).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })
     : "";
   return [
-    `${headline} · ${a.ticker ?? "?"}`,
-    contract,
+    headline,
     retLine,
     time ? `Called ${time} ET` : "",
     POST_DISCLAIMER,

@@ -33,7 +33,9 @@ const BUY_ALERT = {
 test("buildOptionsBuyEmbed matches spec shape and colors", () => {
   const { payload, safe } = buildOptionsBuyEmbed(BUY_ALERT);
   assert.equal(safe, true);
-  assert.ok(payload.content.includes("BUY — TSLA"));
+  assert.ok(payload.content.includes("$TSLA 0DTE $400 PUT 2.52"));
+  assert.ok(!payload.content.includes("BUY"));
+  assert.equal(payload.embeds[0].title, "$TSLA 0DTE $400 PUT 2.52");
   assert.equal(payload.embeds[0].color, DISCORD_COLORS.put);
   assert.equal(payload.embeds[0].author.name, "OPTISCAN · options");
   assert.ok(payload.embeds[0].fields.some((f) => f.name === "Entry (mid)"));
