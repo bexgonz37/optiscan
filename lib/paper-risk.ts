@@ -62,6 +62,7 @@ export interface ProposedTrade {
   entryLimit: number;   // premium
   contracts: number;
   stopLossPct: number | null;
+  assetClass?: "option" | "stock";
 }
 
 export function checkRisk(
@@ -85,7 +86,8 @@ export function checkRisk(
   }
 
   // Per-trade risk.
-  const risk = dollarsAtRisk(proposed.entryLimit, proposed.contracts, proposed.stopLossPct);
+  const multiplier = proposed.assetClass === "stock" ? 1 : 100;
+  const risk = dollarsAtRisk(proposed.entryLimit, proposed.contracts, proposed.stopLossPct, multiplier);
   if (risk > cfg.maxRiskPerTrade) {
     failures.push(`risk $${risk.toFixed(0)} exceeds max $${cfg.maxRiskPerTrade} per trade - reduce contracts or tighten the stop`);
   }
@@ -98,8 +100,8 @@ export function checkRisk(
   // Per-ticker exposure (committed premium).
   const tickerExposure = open
     .filter((t) => t.ticker === proposed.ticker)
-    .reduce((s, t) => s + (t.entryPrice ?? t.entryLimit ?? 0) * 100 * t.contracts, 0);
-  const newExposure = proposed.entryLimit * 100 * proposed.contracts;
+    .reduce((s, t) => s + (t.entryPrice ?? t.entryLimit ?? 0) * (t.optionSymbol ? 100 : 1) * t.contracts, 0);
+  const newExposure = proposed.entryLimit * multiplier * proposed.contracts;
   if (tickerExposure + newExposure > cfg.maxExposurePerTicker) {
     failures.push(`${proposed.ticker} exposure would be $${(tickerExposure + newExposure).toFixed(0)} (max $${cfg.maxExposurePerTicker})`);
   }

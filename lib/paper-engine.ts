@@ -24,6 +24,9 @@ import type { OptionQuote } from "@/lib/execution/broker";
 
 const SWEEP_MS = Number(process.env.PAPER_SWEEP_MS ?? 30_000);
 const MAX_FETCHES_PER_SWEEP = Number(process.env.PAPER_SWEEP_MAX_FETCHES ?? 5);
+const STOCK_SCALP_STOP_PCT = Number(process.env.PAPER_STOCK_SCALP_STOP_PCT ?? 0.45);
+const STOCK_SCALP_TAKE_PROFIT_PCT = Number(process.env.PAPER_STOCK_SCALP_TAKE_PROFIT_PCT ?? 0.8);
+const STOCK_SCALP_MAX_HOLD_MS = Number(process.env.PAPER_STOCK_SCALP_MAX_HOLD_MS ?? 5 * 60_000);
 
 // ── Row mapping ──────────────────────────────────────────────────────────────
 
@@ -41,6 +44,14 @@ function rowToTrade(r: any): PaperTrade {
     lastMark: r.last_mark, lastMarkAtMs: r.last_mark_at_ms,
     createdAtMs: r.created_at_ms,
   };
+}
+
+function paperMultiplier(t: Pick<PaperTrade, "optionSymbol">): number {
+  return t.optionSymbol ? 100 : 1;
+}
+
+function directionMultiplier(t: Pick<PaperTrade, "optionSymbol" | "optionType">): number {
+  return !t.optionSymbol && t.optionType === "put" ? -1 : 1;
 }
 
 function persist(trade: PaperTrade): void {
@@ -71,8 +82,8 @@ export function listPaperTrades(limit = 200): Array<PaperTrade & {
       ...t,
       // Unrealized P/L updates every sweep from the live mark — exactly what a
       // broker position screen would show.
-      unrealizedPnlDollars: live ? +(((t.lastMark as number) - (t.entryPrice as number)) * 100 * t.contracts).toFixed(2) : null,
-      unrealizedPnlPct: live ? +((((t.lastMark as number) - (t.entryPrice as number)) / (t.entryPrice as number)) * 100).toFixed(2) : null,
+      unrealizedPnlDollars: live ? +(((t.lastMark as number) - (t.entryPrice as number)) * directionMultiplier(t) * paperMultiplier(t) * t.contracts).toFixed(2) : null,
+      unrealizedPnlPct: live ? +(((((t.lastMark as number) - (t.entryPrice as number)) * directionMultiplier(t)) / (t.entryPrice as number)) * 100).toFixed(2) : null,
       entrySnapshot: {
         bid: r.entry_bid ?? null, ask: r.entry_ask ?? null, spreadPct: r.entry_spread_pct ?? null,
         iv: r.entry_iv ?? null, delta: r.entry_delta ?? null, gamma: r.entry_gamma ?? null,
@@ -172,17 +183,25 @@ export function riskContext(): RiskContext {
   const weekMs = nowMs - 7 * 24 * 3600_000;
   const realized = (sinceMs: number): number => {
     const rows = db.prepare(
-      `SELECT entry_price, exit_price, contracts FROM paper_trades
+    `SELECT entry_price, exit_price, contracts, option_symbol, option_type FROM paper_trades
        WHERE exit_at_ms >= ? AND entry_price IS NOT NULL AND exit_price IS NOT NULL`,
     ).all(sinceMs) as any[];
-    return rows.reduce((s, r) => s + (r.exit_price - r.entry_price) * 100 * (r.contracts ?? 1), 0);
+    return rows.reduce((s, r) => {
+      const multiplier = r.option_symbol ? 100 : 1;
+      const direction = !r.option_symbol && r.option_type === "put" ? -1 : 1;
+      return s + (r.exit_price - r.entry_price) * direction * multiplier * (r.contracts ?? 1);
+    }, 0);
   };
   const recentClosed = db.prepare(
-    `SELECT exit_at_ms, entry_price, exit_price, contracts FROM paper_trades
+    `SELECT exit_at_ms, entry_price, exit_price, contracts, option_symbol, option_type FROM paper_trades
      WHERE exit_at_ms IS NOT NULL AND entry_price IS NOT NULL AND exit_price IS NOT NULL
      ORDER BY exit_at_ms DESC LIMIT 20`,
   ).all() as any[];
-  const lastLoss = recentClosed.find((r) => (r.exit_price - r.entry_price) * 100 * (r.contracts ?? 1) < 0);
+  const lastLoss = recentClosed.find((r) => {
+    const multiplier = r.option_symbol ? 100 : 1;
+    const direction = !r.option_symbol && r.option_type === "put" ? -1 : 1;
+    return (r.exit_price - r.entry_price) * direction * multiplier * (r.contracts ?? 1) < 0;
+  });
   return {
     openTrades: openTrades(),
     realizedTodayDollars: realized(dayMs),
@@ -518,28 +537,221 @@ export function autoEnterFromAlerts(nowMs: number = Date.now()): number {
   return created;
 }
 
+function currentTapeRow(ticker: string): any | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { loopState } = require("@/lib/scanner-loop");
+    return (loopState().tape ?? loopState().movers ?? []).find((r: any) => r.symbol === ticker) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function latestStockPaperPrice(ticker: string): number | null {
+  const tape = currentTapeRow(ticker);
+  const tapePrice = Number(tape?.price ?? 0);
+  if (Number.isFinite(tapePrice) && tapePrice > 0) return tapePrice;
+  try {
+    const row = getDb().prepare(
+      `SELECT price_at_alert FROM alerts
+       WHERE ticker=? AND asset_class='stock' AND price_at_alert IS NOT NULL
+       ORDER BY id DESC LIMIT 1`,
+    ).get(ticker) as any;
+    const alertPrice = Number(row?.price_at_alert ?? 0);
+    return Number.isFinite(alertPrice) && alertPrice > 0 ? alertPrice : null;
+  } catch {
+    return null;
+  }
+}
+
+function stockSideFromAlert(a: any): "call" | "put" {
+  return a.trade_bias === "stock_short_candidate" || a.direction === "bearish" ? "put" : "call";
+}
+
+function stockPaperShares(price: number, stopLossPct: number): number {
+  const riskCfg = defaultRiskConfig();
+  const riskShares = Math.floor(riskCfg.maxRiskPerTrade / Math.max(0.01, price * (stopLossPct / 100)));
+  const exposureShares = Math.floor(riskCfg.maxExposurePerTicker / Math.max(0.01, price));
+  return Math.max(1, Math.min(riskShares, exposureShares));
+}
+
+export function autoEnterStockScalps(nowMs: number = Date.now()): number {
+  if (!AUTO_ENTRY_ENABLED()) return 0;
+  if (process.env.PAPER_STOCK_SCALPS === "0") return 0;
+  const db = getDb();
+  const candidates = db.prepare(
+    `SELECT a.* FROM alerts a
+     WHERE a.capture_action = 'TRADE'
+       AND a.asset_class = 'stock'
+       AND a.alert_time >= ?
+       AND NOT EXISTS (SELECT 1 FROM paper_trades p WHERE p.alert_id = a.id)
+     ORDER BY a.id ASC LIMIT 5`,
+  ).all(new Date(nowMs - AUTO_ENTRY_MAX_AGE_MS).toISOString()) as any[];
+
+  let created = 0;
+  for (const a of candidates) {
+    const tape = currentTapeRow(a.ticker);
+    const price = Number(latestStockPaperPrice(a.ticker) ?? a.price_at_alert ?? 0);
+    if (!Number.isFinite(price) || price <= 0) {
+      logDecision({
+        alertId: a.id,
+        ticker: a.ticker,
+        decision: "entry_cancelled",
+        allowed: false,
+        reason: "stock scalp skipped: no live/share price available",
+        snapshot: { alertId: a.id },
+        nowMs,
+      });
+      continue;
+    }
+    const side = stockSideFromAlert(a);
+    const shares = stockPaperShares(price, STOCK_SCALP_STOP_PCT);
+    const proposed: ProposedTrade = {
+      ticker: a.ticker,
+      optionType: side,
+      dte: null,
+      entryLimit: price,
+      contracts: shares,
+      stopLossPct: STOCK_SCALP_STOP_PCT,
+      assetClass: "stock",
+    };
+    const risk = checkRisk(proposed, riskContext(), defaultRiskConfig());
+    if (!risk.allowed) {
+      logDecision({
+        alertId: a.id,
+        ticker: a.ticker,
+        decision: "risk_refused",
+        allowed: false,
+        reason: risk.failures.join("; "),
+        risk,
+        snapshot: proposed,
+        nowMs,
+      });
+      db.prepare(
+        `INSERT INTO paper_trades (alert_id, ticker, option_type, contracts, status, exit_reason, created_at_ms)
+         VALUES (?, ?, ?, ?, 'CANCELLED', ?, ?)`,
+      ).run(a.id, a.ticker, side, shares, `stock scalp refused: ${risk.failures.join("; ")}`, nowMs);
+      continue;
+    }
+
+    const info = db.prepare(
+      `INSERT INTO paper_trades
+         (alert_id, ticker, option_symbol, option_type, contracts, status, thesis, confidence,
+          entry_limit, entry_price, entry_at_ms, stop_loss_pct, take_profit_pct,
+          short_rate_entry, above_vwap_entry, rel_vol_entry, last_mark, last_mark_at_ms,
+          mfe_pct, mae_pct, created_at_ms)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      a.id, a.ticker, null, side, shares, "ENTERED",
+      a.ai_explanation ?? `Fast stock paper scalp from ${a.ticker} ${side === "put" ? "short" : "long"} alert`,
+      a.capture_confidence ?? a.signal_score ?? null,
+      price, price, nowMs, STOCK_SCALP_STOP_PCT, STOCK_SCALP_TAKE_PROFIT_PCT,
+      a.short_rate_at_alert ?? tape?.shortRate ?? null,
+      a.above_vwap == null ? null : (a.above_vwap ? 1 : 0),
+      a.relative_volume ?? tape?.relVol ?? null,
+      price, nowMs, 0, 0, nowMs,
+    );
+    const id = Number(info.lastInsertRowid);
+    logDecision({
+      tradeId: id,
+      alertId: a.id,
+      ticker: a.ticker,
+      decision: "entry_filled",
+      allowed: true,
+      reason: `auto stock scalp entered ${side === "put" ? "SHORT" : "LONG"} ${shares} share(s) at ${price.toFixed(2)}`,
+      risk,
+      snapshot: { assetClass: "stock", side: side === "put" ? "SHORT" : "LONG", price, shares, stopLossPct: STOCK_SCALP_STOP_PCT, takeProfitPct: STOCK_SCALP_TAKE_PROFIT_PCT },
+      nowMs,
+    });
+    created += 1;
+  }
+  return created;
+}
+
+function advanceStockScalps(nowMs: number = Date.now()): number {
+  const db = getDb();
+  const rows = db.prepare(
+    "SELECT * FROM paper_trades WHERE option_symbol IS NULL AND status='ENTERED' ORDER BY id ASC",
+  ).all() as any[];
+  let advanced = 0;
+  for (const row of rows) {
+    const t = rowToTrade(row);
+    const tape = currentTapeRow(t.ticker);
+    const maxHold = nowMs - (t.entryAtMs ?? t.createdAtMs) >= STOCK_SCALP_MAX_HOLD_MS;
+    const price = Number(latestStockPaperPrice(t.ticker) ?? t.lastMark ?? t.entryPrice ?? 0);
+    if (!Number.isFinite(price) || price <= 0 || t.entryPrice == null) continue;
+    const direction = directionMultiplier(t);
+    const movePct = ((price - t.entryPrice) * direction / t.entryPrice) * 100;
+    const marked: PaperTrade = {
+      ...t,
+      lastMark: price,
+      lastMarkAtMs: nowMs,
+      mfePct: Math.max(t.mfePct ?? 0, movePct),
+      maePct: Math.min(t.maePct ?? 0, movePct),
+    };
+    const speed = Number(tape?.shortRate ?? 0);
+    const speedAgainst = Number.isFinite(speed) && speed * direction < -0.04;
+    let exitKind: "stop_loss" | "take_profit" | "smart" | null = null;
+    let reason = "";
+    if (movePct <= -(t.stopLossPct ?? STOCK_SCALP_STOP_PCT)) {
+      exitKind = "stop_loss";
+      reason = `stock scalp stop hit (${movePct.toFixed(2)}%)`;
+    } else if (movePct >= (t.takeProfitPct ?? STOCK_SCALP_TAKE_PROFIT_PCT)) {
+      exitKind = "take_profit";
+      reason = `quick stock scalp target hit (+${movePct.toFixed(2)}%)`;
+    } else if (speedAgainst) {
+      exitKind = "smart";
+      reason = `tape reversed against scalp (speed ${speed.toFixed(2)}%/min)`;
+    } else if (maxHold) {
+      exitKind = "smart";
+      reason = `quick scalp max hold reached (${Math.round(STOCK_SCALP_MAX_HOLD_MS / 60000)}m)`;
+    }
+    if (exitKind) {
+      const closed = applyExit(marked, { kind: exitKind, reason, fillPrice: price }, nowMs);
+      persist(closed);
+      logDecision({
+        tradeId: t.id,
+        alertId: t.alertId ?? null,
+        ticker: t.ticker,
+        decision: `exit_${exitKind}`,
+        allowed: true,
+        reason,
+        snapshot: { assetClass: "stock", price, movePct, shares: t.contracts, speed },
+        nowMs,
+      });
+      advanced += 1;
+    } else {
+      persist(marked);
+    }
+  }
+  return advanced;
+}
+
 export async function sweepPaperTrades(nowMs: number = Date.now()): Promise<{ advanced: number; fetched: number }> {
   try { autoEnterFromAlerts(nowMs); } catch (err: any) { console.warn("[paper] auto-entry failed:", err?.message); }
+  try { autoEnterStockScalps(nowMs); } catch (err: any) { console.warn("[paper] stock auto-entry failed:", err?.message); }
+  const stockAdvanced = advanceStockScalps(nowMs);
   const active = openTrades().filter((t) => t.status === "READY" || t.status === "ENTERED");
-  if (!active.length) return { advanced: 0, fetched: 0 };
+  const optionActive = active.filter((t) => t.optionSymbol);
+  if (!optionActive.length) return { advanced: stockAdvanced, fetched: 0 };
 
   // Options quotes only exist while the market trades them.
   if (marketSession(nowMs) !== "regular") {
     // Still handle expirations from last marks (weekend/overnight expiry).
     let advanced = 0;
-    for (const t of active.filter((x) => x.status === "ENTERED")) {
+    for (const t of optionActive.filter((x) => x.status === "ENTERED")) {
       const { checkExpiration } = await import("@/lib/paper-exits");
       const exp = checkExpiration(t, nowMs);
       if (exp) { persist(applyExit(t, exp, nowMs)); advanced++; }
     }
-    return { advanced, fetched: 0 };
+    return { advanced: advanced + stockAdvanced, fetched: 0 };
   }
 
-  if (nearMinuteBudget(getCallStats(nowMs))) return { advanced: 0, fetched: 0 };
+  if (nearMinuteBudget(getCallStats(nowMs))) return { advanced: stockAdvanced, fetched: 0 };
 
   // One chain fetch covers all trades on the same underlying.
   const byTicker = new Map<string, PaperTrade[]>();
-  for (const t of active) byTicker.set(t.ticker, [...(byTicker.get(t.ticker) ?? []), t]);
+  for (const t of optionActive) byTicker.set(t.ticker, [...(byTicker.get(t.ticker) ?? []), t]);
   const tickers = [...byTicker.keys()].slice(0, MAX_FETCHES_PER_SWEEP);
 
   let advanced = 0, fetched = 0;
@@ -555,7 +767,7 @@ export async function sweepPaperTrades(nowMs: number = Date.now()): Promise<{ ad
       if (snap && advanceOpenTrade(t, snap, nowMs)) advanced += 1;
     }
   }
-  return { advanced, fetched };
+  return { advanced: advanced + stockAdvanced, fetched };
 }
 
 // ── Background engine ────────────────────────────────────────────────────────

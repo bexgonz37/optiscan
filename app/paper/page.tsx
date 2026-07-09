@@ -185,7 +185,11 @@ function PaperPageInner() {
                 <li key={t.id}>
                   <span className="t num">#{t.id}</span>
                   <span className="what">
-                    <b>{t.ticker}</b> ${t.strike} {t.optionType?.toUpperCase()} {t.expiration} × {t.contracts}
+                    {t.optionSymbol ? (
+                      <><b>{t.ticker}</b> ${t.strike} {t.optionType?.toUpperCase()} {t.expiration} × {t.contracts}</>
+                    ) : (
+                      <><b>{t.ticker}</b> {t.optionType === "put" ? "SHORT" : "LONG"} shares × {t.contracts}</>
+                    )}
                     <small>
                       {t.status} · entry {t.entryPrice != null ? fmtPrice(t.entryPrice) : `limit ${fmtPrice(t.entryLimit)}`}
                       {t.lastMark != null ? ` · mark ${fmtPrice(t.lastMark)}` : ""}
@@ -226,6 +230,10 @@ function PaperPageInner() {
                       <small className="muted">
                         Quote: {d.snapshot.optionSymbol} · bid {d.snapshot.bid ?? "—"} · ask {d.snapshot.ask ?? "—"} · spread {d.snapshot.spreadPct ?? "—"}%
                       </small>
+                    ) : d.snapshot?.assetClass === "stock" ? (
+                      <small className="muted">
+                        Stock paper scalp: {d.snapshot.side} × {d.snapshot.shares} @ {d.snapshot.price}
+                      </small>
                     ) : null}
                   </span>
                   <span className="res muted text-xs">{timeAgo(d.createdAtMs)}</span>
@@ -257,14 +265,20 @@ function PaperPageInner() {
           {closed.length ? (
             <ul className="ledger axiom-ledger">
               {closed.slice(0, 40).map((t) => {
+                const stockDir = !t.optionSymbol && t.optionType === "put" ? -1 : 1;
+                const multiplier = t.optionSymbol ? 100 : 1;
                 const pnl = t.entryPrice != null && t.exitPrice != null
-                  ? (t.exitPrice - t.entryPrice) * 100 * (t.contracts ?? 1) : null;
-                const pct = t.entryPrice ? ((t.exitPrice - t.entryPrice) / t.entryPrice) * 100 : null;
+                  ? (t.exitPrice - t.entryPrice) * stockDir * multiplier * (t.contracts ?? 1) : null;
+                const pct = t.entryPrice ? ((t.exitPrice - t.entryPrice) * stockDir / t.entryPrice) * 100 : null;
                 return (
                   <li key={t.id}>
                     <span className={`t num ${STATE_CLASS[t.status] ?? ""}`}>{t.status}</span>
                     <span className="what">
-                      <b>{t.ticker}</b> ${t.strike} {t.optionType?.toUpperCase()} {t.expiration}
+                      {t.optionSymbol ? (
+                        <><b>{t.ticker}</b> ${t.strike} {t.optionType?.toUpperCase()} {t.expiration}</>
+                      ) : (
+                        <><b>{t.ticker}</b> {t.optionType === "put" ? "SHORT" : "LONG"} shares</>
+                      )}
                       <small>{t.exitReason ?? "no exit reason recorded"}</small>
                       {t.lessons ? <small className="muted">Lesson: {t.lessons}</small> : null}
                     </span>

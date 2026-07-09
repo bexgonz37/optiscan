@@ -160,17 +160,20 @@ export function applyExit(trade: PaperTrade, decision: ExitDecision, nowMs: numb
 
 export function pnlDollars(trade: PaperTrade): number | null {
   if (trade.entryPrice == null || trade.exitPrice == null) return null;
-  return +((trade.exitPrice - trade.entryPrice) * 100 * trade.contracts).toFixed(2);
+  const multiplier = trade.optionSymbol ? 100 : 1;
+  const direction = !trade.optionSymbol && trade.optionType === "put" ? -1 : 1;
+  return +(((trade.exitPrice - trade.entryPrice) * direction) * multiplier * trade.contracts).toFixed(2);
 }
 
 export function pnlPct(trade: PaperTrade): number | null {
   if (trade.entryPrice == null || trade.exitPrice == null || trade.entryPrice <= 0) return null;
-  return +(((trade.exitPrice - trade.entryPrice) / trade.entryPrice) * 100).toFixed(2);
+  const direction = !trade.optionSymbol && trade.optionType === "put" ? -1 : 1;
+  return +((((trade.exitPrice - trade.entryPrice) * direction) / trade.entryPrice) * 100).toFixed(2);
 }
 
 /** Dollars at risk when the trade is opened (what the risk engine budgets). */
-export function dollarsAtRisk(entryPremium: number, contracts: number, stopLossPct: number | null): number {
-  const full = entryPremium * 100 * contracts;
+export function dollarsAtRisk(entryPremium: number, contracts: number, stopLossPct: number | null, multiplier = 100): number {
+  const full = entryPremium * multiplier * contracts;
   if (stopLossPct == null) return full; // no stop = full premium at risk
   return +(full * Math.min(1, stopLossPct / 100)).toFixed(2);
 }
