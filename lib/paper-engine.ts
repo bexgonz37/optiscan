@@ -562,12 +562,17 @@ export async function sweepPaperTrades(nowMs: number = Date.now()): Promise<{ ad
 
 type G = typeof globalThis & { __optiscanPaperEngine?: { running: boolean; lastSweepAt: number; sweeps: number; errors: number } };
 
-export function paperEngineState() {
+function paperEngineRuntimeState() {
   const g = globalThis as G;
   g.__optiscanPaperEngine ??= { running: false, lastSweepAt: 0, sweeps: 0, errors: 0 };
+  return g.__optiscanPaperEngine;
+}
+
+export function paperEngineState() {
+  const state = paperEngineRuntimeState();
   const risk = defaultRiskConfig();
   return {
-    ...g.__optiscanPaperEngine,
+    ...state,
     autoEntryEnabled: process.env.PAPER_AUTO_ENTRY === "1",
     allowZeroDte: process.env.PAPER_ALLOW_ZERO_DTE === "1",
     sweepMs: SWEEP_MS,
@@ -576,7 +581,7 @@ export function paperEngineState() {
 }
 
 export function startPaperEngine(): void {
-  const s = paperEngineState();
+  const s = paperEngineRuntimeState();
   if (s.running) return;
   if (process.env.PAPER_TRADING_ENABLED === "0") { console.log("[paper] disabled (PAPER_TRADING_ENABLED=0)"); return; }
   s.running = true;
