@@ -26,6 +26,7 @@ import { liveCtxFor, useLiveTapeMap } from "@/hooks/useLiveTapeMap";
 import { loadDashboardPrefs, saveDashboardPrefs } from "@/lib/dashboard-prefs";
 import { uiDirectiveLabel } from "@/lib/language-modes";
 import { InfoTip } from "@/components/InfoTip";
+import { CardTip } from "@/components/CardTip";
 import { stickyMembership, makeStickyState } from "@/lib/sticky-list";
 
 /** Beginner tooltips: strip-stat label -> glossary key (lib/metric-glossary). */
@@ -527,6 +528,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
       ) : null}
 
       <div className="axiom-hero-row">
+        <CardTip metric="heroCallout" className="axiom-hero-card-wrap">
         <div
           className={`axiom-hero-card${(heroAlert?.ticker || liveTapeLead?.symbol) ? " hero-click" : ""}`}
           onClick={(heroAlert?.ticker || liveTapeLead?.symbol) ? () => onOpenChart?.(heroAlert?.ticker ?? liveTapeLead!.symbol) : undefined}
@@ -625,16 +627,17 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
           }
         />
         </div>
+        </CardTip>
 
-        <div className="axiom-hero-ring">
-          <ConvictionRing value={conviction} bear={heroBear} label={convictionBand} />
+        <CardTip metric="conviction" className="axiom-hero-ring">
+          <ConvictionRing value={conviction} bear={heroBear} label={convictionBand} size={168} />
           <div className="axiom-today">
             <InfoTip metric="conviction">Conviction</InfoTip> · {tradingDay()}
             <small>0–100 strength for today&apos;s hero callout</small>
           </div>
-        </div>
+        </CardTip>
 
-        <Panel title="Live tracking" meta={`${trackingList.length} open · click row for chart`} live>
+        <Panel title="Live tracking" meta={`${trackingList.length} open · click row for chart`} live tip="liveTracking" className="axiom-hero-track">
           {trackingList.length ? trackingList.map((a) => {
             const ret = scope === "market" ? (a.latest_max_move ?? a.move_5m ?? a.eod_move) : a.option_return_pct;
             const bear = a.trade_bias === "stock_short_candidate" || a.direction === "bearish" || String(a.option_side ?? "").toLowerCase().startsWith("p");
@@ -781,6 +784,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
       </>) : null}
 
       {scope === "options" && (loop?.nearMisses?.length ?? 0) > 0 ? (
+        <CardTip metric="nearMiss" className="near-miss-wrap">
         <details className="near-miss-panel">
           <summary className="muted text-sm">
             Why didn&apos;t it alert? — {loop.nearMisses.length} near-miss{loop.nearMisses.length === 1 ? "" : "es"} (symbols that came close but a quality gate held them back)
@@ -803,6 +807,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
           </ul>
           <p className="muted text-xs">Fewer alerts is the design — this panel shows the bar is being enforced, not that the scanner is asleep.</p>
         </details>
+        </CardTip>
       ) : null}
 
       <div className="section-head">

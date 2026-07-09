@@ -367,16 +367,32 @@
   align-items: stretch;
 }
 
+.axiom-hero-card-wrap {
+  min-width: 0;
+  grid-area: hero;
+}
+
+.axiom-hero-card-wrap .axiom-hero-card {
+  height: 100%;
+}
+
 .axiom-hero-ring {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 8px;
   padding: 12px;
   border: 1px solid rgba(70, 180, 232, 0.15);
   border-radius: 4px;
   background: var(--panel);
+  grid-area: ring;
+  align-self: start;
+}
+
+.axiom-hero-track {
+  grid-area: track;
+  min-width: 0;
 }
 
 .axiom-today {
@@ -1061,10 +1077,23 @@
 
 @media (max-width: 1100px) {
   .axiom-hero-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "hero ring"
+      "track track";
+  }
+
+  .axiom-hero-ring .ringwrap {
+    width: 148px !important;
+    height: 148px !important;
   }
 
   .axiom-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .paper-strip,
+  .swing-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

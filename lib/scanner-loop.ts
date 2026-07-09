@@ -362,6 +362,13 @@ async function refreshActiveAlerts(nowMs: number) {
     st.lastChainFetch = nowMs;
     const chain: any = await fetchOptionChain(ticker, { dteMin: 0, dteMax: 1, maxPages: 1 });
     if (!chain?.available) continue;
+    // Fast paper exits (2026-07-09): reuse this already-fetched chain so open
+    // paper trades on hot symbols react in ~7s (0DTE moves fast) — zero extra
+    // API cost. Never allowed to break the heartbeat.
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      require("@/lib/paper-engine").evaluatePaperTradesWithChain(ticker, chain.contracts, nowMs);
+    } catch { /* paper piggyback is best-effort */ }
     try {
       const { getDb } = await import("@/lib/db");
       const db = getDb();

@@ -208,6 +208,46 @@ export const METRIC_GLOSSARY: Record<string, MetricInfo> = {
     scoring: "It is the ranking for the swing scanner tab.",
     risk: "Research preview: formulas are principled but not yet validated against OptiScan's own outcome data. Do not trade it blind.",
   },
+  heroCallout: {
+    label: "Hero callout card",
+    what: "The strongest actionable setup on screen right now: a live TRADE callout, a fillable momentum candidate, or (when nothing qualifies) the fastest core mover on tape.",
+    why: "This is the one card to read first — it tells you what the scanner thinks matters most before you scroll the list.",
+    direction: "TRADE + fillable contract = highest priority. Live tape only = not a callout yet.",
+    scoring: "Ranked by capture tier, META-shaped quality, spread, and freshness.",
+    risk: "Hero can show live tape between callouts — that is not a buy signal until the scanner fires and the contract validates.",
+  },
+  liveTracking: {
+    label: "Live tracking panel",
+    what: "Open callouts from today with checkpoint timers (5m / 15m / 30m) showing whether each signal is still moving your way.",
+    why: "Lets you judge follow-through after entry — a callout that dies in the first 5 minutes is different from one that keeps running.",
+    direction: "Green checkpoint progress + positive return = on track. Flat or red = thesis weakening.",
+    scoring: "Uses realized checkpoint returns, not peak marks.",
+    risk: "Checkpoints are timers, not guarantees — fast reversals can happen between polls.",
+  },
+  paperTrading: {
+    label: "Paper trading desk",
+    what: "Autonomous simulated options trades: the engine auto-enters fresh TRADE callouts (when enabled), fills at the ask, exits at the bid, and applies hard stops + smart thesis exits.",
+    why: "Build trust in the system's timing and risk rules before real money — completely separate from the AI copilot.",
+    direction: "Positive expectancy + controlled drawdown = the system is behaving. Refusals from the risk engine are features, not bugs.",
+    scoring: "Every stat uses realized fills only; unrealized marks are for open-trade context.",
+    risk: "Simulation ≠ live fills. Slippage, halts, and broker constraints are not modeled perfectly.",
+  },
+  nearMiss: {
+    label: "Near-miss transparency",
+    what: "Symbols that almost triggered but were blocked by a quality gate (speed, surge, spread, cooldown, etc.).",
+    why: "Proves the scanner is awake but selective — fewer junk alerts is the design.",
+    direction: "More near-misses with rising speed = watchlist heating up. Persistent blocks = bar is doing its job.",
+    scoring: "Not scored — diagnostic only.",
+    risk: "A near-miss can become a full callout seconds later if gates clear.",
+  },
+  swingCandidate: {
+    label: "Swing candidate card",
+    what: "A 1–4 week options setup ranked by trend, momentum, volume, liquidity, and contract economics.",
+    why: "Slower timeframe ideas for holds that don't need same-day speed — each factor line explains why it passed or failed.",
+    direction: "Higher score + fillable contract = stronger candidate. Flags warn about gaps in the data.",
+    scoring: "See factor breakdown on each card; total score is the rank.",
+    risk: "Uncalibrated preview — earnings and macro events are not fully checked. Paper-trade before trusting.",
+  },
 };
 
 export type MetricKey = keyof typeof METRIC_GLOSSARY;

@@ -23,6 +23,8 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   "/data": { title: "Data Core", sub: "Massive feed health · live tick stream" },
   "/copilot": { title: "AI", sub: "Coming soon" },
   "/alerts": { title: "Accuracy", sub: "Live callouts · track record · journal" },
+  "/paper": { title: "Paper Trading", sub: "Autonomous sim · risk engine · lessons" },
+  "/swing": { title: "Swing Scanner", sub: "1–4 week candidates · research preview" },
   "/settings": { title: "Settings", sub: "Thresholds · Discord" },
   "/review": { title: "Review", sub: "Methodology · limits" },
 };

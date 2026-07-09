@@ -240,16 +240,67 @@ interface MarketSnap {
   contract: any;
 }
 
-async function quoteFor(trade: PaperTrade): Promise<MarketSnap | null> {
-  if (!trade.optionSymbol) return null;
-  const chain: any = await fetchOptionChain(trade.ticker, { dteMin: 0, dteMax: 60, maxPages: 2 });
-  if (!chain?.available) return null;
-  const c = chain.contracts.find((x: any) => x.optionSymbol === trade.optionSymbol);
+function snapFromContracts(contracts: any[], optionSymbol: string | null): MarketSnap | null {
+  if (!optionSymbol || !contracts?.length) return null;
+  const c = contracts.find((x: any) => x.optionSymbol === optionSymbol);
   if (!c) return null;
   return {
     quote: { optionSymbol: c.optionSymbol, bid: c.bid, ask: c.ask, mid: c.mid, spreadPct: c.spreadPct, asOfMs: Date.now() },
     contract: c,
   };
+}
+
+/** Advance one READY/ENTERED trade against a fresh market snapshot. */
+function advanceOpenTrade(t: PaperTrade, snap: MarketSnap, nowMs: number): boolean {
+  const quote = snap.quote;
+  if (t.status === "READY") {
+    const r = evaluateEntry(t, quote, nowMs);
+    if (r.event === "waiting") return false;
+    persist(r.trade);
+    if (r.event === "filled") persistMarketSnapshot(t.id, "entry", snap, `filled: ${r.note}`);
+    return true;
+  }
+  if (t.status !== "ENTERED") return false;
+  let marked = markToMarket(t, quote, nowMs);
+  const live = liveSnapshotFor(t.ticker);
+  const liveWithSpread = live ? { ...live, spreadPct: quote.spreadPct } : null;
+  const entrySnap: EntryThesisSnapshot = { shortRateAtEntry: null, aboveVwapAtEntry: null, relVolAtEntry: null };
+  const db = getDb();
+  const row = db.prepare("SELECT short_rate_entry, above_vwap_entry, rel_vol_entry FROM paper_trades WHERE id=?").get(t.id) as any;
+  if (row) {
+    entrySnap.shortRateAtEntry = row.short_rate_entry ?? null;
+    entrySnap.aboveVwapAtEntry = row.above_vwap_entry == null ? null : Boolean(row.above_vwap_entry);
+    entrySnap.relVolAtEntry = row.rel_vol_entry ?? null;
+  }
+  const exit = evaluateExit(marked, quote, liveWithSpread, entrySnap, nowMs, defaultExitConfig());
+  if (exit) {
+    marked = applyExit(marked, exit, nowMs);
+    persistMarketSnapshot(t.id, "exit", snap);
+  }
+  persist(marked);
+  return true;
+}
+
+/**
+ * Fast path (2026-07-09): the scanner's active-alert refresh already fetches
+ * fresh chains every ~7s for recently-alerted symbols — exactly the symbols
+ * auto-entered paper trades hold. Reusing those quotes gives 0DTE paper
+ * trades ~7-second stop/target/smart-exit reaction at ZERO extra API cost.
+ * (A literal 1s per-trade fetch would burn 60+ calls/min per position and
+ * starve the live scanner — this is the professional tradeoff.)
+ */
+export function evaluatePaperTradesWithChain(ticker: string, contracts: any[], nowMs: number = Date.now()): number {
+  if (!contracts?.length) return 0;
+  const db = getDb();
+  const trades = (db.prepare(
+    "SELECT * FROM paper_trades WHERE ticker=? AND status IN ('READY','ENTERED') ORDER BY id ASC",
+  ).all(ticker) as any[]).map(rowToTrade);
+  let advanced = 0;
+  for (const t of trades) {
+    const snap = snapFromContracts(contracts, t.optionSymbol);
+    if (snap && advanceOpenTrade(t, snap, nowMs)) advanced += 1;
+  }
+  return advanced;
 }
 
 /** Persist the full market snapshot the moment an entry/exit fills. */
@@ -270,7 +321,50 @@ function persistMarketSnapshot(id: number | undefined, kind: "entry" | "exit", s
   }
 }
 
+// ── Autonomous entry (PAPER_AUTO_ENTRY=1) ───────────────────────────────────
+// Every fresh TRADE-tier options callout becomes a paper trade automatically.
+// This is deliberately deterministic — no AI in the entry loop. The risk
+// engine is the gatekeeper: over-limit / 0DTE-when-disabled / averaging-down
+// proposals are refused and the refusal is logged, which is the risk engine
+// doing its job, not a bug. NOTE: the live scanner's TRADE callouts are 0DTE,
+// so full autonomy on them also requires PAPER_ALLOW_ZERO_DTE=1.
+const AUTO_ENTRY_ENABLED = () => process.env.PAPER_AUTO_ENTRY === "1";
+const AUTO_ENTRY_MAX_AGE_MS = Number(process.env.PAPER_AUTO_ENTRY_MAX_AGE_MS ?? 10 * 60_000);
+
+export function autoEnterFromAlerts(nowMs: number = Date.now()): number {
+  if (!AUTO_ENTRY_ENABLED()) return 0;
+  const db = getDb();
+  // Fresh TRADE-tier options callouts with a contract, not already papered.
+  const candidates = db.prepare(
+    `SELECT a.id FROM alerts a
+     WHERE a.capture_action = 'TRADE'
+       AND a.option_symbol IS NOT NULL
+       AND a.asset_class != 'stock'
+       AND a.alert_time >= ?
+       AND NOT EXISTS (SELECT 1 FROM paper_trades p WHERE p.alert_id = a.id)
+     ORDER BY a.id ASC LIMIT 5`,
+  ).all(new Date(nowMs - AUTO_ENTRY_MAX_AGE_MS).toISOString()) as any[];
+
+  let created = 0;
+  for (const row of candidates) {
+    const result = createPaperTrade({ alertId: row.id });
+    if (result.ok) {
+      created += 1;
+      console.log(`[paper] auto-entry: trade #${result.id} from alert #${row.id}`);
+    } else {
+      console.log(`[paper] auto-entry refused for alert #${row.id}: ${result.risk.failures.join("; ")}`);
+      // Record the refusal so the same alert isn't re-evaluated every sweep.
+      db.prepare(
+        `INSERT INTO paper_trades (alert_id, ticker, option_type, contracts, status, exit_reason, created_at_ms)
+         SELECT id, ticker, LOWER(COALESCE(option_side,'call')), 1, 'CANCELLED', ?, ? FROM alerts WHERE id=?`,
+      ).run(`auto-entry refused: ${result.risk.failures.join("; ")}`, nowMs, row.id);
+    }
+  }
+  return created;
+}
+
 export async function sweepPaperTrades(nowMs: number = Date.now()): Promise<{ advanced: number; fetched: number }> {
+  try { autoEnterFromAlerts(nowMs); } catch (err: any) { console.warn("[paper] auto-entry failed:", err?.message); }
   const active = openTrades().filter((t) => t.status === "READY" || t.status === "ENTERED");
   if (!active.length) return { advanced: 0, fetched: 0 };
 
@@ -296,48 +390,14 @@ export async function sweepPaperTrades(nowMs: number = Date.now()): Promise<{ ad
   let advanced = 0, fetched = 0;
   for (const ticker of tickers) {
     const trades = byTicker.get(ticker) ?? [];
-    const first = trades[0];
-    const snap0 = await quoteFor(first);
+    // ONE chain fetch covers every trade on the underlying (bug fix: trades on
+    // different contracts of the same ticker previously starved).
+    const chain: any = await fetchOptionChain(ticker, { dteMin: 0, dteMax: 60, maxPages: 2 });
     fetched += 1;
+    if (!chain?.available) continue;
     for (const t of trades) {
-      // Reuse the fetched chain result per ticker: quoteFor re-fetches, so
-      // only the first trade triggers I/O per sweep tick; others use marks.
-      const snap = t === first ? snap0 : (t.optionSymbol === first.optionSymbol ? snap0 : null);
-      if (!snap) continue;
-      const quote = snap.quote;
-      if (t.status === "READY") {
-        const r = evaluateEntry(t, quote, nowMs);
-        if (r.event !== "waiting") {
-          persist(r.trade);
-          if (r.event === "filled") persistMarketSnapshot(t.id, "entry", snap, `filled: ${r.note}`);
-          advanced++;
-        }
-        continue;
-      }
-      // ENTERED: mark, then exits.
-      let marked = markToMarket(t, quote, nowMs);
-      const live = liveSnapshotFor(ticker);
-      const liveWithSpread = live ? { ...live, spreadPct: quote.spreadPct } : null;
-      const entrySnap: EntryThesisSnapshot = {
-        shortRateAtEntry: (t as any).shortRateEntry ?? null,
-        aboveVwapAtEntry: null,
-        relVolAtEntry: null,
-      };
-      // pull thesis snapshot from DB row fields
-      const db = getDb();
-      const row = db.prepare("SELECT short_rate_entry, above_vwap_entry, rel_vol_entry FROM paper_trades WHERE id=?").get(t.id) as any;
-      if (row) {
-        entrySnap.shortRateAtEntry = row.short_rate_entry ?? null;
-        entrySnap.aboveVwapAtEntry = row.above_vwap_entry == null ? null : Boolean(row.above_vwap_entry);
-        entrySnap.relVolAtEntry = row.rel_vol_entry ?? null;
-      }
-      const exit = evaluateExit(marked, quote, liveWithSpread, entrySnap, nowMs, defaultExitConfig());
-      if (exit) {
-        marked = applyExit(marked, exit, nowMs);
-        persistMarketSnapshot(t.id, "exit", snap);
-      }
-      persist(marked);
-      advanced++;
+      const snap = snapFromContracts(chain.contracts, t.optionSymbol);
+      if (snap && advanceOpenTrade(t, snap, nowMs)) advanced += 1;
     }
   }
   return { advanced, fetched };
@@ -350,7 +410,12 @@ type G = typeof globalThis & { __optiscanPaperEngine?: { running: boolean; lastS
 export function paperEngineState() {
   const g = globalThis as G;
   g.__optiscanPaperEngine ??= { running: false, lastSweepAt: 0, sweeps: 0, errors: 0 };
-  return g.__optiscanPaperEngine;
+  return {
+    ...g.__optiscanPaperEngine,
+    autoEntryEnabled: process.env.PAPER_AUTO_ENTRY === "1",
+    allowZeroDte: process.env.PAPER_ALLOW_ZERO_DTE === "1",
+    sweepMs: SWEEP_MS,
+  };
 }
 
 export function startPaperEngine(): void {

@@ -1,18 +1,16 @@
 "use client";
 
 /**
- * /paper — Paper Trading dashboard (v1.2).
- *
- * Simulated options trades with realistic limit fills, hard + smart exits,
- * and honest realized-only analytics. Beginner-first: every stat has an
- * InfoTip, every exit explains itself, every closed trade carries a lesson.
- * No broker. No real money. That's the point.
+ * /paper — Paper Trading dashboard (v1.3).
+ * Autonomous from the AI copilot: deterministic auto-entry + scanner piggyback exits.
  */
 
 import { Suspense, useCallback, useEffect, useState } from "react";
-import { AppNav } from "@/components/AppNav";
 import { scanHeaders } from "@/hooks/useScanner";
 import { InfoTip } from "@/components/InfoTip";
+import { CardTip } from "@/components/CardTip";
+import { Panel } from "@/components/ui/Panel";
+import { StatTile } from "@/components/ui/StatTile";
 import { fmtPrice } from "@/lib/format";
 
 interface Summary {
@@ -71,7 +69,7 @@ function PaperPageInner() {
   useEffect(() => {
     load();
     loadAlerts();
-    const t = setInterval(load, 30_000); // matches the engine sweep — auto-updating
+    const t = setInterval(load, 7_000);
     return () => clearInterval(t);
   }, [load, loadAlerts]);
 
@@ -102,45 +100,53 @@ function PaperPageInner() {
   }, [load]);
 
   const s: Summary | null = data?.summary ?? null;
+  const engine = data?.engine ?? null;
   const trades: any[] = data?.trades ?? [];
   const open = trades.filter((t) => ["WATCHING", "READY", "ENTERED"].includes(t.status));
   const closed = trades.filter((t) => !["WATCHING", "READY", "ENTERED"].includes(t.status));
 
   return (
-    <div className="page">
-      <AppNav />
-      <main className="main-col">
-        <section className="panel main">
-          <h2 className="section-title">Paper trading</h2>
-          <p className="muted text-sm">
-            Simulated trades with realistic limit fills (you pay the ask, exit at the bid), hard stops/targets, and smart
-            thesis-invalidation exits. Build trust in the system before any real money — every stat below uses realized
-            fills only.
-          </p>
-          {error ? <div className="alert-error">{error} — is the app running with a token set?</div> : null}
-        </section>
+    <div className="page axiom-utility">
+      <main className="main-col axiom-live">
+        <CardTip metric="paperTrading" className="utility-hero">
+          <section className="panel main utility-intro">
+            <h2 className="section-title"><InfoTip metric="paperTrading">Paper trading</InfoTip></h2>
+            <p className="muted text-sm">
+              Fully autonomous from the AI copilot — deterministic rules only. Fresh TRADE callouts auto-enter when
+              <code> PAPER_AUTO_ENTRY=1</code>; hot symbols re-price every ~7s via the scanner&apos;s own chain refresh;
+              everything else sweeps every {engine?.sweepMs ? Math.round(engine.sweepMs / 1000) : 30}s.
+            </p>
+            <div className="utility-badges">
+              <span className={`pill badge${engine?.running ? " badge-live" : ""}`}>
+                {engine?.running ? "Engine live" : "Engine offline"}
+              </span>
+              <span className={`pill badge${engine?.autoEntryEnabled ? " badge-live" : ""}`}>
+                {engine?.autoEntryEnabled ? "Auto-entry ON" : "Auto-entry off"}
+              </span>
+              {engine?.autoEntryEnabled && !engine?.allowZeroDte ? (
+                <span className="pill badge badge-warn">Needs PAPER_ALLOW_ZERO_DTE=1</span>
+              ) : null}
+            </div>
+            {error ? <div className="alert-error">{error} — is the app running with a token set?</div> : null}
+          </section>
+        </CardTip>
 
         {s ? (
-          <section className="panel main">
-            <h3 className="section-title">Performance</h3>
-            <div className="statgrid paper-stats">
-              <div><div className="k"><InfoTip metric="winRate">Win rate</InfoTip></div><div className="v num">{num(s.winRatePct, "%")}</div><div className="s">{s.wins}W / {s.losses}L of {s.gradedCount}</div></div>
-              <div><div className="k"><InfoTip metric="profitFactor">Profit factor</InfoTip></div><div className="v num">{num(s.profitFactor, "", 2)}</div><div className="s">gross win ÷ gross loss</div></div>
-              <div><div className="k"><InfoTip metric="expectancy">Expectancy</InfoTip></div><div className="v num">{dollars(s.expectancyDollars)}</div><div className="s">per graded trade</div></div>
-              <div><div className="k">Total P/L</div><div className={`v num ${s.totalPnlDollars >= 0 ? "up" : "dn"}`}>{dollars(s.totalPnlDollars)}</div><div className="s">realized</div></div>
-              <div><div className="k"><InfoTip metric="maxDrawdown">Max drawdown</InfoTip></div><div className="v num">{dollars(s.maxDrawdownDollars)}</div><div className="s">worst stretch</div></div>
-              <div><div className="k">Avg gain / loss</div><div className="v num">{num(s.avgGainPct, "%")} / {num(s.avgLossPct, "%")}</div><div className="s">winners vs losers</div></div>
-              <div><div className="k">Largest win / loss</div><div className="v num">{dollars(s.largestWinDollars)} / {dollars(s.largestLossDollars)}</div><div className="s">outliers matter</div></div>
-              <div><div className="k">Avg hold</div><div className="v num">{num(s.avgHoldMinutes, "m", 0)}</div><div className="s">entry → exit</div></div>
-              <div><div className="k"><InfoTip metric="mfe">Avg MFE</InfoTip> / <InfoTip metric="mae">MAE</InfoTip></div><div className="v num">{num(s.avgMfePct, "%")} / {num(s.avgMaePct, "%")}</div><div className="s">peak vs heat (learning only)</div></div>
-            </div>
-          </section>
+          <div className="axiom-strip paper-strip">
+            <StatTile label="Win rate" value={num(s.winRatePct, "%")} hint={`${s.wins}W / ${s.losses}L of ${s.gradedCount}`} metric="winRate" />
+            <StatTile label="Profit factor" value={num(s.profitFactor, "", 2)} hint="gross win ÷ gross loss" metric="profitFactor" />
+            <StatTile label="Expectancy" value={dollars(s.expectancyDollars)} hint="per graded trade" metric="expectancy" />
+            <StatTile label="Total P/L" value={dollars(s.totalPnlDollars)} hint="realized" metric="paperTrading" />
+            <StatTile label="Max drawdown" value={dollars(s.maxDrawdownDollars)} hint="worst stretch" metric="maxDrawdown" />
+            <StatTile label="Avg gain / loss" value={`${num(s.avgGainPct, "%")} / ${num(s.avgLossPct, "%")}`} hint="winners vs losers" metric="paperTrading" />
+            <StatTile label="Largest win / loss" value={`${dollars(s.largestWinDollars)} / ${dollars(s.largestLossDollars)}`} hint="outliers matter" metric="paperTrading" />
+            <StatTile label="Avg hold" value={num(s.avgHoldMinutes, "m", 0)} hint="entry → exit" metric="paperTrading" />
+          </div>
         ) : null}
 
-        <section className="panel main">
-          <h3 className="section-title">Open trades ({open.length})</h3>
+        <Panel title="Open trades" meta={`${open.length} active · ~7s marks on hot symbols`} live tip="paperTrading">
           {open.length ? (
-            <ul className="ledger">
+            <ul className="ledger axiom-ledger">
               {open.map((t) => (
                 <li key={t.id}>
                   <span className="t num">#{t.id}</span>
@@ -157,8 +163,6 @@ function PaperPageInner() {
                         At entry: Δ {Number(t.entrySnapshot.delta).toFixed(2)}
                         {t.entrySnapshot.iv != null ? ` · IV ${(Number(t.entrySnapshot.iv) * 100).toFixed(0)}%` : ""}
                         {t.entrySnapshot.spreadPct != null ? ` · spread ${Number(t.entrySnapshot.spreadPct).toFixed(1)}%` : ""}
-                        {t.entrySnapshot.openInterest != null ? ` · OI ${t.entrySnapshot.openInterest}` : ""}
-                        {t.entrySnapshot.theta != null ? ` · θ ${Number(t.entrySnapshot.theta).toFixed(3)}` : ""}
                       </small>
                     ) : null}
                     {t.thesis ? <small className="muted">Thesis: {t.thesis.slice(0, 110)}</small> : null}
@@ -172,15 +176,14 @@ function PaperPageInner() {
                 </li>
               ))}
             </ul>
-          ) : <div className="muted text-sm">No open paper trades. Start one from a callout below.</div>}
-        </section>
+          ) : <div className="sigwhy muted text-sm">No open paper trades — auto-entry will populate when TRADE callouts fire.</div>}
+        </Panel>
 
-        <section className="panel main">
-          <h3 className="section-title">Start from a recent callout</h3>
-          <p className="muted text-xs">Uses the callout&apos;s contract + entry mid as the limit. The risk engine can refuse — that&apos;s it working.</p>
+        <Panel title="Manual override" meta="Optional — engine runs without this" tip="paperTrading">
+          <p className="muted text-xs">Force a paper trade from a recent callout. The risk engine can still refuse.</p>
           {createNote ? <div className="text-sm">{createNote}</div> : null}
           {recentAlerts.length ? (
-            <ul className="ledger">
+            <ul className="ledger axiom-ledger">
               {recentAlerts.slice(0, 6).map((a) => (
                 <li key={a.id}>
                   <span className="t num">{a.ticker}</span>
@@ -192,12 +195,11 @@ function PaperPageInner() {
               ))}
             </ul>
           ) : <div className="muted text-sm">No recent options callouts with contracts yet today.</div>}
-        </section>
+        </Panel>
 
-        <section className="panel main">
-          <h3 className="section-title">Closed trades ({closed.length})</h3>
+        <Panel title="Closed trades" meta={`${closed.length} graded · lessons auto-generated`} tip="paperTrading">
           {closed.length ? (
-            <ul className="ledger">
+            <ul className="ledger axiom-ledger">
               {closed.slice(0, 40).map((t) => {
                 const pnl = t.entryPrice != null && t.exitPrice != null
                   ? (t.exitPrice - t.entryPrice) * 100 * (t.contracts ?? 1) : null;
@@ -217,12 +219,11 @@ function PaperPageInner() {
                 );
               })}
             </ul>
-          ) : <div className="muted text-sm">Nothing closed yet — results appear here automatically as exits fire.</div>}
-        </section>
+          ) : <div className="sigwhy muted text-sm">Nothing closed yet — exits fire automatically on stops, targets, and thesis breaks.</div>}
+        </Panel>
 
         {data?.buckets ? (
-          <section className="panel main">
-            <h3 className="section-title">Performance by …</h3>
+          <Panel title="Performance buckets" meta="Where the edge is (or isn't)" tip="paperTrading">
             <div className="paper-buckets">
               {([["Confidence at entry", data.buckets.byConfidence], ["Expiration length", data.buckets.byExpirationLength], ["Setup", data.buckets.bySetup], ["Exit kind", data.buckets.byExitKind]] as [string, BucketRow[]][]).map(([title, rows]) => (
                 <div key={title} className="paper-bucket">
@@ -245,7 +246,7 @@ function PaperPageInner() {
                 </div>
               ))}
             </div>
-          </section>
+          </Panel>
         ) : null}
       </main>
     </div>

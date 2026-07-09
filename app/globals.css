@@ -3552,3 +3552,70 @@ td.num,
 .near-miss-panel { margin: 8px 0; padding: 8px 12px; border: 1px solid var(--line, rgba(255,255,255,0.1)); border-radius: 8px; }
 .near-miss-panel summary { cursor: pointer; }
 .near-miss-list { margin-top: 8px; }
+
+/* ── CardTip: hover whole card for glossary (2026-07-09) ─────────────────── */
+.cardtip-wrap {
+  position: relative;
+  border-radius: 4px;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+.cardtip-wrap:hover,
+.cardtip-wrap.cardtip-open {
+  box-shadow: 0 0 0 1px rgba(47, 240, 166, 0.25), 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+.cardtip-pop {
+  position: absolute;
+  z-index: 95;
+  left: 12px;
+  right: 12px;
+  bottom: calc(100% + 8px);
+  padding: 10px 12px;
+  background: var(--panel-2, #17181c);
+  border: 1px solid rgba(47, 240, 166, 0.35);
+  border-radius: 8px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.55);
+  font-size: 12px;
+  line-height: 1.45;
+  pointer-events: none;
+}
+.cardtip-pop p { margin: 4px 0 0; }
+.cardtip-title { font-weight: 700; font-size: 12px; letter-spacing: 0.04em; }
+.cardtip-risk { color: var(--warn, #e2b93b); }
+.axiom-panel-wrap { display: block; }
+
+/* ── Utility pages: paper + swing (match live terminal) ──────────────────── */
+.axiom-utility .utility-intro { margin-bottom: 0; }
+.axiom-utility .utility-badges { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.axiom-utility .badge { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.85; }
+.axiom-utility .badge-live { color: #2ff0a6; border-color: rgba(47, 240, 166, 0.45); }
+.axiom-utility .badge-warn { color: var(--warn, #e2b93b); border-color: rgba(226, 185, 59, 0.45); }
+.paper-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.swing-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.paper-buckets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.paper-bucket h4 { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; }
+.swing-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.swing-card-inner {
+  border: 1px solid rgba(70, 180, 232, 0.15);
+  border-radius: 4px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.012);
+  height: 100%;
+}
+.swing-card-inner.bear { border-color: rgba(255, 81, 98, 0.2); }
+.swing-card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.swing-score { font-size: 28px; font-weight: 700; color: #2ff0a6; min-width: 44px; }
+.swing-card-inner.bear .swing-score { color: #ff5162; }
+.swing-symbol { font-size: 18px; font-weight: 700; }
+.swing-dir { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; }
+.swing-card-head .btn { margin-left: auto; }
+.swing-contract { font-size: 13px; margin-bottom: 8px; }
+.swing-contract small { display: block; color: var(--muted); margin-top: 2px; }
+.swing-factors { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.swing-factors li { display: grid; grid-template-columns: 72px 32px 1fr; gap: 6px; align-items: baseline; font-size: 11px; }
+.swing-factors .factor-k { text-transform: capitalize; color: var(--dim); }
+.swing-factors .factor-v { font-weight: 700; }
+.swing-flags { margin-top: 8px; font-size: 11px; color: var(--warn, #e2b93b); }
+@media (max-width: 768px) {
+  .paper-buckets { grid-template-columns: 1fr; }
+  .cardtip-pop { position: fixed; left: 12px; right: 12px; bottom: 76px; top: auto; }
+}
