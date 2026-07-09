@@ -19,7 +19,9 @@ import {
   TERMINAL_STATES, type PaperTrade, type PaperState,
 } from "@/lib/paper-trading";
 import { evaluateExit, defaultExitConfig, type LiveTapeSnapshot, type EntryThesisSnapshot } from "@/lib/paper-exits";
-import { checkRisk, defaultRiskConfig, type ProposedTrade, type RiskContext, type RiskVerdict } from "@/lib/paper-risk";
+import { checkRisk, defaultRiskConfig, type ProposedTrade, type RiskConfig, type RiskContext, type RiskVerdict } from "@/lib/paper-risk";
+import { dollarsAtRisk } from "@/lib/paper-trading";
+import { paperExperimentalOversize, paperMinPositionDollars, paperTargetProfitDollars, unitsForDollarExposure } from "@/lib/paper-sizing";
 import type { OptionQuote } from "@/lib/execution/broker";
 
 const SWEEP_MS = Number(process.env.PAPER_SWEEP_MS ?? 30_000);
@@ -27,6 +29,28 @@ const MAX_FETCHES_PER_SWEEP = Number(process.env.PAPER_SWEEP_MAX_FETCHES ?? 5);
 const STOCK_SCALP_STOP_PCT = Number(process.env.PAPER_STOCK_SCALP_STOP_PCT ?? 0.45);
 const STOCK_SCALP_TAKE_PROFIT_PCT = Number(process.env.PAPER_STOCK_SCALP_TAKE_PROFIT_PCT ?? 0.8);
 const STOCK_SCALP_MAX_HOLD_MS = Number(process.env.PAPER_STOCK_SCALP_MAX_HOLD_MS ?? 5 * 60_000);
+
+function riskConfigForProposed(proposed: ProposedTrade): RiskConfig {
+  const cfg = defaultRiskConfig();
+  if (!paperExperimentalOversize()) return cfg;
+
+  const multiplier = proposed.assetClass === "stock" ? 1 : 100;
+  const exposure = proposed.entryLimit * multiplier * proposed.contracts;
+  const risk = dollarsAtRisk(proposed.entryLimit, proposed.contracts, proposed.stopLossPct, multiplier);
+  const positionTarget = paperMinPositionDollars();
+  const profitGoal = paperTargetProfitDollars();
+
+  return {
+    ...cfg,
+    // Paper-only experiment mode: keep kill switch, max open positions,
+    // 0DTE policy, and no-averaging-down intact, but widen dollar caps so
+    // the simulator can hold the requested paper position size.
+    maxRiskPerTrade: Math.max(cfg.maxRiskPerTrade, Math.ceil(risk)),
+    maxExposurePerTicker: Math.max(cfg.maxExposurePerTicker, Math.ceil(exposure)),
+    maxDailyLoss: Math.max(cfg.maxDailyLoss, Math.ceil(profitGoal || positionTarget || risk)),
+    maxWeeklyLoss: Math.max(cfg.maxWeeklyLoss, Math.ceil((profitGoal || positionTarget || risk) * 3)),
+  };
+}
 
 // ── Row mapping ──────────────────────────────────────────────────────────────
 
@@ -266,15 +290,21 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
   }
 
   const exitCfg = defaultExitConfig();
+  const takeProfitPct = base.takeProfitPct ?? exitCfg.takeProfitPct;
+  const contracts = base.contracts ?? unitsForDollarExposure({
+    entryPrice: base.entryLimit,
+    minPositionDollars: paperMinPositionDollars(),
+    multiplier: 100,
+  });
   const proposed: ProposedTrade = {
     ticker: base.ticker,
     optionType: base.optionType ?? "call",
     dte: base.dte ?? null,
     entryLimit: base.entryLimit,
-    contracts: base.contracts ?? 1,
+    contracts,
     stopLossPct: base.stopLossPct ?? exitCfg.stopLossPct,
   };
-  const risk = checkRisk(proposed, riskContext(), defaultRiskConfig());
+  const risk = checkRisk(proposed, riskContext(), riskConfigForProposed(proposed));
   if (!risk.allowed) {
     logDecision({
       alertId: base.alertId ?? null,
@@ -299,7 +329,7 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
     base.alertId ?? null, base.ticker, base.optionSymbol, proposed.optionType,
     base.strike ?? null, base.expiration ?? null, base.dte ?? null, proposed.contracts,
     "READY", base.thesis ?? null, confidence, base.entryLimit,
-    proposed.stopLossPct, base.takeProfitPct ?? exitCfg.takeProfitPct,
+    proposed.stopLossPct, takeProfitPct,
     thesisSnapshot.shortRate, thesisSnapshot.aboveVwap == null ? null : (thesisSnapshot.aboveVwap ? 1 : 0),
     thesisSnapshot.relVol, nowMs,
   );
@@ -569,6 +599,13 @@ function stockSideFromAlert(a: any): "call" | "put" {
 }
 
 function stockPaperShares(price: number, stopLossPct: number): number {
+  const targetShares = unitsForDollarExposure({
+    entryPrice: price,
+    minPositionDollars: paperMinPositionDollars(),
+    multiplier: 1,
+  });
+  if (paperExperimentalOversize()) return targetShares;
+
   const riskCfg = defaultRiskConfig();
   const riskShares = Math.floor(riskCfg.maxRiskPerTrade / Math.max(0.01, price * (stopLossPct / 100)));
   const exposureShares = Math.floor(riskCfg.maxExposurePerTicker / Math.max(0.01, price));
@@ -615,7 +652,7 @@ export function autoEnterStockScalps(nowMs: number = Date.now()): number {
       stopLossPct: STOCK_SCALP_STOP_PCT,
       assetClass: "stock",
     };
-    const risk = checkRisk(proposed, riskContext(), defaultRiskConfig());
+    const risk = checkRisk(proposed, riskContext(), riskConfigForProposed(proposed));
     if (!risk.allowed) {
       logDecision({
         alertId: a.id,
@@ -783,10 +820,15 @@ function paperEngineRuntimeState() {
 export function paperEngineState() {
   const state = paperEngineRuntimeState();
   const risk = defaultRiskConfig();
+  const experimentalPositionDollars = paperMinPositionDollars();
+  const targetProfitDollars = paperTargetProfitDollars();
   return {
     ...state,
     autoEntryEnabled: process.env.PAPER_AUTO_ENTRY === "1",
     allowZeroDte: process.env.PAPER_ALLOW_ZERO_DTE === "1",
+    experimentalOversize: paperExperimentalOversize(),
+    experimentalPositionDollars,
+    targetProfitDollars,
     sweepMs: SWEEP_MS,
     risk,
   };

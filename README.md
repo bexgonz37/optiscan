@@ -305,6 +305,19 @@ ALERT_FP_MIN_FAVORABLE_PCT=1.5
 ALERT_DB_DIR=              # default ./data
 ```
 
+### Autonomous paper trading
+
+```bash
+PAPER_TRADING_ENABLED=1
+PAPER_AUTO_ENTRY=1
+PAPER_STARTING_BALANCE=5000
+PAPER_MIN_POSITION_DOLLARS=1000     # experiment: trade about this much at a time
+PAPER_TARGET_PROFIT_DOLLARS=200     # goal label/risk context; not a guarantee
+PAPER_EXPERIMENTAL_OVERSIZE=1       # paper-only: widen dollar caps for target sizing
+PAPER_STOCK_SCALPS=1
+PAPER_ALLOW_ZERO_DTE=1
+```
+
 ---
 
 ## Settings you control in the UI

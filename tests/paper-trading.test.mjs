@@ -10,6 +10,7 @@ import {
   checkHardExits, checkSmartExit, checkExpiration, evaluateExit, defaultExitConfig, invalidationSignals,
 } from "../lib/paper-exits.ts";
 import { summarize, byConfidence, byExpirationLength } from "../lib/paper-analytics.ts";
+import { paperExperimentalOversize, paperMinPositionDollars, paperTargetProfitDollars, unitsForDollarExposure } from "../lib/paper-sizing.ts";
 
 const T = Date.parse("2026-07-09T15:00:00Z");
 const q = (bid, ask, ms = T) => ({
@@ -218,6 +219,15 @@ test("cooldown after a realized loss blocks revenge entries", () => {
     { ...CFG, cooldownAfterLossMinutes: 30 },
   );
   assert.equal(clear.allowed, true);
+});
+
+test("experimental sizing computes stock shares and option contracts from target exposure", () => {
+  assert.equal(unitsForDollarExposure({ entryPrice: 10, minPositionDollars: 1000 }), 100);
+  assert.equal(unitsForDollarExposure({ entryPrice: 2, minPositionDollars: 1000, multiplier: 100 }), 5);
+  assert.equal(unitsForDollarExposure({ entryPrice: 0, minPositionDollars: 1000, fallbackUnits: 3 }), 3);
+  assert.equal(paperMinPositionDollars({ PAPER_MIN_POSITION_DOLLARS: "1000" }), 1000);
+  assert.equal(paperTargetProfitDollars({ PAPER_TARGET_PROFIT_DOLLARS: "200" }), 200);
+  assert.equal(paperExperimentalOversize({ PAPER_MIN_POSITION_DOLLARS: "1000" }), true);
 });
 
 // ── Analytics ──

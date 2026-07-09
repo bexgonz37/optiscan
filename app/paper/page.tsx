@@ -119,6 +119,9 @@ function PaperPageInner() {
   const filledClosed = closed.filter((t) => t.entryPrice != null && t.exitPrice != null);
   const blockedAttempts = closed.filter((t) => t.status === "CANCELLED" && t.entryPrice == null);
   const risk = engine?.risk ?? {};
+  const positionDollars = Number(engine?.experimentalPositionDollars ?? 0);
+  const profitGoalDollars = Number(engine?.targetProfitDollars ?? 0);
+  const experimentOn = Boolean(engine?.experimentalOversize && positionDollars > 0);
 
   return (
     <div className="page axiom-utility">
@@ -143,7 +146,15 @@ function PaperPageInner() {
                 <span className="pill badge badge-warn">Needs PAPER_ALLOW_ZERO_DTE=1</span>
               ) : null}
               {risk.killSwitch ? <span className="pill badge badge-warn">Kill switch ON</span> : null}
+              {experimentOn ? <span className="pill badge badge-warn">Experimental ${positionDollars.toFixed(0)} position ON</span> : null}
             </div>
+            {experimentOn ? (
+              <div className="alert-error" style={{ marginTop: 12 }}>
+                Paper-only experiment mode is sizing entries to trade about at least {dollars(positionDollars)} at a time
+                {profitGoalDollars > 0 ? ` with a rough ${dollars(profitGoalDollars)} profit goal.` : "."}
+                This can create larger stock share counts or option contract counts and does not guarantee profit.
+              </div>
+            ) : null}
             {error ? <div className="alert-error">{error} — is the app running with a token set?</div> : null}
             {s ? (
               <p className="muted text-xs" style={{ marginTop: 10 }}>
@@ -160,6 +171,7 @@ function PaperPageInner() {
               <h4>Position limits</h4>
               <p className="muted text-xs">
                 Max risk {dollars(risk.maxRiskPerTrade)} per trade · max {risk.maxOpenTrades ?? "—"} open trades · max {dollars(risk.maxExposurePerTicker)} per ticker.
+                {experimentOn ? ` Experimental paper sizing can widen dollar caps per entry to hold about ${dollars(positionDollars)} per trade.` : ""}
               </p>
             </div>
             <div className="paper-bucket">
@@ -251,6 +263,10 @@ function PaperPageInner() {
                     ) : d.snapshot?.assetClass === "stock" ? (
                       <small className="muted">
                         Stock paper scalp: {d.snapshot.side} × {d.snapshot.shares} @ {d.snapshot.price}
+                      </small>
+                    ) : d.snapshot?.contracts ? (
+                      <small className="muted">
+                        Paper option size: {d.snapshot.contracts} contract(s) @ {d.snapshot.entryLimit}
                       </small>
                     ) : null}
                   </span>
