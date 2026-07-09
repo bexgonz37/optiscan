@@ -230,6 +230,13 @@
   background: rgba(255, 184, 77, 0.07);
 }
 
+.axiom-terminal .ops-health-row span.idle,
+.axiom-terminal .empty-chip {
+  color: #7f9db0;
+  border-color: rgba(70, 180, 232, 0.16);
+  background: rgba(255, 255, 255, 0.018);
+}
+
 .axiom-terminal .session-explainer {
   border-color: rgba(47, 240, 166, 0.22);
   background: linear-gradient(135deg, rgba(32, 227, 154, 0.08), rgba(70, 180, 232, 0.045));
@@ -259,6 +266,7 @@
   padding: 8px 2px 12px;
   border-bottom: 1px solid rgba(70, 180, 232, 0.1);
   margin-bottom: 8px;
+  min-height: 48px;
 }
 
 .axiom-terminal .hot-names-label {
@@ -427,6 +435,7 @@
   grid-template-columns: minmax(0, 1.4fr) auto minmax(280px, 0.9fr);
   gap: 12px;
   align-items: stretch;
+  min-height: 260px;
 }
 
 .axiom-hero-card-wrap {
@@ -567,6 +576,7 @@
   padding: 10px 12px;
   background: linear-gradient(180deg, rgba(11, 20, 31, 0.74), rgba(7, 12, 20, 0.68));
   position: relative;
+  min-height: 252px;
 }
 
 .axiom-scanners .scanner::before {
@@ -600,6 +610,12 @@
   border-bottom: 1px solid rgba(70, 180, 232, 0.1);
   list-style: none;
   cursor: pointer;
+  min-height: 44px;
+}
+
+.axiom-scanners .scanner li.scanner-empty-row {
+  cursor: default;
+  opacity: 0.72;
 }
 
 .axiom-scanners .scanner .spd {

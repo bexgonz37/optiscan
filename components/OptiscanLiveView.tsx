@@ -529,10 +529,14 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
 
       <div className="ops-health-row" role="status" aria-label="Scanner and Discord health">
         <span className={loop?.running ? "ok" : "warn"}>Scanner {loop?.running ? "running" : "starting"}</span>
-        <span className={diagnostics?.webhooks?.options ? "ok" : "warn"}>Options Discord {diagnostics?.webhooks?.options ? "ready" : "missing webhook"}</span>
-        <span className={diagnostics?.webhooks?.stocks ? "ok" : "warn"}>Stocks Discord {diagnostics?.webhooks?.stocks ? "ready" : "missing webhook"}</span>
-        <span className={diagnostics?.extendedStockNotify ? "ok" : "warn"}>
-          Extended-hours stocks {diagnostics?.extendedStockNotify ? "on" : "off in Settings"}
+        <span className={diagnostics == null ? "idle" : diagnostics.webhooks?.options ? "ok" : "warn"}>
+          Options Discord {diagnostics == null ? "checking" : diagnostics.webhooks?.options ? "ready" : "missing webhook"}
+        </span>
+        <span className={diagnostics == null ? "idle" : diagnostics.webhooks?.stocks ? "ok" : "warn"}>
+          Stocks Discord {diagnostics == null ? "checking" : diagnostics.webhooks?.stocks ? "ready" : "missing webhook"}
+        </span>
+        <span className={diagnostics == null ? "idle" : diagnostics.extendedStockNotify ? "ok" : "warn"}>
+          Extended-hours stocks {diagnostics == null ? "checking" : diagnostics.extendedStockNotify ? "on" : "off in Settings"}
         </span>
         {diagnostics?.loop?.nearMisses?.[0] ? (
           <span className="muted">Latest block: {diagnostics.loop.nearMisses[0].symbol} · {diagnostics.loop.nearMisses[0].failedGate}</span>
@@ -551,7 +555,6 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
         </p>
       ) : null}
 
-      {(scope !== "options" || liveSession === "regular" || optionsOpeningWatch || heroAlert || liveTapeLead) ? (
       <div className="axiom-hero-row">
         <CardTip metric="heroCallout" className="axiom-hero-card-wrap">
         <div
@@ -697,7 +700,6 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
           )}
         </Panel>
       </div>
-      ) : null}
 
       <div className="axiom-strip">
         {strip.map((s) => (
@@ -705,10 +707,10 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
         ))}
       </div>
 
-      {coreTapeRows.length ? (
+      <>
         <div className="hot-names-row core-names-row" aria-label="Core watch speed board">
           <span className="hot-names-label">Core watch - NVDA SPY TSLA... - click for chart</span>
-          {coreTapeRows.slice(0, 12).map((r) => (
+          {coreTapeRows.length ? coreTapeRows.slice(0, 12).map((r) => (
             <button
               key={r.symbol}
               type="button"
@@ -719,14 +721,14 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
               <span className="sym">{r.symbol}</span>
               <span className={`num ${tapeSpeed(r) >= MIN_SPEED_PCT_PER_MIN ? "spd-strong" : ""}`}>{speedLabel(r.shortRate)}</span>
             </button>
-          ))}
+          )) : <span className="hot-name-chip empty-chip">Warming up tape...</span>}
         </div>
-      ) : null}
+      </>
 
-      {displayRows.length && scope !== "options" ? (
+      {scope !== "options" ? (
         <div className="hot-names-row" aria-label="Runners speed board">
           <span className="hot-names-label">Runners · click for chart</span>
-          {displayRows.filter((r) => !r.core).slice(0, 8).map((r) => (
+          {displayRows.filter((r) => !r.core).length ? displayRows.filter((r) => !r.core).slice(0, 8).map((r) => (
             <button
               key={r.symbol}
               type="button"
@@ -737,7 +739,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
               <span className="sym">{r.symbol}</span>
               <span className="num spd-strong">{speedLabel(r.shortRate)}</span>
             </button>
-          ))}
+          )) : <span className="hot-name-chip empty-chip">No runners yet</span>}
         </div>
       ) : null}
 
@@ -753,7 +755,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
         </p>
       ) : null}
 
-      {scope !== "options" ? (<>
+      <>
       <div className="section-head scanner-head">
         <span className="section-title">Scanners</span>
         <span className="section-head-actions">
@@ -803,11 +805,19 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
                   </li>
                 );
               })}
+              {!col.rows.length ? (
+                <li className="scanner-empty-row">
+                  <span className="sym">—</span>
+                  <span className="spd num">—</span>
+                  <span className="why">Waiting for stable tape</span>
+                  <span className="m num">—</span>
+                </li>
+              ) : null}
             </ul>
           </div>
         ))}
       </div>
-      </>) : null}
+      </>
 
       {scope === "options" && (loop?.nearMisses?.length ?? 0) > 0 ? (
         <CardTip metric="nearMiss" className="near-miss-wrap">
