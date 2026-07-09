@@ -116,6 +116,8 @@ function PaperPageInner() {
   const decisions: any[] = data?.decisions ?? [];
   const open = trades.filter((t) => ["WATCHING", "READY", "ENTERED"].includes(t.status));
   const closed = trades.filter((t) => !["WATCHING", "READY", "ENTERED"].includes(t.status));
+  const filledClosed = closed.filter((t) => t.entryPrice != null && t.exitPrice != null);
+  const blockedAttempts = closed.filter((t) => t.status === "CANCELLED" && t.entryPrice == null);
   const risk = engine?.risk ?? {};
 
   return (
@@ -143,6 +145,12 @@ function PaperPageInner() {
               {risk.killSwitch ? <span className="pill badge badge-warn">Kill switch ON</span> : null}
             </div>
             {error ? <div className="alert-error">{error} — is the app running with a token set?</div> : null}
+            {s ? (
+              <p className="muted text-xs" style={{ marginTop: 10 }}>
+                Stats count <b>{filledClosed.length}</b> filled-and-closed paper trade{filledClosed.length === 1 ? "" : "s"} only.
+                Blocked/refused attempts ({blockedAttempts.length}) are shown in the decision log but do not count toward win rate.
+              </p>
+            ) : null}
           </section>
         </CardTip>
 
@@ -177,7 +185,7 @@ function PaperPageInner() {
                 <StatTile label="Starting cash" value={dollars(account.startingBalance)} hint="simulated account size" metric="paperTrading" />
               </>
             ) : null}
-            <StatTile label="Win rate" value={num(s.winRatePct, "%")} hint={`${s.wins}W / ${s.losses}L of ${s.gradedCount}`} metric="winRate" />
+            <StatTile label="Filled win rate" value={num(s.winRatePct, "%")} hint={`${s.wins}W / ${s.losses}L of ${s.gradedCount} filled trades`} metric="winRate" />
             <StatTile label="Profit factor" value={num(s.profitFactor, "", 2)} hint="gross win ÷ gross loss" metric="profitFactor" />
             <StatTile label="Expectancy" value={dollars(s.expectancyDollars)} hint="per graded trade" metric="expectancy" />
             <StatTile label="Total P/L" value={dollars(s.totalPnlDollars)} hint="realized" metric="paperTrading" />
@@ -271,7 +279,7 @@ function PaperPageInner() {
           ) : <div className="muted text-sm">No recent options callouts with contracts yet today.</div>}
         </Panel>
 
-        <Panel title="Closed trades" meta={`${closed.length} graded · lessons auto-generated`} tip="paperTrading">
+        <Panel title="Closed trades" meta={`${filledClosed.length} filled · ${blockedAttempts.length} blocked/refused · lessons auto-generated`} tip="paperTrading">
           {closed.length ? (
             <ul className="ledger axiom-ledger">
               {closed.slice(0, 40).map((t) => {

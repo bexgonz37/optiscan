@@ -45,9 +45,9 @@ const ACTIVE_REFRESH_MS = Number(process.env.SCANNER_ACTIVE_REFRESH_MS ?? 7000);
 const TRIGGER_COOLDOWN_MS = Number(process.env.SCANNER_TRIGGER_COOLDOWN_MS ?? 10 * 60 * 1000);
 const CORE_TRIGGER_COOLDOWN_MS = Number(process.env.SCANNER_CORE_TRIGGER_COOLDOWN_MS ?? 3 * 60 * 1000);
 const DISCOVERY_MS = Number(process.env.SCANNER_DISCOVERY_MS ?? 30_000);
-const DISCOVERY_TOP_N = Number(process.env.SCANNER_DISCOVERY_TOP_N ?? 12);
+const DISCOVERY_TOP_N = Number(process.env.SCANNER_DISCOVERY_TOP_N ?? 30);
 const PROMOTION_MS = Number(process.env.SCANNER_PROMOTION_MS ?? 5 * 60_000);
-const DISCOVERY_MIN_VOLUME = Number(process.env.SCANNER_DISCOVERY_MIN_VOLUME ?? 100_000);
+const DISCOVERY_MIN_VOLUME = Number(process.env.SCANNER_DISCOVERY_MIN_VOLUME ?? 50_000);
 const TAPE_ENRICH_MS = Number(process.env.SCANNER_TAPE_ENRICH_MS ?? 30_000);
 // When a trigger's capture returns null (SKIP tier / dedup) the full cooldown
 // is intentionally NOT consumed (so an improving setup can still fire), but a
