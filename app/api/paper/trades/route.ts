@@ -12,10 +12,19 @@ export async function GET(req: Request) {
   const { listPaperTrades, listPaperDecisions, paperEngineState } = await import("@/lib/paper-engine");
   const { summarize, byConfidence, byExpirationLength, bySetup, byExitKind } = await import("@/lib/paper-analytics");
   const trades = listPaperTrades();
+  const summary = summarize(trades);
+  const startingBalance = Number(process.env.PAPER_STARTING_BALANCE ?? 5000);
+  const equity = +(startingBalance + summary.totalPnlDollars).toFixed(2);
   return NextResponse.json({
     ok: true,
     trades,
-    summary: summarize(trades),
+    summary,
+    account: {
+      startingBalance,
+      realizedPnl: summary.totalPnlDollars,
+      equity,
+      buyingPowerNote: "Risk engine reserves are enforced by max risk, max ticker exposure, and max open trades.",
+    },
     buckets: {
       byConfidence: byConfidence(trades),
       byExpirationLength: byExpirationLength(trades),

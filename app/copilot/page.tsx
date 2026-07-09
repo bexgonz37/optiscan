@@ -6,8 +6,8 @@ import { scanHeaders } from "@/hooks/useScanner";
 import { tradingDay } from "@/lib/trading-session";
 
 /**
- * AI — READ-ONLY stub. Explains the latest callout using stored data.
- * Wire Claude later; never creates or gates signals.
+ * Copilot — READ-ONLY stub. Explains the latest callout using stored data.
+ * The autonomous paper trader lives in lib/paper-engine.ts and does not wait for this page. Wire an LLM later; never let it create or gate signals.
  */
 
 type Chip = { t: string; s: string };
@@ -63,7 +63,7 @@ export default function CopilotPage() {
     <div className="page-deck axiom-copilot">
       <div className="axiom-scan-sweep" aria-hidden />
 
-      <Panel title="AI" meta="READ-ONLY · COMING SOON" live>
+      <Panel title="Signal explainer" meta="READ-ONLY · NOT THE TRADING ENGINE" live>
         <div className="aihead">
           <span>SOURCE <b className="mdl">OptiScan rules engine</b></span>
           <span>CONTEXT <b>latest TRADE callout</b></span>
@@ -76,7 +76,7 @@ export default function CopilotPage() {
           </div>
 
           <div className={`bubble ai`}>
-            <span className="brole">AXIOM</span>
+            <span className="brole">OPTISCAN</span>
             {alert ? (
               <>
                 <b>{alert.capture_action === "TRADE" ? `BUY ${side}` : "WATCH"} {alert.ticker}</b>
@@ -99,7 +99,7 @@ export default function CopilotPage() {
 
           <div className="aitype">
             <span className="d" />
-            Explanations are rules-based (lib/explain.js) — AI never generates or gates signals.
+            This page only explains callouts. Autonomous paper trading runs separately from the scanner rules engine.
           </div>
         </div>
 
@@ -107,7 +107,7 @@ export default function CopilotPage() {
           <div className="cmd">
             <span className="car">›</span>
             <input
-              placeholder="Ask about a callout… (AI wiring coming soon)"
+              placeholder="Ask about a callout… (LLM chat coming later)"
               onKeyDown={(e) => {
                 // TODO: wire to Claude API — POST question + alert context, render reply as an .ai bubble.
                 if (e.key === "Enter") e.currentTarget.blur();

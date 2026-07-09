@@ -2,7 +2,8 @@
 
 /**
  * /paper — Paper Trading dashboard (v1.3).
- * Autonomous from the AI copilot: deterministic auto-entry + scanner piggyback exits.
+ * Autonomous paper trading: deterministic auto-entry + scanner piggyback exits.
+ * This does not depend on the read-only /copilot explanation page.
  */
 
 import { Suspense, useCallback, useEffect, useState } from "react";
@@ -24,6 +25,7 @@ interface Summary {
 }
 
 interface BucketRow { bucket: string; count: number; winRatePct: number | null; avgPnlPct: number | null; totalDollars: number }
+interface PaperAccount { startingBalance: number; realizedPnl: number; equity: number; buyingPowerNote?: string }
 
 function num(v: number | null | undefined, suffix = "", digits = 1): string {
   if (v == null || Number.isNaN(v)) return "—";
@@ -109,6 +111,7 @@ function PaperPageInner() {
 
   const s: Summary | null = data?.summary ?? null;
   const engine = data?.engine ?? null;
+  const account: PaperAccount | null = data?.account ?? null;
   const trades: any[] = data?.trades ?? [];
   const decisions: any[] = data?.decisions ?? [];
   const open = trades.filter((t) => ["WATCHING", "READY", "ENTERED"].includes(t.status));
@@ -122,11 +125,12 @@ function PaperPageInner() {
           <section className="panel main utility-intro">
             <h2 className="section-title"><InfoTip metric="paperTrading">Paper trading</InfoTip></h2>
             <p className="muted text-sm">
-              Fully autonomous from the AI copilot — deterministic rules only. Fresh TRADE callouts auto-enter when
+              Fully autonomous paper trading — deterministic rules only, no AI approval step required. Fresh TRADE callouts auto-enter when
               <code> PAPER_AUTO_ENTRY=1</code>; hot symbols re-price every ~7s via the scanner&apos;s own chain refresh;
               everything else sweeps every {engine?.sweepMs ? Math.round(engine.sweepMs / 1000) : 30}s.
             </p>
             <div className="utility-badges">
+              {account ? <span className="pill badge">Paper account {dollars(account.startingBalance)}</span> : null}
               <span className={`pill badge${engine?.running ? " badge-live" : ""}`}>
                 {engine?.running ? "Engine live" : "Engine offline"}
               </span>
@@ -167,6 +171,12 @@ function PaperPageInner() {
 
         {s ? (
           <div className="axiom-strip paper-strip">
+            {account ? (
+              <>
+                <StatTile label="Paper equity" value={dollars(account.equity)} hint="starting balance + realized P/L" metric="paperTrading" />
+                <StatTile label="Starting cash" value={dollars(account.startingBalance)} hint="simulated account size" metric="paperTrading" />
+              </>
+            ) : null}
             <StatTile label="Win rate" value={num(s.winRatePct, "%")} hint={`${s.wins}W / ${s.losses}L of ${s.gradedCount}`} metric="winRate" />
             <StatTile label="Profit factor" value={num(s.profitFactor, "", 2)} hint="gross win ÷ gross loss" metric="profitFactor" />
             <StatTile label="Expectancy" value={dollars(s.expectancyDollars)} hint="per graded trade" metric="expectancy" />
