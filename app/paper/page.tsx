@@ -142,6 +142,10 @@ function PaperPageInner() {
               <span className={`pill badge${engine?.autoEntryEnabled ? " badge-live" : ""}`}>
                 {engine?.autoEntryEnabled ? "Auto-entry ON" : "Auto-entry off"}
               </span>
+              <span className="pill badge">Session {engine?.session ?? "—"}</span>
+              {engine?.stockPaperScalpsEnabled ? (
+                <span className="pill badge badge-live">Stock paper: {(engine?.stockSessions ?? []).join(", ")}</span>
+              ) : null}
               {engine?.autoEntryEnabled && !engine?.allowZeroDte ? (
                 <span className="pill badge badge-warn">Needs PAPER_ALLOW_ZERO_DTE=1</span>
               ) : null}
@@ -184,6 +188,7 @@ function PaperPageInner() {
               <h4>Execution discipline</h4>
               <p className="muted text-xs">
                 0DTE {risk.allowZeroDte ? "allowed by env" : "blocked by default"} · averaging down {risk.allowAveragingDown ? "allowed by env" : "blocked"} · kill switch {risk.killSwitch ? "ON" : "off"}.
+                Stock momentum paper entries run in {(engine?.stockSessions ?? ["premarket", "regular", "afterhours"]).join(", ")}; options entries only manage/fill when regular-hours option quotes exist.
               </p>
             </div>
           </div>

@@ -17,8 +17,8 @@ export const STOCK_MIN_SPEED_PCT_PER_MIN = 0.2;
 export const STOCK_MIN_SURGE = 1.5;
 /** Default score bar for persisting a stock alert (settings key: stock_min_score). */
 export const STOCK_DEFAULT_MIN_SCORE = 66;
-/** Confidence bar for Discord — mirrors CLEAR_SIGNAL_MIN_CONFIDENCE for options. */
-export const STOCK_CLEAR_MIN_CONFIDENCE = 82;
+/** Confidence bar for Discord — tunable because extended-hours liquidity varies by account/data plan. */
+export const STOCK_CLEAR_MIN_CONFIDENCE = Number(process.env.STOCK_CLEAR_MIN_CONFIDENCE ?? 78);
 
 export type StockSide = "LONG" | "SHORT" | "NONE";
 export type StockAction = "BUY" | "WAIT" | "SKIP";

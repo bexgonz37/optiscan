@@ -189,8 +189,8 @@ export interface LiveTapeContext {
 }
 
 /** Discord / high-urgency: stricter than TRADE — must be unmistakably moving now. */
-export const CLEAR_SIGNAL_MIN_CONFIDENCE = 82;
-export const CLEAR_SIGNAL_MIN_SPEED = 0.2;
+export const CLEAR_SIGNAL_MIN_CONFIDENCE = Number(process.env.DISCORD_OPTIONS_MIN_CONFIDENCE ?? 82);
+export const CLEAR_SIGNAL_MIN_SPEED = Number(process.env.DISCORD_OPTIONS_MIN_SPEED ?? 0.2);
 
 /** A BUY signal older than this can never re-show as TRADE — the contract,
  * strike, and premium it was based on are stale. Fresh signals only. */

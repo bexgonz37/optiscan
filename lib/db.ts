@@ -375,6 +375,21 @@ CREATE INDEX IF NOT EXISTS idx_journal_dedup ON trade_journal(dedup_key);
        ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
     ).run();
   }
+
+  // One-time: product intent is stock Discord during premarket/AH when the
+  // stocks webhook exists. Older installs defaulted this off, making the tape
+  // look alive while Discord stayed quiet.
+  const stockExtV1: any = db.prepare("SELECT value FROM scanner_settings WHERE key='stock_extended_notify_default_v1'").get();
+  if (!stockExtV1) {
+    db.prepare(
+      `INSERT INTO scanner_settings (key, value) VALUES ('extended_stock_notify', '1')
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+    ).run();
+    db.prepare(
+      `INSERT INTO scanner_settings (key, value) VALUES ('stock_extended_notify_default_v1', '1')
+       ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+    ).run();
+  }
 }
 
 type G = typeof globalThis & { __optiscanDb?: Database.Database };

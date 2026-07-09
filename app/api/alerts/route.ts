@@ -12,6 +12,10 @@ export async function GET(req: Request) {
   try {
     const { listAlerts } = await import("@/lib/alert-store");
     const q = new URL(req.url).searchParams;
+    if (q.get("diagnostics") === "1") {
+      const { alertDiagnostics } = await import("@/lib/alert-diagnostics");
+      return NextResponse.json({ ok: true, diagnostics: alertDiagnostics() });
+    }
     const bool = (v: string | null) => (v == null || v === "" ? undefined : v === "1" || v === "true");
     const num = (v: string | null) => (v == null || v === "" ? undefined : Number(v));
     const alerts = listAlerts({

@@ -29,6 +29,12 @@ const MAX_FETCHES_PER_SWEEP = Number(process.env.PAPER_SWEEP_MAX_FETCHES ?? 5);
 const STOCK_SCALP_STOP_PCT = Number(process.env.PAPER_STOCK_SCALP_STOP_PCT ?? 0.45);
 const STOCK_SCALP_TAKE_PROFIT_PCT = Number(process.env.PAPER_STOCK_SCALP_TAKE_PROFIT_PCT ?? 0.8);
 const STOCK_SCALP_MAX_HOLD_MS = Number(process.env.PAPER_STOCK_SCALP_MAX_HOLD_MS ?? 5 * 60_000);
+const PAPER_STOCK_SESSIONS = () => new Set(
+  String(process.env.PAPER_STOCK_SESSIONS ?? "premarket,regular,afterhours")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
 
 function riskConfigForProposed(proposed: ProposedTrade): RiskConfig {
   const cfg = defaultRiskConfig();
@@ -615,6 +621,8 @@ function stockPaperShares(price: number, stopLossPct: number): number {
 export function autoEnterStockScalps(nowMs: number = Date.now()): number {
   if (!AUTO_ENTRY_ENABLED()) return 0;
   if (process.env.PAPER_STOCK_SCALPS === "0") return 0;
+  const session = marketSession(nowMs);
+  if (!PAPER_STOCK_SESSIONS().has(session)) return 0;
   const db = getDb();
   const candidates = db.prepare(
     `SELECT a.* FROM alerts a
@@ -826,6 +834,9 @@ export function paperEngineState() {
     ...state,
     autoEntryEnabled: process.env.PAPER_AUTO_ENTRY === "1",
     allowZeroDte: process.env.PAPER_ALLOW_ZERO_DTE === "1",
+    session: marketSession(),
+    stockSessions: [...PAPER_STOCK_SESSIONS()],
+    stockPaperScalpsEnabled: process.env.PAPER_STOCK_SCALPS !== "0",
     experimentalOversize: paperExperimentalOversize(),
     experimentalPositionDollars,
     targetProfitDollars,

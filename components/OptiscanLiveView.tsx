@@ -239,6 +239,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
   useEffect(() => { onLoopStatus?.(Boolean(loop?.running)); }, [loop?.running, onLoopStatus]);
 
   const [allProductAlerts, setAllProductAlerts] = useState<any[]>([]);
+  const [diagnostics, setDiagnostics] = useState<any | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -254,6 +255,20 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
     const id = setInterval(poll, pollMs);
     return () => { cancelled = true; clearInterval(id); };
   }, [loop?.session]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch("/api/alerts?diagnostics=1", { cache: "no-store", headers: scanHeaders() });
+        const d = await res.json();
+        if (!cancelled && d?.ok) setDiagnostics(d.diagnostics ?? null);
+      } catch { /* diagnostics should never break live view */ }
+    };
+    poll();
+    const id = setInterval(poll, 15_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
 
   const heroFromAlerts = useMemo(() => {
     const now = Date.now();
@@ -512,12 +527,31 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
         <span><b>Tip:</b> use Hold when the list feels jumpy.</span>
       </div>
 
+      <div className="ops-health-row" role="status" aria-label="Scanner and Discord health">
+        <span className={loop?.running ? "ok" : "warn"}>Scanner {loop?.running ? "running" : "starting"}</span>
+        <span className={diagnostics?.webhooks?.options ? "ok" : "warn"}>Options Discord {diagnostics?.webhooks?.options ? "ready" : "missing webhook"}</span>
+        <span className={diagnostics?.webhooks?.stocks ? "ok" : "warn"}>Stocks Discord {diagnostics?.webhooks?.stocks ? "ready" : "missing webhook"}</span>
+        <span className={diagnostics?.extendedStockNotify ? "ok" : "warn"}>
+          Extended-hours stocks {diagnostics?.extendedStockNotify ? "on" : "off in Settings"}
+        </span>
+        {diagnostics?.loop?.nearMisses?.[0] ? (
+          <span className="muted">Latest block: {diagnostics.loop.nearMisses[0].symbol} · {diagnostics.loop.nearMisses[0].failedGate}</span>
+        ) : null}
+      </div>
+
+      {scope === "options" && liveSession !== "regular" ? (
+        <div className="session-explainer">
+          <b>Options are in watch mode.</b> 0DTE contracts only alert during regular market hours. For live premarket/after-hours ideas, switch to <button type="button" onClick={() => { setScope("market"); saveDashboardPrefs({ liveScope: "market" }); }}>Stock movers</button>.
+        </div>
+      ) : null}
+
       {streamFresh === "red" && marketActive ? (
         <p className="live-guide live-stale-warn" role="status">
           Tape feed is stale — wait for &quot;tape live&quot; in the bar above before trading.
         </p>
       ) : null}
 
+      {(scope !== "options" || liveSession === "regular" || optionsOpeningWatch || heroAlert || liveTapeLead) ? (
       <div className="axiom-hero-row">
         <CardTip metric="heroCallout" className="axiom-hero-card-wrap">
         <div
@@ -663,6 +697,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
           )}
         </Panel>
       </div>
+      ) : null}
 
       <div className="axiom-strip">
         {strip.map((s) => (

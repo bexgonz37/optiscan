@@ -396,7 +396,7 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
         insertNotificationEvent({
           alertId: id, channel: "discord_webhook", status: "skipped",
           error: finalCaptureAction === "TRADE"
-            ? "TRADE but not clear enough for Discord (need ≥82% confidence, ≥0.2%/min aligned speed)"
+            ? "TRADE but not clear enough for Discord (see DISCORD_OPTIONS_MIN_CONFIDENCE and DISCORD_OPTIONS_MIN_SPEED)"
             : `verdict ${finalCaptureAction} (${tier} tier) — only clear TRADE notifies`,
         });
       } catch { /* bookkeeping never breaks capture */ }

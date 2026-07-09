@@ -258,6 +258,9 @@ DISCORD_ROLE_0DTE=         # optional @role on BUY pings
 DISCORD_ROLE_STOCKS=
 PUBLIC_APP_URL=            # embed footer links
 STOCK_CALLOUTS=1           # enable share-momentum engine
+STOCK_CLEAR_MIN_CONFIDENCE=78
+DISCORD_OPTIONS_MIN_CONFIDENCE=82
+DISCORD_OPTIONS_MIN_SPEED=0.2
 ```
 
 ### Scanner loop (0DTE real-time)
@@ -315,6 +318,7 @@ PAPER_MIN_POSITION_DOLLARS=1000     # experiment: trade about this much at a tim
 PAPER_TARGET_PROFIT_DOLLARS=200     # goal label/risk context; not a guarantee
 PAPER_EXPERIMENTAL_OVERSIZE=1       # paper-only: widen dollar caps for target sizing
 PAPER_STOCK_SCALPS=1
+PAPER_STOCK_SESSIONS=premarket,regular,afterhours
 PAPER_ALLOW_ZERO_DTE=1
 ```
 
