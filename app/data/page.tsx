@@ -32,6 +32,7 @@ type Health = {
 type Line = { id: string; ch: "T" | "Q" | "A" | "O"; sym: string; txt: string; tone: "up" | "dn" | "" };
 
 const FIREHOSE_MAX = 16;
+let firehoseSeq = 0;
 
 export default function DataCorePage() {
   const { realtime: loop } = useScannerStream();
@@ -68,8 +69,9 @@ export default function DataCorePage() {
       const ch: Line["ch"] = r.hodBreak || r.lodBreak ? "A" : "T";
       const price = r.price != null ? `$${Number(r.price).toFixed(2)}` : "—";
       const spd = r.shortRate != null ? `${r.shortRate > 0 ? "+" : ""}${r.shortRate.toFixed(2)}%/m` : "";
+      const seq = firehoseSeq++;
       return {
-        id: `${r.symbol}-${now}-${i}`,
+        id: `${ch}-${r.symbol ?? "UNK"}-${now}-${seq}-${i}`,
         ch,
         sym: r.symbol,
         txt: `${price} · ${move > 0 ? "+" : ""}${move.toFixed(2)}% ${spd ? `· ${spd}` : ""}`,
