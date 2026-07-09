@@ -3361,7 +3361,7 @@ td.num,
 .seg.mini button { padding: .34rem .7rem; font-size: .54rem; }
 .product-bar {
   display: flex; align-items: stretch; justify-content: space-between; gap: 1.5rem;
-  margin-top: 5.5rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line-strong);
+  margin-top: 2.4rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line-strong);
 }
 .product-tabs { display: grid; grid-template-columns: repeat(2, minmax(190px, 1fr)); border: 1px solid var(--line-strong); }
 .product-tabs button {
@@ -3380,6 +3380,35 @@ td.num,
 .product-session-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); box-shadow: 0 0 0 3px rgba(255,255,255,.035); }
 .product-session.live { color: var(--silver); }
 .product-session.live .product-session-dot { background: var(--green); box-shadow: 0 0 10px rgba(0,200,5,.5); }
+.live-guide {
+  color: var(--steel);
+  font-size: .66rem;
+  font-weight: 650;
+  letter-spacing: .07em;
+  line-height: 1.45;
+}
+.simple-guide {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: .65rem;
+  margin: .9rem 0 1.2rem;
+  padding: .75rem .85rem;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,.018);
+}
+.simple-guide span {
+  min-width: 0;
+  color: var(--soft);
+  text-transform: none;
+}
+.simple-guide b { color: var(--green); }
+.live-stale-warn {
+  margin: .8rem 0 1rem;
+  padding: .7rem .85rem;
+  border: 1px solid rgba(255,191,0,.28);
+  background: rgba(255,191,0,.06);
+  color: #ffd66b;
+}
 .last-callout {
   display: inline-block; margin-top: 1.3rem; padding: .62rem .8rem; border-left: 2px solid var(--line-strong);
   color: var(--steel); background: rgba(255,255,255,.02); font-size: .62rem; font-weight: 650; letter-spacing: .08em; text-transform: uppercase;

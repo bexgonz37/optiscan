@@ -429,32 +429,24 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
   const openingCandidate = displayRows[0] ?? null;
   const openingSide = (openingCandidate?.shortRate ?? openingCandidate?.movePct ?? 0) < 0 ? "put" : "call";
   const openingCls = openingSide === "put" ? "dn" : "up";
-  const sessionLabel = liveSession === "premarket"
-    ? "Premarket shares live · 4:00–9:30 AM ET"
-    : liveSession === "regular"
-      ? "Regular session live · options + shares"
-      : liveSession === "afterhours"
-        ? "After-hours shares live · until 8:00 PM ET"
-        : "Market closed · shares resume 4:00 AM ET";
-  const productNote = scope === "options"
-    ? optionsActive
-      ? "0DTE options live · contracts validated now"
-      : optionsOpeningWatch
-        ? "Opening watch live · underlying momentum only · contracts validate at 9:30"
-        : "0DTE options closed · opening watch resumes 4:00 AM ET"
-    : marketActive
-      ? languageMode === "public"
-        ? "Share momentum live · bullish/bearish watches · no options"
-        : "Share momentum live · LONG/SHORT · no options"
-      : "Share momentum closed · resumes 4:00 AM ET";
-
-  const holdNote = readingHold
-    ? "Held · list frozen · prices still tick"
-    : scope === "options"
-      ? "Core names only · callouts stick 5 min · Hold freezes the list"
-      : liveSession === "closed"
-        ? "Market closed · showing latest snapshot movers"
-        : "Ranks refresh every 2 min · hover or tap Hold to freeze";
+  const simpleSessionLabel =
+    liveSession === "regular" ? "Market is open"
+      : liveSession === "premarket" ? "Premarket stocks are moving"
+      : liveSession === "afterhours" ? "After-hours stocks are moving"
+      : "Market closed";
+  const simpleProductNote =
+    scope === "options"
+      ? optionsActive
+        ? "Options ideas are live now."
+        : optionsOpeningWatch
+          ? "Watching stocks now. Options contracts validate at 9:30."
+          : "Options are closed. Premarket watch resumes at 4:00 AM ET."
+      : marketActive
+        ? "Stock movers are live now. No options contracts here."
+        : "Stock movers resume at 4:00 AM ET.";
+  const simpleHoldNote = readingHold
+    ? "Held: the list is frozen, prices still update."
+    : "Use Hold when the tape feels too jumpy.";
 
   const liveConviction = computeConviction(scope, heroAlert, heroVerdict, liveTapeLead ?? openingCandidate);
   // Beginner fix (2026-07-09): the raw number recomputed every second and
@@ -480,15 +472,15 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
       <div className="product-bar" aria-label="Scanner product">
         <div className="product-tabs">
           <button type="button" className={scope === "options" ? "on" : ""} onClick={() => { setScope("options"); setSortKey("symbol"); saveDashboardPrefs({ liveScope: "options", liveSort: "symbol" }); }}>
-            <span>Options</span><small>Opening watch 4:00–9:30 · live 9:30–4:00</small>
+            <span>Options ideas</span><small>Contracts after 9:30 · watch before open</small>
           </button>
           <button type="button" className={scope === "market" ? "on" : ""} onClick={() => { setScope("market"); saveDashboardPrefs({ liveScope: "market" }); }}>
-            <span>Market</span><small>Shares · 4:00 AM–8:00 PM ET</small>
+            <span>Stock movers</span><small>Premarket · regular · after-hours</small>
           </button>
         </div>
         <div className={`product-session ${marketActive ? "live" : "closed"}${streamFresh === "red" ? " tape-stale" : ""}`}>
           <span className="product-session-dot" />
-          {sessionLabel}
+          {simpleSessionLabel}
           {marketActive ? ` · tape ${streamFresh === "green" ? "live" : streamFresh === "yellow" ? "slow" : "stale"}${streamAgeSec != null ? ` (${streamAgeSec}s)` : ""}` : ""}
         </div>
         <div className="live-ticker-search">
@@ -513,13 +505,12 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
         </div>
       </div>
 
-      <p className="live-guide">
-        <b>Market</b> tab = share momentum (BUY LONG/SHORT, in/out on shares).
-        <b> Options</b> tab = 0DTE scalps — hero prefers <b>META-shaped</b> speed (≥0.22%/m) + surge (≥2.2×) + tight spread.
-        Click any ticker for a chart (<b>1m</b> default). All callout times are <b>ET</b> (market time).
-        <b> 5m checkpoint</b> = timer tracking whether the callout is still moving your way.
-        Hero only shows callouts from the last {scope === "market" ? "10" : "5"} minutes — otherwise live tape.
-      </p>
+      <div className="live-guide simple-guide" aria-label="How to read this screen">
+        <span><b>1.</b> Pick Options or Stocks.</span>
+        <span><b>2.</b> Read the big card first.</span>
+        <span><b>3.</b> Click any ticker for the chart.</span>
+        <span><b>Tip:</b> use Hold when the list feels jumpy.</span>
+      </div>
 
       {streamFresh === "red" && marketActive ? (
         <p className="live-guide live-stale-warn" role="status">
@@ -543,18 +534,18 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
           kicker={
             heroOptionsActive
               ? <>
-                  {heroVerdict?.action === "TRADE" ? "The callout" : isMetaShapedAlert(heroAlert!) ? "META-shaped momentum" : "Fillable setup"}
+                  {heroVerdict?.action === "TRADE" ? "Options callout" : isMetaShapedAlert(heroAlert!) ? "Fast setup forming" : "Tradable setup"}
                   {" · "}
                   {fmtMarketFreshness(heroAlert!.alert_time) ?? fmtMarketTime(heroAlert!.alert_time)}
                   {heroFillable && heroVerdict?.action !== "TRADE" ? ` · spr ${Number(heroAlert!.entry_spread_pct).toFixed(1)}%` : ""}
                 </>
               : liveTapeLead
-                ? <>Live spike · tick {tapeTickAgeMs != null ? `${Math.round(tapeTickAgeMs / 1000)}s ago` : "now"} · scanner firing…</>
+                ? <>Fast mover - tick {tapeTickAgeMs != null ? `${Math.round(tapeTickAgeMs / 1000)}s ago` : "now"} - checking quality</>
               : scope === "options" && optionsOpeningWatch
                 ? <>Opening watch · premarket · not executable yet</>
                 : scope === "market" && marketActive && heroAlert
                   ? <>Share momentum · {stockSession}</>
-                  : <>Waiting for the next {scope === "options" ? "0DTE BUY" : "SHARE CALLOUT"}</>
+                  : <>Waiting for the next {scope === "options" ? "options idea" : "stock mover"}</>
           }
           action={
             heroOptionsActive
@@ -576,18 +567,18 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
                 ? <>{openingCandidate.symbol} · premarket bias</>
                 : scope === "market" && marketActive && heroAlert
                   ? <>{heroAlert.ticker} shares · {fmtPct(heroAlert.percent_move_at_alert)} day</>
-                  : <>{scope === "options" ? "0DTE desk" : "Share momentum desk"}</>
+                  : <>{scope === "options" ? "No option idea yet" : "No stock mover yet"}</>
           }
           reason={
             heroOptionsActive
-              ? heroVerdict?.reason ?? heroAlert!.ai_explanation ?? "Tight spread + momentum — scalping setup."
+              ? heroVerdict?.reason ?? heroAlert!.ai_explanation ?? "Tight spread + momentum - short-term setup."
               : liveTapeLead
-                ? <>Fastest core mover right now — callout lands in ~5–15s once chain validates. Speed {speedLabel(liveTapeLead.instantRate ?? liveTapeLead.shortRate)} · surge {liveTapeLead.surge != null ? `${liveTapeLead.surge.toFixed(1)}×` : "—"}</>
+                ? <>Fastest core mover right now. The scanner is checking whether volume, trend, and liquidity are good enough. Speed {speedLabel(liveTapeLead.instantRate ?? liveTapeLead.shortRate)} - volume {liveTapeLead.surge != null ? `${liveTapeLead.surge.toFixed(1)}x` : "-"}</>
               : scope === "options" && optionsOpeningWatch && openingCandidate
                 ? <>Premarket {fmtPct(openingCandidate.movePct)} · speed {openingCandidate.shortRate != null ? `${openingCandidate.shortRate.toFixed(2)}%/min` : "—"} · contracts validate at 9:30</>
                 : scope === "market" && marketActive && heroAlert
                   ? heroAlert.ai_explanation ?? heroAlert.private_label ?? "Clean directional tape with share-volume confirmation."
-                  : productNote
+                  : simpleProductNote
           }
           footer={
             <>
@@ -616,11 +607,11 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
               <p className="gates" style={{ marginTop: 10 }}>
                 {heroAlert
                   ? isMetaShapedAlert(heroAlert) && heroAlert.capture_action !== "TRADE"
-                    ? <>META-shaped momentum — <b>fast tape</b> like {META_REFERENCE.ticker} #{META_REFERENCE.alertId}; confirm spread before entry</>
-                    : <>Every gate passed — <b>speed</b> · <b>volume</b> · <b>trend</b> · <b>fillable</b></>
+                    ? <>Fast setup forming - <b>confirm spread</b> before entry</>
+                    : <>Quality checks passed - <b>speed</b> + <b>volume</b> + <b>trend</b> + <b>liquidity</b></>
                   : liveTapeLead
-                    ? <>Live tape only — <b>not a callout</b> until scanner fires (≤{scope === "market" ? "10" : "5"}m fresh)</>
-                    : <>Scanning — hero clears when last callout ages out</>}
+                    ? <>Watch only - <b>not a trade idea yet</b> until quality checks pass</>
+                    : <>Scanning - waiting for a clean setup</>}
               </p>
               {heroAlert && scope === "options" ? <MetaBarPanel alert={heroAlert} compact /> : null}
             </>
@@ -632,12 +623,12 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
         <CardTip metric="conviction" className="axiom-hero-ring">
           <ConvictionRing value={conviction} bear={heroBear} label={convictionBand} size={168} />
           <div className="axiom-today">
-            <InfoTip metric="conviction">Conviction</InfoTip> · {tradingDay()}
-            <small>0–100 strength for today&apos;s hero callout</small>
+            <InfoTip metric="conviction">Strength</InfoTip> - {tradingDay()}
+            <small>How strong the main idea is right now</small>
           </div>
         </CardTip>
 
-        <Panel title="Live tracking" meta={`${trackingList.length} open · click row for chart`} live tip="liveTracking" className="axiom-hero-track">
+        <Panel title="Open ideas" meta={`${trackingList.length} tracking - click row for chart`} live tip="liveTracking" className="axiom-hero-track">
           {trackingList.length ? trackingList.map((a) => {
             const ret = scope === "market" ? (a.latest_max_move ?? a.move_5m ?? a.eod_move) : a.option_return_pct;
             const bear = a.trade_bias === "stock_short_candidate" || a.direction === "bearish" || String(a.option_side ?? "").toLowerCase().startsWith("p");
@@ -681,7 +672,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
 
       {coreTapeRows.length ? (
         <div className="hot-names-row core-names-row" aria-label="Core watch speed board">
-          <span className="hot-names-label">Core watch · NVDA SPY TSLA… · click for chart</span>
+          <span className="hot-names-label">Core watch - NVDA SPY TSLA... - click for chart</span>
           {coreTapeRows.slice(0, 12).map((r) => (
             <button
               key={r.symbol}
@@ -731,7 +722,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
       <div className="section-head scanner-head">
         <span className="section-title">Scanners</span>
         <span className="section-head-actions">
-          <span className="section-note">{productNote} · {holdNote}</span>
+          <span className="section-note">{simpleProductNote} {simpleHoldNote}</span>
           <label className="sort-control">
             <span>Sort</span>
             <select value={sortKey} onChange={(e) => {
@@ -812,7 +803,7 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
 
       <div className="section-head">
         <span className="section-title">{scope === "options" ? "Discord callouts today" : "Recent callouts"}</span>
-        <span className="section-note">{scope === "options" ? "Only verified BUY / META-shaped setups · newest first" : `Newest first · today\u2019s ${scope === "market" ? "share" : "options"} signals`}</span>
+        <span className="section-note">{scope === "options" ? "Best verified options ideas - newest first" : `Newest first - today\u2019s ${scope === "market" ? "stock" : "options"} ideas`}</span>
       </div>
       <ul className="ledger axiom-ledger">
         {settled.length ? settled.map((a) => {

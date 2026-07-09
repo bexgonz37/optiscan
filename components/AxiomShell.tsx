@@ -5,36 +5,31 @@ import { useEffect, useState, type ReactNode } from "react";
 import { marketSession, type MarketSession } from "@/lib/trading-session";
 import { NavRail } from "@/components/ui/NavRail";
 
-const SCANNER_NAV = [
-  { href: "/", label: "Live / Options" },
-  { href: "/data", label: "Data Core" },
+const MAIN_NAV = [
+  { href: "/", label: "Today's Scanner" },
+  { href: "/paper", label: "Paper Trading" },
+  { href: "/alerts", label: "Track Record" },
 ];
 
-const INTEL_NAV = [
-  { href: "/copilot", label: "AI" },
-  { href: "/paper", label: "Paper Trading" },
-  { href: "/swing", label: "Swing (preview)" },
-  { href: "/alerts", label: "Accuracy" },
+const TOOL_NAV = [
+  { href: "/swing", label: "Swing Ideas" },
+  { href: "/data", label: "Data Health" },
   { href: "/settings", label: "Settings" },
 ];
 
 const PAGE_META: Record<string, { title: string; sub: string }> = {
-  "/": { title: "Live Scanner", sub: "0DTE · share momentum" },
-  "/data": { title: "Data Core", sub: "Massive feed health · live tick stream" },
-  "/copilot": { title: "AI", sub: "Coming soon" },
-  "/alerts": { title: "Accuracy", sub: "Live callouts · track record · journal" },
-  "/paper": { title: "Paper Trading", sub: "Autonomous sim · risk engine · lessons" },
-  "/swing": { title: "Swing Scanner", sub: "1–4 week candidates · research preview" },
-  "/settings": { title: "Settings", sub: "Thresholds · Discord" },
-  "/review": { title: "Review", sub: "Methodology · limits" },
+  "/": { title: "Today's Scanner", sub: "Options ideas + stock movers" },
+  "/data": { title: "Data Health", sub: "Feed, quota, and server status" },
+  "/copilot": { title: "Explain Signals", sub: "Coming soon" },
+  "/alerts": { title: "Track Record", sub: "What worked, what failed" },
+  "/paper": { title: "Paper Trading", sub: "Practice trades, no real money" },
+  "/swing": { title: "Swing Ideas", sub: "1-4 week options research" },
+  "/settings": { title: "Settings", sub: "Alerts, Discord, safety" },
+  "/review": { title: "Review", sub: "Methodology and limits" },
 };
 
 function isActive(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
-  if (href === "/data") return pathname === "/data";
-  if (href === "/copilot") return pathname === "/copilot";
-  if (href === "/settings") return pathname === "/settings";
-  if (href === "/review") return pathname === "/review";
   if (href === "/alerts") return pathname === "/alerts" || pathname.startsWith("/alert-lab");
   return pathname === href || pathname.startsWith(`${href}/`);
 }
@@ -44,7 +39,7 @@ export function AxiomShell({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<MarketSession | null>(null);
   const [clock, setClock] = useState("");
   const [liveOk, setLiveOk] = useState<boolean | null>(null);
-  const [liveLabel, setLiveLabel] = useState("Checking Massive…");
+  const [liveLabel, setLiveLabel] = useState("Checking data...");
 
   const pageKey = pathname === "/" ? "/" : `/${pathname.split("/").filter(Boolean)[0]}`;
   const pageMeta = PAGE_META[pageKey] ?? { title: "OptiScan", sub: "Live terminal" };
@@ -80,25 +75,25 @@ export function AxiomShell({ children }: { children: ReactNode }) {
         const tickAge = Number(body?.lastTickAgeMs);
         setLiveOk(loopUp);
         if (Math.abs(skewMs) > 120_000) {
-          setLiveLabel(`Clock skew ${Math.round(Math.abs(skewMs) / 1000)}s — times unreliable`);
+          setLiveLabel("Clock issue - times unreliable");
         } else if (loopUp && tickAge != null && tickAge > 12_000 && body?.session !== "closed") {
-          setLiveLabel(`Tape ${Math.round(tickAge / 1000)}s stale — wait before trading`);
+          setLiveLabel("Data delayed - wait");
         } else if (loopUp) {
-          setLiveLabel("Massive live");
+          setLiveLabel("Live data OK");
         } else if (body?.loopRunning === false && String(body?.note ?? "").includes("advisory lock")) {
-          setLiveLabel("Scanner lock — restart dev or wait ~2 min");
+          setLiveLabel("Scanner starting");
         } else if (body?.session === "closed") {
-          setLiveLabel("Market closed · Massive OK");
+          setLiveLabel("Market closed - data OK");
           setLiveOk(true);
         } else if (body?.keyPresent === false) {
-          setLiveLabel("No Massive key in .env.local");
+          setLiveLabel("Missing data key");
         } else {
-          setLiveLabel("Scanner loop offline");
+          setLiveLabel("Scanner starting");
         }
       } catch {
         if (!cancelled) {
           setLiveOk(false);
-          setLiveLabel("Cannot reach server");
+          setLiveLabel("Server offline");
         }
       }
     };
@@ -120,10 +115,10 @@ export function AxiomShell({ children }: { children: ReactNode }) {
                 OPTI<span>SCAN</span>
               </>
             }
-            tagline="LIVE TERMINAL"
+            tagline="OPTIONS SCANNER"
             sections={[
-              { title: "SCANNERS", items: SCANNER_NAV },
-              { title: "INTELLIGENCE", items: INTEL_NAV },
+              { title: "MAIN", items: MAIN_NAV },
+              { title: "TOOLS", items: TOOL_NAV },
             ]}
             isActive={(href) => isActive(pathname, href)}
             footer={
@@ -135,7 +130,7 @@ export function AxiomShell({ children }: { children: ReactNode }) {
                   />
                   {liveLabel}
                 </div>
-                <div className="railu">{session ?? "—"} · {clock} ET</div>
+                <div className="railu">{session ?? "-"} · {clock} ET</div>
               </>
             }
           />
