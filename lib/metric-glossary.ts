@@ -192,6 +192,14 @@ export const METRIC_GLOSSARY: Record<string, MetricInfo> = {
     scoring: "Headline stat on the paper-trading dashboard.",
     risk: "Past drawdown is a floor, not a ceiling — the worst drawdown is always ahead of you. Size accordingly.",
   },
+  conviction: {
+    label: "Conviction (0–100)",
+    what: "How much independent evidence currently agrees with the strongest signal on screen: speed, volume, tape quality, direction agreement, and (when a callout is live) contract economics.",
+    why: "One stable read of 'how seriously should I take what I'm seeing right now' — it is NOT a win probability and not a price target.",
+    direction: "Higher = more agreeing evidence. The word matters more than the digits: LOW (<40) = nothing actionable, BUILDING (40–64) = watch, STRONG (65–84) = signal-grade, VERY STRONG (85+) = rare full agreement.",
+    scoring: "Derived from the live verdict confidence or the leading candidate's speed+volume; sampled every 15 seconds so it reads as a level, not a jitter.",
+    risk: "Evidence agreement is not certainty — very strong conviction setups still fail. If the band drops while you watch, that IS the information.",
+  },
   swingScore: {
     label: "Swing score (0–100)",
     what: "Composite 1–4 week opportunity grade: trend alignment, momentum, volume, liquidity, contract economics, and event risk (see docs/SWING-SCANNER.md for every formula).",

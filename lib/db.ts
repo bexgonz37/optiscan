@@ -258,6 +258,26 @@ const JOURNAL_COLUMN_MIGRATIONS: [string, string][] = [
   ["dedup_key", "ALTER TABLE trade_journal ADD COLUMN dedup_key TEXT"],
 ];
 
+// Paper realism (2026-07-09): full market snapshot at entry/exit so paper
+// trades carry everything a broker fill would — greeks, IV, OI, volume,
+// bid/ask — and the future broker adapter changes nothing about the schema.
+const PAPER_COLUMN_MIGRATIONS: Array<[string, string]> = [
+  ["entry_bid", "ALTER TABLE paper_trades ADD COLUMN entry_bid REAL"],
+  ["entry_ask", "ALTER TABLE paper_trades ADD COLUMN entry_ask REAL"],
+  ["entry_spread_pct", "ALTER TABLE paper_trades ADD COLUMN entry_spread_pct REAL"],
+  ["entry_iv", "ALTER TABLE paper_trades ADD COLUMN entry_iv REAL"],
+  ["entry_delta", "ALTER TABLE paper_trades ADD COLUMN entry_delta REAL"],
+  ["entry_gamma", "ALTER TABLE paper_trades ADD COLUMN entry_gamma REAL"],
+  ["entry_theta", "ALTER TABLE paper_trades ADD COLUMN entry_theta REAL"],
+  ["entry_vega", "ALTER TABLE paper_trades ADD COLUMN entry_vega REAL"],
+  ["entry_oi", "ALTER TABLE paper_trades ADD COLUMN entry_oi REAL"],
+  ["entry_volume", "ALTER TABLE paper_trades ADD COLUMN entry_volume REAL"],
+  ["entry_reason", "ALTER TABLE paper_trades ADD COLUMN entry_reason TEXT"],
+  ["exit_bid", "ALTER TABLE paper_trades ADD COLUMN exit_bid REAL"],
+  ["exit_ask", "ALTER TABLE paper_trades ADD COLUMN exit_ask REAL"],
+  ["exit_spread_pct", "ALTER TABLE paper_trades ADD COLUMN exit_spread_pct REAL"],
+];
+
 function migrate(db: Database.Database) {
   // Column migrations must run before SCHEMA: idx_alerts_dedup references the
   // 'session' column, which pre-stocks-mode databases don't have yet.
@@ -273,6 +293,8 @@ function migrate(db: Database.Database) {
     if (dedupSql?.sql && !String(dedupSql.sql).includes("session")) db.exec("DROP INDEX idx_alerts_dedup");
   }
   db.exec(SCHEMA);
+  const paperCols = cols("paper_trades");
+  for (const [col, sql] of PAPER_COLUMN_MIGRATIONS) if (!paperCols.has(col)) db.exec(sql);
   const alertCols = cols("alerts");
   for (const [col, sql] of ALERT_COLUMN_MIGRATIONS) if (!alertCols.has(col)) db.exec(sql);
   const journalCols = cols("trade_journal");

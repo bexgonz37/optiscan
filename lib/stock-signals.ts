@@ -104,6 +104,25 @@ export function computeStockVerdict(i: StockSignalInput, { minScore = STOCK_DEFA
   if (eff != null && eff < 0.35) {
     return { action: "SKIP", side, headline: "SKIP", reason: `Tape too choppy (efficiency ${eff.toFixed(2)}) — fake-move risk.`, confidence, score, reasons };
   }
+  // Day-trend alignment (quality-model fix, 2026-07-09): a 10-second bearish
+  // read on a stock that's UP big on the day is a dip, not a short — the
+  // options path already blocks counter-trend entries (trendAlignedForTrade);
+  // shares now get the same discipline. Counter-day-trend BUYs require the
+  // structural proof of a level break in the trade direction.
+  const dayMove = isNum(i.movePct) ? i.movePct : null;
+  const counterTrend =
+    dayMove != null &&
+    ((side === "SHORT" && dayMove > 0.75 && !i.lodBreak) ||
+     (side === "LONG" && dayMove < -0.75 && !i.hodBreak));
+  if (counterTrend) {
+    return {
+      action: "WAIT", side, headline: side === "LONG" ? "Watch ↑ move" : "Watch ↓ move",
+      reason: side === "SHORT"
+        ? `Stock is +${dayMove!.toFixed(1)}% on the day — a short against the day trend needs an LOD break, not a 10-second dip.`
+        : `Stock is ${dayMove!.toFixed(1)}% on the day — a long against the day trend needs an HOD break, not a 10-second pop.`,
+      confidence, score, reasons,
+    };
+  }
   if (!speedAligned) {
     return {
       action: "WAIT", side, headline: side === "LONG" ? "Watch ↑ move" : "Watch ↓ move",

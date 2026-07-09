@@ -26,6 +26,7 @@ import { liveCtxFor, useLiveTapeMap } from "@/hooks/useLiveTapeMap";
 import { loadDashboardPrefs, saveDashboardPrefs } from "@/lib/dashboard-prefs";
 import { uiDirectiveLabel } from "@/lib/language-modes";
 import { InfoTip } from "@/components/InfoTip";
+import { stickyMembership, makeStickyState } from "@/lib/sticky-list";
 
 /** Beginner tooltips: strip-stat label -> glossary key (lib/metric-glossary). */
 const STRIP_METRIC: Record<string, string> = {
@@ -345,10 +346,20 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
   );
   const rowMap = useMemo(() => new Map(rows.map((r) => [r.symbol, r])), [rows]);
   const fullMap = useMemo(() => new Map(tape.map((r) => [r.symbol, r])), [tape]);
-  const displayRows = useMemo(
-    () => stableSymbols.map((s) => rowMap.get(s) ?? (readingHold ? fullMap.get(s) : undefined)).filter(Boolean) as TapeRow[],
-    [stableSymbols, rowMap, fullMap, readingHold],
-  );
+  // Membership dwell (2026-07-09): symbols no longer flash in/out — once
+  // watched they stay listed ~90s in a dimmed "cooling" state until they
+  // re-qualify, alert, or the dwell expires. Presentation only.
+  const stickyState = useRef(makeStickyState());
+  const displayRows = useMemo(() => {
+    const base = stableSymbols.map((s) => rowMap.get(s) ?? (readingHold ? fullMap.get(s) : undefined)).filter(Boolean) as TapeRow[];
+    const sticky = stickyMembership(base.map((r) => r.symbol), stickyState.current, Date.now());
+    return sticky.symbols
+      .map((s: string) => {
+        const row = rowMap.get(s) ?? fullMap.get(s);
+        return row ? ({ ...row, cooling: sticky.cooling.has(s) } as TapeRow & { cooling?: boolean }) : undefined;
+      })
+      .filter(Boolean) as (TapeRow & { cooling?: boolean })[];
+  }, [stableSymbols, rowMap, fullMap, readingHold]);
 
   const scannedRows = scope === "market" && activeScan
     ? applyStockScan(displayRows, activeScan.filters)
@@ -444,7 +455,11 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
         ? "Market closed · showing latest snapshot movers"
         : "Ranks refresh every 2 min · hover or tap Hold to freeze";
 
-  const conviction = computeConviction(scope, heroAlert, heroVerdict, liveTapeLead ?? openingCandidate);
+  const liveConviction = computeConviction(scope, heroAlert, heroVerdict, liveTapeLead ?? openingCandidate);
+  // Beginner fix (2026-07-09): the raw number recomputed every second and
+  // meant nothing to a new trader. Sampled every 15s + banded into words.
+  const conviction = useSampledSnapshot(liveConviction, 15_000, `${scope}-conviction`);
+  const convictionBand = conviction >= 85 ? "VERY STRONG" : conviction >= 65 ? "STRONG" : conviction >= 40 ? "BUILDING" : "LOW";
   const heroBear = heroAlert
     ? (scope === "options"
       ? (heroSide === "put" || (optionsOpeningWatch && openingSide === "put"))
@@ -612,9 +627,9 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
         </div>
 
         <div className="axiom-hero-ring">
-          <ConvictionRing value={conviction} bear={heroBear} label="TODAY" />
+          <ConvictionRing value={conviction} bear={heroBear} label={convictionBand} />
           <div className="axiom-today">
-            Conviction · {tradingDay()}
+            <InfoTip metric="conviction">Conviction</InfoTip> · {tradingDay()}
             <small>0–100 strength for today&apos;s hero callout</small>
           </div>
         </div>
@@ -740,6 +755,8 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
                 return (
                   <li
                     key={r.symbol}
+                    className={(r as any).cooling ? "row-cooling" : undefined}
+                    title={(r as any).cooling ? "Cooling — stays listed ~90s after momentum fades" : undefined}
                     onClick={() => onOpenChart?.(r.symbol)}
                     role="button"
                     tabIndex={0}
@@ -762,6 +779,31 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
         ))}
       </div>
       </>) : null}
+
+      {scope === "options" && (loop?.nearMisses?.length ?? 0) > 0 ? (
+        <details className="near-miss-panel">
+          <summary className="muted text-sm">
+            Why didn&apos;t it alert? — {loop.nearMisses.length} near-miss{loop.nearMisses.length === 1 ? "" : "es"} (symbols that came close but a quality gate held them back)
+          </summary>
+          <ul className="ledger near-miss-list">
+            {loop.nearMisses.slice(0, 8).map((m: any) => (
+              <li key={`${m.symbol}-${m.t}`}>
+                <span className="t num">{new Date(m.t).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" })}</span>
+                <span className="what">
+                  <b>{m.symbol}</b> blocked by <b>{m.failedGate}</b>
+                  <small>
+                    speed {m.values?.shortRate?.toFixed?.(2) ?? "—"}%/min (needs {m.thresholds?.minRate?.toFixed?.(2)})
+                    · surge {m.values?.surge?.toFixed?.(1) ?? "—"}x (needs {m.thresholds?.minSurge?.toFixed?.(1)})
+                    · eff {m.values?.efficiency?.toFixed?.(2) ?? "—"}
+                  </small>
+                </span>
+                <span className="res muted text-xs">{m.gates?.cooldownBlocked ? "cooldown" : "gate"}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="muted text-xs">Fewer alerts is the design — this panel shows the bar is being enforced, not that the scanner is asleep.</p>
+        </details>
+      ) : null}
 
       <div className="section-head">
         <span className="section-title">{scope === "options" ? "Discord callouts today" : "Recent callouts"}</span>

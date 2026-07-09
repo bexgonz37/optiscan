@@ -58,9 +58,30 @@ function persist(trade: PaperTrade): void {
   );
 }
 
-export function listPaperTrades(limit = 200): PaperTrade[] {
+export function listPaperTrades(limit = 200): Array<PaperTrade & {
+  unrealizedPnlDollars: number | null;
+  unrealizedPnlPct: number | null;
+  entrySnapshot: Record<string, number | string | null>;
+}> {
   const db = getDb();
-  return (db.prepare("SELECT * FROM paper_trades ORDER BY id DESC LIMIT ?").all(limit) as any[]).map(rowToTrade);
+  return (db.prepare("SELECT * FROM paper_trades ORDER BY id DESC LIMIT ?").all(limit) as any[]).map((r) => {
+    const t = rowToTrade(r);
+    const live = t.status === "ENTERED" && t.entryPrice != null && t.lastMark != null;
+    return {
+      ...t,
+      // Unrealized P/L updates every sweep from the live mark — exactly what a
+      // broker position screen would show.
+      unrealizedPnlDollars: live ? +(((t.lastMark as number) - (t.entryPrice as number)) * 100 * t.contracts).toFixed(2) : null,
+      unrealizedPnlPct: live ? +((((t.lastMark as number) - (t.entryPrice as number)) / (t.entryPrice as number)) * 100).toFixed(2) : null,
+      entrySnapshot: {
+        bid: r.entry_bid ?? null, ask: r.entry_ask ?? null, spreadPct: r.entry_spread_pct ?? null,
+        iv: r.entry_iv ?? null, delta: r.entry_delta ?? null, gamma: r.entry_gamma ?? null,
+        theta: r.entry_theta ?? null, vega: r.entry_vega ?? null,
+        openInterest: r.entry_oi ?? null, volume: r.entry_volume ?? null,
+        entryReason: r.entry_reason ?? null,
+      },
+    };
+  });
 }
 
 function openTrades(): PaperTrade[] {
@@ -213,13 +234,40 @@ function liveSnapshotFor(ticker: string): LiveTapeSnapshot | null {
   }
 }
 
-async function quoteFor(trade: PaperTrade): Promise<OptionQuote | null> {
+interface MarketSnap {
+  quote: OptionQuote;
+  /** Full contract state for realism snapshots (greeks/IV/OI/volume). */
+  contract: any;
+}
+
+async function quoteFor(trade: PaperTrade): Promise<MarketSnap | null> {
   if (!trade.optionSymbol) return null;
   const chain: any = await fetchOptionChain(trade.ticker, { dteMin: 0, dteMax: 60, maxPages: 2 });
   if (!chain?.available) return null;
   const c = chain.contracts.find((x: any) => x.optionSymbol === trade.optionSymbol);
   if (!c) return null;
-  return { optionSymbol: c.optionSymbol, bid: c.bid, ask: c.ask, mid: c.mid, spreadPct: c.spreadPct, asOfMs: Date.now() };
+  return {
+    quote: { optionSymbol: c.optionSymbol, bid: c.bid, ask: c.ask, mid: c.mid, spreadPct: c.spreadPct, asOfMs: Date.now() },
+    contract: c,
+  };
+}
+
+/** Persist the full market snapshot the moment an entry/exit fills. */
+function persistMarketSnapshot(id: number | undefined, kind: "entry" | "exit", snap: MarketSnap, entryNote?: string): void {
+  if (id == null) return;
+  const db = getDb();
+  const c = snap.contract;
+  if (kind === "entry") {
+    db.prepare(
+      `UPDATE paper_trades SET entry_bid=?, entry_ask=?, entry_spread_pct=?, entry_iv=?, entry_delta=?,
+         entry_gamma=?, entry_theta=?, entry_vega=?, entry_oi=?, entry_volume=?, entry_reason=COALESCE(?, entry_reason)
+       WHERE id=?`,
+    ).run(c.bid, c.ask, c.spreadPct, c.iv, c.delta, c.gamma, c.theta, c.vega, c.openInterest, c.volume, entryNote ?? null, id);
+  } else {
+    db.prepare(
+      `UPDATE paper_trades SET exit_bid=?, exit_ask=?, exit_spread_pct=? WHERE id=?`,
+    ).run(c.bid, c.ask, c.spreadPct, id);
+  }
 }
 
 export async function sweepPaperTrades(nowMs: number = Date.now()): Promise<{ advanced: number; fetched: number }> {
@@ -249,16 +297,21 @@ export async function sweepPaperTrades(nowMs: number = Date.now()): Promise<{ ad
   for (const ticker of tickers) {
     const trades = byTicker.get(ticker) ?? [];
     const first = trades[0];
-    const quote0 = await quoteFor(first);
+    const snap0 = await quoteFor(first);
     fetched += 1;
     for (const t of trades) {
       // Reuse the fetched chain result per ticker: quoteFor re-fetches, so
       // only the first trade triggers I/O per sweep tick; others use marks.
-      const quote = t === first ? quote0 : (t.optionSymbol === first.optionSymbol ? quote0 : null);
-      if (!quote) continue;
+      const snap = t === first ? snap0 : (t.optionSymbol === first.optionSymbol ? snap0 : null);
+      if (!snap) continue;
+      const quote = snap.quote;
       if (t.status === "READY") {
         const r = evaluateEntry(t, quote, nowMs);
-        if (r.event !== "waiting") { persist(r.trade); advanced++; }
+        if (r.event !== "waiting") {
+          persist(r.trade);
+          if (r.event === "filled") persistMarketSnapshot(t.id, "entry", snap, `filled: ${r.note}`);
+          advanced++;
+        }
         continue;
       }
       // ENTERED: mark, then exits.
@@ -279,7 +332,10 @@ export async function sweepPaperTrades(nowMs: number = Date.now()): Promise<{ ad
         entrySnap.relVolAtEntry = row.rel_vol_entry ?? null;
       }
       const exit = evaluateExit(marked, quote, liveWithSpread, entrySnap, nowMs, defaultExitConfig());
-      if (exit) marked = applyExit(marked, exit, nowMs);
+      if (exit) {
+        marked = applyExit(marked, exit, nowMs);
+        persistMarketSnapshot(t.id, "exit", snap);
+      }
       persist(marked);
       advanced++;
     }

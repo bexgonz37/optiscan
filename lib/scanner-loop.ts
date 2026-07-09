@@ -181,8 +181,43 @@ async function refreshDiscovery(nowMs: number) {
     .filter((q: any) => q?.symbol && q.price > 0 && q.changePercent != null && (q.volume ?? 0) >= DISCOVERY_MIN_VOLUME)
     .sort((a: any, b: any) => Math.abs(b.changePercent) - Math.abs(a.changePercent))
     .slice(0, Math.max(0, DISCOVERY_TOP_N));
+  const newlyPromoted = ranked.filter((q: any) => !s.promoted.has(q.symbol)).map((q: any) => q.symbol);
   for (const q of ranked) s.promoted.set(q.symbol, nowMs + PROMOTION_MS);
   for (const [ticker, expiresAt] of s.promoted) if (expiresAt <= nowMs) s.promoted.delete(ticker);
+  // Latency fix (2026-07-09): a freshly promoted discovery name used to sit
+  // through a 10-tick live warmup before it could ever trigger — by then the
+  // move was minutes old (the "RIVN alerted at the top" failure). Seed its
+  // ring from 1-min candle history so persistence/velocity windows are warm
+  // on arrival. Bounded + budget-aware; gates themselves are unchanged.
+  if (newlyPromoted.length && !nearMinuteBudget(getCallStats(nowMs))) {
+    for (const ticker of newlyPromoted.slice(0, 4)) {
+      seedRingFromCandles(ticker, nowMs).catch(() => { /* seeding is best-effort */ });
+    }
+  }
+}
+
+/** Backfill a symbol's ring with synthetic 5s ticks from recent 1-min bars. */
+async function seedRingFromCandles(ticker: string, nowMs: number) {
+  const s = state();
+  const st = sym(s, ticker);
+  if (st.ring.length >= 10) return; // already warm
+  const res: any = await fetchCandles(ticker, { resolution: "1", timespan: "minute", days: 1, countback: 8 });
+  if (!res?.available || !res.bars?.length) return;
+  if (st.ring.length >= 10) return; // live ticks won the race — don't clobber
+  const bars = res.bars.slice(-8);
+  const seeded: { t: number; p: number; v: number }[] = [];
+  let cumVol = 0;
+  for (const b of bars) {
+    cumVol += b.v ?? 0;
+    // Interpolate o→c inside each minute as 12 × 5s pseudo-ticks so the
+    // velocity/persistence windows have realistic sub-minute structure.
+    for (let i = 1; i <= 12; i++) {
+      seeded.push({ t: b.t + i * 5000, p: b.o + ((b.c - b.o) * i) / 12, v: cumVol });
+    }
+  }
+  const cutoff = st.ring[0]?.t ?? nowMs;
+  st.ring.unshift(...seeded.filter((x) => x.t < cutoff).slice(-RING_MAX + st.ring.length));
+  console.log(`[0dte-loop] seeded ${ticker} ring from candles (${st.ring.length} ticks) — warm on promotion`);
 }
 
 function realtimeUniverse(nowMs: number) {

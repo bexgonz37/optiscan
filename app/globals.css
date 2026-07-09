@@ -3543,3 +3543,12 @@ td.num,
 .verdict-weakening-note { color: var(--warn, #e2b93b); font-size: 12px; margin: 4px 0; }
 .verdict-downgrade-note { color: var(--muted, #9aa0aa); font-size: 12px; margin: 4px 0; }
 .verdict-pill.verdict-weakening { outline: 1px dashed var(--warn, #e2b93b); outline-offset: 1px; }
+
+/* ── Watchlist cooling state (membership dwell, 2026-07-09) ─────────────── */
+.scanner li.row-cooling { opacity: 0.45; transition: opacity 0.6s ease; }
+.scanner li.row-cooling .why::after { content: " · cooling"; color: var(--muted, #9aa0aa); }
+
+/* ── Near-miss transparency panel (2026-07-09) ──────────────────────────── */
+.near-miss-panel { margin: 8px 0; padding: 8px 12px; border: 1px solid var(--line, rgba(255,255,255,0.1)); border-radius: 8px; }
+.near-miss-panel summary { cursor: pointer; }
+.near-miss-list { margin-top: 8px; }

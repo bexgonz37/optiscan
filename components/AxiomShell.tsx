@@ -16,7 +16,6 @@ const INTEL_NAV = [
   { href: "/swing", label: "Swing (preview)" },
   { href: "/alerts", label: "Accuracy" },
   { href: "/settings", label: "Settings" },
-  { href: "/review", label: "Review" },
 ];
 
 const PAGE_META: Record<string, { title: string; sub: string }> = {

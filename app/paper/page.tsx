@@ -149,8 +149,18 @@ function PaperPageInner() {
                     <small>
                       {t.status} · entry {t.entryPrice != null ? fmtPrice(t.entryPrice) : `limit ${fmtPrice(t.entryLimit)}`}
                       {t.lastMark != null ? ` · mark ${fmtPrice(t.lastMark)}` : ""}
+                      {t.unrealizedPnlDollars != null ? ` · unrealized ${t.unrealizedPnlDollars >= 0 ? "+" : ""}$${Math.abs(t.unrealizedPnlDollars).toFixed(0)} (${t.unrealizedPnlPct > 0 ? "+" : ""}${t.unrealizedPnlPct.toFixed(0)}%)` : ""}
                       {t.status === "ENTERED" && t.mfePct != null ? ` · peak ${t.mfePct.toFixed(0)}% / heat ${t.maePct?.toFixed(0)}%` : ""}
                     </small>
+                    {t.entrySnapshot?.delta != null ? (
+                      <small className="muted">
+                        At entry: Δ {Number(t.entrySnapshot.delta).toFixed(2)}
+                        {t.entrySnapshot.iv != null ? ` · IV ${(Number(t.entrySnapshot.iv) * 100).toFixed(0)}%` : ""}
+                        {t.entrySnapshot.spreadPct != null ? ` · spread ${Number(t.entrySnapshot.spreadPct).toFixed(1)}%` : ""}
+                        {t.entrySnapshot.openInterest != null ? ` · OI ${t.entrySnapshot.openInterest}` : ""}
+                        {t.entrySnapshot.theta != null ? ` · θ ${Number(t.entrySnapshot.theta).toFixed(3)}` : ""}
+                      </small>
+                    ) : null}
                     {t.thesis ? <small className="muted">Thesis: {t.thesis.slice(0, 110)}</small> : null}
                   </span>
                   <span className="res">
