@@ -68,7 +68,11 @@ test("Discord quant enrichment is optional and non-directive", () => {
   const region = n.slice(Math.max(0, idx - 600), idx + 900);
   assert.ok(/try\s*\{/.test(region) && /catch/.test(region), "quant enrichment must be try/caught — never blocks a send");
   assert.ok(region.includes("historical stats, not advice"), "quant line must carry the stats disclaimer");
-  assert.ok(!/\bBUY\b/.test(region.replace(/BUY payload|BUY\n/g, "")), "no directive wording in the quant line itself");
+  // The quant LINE itself (the template literal) must be non-directive; the
+  // surrounding BUY-payload plumbing legitimately mentions BUY.
+  const lineMatch = region.match(/const line = `([^`]+)`/);
+  assert.ok(lineMatch, "quant line template found");
+  assert.ok(!/\b(BUY|SELL|LONG|SHORT)\b/.test(lineMatch[1]), "no directive wording in the quant line itself");
 });
 
 test("/quant page exists, is in the nav, and carries the disclaimer", () => {

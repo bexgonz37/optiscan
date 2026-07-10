@@ -39,6 +39,8 @@ import {
   firstFailedGate, recordNearMiss, shouldRecordNearMiss, nearMinuteBudget,
   type NearMissEntry,
 } from "@/lib/near-miss";
+import { detectMajorMove } from "@/lib/major-move";
+import { maybeEmitPositionCallout } from "@/lib/position-callout";
 
 const LOOP_MS = Number(process.env.SCANNER_LOOP_MS ?? 1000);
 const ACTIVE_REFRESH_MS = Number(process.env.SCANNER_ACTIVE_REFRESH_MS ?? 7000);
@@ -74,6 +76,7 @@ interface SymState {
   lastAlertAt: number;
   lastOptionsAlertAt: number;
   lastNearMissAt: number;
+  lastMajorMoveAt: number;
 }
 
 interface LoopState {
@@ -97,6 +100,7 @@ interface LoopState {
   lastRecapAt: number;
   tapeBadgeCache: Map<string, { catalystType?: string; catalystFresh?: boolean; haltStatus?: string | null }>;
   nearMisses: NearMissEntry[];
+  majorMoves: any[];
 }
 
 type G = typeof globalThis & { __optiscanLoop?: LoopState; __optiscanLoopTimer?: ReturnType<typeof setTimeout> };
@@ -110,6 +114,7 @@ function state(): LoopState {
       symbols: new Map(), movers: [], tape: [], lastDiscoveryAt: 0, discoveryCount: 0, promoted: new Map(),
       lastTapeEnrichAt: 0, lastRecapAt: 0, tapeBadgeCache: new Map(),
       nearMisses: [],
+      majorMoves: [],
     };
   }
   // Survive Next dev hot reloads from pre-discovery loop state.
@@ -121,6 +126,7 @@ function state(): LoopState {
   g.__optiscanLoop.lastRecapAt ??= 0;
   g.__optiscanLoop.tapeBadgeCache ??= new Map();
   g.__optiscanLoop.nearMisses ??= [];
+  g.__optiscanLoop.majorMoves ??= [];
   return g.__optiscanLoop;
 }
 
@@ -232,7 +238,7 @@ function sym(s: LoopState, ticker: string): SymState {
     st = {
       ring: [], recentRates: [], cooldownUntil: 0, optionsCooldownUntil: 0, stockCooldownUntil: 0, lastChainFetch: 0,
       prefetchedChain: null, prefetchAt: 0,
-      vwap: null, vwapAt: 0, relVol: null, lastAlertAt: 0, lastOptionsAlertAt: 0, lastNearMissAt: 0,
+      vwap: null, vwapAt: 0, relVol: null, lastAlertAt: 0, lastOptionsAlertAt: 0, lastNearMissAt: 0, lastMajorMoveAt: 0,
     };
     s.symbols.set(ticker, st);
   }
@@ -240,6 +246,7 @@ function sym(s: LoopState, ticker: string): SymState {
   st.stockCooldownUntil ??= 0;
   st.lastOptionsAlertAt ??= st.lastAlertAt ?? 0;
   st.lastNearMissAt ??= 0;
+  st.lastMajorMoveAt ??= 0;
   return st;
 }
 
@@ -553,6 +560,35 @@ async function tick() {
       movers.push(row);
     }
 
+    // Day-timeframe major-move detection (META-miss fix, 2026-07-09): a
+    // large-cap grinding a big day on real dollars is VISIBLE even when no
+    // 10-second burst ever fires. Detection only — no BUY, no gate changes.
+    const major = detectMajorMove({
+      symbol: q.symbol, price: q.price, movePct: q.changePercent ?? null,
+      volume: q.volume ?? null, relVol: st.relVol, aboveVwap: levels.aboveVwap,
+      core: isCoreSymbol(q.symbol),
+    });
+    if (major.detected) {
+      (row as any).majorMove = major.status;
+      if (nowMs - st.lastMajorMoveAt >= 30 * 60_000) {
+        st.lastMajorMoveAt = nowMs;
+        s.majorMoves.unshift({
+          t: nowMs, symbol: q.symbol, status: major.status, direction: major.direction,
+          movePct: q.changePercent ?? null, why: major.why,
+        });
+        if (s.majorMoves.length > 20) s.majorMoves.length = 20;
+        console.log(`[major-move] ${q.symbol} ${major.status} (${(q.changePercent ?? 0).toFixed(1)}%): ${major.why[0]}`);
+        // Longer-dated position callout (the "META mid-July 650C" ask):
+        // fire-and-forget; one per symbol/day; budget-aware; WATCH tier only.
+        if (session === "regular") {
+          maybeEmitPositionCallout(
+            { symbol: q.symbol, price: q.price, movePct: q.changePercent ?? null, volume: q.volume ?? null, relVol: st.relVol },
+            major, nowMs,
+          ).catch((err: any) => console.warn("[position] callout failed:", err?.message));
+        }
+      }
+    }
+
     const levelBreak = levels.hodBreak || levels.lodBreak;
     const dirBear = dir.direction === "bearish";
     const instantRate = instantRead.shortRate;
@@ -741,5 +777,6 @@ export function loopState() {
     discoverySymbols: s.discoveryCount,
     promotedSymbols: [...s.promoted.keys()],
     nearMisses: s.nearMisses.slice(0, 25),
+    majorMoves: s.majorMoves.slice(0, 12),
   };
 }

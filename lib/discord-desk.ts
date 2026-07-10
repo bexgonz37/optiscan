@@ -28,4 +28,6 @@ export function isCoreTicker(symbol: string): boolean {
 }
 
 /** How long the hero card stays pinned before switching to a newer callout. */
-export const HERO_STICKY_MS = 5 * 60_000;
+export const HERO_STICKY_MS = Number(process.env.NEXT_PUBLIC_HERO_STICKY_MS ?? 10 * 60_000);
+/** A challenger may only evict a locked hero early with materially more score. */
+export const HERO_CHALLENGER_MARGIN = Number(process.env.NEXT_PUBLIC_HERO_CHALLENGER_MARGIN ?? 10);

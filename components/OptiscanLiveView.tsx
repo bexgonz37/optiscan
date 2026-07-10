@@ -49,7 +49,7 @@ import { rankAlertForHero, isMetaShapedAlert, META_REFERENCE } from "@/lib/meta-
 import { MetaBarPanel } from "@/components/MetaBarPanel";
 import { filterCoreAndWinners, sortCoreFirstThenSpeed } from "@/lib/core-vs-winner";
 import { CORE_WATCH } from "@/lib/universe";
-import { isDiscordRelevantAlert, HERO_STICKY_MS } from "@/lib/discord-desk";
+import { isDiscordRelevantAlert, HERO_STICKY_MS, HERO_CHALLENGER_MARGIN } from "@/lib/discord-desk";
 
 const CORE_SET = new Set(CORE_WATCH);
 
@@ -305,11 +305,14 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
     if (lock && now < lock.until) {
       const locked = allProductAlerts.find((a) => a.id === lock.alertId);
       if (locked && isAlertFresh(locked.alert_time, HERO_CALLOUT_FRESH_MS, now)) {
-        const upgraded =
-          candidate.id !== locked.id
-          && candidate.capture_action === "TRADE"
-          && locked.capture_action !== "TRADE"
-          && CORE_SET.has(candidate.ticker);
+        // Early eviction requires MATERIAL superiority, not recency: a TRADE
+        // over a WATCH, or a score beating the incumbent by the margin.
+        // Small score wiggles must never swap the hero (stability, 2026-07-09).
+        const tierUpgrade =
+          candidate.capture_action === "TRADE" && locked.capture_action !== "TRADE" && CORE_SET.has(candidate.ticker);
+        const scoreUpgrade =
+          Number(candidate.signal_score ?? 0) >= Number(locked.signal_score ?? 0) + HERO_CHALLENGER_MARGIN;
+        const upgraded = candidate.id !== locked.id && (tierUpgrade || scoreUpgrade);
         if (!upgraded) return locked;
       }
     }
@@ -818,6 +821,22 @@ export function OptiscanLiveView({ onOpenChart, onLoopStatus }: {
         ))}
       </div>
       </>
+
+      {scope === "options" && (loop?.majorMoves?.length ?? 0) > 0 ? (
+        <div className="major-moves-row" aria-label="Major moves detected">
+          <span className="hot-names-label">Major moves · day-timeframe detection · not entry signals</span>
+          {loop.majorMoves.slice(0, 6).map((m: any) => (
+            <button key={`${m.symbol}-${m.t}`} type="button"
+              className={`hot-name-chip major-move-chip${m.status === "extended" ? " extended" : ""}${m.direction === "down" ? " bear" : ""}`}
+              title={`${m.why?.join(" · ")}${m.status === "extended" ? " — EXTENDED, do not chase" : ""}`}
+              onClick={() => onOpenChart?.(m.symbol)}>
+              <span className="sym">{m.symbol}</span>
+              <span className="num">{m.movePct != null ? `${m.movePct > 0 ? "+" : ""}${m.movePct.toFixed(1)}%` : ""}</span>
+              <small>{m.status === "extended" ? "extended — don't chase" : "move detected"}</small>
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       {scope === "options" && (loop?.nearMisses?.length ?? 0) > 0 ? (
         <CardTip metric="nearMiss" className="near-miss-wrap">

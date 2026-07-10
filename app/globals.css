@@ -3662,3 +3662,10 @@ td.num,
   .paper-buckets { grid-template-columns: 1fr; }
   .cardtip-pop { position: fixed; left: 12px; right: 12px; bottom: 76px; top: auto; }
 }
+
+/* ── Major-move chips (day-timeframe detection, 2026-07-09) ─────────────── */
+.major-moves-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+.major-move-chip { border: 1px solid var(--up, #2ecc71); }
+.major-move-chip.bear { border-color: var(--dn, #ff5162); }
+.major-move-chip.extended { opacity: 0.75; border-style: dashed; }
+.major-move-chip small { display: block; font-size: 10px; color: var(--muted, #9aa0aa); }
