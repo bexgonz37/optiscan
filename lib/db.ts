@@ -216,6 +216,142 @@ CREATE TABLE IF NOT EXISTS paper_decisions (
 );
 CREATE INDEX IF NOT EXISTS idx_paper_decisions_created ON paper_decisions(created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_paper_decisions_trade ON paper_decisions(trade_id);
+
+CREATE TABLE IF NOT EXISTS historical_alerts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  external_id TEXT UNIQUE,
+  alert_id INTEGER REFERENCES alerts(id) ON DELETE SET NULL,
+  ticker TEXT NOT NULL,
+  asset_class TEXT NOT NULL DEFAULT 'options',
+  setup_type TEXT NOT NULL,
+  direction TEXT,
+  option_symbol TEXT,
+  option_side TEXT,
+  strike REAL,
+  expiration TEXT,
+  dte INTEGER,
+  alert_time TEXT NOT NULL,
+  trading_day TEXT,
+  session TEXT,
+  time_bucket TEXT,
+  market_regime TEXT,
+  ticker_type TEXT,
+  price_at_alert REAL,
+  percent_move_at_alert REAL,
+  volume REAL,
+  relative_volume REAL,
+  iv REAL,
+  delta REAL,
+  gamma REAL,
+  open_interest REAL,
+  option_volume REAL,
+  spread_pct REAL,
+  source TEXT,
+  score_snapshot_json TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_hist_alerts_setup ON historical_alerts(setup_type, alert_time);
+CREATE INDEX IF NOT EXISTS idx_hist_alerts_ticker ON historical_alerts(ticker, alert_time);
+
+CREATE TABLE IF NOT EXISTS trade_outcomes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  alert_id INTEGER REFERENCES alerts(id) ON DELETE SET NULL,
+  historical_alert_id INTEGER REFERENCES historical_alerts(id) ON DELETE SET NULL,
+  paper_trade_id INTEGER REFERENCES paper_trades(id) ON DELETE SET NULL,
+  journal_id INTEGER REFERENCES trade_journal(id) ON DELETE SET NULL,
+  ticker TEXT NOT NULL,
+  asset_class TEXT NOT NULL DEFAULT 'options',
+  setup_type TEXT NOT NULL,
+  side TEXT,
+  option_symbol TEXT,
+  entry_price REAL,
+  exit_price REAL,
+  quantity REAL,
+  entry_time TEXT,
+  exit_time TEXT,
+  hold_minutes REAL,
+  pnl REAL,
+  return_pct REAL,
+  mfe_pct REAL,
+  mae_pct REAL,
+  market_regime TEXT,
+  session TEXT,
+  entry_reason TEXT,
+  exit_reason TEXT,
+  source TEXT NOT NULL DEFAULT 'manual',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE(alert_id, paper_trade_id, journal_id, source)
+);
+CREATE INDEX IF NOT EXISTS idx_trade_outcomes_setup ON trade_outcomes(setup_type, entry_time);
+CREATE INDEX IF NOT EXISTS idx_trade_outcomes_ticker ON trade_outcomes(ticker, entry_time);
+
+CREATE TABLE IF NOT EXISTS setup_statistics (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  setup_type TEXT NOT NULL,
+  asset_class TEXT NOT NULL DEFAULT 'options',
+  market_regime TEXT NOT NULL DEFAULT 'all',
+  time_bucket TEXT NOT NULL DEFAULT 'all',
+  sample_size INTEGER NOT NULL DEFAULT 0,
+  win_rate REAL,
+  average_gain REAL,
+  average_loss REAL,
+  profit_factor REAL,
+  expectancy REAL,
+  max_drawdown REAL,
+  average_hold_minutes REAL,
+  best_time_of_day TEXT,
+  best_market_regime TEXT,
+  best_ticker_types TEXT,
+  best_volume_condition TEXT,
+  best_iv_condition TEXT,
+  recent_expectancy REAL,
+  confidence_score REAL,
+  grade TEXT NOT NULL DEFAULT 'D',
+  recommendation TEXT NOT NULL DEFAULT 'watch_only',
+  data_quality TEXT NOT NULL DEFAULT 'limited',
+  warning TEXT,
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE(setup_type, asset_class, market_regime, time_bucket)
+);
+CREATE INDEX IF NOT EXISTS idx_setup_stats_grade ON setup_statistics(grade, confidence_score);
+
+CREATE TABLE IF NOT EXISTS backtest_results (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT,
+  strategy_version_id INTEGER,
+  filters_json TEXT NOT NULL,
+  result_json TEXT NOT NULL,
+  total_trades INTEGER NOT NULL DEFAULT 0,
+  win_rate REAL,
+  expectancy REAL,
+  max_drawdown REAL,
+  sharpe_like REAL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE TABLE IF NOT EXISTS strategy_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  version TEXT NOT NULL,
+  config_json TEXT NOT NULL,
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE(name, version)
+);
+
+CREATE TABLE IF NOT EXISTS model_predictions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  alert_id INTEGER REFERENCES alerts(id) ON DELETE SET NULL,
+  historical_alert_id INTEGER REFERENCES historical_alerts(id) ON DELETE SET NULL,
+  setup_type TEXT NOT NULL,
+  model_name TEXT NOT NULL DEFAULT 'quant-statistics-v1',
+  prediction_json TEXT NOT NULL,
+  grade TEXT,
+  confidence_score REAL,
+  recommendation TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_model_predictions_alert ON model_predictions(alert_id);
 `;
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */

@@ -14,6 +14,7 @@ const PAGE_TITLES: Record<string, { title: string; sub: string }> = {
   "/scanner": { title: "Scanner", sub: "Legacy dashboard" },
   "/paper": { title: "Paper Trading", sub: "Simulated fills · risk engine · lessons" },
   "/swing": { title: "Swing Scanner", sub: "1–4 week candidates · research preview" },
+  "/quant": { title: "Quant", sub: "Setup grades · historical edge · backtests" },
 };
 
 export interface StatusItem { label: string; live?: boolean; warn?: boolean; }

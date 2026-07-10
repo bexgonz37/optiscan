@@ -278,7 +278,26 @@ export async function notifyNewAlert(alertId: number, alertLike: any): Promise<v
 
     const languageMode = getSetting("language_mode") === "public" ? "public" : "private";
     const built = buildBuyPayload(alertLike, languageMode);
-    const payload = "payload" in built ? built.payload : { content: built.content };
+    const payload: any = "payload" in built ? built.payload : { content: built.content };
+    // Quant enrichment (2026-07-09): compact historical-edge line on every BUY
+    // payload — statistics only, never directives (passes the public-language
+    // guard); a quant failure must never block the send.
+    try {
+      if (alertId != null) {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { scoreAlert } = require("@/lib/quant");
+        const q = scoreAlert(Number(alertId));
+        if (q?.grade) {
+          const wr = q.historicalWinRate != null ? `${Math.round(q.historicalWinRate)}% win` : "win n/a";
+          const ex = q.expectancy != null ? `${q.expectancy > 0 ? "+" : ""}${Number(q.expectancy).toFixed(1)}% expectancy` : "expectancy n/a";
+          const line = `\ud83d\udcca Setup ${q.grade} \u00b7 ${wr} \u00b7 ${ex} \u00b7 conf ${q.confidenceScore != null ? q.confidenceScore : "?"}/100 \u2014 historical stats, not advice`;
+          if (typeof payload.content === "string" && payload.content) payload.content += `\n${line}`;
+          else if (Array.isArray(payload.embeds) && payload.embeds[0]) {
+            payload.embeds[0].description = `${payload.embeds[0].description ?? ""}\n${line}`.trim();
+          }
+        }
+      }
+    } catch { /* quant enrichment is optional */ }
     const safe = built.safe !== false;
     if (!safe) {
       insertNotificationEvent({

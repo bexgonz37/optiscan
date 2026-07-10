@@ -8,6 +8,7 @@ import { NavRail } from "@/components/ui/NavRail";
 const MAIN_NAV = [
   { href: "/", label: "Today's Scanner" },
   { href: "/paper", label: "Paper Trading" },
+  { href: "/quant", label: "Quant" },
   { href: "/alerts", label: "Track Record" },
 ];
 
