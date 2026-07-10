@@ -1,255 +1,231 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Panel } from "@/components/ui/Panel";
-import { StatTile } from "@/components/ui/StatTile";
-import { useScannerStream } from "@/hooks/useScannerStream";
+import { useCallback, useEffect, useState } from "react";
+import {
+  PageContainer,
+  PageHeader,
+  ResponsiveGrid,
+  Card,
+  StatusBadge,
+  KeyValue,
+  EmptyState,
+  LoadingState,
+  ErrorState,
+  DetailsDisclosure,
+  type BadgeTone,
+} from "@/components/ui";
+import { DiscordDeliveryPanel } from "@/components/DiscordDeliveryPanel";
 
 /**
- * Polygon Data Core + Firehose (read-only telemetry).
- * No new Polygon calls — reads existing /api/health + the live scanner stream.
+ * System Health (Phase 2). A human-readable view of provider connection,
+ * market session, scanner loop, per-kind data freshness (with the exact max
+ * ages), rate limits, symbol counts, Discord, and database health. Raw JSON is
+ * available on demand but never shown by default. Provider health is kept
+ * separate from per-symbol staleness.
  */
 
-type Health = {
+type Overview = {
   ok?: boolean;
-  provider?: string;
-  keyPresent?: boolean;
-  loopRunning?: boolean;
-  lastTickAgeMs?: number;
-  session?: string;
-  ticks?: number;
-  triggers?: number;
-  alerts?: number;
-  errors?: number;
-  intervalMs?: number;
-  callsToday?: number;
-  dailyCap?: number;
-  callsThisMinute?: number;
-  minuteCap?: number;
-  quotaExceeded?: boolean;
-};
-
-type Line = { id: string; ch: "T" | "Q" | "A" | "O"; sym: string; txt: string; tone: "up" | "dn" | "" };
-type DataHealth = {
+  application_time?: string;
+  exchange_time?: string;
+  trading_day?: string;
   market_session?: string;
-  provider?: { connected?: boolean; last_latency_ms?: number | null; rate_limit_status?: string };
-  freshness?: Record<string, { freshness_status?: string; symbol?: string; data_age_seconds?: number | null }>;
-  stale_symbols?: string[];
-  monitored_symbols?: string[];
+  provider?: { configured?: boolean; connected?: boolean; last_latency_ms?: number | null; last_success_at?: string | null; last_failure_reason?: string | null; rate_limit_status?: string };
+  scanner?: { running?: boolean; interval_ms?: number; last_tick_age_ms?: number | null; ticks?: number; triggers?: number; alerts?: number; errors?: number; note?: string | null };
+  freshness?: { kind: string; label: string; max_age_seconds: number; status: string; symbol: string | null; age_seconds: number | null; reason: string | null }[];
+  blocked?: { symbol: string; actionable: boolean; reasons: string[] }[];
+  monitored_symbol_count?: number;
+  stale_symbol_count?: number;
+  rate_limit?: { status?: string; calls_today?: number | null; daily_cap?: number | null; calls_this_minute?: number | null; minute_cap?: number | null; quota_exceeded?: boolean };
+  database?: { ok?: boolean; note?: string };
+  discord?: { summary?: { status: string; count: number }[] };
+  entitlement_limitations?: string[];
 };
-type DiscordHealth = {
-  webhooks?: Record<string, boolean>;
-  summary?: { status: string; count: number }[];
-  recentFailures?: { status: string; failure_reason?: string | null; webhook_name?: string }[];
-};
 
-const FIREHOSE_MAX = 16;
-let firehoseSeq = 0;
+const GOOD_FRESHNESS = new Set(["LIVE", "DEGRADED", "DELAYED", "MARKET_CLOSED"]);
 
-export default function DataCorePage() {
-  const { realtime: loop } = useScannerStream();
-  const [health, setHealth] = useState<Health | null>(null);
-  const [dataHealth, setDataHealth] = useState<DataHealth | null>(null);
-  const [discordHealth, setDiscordHealth] = useState<DiscordHealth | null>(null);
-  const [lines, setLines] = useState<Line[]>([]);
+function freshTone(status: string): BadgeTone {
+  if (status === "LIVE") return "live";
+  if (status === "DEGRADED" || status === "DELAYED") return "warn";
+  if (status === "MARKET_CLOSED") return "muted";
+  return "bad";
+}
 
-  useEffect(() => {
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const res = await fetch("/api/health", { cache: "no-store" });
-        const d = (await res.json()) as Health;
-        if (!cancelled) setHealth(d);
-      } catch {
-        /* best effort */
-      }
-    };
-    poll();
-    const id = setInterval(poll, 3000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
+function ms(v: number | null | undefined): string {
+  if (v == null) return "—";
+  if (v < 1000) return `${v} ms`;
+  return `${(v / 1000).toFixed(1)} s`;
+}
+
+export default function SystemHealthPage() {
+  const [data, setData] = useState<Overview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch("/api/system/overview", { cache: "no-store" });
+      const body = (await res.json()) as Overview;
+      setData(body);
+      setError(null);
+    } catch (err: any) {
+      setError(err?.message ?? "Could not load system health.");
+    }
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const [dh, discord] = await Promise.all([
-          fetch("/api/system/data-health", { cache: "no-store" }).then((r) => r.json()),
-          fetch("/api/discord/health", { cache: "no-store" }).then((r) => r.json()),
-        ]);
-        if (!cancelled) {
-          setDataHealth(dh);
-          setDiscordHealth(discord);
-        }
-      } catch {
-        /* telemetry only */
-      }
-    };
-    poll();
-    const id = setInterval(poll, 5000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, []);
+    load();
+    const id = setInterval(load, 5000);
+    return () => clearInterval(id);
+  }, [load]);
 
-  // Firehose = the real live tape, rendered as raw channel messages.
-  const tape = ((loop?.tape ?? loop?.movers ?? []) as any[]) ?? [];
-  useEffect(() => {
-    if (!tape.length) return;
-    const now = Date.now();
-    const next: Line[] = tape.slice(0, 6).map((r: any, i: number) => {
-      const move = typeof r.movePct === "number" ? r.movePct : 0;
-      const tone: Line["tone"] = move > 0 ? "up" : move < 0 ? "dn" : "";
-      const ch: Line["ch"] = r.hodBreak || r.lodBreak ? "A" : "T";
-      const price = r.price != null ? `$${Number(r.price).toFixed(2)}` : "—";
-      const spd = r.shortRate != null ? `${r.shortRate > 0 ? "+" : ""}${r.shortRate.toFixed(2)}%/m` : "";
-      const seq = firehoseSeq++;
-      return {
-        id: `${ch}-${r.symbol ?? "UNK"}-${now}-${seq}-${i}`,
-        ch,
-        sym: r.symbol,
-        txt: `${price} · ${move > 0 ? "+" : ""}${move.toFixed(2)}% ${spd ? `· ${spd}` : ""}`,
-        tone,
-      };
-    });
-    setLines((prev) => [...next, ...prev].slice(0, FIREHOSE_MAX));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loop?.lastTickAt, tape.length]);
-
-  const rate = health?.callsThisMinute != null ? `${health.callsThisMinute}/${health.minuteCap ?? "—"}` : "—";
-  const loopUp = Boolean(health?.loopRunning ?? loop?.running);
-  const hasKey = Boolean(health?.keyPresent);
-  const loopHint =
-    loopUp
-      ? "streaming ticks"
-      : hasKey
-        ? "idle — usually starts within ~2 min after dev restart"
-        : "add MASSIVE/POLYGON_API_KEY to .env.local";
-  const providerLabel = health?.provider === "polygon" ? "massive" : (health?.provider ?? "—");
-  const clusterStat = (live: boolean) => (live ? "● LIVE" : hasKey ? "○ IDLE" : "○ DOWN");
-  const clusters = [
-    { name: "STOCKS", ch: "T · Q · A", ok: loopUp && hasKey },
-    { name: "OPTIONS", ch: "O · A", ok: loopUp && hasKey },
-    { name: "SCANNER LOOP", ch: `${health?.intervalMs ?? 1000}ms`, ok: loopUp },
-  ];
-
-  const freshnessRows = ["stock_quote", "one_minute_candle", "options_chain", "options_quote", "greeks", "news"].map((kind) => ({
-    kind,
-    sample: dataHealth?.freshness?.[kind],
-  }));
-  const sentCount = discordHealth?.summary?.find((s) => s.status === "SENT")?.count ?? 0;
-  const failedCount = (discordHealth?.summary ?? [])
-    .filter((s) => ["FAILED", "RETRYING", "SUPPRESSED", "NOT_CONFIGURED"].includes(s.status))
+  const providerOk = Boolean(data?.provider?.connected);
+  const providerConfigured = Boolean(data?.provider?.configured);
+  const scannerOk = Boolean(data?.scanner?.running);
+  const freshOk = (data?.stale_symbol_count ?? 0) === 0;
+  const dbOk = Boolean(data?.database?.ok);
+  const discordFailures = (data?.discord?.summary ?? [])
+    .filter((s) => ["FAILED", "RETRYING"].includes(s.status))
     .reduce((n, s) => n + Number(s.count ?? 0), 0);
 
+  const statusCells: { k: string; v: string; dot: "ok" | "warn" | "bad" }[] = [
+    { k: "Market session", v: data?.market_session ?? "—", dot: data?.market_session === "closed" ? "warn" : "ok" },
+    { k: "Provider", v: !providerConfigured ? "NO KEY" : providerOk ? "Connected" : "Disconnected", dot: !providerConfigured ? "bad" : providerOk ? "ok" : "warn" },
+    { k: "Scanner loop", v: scannerOk ? "Running" : "Idle", dot: scannerOk ? "ok" : "warn" },
+    { k: "Data freshness", v: freshOk ? "OK" : `${data?.stale_symbol_count} stale`, dot: freshOk ? "ok" : "warn" },
+    { k: "Discord", v: discordFailures ? `${discordFailures} to review` : "OK", dot: discordFailures ? "warn" : "ok" },
+    { k: "Database", v: dbOk ? "OK" : "Fault", dot: dbOk ? "ok" : "bad" },
+  ];
+
+  if (error && !data) {
+    return (
+      <PageContainer>
+        <PageHeader title="System Health" subtitle="Data freshness, delivery, and reliability" />
+        <ErrorState detail={error} onRetry={load} />
+      </PageContainer>
+    );
+  }
+
+  if (!data) {
+    return (
+      <PageContainer>
+        <PageHeader title="System Health" subtitle="Data freshness, delivery, and reliability" />
+        <Card title="Loading system health"><LoadingState label="Reading telemetry…" rows={4} /></Card>
+      </PageContainer>
+    );
+  }
+
+  const blocked = (data.blocked ?? []).filter((b) => b.reasons.length);
+
   return (
-    <div className="page-deck axiom-data">
-      <div className="axiom-scan-sweep" aria-hidden />
+    <PageContainer>
+      <PageHeader
+        title="System Health"
+        subtitle={`${data.exchange_time ?? ""} · ${data.trading_day ?? ""}`}
+        actions={<button type="button" className="ui-btn ui-btn-sm" onClick={load}>Refresh</button>}
+      />
 
-      <div className="axiom-strip">
-        <StatTile label="Provider" value={providerLabel} hint={health?.keyPresent ? "Massive key present" : "no key"} />
-        <StatTile label="Loop" value={loopUp ? "RUNNING" : "IDLE"} hint={loopHint} />
-        <StatTile label="Calls today" value={health?.callsToday != null ? `${health.callsToday}` : "—"} hint={`cap ${health?.dailyCap ?? "—"}`} />
-        <StatTile label="Rate / min" value={rate} hint={health?.quotaExceeded ? "QUOTA HIT" : "within cap"} />
-        <StatTile label="Freshness" value={dataHealth?.stale_symbols?.length ? "BLOCKING" : "OK"} hint={`${dataHealth?.stale_symbols?.length ?? 0} stale symbols`} />
-        <StatTile label="Discord" value={failedCount ? "CHECK" : "OK"} hint={`${sentCount} sent · ${failedCount} needs review`} />
+      {/* Status bar */}
+      <div className="ui-statusbar">
+        {statusCells.map((c) => (
+          <div className="ui-statuscell" key={c.k}>
+            <span className="ui-statuscell-k">{c.k}</span>
+            <span className="ui-statuscell-v"><span className={`ui-statusdot ${c.dot}`} />{c.v}</span>
+          </div>
+        ))}
       </div>
 
-      <p className="live-guide" style={{ marginBottom: 12 }}>
-        <b>Feed health</b> = is the Massive data pipe + scanner loop running?
-        <b> Live tick stream</b> = raw price ticks as they arrive (like a terminal tape).
-      </p>
-
-      <div className="axiom-hero-row" style={{ gridTemplateColumns: "minmax(0,0.9fr) minmax(0,1.1fr)" }}>
-        <Panel title="Feed health" meta={`Massive · ${health?.session ?? "—"}`} live={loopUp}>
-          {clusters.map((c) => (
-            <div className="clrow" key={c.name}>
-              <span className="cldot" style={c.ok ? undefined : { background: hasKey ? "#ffc879" : "#ff5162", boxShadow: hasKey ? "0 0 9px #ffc879" : "0 0 9px #ff5162" }} />
-              <div className="clnamewrap">
-                <span className="clname">{c.name}</span>
-                <span className="clch">{c.ch}</span>
-              </div>
-              <span className="clstat">{clusterStat(c.ok)}</span>
-            </div>
-          ))}
-          <div className="clrow">
-            <span className="cldot" />
-            <div className="clnamewrap">
-              <span className="clname">THROUGHPUT</span>
-              <span className="clch">ticks {health?.ticks ?? 0} · triggers {health?.triggers ?? 0} · alerts {health?.alerts ?? 0}</span>
-            </div>
-            <span className="clstat">{health?.errors ? `${health.errors} err` : "OK"}</span>
-          </div>
-        </Panel>
-
-        <Panel title="Live tick stream" meta="TICKS AS THEY ARRIVE" live>
-          <div className="fh">
-            {lines.length ? (
-              lines.map((l) => (
-                <div className="fhl" key={l.id}>
-                  <span className={`fhch ${l.ch.toLowerCase()}`}>{l.ch}</span>
-                  <span className="fhsym">{l.sym}</span>
-                  <span className={`fhtxt ${l.tone}`}>{l.txt}</span>
-                </div>
-              ))
-            ) : (
-              <div className="sigwhy">
-                {loopUp
-                  ? "Waiting for first tick on the tape…"
-                  : hasKey
-                    ? "Scanner loop is idle — start dev server or wait ~2 min for the lock to clear."
-                    : "No Polygon key — add POLYGON_API_KEY to .env.local"}
-              </div>
-            )}
-          </div>
-        </Panel>
-      </div>
-
-      <div className="axiom-hero-row" style={{ gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", marginTop: 14 }}>
-        <Panel title="Actionable data freshness" meta={dataHealth?.market_session ?? "session unknown"} live={!dataHealth?.stale_symbols?.length}>
-          {freshnessRows.map(({ kind, sample }) => (
-            <div className="clrow" key={kind}>
-              <span className="cldot" style={sample?.freshness_status === "LIVE" || sample?.freshness_status === "DEGRADED" ? undefined : { background: "#ff5162", boxShadow: "0 0 9px #ff5162" }} />
-              <div className="clnamewrap">
-                <span className="clname">{kind.replaceAll("_", " ").toUpperCase()}</span>
-                <span className="clch">{sample?.symbol ?? "no sample yet"} · age {sample?.data_age_seconds ?? "n/a"}s</span>
-              </div>
-              <span className="clstat">{sample?.freshness_status ?? "NO_DATA"}</span>
-            </div>
-          ))}
-          {!dataHealth?.monitored_symbols?.length ? (
-            <div className="sigwhy">No freshness samples yet. The scanner will populate this after the next provider responses.</div>
+      <ResponsiveGrid min={320}>
+        {/* Provider connection — independent of per-symbol staleness */}
+        <Card title="Provider connection" meta="Independent of individual stale symbols" tone={providerOk ? undefined : "warn"}>
+          <KeyValue k="Configured" v={providerConfigured ? "Yes" : "No API key"} tone={providerConfigured ? undefined : "bear"} />
+          <KeyValue k="Connection" v={<StatusBadge tone={providerOk ? "live" : "warn"}>{providerOk ? "Connected" : "Disconnected"}</StatusBadge>} />
+          <KeyValue k="Last latency" v={ms(data.provider?.last_latency_ms)} />
+          <KeyValue k="Rate-limit status" v={data.provider?.rate_limit_status ?? "—"} tone={data.rate_limit?.quota_exceeded ? "warn" : undefined} />
+          {data.provider?.last_failure_reason ? <KeyValue k="Last failure" v={data.provider.last_failure_reason} tone="bear" /> : null}
+          {data.entitlement_limitations?.length ? (
+            <div className="ui-section-hint">Entitlement: {data.entitlement_limitations.join("; ")}</div>
           ) : null}
-        </Panel>
+        </Card>
 
-        <Panel title="Discord delivery" meta="webhook + retry ledger" live={!failedCount}>
-          {(["options", "stocks", "recap"] as const).map((kind) => (
-            <div className="clrow" key={kind}>
-              <span className="cldot" style={discordHealth?.webhooks?.[kind] ? undefined : { background: "#ffc879", boxShadow: "0 0 9px #ffc879" }} />
-              <div className="clnamewrap">
-                <span className="clname">{kind.toUpperCase()} WEBHOOK</span>
-                <span className="clch">{discordHealth?.webhooks?.[kind] ? "configured" : "not configured"}</span>
-              </div>
-              <span className="clstat">{discordHealth?.webhooks?.[kind] ? "OK" : "MISSING"}</span>
-            </div>
-          ))}
-          {discordHealth?.recentFailures?.length ? (
-            <div className="sigwhy">
-              Latest Discord issue: {discordHealth.recentFailures[0].status} · {discordHealth.recentFailures[0].failure_reason ?? discordHealth.recentFailures[0].webhook_name}
-            </div>
-          ) : (
-            <div className="sigwhy">No recent Discord delivery failures in the new ledger.</div>
-          )}
-        </Panel>
-      </div>
+        {/* Scanner loop */}
+        <Card title="Scanner loop" tone={scannerOk ? undefined : "warn"}>
+          <KeyValue k="Status" v={<StatusBadge tone={scannerOk ? "live" : "warn"}>{scannerOk ? "Running" : "Idle"}</StatusBadge>} />
+          <KeyValue k="Interval" v={ms(data.scanner?.interval_ms)} />
+          <KeyValue k="Last tick" v={data.scanner?.last_tick_age_ms == null ? "never" : `${ms(data.scanner.last_tick_age_ms)} ago`} />
+          <KeyValue k="Ticks / triggers / alerts" v={`${data.scanner?.ticks ?? 0} · ${data.scanner?.triggers ?? 0} · ${data.scanner?.alerts ?? 0}`} />
+          <KeyValue k="Errors" v={data.scanner?.errors ?? 0} tone={data.scanner?.errors ? "warn" : undefined} />
+          {data.scanner?.note ? <div className="ui-section-hint">{data.scanner.note}</div> : null}
+        </Card>
 
-      <p className="foot" style={{ marginTop: "1rem", color: "var(--muted)", fontSize: ".72rem" }}>
-        Read-only telemetry from your Massive feed. No extra API calls.
-      </p>
-    </div>
+        {/* Rate limit + counts */}
+        <Card title="Rate limit & coverage">
+          <KeyValue k="Calls today" v={`${data.rate_limit?.calls_today ?? "—"} / ${data.rate_limit?.daily_cap ?? "—"}`} />
+          <KeyValue k="Calls this minute" v={`${data.rate_limit?.calls_this_minute ?? "—"} / ${data.rate_limit?.minute_cap ?? "—"}`} tone={data.rate_limit?.quota_exceeded ? "warn" : undefined} />
+          <KeyValue k="Monitored symbols" v={data.monitored_symbol_count ?? 0} />
+          <KeyValue k="Stale symbols" v={data.stale_symbol_count ?? 0} tone={(data.stale_symbol_count ?? 0) > 0 ? "warn" : undefined} />
+          <KeyValue k="Database" v={<StatusBadge tone={dbOk ? "live" : "bad"}>{data.database?.note ?? (dbOk ? "OK" : "fault")}</StatusBadge>} />
+        </Card>
+      </ResponsiveGrid>
+
+      {/* Data freshness per kind, with the exact allowed max ages */}
+      <Card title="Data freshness" meta={`Max ages shown for the ${data.market_session} session`}>
+        {data.freshness?.length ? (
+          <div className="ui-table-scroll">
+            <table className="ui-table">
+              <thead>
+                <tr>
+                  <th>Data type</th><th>Status</th><th style={{ textAlign: "right" }}>Age</th>
+                  <th style={{ textAlign: "right" }}>Max age</th><th>Latest symbol</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.freshness.map((f) => (
+                  <tr key={f.kind}>
+                    <td>{f.label}</td>
+                    <td><StatusBadge tone={freshTone(f.status)}>{f.status}</StatusBadge></td>
+                    <td style={{ textAlign: "right" }}>{f.age_seconds == null ? "—" : `${f.age_seconds}s`}</td>
+                    <td style={{ textAlign: "right" }}>{f.max_age_seconds}s</td>
+                    <td>{f.symbol ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <EmptyState title="No freshness samples yet" reason="The scanner has not recorded any provider responses in this process yet. Rows appear here after the next successful data fetch." />
+        )}
+      </Card>
+
+      {/* Blocked setups — exact human-readable reasons */}
+      <Card title="Why setups are blocked" meta="Actionable alerts require fresh required data" tone={blocked.length ? "warn" : undefined}>
+        {blocked.length ? (
+          blocked.map((b) => (
+            <div key={b.symbol} style={{ paddingBottom: 8, borderBottom: "1px dashed var(--line)", marginBottom: 4 }}>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>{b.symbol} — <span style={{ color: "var(--bear)" }}>Actionable: No</span></div>
+              {b.reasons.map((r, i) => (
+                <pre key={i} style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: "0.74rem", color: "var(--muted)", fontFamily: "inherit" }}>{r}</pre>
+              ))}
+            </div>
+          ))
+        ) : (
+          <EmptyState
+            icon="✓"
+            title="Nothing is blocked right now"
+            reason="No monitored symbol currently has stale, missing, or unentitled required data. When a setup is blocked, the exact reason (e.g. a quote older than the allowed max age) appears here."
+          />
+        )}
+      </Card>
+
+      {/* Discord delivery ledger (Phase 3) */}
+      <DiscordDeliveryPanel />
+
+      {/* Raw JSON — on demand only, never shown by default */}
+      <Card title="Technical details">
+        <DetailsDisclosure summary="Show raw system overview JSON">
+          <pre>{JSON.stringify(data, null, 2)}</pre>
+        </DetailsDisclosure>
+        <div className="ui-section-hint">Read-only telemetry. No extra provider calls are made to render this page.</div>
+      </Card>
+    </PageContainer>
   );
 }

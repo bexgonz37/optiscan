@@ -229,6 +229,79 @@ export function getSymbolFreshness(symbol: string) {
   };
 }
 
+const KIND_LABELS: Record<DataKind, string> = {
+  stock_quote: "stock quote",
+  stock_trade: "stock trade",
+  one_minute_candle: "1-minute candle",
+  options_chain: "options chain",
+  options_quote: "options quote",
+  options_trade: "options trade",
+  greeks: "option greeks",
+  news: "news",
+};
+
+export function kindLabel(kind: DataKind): string {
+  return KIND_LABELS[kind] ?? String(kind).replaceAll("_", " ");
+}
+
+export function sessionLabel(session: MarketSession): string {
+  switch (session) {
+    case "regular":
+      return "regular-hours";
+    case "premarket":
+      return "pre-market";
+    case "afterhours":
+      return "after-hours";
+    case "closed":
+      return "market-closed";
+  }
+}
+
+/**
+ * Human-readable explanation of why a data sample blocks an actionable alert —
+ * or null when it is not blocking. Always derives the threshold from
+ * maxAgeSecondsFor(kind, session) so UI copy can never drift from the real gate.
+ *
+ * Example output for a stale after-hours quote:
+ *   "META stock quote is 67 seconds old.
+ *    Maximum allowed quote age for after-hours actionable alerts is 80 seconds."
+ */
+export function describeBlockingSample(sample: FreshnessSample): string | null {
+  if (!isBlockingFreshness(sample.freshness_status)) return null;
+  const who = `${sample.symbol} ${kindLabel(sample.kind)}`;
+  const sess = sessionLabel(sample.market_session);
+  switch (sample.freshness_status) {
+    case "STALE": {
+      const max = maxAgeSecondsFor(sample.kind, sample.market_session);
+      const age = sample.data_age_seconds ?? "an unknown number of";
+      return `${who} is ${age} seconds old.\nMaximum allowed ${kindLabel(sample.kind)} age for ${sess} actionable alerts is ${max} seconds.`;
+    }
+    case "DISCONNECTED":
+      return `${who} is unavailable — the data provider is disconnected${sample.note ? ` (${sample.note})` : ""}.`;
+    case "NOT_ENTITLED":
+      return `${who} is not available on the current data plan (entitlement limitation).`;
+    case "NO_DATA":
+      return `${who} has not been received yet, so an actionable alert cannot be confirmed.`;
+    case "MARKET_CLOSED":
+      return `The market is closed, so ${who} cannot support an actionable alert right now.`;
+    default:
+      return `${who} is ${sample.freshness_status}.`;
+  }
+}
+
+/**
+ * A blocking summary for a whole symbol suitable for the exact "Actionable: No"
+ * panel copy. Returns { actionable, reasons } — reasons is empty when clear.
+ */
+export function describeSymbolActionability(symbol: string, kinds?: DataKind[]) {
+  const sym = String(symbol || "").toUpperCase();
+  const all = [...store().samples.values()].filter((s) => s.symbol === sym);
+  const scoped = kinds?.length ? all.filter((s) => kinds.includes(s.kind)) : all;
+  const blocking = scoped.filter((s) => isBlockingFreshness(s.freshness_status));
+  const reasons = blocking.map(describeBlockingSample).filter(Boolean) as string[];
+  return { symbol: sym, actionable: blocking.length === 0, reasons };
+}
+
 export function isBlockingFreshness(status: FreshnessStatus): boolean {
   return status === "STALE"
     || status === "DISCONNECTED"

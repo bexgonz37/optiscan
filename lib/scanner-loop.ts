@@ -42,6 +42,13 @@ import {
 } from "@/lib/near-miss";
 import { detectMajorMove } from "@/lib/major-move";
 import { maybeEmitPositionCallout } from "@/lib/position-callout";
+import { getSystemDataHealth } from "@/lib/data-freshness";
+import { bearishActionable } from "@/lib/bearish-gate";
+import { upsertOpportunities } from "@/lib/opportunity-store";
+import { signalsFromTape } from "@/lib/opportunity-map";
+
+const OPP_INGEST_MS = Number(process.env.OPP_INGEST_MS ?? 5000);
+const OPPORTUNITY_TRACKING = process.env.OPPORTUNITY_TRACKING !== "0";
 
 const LOOP_MS = Number(process.env.SCANNER_LOOP_MS ?? 1000);
 const ACTIVE_REFRESH_MS = Number(process.env.SCANNER_ACTIVE_REFRESH_MS ?? 7000);
@@ -106,6 +113,7 @@ interface LoopState {
   tapeBadgeCache: Map<string, { catalystType?: string; catalystFresh?: boolean; haltStatus?: string | null }>;
   nearMisses: NearMissEntry[];
   majorMoves: any[];
+  lastOppIngestAt: number;
 }
 
 type G = typeof globalThis & { __optiscanLoop?: LoopState; __optiscanLoopTimer?: ReturnType<typeof setTimeout> };
@@ -120,6 +128,7 @@ function state(): LoopState {
       lastTapeEnrichAt: 0, lastRecapAt: 0, tapeBadgeCache: new Map(),
       nearMisses: [],
       majorMoves: [],
+      lastOppIngestAt: 0,
     };
   }
   // Survive Next dev hot reloads from pre-discovery loop state.
@@ -132,6 +141,7 @@ function state(): LoopState {
   g.__optiscanLoop.tapeBadgeCache ??= new Map();
   g.__optiscanLoop.nearMisses ??= [];
   g.__optiscanLoop.majorMoves ??= [];
+  g.__optiscanLoop.lastOppIngestAt ??= 0;
   return g.__optiscanLoop;
 }
 
@@ -738,6 +748,26 @@ async function tick() {
   }
 
   s.tape = tape;
+
+  // Opportunity lifecycle memory (docs/ALERT-RANKING-PLAN.md §1): fold the top
+  // movers into persisted lifecycle records so the Command Center shows a
+  // stable, evolving set instead of a fresh grid each cycle. Throttled + guarded
+  // so it never adds cost or destabilizes the 1s heartbeat. Bearish rows are
+  // demoted to research-only via the map (BEARISH_ACTIONABLE guarantee).
+  if (OPPORTUNITY_TRACKING && nowMs - s.lastOppIngestAt >= OPP_INGEST_MS) {
+    s.lastOppIngestAt = nowMs;
+    try {
+      const staleSymbols = new Set<string>(getSystemDataHealth().stale_symbols ?? []);
+      const signals = signalsFromTape(s.movers, {
+        staleSymbols,
+        bearishActionable: bearishActionable(),
+        optionsSession: session === "regular",
+      });
+      if (signals.length) upsertOpportunities(signals, nowMs);
+    } catch (err: any) {
+      console.warn("[opportunity] ingest failed:", err?.message);
+    }
+  }
 
   // Live option-quote refresh needs chains — RTH only.
   if (session === "regular") refreshActiveAlerts(nowMs).catch(() => {});

@@ -1073,12 +1073,16 @@ export function getDiscordDelivery(deliveryId: string) {
 
 export function listDiscordDeliveries(limit = 100, status?: string | null) {
   const capped = Math.max(1, Math.min(500, Number(limit) || 100));
+  // LEFT JOIN alerts so the delivery ledger UI can show ticker + setup type
+  // without exposing the raw payload (which may embed webhook context).
+  const base =
+    `SELECT d.*, a.ticker AS ticker, a.source AS setup_type, a.option_side AS option_side, a.direction AS direction
+     FROM discord_deliveries d
+     LEFT JOIN alerts a ON a.id = d.alert_id`;
   if (status) {
-    return getDb().prepare(
-      "SELECT * FROM discord_deliveries WHERE status=? ORDER BY created_at DESC LIMIT ?",
-    ).all(status, capped) as any[];
+    return getDb().prepare(`${base} WHERE d.status=? ORDER BY d.created_at DESC LIMIT ?`).all(status, capped) as any[];
   }
-  return getDb().prepare("SELECT * FROM discord_deliveries ORDER BY created_at DESC LIMIT ?").all(capped) as any[];
+  return getDb().prepare(`${base} ORDER BY d.created_at DESC LIMIT ?`).all(capped) as any[];
 }
 
 export function discordDeliverySummary() {

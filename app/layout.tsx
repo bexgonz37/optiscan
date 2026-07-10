@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Chakra_Petch, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import "./axiom-theme.css";
+import "./shared-ui.css";
 import { ToastProvider } from "@/components/Toasts";
 import { GlobalAlerts } from "@/components/GlobalAlerts";
 import { MobileBottomNav } from "@/components/MobileBottomNav";

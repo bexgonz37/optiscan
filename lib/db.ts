@@ -249,6 +249,31 @@ CREATE TABLE IF NOT EXISTS paper_decisions (
 CREATE INDEX IF NOT EXISTS idx_paper_decisions_created ON paper_decisions(created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_paper_decisions_trade ON paper_decisions(trade_id);
 
+-- Opportunity lifecycle memory (docs/ALERT-RANKING-PLAN.md §1). One row evolves
+-- per (ticker, setup_type, trading_day); repeated scans UPDATE it. Hysteresis
+-- bookkeeping (demote_streak, status_since) keeps cards from jumping.
+CREATE TABLE IF NOT EXISTS opportunities (
+  opportunity_id TEXT PRIMARY KEY,
+  ticker TEXT NOT NULL,
+  setup_type TEXT NOT NULL,
+  trading_day TEXT NOT NULL,
+  first_detected_at TEXT NOT NULL,
+  last_updated_at TEXT NOT NULL,
+  highest_score REAL NOT NULL DEFAULT 0,
+  current_score REAL NOT NULL DEFAULT 0,
+  previous_status TEXT,
+  current_status TEXT NOT NULL,
+  trigger_level REAL,
+  entry_zone TEXT,
+  invalidation_level REAL,
+  expiration_time TEXT,
+  demote_streak INTEGER NOT NULL DEFAULT 0,
+  status_since TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_opportunities_key ON opportunities(ticker, setup_type, trading_day);
+CREATE INDEX IF NOT EXISTS idx_opportunities_day ON opportunities(trading_day, current_status);
+CREATE INDEX IF NOT EXISTS idx_opportunities_updated ON opportunities(last_updated_at);
+
 CREATE TABLE IF NOT EXISTS historical_alerts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   external_id TEXT UNIQUE,
