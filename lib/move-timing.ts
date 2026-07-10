@@ -1,3 +1,5 @@
+import { toMs } from "./timestamps.ts";
+
 export type MoveClassification =
   | "FRESH_MOVE"
   | "CONTINUATION"
@@ -50,7 +52,10 @@ export function classifyMoveTiming(input: {
   const moveBeganAt = input.moveBeganAtMs ?? confirmedAt ?? null;
   const signalAgeSeconds = signalAt == null ? null : Math.max(0, Math.round((nowMs - signalAt) / 1000));
   const moveAgeSeconds = moveBeganAt == null ? null : Math.max(0, Math.round((nowMs - moveBeganAt) / 1000));
-  const dataAgeSeconds = input.dataTimestampMs == null ? null : Math.max(0, Math.round((nowMs - input.dataTimestampMs) / 1000));
+  // Defensive: even if a caller leaks a raw provider timestamp, normalize it
+  // here so age math can never run on nanoseconds (Invalid time value bug).
+  const normalizedDataTs = toMs(input.dataTimestampMs ?? null, nowMs);
+  const dataAgeSeconds = normalizedDataTs == null ? null : Math.max(0, Math.round((nowMs - normalizedDataTs) / 1000));
   const reasons: string[] = [];
 
   if (dataAgeSeconds != null && dataAgeSeconds > 90) {

@@ -1,3 +1,4 @@
+import { toMs } from "./timestamps.ts";
 import { marketSession, tradingDay, type MarketSession } from "./trading-session.ts";
 
 export type FreshnessStatus =
@@ -62,6 +63,22 @@ const DEFAULT_MAX_AGE_SECONDS: Record<DataKind, number> = {
   news: 86400,
 };
 
+// Session-aware relaxation (Phase 1, 2026-07-10): extended-hours tape prints
+// far less often — a 67s-old quote on a quiet name after hours is normal, not
+// a system failure. RTH keeps the strict bars; premarket/after-hours multiply
+// them. Env-tunable; MARKET_CLOSED short-circuits before any of this.
+const SESSION_AGE_MULTIPLIER: Record<string, number> = {
+  regular: 1,
+  premarket: Number(process.env.FRESHNESS_EXTENDED_MULTIPLIER ?? 4),
+  afterhours: Number(process.env.FRESHNESS_EXTENDED_MULTIPLIER ?? 4),
+};
+
+/** Max LIVE age for a data kind in a session (exported for tests + UI copy). */
+export function maxAgeSecondsFor(kind: DataKind, session: MarketSession): number {
+  const base = DEFAULT_MAX_AGE_SECONDS[kind] ?? 60;
+  return Math.round(base * (SESSION_AGE_MULTIPLIER[session] ?? 1));
+}
+
 function store() {
   const g = globalThis as G;
   if (!g.__optiscanFreshness) {
@@ -97,6 +114,9 @@ function plausibleMs(ms: number, nowMs = Date.now()): number | null {
   return rounded;
 }
 
+// Delegates to the central normalizer (lib/timestamps.ts) — one unit-detection
+// implementation for the whole app. Kept for backward compatibility.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function integerStringToMs(text: string, nowMs: number): number | null {
   try {
     const raw = BigInt(text);
@@ -118,19 +138,7 @@ export function normalizeProviderTimestampMs(
   input?: number | string | bigint | Date | null,
   nowMs = Date.now(),
 ): number | null {
-  if (input == null) return null;
-  if (input instanceof Date) return plausibleMs(input.getTime(), nowMs);
-  if (typeof input === "bigint") return integerStringToMs(input.toString(), nowMs);
-  if (typeof input === "number") {
-    if (!Number.isFinite(input) || input <= 0) return null;
-    if (Number.isInteger(input)) return integerStringToMs(String(input), nowMs);
-    return plausibleMs(input, nowMs);
-  }
-  const text = String(input).trim();
-  if (!text) return null;
-  if (/^[+-]?\d+$/.test(text)) return integerStringToMs(text, nowMs);
-  const parsed = Date.parse(text);
-  return plausibleMs(parsed, nowMs);
+  return toMs(input, nowMs);
 }
 
 function classify(kind: DataKind, ageSeconds: number | null, session: MarketSession, note?: string | null): FreshnessStatus {
@@ -139,7 +147,7 @@ function classify(kind: DataKind, ageSeconds: number | null, session: MarketSess
   if (n.includes("not entitled") || n.includes("not authorized") || n.includes("forbidden") || n.includes("403")) return "NOT_ENTITLED";
   if (n.includes("no polygon") || n.includes("api key") || n.includes("timeout") || n.includes("quota_exceeded")) return "DISCONNECTED";
   if (ageSeconds == null) return "DEGRADED";
-  const max = DEFAULT_MAX_AGE_SECONDS[kind] ?? 60;
+  const max = maxAgeSecondsFor(kind, session);
   if (ageSeconds <= max) return "LIVE";
   if (ageSeconds <= max * 3) return "DELAYED";
   return "STALE";

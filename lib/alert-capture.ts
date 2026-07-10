@@ -15,6 +15,7 @@
  *   - Everything is deterministic — no AI in the alert path.
  */
 
+import { gateBearishAction } from "@/lib/bearish-gate";
 import { fetchNews } from "@/lib/polygon-provider";
 import { classifyCatalyst } from "@/lib/catalysts";
 import { optionsLiquidityScore, riskScore, setupScore, ivToPct } from "@/lib/alert-scoring";
@@ -271,6 +272,17 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
         logicLine: `${captureVerdict.logicLine} Held at WATCH — META reference needs ≥0.28%/min, ≥2.8x surge, early move, side gap ≥30.`,
       };
     }
+  }
+
+  // Bearish safety gate (2026-07-10): put-side TRADEs are research-only until
+  // the short strategy is rebuilt — see lib/bearish-gate.ts for the traced
+  // root cause. Bullish flow is untouched.
+  const bearGate = gateBearishAction({ direction: sig.direction, optionSide: sideContract?.side ?? null }, finalCaptureAction);
+  if (bearGate.gated) {
+    finalCaptureAction = "WAIT";
+    finalVerdict = { ...finalVerdict, action: "WAIT" as const, reason: bearGate.reason ?? finalVerdict.reason };
+    flags.push("Bearish Strategy Disabled");
+    console.log(`[bearish-gate] ${sig.ticker} put TRADE demoted to WATCH (research-only)`);
   }
 
   const qualityGates = passesQualityGates(verdictInput) && tradeBlockers.length === 0;

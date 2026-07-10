@@ -24,6 +24,7 @@
  * nothing beyond the single shared snapshot call.
  */
 
+import { toMs } from "@/lib/timestamps";
 import { fetchBulkQuotes, fetchCandles, fetchOptionChain, fetchTopMovers, isRecapNoiseSymbol } from "@/lib/polygon-provider";
 import { vwap as sessionVwap, sessionBars, relativeVolume } from "@/lib/momentum-signals";
 import {
@@ -313,7 +314,9 @@ async function handleStockTrigger(ticker: string, st: SymState, read: any, quote
     signalDetectedAtMs: st.lastTriggerEventAt || nowMs,
     lastConfirmedAtMs: st.lastConfirmedAt || nowMs,
     moveBeganAtMs: st.moveBeganAt || nowMs,
-    dataTimestampMs: quote.providerTimestamp ?? quote.lastTradeTimestamp ?? null,
+    // Root-cause fix (2026-07-10): providerTimestamp arrives in NANOSECONDS
+    // from Polygon lastTrade.t — normalize before it enters any *Ms field.
+    dataTimestampMs: toMs(quote.providerTimestamp ?? quote.lastTradeTimestamp ?? null),
     lastTriggerEventAtMs: st.lastTriggerEventAt || nowMs,
   });
   if (id != null) {

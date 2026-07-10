@@ -1,3 +1,4 @@
+import { bearishActionable, BEARISH_DISABLED_REASON } from "./bearish-gate.ts";
 /**
  * stock-signals.ts — pure, deterministic scoring for regular-stock callouts
  * (premarket / after-hours, no option chain involved).
@@ -141,6 +142,15 @@ export function computeStockVerdict(i: StockSignalInput, { minScore = STOCK_DEFA
     return {
       action: "WAIT", side, headline: side === "LONG" ? "Watch ↑ move" : "Watch ↓ move",
       reason: `Setup ${score}/100 is below the ${minScore} bar.`,
+      confidence, score, reasons,
+    };
+  }
+  // Bearish safety gate (2026-07-10): SHORT verdicts are research-only until
+  // the short strategy is rebuilt and validated (lib/bearish-gate.ts).
+  if (side === "SHORT" && !bearishActionable()) {
+    return {
+      action: "WAIT", side, headline: "Watch ↓ move",
+      reason: `${BEARISH_DISABLED_REASON}: bearish stock callouts are research-only pending strategy rebuild.`,
       confidence, score, reasons,
     };
   }

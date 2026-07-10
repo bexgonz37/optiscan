@@ -26,13 +26,23 @@ test("computeStockVerdict: BUY LONG needs aligned speed + volume + score", () =>
   assert.equal(v.headline, "Buy stock ↑");
 });
 
-test("computeStockVerdict: BUY SHORT on downside speed", () => {
-  const v = computeStockVerdict({
+test("computeStockVerdict: SHORT is research-only while the bearish gate is active (2026-07-10)", () => {
+  // The old contract (BUY SHORT on downside speed) is intentionally disabled:
+  // inverted-bullish shorts produced low-quality callouts. The old logic is
+  // preserved behind BEARISH_ACTIONABLE=1 for the post-rebuild re-enable.
+  delete process.env.BEARISH_ACTIONABLE;
+  const input = {
     ...strongLong, direction: "bearish", shortRate: -0.5,
-    aboveVwap: false, hodBreak: false, lodBreak: true,
-  });
-  assert.equal(v.action, "BUY");
-  assert.equal(v.headline, "Bet stock ↓");
+    aboveVwap: false, hodBreak: false, lodBreak: true, movePct: -2.5,
+  };
+  const gated = computeStockVerdict(input);
+  assert.equal(gated.action, "WAIT");
+  assert.match(gated.reason, /BEARISH_STRATEGY_DISABLED/);
+  process.env.BEARISH_ACTIONABLE = "1";
+  const enabled = computeStockVerdict(input);
+  assert.equal(enabled.action, "BUY", "old path preserved behind the flag");
+  assert.equal(enabled.headline, "Bet stock ↓");
+  delete process.env.BEARISH_ACTIONABLE;
 });
 
 test("computeStockVerdict: speed below the bar never BUYs (day move is context only)", () => {
