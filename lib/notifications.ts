@@ -27,7 +27,12 @@ import {
   getSetting,
   getSentDiscordForAlert,
   recentWatchDiscordForTicker,
+  createDiscordDelivery,
+  updateDiscordDelivery,
+  getDiscordDelivery,
+  retryableDiscordDeliveries,
 } from "@/lib/alert-store";
+import { actionableFreshness, type DataKind } from "@/lib/data-freshness";
 
 export type DiscordWebhookKind = "options" | "stocks" | "recap" | "default";
 
@@ -96,7 +101,7 @@ function webhookMessageUrl(webhookUrl: string, messageId: string): string {
 export async function postToDiscord(
   payload: Record<string, unknown>,
   { webhook = "default", skipPublicCheck = false }: { webhook?: DiscordWebhookKind; skipPublicCheck?: boolean } = {},
-): Promise<{ messageId: string | null; webhookUrl: string }> {
+): Promise<{ messageId: string | null; webhookUrl: string; httpStatus: number; responseBodySafe: string | null }> {
   const url = webhookEnv(webhook);
   if (!url) throw new Error(`Discord webhook not set (${webhook})`);
   const serialized = JSON.stringify(payload);
@@ -109,13 +114,58 @@ export async function postToDiscord(
     body: serialized,
     signal: AbortSignal.timeout(12_000),
   });
-  if (!res.ok) throw new Error(`discord ${res.status}: ${(await res.text().catch(() => "")).slice(0, 150)}`);
+  const bodyText = await res.text().catch(() => "");
+  if (!res.ok) throw new Error(`discord ${res.status}: ${bodyText.slice(0, 150)}`);
   let messageId: string | null = null;
   try {
-    const body = await res.json();
+    const body = bodyText ? JSON.parse(bodyText) : null;
     messageId = body?.id != null ? String(body.id) : null;
   } catch { /* some webhooks return empty with wait=true */ }
-  return { messageId, webhookUrl: url };
+  return { messageId, webhookUrl: url, httpStatus: res.status, responseBodySafe: bodyText.slice(0, 500) || null };
+}
+
+function nextRetryIso(retryCount: number): string {
+  const delayMs = Math.min(15 * 60_000, 30_000 * (2 ** Math.max(0, retryCount)));
+  return new Date(Date.now() + delayMs).toISOString();
+}
+
+async function sendTrackedDiscord(input: {
+  alertId?: number | null;
+  payload: any;
+  webhook: DiscordWebhookKind;
+  payloadType: string;
+  idempotencyKey?: string | null;
+}) {
+  const deliveryId = createDiscordDelivery({
+    alertId: input.alertId ?? null,
+    channelType: "discord_webhook",
+    webhookName: input.webhook,
+    payloadType: input.payloadType,
+    payload: input.payload,
+    idempotencyKey: input.idempotencyKey ?? null,
+  });
+  updateDiscordDelivery(deliveryId, { status: "SENDING", attempted: true });
+  try {
+    const res = await postToDiscord(input.payload, { webhook: input.webhook, skipPublicCheck: true });
+    updateDiscordDelivery(deliveryId, {
+      status: "SENT",
+      httpStatus: res.httpStatus,
+      responseBodySafe: res.responseBodySafe,
+      sent: true,
+      nextRetryAt: null,
+    });
+    return { ...res, deliveryId };
+  } catch (err: any) {
+    const current = getDiscordDelivery(deliveryId);
+    const retryCount = Number(current?.retry_count ?? 0) + 1;
+    updateDiscordDelivery(deliveryId, {
+      status: retryCount < 3 ? "RETRYING" : "FAILED",
+      failureReason: err?.message ?? String(err),
+      retryCountDelta: 1,
+      nextRetryAt: retryCount < 3 ? nextRetryIso(retryCount) : null,
+    });
+    throw err;
+  }
 }
 
 export async function editDiscordMessage(
@@ -300,6 +350,15 @@ export async function notifyNewAlert(alertId: number, alertLike: any): Promise<v
     } catch { /* quant enrichment is optional */ }
     const safe = built.safe !== false;
     if (!safe) {
+      createDiscordDelivery({
+        alertId,
+        channelType: "discord_webhook",
+        webhookName: isStock ? "stocks" : "options",
+        payloadType: isStock ? "stock_buy" : "options_buy",
+        payload,
+        status: "SUPPRESSED",
+        failureReason: "unsafe wording blocked",
+      });
       insertNotificationEvent({
         alertId, channel: "discord_webhook", status: "failed", error: "unsafe wording blocked",
         payloadJson: JSON.stringify(payload),
@@ -315,6 +374,15 @@ export async function notifyNewAlert(alertId: number, alertLike: any): Promise<v
     }
     const webhook: DiscordWebhookKind = isStock ? "stocks" : "options";
     if (!discordWebhookConfigured(webhook)) {
+      createDiscordDelivery({
+        alertId,
+        channelType: "discord_webhook",
+        webhookName: webhook,
+        payloadType: isStock ? "stock_buy" : "options_buy",
+        payload,
+        status: "NOT_CONFIGURED",
+        failureReason: `Discord ${webhook} webhook not set`,
+      });
       insertNotificationEvent({
         alertId,
         channel: "discord_webhook",
@@ -323,7 +391,36 @@ export async function notifyNewAlert(alertId: number, alertLike: any): Promise<v
       });
       return;
     }
-    const { messageId, webhookUrl } = await postToDiscord(payload, { webhook, skipPublicCheck: true });
+    const requiredKinds: DataKind[] = isStock
+      ? ["stock_quote"]
+      : ["stock_quote", "options_chain", "options_quote", "greeks"];
+    const freshness = actionableFreshness(String(alertLike?.ticker ?? ""), requiredKinds);
+    if (!freshness.ok) {
+      createDiscordDelivery({
+        alertId,
+        channelType: "discord_webhook",
+        webhookName: webhook,
+        payloadType: isStock ? "stock_buy" : "options_buy",
+        payload,
+        status: "SUPPRESSED",
+        failureReason: `data freshness blocked actionable alert: ${freshness.reason}`,
+      });
+      insertNotificationEvent({
+        alertId,
+        channel: "discord_webhook",
+        status: "skipped",
+        error: `data freshness blocked actionable alert: ${freshness.reason}`,
+        payloadJson: JSON.stringify({ payload, freshness }),
+      });
+      return;
+    }
+    const { messageId, webhookUrl } = await sendTrackedDiscord({
+      alertId,
+      payload,
+      webhook,
+      payloadType: isStock ? "stock_buy" : "options_buy",
+      idempotencyKey: `${alertId}:${webhook}:buy`,
+    });
     insertNotificationEvent({
       alertId,
       channel: "discord_webhook",
@@ -350,7 +447,13 @@ export async function confirmAndSendPending(eventId: number): Promise<{ ok: bool
   const webhook = (parsed.webhook ?? "default") as DiscordWebhookKind;
   if (!payload || (!payload.content && !payload.embeds)) return { ok: false, error: "empty payload" };
   try {
-    const { messageId, webhookUrl } = await postToDiscord(payload, { webhook, skipPublicCheck: true });
+    const { messageId, webhookUrl } = await sendTrackedDiscord({
+      alertId: e.alert_id,
+      payload,
+      webhook,
+      payloadType: "manual_confirm",
+      idempotencyKey: `event:${eventId}:${webhook}`,
+    });
     markNotificationEvent(eventId, "sent");
     insertNotificationEvent({
       alertId: e.alert_id,
@@ -371,9 +474,16 @@ export async function sendDiscordTest(kind: "options" | "stocks" = "options"): P
   if (!s?.discord_enabled) return { ok: false, error: "Enable Discord in settings first." };
   if (!discordWebhookConfigured(kind)) return { ok: false, error: `Discord ${kind} webhook is not set in .env.local.` };
   try {
-    await postToDiscord({
+    const payload = {
       content: `OptiScan ${kind} test: research scanner alert channel is connected. Not financial advice.`,
-    }, { webhook: kind });
+    };
+    await sendTrackedDiscord({
+      alertId: null,
+      payload,
+      webhook: kind,
+      payloadType: "test",
+      idempotencyKey: `test:${kind}:${new Date().toISOString().slice(0, 13)}`,
+    });
     insertNotificationEvent({
       alertId: null, channel: "discord_webhook", status: "sent",
       payloadJson: JSON.stringify({ test: true, kind }), sentAt: new Date().toISOString(),
@@ -383,4 +493,40 @@ export async function sendDiscordTest(kind: "options" | "stocks" = "options"): P
     insertNotificationEvent({ alertId: null, channel: "discord_webhook", status: "failed", error: err?.message });
     return { ok: false, error: err?.message };
   }
+}
+
+export async function retryDiscordDelivery(deliveryId: string): Promise<{ ok: boolean; error?: string }> {
+  const d = getDiscordDelivery(deliveryId);
+  if (!d) return { ok: false, error: "delivery not found" };
+  if (!d.payload_json) return { ok: false, error: "delivery has no stored payload" };
+  let payload: any;
+  try { payload = JSON.parse(d.payload_json); } catch { return { ok: false, error: "stored payload is invalid JSON" }; }
+  updateDiscordDelivery(deliveryId, { status: "SENDING", attempted: true });
+  try {
+    const res = await postToDiscord(payload, { webhook: d.webhook_name as DiscordWebhookKind, skipPublicCheck: true });
+    updateDiscordDelivery(deliveryId, {
+      status: "SENT",
+      httpStatus: res.httpStatus,
+      responseBodySafe: res.responseBodySafe,
+      sent: true,
+      nextRetryAt: null,
+    });
+    return { ok: true };
+  } catch (err: any) {
+    const retryCount = Number(d.retry_count ?? 0) + 1;
+    updateDiscordDelivery(deliveryId, {
+      status: retryCount < 3 ? "RETRYING" : "FAILED",
+      failureReason: err?.message ?? String(err),
+      retryCountDelta: 1,
+      nextRetryAt: retryCount < 3 ? nextRetryIso(retryCount) : null,
+    });
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+}
+
+export async function retryFailedDiscordDeliveries(limit = 25) {
+  const rows = retryableDiscordDeliveries(limit);
+  const results = [];
+  for (const row of rows) results.push({ deliveryId: row.delivery_id, ...(await retryDiscordDelivery(row.delivery_id)) });
+  return { attempted: results.length, results };
 }

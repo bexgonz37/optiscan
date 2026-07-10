@@ -45,8 +45,10 @@ test("buildOptionsBuyEmbed matches spec shape and colors", () => {
 
 test("buildStockBuyEmbed uses LONG green / SHORT coral", () => {
   const long = buildStockBuyEmbed({ ticker: "RIVN", session: "premarket", direction: "bullish", price: 16.98, shortRate: 0.48, volumeSurge: 3.1, movePct: 6.4, stockReason: "Gap hold" });
+  assert.equal(long.safe, true);
   assert.equal(long.payload.embeds[0].color, DISCORD_COLORS.call);
   const short = buildStockBuyEmbed({ ticker: "RIVN", session: "regular", direction: "bearish", price: 16.98, stockHeadline: "SHORT RIVN" });
+  assert.equal(short.safe, true);
   assert.equal(short.payload.embeds[0].color, DISCORD_COLORS.put);
 });
 

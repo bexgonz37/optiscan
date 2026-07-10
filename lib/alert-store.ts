@@ -88,6 +88,16 @@ export interface NewAlert {
   assetClass?: "options" | "stock" | null;
   /** Session the alert fired in: premarket | regular | afterhours */
   session?: string | null;
+  /** Live timing audit fields for "fresh now" vs old/daily context. */
+  moveClassification?: string | null;
+  signalDetectedAt?: string | null;
+  lastConfirmedAt?: string | null;
+  moveBeganAt?: string | null;
+  dataTimestamp?: string | null;
+  expiresAt?: string | null;
+  lastValidatedAt?: string | null;
+  lastTriggerEventAt?: string | null;
+  invalidationReason?: string | null;
   optionsPressureLabel?: string | null;
   optionsPressureJson?: string | null;
   snapshot?: {
@@ -147,8 +157,10 @@ export function insertAlert(a: NewAlert): number | null {
           score_breakdown_json, ai_explanation, public_explanation, private_label, public_label,
           trade_bias, move_status, option_worth_score, worth_verdict, chase_risk, iv_risk, spread_risk,
           continuation_score, exhaustion_score, long_call_score, long_put_score, zero_dte_contract_score, risk_flags,
-          options_pressure_label, options_pressure_json, short_rate_at_alert, volume_surge_at_alert, alert_tier, capture_action, capture_confidence, asset_class, session, status
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'tracking')`,
+          options_pressure_label, options_pressure_json, short_rate_at_alert, volume_surge_at_alert, alert_tier, capture_action, capture_confidence, asset_class, session,
+          move_classification, signal_detected_at, last_confirmed_at, move_began_at, data_timestamp, expires_at, last_validated_at, last_trigger_event_at, invalidation_reason,
+          status
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'tracking')`,
       )
       .run(
         alert.ticker, alert.source, alert.alertType ?? null, alert.direction, alert.optionSymbol, alert.optionSide,
@@ -168,6 +180,15 @@ export function insertAlert(a: NewAlert): number | null {
         alert.alertTier ?? null,
         alert.captureAction ?? null, alert.captureConfidence ?? null,
         alert.assetClass ?? "options", alert.session ?? null,
+        alert.moveClassification ?? null,
+        alert.signalDetectedAt ?? null,
+        alert.lastConfirmedAt ?? null,
+        alert.moveBeganAt ?? null,
+        alert.dataTimestamp ?? null,
+        alert.expiresAt ?? null,
+        alert.lastValidatedAt ?? null,
+        alert.lastTriggerEventAt ?? null,
+        alert.invalidationReason ?? null,
       );
     if (res.changes === 0) return null;
     const id = Number(res.lastInsertRowid);
@@ -306,7 +327,23 @@ export function getAlertDetail(id: number) {
     catalysts: db.prepare("SELECT * FROM catalyst_records WHERE alert_id=? ORDER BY published_at DESC").all(id),
     journal: db.prepare("SELECT * FROM trade_journal WHERE alert_id=? ORDER BY created_at").all(id),
     breakdowns: db.prepare("SELECT * FROM score_breakdowns WHERE alert_id=?").all(id),
+    feedback: db.prepare("SELECT * FROM alert_feedback WHERE alert_id=? ORDER BY submitted_at DESC").all(id),
+    notifications: db.prepare("SELECT * FROM notification_events WHERE alert_id=? ORDER BY created_at DESC").all(id),
+    discordDeliveries: db.prepare("SELECT * FROM discord_deliveries WHERE alert_id=? ORDER BY created_at DESC").all(id),
   };
+}
+
+export function insertAlertFeedback(e: {
+  alertId: number;
+  userFeedback: string;
+  feedbackReason?: string | null;
+  notes?: string | null;
+}): number {
+  const res = getDb().prepare(
+    `INSERT INTO alert_feedback (alert_id, user_feedback, feedback_reason, notes)
+     VALUES (?,?,?,?)`,
+  ).run(e.alertId, e.userFeedback, e.feedbackReason ?? null, e.notes ?? null);
+  return Number(res.lastInsertRowid);
 }
 
 export function listPerformance(f: { date?: string; ticker?: string; limit?: number } = {}) {
@@ -958,4 +995,104 @@ export function markNotificationEvent(id: number, status: string, error?: string
   getDb().prepare(
     "UPDATE notification_events SET status=?, error=?, sent_at=CASE WHEN ?='sent' THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE sent_at END WHERE id=?",
   ).run(status, error ?? null, status, id);
+}
+
+export type DiscordDeliveryStatus =
+  | "PENDING"
+  | "SENDING"
+  | "SENT"
+  | "FAILED"
+  | "RETRYING"
+  | "SUPPRESSED"
+  | "NOT_CONFIGURED";
+
+export function createDiscordDelivery(input: {
+  alertId?: number | null;
+  channelType: string;
+  webhookName: string;
+  payloadType: string;
+  payload: unknown;
+  status?: DiscordDeliveryStatus;
+  idempotencyKey?: string | null;
+  failureReason?: string | null;
+}): string {
+  const deliveryId = `dd_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  const payloadJson = JSON.stringify(input.payload ?? {});
+  const preview = payloadJson.replace(/\s+/g, " ").slice(0, 500);
+  const idempotencyKey = input.idempotencyKey ?? `${input.alertId ?? "test"}:${input.webhookName}:${input.payloadType}:${preview.slice(0, 80)}`;
+  const existing: any = getDb().prepare("SELECT delivery_id FROM discord_deliveries WHERE idempotency_key=?").get(idempotencyKey);
+  if (existing?.delivery_id) return existing.delivery_id;
+  getDb().prepare(
+    `INSERT INTO discord_deliveries
+       (delivery_id, alert_id, channel_type, webhook_name, payload_type, payload_preview, payload_json,
+        idempotency_key, status, failure_reason)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+  ).run(
+    deliveryId,
+    input.alertId ?? null,
+    input.channelType,
+    input.webhookName,
+    input.payloadType,
+    preview,
+    payloadJson,
+    idempotencyKey,
+    input.status ?? "PENDING",
+    input.failureReason ?? null,
+  );
+  return deliveryId;
+}
+
+export function updateDiscordDelivery(deliveryId: string, patch: {
+  status?: DiscordDeliveryStatus;
+  httpStatus?: number | null;
+  responseBodySafe?: string | null;
+  failureReason?: string | null;
+  retryCountDelta?: number;
+  nextRetryAt?: string | null;
+  attempted?: boolean;
+  sent?: boolean;
+}) {
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  if (patch.status) { sets.push("status=?"); params.push(patch.status); }
+  if ("httpStatus" in patch) { sets.push("http_status=?"); params.push(patch.httpStatus ?? null); }
+  if ("responseBodySafe" in patch) { sets.push("response_body_safe=?"); params.push(patch.responseBodySafe?.slice(0, 500) ?? null); }
+  if ("failureReason" in patch) { sets.push("failure_reason=?"); params.push(patch.failureReason?.slice(0, 500) ?? null); }
+  if ("nextRetryAt" in patch) { sets.push("next_retry_at=?"); params.push(patch.nextRetryAt ?? null); }
+  if (patch.retryCountDelta) sets.push(`retry_count=retry_count+${Math.max(0, Math.floor(patch.retryCountDelta))}`);
+  if (patch.attempted) sets.push("attempted_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')");
+  if (patch.sent) sets.push("sent_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')");
+  if (!sets.length) return;
+  params.push(deliveryId);
+  getDb().prepare(`UPDATE discord_deliveries SET ${sets.join(", ")} WHERE delivery_id=?`).run(...params);
+}
+
+export function getDiscordDelivery(deliveryId: string) {
+  return getDb().prepare("SELECT * FROM discord_deliveries WHERE delivery_id=?").get(deliveryId) as any;
+}
+
+export function listDiscordDeliveries(limit = 100, status?: string | null) {
+  const capped = Math.max(1, Math.min(500, Number(limit) || 100));
+  if (status) {
+    return getDb().prepare(
+      "SELECT * FROM discord_deliveries WHERE status=? ORDER BY created_at DESC LIMIT ?",
+    ).all(status, capped) as any[];
+  }
+  return getDb().prepare("SELECT * FROM discord_deliveries ORDER BY created_at DESC LIMIT ?").all(capped) as any[];
+}
+
+export function discordDeliverySummary() {
+  return getDb().prepare(
+    `SELECT status, COUNT(*) AS count FROM discord_deliveries GROUP BY status ORDER BY status`,
+  ).all() as any[];
+}
+
+export function retryableDiscordDeliveries(limit = 25) {
+  return getDb().prepare(
+    `SELECT * FROM discord_deliveries
+     WHERE status IN ('FAILED','RETRYING')
+       AND retry_count < 3
+       AND (next_retry_at IS NULL OR next_retry_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+     ORDER BY created_at ASC LIMIT ?`,
+  ).all(Math.max(1, Math.min(100, Number(limit) || 25))) as any[];
 }

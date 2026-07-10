@@ -30,6 +30,18 @@ type Health = {
 };
 
 type Line = { id: string; ch: "T" | "Q" | "A" | "O"; sym: string; txt: string; tone: "up" | "dn" | "" };
+type DataHealth = {
+  market_session?: string;
+  provider?: { connected?: boolean; last_latency_ms?: number | null; rate_limit_status?: string };
+  freshness?: Record<string, { freshness_status?: string; symbol?: string; data_age_seconds?: number | null }>;
+  stale_symbols?: string[];
+  monitored_symbols?: string[];
+};
+type DiscordHealth = {
+  webhooks?: Record<string, boolean>;
+  summary?: { status: string; count: number }[];
+  recentFailures?: { status: string; failure_reason?: string | null; webhook_name?: string }[];
+};
 
 const FIREHOSE_MAX = 16;
 let firehoseSeq = 0;
@@ -37,6 +49,8 @@ let firehoseSeq = 0;
 export default function DataCorePage() {
   const { realtime: loop } = useScannerStream();
   const [health, setHealth] = useState<Health | null>(null);
+  const [dataHealth, setDataHealth] = useState<DataHealth | null>(null);
+  const [discordHealth, setDiscordHealth] = useState<DiscordHealth | null>(null);
   const [lines, setLines] = useState<Line[]>([]);
 
   useEffect(() => {
@@ -52,6 +66,30 @@ export default function DataCorePage() {
     };
     poll();
     const id = setInterval(poll, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const [dh, discord] = await Promise.all([
+          fetch("/api/system/data-health", { cache: "no-store" }).then((r) => r.json()),
+          fetch("/api/discord/health", { cache: "no-store" }).then((r) => r.json()),
+        ]);
+        if (!cancelled) {
+          setDataHealth(dh);
+          setDiscordHealth(discord);
+        }
+      } catch {
+        /* telemetry only */
+      }
+    };
+    poll();
+    const id = setInterval(poll, 5000);
     return () => {
       cancelled = true;
       clearInterval(id);
@@ -99,6 +137,15 @@ export default function DataCorePage() {
     { name: "SCANNER LOOP", ch: `${health?.intervalMs ?? 1000}ms`, ok: loopUp },
   ];
 
+  const freshnessRows = ["stock_quote", "one_minute_candle", "options_chain", "options_quote", "greeks", "news"].map((kind) => ({
+    kind,
+    sample: dataHealth?.freshness?.[kind],
+  }));
+  const sentCount = discordHealth?.summary?.find((s) => s.status === "SENT")?.count ?? 0;
+  const failedCount = (discordHealth?.summary ?? [])
+    .filter((s) => ["FAILED", "RETRYING", "SUPPRESSED", "NOT_CONFIGURED"].includes(s.status))
+    .reduce((n, s) => n + Number(s.count ?? 0), 0);
+
   return (
     <div className="page-deck axiom-data">
       <div className="axiom-scan-sweep" aria-hidden />
@@ -108,6 +155,8 @@ export default function DataCorePage() {
         <StatTile label="Loop" value={loopUp ? "RUNNING" : "IDLE"} hint={loopHint} />
         <StatTile label="Calls today" value={health?.callsToday != null ? `${health.callsToday}` : "—"} hint={`cap ${health?.dailyCap ?? "—"}`} />
         <StatTile label="Rate / min" value={rate} hint={health?.quotaExceeded ? "QUOTA HIT" : "within cap"} />
+        <StatTile label="Freshness" value={dataHealth?.stale_symbols?.length ? "BLOCKING" : "OK"} hint={`${dataHealth?.stale_symbols?.length ?? 0} stale symbols`} />
+        <StatTile label="Discord" value={failedCount ? "CHECK" : "OK"} hint={`${sentCount} sent · ${failedCount} needs review`} />
       </div>
 
       <p className="live-guide" style={{ marginBottom: 12 }}>
@@ -157,6 +206,44 @@ export default function DataCorePage() {
               </div>
             )}
           </div>
+        </Panel>
+      </div>
+
+      <div className="axiom-hero-row" style={{ gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr)", marginTop: 14 }}>
+        <Panel title="Actionable data freshness" meta={dataHealth?.market_session ?? "session unknown"} live={!dataHealth?.stale_symbols?.length}>
+          {freshnessRows.map(({ kind, sample }) => (
+            <div className="clrow" key={kind}>
+              <span className="cldot" style={sample?.freshness_status === "LIVE" || sample?.freshness_status === "DEGRADED" ? undefined : { background: "#ff5162", boxShadow: "0 0 9px #ff5162" }} />
+              <div className="clnamewrap">
+                <span className="clname">{kind.replaceAll("_", " ").toUpperCase()}</span>
+                <span className="clch">{sample?.symbol ?? "no sample yet"} · age {sample?.data_age_seconds ?? "n/a"}s</span>
+              </div>
+              <span className="clstat">{sample?.freshness_status ?? "NO_DATA"}</span>
+            </div>
+          ))}
+          {!dataHealth?.monitored_symbols?.length ? (
+            <div className="sigwhy">No freshness samples yet. The scanner will populate this after the next provider responses.</div>
+          ) : null}
+        </Panel>
+
+        <Panel title="Discord delivery" meta="webhook + retry ledger" live={!failedCount}>
+          {(["options", "stocks", "recap"] as const).map((kind) => (
+            <div className="clrow" key={kind}>
+              <span className="cldot" style={discordHealth?.webhooks?.[kind] ? undefined : { background: "#ffc879", boxShadow: "0 0 9px #ffc879" }} />
+              <div className="clnamewrap">
+                <span className="clname">{kind.toUpperCase()} WEBHOOK</span>
+                <span className="clch">{discordHealth?.webhooks?.[kind] ? "configured" : "not configured"}</span>
+              </div>
+              <span className="clstat">{discordHealth?.webhooks?.[kind] ? "OK" : "MISSING"}</span>
+            </div>
+          ))}
+          {discordHealth?.recentFailures?.length ? (
+            <div className="sigwhy">
+              Latest Discord issue: {discordHealth.recentFailures[0].status} · {discordHealth.recentFailures[0].failure_reason ?? discordHealth.recentFailures[0].webhook_name}
+            </div>
+          ) : (
+            <div className="sigwhy">No recent Discord delivery failures in the new ledger.</div>
+          )}
         </Panel>
       </div>
 

@@ -77,6 +77,10 @@ interface SymState {
   lastOptionsAlertAt: number;
   lastNearMissAt: number;
   lastMajorMoveAt: number;
+  moveBeganAt: number;
+  lastConfirmedAt: number;
+  lastTriggerEventAt: number;
+  lastMoveDirection: "bullish" | "bearish" | "choppy" | null;
 }
 
 interface LoopState {
@@ -239,6 +243,7 @@ function sym(s: LoopState, ticker: string): SymState {
       ring: [], recentRates: [], cooldownUntil: 0, optionsCooldownUntil: 0, stockCooldownUntil: 0, lastChainFetch: 0,
       prefetchedChain: null, prefetchAt: 0,
       vwap: null, vwapAt: 0, relVol: null, lastAlertAt: 0, lastOptionsAlertAt: 0, lastNearMissAt: 0, lastMajorMoveAt: 0,
+      moveBeganAt: 0, lastConfirmedAt: 0, lastTriggerEventAt: 0, lastMoveDirection: null,
     };
     s.symbols.set(ticker, st);
   }
@@ -247,6 +252,10 @@ function sym(s: LoopState, ticker: string): SymState {
   st.lastOptionsAlertAt ??= st.lastAlertAt ?? 0;
   st.lastNearMissAt ??= 0;
   st.lastMajorMoveAt ??= 0;
+  st.moveBeganAt ??= 0;
+  st.lastConfirmedAt ??= 0;
+  st.lastTriggerEventAt ??= 0;
+  st.lastMoveDirection ??= null;
   return st;
 }
 
@@ -295,11 +304,17 @@ async function handleStockTrigger(ticker: string, st: SymState, read: any, quote
   const id = await captureStockAlert({
     ticker, price: quote.price, movePct: quote.changePercent ?? 0,
     shortRate: read.accelRead.shortRate, accel: read.accelRead.accel,
+    instantRate: read.instantRate ?? null,
     surge: read.surge, relVol: st.relVol, efficiency: read.efficiency,
     vwap: st.vwap, aboveVwap: read.levels.aboveVwap,
     hodBreak: read.levels.hodBreak, lodBreak: read.levels.lodBreak,
     direction: read.dir.direction, directionConfidence: read.dir.confidence,
     shareVolume: quote.volume ?? null, nowMs,
+    signalDetectedAtMs: st.lastTriggerEventAt || nowMs,
+    lastConfirmedAtMs: st.lastConfirmedAt || nowMs,
+    moveBeganAtMs: st.moveBeganAt || nowMs,
+    dataTimestampMs: quote.providerTimestamp ?? quote.lastTradeTimestamp ?? null,
+    lastTriggerEventAtMs: st.lastTriggerEventAt || nowMs,
   });
   if (id != null) {
     st.lastAlertAt = nowMs;
@@ -613,6 +628,19 @@ async function tick() {
         surge != null &&
         surge >= triggerMinSurge * 0.88);
 
+    const impulseConfirmed = tapeMoving || levelBreak || sustainedOk;
+    if (impulseConfirmed && dir.direction !== "choppy") {
+      const moveDirection = dir.direction === "bearish" ? "bearish" : "bullish";
+      const gapMs = st.lastConfirmedAt ? nowMs - st.lastConfirmedAt : Number.POSITIVE_INFINITY;
+      const directionChanged = st.lastMoveDirection != null && st.lastMoveDirection !== moveDirection;
+      if (!st.moveBeganAt || directionChanged || gapMs > 15 * 60_000) {
+        st.moveBeganAt = nowMs;
+      }
+      st.lastMoveDirection = moveDirection;
+      st.lastConfirmedAt = nowMs;
+      if (levelBreak || sustainedOk) st.lastTriggerEventAt = nowMs;
+    }
+
     const stockEnabled = process.env.STOCK_CALLOUTS === "1";
     // Options and stock use separate cooldowns — stock must not block 0DTE re-fire.
     const routeCooldownUntil = session === "regular"
@@ -652,7 +680,8 @@ async function tick() {
 
     if (fired) {
       // fire-and-forget: the 1s heartbeat must never wait on a chain fetch.
-      const read = { accelRead, surge, efficiency, levels, dir };
+      st.lastTriggerEventAt = nowMs;
+      const read = { accelRead, instantRate, surge, efficiency, levels, dir };
       const tasks: Promise<unknown>[] = [];
       if (session === "regular") tasks.push(handleTrigger(q.symbol, st, read, q, nowMs));
       if (stockEnabled) tasks.push(handleStockTrigger(q.symbol, st, read, q, nowMs));

@@ -22,6 +22,7 @@ import { evaluateExit, defaultExitConfig, type LiveTapeSnapshot, type EntryThesi
 import { checkRisk, defaultRiskConfig, type ProposedTrade, type RiskConfig, type RiskContext, type RiskVerdict } from "@/lib/paper-risk";
 import { dollarsAtRisk } from "@/lib/paper-trading";
 import { paperExperimentalOversize, paperMinPositionDollars, paperTargetProfitDollars, unitsForDollarExposure } from "@/lib/paper-sizing";
+import { actionableFreshness } from "@/lib/data-freshness";
 import type { OptionQuote } from "@/lib/execution/broker";
 
 const SWEEP_MS = Number(process.env.PAPER_SWEEP_MS ?? 30_000);
@@ -293,6 +294,21 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
 
   if (!base.ticker || !base.optionSymbol || base.entryLimit == null || base.entryLimit <= 0) {
     return { ok: false, risk: { allowed: false, failures: ["ticker, optionSymbol and a positive entryLimit are required (alert had no contract attached?)"] } };
+  }
+
+  const fresh = actionableFreshness(base.ticker, ["stock_quote", "options_chain", "options_quote", "greeks"]);
+  if (!fresh.ok) {
+    const risk = { allowed: false, failures: [`stale/unavailable data blocks paper option entry: ${fresh.reason}`] };
+    logDecision({
+      alertId: input.alertId ?? null,
+      ticker: base.ticker,
+      decision: "data_stale_refused",
+      allowed: false,
+      reason: risk.failures.join("; "),
+      risk,
+      snapshot: fresh,
+    });
+    return { ok: false, risk };
   }
 
   const exitCfg = defaultExitConfig();
@@ -647,6 +663,23 @@ export function autoEnterStockScalps(nowMs: number = Date.now()): number {
         snapshot: { alertId: a.id },
         nowMs,
       });
+      continue;
+    }
+    const fresh = actionableFreshness(a.ticker, ["stock_quote"]);
+    if (!fresh.ok) {
+      logDecision({
+        alertId: a.id,
+        ticker: a.ticker,
+        decision: "data_stale_refused",
+        allowed: false,
+        reason: `stale/unavailable data blocks stock paper entry: ${fresh.reason}`,
+        snapshot: fresh,
+        nowMs,
+      });
+      db.prepare(
+        `INSERT INTO paper_trades (alert_id, ticker, option_type, contracts, status, exit_reason, created_at_ms)
+         VALUES (?,?,?,?, 'CANCELLED', ?, ?)`,
+      ).run(a.id, a.ticker, stockSideFromAlert(a), 0, `stock scalp refused: stale/unavailable data (${fresh.reason})`, nowMs);
       continue;
     }
     const side = stockSideFromAlert(a);

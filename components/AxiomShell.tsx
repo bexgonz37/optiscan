@@ -6,25 +6,26 @@ import { marketSession, type MarketSession } from "@/lib/trading-session";
 import { NavRail } from "@/components/ui/NavRail";
 
 const MAIN_NAV = [
-  { href: "/", label: "Today's Scanner" },
+  { href: "/", label: "Command Center" },
+  { href: "/alerts", label: "Options Callouts" },
   { href: "/paper", label: "Paper Trading" },
-  { href: "/quant", label: "Quant" },
-  { href: "/alerts", label: "Track Record" },
-];
-
-const TOOL_NAV = [
-  { href: "/swing", label: "Swing Ideas" },
-  { href: "/data", label: "Data Health" },
+  { href: "/data", label: "System Health" },
   { href: "/settings", label: "Settings" },
 ];
 
+const TOOL_NAV = [
+  { href: "/quant", label: "Research Lab" },
+  { href: "/swing", label: "Swing Research" },
+];
+
 const PAGE_META: Record<string, { title: string; sub: string }> = {
-  "/": { title: "Today's Scanner", sub: "Options ideas + stock movers" },
-  "/data": { title: "Data Health", sub: "Feed, quota, and server status" },
+  "/": { title: "Command Center", sub: "What matters right now" },
+  "/data": { title: "System Health", sub: "Data freshness, Discord, and reliability" },
   "/copilot": { title: "Explain Signals", sub: "Coming soon" },
-  "/alerts": { title: "Track Record", sub: "What worked, what failed" },
-  "/paper": { title: "Paper Trading", sub: "Practice trades, no real money" },
-  "/swing": { title: "Swing Ideas", sub: "1-4 week options research" },
+  "/alerts": { title: "Options Callouts", sub: "Signals, follow-through, and history" },
+  "/paper": { title: "Paper Trading", sub: "Autonomous simulated trades, no real money" },
+  "/quant": { title: "Research Lab", sub: "Setup stats and backtests" },
+  "/swing": { title: "Swing Research", sub: "1-4 week options research" },
   "/settings": { title: "Settings", sub: "Alerts, Discord, safety" },
   "/review": { title: "Review", sub: "Methodology and limits" },
 };

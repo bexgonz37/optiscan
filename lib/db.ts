@@ -177,6 +177,16 @@ CREATE TABLE IF NOT EXISTS popup_events (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
+CREATE TABLE IF NOT EXISTS alert_feedback (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  alert_id INTEGER NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
+  user_feedback TEXT NOT NULL,
+  feedback_reason TEXT,
+  notes TEXT,
+  submitted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_alert_feedback_alert ON alert_feedback(alert_id);
+
 CREATE TABLE IF NOT EXISTS notification_settings (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   browser_popup_enabled INTEGER NOT NULL DEFAULT 1,
@@ -200,6 +210,28 @@ CREATE TABLE IF NOT EXISTS notification_events (
   sent_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_notif_status ON notification_events(status);
+
+CREATE TABLE IF NOT EXISTS discord_deliveries (
+  delivery_id TEXT PRIMARY KEY,
+  alert_id INTEGER REFERENCES alerts(id) ON DELETE SET NULL,
+  channel_type TEXT NOT NULL,
+  webhook_name TEXT NOT NULL,
+  payload_type TEXT NOT NULL,
+  payload_preview TEXT,
+  payload_json TEXT,
+  idempotency_key TEXT UNIQUE,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  attempted_at TEXT,
+  sent_at TEXT,
+  status TEXT NOT NULL,
+  http_status INTEGER,
+  response_body_safe TEXT,
+  failure_reason TEXT,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  next_retry_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_discord_deliveries_status ON discord_deliveries(status, next_retry_at);
+CREATE INDEX IF NOT EXISTS idx_discord_deliveries_alert ON discord_deliveries(alert_id);
 
 CREATE TABLE IF NOT EXISTS paper_decisions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -395,6 +427,15 @@ const ALERT_COLUMN_MIGRATIONS: [string, string][] = [
   // stocks mode: 'options' (default) | 'stock', plus the session the alert fired in
   ["asset_class", "ALTER TABLE alerts ADD COLUMN asset_class TEXT NOT NULL DEFAULT 'options'"],
   ["session", "ALTER TABLE alerts ADD COLUMN session TEXT"],
+  ["move_classification", "ALTER TABLE alerts ADD COLUMN move_classification TEXT"],
+  ["signal_detected_at", "ALTER TABLE alerts ADD COLUMN signal_detected_at TEXT"],
+  ["last_confirmed_at", "ALTER TABLE alerts ADD COLUMN last_confirmed_at TEXT"],
+  ["move_began_at", "ALTER TABLE alerts ADD COLUMN move_began_at TEXT"],
+  ["data_timestamp", "ALTER TABLE alerts ADD COLUMN data_timestamp TEXT"],
+  ["expires_at", "ALTER TABLE alerts ADD COLUMN expires_at TEXT"],
+  ["last_validated_at", "ALTER TABLE alerts ADD COLUMN last_validated_at TEXT"],
+  ["last_trigger_event_at", "ALTER TABLE alerts ADD COLUMN last_trigger_event_at TEXT"],
+  ["invalidation_reason", "ALTER TABLE alerts ADD COLUMN invalidation_reason TEXT"],
 ];
 const JOURNAL_COLUMN_MIGRATIONS: [string, string][] = [
   ["contract", "ALTER TABLE trade_journal ADD COLUMN contract TEXT"],
