@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-/** /stocks merged into Live — session-aware watchlist on /. */
+/** /stocks renamed to /watchlist (Phase 5). Redirect preserves old links. */
 export default function StocksRedirect() {
-  redirect("/");
+  redirect("/watchlist");
 }

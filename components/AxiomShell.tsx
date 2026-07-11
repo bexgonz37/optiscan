@@ -8,14 +8,17 @@ import { NavRail } from "@/components/ui/NavRail";
 const MAIN_NAV = [
   { href: "/", label: "Command Center" },
   { href: "/alerts", label: "Options Callouts" },
+  { href: "/watchlist", label: "Watchlist" },
   { href: "/paper", label: "Paper Trading" },
+  { href: "/performance", label: "Performance" },
+  { href: "/quant", label: "Research & Backtesting" },
   { href: "/data", label: "System Health" },
   { href: "/settings", label: "Settings" },
 ];
 
 const TOOL_NAV = [
-  { href: "/quant", label: "Research Lab" },
   { href: "/swing", label: "Swing Research" },
+  { href: "/guide", label: "Guide" },
 ];
 
 const PAGE_META: Record<string, { title: string; sub: string }> = {
@@ -23,11 +26,14 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   "/data": { title: "System Health", sub: "Data freshness, Discord, and reliability" },
   "/copilot": { title: "Explain Signals", sub: "Coming soon" },
   "/alerts": { title: "Options Callouts", sub: "Signals, follow-through, and history" },
+  "/watchlist": { title: "Watchlist", sub: "Symbols the scanner is monitoring" },
   "/paper": { title: "Paper Trading", sub: "Autonomous simulated trades, no real money" },
-  "/quant": { title: "Research Lab", sub: "Setup stats and backtests" },
+  "/performance": { title: "Performance", sub: "Alert track record and paper account" },
+  "/quant": { title: "Research & Backtesting", sub: "Setup stats and backtests" },
   "/swing": { title: "Swing Research", sub: "1-4 week options research" },
   "/settings": { title: "Settings", sub: "Alerts, Discord, safety" },
   "/review": { title: "Review", sub: "Methodology and limits" },
+  "/guide": { title: "Guide", sub: "Quick start" },
 };
 
 function isActive(pathname: string, href: string): boolean {

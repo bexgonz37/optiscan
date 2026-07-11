@@ -11,9 +11,9 @@ Lab / an embedded LLM.
 
 | Check | Result |
 |---|---|
-| `npm test` | **414 pass**, 0 fail, 0 skip (385 baseline + 29 new) |
+| `npm test` | **418 pass**, 0 fail, 0 skip (385 baseline + 33 new) |
 | `npx tsc --noEmit` | clean |
-| `npm run build` | compiles, 18/18 static pages |
+| `npm run build` | compiles, 20/20 static pages |
 
 ## Preserved Phase-1 guarantees (unchanged)
 
@@ -65,11 +65,19 @@ disabled by default (`lib/bearish-gate.ts`), all provider calls via metered
   - Scanner tick ingests top movers (throttled `OPP_INGEST_MS`, disable via
     `OPPORTUNITY_TRACKING=0`). `GET /api/opportunities` returns grouped buckets.
 
+- **Phase 5 — Simplified Navigation**: ✅ DONE.
+  - `components/AxiomShell.tsx` NavRail = the target 8 primary items
+    (Command Center, Options Callouts, Watchlist, Paper Trading, Performance,
+    Research & Backtesting, System Health, Settings) + TOOLS (Swing Research,
+    Guide). `/quant` relabelled "Research & Backtesting".
+  - New `app/watchlist/page.tsx` (monitored symbols / live tape, read-only over
+    `/api/scanner/live`) and `app/performance/page.tsx` (alert stats +
+    `/api/paper/trades`, live outcomes only, no fabricated history).
+  - `/stocks` now redirects to `/watchlist`; `/now`, `/scanner`, `/review`
+    redirects preserved — no dead links.
+
 ## Not yet started (next sessions — do not start without go-ahead)
 
-- **Phase 5 — Simplified Navigation**: NavRail already close to target; still
-  need Watchlist / Performance / "Research & Backtesting" consolidation +
-  redirects for renamed routes. Inspect deps before hiding any route.
 - **Phase 6 — Command Center**: sectioned calm home (Status Bar, Developing,
   Near Trigger, Actionable Now, Open Paper Trades, Extended/Invalidated, Recent
   Alerts) consuming `/api/opportunities`. Home is still the live scanner.
@@ -84,4 +92,4 @@ Self-Improvement Lab · optional embedded LLM.
 ## New tests
 
 `tests/opportunity-lifecycle.test.mjs` (14), `tests/opportunity-persistence.test.mjs`
-(6), `tests/system-health.test.mjs` (9).
+(6), `tests/system-health.test.mjs` (9), `tests/navigation.test.mjs` (4).
