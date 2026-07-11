@@ -249,6 +249,27 @@ CREATE TABLE IF NOT EXISTS paper_decisions (
 CREATE INDEX IF NOT EXISTS idx_paper_decisions_created ON paper_decisions(created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_paper_decisions_trade ON paper_decisions(trade_id);
 
+-- Typed, idempotent paper lifecycle event stream (rebuild). One row per
+-- transition; idempotency_key is UNIQUE so a duplicate scanner cycle is a
+-- no-op (INSERT OR IGNORE). Clean substrate for later outcome tracking — no
+-- statistics are computed here. paper_decisions is kept for compatibility.
+CREATE TABLE IF NOT EXISTS paper_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  trade_id INTEGER REFERENCES paper_trades(id) ON DELETE SET NULL,
+  alert_id INTEGER REFERENCES alerts(id) ON DELETE SET NULL,
+  ticker TEXT,
+  event_type TEXT NOT NULL,            -- candidate_created | validation_* | order_submitted | fill | no_fill | ...
+  event_seq INTEGER NOT NULL DEFAULT 0,
+  from_state TEXT,
+  to_state TEXT,
+  payload_json TEXT,
+  idempotency_key TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_events_idem ON paper_events(idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_paper_events_trade ON paper_events(trade_id, event_seq);
+
 -- Opportunity lifecycle memory (docs/ALERT-RANKING-PLAN.md §1). One row evolves
 -- per (ticker, setup_type, trading_day); repeated scans UPDATE it. Hysteresis
 -- bookkeeping (demote_streak, status_since) keeps cards from jumping.
@@ -494,6 +515,31 @@ const PAPER_COLUMN_MIGRATIONS: Array<[string, string]> = [
   ["exit_bid", "ALTER TABLE paper_trades ADD COLUMN exit_bid REAL"],
   ["exit_ask", "ALTER TABLE paper_trades ADD COLUMN exit_ask REAL"],
   ["exit_spread_pct", "ALTER TABLE paper_trades ADD COLUMN exit_spread_pct REAL"],
+  // Rebuild (additive): explicit order/position states derived from `status`
+  // (legacy status preserved), immutable alert-time + pre-entry snapshots,
+  // fill/fee/slippage assumptions, revalidation + drift, and a snapshot version.
+  ["order_state", "ALTER TABLE paper_trades ADD COLUMN order_state TEXT"],
+  ["position_state", "ALTER TABLE paper_trades ADD COLUMN position_state TEXT"],
+  ["close_reason", "ALTER TABLE paper_trades ADD COLUMN close_reason TEXT"],
+  ["strategy", "ALTER TABLE paper_trades ADD COLUMN strategy TEXT"],
+  ["opportunity_id", "ALTER TABLE paper_trades ADD COLUMN opportunity_id TEXT"],
+  ["selector_profile", "ALTER TABLE paper_trades ADD COLUMN selector_profile TEXT"],
+  ["selection_score", "ALTER TABLE paper_trades ADD COLUMN selection_score REAL"],
+  ["passed_gates", "ALTER TABLE paper_trades ADD COLUMN passed_gates TEXT"],
+  ["failed_gates", "ALTER TABLE paper_trades ADD COLUMN failed_gates TEXT"],
+  ["alert_time_contract_json", "ALTER TABLE paper_trades ADD COLUMN alert_time_contract_json TEXT"],
+  ["preentry_snapshot_json", "ALTER TABLE paper_trades ADD COLUMN preentry_snapshot_json TEXT"],
+  ["preentry_drift_json", "ALTER TABLE paper_trades ADD COLUMN preentry_drift_json TEXT"],
+  ["entry_slippage", "ALTER TABLE paper_trades ADD COLUMN entry_slippage REAL"],
+  ["entry_fees", "ALTER TABLE paper_trades ADD COLUMN entry_fees REAL"],
+  ["exit_slippage", "ALTER TABLE paper_trades ADD COLUMN exit_slippage REAL"],
+  ["exit_fees", "ALTER TABLE paper_trades ADD COLUMN exit_fees REAL"],
+  ["fill_assumptions_json", "ALTER TABLE paper_trades ADD COLUMN fill_assumptions_json TEXT"],
+  ["underlying_at_entry", "ALTER TABLE paper_trades ADD COLUMN underlying_at_entry REAL"],
+  ["session_at_entry", "ALTER TABLE paper_trades ADD COLUMN session_at_entry TEXT"],
+  ["freshness_at_entry", "ALTER TABLE paper_trades ADD COLUMN freshness_at_entry TEXT"],
+  ["risk_amount", "ALTER TABLE paper_trades ADD COLUMN risk_amount REAL"],
+  ["snapshot_version", "ALTER TABLE paper_trades ADD COLUMN snapshot_version INTEGER"],
 ];
 
 function migrate(db: Database.Database) {

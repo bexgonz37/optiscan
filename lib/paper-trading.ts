@@ -26,6 +26,50 @@ export const TERMINAL_STATES: ReadonlySet<PaperState> = new Set([
   "EXITED", "STOPPED_OUT", "TAKE_PROFIT", "CANCELLED", "EXPIRED",
 ]);
 
+// ── Explicit order + position states (rebuild, additive) ─────────────────────
+// The legacy `status` column stays the source of truth for backward-compat; the
+// order/position pair is DERIVED from it (and persisted alongside) so old rows
+// remain readable through one explicit mapping. Partial fills are structurally
+// supported but disabled by default this phase (no verified market depth).
+
+export const ORDER_STATES = [
+  "CANDIDATE", "VALIDATING", "REJECTED", "PENDING", "FILLED", "PARTIALLY_FILLED", "CANCELLED", "EXPIRED",
+] as const;
+export type OrderState = (typeof ORDER_STATES)[number];
+
+export const POSITION_STATES = [
+  "OPEN", "EXIT_PENDING", "CLOSED", "EXPIRED", "INVALIDATED", "ERROR",
+] as const;
+export type PositionState = (typeof POSITION_STATES)[number];
+
+/** Order state derived from a legacy PaperState (never fabricated). */
+export function deriveOrderState(status: PaperState): OrderState {
+  switch (status) {
+    case "WATCHING": return "CANDIDATE";
+    case "READY": return "PENDING";
+    case "ENTERED":
+    case "EXITED":
+    case "STOPPED_OUT":
+    case "TAKE_PROFIT": return "FILLED";
+    case "CANCELLED": return "CANCELLED";
+    case "EXPIRED": return "EXPIRED";
+  }
+}
+
+/** Position state derived from a legacy PaperState, or null when never opened. */
+export function derivePositionState(status: PaperState): PositionState | null {
+  switch (status) {
+    case "ENTERED": return "OPEN";
+    case "EXITED":
+    case "STOPPED_OUT":
+    case "TAKE_PROFIT": return "CLOSED";
+    case "EXPIRED": return "EXPIRED";
+    case "WATCHING":
+    case "READY":
+    case "CANCELLED": return null; // never held a position
+  }
+}
+
 const TRANSITIONS: Record<PaperState, PaperState[]> = {
   WATCHING: ["READY", "CANCELLED"],
   READY: ["ENTERED", "CANCELLED", "EXPIRED"],
