@@ -33,7 +33,16 @@ export async function GET(req: Request) {
       limit: num(q.get("limit")),
       offset: num(q.get("offset")),
     });
-    return NextResponse.json({ ok: true, alerts });
+    // Attach the deterministic shared explanation per row (Simple/Advanced desktop
+    // read the same object). Never throws into the list — falls back to no field.
+    let withExplanation: any[] = alerts;
+    try {
+      const { explanationForAlert } = await import("@/lib/explanation-adapters");
+      withExplanation = alerts.map((a: any) => {
+        try { return { ...a, explanation: explanationForAlert(a) }; } catch { return a; }
+      });
+    } catch { /* explanation is additive; keep raw alerts on failure */ }
+    return NextResponse.json({ ok: true, alerts: withExplanation });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err?.message ?? "alerts unavailable", alerts: [] }, { status: 500 });
   }

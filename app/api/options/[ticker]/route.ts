@@ -3,6 +3,7 @@ import { fetchOptionChain } from "@/lib/polygon-provider";
 import { optionsLiquidityScore, ivToPct } from "@/lib/alert-scoring";
 import { rankZeroDteContracts, zeroDteContractScore, expectedRemainingMovePct } from "@/lib/zero-dte";
 import { selectContract, type ChainContract } from "@/lib/contract-selector";
+import { explanationForSelection } from "@/lib/explanation-adapters";
 import { optionsPressure } from "@/lib/options-pressure";
 import { minutesToClose } from "@/lib/db";
 import { marketSession } from "@/lib/trading-session";
@@ -75,6 +76,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ ticker: 
         { underlying: res.underlying, spot, side, contracts: chainContracts, session: marketSession(), chainAvailable: true, chainAsOfMs, minsToClose: mins, expRemainPct: expRemain },
         "near_money_context",
       );
+      const callSel = selectFor("call");
+      const putSel = selectFor("put");
       return NextResponse.json({
         ok: true,
         ticker: res.underlying,
@@ -82,7 +85,13 @@ export async function GET(req: Request, { params }: { params: Promise<{ ticker: 
         pressure: optionsPressure(res.contracts, { direction }),
         bestCalls: bestCalls.map((r: any) => realityCheck(r.contract, mins, expRemain)),
         bestPuts: bestPuts.map((r: any) => realityCheck(r.contract, mins, expRemain)),
-        selection: { call: selectFor("call"), put: selectFor("put") },
+        selection: { call: callSel, put: putSel },
+        // Deterministic shared explanation per side (research display). Puts stay
+        // research-only; the builder never marks a put ACTIONABLE.
+        explanation: {
+          call: explanationForSelection(callSel, { ticker: res.underlying, side: "call" }),
+          put: explanationForSelection(putSel, { ticker: res.underlying, side: "put" }),
+        },
         note: "Reality check is research data (ratings + required move), not a recommendation.",
       });
     }
