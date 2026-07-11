@@ -11,6 +11,11 @@
  * own tracked outcomes. Treat rankings as a research queue, not signals.
  */
 
+// Swing contract SELECTION is consolidated in lib/contract-selector.ts; the
+// SWING_* constants below remain the documented thresholds, and pickSwingContract
+// is a thin wrapper delegating to the canonical picker.
+import { pickSwing } from "./contract-selector.ts";
+
 export interface DailyBar { t: number; o: number; h: number; l: number; c: number; v: number }
 
 export interface SwingContract {
@@ -177,27 +182,14 @@ export function regimeScore(spyBars: DailyBar[] | null, direction: "call" | "put
 }
 
 // ── Contract selection (hard gates documented in §4) ────────────────────────
-
-export const SWING_MAX_SPREAD_PCT = Number(process.env.SWING_MAX_SPREAD_PCT ?? 8);
-export const SWING_MIN_OI = Number(process.env.SWING_MIN_OI ?? 250);
-export const SWING_DELTA_MIN = 0.40;
-export const SWING_DELTA_MAX = 0.70;
+// Single source of truth for the swing gate thresholds now lives in the
+// centralized selector; re-exported here for backward compatibility.
+export { SWING_MAX_SPREAD_PCT, SWING_MIN_OI, SWING_DELTA_MIN, SWING_DELTA_MAX } from "./contract-selector.ts";
 
 export function pickSwingContract(contracts: SwingContract[], direction: "call" | "put"): SwingContract | null {
-  const usable = contracts.filter((c) =>
-    c.side === direction &&
-    c.dte != null && c.dte >= 7 && c.dte <= 35 &&
-    c.spreadPct != null && c.spreadPct <= SWING_MAX_SPREAD_PCT &&
-    (c.openInterest ?? 0) >= SWING_MIN_OI &&
-    c.delta != null && Math.abs(c.delta) >= SWING_DELTA_MIN && Math.abs(c.delta) <= SWING_DELTA_MAX &&
-    c.mid != null && c.mid > 0.1,
-  );
-  // Prefer the 21–28 DTE window (avoids gamma week), then closest to 0.55Δ.
-  return usable.sort((a, b) => {
-    const dteScore = (c: SwingContract) => (c.dte! >= 21 && c.dte! <= 28 ? 0 : Math.min(Math.abs(c.dte! - 21), Math.abs(c.dte! - 28)));
-    const dDelta = (c: SwingContract) => Math.abs(Math.abs(c.delta!) - 0.55);
-    return dteScore(a) - dteScore(b) || dDelta(a) - dDelta(b);
-  })[0] ?? null;
+  // Delegates to the centralized selector (gates: DTE 7–35, spread ≤8%, OI ≥250,
+  // delta 0.40–0.70, mid >0.1; prefers the 21–28 DTE window then 0.55Δ).
+  return pickSwing(contracts as any, direction) as SwingContract | null;
 }
 
 // ── Composite ────────────────────────────────────────────────────────────────
