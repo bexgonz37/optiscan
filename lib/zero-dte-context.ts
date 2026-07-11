@@ -170,6 +170,8 @@ export async function fetchStripAtmIv(symbol: string, nowMs = Date.now()): Promi
     // chain is already here for ATM IV.
     // breakevenOk needs live speed context — the strip shows the raw "needs
     // X% move" number and lets the callout gates judge feasibility.
+    // nearTheMoneyPair delegates to the centralized selector's nearTheMoney
+    // (research display: nearest usable strike each side, non-actionable framing).
     const pair = nearTheMoneyPair(chain.contracts ?? [], spot);
     return {
       symbol: sym,

@@ -214,7 +214,10 @@ export const PROFILES: Record<string, ContractProfile> = {
     minOpenInterest: SWING_MIN_OI, minVolume: 0, minMid: 0.1,
     requireActionableSession: false,
     actionableSessions: ["premarket", "regular", "afterhours"],
-    maxChainAgeMode: "session",
+    // Multi-week position ideas: a lenient 10-min staleness bound (normal option
+    // NBBO latency must not suppress a swing pick the way it gates a 0DTE scalp),
+    // while a genuinely stale snapshot is still caught.
+    maxChainAgeMode: Number(process.env.SWING_MAX_CHAIN_AGE_SEC ?? 600),
     requireBreakeven: false,
   },
   near_money_context: {

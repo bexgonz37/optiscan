@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 import { fetchOptionChain } from "@/lib/polygon-provider";
 import { optionsLiquidityScore, ivToPct } from "@/lib/alert-scoring";
 import { rankZeroDteContracts, zeroDteContractScore, expectedRemainingMovePct } from "@/lib/zero-dte";
+import { selectContract, type ChainContract } from "@/lib/contract-selector";
 import { optionsPressure } from "@/lib/options-pressure";
 import { minutesToClose } from "@/lib/db";
+import { marketSession } from "@/lib/trading-session";
 import { checkApiToken, unauthorized } from "@/lib/auth";
 
 export const runtime = "nodejs";
@@ -60,6 +62,19 @@ export async function GET(req: Request, { params }: { params: Promise<{ ticker: 
       const bestPuts = rankZeroDteContracts(res.contracts, "put", { minsToClose: mins, expRemainPct: expRemain, max: 3 } as any);
       const dirParam = new URL(req.url).searchParams.get("dir");
       const direction = dirParam === "bullish" || dirParam === "bearish" ? dirParam : undefined;
+      // Centralized selection verdict (research display): the single selector's
+      // actionable/rejection answer per side. Puts are surfaced for research but
+      // never marked actionable here — the bearish gate is the downstream authority.
+      const chainContracts = (res.contracts ?? []) as ChainContract[];
+      const spot = chainContracts.find((c) => typeof c.underlyingPrice === "number")?.underlyingPrice ?? null;
+      const chainAsOfMs = chainContracts.reduce<number | null>(
+        (max, c) => (typeof c.providerTimestamp === "number" && (max == null || c.providerTimestamp > max) ? c.providerTimestamp : max),
+        null,
+      );
+      const selectFor = (side: "call" | "put") => selectContract(
+        { underlying: res.underlying, spot, side, contracts: chainContracts, session: marketSession(), chainAvailable: true, chainAsOfMs, minsToClose: mins, expRemainPct: expRemain },
+        "near_money_context",
+      );
       return NextResponse.json({
         ok: true,
         ticker: res.underlying,
@@ -67,6 +82,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ ticker: 
         pressure: optionsPressure(res.contracts, { direction }),
         bestCalls: bestCalls.map((r: any) => realityCheck(r.contract, mins, expRemain)),
         bestPuts: bestPuts.map((r: any) => realityCheck(r.contract, mins, expRemain)),
+        selection: { call: selectFor("call"), put: selectFor("put") },
         note: "Reality check is research data (ratings + required move), not a recommendation.",
       });
     }

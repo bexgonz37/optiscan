@@ -20,8 +20,9 @@ import { getDb } from "@/lib/db";
 import { insertAlert } from "@/lib/alert-store";
 import { fetchOptionChain, getCallStats } from "@/lib/polygon-provider";
 import { nearMinuteBudget } from "@/lib/near-miss";
-import { pickSwingContract, type SwingContract } from "@/lib/swing-score";
-import { tradingDay } from "@/lib/trading-session";
+import type { SwingContract } from "@/lib/swing-score";
+import { selectContract, type ChainContract } from "@/lib/contract-selector";
+import { tradingDay, marketSession } from "@/lib/trading-session";
 import type { MajorMoveRead } from "@/lib/major-move";
 
 export const POSITION_CALLOUTS_ENABLED = () => process.env.POSITION_CALLOUTS !== "0";
@@ -78,11 +79,28 @@ export async function maybeEmitPositionCallout(
   const side = major.direction === "down" ? "put" : "call";
   const chain: any = await fetchOptionChain(quote.symbol, { dteMin: 7, dteMax: 35, maxPages: 2 });
   if (!chain?.available) return null;
-  const contract = pickSwingContract(chain.contracts as SwingContract[], side);
-  if (!contract) {
-    console.log(`[position] ${quote.symbol}: major move but no fillable 1–5 week ${side} (spread/OI/delta gates) — shares-watch only`);
+
+  // Centralized selection (swing_position profile): the same proven gates
+  // (spread ≤8%, OI ≥250, 0.40–0.70Δ, 7–35 DTE, 21–28 preferred) now applied
+  // through the one selector, with structured rejection reasons and staleness.
+  const contracts = (chain.contracts ?? []) as ChainContract[];
+  const chainAsOfMs = contracts.reduce<number | null>(
+    (max, c) => (typeof c.providerTimestamp === "number" && (max == null || c.providerTimestamp > max) ? c.providerTimestamp : max),
+    null,
+  );
+  const selection = selectContract(
+    {
+      underlying: quote.symbol, spot: quote.price, side,
+      contracts, session: marketSession(nowMs),
+      chainAvailable: Boolean(chain.available), chainAsOfMs, nowMs,
+    },
+    "swing_position",
+  );
+  if (!selection.ok) {
+    console.log(`[position] ${quote.symbol}: major move but no fillable 1–5 week ${side} — ${selection.reason}`);
     return null;
   }
+  const contract = selection.contract as unknown as SwingContract;
 
   const explanation = buildPositionExplanation(quote.symbol, major, quote, contract);
   const id = insertAlert({

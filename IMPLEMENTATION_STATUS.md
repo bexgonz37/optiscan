@@ -103,11 +103,50 @@ disabled by default (`lib/bearish-gate.ts`), all provider calls via metered
   pages at every width**. The only wide element is `.ui-table-scroll`, which
   scrolls internally by design (page body never scrolls horizontally).
 
+## Centralized Options Contract Selection — DONE (2 commits)
+
+**Commit A — `lib/contract-selector.ts` + `tests/contract-selector.test.mjs`.**
+One pure, deterministic selection service. Configurable strategy profiles
+(`zero_dte_momentum`, `swing_position`, `near_money_context`). Structured
+success/rejection results (`RejectionCode` + `blockedByGate` counts + human
+reason). Stable `optionSymbol` tie-break. Session-aware chain staleness
+(`maxAgeSecondsFor("options_chain", session)`) **and** per-contract staleness —
+a fresh chain never rescues an individually stale contract. Liquidity / spread /
+delta / DTE / price / mid gates. No fabricated data; no silent illiquid fallback.
+Legacy selectors (`rankZeroDteContracts`, `contractEntryGate`, `nearTheMoneyPair`,
+`pickSwingContract`) are thin wrappers delegating here; `SWING_*` thresholds have
+one source.
+
+**Commit B — call-site migration.**
+- `lib/position-callout.ts` → full adoption of `selectContract("swing_position")`
+  with structured rejection logging.
+- `app/api/options/[ticker]/route.ts` → additive centralized `selection` verdict
+  per side (research display; puts surfaced but never actionable).
+- `lib/scanner-loop.ts`, `lib/alert-capture.ts`, `lib/swing-score.ts`,
+  `lib/zero-dte-context.ts` → their ranking/gate now routes through the one
+  central implementation via the Commit-A delegation (behavior preserved; the
+  delicate capture/emission tiering is intentionally unchanged).
+
+**Bearish safety (unchanged authority):** the selector may select/score/display a
+put for research but **never** marks it `actionable`. `BEARISH_ACTIONABLE` stays
+off, and `lib/bearish-gate.ts` (`gateBearishAction`) remains the final authority
+for any bearish actionability downstream. No env override enables bearish here.
+
+**Selection vs. actionability** are distinct: "best available research contract"
+(may fail gates → `researchOnly`) vs. "safe + actionable" (passes all gates,
+non-put, actionable session).
+
+**Paper trading** still inherits the alert-time contract (unchanged this phase).
+**TODO (paper-trading rebuild):** revalidate the contract through
+`selectContract` immediately before entry (freshness/spread can drift between
+alert and fill) — belongs to that phase, not here.
+
 ## Later phases (explicitly out of scope now)
 
-Centralized contract selection · bearish-strategy rebuild · paper-trading
-rebuild · historical-data adapter · statistical prediction models ·
-Self-Improvement Lab · optional embedded LLM.
+Bearish-strategy rebuild · paper-trading rebuild (incl. pre-entry contract
+revalidation) · historical-data adapter · statistical prediction models ·
+specialized strategy agents (each = a selector profile) · Self-Improvement Lab ·
+optional embedded LLM.
 
 ## New tests
 

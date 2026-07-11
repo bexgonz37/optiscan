@@ -187,6 +187,10 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
   // accuracy lab still records it with the reason visible.
   const tradeBlockers: string[] = [];
   const maxSpreadPct = getSettingNum("trade_max_spread_pct", Number(process.env.TRADE_MAX_SPREAD_PCT ?? 5));
+  // Canonical 0DTE tradability gate — contractEntryGate now delegates to the
+  // centralized selector (lib/contract-selector.ts entryGate), so the spread/
+  // delta/breakeven thresholds live in one place. Bearish (put) TRADEs remain
+  // governed by the bearish gate below, which stays the final authority.
   const entryGate = contractEntryGate(sideContract, { underlying: sig.price, expRemainPct, maxSpreadPct });
   if (!entryGate.ok) tradeBlockers.push(...entryGate.failures.map((f: string) => `order economics: ${f}`));
   const trend = trendAlignedForTrade({

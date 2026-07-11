@@ -361,6 +361,11 @@ async function handleTrigger(ticker: string, st: SymState, read: any, quote: any
 
   const minsToClose = minutesToClose(nowMs);
   const expRemainPct = expectedRemainingMovePct({ shortRate: read.accelRead.shortRate ?? 0, minsToClose });
+  // Ranking routes through the centralized selector (rankZeroDteContracts →
+  // rankZeroDte in lib/contract-selector.ts). The permissive rank still returns
+  // the top strike per side (including marginal contracts) so a WATCH-tier
+  // heads-up can still fire; capture applies the central tradability gate
+  // (contractEntryGate) for the actionable TRADE tier.
   const bestCall = rankZeroDteContracts(chain.contracts, "call", { minsToClose, expRemainPct, max: 1, underlying: quote.price } as any)[0]?.contract ?? null;
   const bestPut = rankZeroDteContracts(chain.contracts, "put", { minsToClose, expRemainPct, max: 1, underlying: quote.price } as any)[0]?.contract ?? null;
 
