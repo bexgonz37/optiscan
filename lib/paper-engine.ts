@@ -13,10 +13,11 @@
 import { getDb } from "@/lib/db";
 import { fetchOptionChain, getCallStats } from "@/lib/polygon-provider";
 import { nearMinuteBudget } from "@/lib/near-miss";
-import { marketSession } from "@/lib/trading-session";
+import { marketSession, type MarketSession } from "@/lib/trading-session";
 import {
-  evaluateEntry, markToMarket, applyExit, pnlDollars, pnlPct, lessonsLearned,
-  TERMINAL_STATES, type PaperTrade, type PaperState,
+  markToMarket, applyExit, lessonsLearned, ENTRY_WINDOW_MS,
+  TERMINAL_STATES, deriveOrderState, derivePositionState,
+  type PaperTrade, type PaperState, type ExitDecision,
 } from "@/lib/paper-trading";
 import { evaluateExit, defaultExitConfig, type LiveTapeSnapshot, type EntryThesisSnapshot } from "@/lib/paper-exits";
 import { checkRisk, defaultRiskConfig, type ProposedTrade, type RiskConfig, type RiskContext, type RiskVerdict } from "@/lib/paper-risk";
@@ -24,6 +25,12 @@ import { dollarsAtRisk } from "@/lib/paper-trading";
 import { paperExperimentalOversize, paperMinPositionDollars, paperTargetProfitDollars, unitsForDollarExposure } from "@/lib/paper-sizing";
 import { actionableFreshness } from "@/lib/data-freshness";
 import type { OptionQuote } from "@/lib/execution/broker";
+import { revalidateContract, type AlertTimeContract, type RevalidationResult } from "@/lib/paper-revalidation";
+import { defaultFillConfig } from "@/lib/paper-fill-model";
+import { checkCapital, defaultCapitalConfig, type CapitalContext } from "@/lib/paper-capital";
+import { recordPaperEvent, type PaperEventType } from "@/lib/paper-events";
+import { decideEntryFill, decideMark, resolveExitFill } from "@/lib/paper-entry";
+import type { ChainContract } from "@/lib/contract-selector";
 
 const SWEEP_MS = Number(process.env.PAPER_SWEEP_MS ?? 30_000);
 const MAX_FETCHES_PER_SWEEP = Number(process.env.PAPER_SWEEP_MAX_FETCHES ?? 5);
@@ -87,28 +94,95 @@ function directionMultiplier(t: Pick<PaperTrade, "optionSymbol" | "optionType">)
 
 function persist(trade: PaperTrade): void {
   const db = getDb();
+  // Keep the legacy `status` authoritative; derive the explicit order/position
+  // states from it so old rows and new rows read through one mapping.
   db.prepare(
     `UPDATE paper_trades SET
-       status=?, entry_price=?, entry_at_ms=?, exit_price=?, exit_at_ms=?, exit_reason=?,
+       status=?, order_state=?, position_state=?, entry_price=?, entry_at_ms=?, exit_price=?, exit_at_ms=?, exit_reason=?,
        mfe_pct=?, mae_pct=?, last_mark=?, last_mark_at_ms=?, lessons=COALESCE(?, lessons)
      WHERE id=?`,
   ).run(
-    trade.status, trade.entryPrice, trade.entryAtMs, trade.exitPrice, trade.exitAtMs, trade.exitReason,
+    trade.status, deriveOrderState(trade.status), derivePositionState(trade.status),
+    trade.entryPrice, trade.entryAtMs, trade.exitPrice, trade.exitAtMs, trade.exitReason,
     trade.mfePct, trade.maePct, trade.lastMark, trade.lastMarkAtMs,
     TERMINAL_STATES.has(trade.status) && trade.entryPrice != null ? lessonsLearned(trade) : null,
     trade.id,
   );
 }
 
+const fillCfg = () => defaultFillConfig();
+
+/** Emit a sequence of lifecycle events for a trade (idempotent per event). */
+function emitEvents(tradeId: number | undefined, alertId: number | null, ticker: string, events: PaperEventType[], detail: { fromState?: string | null; toState?: string | null; reason?: string; discriminator?: string | number | null; nowMs?: number } = {}): void {
+  if (tradeId == null) return;
+  for (const eventType of events) {
+    recordPaperEvent({
+      tradeId, alertId, ticker, eventType,
+      fromState: detail.fromState ?? null, toState: detail.toState ?? null,
+      payload: detail.reason ? { reason: detail.reason } : undefined,
+      discriminator: detail.discriminator ?? eventType,
+      nowMs: detail.nowMs,
+    });
+  }
+}
+
+function underlyingFromContracts(contracts: any[]): number | null {
+  const c = contracts.find((x) => typeof x?.underlyingPrice === "number");
+  return c?.underlyingPrice ?? null;
+}
+
+function chainAsOfFromContracts(contracts: any[]): number | null {
+  return contracts.reduce<number | null>(
+    (max, c) => (typeof c?.providerTimestamp === "number" && (max == null || c.providerTimestamp > max) ? c.providerTimestamp : max),
+    null,
+  );
+}
+
+function profileForTrade(t: PaperTrade, stored?: string | null): string {
+  if (stored) return stored;
+  return t.dteAtEntry != null && t.dteAtEntry <= 1 ? "zero_dte_momentum" : "swing_position";
+}
+
+function alertTimeContractFor(row: any, t: PaperTrade): AlertTimeContract {
+  const parsed = parseJsonObj(row?.alert_time_contract_json);
+  if (parsed && parsed.optionSymbol) return parsed as unknown as AlertTimeContract;
+  return {
+    optionSymbol: t.optionSymbol ?? "",
+    side: t.optionType,
+    strike: t.strike,
+    expiration: t.expiration,
+    dte: t.dteAtEntry,
+    mid: row?.entry_bid != null && row?.entry_ask != null ? (row.entry_bid + row.entry_ask) / 2 : null,
+    spreadPct: row?.entry_spread_pct ?? null,
+    delta: row?.entry_delta ?? null,
+  };
+}
+
 export function listPaperTrades(limit = 200): Array<PaperTrade & {
   unrealizedPnlDollars: number | null;
   unrealizedPnlPct: number | null;
   entrySnapshot: Record<string, number | string | null>;
+  orderState: string | null;
+  positionState: string | null;
+  strategy: string | null;
+  selectorProfile: string | null;
+  selectionScore: number | null;
+  closeReason: string | null;
+  riskAmount: number | null;
+  passedGates: string[] | null;
+  failedGates: string[] | null;
+  entryCosts: Record<string, number | string | null>;
+  exitCosts: Record<string, number | null>;
+  alertTimeContract: Record<string, unknown> | null;
+  preentrySnapshot: Record<string, unknown> | null;
+  preentryDrift: Record<string, unknown> | null;
+  fillAssumptions: Record<string, unknown> | null;
 }> {
   const db = getDb();
   return (db.prepare("SELECT * FROM paper_trades ORDER BY id DESC LIMIT ?").all(limit) as any[]).map((r) => {
     const t = rowToTrade(r);
     const live = t.status === "ENTERED" && t.entryPrice != null && t.lastMark != null;
+    const splitGates = (v: string | null | undefined): string[] | null => (v ? v.split(",").filter(Boolean) : null);
     return {
       ...t,
       // Unrealized P/L updates every sweep from the live mark — exactly what a
@@ -122,6 +196,26 @@ export function listPaperTrades(limit = 200): Array<PaperTrade & {
         openInterest: r.entry_oi ?? null, volume: r.entry_volume ?? null,
         entryReason: r.entry_reason ?? null,
       },
+      // Rebuild fields — explicit states, strategy, gates, costs, immutable snapshots.
+      orderState: r.order_state ?? deriveOrderState(t.status),
+      positionState: r.position_state ?? derivePositionState(t.status),
+      strategy: r.strategy ?? null,
+      selectorProfile: r.selector_profile ?? null,
+      selectionScore: r.selection_score ?? null,
+      closeReason: r.close_reason ?? null,
+      riskAmount: r.risk_amount ?? null,
+      passedGates: splitGates(r.passed_gates),
+      failedGates: splitGates(r.failed_gates),
+      entryCosts: {
+        slippage: r.entry_slippage ?? null, fees: r.entry_fees ?? null,
+        underlyingAtEntry: r.underlying_at_entry ?? null, sessionAtEntry: r.session_at_entry ?? null,
+        freshnessAtEntry: r.freshness_at_entry ?? null,
+      },
+      exitCosts: { slippage: r.exit_slippage ?? null, fees: r.exit_fees ?? null },
+      alertTimeContract: parseJsonObj(r.alert_time_contract_json),
+      preentrySnapshot: parseJsonObj(r.preentry_snapshot_json),
+      preentryDrift: parseJsonObj(r.preentry_drift_json),
+      fillAssumptions: parseJsonObj(r.fill_assumptions_json),
     };
   });
 }
@@ -242,6 +336,29 @@ export function riskContext(): RiskContext {
   };
 }
 
+/** Capital context from open positions + realized P/L (buying-power reservation). */
+export function capitalContext(nowMs = Date.now()): CapitalContext {
+  const db = getDb();
+  const cfg = defaultCapitalConfig();
+  const realized: any = db.prepare(
+    `SELECT COALESCE(SUM((exit_price - entry_price) * (CASE WHEN option_symbol IS NULL AND option_type='put' THEN -1 ELSE 1 END)
+       * (CASE WHEN option_symbol IS NULL THEN 1 ELSE 100 END) * contracts), 0) AS pnl
+     FROM paper_trades WHERE entry_price IS NOT NULL AND exit_price IS NOT NULL`,
+  ).get();
+  const open = db.prepare(
+    "SELECT ticker, option_symbol, entry_price, entry_limit, contracts, strategy FROM paper_trades WHERE status IN ('ENTERED')",
+  ).all() as any[];
+  const reserved = open.reduce((s, r) => s + (r.entry_price ?? r.entry_limit ?? 0) * (r.option_symbol ? 100 : 1) * (r.contracts ?? 1), 0);
+  const dayStart = new Date(nowMs); dayStart.setHours(0, 0, 0, 0);
+  return {
+    equityDollars: cfg.startingBalance + Number(realized?.pnl ?? 0),
+    reservedOpenDollars: +reserved.toFixed(2),
+    openPositions: open.length,
+    openContractSymbols: new Set(open.map((r) => r.option_symbol).filter(Boolean)),
+    todayStrategyEntries: 0, // per-strategy counting handled at auto-entry time
+  };
+}
+
 // ── Creation (from an alert or manual) ───────────────────────────────────────
 
 export interface CreatePaperTradeInput {
@@ -340,22 +457,52 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
     return { ok: false, risk };
   }
 
+  // Capital / buying-power reservation (rebuild) — composed with the risk engine.
+  const strategy = profileForTrade({ dteAtEntry: base.dte ?? null } as PaperTrade);
+  const costDollars = base.entryLimit * 100 * proposed.contracts;
+  const capital = checkCapital(
+    { ticker: base.ticker, optionSymbol: base.optionSymbol, strategy, costDollars, units: proposed.contracts },
+    capitalContext(),
+  );
+  if (!capital.allowed) {
+    logDecision({
+      alertId: base.alertId ?? null, ticker: base.ticker, decision: "capital_refused",
+      allowed: false, reason: capital.failures.join("; "), snapshot: { costDollars, strategy },
+    });
+    return { ok: false, risk: { allowed: false, failures: capital.failures } };
+  }
+
   const nowMs = Date.now();
+  const riskAmount = dollarsAtRisk(base.entryLimit, proposed.contracts, proposed.stopLossPct ?? null, 100);
+  // Immutable alert-time contract snapshot — never overwritten by later marks.
+  const alertTimeContract: AlertTimeContract = {
+    optionSymbol: base.optionSymbol,
+    side: proposed.optionType,
+    strike: base.strike ?? null,
+    expiration: base.expiration ?? null,
+    dte: base.dte ?? null,
+    mid: base.entryLimit,
+    spreadPct: null,
+    delta: null,
+  };
   const info = db.prepare(
     `INSERT INTO paper_trades
        (alert_id, ticker, option_symbol, option_type, strike, expiration, dte_at_entry, contracts,
-        status, thesis, confidence, entry_limit, stop_loss_pct, take_profit_pct,
-        short_rate_entry, above_vwap_entry, rel_vol_entry, created_at_ms)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        status, order_state, thesis, confidence, entry_limit, stop_loss_pct, take_profit_pct,
+        short_rate_entry, above_vwap_entry, rel_vol_entry, created_at_ms,
+        strategy, selector_profile, alert_time_contract_json, risk_amount, snapshot_version)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     base.alertId ?? null, base.ticker, base.optionSymbol, proposed.optionType,
     base.strike ?? null, base.expiration ?? null, base.dte ?? null, proposed.contracts,
-    "READY", base.thesis ?? null, confidence, base.entryLimit,
+    "READY", "PENDING", base.thesis ?? null, confidence, base.entryLimit,
     proposed.stopLossPct, takeProfitPct,
     thesisSnapshot.shortRate, thesisSnapshot.aboveVwap == null ? null : (thesisSnapshot.aboveVwap ? 1 : 0),
     thesisSnapshot.relVol, nowMs,
+    strategy, strategy, JSON.stringify(alertTimeContract), riskAmount, 1,
   );
   const id = Number(info.lastInsertRowid);
+  emitEvents(id, base.alertId ?? null, base.ticker, ["candidate_created", "order_submitted"], { toState: "PENDING", reason: "risk + capital passed; entry order active", nowMs });
   logDecision({
     tradeId: id,
     alertId: base.alertId ?? null,
@@ -444,64 +591,191 @@ function snapFromContracts(contracts: any[], optionSymbol: string | null): Marke
   };
 }
 
-/** Advance one READY/ENTERED trade against a fresh market snapshot. */
-function advanceOpenTrade(t: PaperTrade, snap: MarketSnap, nowMs: number): boolean {
+/** Map an exit kind to its lifecycle event type (for the immutable event log). */
+const EXIT_EVENT: Record<ExitDecision["kind"], PaperEventType> = {
+  stop_loss: "stop_triggered",
+  take_profit: "target_triggered",
+  smart: "system_close",
+  manual: "manual_close",
+  expired: "expiration",
+};
+
+/** Immutable pre-entry snapshot: written once (COALESCE guards overwrite). */
+function persistPreentrySnapshot(id: number | undefined, reval: RevalidationResult, extra: { session: MarketSession; spot: number | null; nowMs: number }): void {
+  if (id == null) return;
+  const snapshot = {
+    revalidatedOk: reval.ok,
+    actionable: reval.actionable,
+    rejectionCode: reval.rejectionCode,
+    reason: reval.reason,
+    passedGates: reval.passedGates,
+    failedGates: reval.failedGates,
+    selectionScore: reval.selectionScore,
+    session: extra.session,
+    spot: extra.spot,
+    at: extra.nowMs,
+  };
+  getDb().prepare(
+    `UPDATE paper_trades SET
+       preentry_snapshot_json = COALESCE(preentry_snapshot_json, ?),
+       preentry_drift_json   = COALESCE(preentry_drift_json, ?),
+       selection_score       = COALESCE(selection_score, ?),
+       passed_gates          = COALESCE(passed_gates, ?),
+       failed_gates          = COALESCE(failed_gates, ?)
+     WHERE id=?`,
+  ).run(
+    JSON.stringify(snapshot),
+    reval.drift ? JSON.stringify(reval.drift) : null,
+    reval.selectionScore,
+    reval.passedGates.length ? reval.passedGates.join(",") : null,
+    reval.failedGates.length ? reval.failedGates.join(",") : null,
+    id,
+  );
+}
+
+/** Record the deterministic fill costs + assumptions on entry or exit. */
+function persistFillCosts(
+  id: number | undefined,
+  kind: "entry" | "exit",
+  slippage: number,
+  fees: number,
+  assumptions: unknown,
+  extra: { underlying?: number | null; session?: MarketSession; freshness?: string | null; closeReason?: string | null } = {},
+): void {
+  if (id == null) return;
+  const db = getDb();
+  if (kind === "entry") {
+    db.prepare(
+      `UPDATE paper_trades SET entry_slippage=?, entry_fees=?,
+         fill_assumptions_json = COALESCE(?, fill_assumptions_json),
+         underlying_at_entry=?, session_at_entry=?, freshness_at_entry=?
+       WHERE id=?`,
+    ).run(slippage, fees, assumptions ? JSON.stringify(assumptions) : null, extra.underlying ?? null, extra.session ?? null, extra.freshness ?? null, id);
+  } else {
+    db.prepare(
+      `UPDATE paper_trades SET exit_slippage=?, exit_fees=?, close_reason=COALESCE(?, close_reason) WHERE id=?`,
+    ).run(slippage, fees, extra.closeReason ?? null, id);
+  }
+}
+
+function entryThesisSnapshotFor(id: number | undefined): EntryThesisSnapshot {
+  const snap: EntryThesisSnapshot = { shortRateAtEntry: null, aboveVwapAtEntry: null, relVolAtEntry: null };
+  if (id == null) return snap;
+  const row = getDb().prepare("SELECT short_rate_entry, above_vwap_entry, rel_vol_entry FROM paper_trades WHERE id=?").get(id) as any;
+  if (row) {
+    snap.shortRateAtEntry = row.short_rate_entry ?? null;
+    snap.aboveVwapAtEntry = row.above_vwap_entry == null ? null : Boolean(row.above_vwap_entry);
+    snap.relVolAtEntry = row.rel_vol_entry ?? null;
+  }
+  return snap;
+}
+
+/**
+ * Advance one READY/ENTERED trade against a fresh chain snapshot.
+ *
+ * READY → pre-entry revalidation of the SAME alert-time contract (no
+ * substitution) then a conservative fill (never the mid); a failed
+ * revalidation rejects and preserves the contract. ENTERED → a stale/missing
+ * mark keeps the position OPEN (no fabricated exit); a real exit settles at
+ * intrinsic (expiry) or bid − slippage, and an unfillable exit quote keeps the
+ * position open rather than inventing a close.
+ */
+function advanceOpenTrade(t: PaperTrade, snap: MarketSnap, contracts: any[], nowMs: number): boolean {
   const quote = snap.quote;
+  const session = marketSession(nowMs);
+  const db = getDb();
+
   if (t.status === "READY") {
-    const r = evaluateEntry(t, quote, nowMs);
-    if (r.event === "waiting") return false;
-    persist(r.trade);
-    if (r.event === "filled") {
-      persistMarketSnapshot(t.id, "entry", snap, `filled: ${r.note}`);
-      logDecision({
-        tradeId: t.id,
-        alertId: t.alertId ?? null,
-        ticker: t.ticker,
-        decision: "entry_filled",
-        allowed: true,
-        reason: r.note,
-        snapshot: { optionSymbol: quote.optionSymbol, bid: quote.bid, ask: quote.ask, mid: quote.mid, spreadPct: quote.spreadPct },
-        nowMs,
-      });
-    } else if (r.event === "cancelled") {
-      logDecision({
-        tradeId: t.id,
-        alertId: t.alertId ?? null,
-        ticker: t.ticker,
-        decision: "entry_cancelled",
-        allowed: false,
-        reason: r.note,
-        nowMs,
-      });
+    const row = db.prepare("SELECT * FROM paper_trades WHERE id=?").get(t.id) as any;
+    const profile = profileForTrade(t, row?.selector_profile);
+    const alertContract = alertTimeContractFor(row, t);
+    const spot = underlyingFromContracts(contracts);
+    const reval = revalidateContract({
+      underlying: t.ticker,
+      alertContract,
+      freshContracts: contracts as ChainContract[],
+      chainAvailable: true,
+      chainAsOfMs: chainAsOfFromContracts(contracts),
+      session,
+      spot,
+      profile,
+      nowMs,
+    });
+    const entryWindowExpired = nowMs - t.createdAtMs > ENTRY_WINDOW_MS;
+    const decision = decideEntryFill({
+      revalidation: reval,
+      quote,
+      limit: t.entryLimit ?? 0,
+      contracts: t.contracts,
+      session,
+      fillCfg: fillCfg(),
+      nowMs,
+      entryWindowExpired,
+    });
+
+    if (decision.action === "wait") {
+      emitEvents(t.id, t.alertId ?? null, t.ticker, decision.events, { reason: decision.reason, discriminator: Math.floor(nowMs / 60_000), nowMs });
+      return false;
     }
+
+    // Both fill and reject finalize the pre-entry stage → record the immutable snapshot.
+    persistPreentrySnapshot(t.id, reval, { session, spot, nowMs });
+
+    if (decision.action === "fill" && decision.fillPrice != null) {
+      const entered: PaperTrade = {
+        ...t, status: "ENTERED",
+        entryPrice: decision.fillPrice, entryAtMs: nowMs,
+        lastMark: quote.mid ?? decision.fillPrice, lastMarkAtMs: nowMs,
+        mfePct: 0, maePct: 0,
+      };
+      persist(entered);
+      persistFillCosts(t.id, "entry", decision.slippage, decision.fees, decision.assumptions, { underlying: spot, session, freshness: `chain age ${chainAsOfFromContracts(contracts) != null ? Math.round((nowMs - (chainAsOfFromContracts(contracts) as number)) / 1000) : "?"}s` });
+      persistMarketSnapshot(t.id, "entry", snap, `filled: ${decision.reason}`);
+      emitEvents(t.id, t.alertId ?? null, t.ticker, decision.events, { fromState: "PENDING", toState: "OPEN", reason: decision.reason, nowMs });
+      logDecision({ tradeId: t.id, alertId: t.alertId ?? null, ticker: t.ticker, decision: "entry_filled", allowed: true, reason: decision.reason, snapshot: { optionSymbol: quote.optionSymbol, bid: quote.bid, ask: quote.ask, fillPrice: decision.fillPrice, slippage: decision.slippage, fees: decision.fees }, nowMs });
+      return true;
+    }
+
+    // reject (failed/non-actionable revalidation, or lapsed entry window) — preserve the contract, never substitute.
+    const rejected: PaperTrade = { ...t, status: decision.toStatus ?? "CANCELLED", exitReason: decision.reason };
+    persist(rejected);
+    persistFillCosts(t.id, "exit", 0, 0, null, { closeReason: decision.reason });
+    emitEvents(t.id, t.alertId ?? null, t.ticker, decision.events, { fromState: "PENDING", toState: decision.toOrderState, reason: decision.reason, nowMs });
+    logDecision({ tradeId: t.id, alertId: t.alertId ?? null, ticker: t.ticker, decision: "entry_rejected", allowed: false, reason: decision.reason, snapshot: { rejectionCode: reval.rejectionCode, revalOk: reval.ok }, nowMs });
     return true;
   }
+
   if (t.status !== "ENTERED") return false;
+
+  // Mark first: a stale/missing mark keeps the position OPEN — no fabricated
+  // exit, no terminal ERROR for a temporary quote gap.
+  const markDecision = decideMark(quote, fillCfg(), nowMs);
+  if (!markDecision.markable) {
+    emitEvents(t.id, t.alertId ?? null, t.ticker, [markDecision.event], { reason: markDecision.note, discriminator: Math.floor(nowMs / 60_000), nowMs });
+    return false;
+  }
+
   let marked = markToMarket(t, quote, nowMs);
   const live = liveSnapshotFor(t.ticker);
   const liveWithSpread = live ? { ...live, spreadPct: quote.spreadPct } : null;
-  const entrySnap: EntryThesisSnapshot = { shortRateAtEntry: null, aboveVwapAtEntry: null, relVolAtEntry: null };
-  const db = getDb();
-  const row = db.prepare("SELECT short_rate_entry, above_vwap_entry, rel_vol_entry FROM paper_trades WHERE id=?").get(t.id) as any;
-  if (row) {
-    entrySnap.shortRateAtEntry = row.short_rate_entry ?? null;
-    entrySnap.aboveVwapAtEntry = row.above_vwap_entry == null ? null : Boolean(row.above_vwap_entry);
-    entrySnap.relVolAtEntry = row.rel_vol_entry ?? null;
-  }
+  const entrySnap = entryThesisSnapshotFor(t.id);
   const exit = evaluateExit(marked, quote, liveWithSpread, entrySnap, nowMs, defaultExitConfig());
   if (exit) {
-    marked = applyExit(marked, exit, nowMs);
+    const exitFill = resolveExitFill({ decision: exit, trade: marked, quote, underlying: underlyingFromContracts(contracts), session, fillCfg: fillCfg(), nowMs });
+    if (exitFill.unresolved) {
+      // The exit is warranted but no usable quote to fill against — keep the
+      // position open and surface the data-quality issue, don't invent a close.
+      emitEvents(t.id, t.alertId ?? null, t.ticker, ["mark_missing"], { reason: exitFill.note, discriminator: Math.floor(nowMs / 60_000), nowMs });
+      persist(marked);
+      return true;
+    }
+    marked = applyExit(marked, { ...exit, fillPrice: exitFill.fillPrice }, nowMs);
+    persist(marked);
+    persistFillCosts(t.id, "exit", exitFill.slippage, exitFill.fees, exitFill.assumptions, { closeReason: `${exit.kind}: ${exit.reason}` });
     persistMarketSnapshot(t.id, "exit", snap);
-    logDecision({
-      tradeId: t.id,
-      alertId: t.alertId ?? null,
-      ticker: t.ticker,
-      decision: `exit_${exit.kind}`,
-      allowed: true,
-      reason: exit.reason,
-      snapshot: { optionSymbol: quote.optionSymbol, bid: quote.bid, ask: quote.ask, mid: quote.mid, spreadPct: quote.spreadPct, fillPrice: exit.fillPrice },
-      nowMs,
-    });
+    emitEvents(t.id, t.alertId ?? null, t.ticker, [EXIT_EVENT[exit.kind], "final_outcome"], { fromState: "OPEN", toState: derivePositionState(marked.status), reason: exit.reason, nowMs });
+    logDecision({ tradeId: t.id, alertId: t.alertId ?? null, ticker: t.ticker, decision: `exit_${exit.kind}`, allowed: true, reason: exit.reason, snapshot: { optionSymbol: quote.optionSymbol, bid: quote.bid, ask: quote.ask, fillPrice: exitFill.fillPrice, slippage: exitFill.slippage, fees: exitFill.fees }, nowMs });
+    return true;
   }
   persist(marked);
   return true;
@@ -524,7 +798,7 @@ export function evaluatePaperTradesWithChain(ticker: string, contracts: any[], n
   let advanced = 0;
   for (const t of trades) {
     const snap = snapFromContracts(contracts, t.optionSymbol);
-    if (snap && advanceOpenTrade(t, snap, nowMs)) advanced += 1;
+    if (snap && advanceOpenTrade(t, snap, contracts, nowMs)) advanced += 1;
   }
   return advanced;
 }
@@ -813,14 +1087,26 @@ export async function sweepPaperTrades(nowMs: number = Date.now()): Promise<{ ad
   const optionActive = active.filter((t) => t.optionSymbol);
   if (!optionActive.length) return { advanced: stockAdvanced, fetched: 0 };
 
+  const session = marketSession(nowMs);
   // Options quotes only exist while the market trades them.
-  if (marketSession(nowMs) !== "regular") {
-    // Still handle expirations from last marks (weekend/overnight expiry).
+  if (session !== "regular") {
+    // Still handle expirations (weekend/overnight expiry). Settle at intrinsic
+    // from a best-effort underlying; with no fresh underlying, resolveExitFill
+    // falls back to the last mark (documented — never fabricated).
     let advanced = 0;
     for (const t of optionActive.filter((x) => x.status === "ENTERED")) {
       const { checkExpiration } = await import("@/lib/paper-exits");
       const exp = checkExpiration(t, nowMs);
-      if (exp) { persist(applyExit(t, exp, nowMs)); advanced++; }
+      if (!exp) continue;
+      const tapePrice = Number(currentTapeRow(t.ticker)?.price ?? NaN);
+      const underlying = Number.isFinite(tapePrice) && tapePrice > 0 ? tapePrice : null;
+      const staleQuote: OptionQuote = { optionSymbol: t.optionSymbol ?? "", bid: null, ask: null, mid: null, spreadPct: null, asOfMs: nowMs };
+      const exitFill = resolveExitFill({ decision: exp, trade: t, quote: staleQuote, underlying, session, fillCfg: fillCfg(), nowMs });
+      const closed = applyExit(t, { ...exp, fillPrice: exitFill.fillPrice }, nowMs);
+      persist(closed);
+      persistFillCosts(t.id, "exit", exitFill.slippage, exitFill.fees, exitFill.assumptions, { closeReason: `expired: ${exitFill.note}` });
+      emitEvents(t.id, t.alertId ?? null, t.ticker, ["expiration", "final_outcome"], { fromState: "OPEN", toState: "EXPIRED", reason: exitFill.note, nowMs });
+      advanced++;
     }
     return { advanced: advanced + stockAdvanced, fetched: 0 };
   }
@@ -842,7 +1128,7 @@ export async function sweepPaperTrades(nowMs: number = Date.now()): Promise<{ ad
     if (!chain?.available) continue;
     for (const t of trades) {
       const snap = snapFromContracts(chain.contracts, t.optionSymbol);
-      if (snap && advanceOpenTrade(t, snap, nowMs)) advanced += 1;
+      if (snap && advanceOpenTrade(t, snap, chain.contracts, nowMs)) advanced += 1;
     }
   }
   return { advanced: advanced + stockAdvanced, fetched };
