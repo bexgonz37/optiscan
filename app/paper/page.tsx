@@ -114,6 +114,7 @@ function PaperPageInner() {
   const account: PaperAccount | null = data?.account ?? null;
   const trades: any[] = data?.trades ?? [];
   const decisions: any[] = data?.decisions ?? [];
+  const events: any[] = data?.events ?? [];
   const open = trades.filter((t) => ["WATCHING", "READY", "ENTERED"].includes(t.status));
   const closed = trades.filter((t) => !["WATCHING", "READY", "ENTERED"].includes(t.status));
   const filledClosed = closed.filter((t) => t.entryPrice != null && t.exitPrice != null);
@@ -226,7 +227,7 @@ function PaperPageInner() {
                       <><b>{t.ticker}</b> {t.optionType === "put" ? "SHORT" : "LONG"} shares × {t.contracts}</>
                     )}
                     <small>
-                      {t.status} · entry {t.entryPrice != null ? fmtPrice(t.entryPrice) : `limit ${fmtPrice(t.entryLimit)}`}
+                      {t.orderState ?? t.status}{t.positionState ? ` · ${t.positionState}` : ""} · entry {t.entryPrice != null ? fmtPrice(t.entryPrice) : `limit ${fmtPrice(t.entryLimit)}`}
                       {t.lastMark != null ? ` · mark ${fmtPrice(t.lastMark)}` : ""}
                       {t.unrealizedPnlDollars != null ? ` · unrealized ${t.unrealizedPnlDollars >= 0 ? "+" : ""}$${Math.abs(t.unrealizedPnlDollars).toFixed(0)} (${t.unrealizedPnlPct > 0 ? "+" : ""}${t.unrealizedPnlPct.toFixed(0)}%)` : ""}
                       {t.status === "ENTERED" && t.mfePct != null ? ` · peak ${t.mfePct.toFixed(0)}% / heat ${t.maePct?.toFixed(0)}%` : ""}
@@ -236,6 +237,13 @@ function PaperPageInner() {
                         At entry: Δ {Number(t.entrySnapshot.delta).toFixed(2)}
                         {t.entrySnapshot.iv != null ? ` · IV ${(Number(t.entrySnapshot.iv) * 100).toFixed(0)}%` : ""}
                         {t.entrySnapshot.spreadPct != null ? ` · spread ${Number(t.entrySnapshot.spreadPct).toFixed(1)}%` : ""}
+                      </small>
+                    ) : null}
+                    {t.explanation?.revalidated ? <small className="muted">Revalidation: {t.explanation.revalidated}</small> : null}
+                    {t.entryCosts?.slippage != null || t.entryCosts?.fees != null ? (
+                      <small className="muted">
+                        Fill costs: slippage ${Number(t.entryCosts.slippage ?? 0).toFixed(2)}/unit · fees ${Number(t.entryCosts.fees ?? 0).toFixed(2)}
+                        {t.entryCosts.sessionAtEntry ? ` · ${t.entryCosts.sessionAtEntry}` : ""}
                       </small>
                     ) : null}
                     {t.thesis ? <small className="muted">Thesis: {t.thesis.slice(0, 110)}</small> : null}
@@ -282,6 +290,24 @@ function PaperPageInner() {
           ) : <div className="sigwhy muted text-sm">No agent decisions logged yet. The first auto-entry, risk refusal, fill, or exit will appear here.</div>}
         </Panel>
 
+        <Panel title="Lifecycle events" meta={`${events.length} latest · immutable, idempotent audit trail`} tip="paperTrading">
+          {events.length ? (
+            <ul className="ledger axiom-ledger">
+              {events.slice(0, 20).map((e) => (
+                <li key={e.id}>
+                  <span className="t num">#{e.tradeId ?? "—"}</span>
+                  <span className="what">
+                    <b>{e.ticker ?? "SYSTEM"}</b> {String(e.eventType).replaceAll("_", " ")}
+                    {e.fromState || e.toState ? <small className="muted">{e.fromState ?? "—"} → {e.toState ?? "—"}</small> : null}
+                    {e.payload?.reason ? <small>{String(e.payload.reason).slice(0, 120)}</small> : null}
+                  </span>
+                  <span className="res muted text-xs">{timeAgo(e.createdAtMs)}</span>
+                </li>
+              ))}
+            </ul>
+          ) : <div className="sigwhy muted text-sm">No lifecycle events yet — candidate/validation/fill/exit events appear here with idempotency keys.</div>}
+        </Panel>
+
         <Panel title="Manual override" meta="Optional — engine runs without this" tip="paperTrading">
           <p className="muted text-xs">Force a paper trade from a recent callout. The risk engine can still refuse.</p>
           {createNote ? <div className="text-sm">{createNote}</div> : null}
@@ -318,7 +344,11 @@ function PaperPageInner() {
                       ) : (
                         <><b>{t.ticker}</b> {t.optionType === "put" ? "SHORT" : "LONG"} shares</>
                       )}
-                      <small>{t.exitReason ?? "no exit reason recorded"}</small>
+                      <small>{t.closeReason ?? t.exitReason ?? "no exit reason recorded"}</small>
+                      {t.explanation?.revalidated && t.entryPrice == null ? <small className="muted">{t.explanation.revalidated}</small> : null}
+                      {t.exitCosts?.slippage != null || t.exitCosts?.fees != null ? (
+                        <small className="muted">Exit costs: slippage ${Number(t.exitCosts.slippage ?? 0).toFixed(2)}/unit · fees ${Number(t.exitCosts.fees ?? 0).toFixed(2)}</small>
+                      ) : null}
                       {t.lessons ? <small className="muted">Lesson: {t.lessons}</small> : null}
                     </span>
                     <span className={`res num ${pnl != null && pnl > 0 ? "pos" : pnl != null ? "neg" : "open"}`}>

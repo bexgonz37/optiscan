@@ -125,6 +125,36 @@ export interface PaperEventRow {
   createdAtMs: number;
 }
 
+function mapEventRow(r: any): PaperEventRow {
+  return {
+    id: r.id,
+    tradeId: r.trade_id ?? null,
+    alertId: r.alert_id ?? null,
+    ticker: r.ticker ?? null,
+    eventType: r.event_type,
+    eventSeq: r.event_seq,
+    fromState: r.from_state ?? null,
+    toState: r.to_state ?? null,
+    payload: r.payload_json ? safeParse(r.payload_json) : null,
+    idempotencyKey: r.idempotency_key,
+    createdAtMs: r.created_at_ms,
+  };
+}
+
+/** Recent events across all trades (newest first) — for the dashboard feed. */
+export function listRecentPaperEvents(limit = 200): PaperEventRow[] {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getDb } = require("@/lib/db");
+    const rows = getDb()
+      .prepare("SELECT * FROM paper_events ORDER BY id DESC LIMIT ?")
+      .all(limit) as any[];
+    return rows.map(mapEventRow);
+  } catch {
+    return [];
+  }
+}
+
 export function listPaperEvents(tradeId: number, limit = 200): PaperEventRow[] {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports

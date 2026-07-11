@@ -9,8 +9,15 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   if (!checkApiToken(req)) return unauthorized();
   ensureServerBoot();
-  const { listPaperTrades, listPaperDecisions, paperEngineState } = await import("@/lib/paper-engine");
+  const { listPaperTrades, listPaperDecisions, paperEngineState, recentPaperEvents, paperTradeEvents } = await import("@/lib/paper-engine");
   const { summarize, byConfidence, byExpirationLength, bySetup, byExitKind } = await import("@/lib/paper-analytics");
+
+  // Detail view: ?tradeId=N returns the full chronological event log for one trade.
+  const tradeIdParam = new URL(req.url).searchParams.get("tradeId");
+  if (tradeIdParam != null && Number.isFinite(Number(tradeIdParam))) {
+    return NextResponse.json({ ok: true, tradeId: Number(tradeIdParam), events: paperTradeEvents(Number(tradeIdParam)) });
+  }
+
   const trades = listPaperTrades();
   const summary = summarize(trades);
   const startingBalance = Number(process.env.PAPER_STARTING_BALANCE ?? 5000);
@@ -32,6 +39,7 @@ export async function GET(req: Request) {
       byExitKind: byExitKind(trades),
     },
     decisions: listPaperDecisions(),
+    events: recentPaperEvents(200),
     engine: paperEngineState(),
   });
 }

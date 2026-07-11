@@ -31,6 +31,8 @@ import { checkCapital, defaultCapitalConfig, type CapitalContext } from "@/lib/p
 import { recordPaperEvent, type PaperEventType } from "@/lib/paper-events";
 import { decideEntryFill, decideMark, resolveExitFill } from "@/lib/paper-entry";
 import { decideStockEntry, evaluateStockExit, resolveStockExitFill } from "@/lib/paper-stock";
+import { buildPaperExplanation, type PaperExplanation } from "@/lib/paper-explain";
+import { listRecentPaperEvents, listPaperEvents, type PaperEventRow } from "@/lib/paper-events";
 import { normalizeProviderTimestampMs } from "@/lib/data-freshness";
 import type { ChainContract } from "@/lib/contract-selector";
 
@@ -179,12 +181,37 @@ export function listPaperTrades(limit = 200): Array<PaperTrade & {
   preentrySnapshot: Record<string, unknown> | null;
   preentryDrift: Record<string, unknown> | null;
   fillAssumptions: Record<string, unknown> | null;
+  explanation: PaperExplanation;
 }> {
   const db = getDb();
   return (db.prepare("SELECT * FROM paper_trades ORDER BY id DESC LIMIT ?").all(limit) as any[]).map((r) => {
     const t = rowToTrade(r);
     const live = t.status === "ENTERED" && t.entryPrice != null && t.lastMark != null;
     const splitGates = (v: string | null | undefined): string[] | null => (v ? v.split(",").filter(Boolean) : null);
+    const preentry = parseJsonObj(r.preentry_snapshot_json);
+    const drift = parseJsonObj(r.preentry_drift_json);
+    const explanation = buildPaperExplanation({
+      ticker: t.ticker,
+      side: t.optionType,
+      status: t.status,
+      orderState: r.order_state ?? deriveOrderState(t.status),
+      positionState: r.position_state ?? derivePositionState(t.status),
+      strategy: r.strategy ?? null,
+      thesis: t.thesis,
+      selectionScore: r.selection_score ?? null,
+      revalidationOk: preentry ? Boolean(preentry.revalidatedOk) : null,
+      revalidationReason: (preentry?.reason as string) ?? null,
+      revalidationCode: (preentry?.rejectionCode as any) ?? null,
+      drift: drift as any,
+      entryPrice: t.entryPrice,
+      entrySlippage: r.entry_slippage ?? null,
+      entryFees: r.entry_fees ?? null,
+      exitPrice: t.exitPrice,
+      exitSlippage: r.exit_slippage ?? null,
+      exitFees: r.exit_fees ?? null,
+      closeReason: r.close_reason ?? null,
+      exitReason: t.exitReason,
+    });
     return {
       ...t,
       // Unrealized P/L updates every sweep from the live mark — exactly what a
@@ -215,11 +242,22 @@ export function listPaperTrades(limit = 200): Array<PaperTrade & {
       },
       exitCosts: { slippage: r.exit_slippage ?? null, fees: r.exit_fees ?? null },
       alertTimeContract: parseJsonObj(r.alert_time_contract_json),
-      preentrySnapshot: parseJsonObj(r.preentry_snapshot_json),
-      preentryDrift: parseJsonObj(r.preentry_drift_json),
+      preentrySnapshot: preentry,
+      preentryDrift: drift,
       fillAssumptions: parseJsonObj(r.fill_assumptions_json),
+      explanation,
     };
   });
+}
+
+/** Events for one trade (chronological) — for the dashboard detail view. */
+export function paperTradeEvents(tradeId: number, limit = 200): PaperEventRow[] {
+  return listPaperEvents(tradeId, limit);
+}
+
+/** Recent events across all trades (newest first) — dashboard feed. */
+export function recentPaperEvents(limit = 200): PaperEventRow[] {
+  return listRecentPaperEvents(limit);
 }
 
 export interface PaperDecisionLog {

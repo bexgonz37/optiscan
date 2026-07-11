@@ -194,12 +194,86 @@ already-valid `setup_statistics`, gated so weak samples are never shown as proof
 `tests/explanation-adapters.test.mjs` (9), `tests/presentation-mode.test.mjs` (5),
 `tests/explanation-discord.test.mjs` (6).
 
+## Paper-Trading Rebuild with Pre-Entry Revalidation — DONE (5 commits)
+
+Realistic, auditable paper fills on top of the centralized selector +
+explanation layer. Additive DB migration only (column-existence-guarded
+`ALTER TABLE ADD COLUMN` + `CREATE TABLE/INDEX IF NOT EXISTS`, repeat-safe);
+legacy `status` stays authoritative and every historical row remains readable
+through one derived mapping.
+
+**1 — Shared execution + event infrastructure.** `lib/paper-fill-model.ts`
+(conservative, deterministic fills: long entries at ask + bounded slippage capped
+at the limit — never the mid; exits at bid − slippage; reject one-sided / crossed
+/ stale / wide-spread / missing quotes; partials structurally supported but
+disabled). `lib/paper-capital.ts` (buying-power reservation, max position $, max
+concurrent, duplicate-contract exposure, per-strategy daily cap).
+`lib/paper-events.ts` (21 typed lifecycle events with deterministic idempotency
+keys `pe:{tradeId}:{eventType}:{disc}`, `INSERT OR IGNORE`). Derived
+`ORDER_STATES` / `POSITION_STATES` alongside legacy `status`. New `paper_events`
+table + additive `paper_trades` columns (states, strategy, gates, immutable
+alert-time + pre-entry snapshots, drift, fill assumptions, fees/slippage).
+
+**2 — Pre-entry revalidation (no substitution).** `lib/paper-revalidation.ts`
+re-checks the SPECIFIC alert-time contract against a fresh chain by running it
+back through the ONE `selectContract` as a single-contract pool (spread /
+liquidity / delta / DTE / freshness / bearish policy reused, never duplicated).
+`revalidatedContract` is ALWAYS the alert-time symbol or `null` — a vanished /
+identity-changed / out-of-profile / stale contract rejects the entry and
+preserves the original; it never selects a different contract. Substitution is
+explicitly deferred.
+
+**3 — Options paper-trading rebuild.** `lib/paper-entry.ts` +
+`lib/paper-explain.ts` (pure) wired into `lib/paper-engine.ts`: explicit
+candidate → validation → pending → fill → open → exit. Entry revalidates then
+fills only from the conservative model, persisting the immutable pre-entry
+snapshot + drift + fees/slippage/assumptions. A stale/missing mark keeps the
+position OPEN (typed event, no fabricated exit, no terminal ERROR for a
+temporary quote gap). Exits settle at intrinsic value (expiry) or bid − slippage;
+an unfillable exit quote keeps the position open. Deterministic explanation reuses
+`rejectionToPlain`.
+
+**4 — Momentum-stock rebuild (verified fills, long only).**
+`lib/paper-stock.ts` (pure) replaces instant tape-price entries with the same
+verified-quote model. Real NBBO is plumbed additively through
+`parseSnapshotTickers` + the scanner tape (zero extra API calls). Decision 8: the
+rebuilt path NEVER opens a short/bearish stock paper position while bearish
+actionability is disabled — long only. Decision 7: extended-hours entries only
+when explicitly permitted (`PAPER_STOCK_EXTENDED_HOURS=1`) AND a fresh valid
+two-sided quote fills through the extended-slippage rules; the tape price is never
+a guaranteed fill. Capital gate + typed events + immutable snapshots throughout.
+
+**5 — API / dashboard / docs.** `GET /api/paper/trades` exposes per-trade
+`orderState` / `positionState`, strategy, gates, entry/exit costs, immutable
+alert-time + pre-entry snapshots, drift, fill assumptions, and a deterministic
+`explanation`; adds a recent `events` feed and `?tradeId=` per-trade event log.
+The desktop paper page surfaces the states, revalidation/drift, fill costs, close
+reason, and a lifecycle-events panel (no unrelated redesign). No Discord
+paper-trade alerts this phase.
+
+**Bearish safety (unchanged):** `BEARISH_ACTIONABLE` stays off; puts may be
+selected / researched / explained / displayed but never create an actionable
+bearish paper trade, and no short stock paper entry is created through the
+rebuilt path. `lib/bearish-gate.ts` remains the final authority — no test / env /
+hidden override.
+
+**Deferred (explicitly not started this phase):** contract SUBSTITUTION on
+revalidation failure · Discord paper-trade alerts · setup fingerprinting ·
+statistical calculations / expectancy / prediction models · specialized agents ·
+Self-Improvement Lab · embedded LLM · live-broker / real-money execution ·
+partial fills (no verified market depth).
+
+**New tests:** `tests/paper-fill-model.test.mjs` (13),
+`tests/paper-capital.test.mjs` (8), `tests/paper-events.test.mjs` (8),
+`tests/paper-revalidation.test.mjs` (11), `tests/paper-entry.test.mjs` (15),
+`tests/paper-stock.test.mjs` (14).
+
 ## Later phases (explicitly out of scope now)
 
-Bearish-strategy rebuild · paper-trading rebuild (incl. pre-entry contract
-revalidation) · historical-data adapter · statistical prediction models ·
-specialized strategy agents (each = a selector profile) · Self-Improvement Lab ·
-optional embedded LLM.
+Bearish-strategy rebuild · contract substitution on revalidation failure ·
+historical-data adapter · statistical prediction models · specialized strategy
+agents (each = a selector profile) · Self-Improvement Lab · optional embedded
+LLM · live-broker / real-money execution.
 
 ## New tests
 
