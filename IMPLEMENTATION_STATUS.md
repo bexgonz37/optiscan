@@ -11,7 +11,7 @@ Lab / an embedded LLM.
 
 | Check | Result |
 |---|---|
-| `npm test` | **423 pass**, 0 fail, 0 skip (385 baseline + 38 new) |
+| `npm test` | **478 pass**, 0 fail, 0 skip (423 prior + 55 new) |
 | `npx tsc --noEmit` | clean |
 | `npm run build` | compiles, 20/20 static pages |
 
@@ -140,6 +140,59 @@ non-put, actionable session).
 **TODO (paper-trading rebuild):** revalidate the contract through
 `selectContract` immediately before entry (freshness/spread can drift between
 alert and fill) — belongs to that phase, not here.
+
+## Desktop + Discord Trade Explainability — DONE (5 commits)
+
+One shared, deterministic explanation object drives both the desktop dashboard
+(Simple/Advanced) and Discord. No LLM, no fabricated data, no DB migration —
+explanations are derived at read/render time from already-verified fields.
+
+**A — `lib/trade-explanation.ts` + tests.** The ONE pure builder
+(`buildTradeExplanation`): `plainSummary`, `whyNow`, `contractSummary`,
+`riskSummary`, `selectedBecause`, `rejectedBecause`, `wouldImproveIf`,
+`invalidatedIf`, `supportingMetrics`, `glossaryTerms`, `evidenceStatus`,
+`evidenceSummary`, `actionabilityStatus`, `advanced{}`. No DB, no provider I/O,
+no `@/`, no wall-clock in output. A put/bearish idea can NEVER be `ACTIONABLE`
+(display guard on top of the selector + `lib/bearish-gate.ts`); evidence gating
+surfaces numeric win rate/expectancy only for an ESTABLISHED (strong) sample.
+
+**B — `lib/explanation-adapters.ts` + additive API wiring.** Impure gathering
+(`explanationForSelection` / `explanationForOpportunity` / `explanationForAlert`,
+the alert adapter tolerating both DB-row and notify shapes). Read-only evidence
+lookup of `setup_statistics` (never recomputed). `GET /api/opportunities`,
+`/api/options/:ticker`, and `/api/alerts` each attach `explanation` additively.
+
+**C — Desktop Simple/Advanced.** `hooks/usePresentationMode.ts` (localStorage,
+default **simple**, persists across pages) + `components/TradeExplanationCard.tsx`
+(the one renderer; Advanced is additive — expandable raw-metrics disclosure with
+glossary InfoTips). Command Center toolbar toggle + opportunity cards; ChartPanel
+reality-check surfaces the same per-side selection explanation. Both modes render
+the EXACT SAME object — the mode only selects which fields show.
+
+**D — One combined Discord alert.** `formatExplanationDiscord` merges the
+explanation body into the existing BUY embed, preserving color/author/footer/
+timestamp, role-mention content, and structured metric fields; adds a compact
+`Advanced` line + a `Status` field. `notifyNewAlert` merges into the SINGLE
+payload — freshness gate, ledger states, language guard, dedup window, and the
+`${alertId}:${webhook}:buy` idempotency key are all unchanged (exactly one send).
+
+**Bearish safety (unchanged):** `BEARISH_ACTIONABLE` stays off; the explanation
+layer describes puts/research only and never authorizes a bearish actionable
+alert. `lib/bearish-gate.ts` remains the final authority.
+
+**Deferred to the paper-trading rebuild:** pre-entry contract revalidation
+through `selectContract` immediately before a fill — the explanation may describe
+the alert-time contract but never claims it is still tradable (a note flags
+possible drift). No paper-trading logic was changed this phase.
+
+**Deferred to setup-fingerprinting / statistical outcome tracking:** real
+`evidenceStatus` beyond `NOT_TRACKED` for opportunities, and comparable
+per-fingerprint win rate / expectancy / profit factor. This phase only surfaces
+already-valid `setup_statistics`, gated so weak samples are never shown as proof.
+
+**New tests:** `tests/trade-explanation.test.mjs` (19),
+`tests/explanation-adapters.test.mjs` (9), `tests/presentation-mode.test.mjs` (5),
+`tests/explanation-discord.test.mjs` (6).
 
 ## Later phases (explicitly out of scope now)
 
