@@ -1,22 +1,16 @@
-﻿"use client";
+"use client";
 
-import { Suspense, useCallback, useState } from "react";
-import { LivePageTabs } from "@/components/LivePageTabs";
-import { openLiveChart } from "@/lib/open-chart";
+import { Suspense } from "react";
+import { CommandCenter } from "@/components/CommandCenter";
 
-function LivePageInner() {
-  const [, setLoopLive] = useState(false);
-  const onOpenChart = useCallback((symbol: string) => {
-    openLiveChart(symbol);
-  }, []);
-
-  return <LivePageTabs onOpenChart={onOpenChart} onLoopStatus={setLoopLive} />;
-}
-
+/**
+ * Home is the calm, sectioned Command Center (Phase 6). The full live scanner
+ * moved to /scanner and is linked from here.
+ */
 export default function Page() {
   return (
     <Suspense fallback={null}>
-      <LivePageInner />
+      <CommandCenter />
     </Suspense>
   );
 }

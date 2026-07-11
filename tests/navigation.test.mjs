@@ -39,8 +39,7 @@ test("new Watchlist and Performance pages exist", () => {
 test("renamed / removed routes still resolve via redirects (no dead links)", () => {
   const redirects = {
     "app/stocks/page.tsx": "/watchlist",
-    "app/now/page.tsx": "/",
-    "app/scanner/page.tsx": "/",
+    "app/now/page.tsx": "/scanner", // live view relocated when "/" became the Command Center
     "app/review/page.tsx": "/alerts",
   };
   for (const [file, target] of Object.entries(redirects)) {

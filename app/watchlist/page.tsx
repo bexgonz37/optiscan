@@ -3,10 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   PageContainer,
-  PageHeader,
   Card,
   StatusBadge,
-  EmptyState,
   LoadingState,
   ErrorState,
   type BadgeTone,
@@ -91,17 +89,11 @@ export default function WatchlistPage() {
 
   return (
     <PageContainer>
-      <PageHeader
-        title="Watchlist"
-        subtitle="Symbols the scanner is actively monitoring this session"
-        actions={
-          <>
-            {running != null ? <StatusBadge tone={running ? "live" : "warn"}>{running ? "Scanner live" : "Scanner idle"}</StatusBadge> : null}
-            <button type="button" className="ui-btn ui-btn-sm" onClick={load}>Refresh</button>
-          </>
-        }
-      />
-      <Card title="Monitored symbols" meta={rows ? `${rows.length} tracked` : undefined}>
+      <Card
+        title="Monitored symbols"
+        meta={rows ? `${rows.length} tracked` : undefined}
+        actions={running != null ? <StatusBadge tone={running ? "live" : "warn"}>{running ? "Scanner live" : "Scanner idle"}</StatusBadge> : undefined}
+      >
         {error ? (
           <ErrorState detail={error} onRetry={load} />
         ) : rows == null ? (

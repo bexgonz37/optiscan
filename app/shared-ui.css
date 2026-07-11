@@ -328,5 +328,38 @@
 }
 .ui-section-hint { font-size: 0.74rem; color: var(--muted, #8b97a8); }
 
+/* ---- Command Center (Phase 6) ---- */
+.cc-page { gap: 18px; }
+.cc-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.cc-opp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
+  gap: 10px;
+  align-items: stretch;
+}
+.cc-opp {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 11px 13px;
+  background: var(--panel, #0d1420);
+  border: 1px solid var(--line, #1e2a3c);
+  border-radius: 10px;
+  min-width: 0;
+}
+.cc-opp-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cc-opp-ticker { font-family: var(--font-display, inherit); font-weight: 700; font-size: 0.98rem; letter-spacing: 0.02em; }
+.cc-opp-meta { font-size: 0.7rem; color: var(--muted, #8b97a8); text-transform: capitalize; }
+.cc-opp-row { display: flex; align-items: baseline; justify-content: space-between; font-size: 0.74rem; color: var(--muted, #8b97a8); }
+.cc-opp-num { color: var(--txt, #e7edf5); font-weight: 600; font-variant-numeric: tabular-nums; }
+.cc-opp-dim { color: var(--muted, #8b97a8); font-weight: 400; }
+.cc-opp-foot { font-size: 0.66rem; color: var(--muted, #8b97a8); margin-top: 2px; }
+
 /* prevent any page-level horizontal scroll from shared components */
 .ui-page, .ui-page * { box-sizing: border-box; }

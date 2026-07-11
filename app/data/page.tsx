@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   PageContainer,
-  PageHeader,
   ResponsiveGrid,
   Card,
   StatusBadge,
@@ -99,7 +98,6 @@ export default function SystemHealthPage() {
   if (error && !data) {
     return (
       <PageContainer>
-        <PageHeader title="System Health" subtitle="Data freshness, delivery, and reliability" />
         <ErrorState detail={error} onRetry={load} />
       </PageContainer>
     );
@@ -108,7 +106,6 @@ export default function SystemHealthPage() {
   if (!data) {
     return (
       <PageContainer>
-        <PageHeader title="System Health" subtitle="Data freshness, delivery, and reliability" />
         <Card title="Loading system health"><LoadingState label="Reading telemetry…" rows={4} /></Card>
       </PageContainer>
     );
@@ -118,12 +115,6 @@ export default function SystemHealthPage() {
 
   return (
     <PageContainer>
-      <PageHeader
-        title="System Health"
-        subtitle={`${data.exchange_time ?? ""} · ${data.trading_day ?? ""}`}
-        actions={<button type="button" className="ui-btn ui-btn-sm" onClick={load}>Refresh</button>}
-      />
-
       {/* Status bar */}
       <div className="ui-statusbar">
         {statusCells.map((c) => (

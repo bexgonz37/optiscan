@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   PageContainer,
-  PageHeader,
   ResponsiveGrid,
   Card,
   KeyValue,
@@ -72,7 +71,6 @@ export default function PerformancePage() {
   if (error && !stats) {
     return (
       <PageContainer>
-        <PageHeader title="Performance" subtitle="Alert track record and paper account" />
         <ErrorState detail={error} onRetry={load} />
       </PageContainer>
     );
@@ -80,7 +78,6 @@ export default function PerformancePage() {
   if (!stats || !paper) {
     return (
       <PageContainer>
-        <PageHeader title="Performance" subtitle="Alert track record and paper account" />
         <Card title="Loading performance"><LoadingState rows={4} /></Card>
       </PageContainer>
     );
@@ -106,12 +103,6 @@ export default function PerformancePage() {
 
   return (
     <PageContainer>
-      <PageHeader
-        title="Performance"
-        subtitle="Alert track record and paper account — measured from live outcomes only"
-        actions={<button type="button" className="ui-btn ui-btn-sm" onClick={load}>Refresh</button>}
-      />
-
       <ResponsiveGrid min={240}>
         <Card title="Alert track record">
           <KeyValue k="Total alerts" v={totals.total ?? 0} />

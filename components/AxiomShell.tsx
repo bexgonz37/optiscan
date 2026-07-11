@@ -34,6 +34,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   "/settings": { title: "Settings", sub: "Alerts, Discord, safety" },
   "/review": { title: "Review", sub: "Methodology and limits" },
   "/guide": { title: "Guide", sub: "Quick start" },
+  "/scanner": { title: "Live Scanner", sub: "0DTE options · share momentum tape" },
 };
 
 function isActive(pathname: string, href: string): boolean {
@@ -51,7 +52,9 @@ export function AxiomShell({ children }: { children: ReactNode }) {
 
   const pageKey = pathname === "/" ? "/" : `/${pathname.split("/").filter(Boolean)[0]}`;
   const pageMeta = PAGE_META[pageKey] ?? { title: "OptiScan", sub: "Live terminal" };
-  const isLive = pathname === "/";
+  // Full-bleed live chrome is for the live scanner (now /scanner). The Command
+  // Center at "/" is a normal, calm page and uses the standard header.
+  const isLive = pathname === "/scanner";
 
   useEffect(() => {
     const tick = () => {

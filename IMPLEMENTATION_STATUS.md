@@ -11,7 +11,7 @@ Lab / an embedded LLM.
 
 | Check | Result |
 |---|---|
-| `npm test` | **418 pass**, 0 fail, 0 skip (385 baseline + 33 new) |
+| `npm test` | **423 pass**, 0 fail, 0 skip (385 baseline + 38 new) |
 | `npx tsc --noEmit` | clean |
 | `npm run build` | compiles, 20/20 static pages |
 
@@ -76,12 +76,22 @@ disabled by default (`lib/bearish-gate.ts`), all provider calls via metered
   - `/stocks` now redirects to `/watchlist`; `/now`, `/scanner`, `/review`
     redirects preserved — no dead links.
 
+- **Phase 6 — Command Center**: ✅ DONE.
+  - `components/CommandCenter.tsx` is the new home (`app/page.tsx`): status bar
+    (session, provider, freshness, scanner, Discord, paper) + calm sections —
+    Actionable Now, Near Trigger, Developing Setups, Open Paper Trades, Extended
+    or Invalidated, Recent Alerts. Reads persisted `/api/opportunities` buckets
+    (stable, hysteresis-smoothed order — no per-tick re-ranking, no animation);
+    every empty section explains why. Read-only (no trading/provider calls).
+  - The full live scanner is **preserved** at `/scanner` (was the old home);
+    `/now` redirects there. Shell full-bleed "live" chrome now keys on
+    `/scanner`, so `/` uses the standard calm page header.
+  - Duplicate page `<PageHeader>`s removed from System Health / Watchlist /
+    Performance — the shell's `pgtop` is the single page-title source.
+
 ## Not yet started (next sessions — do not start without go-ahead)
 
-- **Phase 6 — Command Center**: sectioned calm home (Status Bar, Developing,
-  Near Trigger, Actionable Now, Open Paper Trades, Extended/Invalidated, Recent
-  Alerts) consuming `/api/opportunities`. Home is still the live scanner.
-- **Verification**: responsive screenshots at 1440 / 1024 / 768 / 390.
+- **Verification**: responsive screenshots at 1440 / 1024 / 768 / 390 (in progress).
 
 ## Later phases (explicitly out of scope now)
 
@@ -92,4 +102,5 @@ Self-Improvement Lab · optional embedded LLM.
 ## New tests
 
 `tests/opportunity-lifecycle.test.mjs` (14), `tests/opportunity-persistence.test.mjs`
-(6), `tests/system-health.test.mjs` (9), `tests/navigation.test.mjs` (4).
+(6), `tests/system-health.test.mjs` (9), `tests/navigation.test.mjs` (4),
+`tests/command-center.test.mjs` (5).

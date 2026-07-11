@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-/** /now merged into the main dashboard. */
+/** /now → the live scanner (moved to /scanner when "/" became the Command Center). */
 export default function NowRedirect() {
-  redirect("/");
+  redirect("/scanner");
 }
