@@ -14,6 +14,7 @@ import {
   buildWatchEmbed,
   buildScoreboardEmbed,
   formatDiscordAlert,
+  formatExplanationDiscord,
 } from "@/lib/alert-format";
 import { containsBannedPublicLanguage } from "@/lib/language-modes";
 import { isOptionsSession } from "@/lib/trading-session";
@@ -328,7 +329,26 @@ export async function notifyNewAlert(alertId: number, alertLike: any): Promise<v
 
     const languageMode = getSetting("language_mode") === "public" ? "public" : "private";
     const built = buildBuyPayload(alertLike, languageMode);
-    const payload: any = "payload" in built ? built.payload : { content: built.content };
+    let payload: any = "payload" in built ? built.payload : { content: built.content };
+    let safe = built.safe !== false;
+
+    // ONE combined alert: the deterministic TradeExplanation becomes the readable
+    // body while the base embed's color/fields/footer/timestamp and role-mention
+    // content are preserved. Enrichment only — this never sends a second message,
+    // and any failure falls back to the base payload unchanged.
+    try {
+      const { explanationForAlert } = await import("@/lib/explanation-adapters");
+      const exp = explanationForAlert(alertLike);
+      if (payload.embeds && payload.embeds[0]) {
+        const merged = formatExplanationDiscord(exp, { base: payload });
+        payload = merged.payload;
+        safe = safe && merged.safe;
+      } else {
+        const merged = formatExplanationDiscord(exp);
+        payload = { ...payload, embeds: merged.payload.embeds };
+        safe = safe && merged.safe;
+      }
+    } catch { /* explanation enrichment is optional — keep the base payload */ }
     // Quant enrichment (2026-07-09): compact historical-edge line on every BUY
     // payload — statistics only, never directives (passes the public-language
     // guard); a quant failure must never block the send.
@@ -348,7 +368,6 @@ export async function notifyNewAlert(alertId: number, alertLike: any): Promise<v
         }
       }
     } catch { /* quant enrichment is optional */ }
-    const safe = built.safe !== false;
     if (!safe) {
       createDiscordDelivery({
         alertId,

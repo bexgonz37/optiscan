@@ -144,19 +144,41 @@ export function explanationForOpportunity(
 
 // ── Alert (alerts feed + Discord) ────────────────────────────────────────────
 
+/** First finite/defined value among the given keys (tolerates camel + snake shapes). */
+function pick(obj: any, ...keys: string[]): any {
+  for (const k of keys) {
+    const v = obj?.[k];
+    if (v !== undefined && v !== null && v !== "") return v;
+  }
+  return null;
+}
+
 /**
- * Build an explanation from an alert row (as returned by listAlerts / alert
- * snapshots). Reuses the deterministic explain.js sections for narrative
+ * Build an explanation from an alert-like object. Tolerates BOTH shapes: the
+ * snake_case DB row (listAlerts) and the camelCase in-memory alert passed to the
+ * Discord notify path. Reuses the deterministic explain.js sections for narrative
  * fragments and a read-only setup-statistics lookup for gated evidence.
  */
 export function explanationForAlert(alert: any): TradeExplanation {
-  const direction = alert.direction === "bearish" ? "bearish" : alert.direction === "bullish" ? "bullish" : null;
-  const rawSide = String(alert.option_side ?? "").toLowerCase();
+  const rawDir = String(pick(alert, "direction") ?? "").toLowerCase();
+  const direction = rawDir === "bearish" ? "bearish" : rawDir === "bullish" ? "bullish" : null;
+  const rawSide = String(pick(alert, "option_side", "optionSide") ?? "").toLowerCase();
   const side: "call" | "put" | null = rawSide.startsWith("p") ? "put" : rawSide.startsWith("c") ? "call" : direction === "bearish" ? "put" : direction === "bullish" ? "call" : null;
-  const assetClass: "options" | "stock" = alert.asset_class === "stock" ? "stock" : "options";
+  const assetClass: "options" | "stock" = pick(alert, "asset_class", "assetClass") === "stock" ? "stock" : "options";
 
-  const movePct = isNum(alert.percent_move_at_alert) ? alert.percent_move_at_alert : null;
-  const relVol = isNum(alert.relative_volume) ? alert.relative_volume : null;
+  const movePct = isNum(pick(alert, "percent_move_at_alert", "movePct", "percentMoveAtAlert")) ? Number(pick(alert, "percent_move_at_alert", "movePct", "percentMoveAtAlert")) : null;
+  const relVol = isNum(pick(alert, "relative_volume", "relativeVolume", "relVol")) ? Number(pick(alert, "relative_volume", "relativeVolume", "relVol")) : null;
+  const spreadPct = isNum(pick(alert, "entry_spread_pct", "spreadPct", "spread_pct")) ? Number(pick(alert, "entry_spread_pct", "spreadPct", "spread_pct")) : null;
+  const delta = isNum(pick(alert, "entry_delta", "delta")) ? Number(pick(alert, "entry_delta", "delta")) : null;
+  const mid = isNum(pick(alert, "entry_mid", "optionMid", "option_mid")) ? Number(pick(alert, "entry_mid", "optionMid", "option_mid")) : null;
+  const strike = isNum(pick(alert, "strike")) ? Number(pick(alert, "strike")) : null;
+  const dte = isNum(pick(alert, "dte")) ? Number(pick(alert, "dte")) : null;
+  const riskScore = isNum(pick(alert, "risk_score", "riskScore")) ? Number(pick(alert, "risk_score", "riskScore")) : null;
+  const signalScore = isNum(pick(alert, "signal_score", "setupScore")) ? Number(pick(alert, "signal_score", "setupScore")) : null;
+  const moveStatus = pick(alert, "move_status", "moveStatus");
+  const expiration = pick(alert, "expiration");
+  const optionSymbol = pick(alert, "option_symbol", "optionSymbol");
+  const invalidationReason = pick(alert, "invalidation_reason", "invalidationReason");
 
   // Deterministic narrative fragments from explain.js (no model calls).
   let whyNow: string | null = null;
@@ -166,14 +188,14 @@ export function explanationForAlert(alert: any): TradeExplanation {
     const { sections } = buildExplanation(
       {
         ticker: alert.ticker,
-        direction: alert.direction,
+        direction: direction ?? undefined,
         movePct,
         relVol,
-        moveStatus: alert.move_status ?? null,
-        spreadPct: isNum(alert.entry_spread_pct) ? alert.entry_spread_pct : null,
-        riskScore: alert.risk_score ?? null,
-        setupScore: alert.signal_score ?? null,
-        liquidityScore: alert.options_liquidity_score ?? null,
+        moveStatus: moveStatus ?? null,
+        spreadPct,
+        riskScore,
+        setupScore: signalScore,
+        liquidityScore: pick(alert, "options_liquidity_score", "liquidityScore"),
       },
       "private",
     );
@@ -187,20 +209,11 @@ export function explanationForAlert(alert: any): TradeExplanation {
   } catch {
     /* narrative is optional — leave nulls rather than fabricate */
   }
-  if (alert.invalidation_reason) invalidateIf = `This is invalidated if ${alert.invalidation_reason}.`;
+  if (invalidationReason) invalidateIf = `This is invalidated if ${invalidationReason}.`;
 
-  const hasContract = side != null && (alert.strike != null || alert.entry_mid != null);
+  const hasContract = side != null && (strike != null || mid != null);
   const contract = hasContract
-    ? {
-        optionSymbol: alert.option_symbol ?? null,
-        strike: isNum(alert.strike) ? alert.strike : null,
-        side,
-        expiration: alert.expiration ?? null,
-        dte: isNum(alert.dte) ? alert.dte : null,
-        mid: isNum(alert.entry_mid) ? alert.entry_mid : null,
-        spreadPct: isNum(alert.entry_spread_pct) ? alert.entry_spread_pct : null,
-        delta: isNum(alert.entry_delta) ? alert.entry_delta : null,
-      }
+    ? { optionSymbol, strike, side, expiration, dte, mid, spreadPct, delta }
     : null;
 
   let evidence: ExplanationEvidence | null = null;
@@ -216,9 +229,9 @@ export function explanationForAlert(alert: any): TradeExplanation {
     side,
     movePct,
     relVol,
-    riskScore: isNum(alert.risk_score) ? alert.risk_score : null,
-    riskLabel: isNum(alert.risk_score) ? riskLabel(alert.risk_score) : null,
-    score: isNum(alert.signal_score) ? alert.signal_score : null,
+    riskScore,
+    riskLabel: riskScore != null ? riskLabel(riskScore) : null,
+    score: signalScore,
     whyNow,
     improveIf,
     invalidateIf,
