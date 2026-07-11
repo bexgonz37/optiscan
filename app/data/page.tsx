@@ -13,7 +13,7 @@ import {
   ErrorState,
   DetailsDisclosure,
   type BadgeTone,
-} from "@/components/ui";
+} from "@/components/ui/Shell";
 import { DiscordDeliveryPanel } from "@/components/DiscordDeliveryPanel";
 
 /**

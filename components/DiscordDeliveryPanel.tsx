@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Card, StatusBadge, SimpleTable, EmptyState, LoadingState, ErrorState, type BadgeTone, type Column } from "@/components/ui";
+import { Card, StatusBadge, EmptyState, LoadingState, ErrorState, type BadgeTone } from "@/components/ui/Shell";
+import { SimpleTable, type Column } from "@/components/ui/Table";
 
 /**
  * Discord delivery UI (Phase 3). Renders the existing delivery ledger + health
@@ -120,28 +121,28 @@ export function DiscordDeliveryPanel() {
   const recapConfigured = health?.webhooks?.recap ?? false;
 
   const columns: Column<Delivery>[] = [
-    { key: "status", header: "Status", render: (d) => <StatusBadge tone={tone(d.status)}>{d.status.replace("_", " ")}</StatusBadge> },
-    { key: "alert", header: "Alert", render: (d) => (d.alert_id != null ? `#${d.alert_id}` : "—") },
-    { key: "ticker", header: "Ticker", render: (d) => d.ticker ?? "—" },
+    { key: "status", header: "Status", render: (d: Delivery) => <StatusBadge tone={tone(d.status)}>{d.status.replace("_", " ")}</StatusBadge> },
+    { key: "alert", header: "Alert", render: (d: Delivery) => (d.alert_id != null ? `#${d.alert_id}` : "—") },
+    { key: "ticker", header: "Ticker", render: (d: Delivery) => d.ticker ?? "—" },
     {
       key: "setup",
       header: "Setup",
-      render: (d) => (d.setup_type ? `${d.setup_type}${d.option_side ? ` · ${d.option_side}` : ""}` : d.payload_type),
+      render: (d: Delivery) => (d.setup_type ? `${d.setup_type}${d.option_side ? ` · ${d.option_side}` : ""}` : d.payload_type),
     },
-    { key: "channel", header: "Channel", render: (d) => d.channel_type || d.webhook_name },
-    { key: "created", header: "Created", render: (d) => timeShort(d.created_at) },
-    { key: "sent", header: "Sent", render: (d) => timeShort(d.sent_at) },
-    { key: "retries", header: "Retries", align: "right", render: (d) => String(d.retry_count ?? 0) },
+    { key: "channel", header: "Channel", render: (d: Delivery) => d.channel_type || d.webhook_name },
+    { key: "created", header: "Created", render: (d: Delivery) => timeShort(d.created_at) },
+    { key: "sent", header: "Sent", render: (d: Delivery) => timeShort(d.sent_at) },
+    { key: "retries", header: "Retries", align: "right", render: (d: Delivery) => String(d.retry_count ?? 0) },
     {
       key: "reason",
       header: "Failure reason",
-      render: (d) =>
+      render: (d: Delivery) =>
         d.failure_reason ? <span title={d.failure_reason} style={{ color: "var(--bear)" }}>{d.failure_reason}</span> : "—",
     },
     {
       key: "action",
       header: "",
-      render: (d) =>
+      render: (d: Delivery) =>
         ["FAILED", "RETRYING"].includes(d.status) ? (
           <button type="button" className="ui-btn ui-btn-sm" disabled={busy === `retry-${d.delivery_id}`} onClick={() => retry(d.delivery_id)}>
             {busy === `retry-${d.delivery_id}` ? "…" : "Retry"}
@@ -206,7 +207,7 @@ export function DiscordDeliveryPanel() {
           <SimpleTable
             columns={columns}
             rows={recent}
-            rowKey={(d) => d.delivery_id}
+            rowKey={(d: Delivery) => d.delivery_id}
             emptyTitle="No Discord deliveries yet"
             emptyReason="Nothing has been sent to Discord in this process. Deliveries appear here once an alert fires or you send a test message above."
           />
