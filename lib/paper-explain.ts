@@ -4,7 +4,8 @@
  * Reuses the completed shared explanation vocabulary (rejectionToPlain from
  * lib/trade-explanation) so contract-rejection wording is not duplicated. PURE:
  * builds only from verified structured fields already recorded on the trade —
- * no LLM, no fabricated metrics. Every field is null when its source is absent.
+ * no generative model, no fabricated metrics. Every field is null when its
+ * source is absent.
  */
 import { rejectionToPlain, type ActionabilityStatus } from "./trade-explanation.ts";
 import type { RevalidationCode } from "./paper-revalidation.ts";

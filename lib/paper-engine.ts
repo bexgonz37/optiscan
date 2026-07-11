@@ -30,6 +30,8 @@ import { defaultFillConfig } from "@/lib/paper-fill-model";
 import { checkCapital, defaultCapitalConfig, type CapitalContext } from "@/lib/paper-capital";
 import { recordPaperEvent, type PaperEventType } from "@/lib/paper-events";
 import { decideEntryFill, decideMark, resolveExitFill } from "@/lib/paper-entry";
+import { decideStockEntry, evaluateStockExit, resolveStockExitFill } from "@/lib/paper-stock";
+import { normalizeProviderTimestampMs } from "@/lib/data-freshness";
 import type { ChainContract } from "@/lib/contract-selector";
 
 const SWEEP_MS = Number(process.env.PAPER_SWEEP_MS ?? 30_000);
@@ -894,6 +896,23 @@ function stockSideFromAlert(a: any): "call" | "put" {
   return a.trade_bias === "stock_short_candidate" || a.direction === "bearish" ? "put" : "call";
 }
 
+/** Build a verified two-sided stock quote from the freshest tape row (real NBBO). */
+function stockQuoteFrom(ticker: string, nowMs: number): OptionQuote | null {
+  const tape = currentTapeRow(ticker);
+  if (!tape) return null;
+  const bid = typeof tape.bid === "number" ? tape.bid : null;
+  const ask = typeof tape.ask === "number" ? tape.ask : null;
+  const asOfMs = normalizeProviderTimestampMs(tape.quoteProviderTimestamp, nowMs) ?? nowMs;
+  const mid = bid != null && ask != null ? +(((bid + ask) / 2)).toFixed(4) : null;
+  const spreadPct = bid != null && ask != null && mid && mid > 0 ? +(((ask - bid) / mid) * 100).toFixed(2) : null;
+  return { optionSymbol: ticker, bid, ask, mid, spreadPct, asOfMs };
+}
+
+/** Extended-hours stock entries only when explicitly permitted (Decision 7). */
+function stockExtendedHoursAllowed(): boolean {
+  return process.env.PAPER_STOCK_EXTENDED_HOURS === "1";
+}
+
 function stockPaperShares(price: number, stopLossPct: number): number {
   const targetShares = unitsForDollarExposure({
     entryPrice: price,
@@ -908,11 +927,24 @@ function stockPaperShares(price: number, stopLossPct: number): number {
   return Math.max(1, Math.min(riskShares, exposureShares));
 }
 
+const STOCK_STRATEGY = "momentum_stock";
+
+/** Terminal refusal marker keyed to the alert (blocks re-evaluation), with events. */
+function markStockRefused(a: any, side: "call" | "put", shares: number, reason: string, nowMs: number): void {
+  const info = getDb().prepare(
+    `INSERT INTO paper_trades (alert_id, ticker, option_type, contracts, status, order_state, strategy, exit_reason, close_reason, created_at_ms)
+     VALUES (?,?,?,?, 'CANCELLED', 'REJECTED', ?, ?, ?, ?)`,
+  ).run(a.id, a.ticker, side, shares, STOCK_STRATEGY, reason, reason, nowMs);
+  emitEvents(Number(info.lastInsertRowid), a.id, a.ticker, ["candidate_created", "rejected"], { toState: "REJECTED", reason, nowMs });
+}
+
 export function autoEnterStockScalps(nowMs: number = Date.now()): number {
   if (!AUTO_ENTRY_ENABLED()) return 0;
   if (process.env.PAPER_STOCK_SCALPS === "0") return 0;
   const session = marketSession(nowMs);
   if (!PAPER_STOCK_SESSIONS().has(session)) return 0;
+  const extended = session === "premarket" || session === "afterhours";
+  const sessionAllowed = !extended || stockExtendedHoursAllowed(); // Decision 7
   const db = getDb();
   const candidates = db.prepare(
     `SELECT a.* FROM alerts a
@@ -926,94 +958,87 @@ export function autoEnterStockScalps(nowMs: number = Date.now()): number {
   let created = 0;
   for (const a of candidates) {
     const tape = currentTapeRow(a.ticker);
-    const price = Number(latestStockPaperPrice(a.ticker) ?? a.price_at_alert ?? 0);
-    if (!Number.isFinite(price) || price <= 0) {
-      logDecision({
-        alertId: a.id,
-        ticker: a.ticker,
-        decision: "entry_cancelled",
-        allowed: false,
-        reason: "stock scalp skipped: no live/share price available",
-        snapshot: { alertId: a.id },
-        nowMs,
-      });
-      continue;
+    const side = stockSideFromAlert(a);
+    // Reference price for sizing/exposure only — the FILL uses the verified quote.
+    const refPrice = Number(latestStockPaperPrice(a.ticker) ?? a.price_at_alert ?? 0);
+    if (!Number.isFinite(refPrice) || refPrice <= 0) {
+      logDecision({ alertId: a.id, ticker: a.ticker, decision: "entry_cancelled", allowed: false, reason: "stock scalp skipped: no live/share price available", nowMs });
+      continue; // transient — retry within the entry window (no terminal marker)
     }
+    const shares = stockPaperShares(refPrice, STOCK_SCALP_STOP_PCT);
+
     const fresh = actionableFreshness(a.ticker, ["stock_quote"]);
     if (!fresh.ok) {
-      logDecision({
-        alertId: a.id,
-        ticker: a.ticker,
-        decision: "data_stale_refused",
-        allowed: false,
-        reason: `stale/unavailable data blocks stock paper entry: ${fresh.reason}`,
-        snapshot: fresh,
-        nowMs,
-      });
-      db.prepare(
-        `INSERT INTO paper_trades (alert_id, ticker, option_type, contracts, status, exit_reason, created_at_ms)
-         VALUES (?,?,?,?, 'CANCELLED', ?, ?)`,
-      ).run(a.id, a.ticker, stockSideFromAlert(a), 0, `stock scalp refused: stale/unavailable data (${fresh.reason})`, nowMs);
-      continue;
-    }
-    const side = stockSideFromAlert(a);
-    const shares = stockPaperShares(price, STOCK_SCALP_STOP_PCT);
-    const proposed: ProposedTrade = {
-      ticker: a.ticker,
-      optionType: side,
-      dte: null,
-      entryLimit: price,
-      contracts: shares,
-      stopLossPct: STOCK_SCALP_STOP_PCT,
-      assetClass: "stock",
-    };
-    const risk = checkRisk(proposed, riskContext(), riskConfigForProposed(proposed));
-    if (!risk.allowed) {
-      logDecision({
-        alertId: a.id,
-        ticker: a.ticker,
-        decision: "risk_refused",
-        allowed: false,
-        reason: risk.failures.join("; "),
-        risk,
-        snapshot: proposed,
-        nowMs,
-      });
-      db.prepare(
-        `INSERT INTO paper_trades (alert_id, ticker, option_type, contracts, status, exit_reason, created_at_ms)
-         VALUES (?, ?, ?, ?, 'CANCELLED', ?, ?)`,
-      ).run(a.id, a.ticker, side, shares, `stock scalp refused: ${risk.failures.join("; ")}`, nowMs);
+      logDecision({ alertId: a.id, ticker: a.ticker, decision: "data_stale_refused", allowed: false, reason: `stale/unavailable data blocks stock paper entry: ${fresh.reason}`, snapshot: fresh, nowMs });
+      markStockRefused(a, side, shares, `stock scalp refused: stale/unavailable data (${fresh.reason})`, nowMs);
       continue;
     }
 
+    const proposed: ProposedTrade = { ticker: a.ticker, optionType: side, dte: null, entryLimit: refPrice, contracts: shares, stopLossPct: STOCK_SCALP_STOP_PCT, assetClass: "stock" };
+    const risk = checkRisk(proposed, riskContext(), riskConfigForProposed(proposed));
+    if (!risk.allowed) {
+      logDecision({ alertId: a.id, ticker: a.ticker, decision: "risk_refused", allowed: false, reason: risk.failures.join("; "), risk, snapshot: proposed, nowMs });
+      markStockRefused(a, side, shares, `stock scalp refused: ${risk.failures.join("; ")}`, nowMs);
+      continue;
+    }
+
+    // Capital / buying-power gate (rebuild) — composed with the risk engine.
+    const capital = checkCapital({ ticker: a.ticker, optionSymbol: null, strategy: STOCK_STRATEGY, costDollars: refPrice * shares, units: shares }, capitalContext());
+    if (!capital.allowed) {
+      logDecision({ alertId: a.id, ticker: a.ticker, decision: "capital_refused", allowed: false, reason: capital.failures.join("; "), snapshot: { costDollars: refPrice * shares }, nowMs });
+      markStockRefused(a, side, shares, `stock scalp refused: ${capital.failures.join("; ")}`, nowMs);
+      continue;
+    }
+
+    // Verified conservative fill — never the tape last as a guaranteed fill.
+    const quote = stockQuoteFrom(a.ticker, nowMs);
+    if (!quote) {
+      logDecision({ alertId: a.id, ticker: a.ticker, decision: "entry_cancelled", allowed: false, reason: "stock scalp waiting: no tape quote yet", nowMs });
+      continue; // transient — retry within the window
+    }
+    const decision = decideStockEntry({ side, sessionAllowed, quote, shares, session, fillCfg: fillCfg(), nowMs });
+
+    if (decision.action === "retry") {
+      logDecision({ alertId: a.id, ticker: a.ticker, decision: "entry_cancelled", allowed: false, reason: decision.reason, snapshot: { bid: quote.bid, ask: quote.ask }, nowMs });
+      continue; // no terminal marker — a transiently unfillable quote may tighten
+    }
+    if (decision.action === "reject" || decision.fillPrice == null) {
+      logDecision({ alertId: a.id, ticker: a.ticker, decision: "entry_rejected", allowed: false, reason: decision.reason, snapshot: { side, bid: quote.bid, ask: quote.ask }, nowMs });
+      markStockRefused(a, side, shares, `stock scalp rejected: ${decision.reason}`, nowMs);
+      continue;
+    }
+
+    // FILL — open at the conservative fill price (ask + bounded slippage), long only.
+    const fillPrice = decision.fillPrice;
+    const alertTimeContract: AlertTimeContract = { optionSymbol: "", side, strike: null, expiration: null, dte: null, mid: refPrice, spreadPct: quote.spreadPct, delta: null };
     const info = db.prepare(
       `INSERT INTO paper_trades
-         (alert_id, ticker, option_symbol, option_type, contracts, status, thesis, confidence,
-          entry_limit, entry_price, entry_at_ms, stop_loss_pct, take_profit_pct,
+         (alert_id, ticker, option_symbol, option_type, contracts, status, order_state, position_state,
+          thesis, confidence, entry_limit, entry_price, entry_at_ms, stop_loss_pct, take_profit_pct,
           short_rate_entry, above_vwap_entry, rel_vol_entry, last_mark, last_mark_at_ms,
-          mfe_pct, mae_pct, created_at_ms)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          mfe_pct, mae_pct, created_at_ms,
+          strategy, alert_time_contract_json, risk_amount, snapshot_version,
+          entry_slippage, entry_fees, fill_assumptions_json, underlying_at_entry, session_at_entry)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(
-      a.id, a.ticker, null, side, shares, "ENTERED",
-      a.ai_explanation ?? `Fast stock paper scalp from ${a.ticker} ${side === "put" ? "short" : "long"} alert`,
+      a.id, a.ticker, null, side, shares, "ENTERED", "FILLED", "OPEN",
+      a.ai_explanation ?? `Fast stock paper scalp from ${a.ticker} long alert`,
       a.capture_confidence ?? a.signal_score ?? null,
-      price, price, nowMs, STOCK_SCALP_STOP_PCT, STOCK_SCALP_TAKE_PROFIT_PCT,
+      refPrice, fillPrice, nowMs, STOCK_SCALP_STOP_PCT, STOCK_SCALP_TAKE_PROFIT_PCT,
       a.short_rate_at_alert ?? tape?.shortRate ?? null,
       a.above_vwap == null ? null : (a.above_vwap ? 1 : 0),
       a.relative_volume ?? tape?.relVol ?? null,
-      price, nowMs, 0, 0, nowMs,
+      quote.mid ?? fillPrice, nowMs, 0, 0, nowMs,
+      STOCK_STRATEGY, JSON.stringify(alertTimeContract), dollarsAtRisk(refPrice, shares, STOCK_SCALP_STOP_PCT, 1), 1,
+      decision.slippage, decision.fees, decision.assumptions ? JSON.stringify(decision.assumptions) : null,
+      quote.mid ?? fillPrice, session,
     );
     const id = Number(info.lastInsertRowid);
+    emitEvents(id, a.id, a.ticker, ["candidate_created", ...decision.events], { toState: "OPEN", reason: decision.reason, nowMs });
     logDecision({
-      tradeId: id,
-      alertId: a.id,
-      ticker: a.ticker,
-      decision: "entry_filled",
-      allowed: true,
-      reason: `auto stock scalp entered ${side === "put" ? "SHORT" : "LONG"} ${shares} share(s) at ${price.toFixed(2)}`,
-      risk,
-      snapshot: { assetClass: "stock", side: side === "put" ? "SHORT" : "LONG", price, shares, stopLossPct: STOCK_SCALP_STOP_PCT, takeProfitPct: STOCK_SCALP_TAKE_PROFIT_PCT },
-      nowMs,
+      tradeId: id, alertId: a.id, ticker: a.ticker, decision: "entry_filled", allowed: true,
+      reason: `auto stock scalp entered LONG ${shares} share(s) at ${fillPrice.toFixed(2)} (ask+slip, verified quote)`,
+      risk, snapshot: { assetClass: "stock", side: "LONG", fillPrice, refPrice, shares, slippage: decision.slippage, fees: decision.fees, session }, nowMs,
     });
     created += 1;
   }
@@ -1022,55 +1047,53 @@ export function autoEnterStockScalps(nowMs: number = Date.now()): number {
 
 function advanceStockScalps(nowMs: number = Date.now()): number {
   const db = getDb();
+  const session = marketSession(nowMs);
   const rows = db.prepare(
     "SELECT * FROM paper_trades WHERE option_symbol IS NULL AND status='ENTERED' ORDER BY id ASC",
   ).all() as any[];
   let advanced = 0;
   for (const row of rows) {
     const t = rowToTrade(row);
+    if (t.entryPrice == null) continue;
     const tape = currentTapeRow(t.ticker);
-    const maxHold = nowMs - (t.entryAtMs ?? t.createdAtMs) >= STOCK_SCALP_MAX_HOLD_MS;
-    const price = Number(latestStockPaperPrice(t.ticker) ?? t.lastMark ?? t.entryPrice ?? 0);
-    if (!Number.isFinite(price) || price <= 0 || t.entryPrice == null) continue;
-    const direction = directionMultiplier(t);
-    const movePct = ((price - t.entryPrice) * direction / t.entryPrice) * 100;
-    const marked: PaperTrade = {
-      ...t,
-      lastMark: price,
-      lastMarkAtMs: nowMs,
-      mfePct: Math.max(t.mfePct ?? 0, movePct),
-      maePct: Math.min(t.maePct ?? 0, movePct),
-    };
-    const speed = Number(tape?.shortRate ?? 0);
-    const speedAgainst = Number.isFinite(speed) && speed * direction < -0.04;
-    let exitKind: "stop_loss" | "take_profit" | "smart" | null = null;
-    let reason = "";
-    if (movePct <= -(t.stopLossPct ?? STOCK_SCALP_STOP_PCT)) {
-      exitKind = "stop_loss";
-      reason = `stock scalp stop hit (${movePct.toFixed(2)}%)`;
-    } else if (movePct >= (t.takeProfitPct ?? STOCK_SCALP_TAKE_PROFIT_PCT)) {
-      exitKind = "take_profit";
-      reason = `quick stock scalp target hit (+${movePct.toFixed(2)}%)`;
-    } else if (speedAgainst) {
-      exitKind = "smart";
-      reason = `tape reversed against scalp (speed ${speed.toFixed(2)}%/min)`;
-    } else if (maxHold) {
-      exitKind = "smart";
-      reason = `quick scalp max hold reached (${Math.round(STOCK_SCALP_MAX_HOLD_MS / 60000)}m)`;
+    const quote = stockQuoteFrom(t.ticker, nowMs);
+
+    // A stale/missing mark keeps the position OPEN — no fabricated exit.
+    const markDecision = decideMark(quote, fillCfg(), nowMs);
+    if (!markDecision.markable || markDecision.mark == null) {
+      emitEvents(t.id, t.alertId ?? null, t.ticker, [markDecision.event], { reason: markDecision.note, discriminator: Math.floor(nowMs / 60_000), nowMs });
+      continue;
     }
-    if (exitKind) {
-      const closed = applyExit(marked, { kind: exitKind, reason, fillPrice: price }, nowMs);
+
+    // Long only (Decision 8): mark move is measured directly from the mid.
+    const mark = markDecision.mark;
+    const movePct = ((mark - t.entryPrice) / t.entryPrice) * 100;
+    const marked: PaperTrade = { ...t, lastMark: mark, lastMarkAtMs: nowMs, mfePct: Math.max(t.mfePct ?? 0, movePct), maePct: Math.min(t.maePct ?? 0, movePct) };
+    const speed = Number(tape?.shortRate ?? NaN);
+    const maxHold = nowMs - (t.entryAtMs ?? t.createdAtMs) >= STOCK_SCALP_MAX_HOLD_MS;
+
+    const exit = evaluateStockExit({
+      movePct,
+      stopPct: t.stopLossPct ?? STOCK_SCALP_STOP_PCT,
+      targetPct: t.takeProfitPct ?? STOCK_SCALP_TAKE_PROFIT_PCT,
+      speed: Number.isFinite(speed) ? speed : null,
+      maxHold,
+      maxHoldMinutes: Math.round(STOCK_SCALP_MAX_HOLD_MS / 60000),
+    });
+
+    if (exit.kind) {
+      const exitFill = resolveStockExitFill({ quote: quote as OptionQuote, shares: t.contracts, session, fillCfg: fillCfg(), nowMs });
+      if (exitFill.unresolved) {
+        // Exit is warranted but no usable quote to fill against — keep open.
+        emitEvents(t.id, t.alertId ?? null, t.ticker, ["mark_missing"], { reason: exitFill.note, discriminator: Math.floor(nowMs / 60_000), nowMs });
+        persist(marked);
+        continue;
+      }
+      const closed = applyExit(marked, { kind: exit.kind, reason: exit.reason, fillPrice: exitFill.fillPrice }, nowMs);
       persist(closed);
-      logDecision({
-        tradeId: t.id,
-        alertId: t.alertId ?? null,
-        ticker: t.ticker,
-        decision: `exit_${exitKind}`,
-        allowed: true,
-        reason,
-        snapshot: { assetClass: "stock", price, movePct, shares: t.contracts, speed },
-        nowMs,
-      });
+      persistFillCosts(t.id, "exit", exitFill.slippage, exitFill.fees, exitFill.assumptions, { closeReason: `${exit.kind}: ${exit.reason}` });
+      emitEvents(t.id, t.alertId ?? null, t.ticker, [EXIT_EVENT[exit.kind], "final_outcome"], { fromState: "OPEN", toState: derivePositionState(closed.status), reason: exit.reason, nowMs });
+      logDecision({ tradeId: t.id, alertId: t.alertId ?? null, ticker: t.ticker, decision: `exit_${exit.kind}`, allowed: true, reason: exit.reason, snapshot: { assetClass: "stock", fillPrice: exitFill.fillPrice, movePct, shares: t.contracts, speed, slippage: exitFill.slippage, fees: exitFill.fees }, nowMs });
       advanced += 1;
     } else {
       persist(marked);

@@ -533,6 +533,7 @@ async function tick() {
       const warmLevels = detectLevels({ price: q.price, dayHigh: q.dayHigh, dayLow: q.dayLow, vwap: st.vwap });
       tape.push({
         symbol: q.symbol, price: q.price, movePct: q.changePercent, volume: q.volume ?? null,
+        bid: q.bid ?? null, ask: q.ask ?? null, quoteProviderTimestamp: q.quoteProviderTimestamp ?? null,
         shortRate: null, accel: null, surge: null, efficiency: null,
         direction: (q.changePercent ?? 0) > 0.15 ? "bullish" : (q.changePercent ?? 0) < -0.15 ? "bearish" : "choppy",
         confidence: 15,
@@ -580,6 +581,7 @@ async function tick() {
 
     const row = {
       symbol: q.symbol, price: q.price, movePct: q.changePercent, volume: q.volume ?? null,
+      bid: q.bid ?? null, ask: q.ask ?? null, quoteProviderTimestamp: q.quoteProviderTimestamp ?? null,
       shortRate: accelRead.shortRate, instantRate: instantRead.shortRate, accel: accelRead.accel, surge, efficiency,
       direction: dir.direction, confidence: dir.confidence,
       hodBreak: levels.hodBreak, lodBreak: levels.lodBreak, aboveVwap: levels.aboveVwap,
