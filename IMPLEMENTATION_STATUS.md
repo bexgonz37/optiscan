@@ -89,9 +89,19 @@ disabled by default (`lib/bearish-gate.ts`), all provider calls via metered
   - Duplicate page `<PageHeader>`s removed from System Health / Watchlist /
     Performance — the shell's `pgtop` is the single page-title source.
 
-## Not yet started (next sessions — do not start without go-ahead)
+## Verification (Phase 7) — DONE
 
-- **Verification**: responsive screenshots at 1440 / 1024 / 768 / 390 (in progress).
+- Full suite, `tsc`, and production build all green (table above).
+- Drove the production server (`npm run start`, scanner disabled for a stable
+  UI) and screenshotted Command Center, System Health, Watchlist, and
+  Performance at 1440/1024 — all render correctly (target 8-item nav, status
+  bars, calm sections, human-readable blocking reasons, live-data track record).
+- The browser window is clamped to ~1528px in this environment, so true
+  768/390 screenshots aren't possible via resize. Instead verified responsiveness
+  programmatically: constrained each page's content column to 390/768/1024 and
+  measured overflow — **0px page-level horizontal overflow on all four primary
+  pages at every width**. The only wide element is `.ui-table-scroll`, which
+  scrolls internally by design (page body never scrolls horizontally).
 
 ## Later phases (explicitly out of scope now)
 
