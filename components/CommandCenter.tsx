@@ -5,6 +5,10 @@ import Link from "next/link";
 import { Card, StatusBadge, EmptyState, LoadingState, type BadgeTone } from "@/components/ui/Shell";
 import { SimpleTable, type Column } from "@/components/ui/Table";
 import { scanHeaders } from "@/hooks/useScanner";
+import { usePresentationMode } from "@/hooks/usePresentationMode";
+import { TradeExplanationCard } from "@/components/TradeExplanationCard";
+import type { TradeExplanation } from "@/lib/trade-explanation";
+import type { PresentationMode } from "@/lib/dashboard-prefs";
 
 /**
  * Command Center (Phase 6). A calm, sectioned main page — NOT one constantly
@@ -24,6 +28,7 @@ type Opp = {
   trigger_level: number | null;
   entry_zone: string | null;
   last_updated_at: string;
+  explanation?: TradeExplanation;
 };
 
 type Buckets = Record<string, Opp[]>;
@@ -62,7 +67,21 @@ function ago(iso: string): string {
   return `${Math.round(s / 3600)}h ago`;
 }
 
-function OpportunityCard({ o }: { o: Opp }) {
+function OpportunityCard({ o, mode }: { o: Opp; mode: PresentationMode }) {
+  // Both Simple and Advanced render the SAME explanation object; the mode only
+  // selects which fields show. When no explanation is attached, fall back to the
+  // compact status/score card.
+  if (o.explanation) {
+    return (
+      <div className="cc-opp">
+        <TradeExplanationCard explanation={o.explanation} mode={mode} />
+        <div className="cc-opp-foot">
+          Score {Math.round(o.current_score)} <span className="cc-opp-dim">/ peak {Math.round(o.highest_score)}</span>
+          {o.entry_zone ? <> · entry {o.entry_zone}</> : null} · updated {ago(o.last_updated_at)}
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="cc-opp">
       <div className="cc-opp-top">
@@ -82,7 +101,7 @@ function OpportunityCard({ o }: { o: Opp }) {
   );
 }
 
-function Section({ title, hint, items, emptyReason }: { title: string; hint: string; items: Opp[]; emptyReason: ReactNode }) {
+function Section({ title, hint, items, emptyReason, mode }: { title: string; hint: string; items: Opp[]; emptyReason: ReactNode; mode: PresentationMode }) {
   return (
     <section className="ui-section">
       <div className="ui-section-head">
@@ -92,7 +111,7 @@ function Section({ title, hint, items, emptyReason }: { title: string; hint: str
       <div className="ui-section-hint">{hint}</div>
       {items.length ? (
         <div className="cc-opp-grid">
-          {items.map((o) => <OpportunityCard key={o.opportunity_id} o={o} />)}
+          {items.map((o) => <OpportunityCard key={o.opportunity_id} o={o} mode={mode} />)}
         </div>
       ) : (
         <EmptyState title="Nothing here right now" reason={emptyReason} />
@@ -106,6 +125,7 @@ export function CommandCenter() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [trades, setTrades] = useState<any[] | null>(null);
   const [alerts, setAlerts] = useState<any[] | null>(null);
+  const [mode, setMode] = usePresentationMode();
 
   const load = useCallback(async () => {
     const h = { cache: "no-store" as const, headers: scanHeaders() };
@@ -180,7 +200,27 @@ export function CommandCenter() {
 
       <div className="cc-toolbar">
         <span className="ui-section-hint">Calm view of what matters right now. Opportunities evolve in place — cards do not re-rank on every tick.</span>
-        <Link href="/scanner" className="ui-btn ui-btn-sm">Open live scanner →</Link>
+        <div className="cc-toolbar-right">
+          <div className="tx-modetoggle" role="group" aria-label="Presentation detail level">
+            <button
+              type="button"
+              className={`ui-btn ui-btn-sm${mode === "simple" ? " tx-modeon" : ""}`}
+              aria-pressed={mode === "simple"}
+              onClick={() => setMode("simple")}
+            >
+              Simple
+            </button>
+            <button
+              type="button"
+              className={`ui-btn ui-btn-sm${mode === "advanced" ? " tx-modeon" : ""}`}
+              aria-pressed={mode === "advanced"}
+              onClick={() => setMode("advanced")}
+            >
+              Advanced
+            </button>
+          </div>
+          <Link href="/scanner" className="ui-btn ui-btn-sm">Open live scanner →</Link>
+        </div>
       </div>
 
       <Section
@@ -188,6 +228,7 @@ export function CommandCenter() {
         hint="Confirmed entries on fresh data with a valid contract, non-extended price, and acceptable risk. Bearish setups stay research-only."
         items={actionable}
         emptyReason="No setup is confirmed for entry right now. This fills when a monitored symbol breaks its level with momentum on fresh required data."
+        mode={mode}
       />
 
       <Section
@@ -195,6 +236,7 @@ export function CommandCenter() {
         hint="Close to confirmation — watch for the trigger or a pullback into the entry zone."
         items={near}
         emptyReason="Nothing is near a trigger. Setups appear here as they build conviction toward confirmation."
+        mode={mode}
       />
 
       <Section
@@ -202,6 +244,7 @@ export function CommandCenter() {
         hint="Still forming — building conviction but not yet near a trigger."
         items={developing}
         emptyReason="No setups are developing yet. The scanner adds them here as momentum and volume build during the session."
+        mode={mode}
       />
 
       {/* Open Paper Trades */}
@@ -226,6 +269,7 @@ export function CommandCenter() {
         hint="No longer valid entries — price ran past the zone or the invalidation level was broken."
         items={extendedInvalid}
         emptyReason="Nothing has extended or invalidated today. Setups move here once they run too far or break their invalidation level."
+        mode={mode}
       />
 
       {/* Recent Alerts */}

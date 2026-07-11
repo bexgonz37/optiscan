@@ -6,6 +6,9 @@ export const DASHBOARD_PREFS_KEY = "optiscan:prefs";
 
 export type DashboardTab = "momentum" | "unusual";
 export type Theme = "dark" | "light";
+/** Global detail level for the shared TradeExplanation (Simple = plain summary). */
+export type PresentationMode = "simple" | "advanced";
+export const DEFAULT_PRESENTATION_MODE: PresentationMode = "simple";
 export type LiveSort = "speed" | "surge" | "move" | "level" | "symbol";
 export type LiveScope = "options" | "market";
 
@@ -32,6 +35,8 @@ export interface DashboardPrefs {
   tab?: DashboardTab;
   desktopAlerts?: boolean;
   theme?: Theme;
+  /** Simple vs Advanced presentation of the shared explanation (default simple). */
+  presentation?: PresentationMode;
   liveSort?: LiveSort;
   liveScope?: LiveScope;
   chartTimeframe?: ChartTimeframe;

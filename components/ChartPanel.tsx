@@ -16,6 +16,8 @@ import {
 } from "lightweight-charts";
 import { scanHeaders } from "@/hooks/useScanner";
 import { liveCtxFor, useLiveTapeMap } from "@/hooks/useLiveTapeMap";
+import { usePresentationMode } from "@/hooks/usePresentationMode";
+import { TradeExplanationCard } from "@/components/TradeExplanationCard";
 import { VerdictPreviewBlock } from "@/components/VerdictPreviewBlock";
 import { fmtPrice, fmtPct, fmtInt, pctClass, fmtPremium, fmtNum } from "@/lib/format";
 import {
@@ -251,6 +253,7 @@ export function ChartPanel({
   const [error, setError] = useState<string | null>(null);
   const [quotaNotice, setQuotaNotice] = useState<string | null>(null);
   const [reality, setReality] = useState<any>(null);
+  const [presentationMode] = usePresentationMode();
   const [verdictPreview, setVerdictPreview] = useState<any>(null);
   const [candleUpdatedAt, setCandleUpdatedAt] = useState<number | null>(null);
   const tape = useLiveTapeMap();
@@ -452,6 +455,9 @@ export function ChartPanel({
 
   const bestCall = reality?.bestCalls?.[0] ?? null;
   const bestPut = reality?.bestPuts?.[0] ?? null;
+  // Direction-relevant shared explanation (same object desktop Simple/Advanced use).
+  const relevantExplanation =
+    stockDirection === "bearish" ? reality?.explanation?.put : reality?.explanation?.call;
 
   const indicatorChips = useMemo(
     () =>
@@ -569,6 +575,11 @@ export function ChartPanel({
                 {bestPut ? <ContractRow c={bestPut} /> : null}
                 {!bestCall && !bestPut ? <div className="muted text-sm">No qualifying 0DTE contracts.</div> : null}
               </div>
+              {relevantExplanation ? (
+                <div className="chart-reality-explanation">
+                  <TradeExplanationCard explanation={relevantExplanation} mode={presentationMode} />
+                </div>
+              ) : null}
             </>
           ) : (
             <div className="muted text-sm">Loading contracts…</div>

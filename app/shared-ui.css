@@ -339,10 +339,11 @@
 }
 .cc-opp-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
   gap: 10px;
   align-items: stretch;
 }
+.cc-toolbar-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .cc-opp {
   display: flex;
   flex-direction: column;
@@ -360,6 +361,42 @@
 .cc-opp-num { color: var(--txt, #e7edf5); font-weight: 600; font-variant-numeric: tabular-nums; }
 .cc-opp-dim { color: var(--muted, #8b97a8); font-weight: 400; }
 .cc-opp-foot { font-size: 0.66rem; color: var(--muted, #8b97a8); margin-top: 2px; }
+
+/* ── Shared TradeExplanation card (Simple + Advanced) ──────────────────────── */
+.tx-modetoggle { display: inline-flex; gap: 4px; }
+.tx-modetoggle .tx-modeon {
+  border-color: color-mix(in srgb, var(--accent, #5aa9ff) 55%, transparent);
+  background: color-mix(in srgb, var(--accent, #5aa9ff) 16%, transparent);
+  color: var(--accent, #5aa9ff);
+}
+.tx-card { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.tx-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tx-ticker { font-family: var(--font-display, inherit); font-weight: 700; font-size: 0.98rem; letter-spacing: 0.02em; }
+.tx-side {
+  font-size: 0.66rem; font-weight: 700; letter-spacing: 0.04em;
+  color: var(--muted, #8b97a8); border: 1px solid var(--line, #1e2a3c);
+  border-radius: 5px; padding: 1px 5px;
+}
+.tx-line { display: flex; flex-direction: column; gap: 1px; font-size: 0.78rem; line-height: 1.35; }
+.tx-line-label { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted, #8b97a8); }
+.tx-line-value { color: var(--txt, #e7edf5); overflow-wrap: anywhere; }
+.tx-evidence { font-size: 0.68rem; color: var(--muted, #8b97a8); font-style: italic; margin-top: 2px; }
+.tx-notes { display: flex; flex-direction: column; gap: 3px; }
+.tx-note { font-size: 0.7rem; color: var(--warn, #e2a53f); overflow-wrap: anywhere; }
+.tx-muted { font-size: 0.72rem; color: var(--muted, #8b97a8); }
+.tx-adv { display: flex; flex-direction: column; gap: 8px; }
+.tx-adv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(120px, 100%), 1fr));
+  gap: 6px 12px;
+}
+.tx-adv-cell { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.tx-adv-k { font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted, #8b97a8); }
+.tx-adv-v { font-size: 0.8rem; color: var(--txt, #e7edf5); font-variant-numeric: tabular-nums; }
+.tx-gates { font-size: 0.7rem; overflow-wrap: anywhere; }
+.tx-gates-pass { color: var(--bull, #34d399); }
+.tx-gates-fail { color: var(--bear, #f2607a); }
+.tx-rejection { font-size: 0.7rem; color: var(--muted, #8b97a8); overflow-wrap: anywhere; }
 
 /* prevent any page-level horizontal scroll from shared components */
 .ui-page, .ui-page * { box-sizing: border-box; }
