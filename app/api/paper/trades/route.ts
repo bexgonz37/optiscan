@@ -11,9 +11,23 @@ export async function GET(req: Request) {
   ensureServerBoot();
   const { listPaperTrades, listPaperDecisions, paperEngineState, recentPaperEvents, paperTradeEvents } = await import("@/lib/paper-engine");
   const { summarize, byConfidence, byExpirationLength, bySetup, byExitKind } = await import("@/lib/paper-analytics");
+  const { syncPaperOutcomes } = await import("@/lib/outcome-store");
+
+  const url = new URL(req.url);
+
+  // Read-only NBBO preflight diagnostic (?diag=nbbo). Reports counts only — no
+  // secrets, no fabrication. Honestly shows whether verified stock NBBO fills
+  // have occurred in this DB.
+  if (url.searchParams.get("diag") === "nbbo") {
+    const { nbboDiagnostic } = await import("@/lib/outcome-store");
+    return NextResponse.json({ ok: true, diag: "nbbo", ...nbboDiagnostic() });
+  }
+
+  // Idempotent: freeze fingerprints + grade terminal trades before reading.
+  syncPaperOutcomes();
 
   // Detail view: ?tradeId=N returns the full chronological event log for one trade.
-  const tradeIdParam = new URL(req.url).searchParams.get("tradeId");
+  const tradeIdParam = url.searchParams.get("tradeId");
   if (tradeIdParam != null && Number.isFinite(Number(tradeIdParam))) {
     return NextResponse.json({ ok: true, tradeId: Number(tradeIdParam), events: paperTradeEvents(Number(tradeIdParam)) });
   }

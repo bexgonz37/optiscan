@@ -295,6 +295,74 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_opportunities_key ON opportunities(ticker,
 CREATE INDEX IF NOT EXISTS idx_opportunities_day ON opportunities(trading_day, current_status);
 CREATE INDEX IF NOT EXISTS idx_opportunities_updated ON opportunities(last_updated_at);
 
+-- Setup fingerprinting (Phase 1). setup_fingerprints owns the IMMUTABLE
+-- canonical dimension dictionary; paper_trade_outcomes owns the authoritative,
+-- fee-aware completed outcome + grading. Distinct from the legacy quant
+-- trade_outcomes table (which stays operational until the statistics phase
+-- reconciles it). One row per distinct fingerprint / per filled+terminal trade.
+CREATE TABLE IF NOT EXISTS setup_fingerprints (
+  fingerprint_id TEXT PRIMARY KEY,
+  fingerprint_version INTEGER NOT NULL,
+  strategy TEXT,
+  strategy_version INTEGER,
+  dimensions_json TEXT NOT NULL,       -- canonical, sorted, human+machine readable
+  human_summary TEXT NOT NULL,
+  first_seen_at_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_setup_fp_strategy ON setup_fingerprints(strategy, strategy_version);
+
+CREATE TABLE IF NOT EXISTS paper_trade_outcomes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  paper_trade_id INTEGER NOT NULL UNIQUE REFERENCES paper_trades(id) ON DELETE CASCADE,
+  alert_id INTEGER REFERENCES alerts(id) ON DELETE SET NULL,
+  opportunity_id TEXT,
+  fingerprint_id TEXT,
+  fingerprint_version INTEGER,
+  strategy TEXT,
+  strategy_version INTEGER,
+  instrument_type TEXT,                 -- 'option' | 'stock'
+  direction TEXT,                       -- 'CALL' | 'PUT' | 'LONG'
+  selector_profile TEXT,
+  option_symbol TEXT,
+  strike REAL,
+  expiration TEXT,
+  dte_at_entry INTEGER,
+  entry_time_ms INTEGER,
+  exit_time_ms INTEGER,
+  hold_minutes REAL,
+  entry_price REAL,
+  exit_price REAL,
+  quantity REAL,
+  gross_pnl REAL,
+  entry_fees REAL,
+  exit_fees REAL,
+  entry_slippage REAL,                  -- recorded for transparency (already in fill price)
+  exit_slippage REAL,
+  net_pnl REAL,                         -- gross − fees (slippage already embedded)
+  return_pct REAL,                      -- net return on entry notional
+  risk_amount REAL,                     -- immutable risk recorded at entry
+  r_multiple REAL,                      -- net_pnl / risk_amount
+  mfe_pct REAL,
+  mae_pct REAL,
+  terminal_kind TEXT,                   -- STOP | TARGET | TIMEOUT | EXPIRATION | MANUAL | SMART | EXITED
+  exit_reason TEXT,
+  close_reason TEXT,
+  entry_session TEXT,
+  exit_session TEXT,
+  grade TEXT NOT NULL,                  -- WIN | LOSS | BREAKEVEN | UNGRADABLE
+  grading_status TEXT NOT NULL,         -- GRADED | UNGRADABLE
+  data_quality_status TEXT NOT NULL,    -- OK | LEGACY_LIMITED | INCOMPLETE
+  data_quality_reasons_json TEXT,
+  snapshot_version INTEGER,
+  outcome_version INTEGER NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_pto_fingerprint ON paper_trade_outcomes(fingerprint_id);
+CREATE INDEX IF NOT EXISTS idx_pto_strategy ON paper_trade_outcomes(strategy, strategy_version);
+CREATE INDEX IF NOT EXISTS idx_pto_grade ON paper_trade_outcomes(grade);
+
 CREATE TABLE IF NOT EXISTS historical_alerts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   external_id TEXT UNIQUE,
@@ -540,6 +608,11 @@ const PAPER_COLUMN_MIGRATIONS: Array<[string, string]> = [
   ["freshness_at_entry", "ALTER TABLE paper_trades ADD COLUMN freshness_at_entry TEXT"],
   ["risk_amount", "ALTER TABLE paper_trades ADD COLUMN risk_amount REAL"],
   ["snapshot_version", "ALTER TABLE paper_trades ADD COLUMN snapshot_version INTEGER"],
+  // Phase 1 (setup fingerprinting): immutable fingerprint reference frozen at fill.
+  ["fingerprint_id", "ALTER TABLE paper_trades ADD COLUMN fingerprint_id TEXT"],
+  ["fingerprint_version", "ALTER TABLE paper_trades ADD COLUMN fingerprint_version INTEGER"],
+  ["fingerprint_dimensions_json", "ALTER TABLE paper_trades ADD COLUMN fingerprint_dimensions_json TEXT"],
+  ["strategy_version", "ALTER TABLE paper_trades ADD COLUMN strategy_version INTEGER"],
 ];
 
 function migrate(db: Database.Database) {

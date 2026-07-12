@@ -11,9 +11,12 @@ Lab / an embedded LLM.
 
 | Check | Result |
 |---|---|
-| `npm test` | **478 pass**, 0 fail, 0 skip (423 prior + 55 new) |
+| `npm test` | **585 pass**, 0 fail, 0 skip (547 prior + 38 Phase-1 fingerprinting) |
 | `npx tsc --noEmit` | clean |
-| `npm run build` | compiles, 20/20 static pages |
+| `npm run build` | compiles, all static pages |
+
+_(Earlier revisions of this file undercounted tests; the true baseline before
+setup-fingerprinting was 547, now 585.)_
 
 ## Preserved Phase-1 guarantees (unchanged)
 
@@ -267,6 +270,66 @@ partial fills (no verified market depth).
 `tests/paper-capital.test.mjs` (8), `tests/paper-events.test.mjs` (8),
 `tests/paper-revalidation.test.mjs` (11), `tests/paper-entry.test.mjs` (15),
 `tests/paper-stock.test.mjs` (14).
+
+## Setup Fingerprinting + Authoritative Outcomes — DONE (Phase 1 of the quant roadmap)
+
+Deterministic, versioned setup fingerprints + a fee-aware authoritative outcome
+layer. Additive migration only (new tables + guarded `paper_trades` columns).
+The legacy `quant.ts` gross-P&L `trade_outcomes`/`setup_statistics` layer is left
+operational and untouched (reconciliation deferred to the statistics phase).
+
+**Pure — `lib/setup-fingerprint.ts` (+16 tests).** `buildFingerprint` produces a
+stable `sf{version}_{16hex}` id from a FIXED, SORTED dimension set, hashing only
+bucket labels (never raw floats). `FINGERPRINT_VERSION=1` is baked into the
+canonical payload AND the id. Casing-normalized, NaN/Infinity→NA with
+`dataQualityReasons`, deterministic across property order / restarts / processes.
+Look-ahead safe by construction: the input type only exposes entry-time fields —
+exit price/reason/P&L/MFE/MAE/future timestamps have no channel in. Stores both
+the opaque id and the sorted human-readable canonical dimensions. `strategyVersion`
+is a case-insensitive registry dimension so a strategy-meaning change is distinct.
+
+**Pure — `lib/trade-outcome.ts` (+13 tests).** `gradeOutcome` grades WIN / LOSS /
+BREAKEVEN / UNGRADABLE on NET realized P&L after fees. Slippage is already embedded
+in the fill price and is NOT double-counted (net = gross − fees). A positive gross
+that goes negative net is a LOSS. Deterministic configurable breakeven tolerance
+(`OUTCOME_BREAKEVEN_TOLERANCE_DOLLARS`, default $0.50). Missing entry/exit/qty/times
+→ one UNGRADABLE record with structured reasons (never dropped). R-multiple uses
+the immutable `risk_amount`. `terminalKind` maps status→STOP/TARGET/…
+
+**Impure — `lib/outcome-store.ts` (+`outcome-store.test.mjs`, real-DB functional).**
+`freezeFingerprintOnDb` writes the fingerprint ONCE (COALESCE guard) + upserts
+`setup_fingerprints` (INSERT OR IGNORE). `generateOutcomeOnDb`/`syncOutcomesOnDb`
+create exactly one `paper_trade_outcomes` row per FILLED+TERMINAL trade
+(UNIQUE(paper_trade_id) + existence check) — restart/re-sweep idempotent. Only
+filled trades are graded; rejected/failed-reval/unfilled/cancelled/bearish-research
+never reach the gate. `nbboDiagnostic()` is read-only count reporting. DB core is
+handle-injectable so it is unit-tested against real better-sqlite3.
+
+**DB (`lib/db.ts`).** New `setup_fingerprints`, `paper_trade_outcomes`
+(CREATE IF NOT EXISTS); guarded `paper_trades` ALTERs: `fingerprint_id`,
+`fingerprint_version`, `fingerprint_dimensions_json`, `strategy_version`. Additive,
+repeat-safe, backward compatible. Legacy `trade_outcomes` untouched.
+
+**Wiring.** `paper-engine.ts` freezes the fingerprint at the actual option AND stock
+fill, and runs `syncPaperOutcomes` idempotently each sweep; `listPaperTrades` and
+`/api/paper/trades` expose per-trade `fingerprintId`/`fingerprintDimensions`/`outcome`
+additively (plus `?diag=nbbo`). `paper-explain.ts` states the setup fingerprint, the
+gross→net cost impact, the grade, data-quality reasons, and an explicit
+insufficient-evidence note — deterministic, no statistics, no LLM.
+
+**NBBO finding.** Parser mapping is correct (`lastQuote.p/P/t`). Runtime stock NBBO
+availability **cannot be proven from the repository** (no committed fixture / DB is
+runtime state). `nbboDiagnostic` reports honest counts; `runtimeNbboProven` is true
+only once a real verified stock fill exists.
+
+**Bearish safety (unchanged):** `BEARISH_ACTIONABLE` stays off; puts never create an
+actionable graded outcome; `lib/bearish-gate.ts` remains final authority. No new
+env/test/route/hidden override.
+
+**Deferred to the statistics phase:** win rate / expectancy / profit factor / Wilson
+intervals / rolling windows per fingerprint; evidence states beyond a single-outcome
+note; reconciling/retiring the legacy gross-P&L layer; activating a trustworthy
+market-regime dimension.
 
 ## Later phases (explicitly out of scope now)
 

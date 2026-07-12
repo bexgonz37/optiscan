@@ -39,6 +39,15 @@ export interface PaperExplanationInput {
   exitFees?: number | null;
   closeReason?: string | null;
   exitReason?: string | null;
+  // Phase 1 — setup fingerprint + authoritative outcome.
+  fingerprintId?: string | null;
+  fingerprintSummary?: string | null;
+  outcomeGrade?: string | null;
+  outcomeGrossPnl?: number | null;
+  outcomeNetPnl?: number | null;
+  outcomeRMultiple?: number | null;
+  outcomeDataQuality?: string | null;
+  outcomeDataQualityReasons?: string[] | null;
 }
 
 export interface PaperExplanation {
@@ -50,6 +59,11 @@ export interface PaperExplanation {
   fillOrReject: string | null;
   exit: string | null;
   costImpact: string | null;
+  // Phase 1 additions (deterministic, no statistics).
+  setupFingerprint: string | null;
+  outcome: string | null;
+  dataQuality: string | null;
+  evidenceNote: string | null;
 }
 
 function actionabilityFor(input: PaperExplanationInput): ActionabilityStatus {
@@ -110,6 +124,29 @@ export function buildPaperExplanation(input: PaperExplanationInput): PaperExplan
   if (isNum(input.exitFees) && input.exitFees > 0) costBits.push(`exit fees $${input.exitFees.toFixed(2)}`);
   const costImpact = costBits.length ? `Cost assumptions applied — ${costBits.join(", ")}.` : null;
 
+  const setupFingerprint = input.fingerprintId
+    ? `Setup fingerprint ${input.fingerprintId}${input.fingerprintSummary ? ` — ${input.fingerprintSummary}` : ""}.`
+    : null;
+
+  let outcome: string | null = null;
+  if (input.outcomeGrade === "UNGRADABLE") {
+    const why = input.outcomeDataQualityReasons?.length ? ` (${input.outcomeDataQualityReasons.join(", ")})` : "";
+    outcome = `Outcome UNGRADABLE — required entry/exit fields were incomplete${why}. Recorded, not discarded.`;
+  } else if (input.outcomeGrade) {
+    const grossToNet = isNum(input.outcomeGrossPnl) && isNum(input.outcomeNetPnl)
+      ? ` Gross $${input.outcomeGrossPnl.toFixed(2)} → net $${input.outcomeNetPnl.toFixed(2)} after fees${isNum(input.outcomeRMultiple) ? `, ${input.outcomeRMultiple.toFixed(2)}R` : ""}.`
+      : "";
+    outcome = `Graded ${input.outcomeGrade} on net realized P&L after fees.${grossToNet}`;
+  }
+
+  const dataQuality = input.outcomeDataQuality && input.outcomeDataQuality !== "OK"
+    ? `Data quality: ${input.outcomeDataQuality}${input.outcomeDataQualityReasons?.length ? ` — ${input.outcomeDataQualityReasons.join(", ")}` : ""}.`
+    : null;
+
+  const evidenceNote = input.outcomeGrade && input.outcomeGrade !== "UNGRADABLE"
+    ? "This is a single recorded outcome — the sample is not yet large enough for statistical conclusions."
+    : null;
+
   return {
     ticker: input.ticker,
     side: input.side,
@@ -119,5 +156,9 @@ export function buildPaperExplanation(input: PaperExplanationInput): PaperExplan
     fillOrReject,
     exit,
     costImpact,
+    setupFingerprint,
+    outcome,
+    dataQuality,
+    evidenceNote,
   };
 }

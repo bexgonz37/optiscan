@@ -33,6 +33,8 @@ import { decideEntryFill, decideMark, resolveExitFill } from "@/lib/paper-entry"
 import { decideStockEntry, evaluateStockExit, resolveStockExitFill } from "@/lib/paper-stock";
 import { buildPaperExplanation, type PaperExplanation } from "@/lib/paper-explain";
 import { listRecentPaperEvents, listPaperEvents, type PaperEventRow } from "@/lib/paper-events";
+import { freezePaperFingerprintForTrade, syncPaperOutcomes, outcomesByTradeId, type PaperOutcomeRow } from "@/lib/outcome-store";
+import { humanReadable } from "@/lib/setup-fingerprint";
 import { normalizeProviderTimestampMs } from "@/lib/data-freshness";
 import type { ChainContract } from "@/lib/contract-selector";
 
@@ -181,15 +183,23 @@ export function listPaperTrades(limit = 200): Array<PaperTrade & {
   preentrySnapshot: Record<string, unknown> | null;
   preentryDrift: Record<string, unknown> | null;
   fillAssumptions: Record<string, unknown> | null;
+  fingerprintId: string | null;
+  fingerprintVersion: number | null;
+  fingerprintDimensions: Record<string, unknown> | null;
+  outcome: PaperOutcomeRow | null;
   explanation: PaperExplanation;
 }> {
   const db = getDb();
-  return (db.prepare("SELECT * FROM paper_trades ORDER BY id DESC LIMIT ?").all(limit) as any[]).map((r) => {
+  const rows = db.prepare("SELECT * FROM paper_trades ORDER BY id DESC LIMIT ?").all(limit) as any[];
+  const outcomes = outcomesByTradeId(rows.map((r) => r.id));
+  return rows.map((r) => {
     const t = rowToTrade(r);
     const live = t.status === "ENTERED" && t.entryPrice != null && t.lastMark != null;
     const splitGates = (v: string | null | undefined): string[] | null => (v ? v.split(",").filter(Boolean) : null);
     const preentry = parseJsonObj(r.preentry_snapshot_json);
     const drift = parseJsonObj(r.preentry_drift_json);
+    const outcome = outcomes.get(r.id) ?? null;
+    const fingerprintDimensions = parseJsonObj(r.fingerprint_dimensions_json);
     const explanation = buildPaperExplanation({
       ticker: t.ticker,
       side: t.optionType,
@@ -211,9 +221,21 @@ export function listPaperTrades(limit = 200): Array<PaperTrade & {
       exitFees: r.exit_fees ?? null,
       closeReason: r.close_reason ?? null,
       exitReason: t.exitReason,
+      fingerprintId: r.fingerprint_id ?? null,
+      fingerprintSummary: fingerprintDimensions ? humanReadable(fingerprintDimensions as Record<string, string | null>) : null,
+      outcomeGrade: outcome?.grade ?? null,
+      outcomeGrossPnl: outcome?.grossPnl ?? null,
+      outcomeNetPnl: outcome?.netPnl ?? null,
+      outcomeRMultiple: outcome?.rMultiple ?? null,
+      outcomeDataQuality: outcome?.dataQualityStatus ?? null,
+      outcomeDataQualityReasons: outcome?.dataQualityReasons ?? null,
     });
     return {
       ...t,
+      fingerprintId: r.fingerprint_id ?? null,
+      fingerprintVersion: r.fingerprint_version ?? null,
+      fingerprintDimensions,
+      outcome,
       // Unrealized P/L updates every sweep from the live mark — exactly what a
       // broker position screen would show.
       unrealizedPnlDollars: live ? +(((t.lastMark as number) - (t.entryPrice as number)) * directionMultiplier(t) * paperMultiplier(t) * t.contracts).toFixed(2) : null,
@@ -771,6 +793,9 @@ function advanceOpenTrade(t: PaperTrade, snap: MarketSnap, contracts: any[], now
       persist(entered);
       persistFillCosts(t.id, "entry", decision.slippage, decision.fees, decision.assumptions, { underlying: spot, session, freshness: `chain age ${chainAsOfFromContracts(contracts) != null ? Math.round((nowMs - (chainAsOfFromContracts(contracts) as number)) / 1000) : "?"}s` });
       persistMarketSnapshot(t.id, "entry", snap, `filled: ${decision.reason}`);
+      // Freeze the primary setup fingerprint at the actual fill (entry-time
+      // fields only — immutable, write-once).
+      freezePaperFingerprintForTrade(t.id!, nowMs);
       emitEvents(t.id, t.alertId ?? null, t.ticker, decision.events, { fromState: "PENDING", toState: "OPEN", reason: decision.reason, nowMs });
       logDecision({ tradeId: t.id, alertId: t.alertId ?? null, ticker: t.ticker, decision: "entry_filled", allowed: true, reason: decision.reason, snapshot: { optionSymbol: quote.optionSymbol, bid: quote.bid, ask: quote.ask, fillPrice: decision.fillPrice, slippage: decision.slippage, fees: decision.fees }, nowMs });
       return true;
@@ -1072,6 +1097,7 @@ export function autoEnterStockScalps(nowMs: number = Date.now()): number {
       quote.mid ?? fillPrice, session,
     );
     const id = Number(info.lastInsertRowid);
+    freezePaperFingerprintForTrade(id, nowMs); // freeze setup fingerprint at the verified stock fill
     emitEvents(id, a.id, a.ticker, ["candidate_created", ...decision.events], { toState: "OPEN", reason: decision.reason, nowMs });
     logDecision({
       tradeId: id, alertId: a.id, ticker: a.ticker, decision: "entry_filled", allowed: true,
@@ -1141,6 +1167,10 @@ function advanceStockScalps(nowMs: number = Date.now()): number {
 }
 
 export async function sweepPaperTrades(nowMs: number = Date.now()): Promise<{ advanced: number; fetched: number }> {
+  // Idempotent: freeze fingerprints for any filled trade missing one and grade
+  // any filled+terminal trade into the authoritative outcome layer. Restart-safe
+  // (guarded by fingerprint_id IS NULL and a UNIQUE(paper_trade_id) outcome row).
+  try { syncPaperOutcomes(nowMs); } catch (err: any) { console.warn("[paper] outcome sync failed:", err?.message); }
   try { autoEnterFromAlerts(nowMs); } catch (err: any) { console.warn("[paper] auto-entry failed:", err?.message); }
   try { autoEnterStockScalps(nowMs); } catch (err: any) { console.warn("[paper] stock auto-entry failed:", err?.message); }
   const stockAdvanced = advanceStockScalps(nowMs);
