@@ -11,7 +11,7 @@ Lab / an embedded LLM.
 
 | Check | Result |
 |---|---|
-| `npm test` | **620 pass**, 0 fail, 0 skip (547 + 38 P1 + 20 P2 + 15 P3) |
+| `npm test` | **653 pass**, 0 fail, 0 skip (547 + 38 P1 + 20 P2 + 15 P3 + 33 P4) |
 | `npx tsc --noEmit` | clean |
 | `npm run build` | compiles, all static pages |
 
@@ -396,6 +396,50 @@ repeat-safe. **Fingerprints are NOT expanded** with context fields — a future
 fingerprint schema change requires its own new fingerprint version.
 
 **API.** `GET /api/market/context` builds + persists + returns the current context.
+
+## Validated Probability-Model Foundation — DONE (Phase 4 of the quant roadmap)
+
+Complete probability-model infrastructure. **Current live status:
+`INACTIVE_INSUFFICIENT_DATA`** — there are no graded outcomes yet, so no model is
+trained/activated. This is truthful, not a failure: the full pipeline exists and
+activates automatically once the data thresholds are met. Additive migration.
+
+**Pure — `lib/model-features.ts` (+8 tests).** Leak-free feature extraction from a
+STRICT entry-time whitelist (fingerprint dims + entry numerics + context), one-hot
+over fixed vocabularies with explicit missing indicators, `FEATURE_SCHEMA_VERSION=1`,
+deterministic sorted schema. Exit/realized/future fields have no channel in.
+
+**Pure — `lib/logistic-model.ts` (+8 tests).** Interpretable L2-regularized logistic
+regression; fixed zero-init + fixed full-batch gradient steps ⇒ reproducible.
+Standardization baked into the model; schema-mismatch predictions fall back to the
+base rate (never a guess). Serialize/restore.
+
+**Pure — `lib/model-evaluation.ts` (+11 tests).** Brier (+ base-rate Brier), log loss,
+ROC-AUC (only when both classes present), calibration bins + ECE, confusion at a
+documented threshold. **Temporal validation only:** `chronologicalSplit` +
+`walkForwardFolds` (expanding train window, test always follows train — no leakage).
+
+**Impure — `lib/model-registry.ts` (+6 tests).** Assembles the chronological,
+leak-free training set from graded outcomes + frozen fingerprint dims + entry
+numerics; enforces conservative ACTIVATION GATES (≥200 graded, ≥40 wins, ≥40 losses,
+≥50 chronological holdout, ≥95% feature coverage — all configurable). Champion/
+challenger: a challenger is promoted ONLY if it beats the naive base-rate model out
+of sample, stays calibrated (ECE ≤ 0.15), has both classes in holdout, and does not
+worsen the champion's Brier/log-loss; the prior champion is RETIRED (kept for
+rollback, never deleted). Versioned model registry + evaluation history + prediction
+audit tables. `predictFor` returns null (⇒ "Model inactive") unless a validated
+champion exists AND the feature schema matches — never a placeholder percentage, and
+never a trade authorization. The functional test seeds synthetic outcomes as TEST
+SCAFFOLDING ONLY to exercise the gate/promotion path; production fabricates nothing.
+
+**DB (`lib/db.ts`).** New `model_registry`, `model_evaluations`,
+`model_prediction_audit`. Additive, repeat-safe.
+
+**API.** `GET /api/model/status` (`?train=1` runs a gated train/evaluate pass).
+
+**Hard-gate precedence (unchanged):** a probability can never override stale-data
+blocks, session rules, contract validation, liquidity/spread/risk/capital limits,
+bearish safety, or selector rejection.
 
 ## Later phases (explicitly out of scope now)
 

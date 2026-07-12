@@ -406,6 +406,52 @@ CREATE TABLE IF NOT EXISTS market_context_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_mkt_ctx_created ON market_context_snapshots(created_at_ms);
 
+-- Probability-model registry (Phase 4). Versioned models + evaluation history +
+-- prediction audit. A model is a calibrated EVIDENCE score only; it can never
+-- override a hard gate. Champion/challenger with rollback; no model activates
+-- until the data thresholds pass (status INACTIVE_INSUFFICIENT_DATA otherwise).
+CREATE TABLE IF NOT EXISTS model_registry (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  model_name TEXT NOT NULL,
+  model_version INTEGER NOT NULL,
+  feature_schema_version INTEGER NOT NULL,
+  status TEXT NOT NULL,                 -- CHAMPION | CHALLENGER | RETIRED | REJECTED
+  config_json TEXT NOT NULL,
+  model_json TEXT NOT NULL,
+  metrics_json TEXT,
+  training_watermark INTEGER NOT NULL DEFAULT 0,
+  n_train INTEGER NOT NULL DEFAULT 0,
+  base_rate REAL,
+  trained_at_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE(model_name, model_version)
+);
+CREATE INDEX IF NOT EXISTS idx_model_registry_status ON model_registry(model_name, status);
+
+CREATE TABLE IF NOT EXISTS model_evaluations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  model_registry_id INTEGER REFERENCES model_registry(id) ON DELETE CASCADE,
+  eval_kind TEXT NOT NULL,              -- holdout | walkforward
+  metrics_json TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_model_evals_model ON model_evaluations(model_registry_id);
+
+CREATE TABLE IF NOT EXISTS model_prediction_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  paper_trade_id INTEGER,
+  fingerprint_id TEXT,
+  model_name TEXT NOT NULL,
+  model_version INTEGER NOT NULL,
+  feature_schema_version INTEGER NOT NULL,
+  proba REAL NOT NULL,
+  features_json TEXT,
+  created_at_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_model_pred_audit_fp ON model_prediction_audit(fingerprint_id);
+
 CREATE TABLE IF NOT EXISTS historical_alerts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   external_id TEXT UNIQUE,
