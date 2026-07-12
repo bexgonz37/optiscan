@@ -386,6 +386,26 @@ CREATE TABLE IF NOT EXISTS authoritative_statistics (
 );
 CREATE INDEX IF NOT EXISTS idx_authstats_kind ON authoritative_statistics(group_kind, graded_sample_size);
 
+-- Market context snapshots (Phase 3). The EXACT versioned context used by a
+-- callout / prediction is persisted here (never back-filled onto old rows).
+CREATE TABLE IF NOT EXISTS market_context_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  context_version INTEGER NOT NULL,
+  session TEXT,
+  risk_state TEXT NOT NULL,
+  structure TEXT NOT NULL,
+  volatility TEXT NOT NULL,
+  freshness TEXT NOT NULL,
+  spy_trend TEXT,
+  qqq_trend TEXT,
+  vwap_state TEXT,
+  conflict_flags TEXT,
+  context_json TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_mkt_ctx_created ON market_context_snapshots(created_at_ms);
+
 CREATE TABLE IF NOT EXISTS historical_alerts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   external_id TEXT UNIQUE,

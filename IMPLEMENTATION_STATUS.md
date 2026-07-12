@@ -11,7 +11,7 @@ Lab / an embedded LLM.
 
 | Check | Result |
 |---|---|
-| `npm test` | **605 pass**, 0 fail, 0 skip (547 prior + 38 Phase-1 + 20 Phase-2) |
+| `npm test` | **620 pass**, 0 fail, 0 skip (547 + 38 P1 + 20 P2 + 15 P3) |
 | `npx tsc --noEmit` | clean |
 | `npm run build` | compiles, all static pages |
 
@@ -371,6 +371,31 @@ disclaimer.
 
 **Deferred to prediction modeling (Phase 4):** turning these statistics into a
 calibrated probability; the legacy `setup_statistics`/`trade_outcomes` full retirement.
+
+## Market Context + Regime Foundation — DONE (Phase 3 of the quant roadmap)
+
+Deterministic, versioned Market Context Agent. Additive migration.
+
+**Pure — `lib/market-context.ts` (+12 tests).** `buildMarketContext` derives
+`spyTrend`/`qqqTrend` (UP/DOWN/FLAT/UNKNOWN via a configurable threshold),
+`vwapState`, `riskState` (RISK_ON/RISK_OFF/MIXED/UNKNOWN from SPY+QQQ agreement),
+`structure` (TRENDING/CHOPPY/UNKNOWN — trending only when VWAP agrees with the
+trend), `volatility` (LOW/ELEVATED/HIGH/UNKNOWN), `freshness`, and `conflictFlags`.
+`MARKET_CONTEXT_VERSION=1` stamped on every snapshot. HONEST BY DESIGN: any
+dimension without real, fresh data is UNKNOWN with a reason code and never counts
+as directional confirmation; the mislabeled legacy `market_regime` is NOT trusted.
+
+**Impure — `lib/market-context-store.ts` (+3 tests).** Gathers SPY/QQQ from the
+EXISTING scanner tape (no new provider calls; freshness verified via
+`actionableFreshness`) — index dimensions activate only when present AND fresh.
+No trustworthy VIX feed is wired, so volatility stays UNKNOWN (not guessed).
+Persists the exact context snapshot used (append-only; never back-fills old rows).
+
+**DB (`lib/db.ts`).** New append-only `market_context_snapshots`. Additive,
+repeat-safe. **Fingerprints are NOT expanded** with context fields — a future
+fingerprint schema change requires its own new fingerprint version.
+
+**API.** `GET /api/market/context` builds + persists + returns the current context.
 
 ## Later phases (explicitly out of scope now)
 
