@@ -18,6 +18,36 @@ Lab / an embedded LLM.
 _(Earlier revisions of this file undercounted tests; the true baseline before
 setup-fingerprinting was 547.)_
 
+## Quant roadmap progress + RESUME POINT
+
+Autonomous quant-roadmap execution (commit each phase green + pushed to `main`):
+
+| Phase | Status | Commit |
+|---|---|---|
+| P1 — Setup fingerprinting + authoritative outcomes | ✅ pushed | `4cb1dc6` |
+| P2 — Trustworthy statistics + evidence engine | ✅ pushed | `9a4fd2c` |
+| P3 — Market context + regime foundation | ✅ pushed | `e172640` |
+| P4 — Validated probability-model foundation (inactive: no data) | ✅ pushed | `96df168` |
+| **P5 — Modular specialized strategy agents** | ⏭️ **NEXT** | — |
+| P6 — Advanced options callouts (desktop + Discord) | ⏳ pending | — |
+| P7 — Controlled continuous learning + drift | ⏳ pending | — |
+
+**Resume point:** `main` @ `96df168`, tree clean, 653 tests green, tsc clean,
+build green. Reusable substrate now in place for the agents: `contract-selector`,
+`data-freshness`, `trade-explanation`/`paper-explain`, `paper-engine`,
+`setup-fingerprint` + `outcome-store`, `setup-statistics` + `statistics-store`
+(evidence engine), `market-context` (+ store), `model-registry` (probability,
+currently `INACTIVE_INSUFFICIENT_DATA`), `bearish-gate`, `paper-risk`,
+`paper-capital`, `opportunity-lifecycle`. P5 should define ONE shared normalized
+agent-result interface + a deterministic runtime, wrap these services (do NOT
+duplicate them), implement the bullish/put-research horizon agents (0DTE, 1–5,
+6–10, 11–35, 36–90 + momentum stock; puts RESEARCH_ONLY), shared service agents
+(market-data, context, contract-selection, risk-veto, execution, performance,
+missed-opportunity, research/learning, explanation), and a Supervisor/Orchestrator
+that dedups, resolves overlapping horizons, applies risk vetoes + lifecycle
+hysteresis, and ranks the best candidate per ticker/horizon/direction. Risk +
+hard gates always outrank agent agreement.
+
 ## Preserved Phase-1 guarantees (unchanged)
 
 Central timestamp normalization (`lib/timestamps.ts`), ns/µs/ms/s handling,
