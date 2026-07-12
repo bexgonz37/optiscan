@@ -31,6 +31,39 @@ type Paper = {
   summary?: { trades?: number; wins?: number; losses?: number; winRate?: number; totalPnlDollars?: number };
 };
 
+type StatBlock = {
+  evidenceState: string;
+  evidenceSummary: string;
+  gradedSampleSize: number;
+  ungradableCount: number;
+  wins: number;
+  losses: number;
+  breakevens: number;
+  winRate: number | null;
+  winRateInterval: { low: number; high: number } | null;
+  expectancyDollars: number | null;
+  expectancyR: number | null;
+  profitFactor: number | null;
+  netPnl: number;
+  totalFees: number;
+  maxDrawdown: number;
+  avgHoldMinutes: number | null;
+  dataQualityCoverage: number | null;
+  rolling: { window: number; count: number; netPnl: number; winRate: number | null }[];
+};
+type AuthStats = {
+  overall?: { evidenceState: string; gradedSampleSize: number; stats: StatBlock } | null;
+  stats?: { groupKind: string; groupKey: string; evidenceState: string; gradedSampleSize: number; stats: StatBlock }[];
+  disclaimer?: string;
+};
+
+const EVIDENCE_LABEL: Record<string, string> = {
+  NOT_TRACKED: "Not tracked yet",
+  INSUFFICIENT_HISTORY: "Insufficient history",
+  EARLY_EVIDENCE: "Early evidence",
+  ESTABLISHED_EVIDENCE: "Established evidence",
+};
+
 function num(v: number | null | undefined, digits = 1, suffix = ""): string {
   if (v == null || Number.isNaN(Number(v))) return "—";
   return `${Number(v).toFixed(digits)}${suffix}`;
@@ -45,17 +78,20 @@ function money(v: number | null | undefined): string {
 export default function PerformancePage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [paper, setPaper] = useState<Paper | null>(null);
+  const [authStats, setAuthStats] = useState<AuthStats | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
       const h = { cache: "no-store" as const, headers: scanHeaders() };
-      const [s, p] = await Promise.all([
+      const [s, p, a] = await Promise.all([
         fetch("/api/alerts/stats", h).then((r) => r.json()).catch(() => null),
         fetch("/api/paper/trades", h).then((r) => r.json()).catch(() => null),
+        fetch("/api/performance/statistics", h).then((r) => r.json()).catch(() => null),
       ]);
       setStats(s ?? {});
       setPaper(p ?? {});
+      setAuthStats(a ?? {});
       setError(null);
     } catch (err: any) {
       setError(err?.message ?? "Could not load performance.");
@@ -120,6 +156,54 @@ export default function PerformancePage() {
           <KeyValue k="Win rate" v={psum.winRate == null ? "—" : `${(psum.winRate * 100).toFixed(0)}%`} />
         </Card>
       </ResponsiveGrid>
+
+      {(() => {
+        const overall = authStats?.overall ?? null;
+        const ob = overall?.stats;
+        const cuts = (authStats?.stats ?? []).filter((g) => g.groupKind === "strategy" || g.groupKind === "session" || g.groupKind === "dte_bucket" || g.groupKind === "tod_bucket");
+        const cutCols: Column<NonNullable<AuthStats["stats"]>[number]>[] = [
+          { key: "kind", header: "Cut", render: (r) => r.groupKind },
+          { key: "key", header: "Group", render: (r) => r.groupKey },
+          { key: "n", header: "Graded", align: "right", render: (r) => String(r.gradedSampleSize) },
+          { key: "ev", header: "Evidence", render: (r) => EVIDENCE_LABEL[r.evidenceState] ?? r.evidenceState },
+          { key: "wr", header: "Win rate", align: "right", render: (r) => (r.stats.winRate == null ? "—" : `${r.stats.winRate}%`) },
+          { key: "net", header: "Net P&L", align: "right", render: (r) => money(r.stats.netPnl) },
+        ];
+        return (
+          <>
+            <ResponsiveGrid min={240}>
+              <Card title="Setup evidence (authoritative)" meta="Fingerprint outcomes · net of fees">
+                <KeyValue k="Evidence state" v={EVIDENCE_LABEL[overall?.evidenceState ?? "NOT_TRACKED"] ?? "—"} />
+                <KeyValue k="Graded outcomes" v={ob?.gradedSampleSize ?? 0} />
+                <KeyValue k="Ungradable" v={ob?.ungradableCount ?? 0} tone={(ob?.ungradableCount ?? 0) > 0 ? "warn" : undefined} />
+                <KeyValue k="Data-quality coverage" v={ob?.dataQualityCoverage == null ? "—" : `${Math.round(ob.dataQualityCoverage * 100)}%`} />
+                <KeyValue
+                  k="Win rate (95% CI)"
+                  v={ob?.winRate == null ? "—" : `${ob.winRate}%${ob.winRateInterval ? ` (${Math.round(ob.winRateInterval.low * 100)}–${Math.round(ob.winRateInterval.high * 100)}%)` : ""}`}
+                />
+              </Card>
+              <Card title="Results after costs" meta="Slippage embedded in fills; net = gross − fees">
+                <KeyValue k="Net P&L" v={money(ob?.netPnl)} tone={ob?.netPnl == null ? undefined : ob.netPnl >= 0 ? "bull" : "bear"} />
+                <KeyValue k="Total fees" v={money(ob?.totalFees)} />
+                <KeyValue k="Expectancy / trade" v={money(ob?.expectancyDollars)} />
+                <KeyValue k="Expectancy (R)" v={ob?.expectancyR == null ? "—" : num(ob.expectancyR, 2, "R")} />
+                <KeyValue k="Profit factor" v={ob?.profitFactor == null ? "—" : num(ob.profitFactor, 2)} />
+                <KeyValue k="Max drawdown" v={money(ob?.maxDrawdown)} />
+                <KeyValue k="Avg hold" v={ob?.avgHoldMinutes == null ? "—" : `${ob.avgHoldMinutes} min`} />
+              </Card>
+            </ResponsiveGrid>
+            <Card title="Performance by cut" meta={overall?.stats.evidenceState === "NOT_TRACKED" ? "Awaiting graded outcomes" : undefined}>
+              <SimpleTable
+                columns={cutCols}
+                rows={cuts}
+                rowKey={(r, i) => `${r.groupKind}-${r.groupKey}-${i}`}
+                emptyTitle="Not enough evidence yet"
+                emptyReason="Authoritative per-setup statistics appear once paper trades close into graded outcomes. Nothing here is fabricated — past results never guarantee future performance."
+              />
+            </Card>
+          </>
+        );
+      })()}
 
       <ResponsiveGrid min={320}>
         <Card title="By catalyst">

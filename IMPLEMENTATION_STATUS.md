@@ -11,12 +11,12 @@ Lab / an embedded LLM.
 
 | Check | Result |
 |---|---|
-| `npm test` | **585 pass**, 0 fail, 0 skip (547 prior + 38 Phase-1 fingerprinting) |
+| `npm test` | **605 pass**, 0 fail, 0 skip (547 prior + 38 Phase-1 + 20 Phase-2) |
 | `npx tsc --noEmit` | clean |
 | `npm run build` | compiles, all static pages |
 
 _(Earlier revisions of this file undercounted tests; the true baseline before
-setup-fingerprinting was 547, now 585.)_
+setup-fingerprinting was 547.)_
 
 ## Preserved Phase-1 guarantees (unchanged)
 
@@ -330,6 +330,47 @@ env/test/route/hidden override.
 intervals / rolling windows per fingerprint; evidence states beyond a single-outcome
 note; reconciling/retiring the legacy gross-P&L layer; activating a trustworthy
 market-regime dimension.
+
+## Trustworthy Statistics + Evidence Engine — DONE (Phase 2 of the quant roadmap)
+
+Authoritative statistics computed ONLY from the Phase-1 `paper_trade_outcomes`
+layer (never the legacy gross-P&L `trade_outcomes`). Additive migration.
+
+**Pure — `lib/setup-statistics.ts` (+16 tests).** `summarizeOutcomes` computes
+graded sample size, ungradable count, data-quality coverage, wins/losses/breakevens,
+win rate + **Wilson 95% interval**, avg winner/loser, payoff ratio, profit factor,
+expectancy ($ and R), gross/net P&L, total fees, recorded slippage, avg/median hold,
+MFE/MAE, max drawdown (ordered equity curve), consecutive win/loss streaks, and
+rolling 20/50/100 windows. UNGRADABLE rows are EXCLUDED from performance math but
+counted for coverage. Explicit configurable evidence states: `NOT_TRACKED` (0),
+`INSUFFICIENT_HISTORY` (1–19), `EARLY_EVIDENCE` (20–99), `ESTABLISHED_EVIDENCE`
+(≥100 graded AND ≥20 wins AND ≥20 losses AND ≥95% coverage). A high win rate on a
+thin sample is NEVER established.
+
+**Impure — `lib/statistics-store.ts` (+`statistics-store.test.mjs`).** Enriches each
+outcome with its frozen fingerprint dimensions and aggregates by fingerprint /
+strategy / strategy-version / instrument / selector-profile / session / direction /
+tod / dte / delta / spread / rel-vol / vwap / move-classification cuts. Idempotent
+`refreshStatistics` materializes `authoritative_statistics` (UNIQUE per
+group×version, watermark = max outcome id, upsert-in-place — no double counting).
+
+**DB (`lib/db.ts`).** New `authoritative_statistics` cache (statistics + fingerprint
++ strategy versions, watermark, evidence state). Additive, repeat-safe. Legacy
+`setup_statistics`/`trade_outcomes` untouched but no longer sourced for trustworthy
+claims.
+
+**Reconciliation.** `explanation-adapters.ts` evidence now reads
+`authoritative_statistics` (read-only), mapping evidence state → the explanation
+vocabulary; numeric win rate/expectancy surface ONLY for `ESTABLISHED_EVIDENCE`.
+The legacy gross-P&L `setup_statistics` read is removed from the evidence path
+(deprecated, not deleted). `GET /api/performance/statistics` refreshes + returns the
+overall block and cuts; the Performance dashboard shows evidence state, sample count,
+win-rate CI, results-after-costs, expectancy, profit factor, drawdown, and per-cut
+rows — with explicit "not enough evidence" empty states and a no-guarantee
+disclaimer.
+
+**Deferred to prediction modeling (Phase 4):** turning these statistics into a
+calibrated probability; the legacy `setup_statistics`/`trade_outcomes` full retirement.
 
 ## Later phases (explicitly out of scope now)
 

@@ -25,9 +25,12 @@ test("adapters delegate to the ONE pure builder", () => {
   assert.ok(buildCalls >= 3, "each adapter calls buildTradeExplanation");
 });
 
-test("evidence lookup is READ-ONLY (no INSERT/UPDATE/refresh writes)", () => {
+test("evidence lookup is READ-ONLY and sourced from the authoritative layer", () => {
   const src = read("lib/explanation-adapters.ts");
-  assert.ok(/SELECT sample_size, win_rate, expectancy, data_quality FROM setup_statistics/.test(src), "read-only setup stats query");
+  // Phase 2: evidence now comes from authoritative_statistics, not the legacy
+  // gross-P&L setup_statistics table.
+  assert.ok(/SELECT graded_sample_size, evidence_state, stats_json FROM authoritative_statistics/.test(src), "read-only authoritative stats query");
+  assert.ok(!/FROM setup_statistics/.test(src), "legacy gross-P&L setup_statistics must no longer be read for evidence");
   assert.ok(!/INSERT INTO|UPDATE |refreshSetupStatistics|scoreAlert/.test(src), "adapters must not write or recompute stats");
 });
 

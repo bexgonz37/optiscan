@@ -363,6 +363,29 @@ CREATE INDEX IF NOT EXISTS idx_pto_fingerprint ON paper_trade_outcomes(fingerpri
 CREATE INDEX IF NOT EXISTS idx_pto_strategy ON paper_trade_outcomes(strategy, strategy_version);
 CREATE INDEX IF NOT EXISTS idx_pto_grade ON paper_trade_outcomes(grade);
 
+-- Authoritative statistics cache (Phase 2). Materialized from
+-- paper_trade_outcomes ONLY (never the legacy gross-P&L trade_outcomes). One row
+-- per (group_kind, group_key) at a statistics_version; idempotent refresh keyed
+-- by a source-outcome watermark. Legacy setup_statistics stays for the old quant
+-- explanation path until it is safely reconciled.
+CREATE TABLE IF NOT EXISTS authoritative_statistics (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  group_kind TEXT NOT NULL,            -- overall | fingerprint | strategy | session | ...
+  group_key TEXT NOT NULL,
+  statistics_version INTEGER NOT NULL,
+  fingerprint_version INTEGER,
+  strategy_version INTEGER,
+  graded_sample_size INTEGER NOT NULL DEFAULT 0,
+  ungradable_count INTEGER NOT NULL DEFAULT 0,
+  evidence_state TEXT NOT NULL,
+  stats_json TEXT NOT NULL,
+  source_watermark INTEGER NOT NULL DEFAULT 0,  -- max paper_trade_outcomes.id included
+  last_refresh_ms INTEGER NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE(group_kind, group_key, statistics_version)
+);
+CREATE INDEX IF NOT EXISTS idx_authstats_kind ON authoritative_statistics(group_kind, graded_sample_size);
+
 CREATE TABLE IF NOT EXISTS historical_alerts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   external_id TEXT UNIQUE,

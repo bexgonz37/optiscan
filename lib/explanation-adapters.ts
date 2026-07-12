@@ -26,19 +26,34 @@ import type { OpportunityRecord } from "@/lib/opportunity-lifecycle";
 
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
-/** Read-only historical evidence for a setup, or null when nothing is tracked. */
-function evidenceForSetup(setupType: string, assetClass: "options" | "stock"): ExplanationEvidence | null {
+/**
+ * Read-only historical evidence for a setup, sourced from the AUTHORITATIVE
+ * statistics layer (`authoritative_statistics`, Phase 2). The legacy gross-P&L
+ * `setup_statistics` table is DEPRECATED and no longer consulted for trustworthy
+ * claims. Numeric win rate / expectancy surface ONLY for an established sample;
+ * otherwise this returns null ⇒ NOT_TRACKED, the honest default until
+ * fingerprint-level outcomes accumulate. Never writes.
+ */
+function evidenceForSetup(setupType: string, _assetClass: "options" | "stock"): ExplanationEvidence | null {
   try {
     const row: any = getDb()
-      .prepare("SELECT sample_size, win_rate, expectancy, data_quality FROM setup_statistics WHERE setup_type=? AND asset_class=?")
-      .get(setupType, assetClass);
+      .prepare("SELECT graded_sample_size, evidence_state, stats_json FROM authoritative_statistics WHERE group_kind='strategy' AND group_key=? ORDER BY statistics_version DESC LIMIT 1")
+      .get(setupType);
     if (!row) return null;
-    return {
-      dataQuality: row.data_quality ?? null,
-      sampleSize: row.sample_size ?? null,
-      winRate: isNum(row.win_rate) ? row.win_rate : null,
-      expectancy: isNum(row.expectancy) ? row.expectancy : null,
-    };
+    const state = String(row.evidence_state ?? "");
+    const dataQuality = state === "ESTABLISHED_EVIDENCE" ? "strong"
+      : state === "EARLY_EVIDENCE" ? "developing"
+      : state === "INSUFFICIENT_HISTORY" ? "limited" : "empty";
+    let winRate: number | null = null;
+    let expectancy: number | null = null;
+    if (state === "ESTABLISHED_EVIDENCE") {
+      try {
+        const s = JSON.parse(row.stats_json);
+        winRate = isNum(s.winRate) ? s.winRate / 100 : null; // authoritative stores %; legacy shape is a fraction
+        expectancy = isNum(s.expectancyDollars) ? s.expectancyDollars : null;
+      } catch { /* fall through to nulls */ }
+    }
+    return { dataQuality, sampleSize: row.graded_sample_size ?? null, winRate, expectancy };
   } catch {
     return null; // table missing / query failure → NOT_TRACKED (never throws into a read)
   }
