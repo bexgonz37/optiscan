@@ -96,3 +96,86 @@ export function heartbeatScannerLock(db: DbLike, pid: number, nowMs: number = Da
 export function releaseScannerLock(db: DbLike, pid: number): void {
   db.prepare("DELETE FROM scanner_lock WHERE id = 1 AND pid = ?").run(pid);
 }
+
+// ── Generalized named worker leases ──────────────────────────────────────────
+//
+// The scanner lock guards the scanner. Background workers (the learning/drift/
+// supervisor scheduler) need the same single-owner guarantee under their own
+// name so two hosted replicas do not run the same jobs and double-send. Same
+// semantics: a FRESH lease (heartbeat younger than staleMs) is exclusive; a
+// crashed owner stops heartbeating and its lease expires on its own; same-pid
+// re-acquire always succeeds. Functions take the db handle + nowMs so they are
+// testable with fake time.
+
+export function ensureLeaseTable(db: DbLike): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS worker_leases (
+    name TEXT PRIMARY KEY,
+    pid INTEGER NOT NULL,
+    hostname TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL,
+    heartbeat_at TEXT NOT NULL
+  )`);
+}
+
+export function acquireLease(
+  db: DbLike,
+  name: string,
+  opts: { pid: number; hostname?: string; nowMs?: number; staleMs?: number },
+): AcquireResult {
+  const nowMs = opts.nowMs ?? Date.now();
+  const staleMs = opts.staleMs ?? LOCK_STALE_MS;
+  const hostname = opts.hostname ?? "";
+  ensureLeaseTable(db);
+  const row = db.prepare("SELECT pid, hostname, started_at, heartbeat_at FROM worker_leases WHERE name = ?").get(name) as
+    | LockHolder
+    | undefined;
+
+  if (row) {
+    const beatMs = Date.parse(row.heartbeat_at);
+    const fresh = Number.isFinite(beatMs) && nowMs - beatMs < staleMs;
+    if (fresh && row.pid !== opts.pid) {
+      return { acquired: false, holder: row };
+    }
+  }
+
+  const nowIso = new Date(nowMs).toISOString();
+  db.prepare(
+    `INSERT INTO worker_leases (name, pid, hostname, started_at, heartbeat_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(name) DO UPDATE SET
+       pid = excluded.pid,
+       hostname = excluded.hostname,
+       started_at = excluded.started_at,
+       heartbeat_at = excluded.heartbeat_at`,
+  ).run(name, opts.pid, hostname, nowIso, nowIso);
+  return { acquired: true, holder: null };
+}
+
+export function heartbeatLease(db: DbLike, name: string, pid: number, nowMs: number = Date.now()): void {
+  db.prepare("UPDATE worker_leases SET heartbeat_at = ? WHERE name = ? AND pid = ?").run(
+    new Date(nowMs).toISOString(),
+    name,
+    pid,
+  );
+}
+
+export function releaseLease(db: DbLike, name: string, pid: number): void {
+  db.prepare("DELETE FROM worker_leases WHERE name = ? AND pid = ?").run(name, pid);
+}
+
+/** Current lease holder + freshness (for the health surface). */
+export function leaseHolder(
+  db: DbLike,
+  name: string,
+  nowMs: number = Date.now(),
+  staleMs: number = LOCK_STALE_MS,
+): { holder: LockHolder | null; fresh: boolean } {
+  ensureLeaseTable(db);
+  const row = db.prepare("SELECT pid, hostname, started_at, heartbeat_at FROM worker_leases WHERE name = ?").get(name) as
+    | LockHolder
+    | undefined;
+  if (!row) return { holder: null, fresh: false };
+  const beatMs = Date.parse(row.heartbeat_at);
+  const fresh = Number.isFinite(beatMs) && nowMs - beatMs < staleMs;
+  return { holder: row, fresh };
+}

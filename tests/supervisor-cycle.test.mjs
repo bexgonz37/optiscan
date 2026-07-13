@@ -7,9 +7,9 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => readFileSync(join(root, p), "utf8");
 
-test("supervisor cycle reuses the agent runtime + supervisor, never a provider directly", () => {
+test("supervisor cycle delegates to the canonical callout path, never a provider directly", () => {
   const src = read("lib/supervisor-cycle.ts");
-  assert.ok(/runAgentsForTicker/.test(src), "delegates to the agent runtime");
+  assert.ok(/buildCalloutsForTickers/.test(src), "delegates to the single canonical callout path");
   // No direct provider fetch: the metered chain fetch lives in the agent runtime.
   assert.ok(!/polyFetch\(|fetchOptionChain\(|fetchBulkQuotes\(|https?:\/\//.test(src), "no direct provider calls");
   // No brokerage / live-execution import in the cycle.

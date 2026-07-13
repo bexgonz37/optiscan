@@ -523,6 +523,17 @@ CREATE TABLE IF NOT EXISTS callout_state (
 );
 CREATE INDEX IF NOT EXISTS idx_callout_state_updated ON callout_state(updated_at_ms);
 
+-- Named worker leases (live runtime wiring). Single-owner guarantee for background
+-- schedulers so two hosted replicas never run the same jobs / double-send. A
+-- crashed owner stops heartbeating and its lease expires on its own.
+CREATE TABLE IF NOT EXISTS worker_leases (
+  name TEXT PRIMARY KEY,
+  pid INTEGER NOT NULL,
+  hostname TEXT NOT NULL DEFAULT '',
+  started_at TEXT NOT NULL,
+  heartbeat_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS historical_alerts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   external_id TEXT UNIQUE,
