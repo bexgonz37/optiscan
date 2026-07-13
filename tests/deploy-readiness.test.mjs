@@ -145,7 +145,8 @@ test("core deployment variables in the example are actually read by the code", (
     "lib/supervisor-cycle.ts","lib/auth.ts","lib/polygon-provider.js","lib/notifications.ts","lib/scanner-loop.ts"]
     .map(read).join("\n");
   for (const v of ["ALERT_DB_DIR","POLYGON_API_KEY","SCAN_API_TOKEN","SUPERVISOR_RUNTIME",
-    "CALLOUT_CANONICAL_PATH","AGENT_CALLOUT_DISCORD","SUPERVISOR_MAX_TICKERS","SCHEDULER_DISABLED"]) {
+    "CALLOUT_CANONICAL_PATH","AGENT_CALLOUT_DISCORD","SUPERVISOR_MAX_TICKERS",
+    "SUPERVISOR_CORE_TICKERS","SCHEDULER_DISABLED"]) {
     assert.ok(codeBlob.includes(v), `documented var not read by code: ${v}`);
     assert.ok(read(".env.railway.example").includes(v), `var missing from example: ${v}`);
   }

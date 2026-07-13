@@ -16,6 +16,8 @@
  */
 import { buildCalloutsForTickers } from "@/lib/callouts/runtime";
 import { getZeroDteUniverse } from "@/lib/universe.js";
+import { loopState } from "@/lib/scanner-loop";
+import { buildCycleUniverse, DEFAULT_SUPERVISOR_CORE_TICKERS } from "@/lib/supervisor-universe";
 
 type G = typeof globalThis & { __optiscanSupervisorTelemetry?: SupervisorTelemetry };
 
@@ -48,10 +50,37 @@ export function supervisorRuntimeEnabled(env: NodeJS.ProcessEnv = process.env): 
   return env.SUPERVISOR_RUNTIME === "1";
 }
 
+/**
+ * Dynamic candidates for the cycle, ranked strongest-first: live scanner movers
+ * (already sorted by short-rate magnitude), then any promoted discovery names,
+ * then the static 0DTE watchlist as a never-empty fallback. Reading the scanner
+ * is best-effort — if it has not booted yet the watchlist alone still yields a
+ * valid cycle. `buildCycleUniverse` deduplicates the combined list.
+ */
+function dynamicCandidates(env: NodeJS.ProcessEnv): string[] {
+  const out: string[] = [];
+  try {
+    const st = loopState() as { movers?: Array<{ symbol?: string }>; promotedSymbols?: string[] };
+    for (const m of st.movers ?? []) if (m?.symbol) out.push(String(m.symbol));
+    for (const p of st.promotedSymbols ?? []) if (p) out.push(String(p));
+  } catch {
+    // Scanner not booted (e.g. cold start / closed session) — fall back to the
+    // static watchlist below. Never throw into the cycle.
+  }
+  for (const s of getZeroDteUniverse(env) as string[]) out.push(s);
+  return out;
+}
+
+/**
+ * The bounded, session-appropriate ticker universe for one supervisor cycle.
+ * Pinned core tickers (SUPERVISOR_CORE_TICKERS, default NVDA,META,SPCX,SPY,AAPL,
+ * AMZN) are always included first; the strongest dynamic movers fill the
+ * remaining slots up to SUPERVISOR_MAX_TICKERS. See `buildCycleUniverse`.
+ */
 export function cycleUniverse(env: NodeJS.ProcessEnv = process.env): string[] {
   const cap = Math.max(1, Math.min(50, Number(env.SUPERVISOR_MAX_TICKERS ?? 8) || 8));
-  const core = getZeroDteUniverse(env) as string[];
-  return core.slice(0, cap);
+  const coreCsv = env.SUPERVISOR_CORE_TICKERS ?? DEFAULT_SUPERVISOR_CORE_TICKERS;
+  return buildCycleUniverse(coreCsv, dynamicCandidates(env), cap);
 }
 
 export interface SupervisorCycleResult {

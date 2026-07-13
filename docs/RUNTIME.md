@@ -28,6 +28,23 @@ expires so another replica can take over — no permanent deadlock):
 | supervisor | 60 s | run relevant horizon agents → canonical callouts → deliver | `SUPERVISOR_RUNTIME=1` |
 | improvement | 6 h | record proposal-only improvement audit | `IMPROVEMENT_AUDIT=1` |
 
+### Supervisor cycle universe
+
+Each supervisor cycle scans a bounded universe built as: every **valid** pinned
+core ticker first (`SUPERVISOR_CORE_TICKERS`, default `NVDA,META,SPCX,SPY,AAPL,AMZN`),
+then the strongest **dynamic movers** from the live scanner (falling back to the
+static 0DTE watchlist when the scanner has no movers), filling the remaining slots
+up to `SUPERVISOR_MAX_TICKERS`. The list is deduplicated (core vs. movers vs.
+watchlist) and capped. With `SUPERVISOR_MAX_TICKERS=8` and the six default core
+symbols, two slots remain for the strongest movers.
+
+Core tickers are only *scanned first* — they are not forced actionable. A core
+symbol with unavailable/stale data or no supported options chain fails honestly for
+that symbol (downstream freshness/relevance/risk gates) while the rest of the cycle
+continues. Invalid/garbage entries in `SUPERVISOR_CORE_TICKERS` are dropped and
+never crash the cycle. Puts remain `RESEARCH_ONLY`; no contracts are fabricated and
+no unsupported DTE coverage is widened.
+
 The retrain policy is unchanged: ≥25 new graded outcomes, ≥24 h between trainings,
 both classes present, sufficient coverage, moved watermark. With zero graded
 outcomes the model stays honestly `INACTIVE_NO_TRAINABLE_DATA` — the scheduler never
@@ -41,6 +58,7 @@ All booleans use the repo convention `=== "1"`.
 |---|---|---|
 | `SCHEDULER_DISABLED` | unset | `1` = do not start the scheduler at all (kill switch) |
 | `SUPERVISOR_RUNTIME` | off | `1` = run the automatic supervisor callout cycle |
+| `SUPERVISOR_CORE_TICKERS` | `NVDA,META,SPCX,SPY,AAPL,AMZN` | comma/space-separated pinned core symbols always included first, before dynamic movers |
 | `SUPERVISOR_MAX_TICKERS` | 8 | cap on tickers per supervisor cycle (1–50) |
 | `CALLOUT_CANONICAL_PATH` | `legacy` | `supervisor` makes the new path canonical for OPTIONS callouts and stands the legacy options Discord sender down (no double-send) |
 | `AGENT_CALLOUT_DISCORD` | off | `1` = master switch permitting supervisor Discord delivery (existing var) |
