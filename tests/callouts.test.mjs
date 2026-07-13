@@ -111,21 +111,39 @@ test("nextCalloutState records emission times deterministically", () => {
 
 // ── Discord formatting ───────────────────────────────────────────────────────
 
-test("discord payload has ordered sections and no banned language", () => {
+test("discord DEFAULT payload is a compact card with the exact contract + real prices", () => {
   const p = formatCalloutDiscord(buildCallout(ar()));
-  const names = p.embed.fields.map((f) => f.name);
-  // Forward-looking order: trade → wait for → valid entry → do not enter → currently.
-  assert.deepEqual(names.slice(0, 7), ["Trade", "⏳ Wait for", "✅ Valid entry", "⛔ Do not enter if", "📍 Currently", "Horizon", "Risk"]);
-  // Never headlines the raw OCC option symbol.
+  const d = p.embed.description;
+  // Compact card lines the trader reads first.
+  assert.match(d, /Contract: SPY \$500 Call/);
+  assert.match(d, /Expiration: Jul 9/);
+  assert.match(d, /DTE: 0/);
+  assert.match(d, /Option: \$1\.10 bid \/ \$1\.20 ask \(mid \$1\.15\)/);
+  assert.match(d, /Estimated entry: \$/); // a real, computed entry (ask + bounded slippage)
+  assert.match(d, /Status: ACTIONABLE NOW/);
+  // Title leads with the human trade + confidence tier, NEVER the OCC symbol.
+  assert.match(p.embed.title, /SPY CALL · (HIGH|MEDIUM|LOW) CONFIDENCE/);
   assert.ok(!/^O:/.test(p.embed.title) && !/O:SPY/.test(p.embed.title));
+  // Advanced detail is HIDDEN by default (no OCC symbol / greeks fields).
+  assert.equal(p.embed.fields.length, 0, "compact by default — no advanced fields");
+  assert.ok(!/O:SPY/.test(JSON.stringify(p)), "no raw OCC symbol in the default card");
   assert.ok(!containsBannedLanguage(JSON.stringify(p)));
-  assert.match(p.embed.description, /outcomes are uncertain/);
+  assert.match(d, /outcomes are uncertain/);
 });
 
-test("discord hides probability when the model is inactive", () => {
+test("discord shows the SETUP SCORE (not a probability) when the model is inactive", () => {
   const p = formatCalloutDiscord(buildCallout(ar()));
-  const model = p.embed.fields.find((f) => f.name === "Model");
-  assert.match(model.value, /no probability/);
+  assert.match(p.embed.description, /SETUP SCORE — NOT A WIN PROBABILITY: 78/);
+  assert.ok(!/p\(win\)/.test(p.embed.description), "no probability shown for an inactive model");
+});
+
+test("discord Advanced block is appended only when DISCORD_ADVANCED_DETAILS=1", () => {
+  const c = buildCallout(ar());
+  const off = formatCalloutDiscord(c, {});
+  assert.equal(off.embed.fields.length, 0);
+  const on = formatCalloutDiscord(c, { DISCORD_ADVANCED_DETAILS: "1" });
+  assert.ok(on.embed.fields.some((f) => /Advanced/.test(f.name)), "advanced divider present");
+  assert.ok(on.embed.fields.some((f) => f.value.includes("O:SPY_C500")), "OCC symbol lives under Advanced");
 });
 
 // ── Phase 8: experimental / setup-score labeling ─────────────────────────────
@@ -140,7 +158,7 @@ test("experimental model ⇒ probability carries the EXPERIMENTAL research-only 
   const c = buildCallout(ar({ modelStatus: "ACTIVE_EXPERIMENTAL_RESEARCH_ONLY", probability: 0.62 }));
   assert.equal(c.modelLabel, "EXPERIMENTAL — LIMITED DATA — RESEARCH ONLY");
   assert.equal(c.probabilityIsExperimental, true);
-  const p = formatCalloutDiscord(c);
+  const p = formatCalloutDiscord(c, { DISCORD_ADVANCED_DETAILS: "1" });
   const model = p.embed.fields.find((f) => f.name === "Model");
   assert.match(model.value, /EXPERIMENTAL — LIMITED DATA — RESEARCH ONLY/);
   assert.match(model.value, /not a validated probability/);
@@ -151,7 +169,7 @@ test("validated model ⇒ plain probability, no experimental label", () => {
   const c = buildCallout(ar({ modelStatus: "ACTIVE_VALIDATED", probability: 0.58 }), { modelVersion: 4, calibration: "ECE 0.05" });
   assert.equal(c.modelLabel, null);
   assert.equal(c.probabilityIsExperimental, false);
-  const p = formatCalloutDiscord(c);
+  const p = formatCalloutDiscord(c, { DISCORD_ADVANCED_DETAILS: "1" });
   const model = p.embed.fields.find((f) => f.name === "Model");
   assert.match(model.value, /p\(win\) 58\.0%/);
   assert.ok(!/EXPERIMENTAL/.test(model.value));
@@ -170,7 +188,6 @@ test("discord put callout is labeled research", () => {
   const p = formatCalloutDiscord(buildCallout(ar({ direction: "bearish", candidateStatus: "RESEARCH_ONLY", researchOnly: true, actionability: "RESEARCH_ONLY", selectedContract: { ...ar().selectedContract, side: "put" } })));
   assert.match(p.embed.title, /PUT/);
   assert.match(p.embed.description, /RESEARCH ONLY/);
-  // A non-actionable put shows no live entry window.
-  const entry = p.embed.fields.find((f) => f.name === "✅ Valid entry");
-  assert.match(entry.value, /NO VALID ENTRY WINDOW/);
+  // A non-actionable put shows no tradable entry in the compact card.
+  assert.match(p.embed.description, /Estimated entry: NO VALID ENTRY YET/);
 });

@@ -1,13 +1,19 @@
 /**
- * callouts/discord-format.ts — deterministic, TRADER-FIRST Discord embed builder.
- * PURE. It answers, in order: what trade, why now, the underlying trigger, the
- * option entry (bid/ask/mid/spread + estimated fill), invalidation, expected
- * holding horizon, and risk — with the heavy statistics kept below. It NEVER
- * headlines the raw OCC option symbol, never fabricates a target, and never emits
- * banned/guarantee language. It only builds the payload; the delivery ledger
- * (idempotency, retries, routing, role mentions) does the sending.
+ * callouts/discord-format.ts — deterministic COMPACT-TRADE-CARD Discord builder.
+ * PURE. The DEFAULT payload is a compact card: ticker + direction + confidence
+ * tier, the exact contract (strike / expiration / DTE), the underlying price and
+ * the live option bid/ask/mid at alert time, a realistic estimated entry, a plain
+ * entry status, the horizon, and the alert time. Nothing is fabricated; the raw
+ * OCC symbol is never the headline; no banned/guarantee language is ever emitted.
+ *
+ * All the technical detail (OCC symbol, greeks, OI/volume, spread%, contract
+ * score/rank, agent, evidence, model state, risk, VWAP/relVol/accel, reasons,
+ * prior context) stays available but moves BELOW a compact divider — and is only
+ * appended when DISCORD_ADVANCED_DETAILS=1 (default off). It only builds the
+ * payload; the delivery ledger does the sending.
  */
 import { containsBannedLanguage, type Callout } from "./callout.ts";
+import { compactCard, discordAdvancedEnabled } from "./confidence.ts";
 
 const STATUS_EMOJI: Record<string, string> = {
   ACTIONABLE_NOW: "🟢", NEAR_TRIGGER: "🟡", DEVELOPING: "🔵", WAIT_FOR_PULLBACK: "🟠",
@@ -15,34 +21,10 @@ const STATUS_EMOJI: Record<string, string> = {
   DATA_STALE: "⌛", MODEL_EXPERIMENTAL: "🧪", MODEL_INACTIVE: "◻", INSUFFICIENT_EVIDENCE: "ℹ", WATCH: "👁",
 };
 
+const TIER_EMOJI: Record<string, string> = { HIGH: "🟢", MEDIUM: "🟡", LOW: "⚪" };
+
 function fmtNum(v: number | null | undefined, dp = 2): string {
   return v == null || !Number.isFinite(v) ? "—" : Number(v).toFixed(dp);
-}
-
-/** "2026-07-14" → "Jul 14"; falls back to the raw value. */
-function expiryLabel(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(`${iso}T00:00:00`);
-  if (Number.isNaN(d.getTime())) return String(iso);
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
-
-function dteWord(dte: number | null | undefined): string {
-  if (dte == null) return "";
-  if (dte <= 0) return "0DTE (expires today)";
-  if (dte === 1) return "1DTE (expires tomorrow)";
-  return `${dte}DTE`;
-}
-
-/** Plain-English trade line, e.g. "SPY $755 CALL · exp Jul 14 · 0DTE (expires today)". */
-function tradeHeadline(c: Callout): string {
-  const side = (c.contract?.side ?? (c.direction === "bearish" ? "put" : "call")).toUpperCase();
-  const strike = c.contract?.strike != null ? `$${c.contract.strike}` : "";
-  const bits = [`${c.ticker} ${strike} ${side}`.replace(/\s+/g, " ").trim()];
-  if (c.contract?.expiration) bits.push(`exp ${expiryLabel(c.contract.expiration)}`);
-  const d = dteWord(c.contract?.dte);
-  if (d) bits.push(d);
-  return bits.join(" · ");
 }
 
 export interface DiscordCalloutPayload {
@@ -56,110 +38,93 @@ export interface DiscordCalloutPayload {
   };
 }
 
-/** Build the trader-first Discord payload for one callout. */
-export function formatCalloutDiscord(c: Callout): DiscordCalloutPayload {
-  const emoji = STATUS_EMOJI[c.status] ?? "•";
-  const sideWord = c.direction === "bearish" ? "PUT" : "CALL";
-  // Title leads with the human trade, NEVER the OCC symbol.
-  const title = `${emoji} ${c.ticker} ${sideWord} · ${c.horizon} · ${c.status.replace(/_/g, " ")}`;
+/** Build the compact-card Discord payload for one callout. */
+export function formatCalloutDiscord(c: Callout, env: NodeJS.ProcessEnv = process.env): DiscordCalloutPayload {
+  const card = compactCard(c, env);
+  const emoji = STATUS_EMOJI[c.status] ?? TIER_EMOJI[card.tier] ?? "•";
 
-  const hasEntry = c.actionable && Boolean(c.contract) && c.quoteFreshness === "fresh";
-  const isLate = c.entryState === "EXTENDED" || c.entryState === "MISSED" || c.entryState === "INVALIDATED";
-  const fields: DiscordCalloutPayload["embed"]["fields"] = [];
+  // Title = the human trade + confidence tier, e.g. "🟢 NVDA CALL · HIGH CONFIDENCE".
+  const title = `${emoji} ${card.headline}`;
 
-  // FORWARD-LOOKING FIRST: what to wait for, whether there is a valid entry NOW,
-  // what invalidates it, and whether it is already too late. (§5)
-
-  // 1. WHAT TRADE
-  fields.push({ name: "Trade", value: tradeHeadline(c) });
-
-  // 2. WAIT FOR — the NEXT required condition (not a past-move summary).
-  fields.push({ name: "⏳ Wait for", value: c.waitFor || c.trigger || "Live confirmation of the setup before entry." });
-
-  // 3. VALID ENTRY — the window + live option quote when actually actionable.
-  if (hasEntry) {
-    const k = c.contract!;
-    fields.push({
-      name: "✅ Valid entry",
-      value: [
-        c.validEntry || "Valid now while the trigger holds and the quote stays fresh.",
-        `bid ${fmtNum(k.bid)} / ask ${fmtNum(k.ask)} / mid ${fmtNum(k.mid)} · spread ${fmtNum(k.spreadPct, 1)}%`,
-        c.estimatedFillNote ?? "Estimated paper fill ≈ ask + bounded slippage (simulated, not a real fill).",
-      ].join("\n"),
-    });
-  } else {
-    const why = isLate ? "the move already ran"
-      : !c.contract ? (c.primaryBlockingReason ?? "no valid contract")
-      : c.quoteFreshness !== "fresh" ? "quote not fresh"
-      : "trigger not confirmed yet";
-    fields.push({ name: "✅ Valid entry", value: `WAIT — NO VALID ENTRY WINDOW (${why}). ${c.validEntry ?? ""}`.trim() });
-  }
-
-  // 4. DO NOT ENTER IF / DO NOT CHASE
-  fields.push({ name: "⛔ Do not enter if", value: c.doNotEnter || c.invalidation || "The thesis level breaks or the setup changes." });
-
-  // 5. CURRENTLY — plain state, with an explicit too-late flag.
-  fields.push({ name: "📍 Currently", value: `${c.currently ?? c.reason ?? "—"}${isLate ? " — ALREADY TOO LATE, do not chase." : ""}` });
-
-  // 6. EXPECTED HOLDING HORIZON
-  fields.push({ name: "Horizon", value: `${c.horizon}${c.contract?.dte != null ? ` · ${dteWord(c.contract.dte)}` : ""}`, inline: true });
-
-  // 7. RISK
-  fields.push({
-    name: "Risk",
-    value: c.riskVerdict?.allowed === false ? `Risk veto: ${c.riskVerdict.failures.join("; ")}` : "Risk checks passed",
-    inline: true,
-  });
-
-  // Historical context — LABELED, never presented as the entry itself.
-  if (c.alreadyHappened) fields.push({ name: "ALREADY HAPPENED (context only)", value: c.alreadyHappened });
-  // Structural invalidation, when distinct from the entry-window rule.
-  if (c.invalidation && c.invalidation !== c.doNotEnter) fields.push({ name: "Invalidation", value: c.invalidation });
-  // Management guidance ONLY when genuinely supported (never fabricated).
-  if (c.management) fields.push({ name: "Management", value: c.management });
-  // Thesis-reconciliation note (portfolio layer), when present.
-  if (c.thesisNote) fields.push({ name: "Note", value: c.thesisNote });
-
-  // ── Advanced statistics below ──────────────────────────────────────────────
-  fields.push({ name: "Evidence", value: `${c.evidenceStatus.replace(/_/g, " ")} · sample ${c.sampleSize}${c.expectancy != null ? ` · expectancy ${fmtNum(c.expectancy)}` : ""}${c.profitFactor != null ? ` · PF ${fmtNum(c.profitFactor)}` : ""}`, inline: true });
-
-  if (c.probability != null) {
-    const pct = fmtNum(c.probability * 100, 1);
-    const meta = `v${c.modelVersion ?? "?"}, ${c.calibration ?? "calib n/a"}`;
-    fields.push({
-      name: "Model",
-      value: c.probabilityIsExperimental
-        ? `${c.modelLabel} · p(win) ${pct}% (${meta}) — not a validated probability`
-        : `${c.modelState.replace(/_/g, " ")} · p(win) ${pct}% (${meta})`,
-      inline: true,
-    });
-  } else {
-    const label = c.modelLabel ?? "SETUP SCORE — NOT A PROBABILITY";
-    fields.push({ name: "Model", value: `${c.modelState.replace(/_/g, " ")} — ${label}; no probability (setup score ${c.contractScore ?? "—"}).`, inline: true });
-  }
-
-  fields.push({
-    name: "Advanced",
-    value: `contract ${c.contract?.optionSymbol ?? "—"} · Δ ${fmtNum(c.contract?.delta)} · IV ${fmtNum(c.contract?.iv)} · OI ${c.contract?.openInterest ?? "—"} · vol ${c.contract?.volume ?? "—"} · score ${c.contractScore ?? "—"}${c.portfolioRank != null ? ` · rank ${fmtNum(c.portfolioRank, 1)}` : ""} · agent ${c.strategyAgent}`,
-  });
+  // DEFAULT compact card — the exact contract + real prices at alert time.
+  const cardLines = [
+    `Contract: ${card.contract}`,
+    `Expiration: ${card.expiration}`,
+    `DTE: ${card.dte}`,
+    `Stock: ${card.stock}`,
+    `Option: ${card.optionQuote} (mid ${card.optionMid})`,
+    `Estimated entry: ${card.estimatedEntry}`,
+    `Status: ${card.status}`,
+    `Horizon: ${card.horizon}`,
+    `Time: ${card.time}`,
+  ];
+  if (card.setupScoreLine) cardLines.push("", card.setupScoreLine);
 
   const disclaimerBits = [
     c.researchOnlyWarning,
-    c.insufficientEvidenceWarning,
     "Research/paper simulation — outcomes are uncertain and never assured.",
   ].filter(Boolean);
+  cardLines.push("", disclaimerBits.join(" "));
+
+  const description = cardLines.join("\n");
+
+  // ── Advanced (below the divider) — appended ONLY when explicitly enabled. ────
+  const fields: DiscordCalloutPayload["embed"]["fields"] = [];
+  if (discordAdvancedEnabled(env)) {
+    const k = c.contract;
+    fields.push({ name: "──────── Advanced ────────", value: "Technical detail (not needed to read the trade)." });
+    fields.push({
+      name: "Contract detail",
+      value: `${k?.optionSymbol ?? "—"} · Δ ${fmtNum(k?.delta)} · IV ${fmtNum(k?.iv)} · OI ${k?.openInterest ?? "—"} · vol ${k?.volume ?? "—"} · spread ${fmtNum(k?.spreadPct, 1)}%`,
+    });
+    fields.push({
+      name: "Ranking",
+      value: `setup score ${c.contractScore ?? "—"}${c.portfolioRank != null ? ` · rank ${fmtNum(c.portfolioRank, 1)}` : ""} · agent ${c.strategyAgent}`,
+      inline: true,
+    });
+    fields.push({
+      name: "Evidence",
+      value: `${c.evidenceStatus.replace(/_/g, " ")} · sample ${c.sampleSize}${c.expectancy != null ? ` · expectancy ${fmtNum(c.expectancy)}` : ""}${c.profitFactor != null ? ` · PF ${fmtNum(c.profitFactor)}` : ""}`,
+      inline: true,
+    });
+    if (c.probability != null) {
+      const pct = fmtNum(c.probability * 100, 1);
+      const meta = `v${c.modelVersion ?? "?"}, ${c.calibration ?? "calib n/a"}`;
+      fields.push({
+        name: "Model",
+        value: c.probabilityIsExperimental
+          ? `${c.modelLabel} · p(win) ${pct}% (${meta}) — not a validated probability`
+          : `${c.modelState.replace(/_/g, " ")} · p(win) ${pct}% (${meta})`,
+        inline: true,
+      });
+    } else {
+      const label = c.modelLabel ?? "SETUP SCORE — NOT A PROBABILITY";
+      fields.push({ name: "Model", value: `${c.modelState.replace(/_/g, " ")} — ${label}; no probability (setup score ${c.contractScore ?? "—"}).`, inline: true });
+    }
+    fields.push({
+      name: "Risk",
+      value: c.riskVerdict?.allowed === false ? `Risk veto: ${c.riskVerdict.failures.join("; ")}` : "Risk checks passed",
+      inline: true,
+    });
+    if (c.waitFor) fields.push({ name: "Next required condition", value: c.waitFor });
+    if (c.doNotEnter || c.invalidation) fields.push({ name: "Do not enter if", value: c.doNotEnter || c.invalidation || "—" });
+    if (c.currently) fields.push({ name: "Currently", value: c.currently });
+    if (c.alreadyHappened) fields.push({ name: "Already happened (context only)", value: c.alreadyHappened });
+    if (c.thesisNote) fields.push({ name: "Note", value: c.thesisNote });
+  }
 
   const color = c.direction === "bearish"
     ? (c.status === "ACTIONABLE_NOW" ? 0xe67e22 : 0x9b59b6)
     : c.status === "ACTIONABLE_NOW" ? 0x2ecc71 : c.status === "INVALIDATED" ? 0xe74c3c : 0x3498db;
 
   const payload: DiscordCalloutPayload = {
-    content: `${emoji} ${c.ticker} ${sideWord} ${c.horizon} · ${c.status.replace(/_/g, " ")}`,
-    embed: { title, description: disclaimerBits.join(" "), color, fields, footer: { text: `${c.strategyAgent} · ${new Date(c.timestamp).toISOString()}` } },
+    content: `${emoji} ${card.headline} · ${card.status}`,
+    embed: { title, description, color, fields, footer: { text: `${c.strategyAgent} · ${new Date(c.timestamp).toISOString()}` } },
   };
 
   // Safety: a callout must never contain banned/guarantee language.
   if (containsBannedLanguage(JSON.stringify(payload).toLowerCase())) {
+    payload.embed.description = "[redacted: non-compliant language]";
     payload.embed.fields = payload.embed.fields.map((f) => ({ ...f, value: "[redacted: non-compliant language]" }));
   }
   return payload;

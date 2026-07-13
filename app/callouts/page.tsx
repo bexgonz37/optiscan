@@ -27,14 +27,23 @@ type Callout = {
   strategyAgent: string;
   horizon: string;
   reason: string;
-  contract: { optionSymbol: string | null; strike: number | null; expiration: string | null; dte: number | null; side: string | null; bid: number | null; ask: number | null; mid: number | null; spreadPct: number | null; delta: number | null } | null;
+  contract: { optionSymbol: string | null; strike: number | null; expiration: string | null; dte: number | null; side: string | null; bid: number | null; ask: number | null; mid: number | null; spreadPct: number | null; delta: number | null; iv?: number | null; volume?: number | null; openInterest?: number | null } | null;
+  underlyingPrice: number | null;
+  confidenceTier: "HIGH" | "MEDIUM" | "LOW";
+  estimatedEntry: number | null;
+  entryStatusLabel: string;
   quoteFreshness: string;
   contractScore: number | null;
+  portfolioRank?: number | null;
   evidenceStatus: string;
   sampleSize: number;
   modelState: string;
   probability: number | null;
   actionable: boolean;
+  waitFor?: string | null;
+  doNotEnter?: string | null;
+  currently?: string | null;
+  alreadyHappened?: string | null;
   researchOnlyWarning: string | null;
   insufficientEvidenceWarning: string | null;
   primaryBlockingReason: string | null;
@@ -69,6 +78,24 @@ function tone(status: string): "bull" | "warn" | "bear" | "muted" {
   if (status === "NEAR_TRIGGER" || status === "DEVELOPING") return "warn";
   if (status === "INVALIDATED" || status === "DATA_STALE") return "bear";
   return "muted";
+}
+
+function tierTone(tier: string): "bull" | "warn" | "muted" {
+  if (tier === "HIGH") return "bull";
+  if (tier === "MEDIUM") return "warn";
+  return "muted";
+}
+
+function entryStatusTone(label: string): "bull" | "warn" | "bear" | "muted" {
+  if (label === "ACTIONABLE NOW") return "bull";
+  if (label === "WAIT FOR PULLBACK" || label === "WAIT") return "warn";
+  if (label === "NO VALID ENTRY" || label === "MISSED") return "bear";
+  return "muted";
+}
+
+/** "$182.40" — never fabricates; a missing value renders as "—". */
+function money(v: number | null | undefined): string {
+  return typeof v === "number" && Number.isFinite(v) ? `$${v.toFixed(2)}` : "—";
 }
 
 /** "2026-07-14" → "Jul 14". Falls back to the raw string on any parse issue. */
@@ -196,31 +223,66 @@ function CalloutsInner() {
             </Card>
           ) : (
             filtered.map((c) => (
-              <Card key={c.key} title={`${c.ticker} · ${c.horizon} · ${c.direction === "bearish" ? "PUT (research)" : "CALL"}`} meta={c.strategyAgent}>
-                <div style={{ marginBottom: 6 }}><StatusBadge tone={tone(c.status)}>{c.status.replace(/_/g, " ")}</StatusBadge></div>
-                <p style={{ margin: "6px 0", fontSize: 14 }}>{c.reason}</p>
-                {c.contract && (
-                  <>
-                    <KeyValue k="Contract" v={contractHeadline(c)} />
-                    <KeyValue
-                      k="Price"
-                      v={[
-                        c.contract.mid != null ? `mid $${Number(c.contract.mid).toFixed(2)}` : null,
-                        c.contract.bid != null && c.contract.ask != null ? `(bid $${Number(c.contract.bid).toFixed(2)} / ask $${Number(c.contract.ask).toFixed(2)})` : null,
-                        c.contract.delta != null ? `Δ ${Math.abs(Number(c.contract.delta)).toFixed(2)}` : null,
-                        c.contract.spreadPct != null ? `spread ${Number(c.contract.spreadPct).toFixed(2)}%` : null,
-                      ].filter(Boolean).join(" · ")}
-                    />
-                    <div style={{ fontSize: 11, opacity: 0.45, marginTop: 2 }}>{c.contract.optionSymbol ?? ""}</div>
-                  </>
+              <Card key={c.key} title={`${c.ticker} ${c.direction === "bearish" ? "PUT" : "CALL"} · ${c.confidenceTier} CONFIDENCE`} meta={c.strategyAgent}>
+                {/* COMPACT TRADE CARD — the exact contract + real prices at alert time. */}
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+                  <StatusBadge tone={tierTone(c.confidenceTier)}>{c.confidenceTier} CONFIDENCE</StatusBadge>
+                  <StatusBadge tone={entryStatusTone(c.entryStatusLabel)}>{c.entryStatusLabel}</StatusBadge>
+                </div>
+                <KeyValue k="Contract" v={contractHeadline(c)} />
+                <KeyValue k="Expiration" v={c.contract?.expiration ? expiryLabel(c.contract.expiration) : "—"} />
+                <KeyValue k="DTE" v={c.contract?.dte != null ? String(c.contract.dte) : "—"} />
+                <KeyValue k="Stock" v={money(c.underlyingPrice)} />
+                <KeyValue
+                  k="Option"
+                  v={c.contract && (c.contract.bid != null || c.contract.ask != null)
+                    ? `${money(c.contract.bid)} bid / ${money(c.contract.ask)} ask (mid ${money(c.contract.mid)})`
+                    : "—"}
+                />
+                <KeyValue
+                  k="Estimated entry"
+                  v={c.estimatedEntry != null && c.entryStatusLabel === "ACTIONABLE NOW" ? money(c.estimatedEntry) : "NO VALID ENTRY YET"}
+                  tone={c.estimatedEntry != null && c.entryStatusLabel === "ACTIONABLE NOW" ? undefined : "warn"}
+                />
+                <KeyValue k="Horizon" v={c.horizon} />
+                {c.probability == null && c.contractScore != null && (
+                  <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>SETUP SCORE — NOT A WIN PROBABILITY: {c.contractScore}</div>
                 )}
-                <KeyValue k="Quote freshness" v={c.quoteFreshness} tone={c.quoteFreshness === "fresh" ? undefined : "warn"} />
-                <KeyValue k="Contract score" v={c.contractScore ?? "—"} />
-                <KeyValue k="Evidence" v={`${c.evidenceStatus.replace(/_/g, " ")} (sample ${c.sampleSize})`} />
-                <KeyValue k="Model" v={c.probability != null ? `${c.modelState} · p ${(c.probability * 100).toFixed(1)}%` : `${c.modelState.replace(/_/g, " ")} — no probability`} />
-                {c.primaryBlockingReason && <KeyValue k="Blocked by" v={c.primaryBlockingReason} tone="warn" />}
                 {c.researchOnlyWarning && <p style={{ margin: "6px 0 0", fontSize: 12, opacity: 0.8 }}>🔬 {c.researchOnlyWarning}</p>}
-                {c.insufficientEvidenceWarning && <p style={{ margin: "2px 0 0", fontSize: 12, opacity: 0.8 }}>ℹ {c.insufficientEvidenceWarning}</p>}
+
+                {/* ADVANCED — technical detail, collapsed by default. */}
+                <details style={{ marginTop: 8 }}>
+                  <summary style={{ cursor: "pointer", fontSize: 12, opacity: 0.7 }}>Advanced</summary>
+                  <div style={{ marginTop: 6 }}>
+                    <div style={{ marginBottom: 6 }}><StatusBadge tone={tone(c.status)}>{c.status.replace(/_/g, " ")}</StatusBadge></div>
+                    {c.contract && (
+                      <>
+                        <KeyValue
+                          k="Greeks / liquidity"
+                          v={[
+                            c.contract.delta != null ? `Δ ${Math.abs(Number(c.contract.delta)).toFixed(2)}` : null,
+                            c.contract.iv != null ? `IV ${Number(c.contract.iv).toFixed(2)}` : null,
+                            c.contract.spreadPct != null ? `spread ${Number(c.contract.spreadPct).toFixed(2)}%` : null,
+                            c.contract.openInterest != null ? `OI ${c.contract.openInterest}` : null,
+                            c.contract.volume != null ? `vol ${c.contract.volume}` : null,
+                          ].filter(Boolean).join(" · ") || "—"}
+                        />
+                        <div style={{ fontSize: 11, opacity: 0.45, marginTop: 2 }}>{c.contract.optionSymbol ?? ""}</div>
+                      </>
+                    )}
+                    {c.waitFor && <KeyValue k="Next required condition" v={c.waitFor} />}
+                    {c.doNotEnter && <KeyValue k="Do not enter if" v={c.doNotEnter} />}
+                    {c.currently && <KeyValue k="Currently" v={c.currently} />}
+                    {c.alreadyHappened && <KeyValue k="Already happened (context)" v={c.alreadyHappened} />}
+                    <KeyValue k="Quote freshness" v={c.quoteFreshness} tone={c.quoteFreshness === "fresh" ? undefined : "warn"} />
+                    <KeyValue k="Setup score / rank" v={`${c.contractScore ?? "—"}${c.portfolioRank != null ? ` · rank ${c.portfolioRank.toFixed(1)}` : ""}`} />
+                    <KeyValue k="Evidence" v={`${c.evidenceStatus.replace(/_/g, " ")} (sample ${c.sampleSize})`} />
+                    <KeyValue k="Model" v={c.probability != null ? `${c.modelState} · p ${(c.probability * 100).toFixed(1)}%` : `${c.modelState.replace(/_/g, " ")} — no probability`} />
+                    <p style={{ margin: "6px 0 0", fontSize: 13, opacity: 0.85 }}>{c.reason}</p>
+                    {c.primaryBlockingReason && <KeyValue k="Blocked by" v={c.primaryBlockingReason} tone="warn" />}
+                    {c.insufficientEvidenceWarning && <p style={{ margin: "2px 0 0", fontSize: 12, opacity: 0.8 }}>ℹ {c.insufficientEvidenceWarning}</p>}
+                  </div>
+                </details>
               </Card>
             ))
           )}

@@ -5,6 +5,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSmokeCallouts, SMOKE_LABEL } from "../lib/callouts/smoke-fixtures.ts";
 import { containsBannedLanguage } from "../lib/callouts/callout.ts";
+import { formatCalloutDiscord } from "../lib/callouts/discord-format.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => readFileSync(join(root, p), "utf8");
@@ -35,20 +36,27 @@ test("momentum-stock routes to the stocks channel", () => {
   assert.equal(byName.stock_momentum.webhook, "stocks");
 });
 
-test("inactive model shows the SETUP SCORE fallback; experimental shows the EXPERIMENTAL label", () => {
-  const inactiveModel = byName.model_inactive.payload.embed.fields.find((f) => f.name === "Model");
-  assert.match(inactiveModel.value, /SETUP SCORE — NOT A PROBABILITY/);
-  const expModel = byName.model_experimental.payload.embed.fields.find((f) => f.name === "Model");
+test("inactive model shows the SETUP SCORE (not a probability) on the compact card", () => {
+  // Compact card carries the labeled setup score; the model detail lives under Advanced.
+  assert.match(byName.model_inactive.payload.embed.description, /SETUP SCORE — NOT A WIN PROBABILITY/);
+  const expAdvanced = formatCalloutDiscord(byName.model_experimental.callout, { DISCORD_ADVANCED_DETAILS: "1" });
+  const expModel = expAdvanced.embed.fields.find((f) => f.name === "Model");
   assert.match(expModel.value, /EXPERIMENTAL — LIMITED DATA — RESEARCH ONLY/);
 });
 
 test("no-valid-contract scenario renders without a fabricated contract", () => {
   const nvc = byName.no_valid_contract;
-  // The forward-looking format states the missing entry window instead of a contract.
-  const entryField = nvc.payload.embed.fields.find((f) => f.name === "✅ Valid entry");
-  assert.ok(entryField, "has a Valid entry field");
-  assert.match(entryField.value, /NO VALID ENTRY WINDOW/);
+  // The compact card states there is no tradable entry instead of a contract.
+  assert.match(nvc.payload.embed.description, /Estimated entry: NO VALID ENTRY YET/);
+  assert.match(nvc.payload.embed.description, /Status: NO VALID ENTRY/);
   assert.ok(!/O:TEST_C100/.test(JSON.stringify(nvc.payload)), "no fabricated option symbol");
+});
+
+test("the compact card is the DEFAULT (advanced fields hidden unless enabled)", () => {
+  for (const it of items) {
+    assert.equal(it.payload.embed.fields.length, 0, `${it.name} should have no advanced fields by default`);
+    assert.match(it.payload.embed.title, /(HIGH|MEDIUM|LOW) CONFIDENCE/, `${it.name} title carries a confidence tier`);
+  }
 });
 
 test("no smoke payload contains banned/guarantee language", () => {

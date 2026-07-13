@@ -6,6 +6,47 @@ This file is the resume point. Read it + the task list before making changes.
 Do **not** repeat Phase 1, redo timestamp normalization, or add the Self-Improvement
 Lab / an embedded LLM.
 
+## Compact Trade Cards (2026-07-13) — default Discord + frontend callout
+
+The default callout (Discord + `/callouts`) is now a COMPACT TRADE CARD, not a
+technical write-up. All underlying data is preserved — technical detail just moves
+behind Advanced.
+
+- **`lib/callouts/confidence.ts`** (PURE) — the compact-card layer. Derives, from
+  fields already verified on the callout: a DETERMINISTIC confidence tier
+  (HIGH/MEDIUM/LOW — a setup-quality tier, **not** a win probability), the exact
+  contract line, expiration/DTE, underlying price at alert time, live bid/ask/mid,
+  a realistic estimated entry (matches the paper-fill model: `ask + bounded
+  slippage`, capped), a plain entry status (ACTIONABLE NOW / WAIT FOR PULLBACK /
+  WAIT / NO VALID ENTRY / MISSED), horizon, and ET alert time. Never fabricates a
+  price; a missing/stale/crossed quote → NO VALID ENTRY (no old price shown).
+- **HIGH** requires every gate: aligned + actionable, fresh & valid two-sided
+  quote, acceptable spread, risk passed, and — when an entry window exists — that
+  it confirm NOW (not extended/missed/invalidated/waiting/early). Only **HIGH**
+  actionable setups send a normal Discord alert (`selectForDiscord` confidence
+  gate); MEDIUM/LOW stay dashboard-only. Exceptions: the owner's opt-in
+  early-stage alerts and the single mixed-thesis WATCH disagreement notice.
+- **`lib/callouts/discord-format.ts`** rewritten: the default embed is the compact
+  card (description = Contract/Expiration/DTE/Stock/Option/Estimated entry/Status/
+  Horizon/Time + the labeled setup score). The Advanced block (OCC symbol, greeks,
+  OI/vol, spread%, score/rank, agent, evidence, model, risk, entry-window detail)
+  is appended ONLY when `DISCORD_ADVANCED_DETAILS=1` (**default off**).
+- `callout.ts` now carries `underlyingPrice`, `confidenceTier`, `estimatedEntry`,
+  `entryStatusLabel`; `app/callouts/page.tsx` renders the compact card with an
+  `<details>` Advanced section (collapsed by default). API already spreads the
+  callout so the new fields flow to the frontend.
+- Env: `DISCORD_ADVANCED_DETAILS=0` (default off). Not added to
+  `.env.railway.example` (that file is permission-locked in this workspace); the
+  code default already treats anything but `"1"` as off.
+- Tests: +14 (`tests/compact-card.test.mjs`) proving exact strike/expiration/DTE/
+  underlying/bid/ask/mid shown, estimated entry from verified quote, missing/stale
+  → NO VALID ENTRY, only-HIGH-sends, medium/low dashboard-only, inactive setup
+  score ≠ probability, Advanced hidden by default, no fabricated price. Existing
+  `callouts`/`discord-smoke` tests updated to the compact format. Suite: 915 pass.
+- Unchanged (safety): trading logic, freshness/spread/liquidity gates, risk rules,
+  paper-trading rules, contract selection, bearish default, model integrity,
+  no-live-execution. Confidence only *gates/labels*; it never loosens a gate.
+
 ## Forward-Looking Alert Quality (2026-07-13) — anti-late / entry-window
 
 Root cause of "wrong / late" calls (e.g. an NVDA CALL while it was falling):

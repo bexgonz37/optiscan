@@ -9,6 +9,7 @@
 import type { AgentResult, CandidateStatus } from "../agents/types.ts";
 import { EXPERIMENTAL_LABEL, SETUP_SCORE_LABEL } from "../model-experimental.ts";
 import { bearishActionable } from "../bearish-gate.ts";
+import { confidenceTier, estimatedEntryPrice, entryStatusLabel } from "./confidence.ts";
 
 /** Phrases that must never appear in any callout text. */
 export const BANNED_PHRASES = [
@@ -38,6 +39,14 @@ export interface Callout {
   invalidation: string | null;
   management: string | null;
   contract: AgentResult["selectedContract"];
+  /** Underlying stock price at alert time (verified spot from the chain snapshot). */
+  underlyingPrice: number | null;
+  /** DETERMINISTIC compact-card fields (lib/callouts/confidence.ts). Confidence is
+   * a setup-quality tier (HIGH/MEDIUM/LOW), NEVER a win probability; estimatedEntry
+   * is the realistic paper-fill entry, null when no valid entry is available now. */
+  confidenceTier: "HIGH" | "MEDIUM" | "LOW";
+  estimatedEntry: number | null;
+  entryStatusLabel: string;
   estimatedFillNote: string | null;
   quoteFreshness: string;
   contractScore: number | null;
@@ -146,6 +155,11 @@ export function buildCallout(r: AgentResult, extras: BuildCalloutExtras = {}): C
     invalidation: r.invalidationConditions.length ? r.invalidationConditions.join("; ") : null,
     management: null,
     contract: r.selectedContract,
+    underlyingPrice: typeof (r.verifiedInputs as any)?.spot === "number" ? (r.verifiedInputs as any).spot : null,
+    // Compact-card fields are filled in just below (they read the built callout).
+    confidenceTier: "LOW",
+    estimatedEntry: null,
+    entryStatusLabel: "WAIT",
     estimatedFillNote: r.selectedContract?.ask != null
       ? `Estimated paper fill ≈ ask ${r.selectedContract.ask} + bounded slippage (simulated, not a real fill).`
       : null,
@@ -189,5 +203,10 @@ export function buildCallout(r: AgentResult, extras: BuildCalloutExtras = {}): C
       lateReason: entryLate ? ew.currently : null,
     } : null,
   };
+  // DETERMINISTIC compact-card derivations (read the fully-built callout). These
+  // never fetch or fabricate — confidence is a setup tier, not a probability.
+  c.confidenceTier = confidenceTier(c);
+  c.estimatedEntry = estimatedEntryPrice(c);
+  c.entryStatusLabel = entryStatusLabel(c);
   return c;
 }

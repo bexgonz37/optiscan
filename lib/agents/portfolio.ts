@@ -25,6 +25,7 @@
  * the callout.
  */
 import type { Callout } from "../callouts/callout.ts";
+import { confidenceTier } from "../callouts/confidence.ts";
 import {
   ownerSettings, tickerPriorityRank, isPriorityTicker, type OwnerSettings, type AlertCategory,
 } from "../owner-settings.ts";
@@ -211,6 +212,15 @@ export function selectForDiscord(callouts: Callout[], s: OwnerSettings): Discord
     if (c.direction === "bearish" && !s.bearishEnabled) { suppressed.push({ key: c.key, reason: "bearish alerts disabled by owner" }); continue; }
     if (!s.categories.has(categoryOf(c))) { suppressed.push({ key: c.key, reason: `category ${categoryOf(c)} disabled by owner` }); continue; }
     if (EARLY_ONLY.has(c.status) && !s.earlyAlertsEnabled) { suppressed.push({ key: c.key, reason: "early-stage alert disabled by owner" }); continue; }
+    // CONFIDENCE GATE: only HIGH-confidence setups send a normal Discord alert.
+    // MEDIUM/LOW stay dashboard-only until they become HIGH. The two explicit
+    // exceptions are the owner's opt-in early-stage alerts (NEAR_TRIGGER/DEVELOPING,
+    // already gated above) and the single mixed-thesis WATCH disagreement notice
+    // (a risk-reduction message, not a trade recommendation).
+    if (!EARLY_ONLY.has(c.status) && !mixedWatch && confidenceTier(c) !== "HIGH") {
+      suppressed.push({ key: c.key, reason: `not HIGH confidence (${confidenceTier(c).toLowerCase()}) — dashboard only` });
+      continue;
+    }
     const quality = scoreCalloutQuality(c, s);
     if (quality < s.minSetupQuality) { suppressed.push({ key: c.key, reason: `below min setup quality (${quality} < ${s.minSetupQuality})` }); continue; }
     eligible.push({ c, quality });
