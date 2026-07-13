@@ -11,7 +11,7 @@ Lab / an embedded LLM.
 
 | Check | Result |
 |---|---|
-| `npm test` | **673 pass**, 0 fail (547 + 38 P1 + 20 P2 + 15 P3 + 33 P4 + 20 P5) |
+| `npm test` | **688 pass**, 0 fail (547 + 38+20+15+33+20 P1–P5 + 15 P6) |
 | `npx tsc --noEmit` | clean |
 | `npm run build` | compiles, all static pages |
 
@@ -28,9 +28,9 @@ Autonomous quant-roadmap execution (commit each phase green + pushed to `main`):
 | P2 — Trustworthy statistics + evidence engine | ✅ pushed | `9a4fd2c` |
 | P3 — Market context + regime foundation | ✅ pushed | `e172640` |
 | P4 — Validated probability-model foundation (inactive: no data) | ✅ pushed | `96df168` |
-| P5 — Modular specialized strategy agents | ✅ pushed | (this commit) |
-| **P6 — Advanced options callouts (desktop + Discord)** | ⏭️ **NEXT** | — |
-| P7 — Controlled continuous learning + drift | ⏳ pending | — |
+| P5 — Modular specialized strategy agents | ✅ pushed | `29a86d6` |
+| P6 — Advanced options callouts (desktop + Discord) | ✅ pushed | (this commit) |
+| **P7 — Controlled continuous learning + drift** | ⏭️ **NEXT** | — |
 | P8 — Live experimental probability mode | ⏳ pending | — |
 | P9 — Controlled code-improvement agent | ⏳ pending | — |
 
@@ -518,6 +518,39 @@ writes no trades and fabricates no fills.
 
 **API.** `GET /api/agents?ticker=SPY` returns the canonical set + all contributors +
 audit + context + QC.
+
+## Advanced Desktop + Discord Callouts — DONE (Phase 6 of the quant roadmap)
+
+Canonical callouts across every horizon, built from the Supervisor's deduped
+results. No DB migration.
+
+**Pure — `lib/callouts/callout.ts` (+5 tests).** `buildCallout` renders ONE
+callout per canonical agent result with all specified fields; expectancy/profit
+factor surface ONLY for an established sample; probability only when the model
+legitimately permits it; puts always carry a research-only warning and are never
+actionable. `BANNED_PHRASES` + `containsBannedLanguage` forbid guarantee/"easy
+money"/etc.
+
+**Pure — `lib/callouts/dedup.ts` (+7 tests).** Deterministic emission gating:
+exactly one message per (opportunity, status) via a stable idempotency key
+(`callout:{ticker|dir|horizon}:{status}`); unchanged status ⇒ suppress (no
+minor-oscillation spam); only material transitions (developing→near→actionable→
+extended/invalidated, no-contract→valid, stale→fresh, model transitions) emit an
+update; non-emittable statuses (stale/no-contract) show on desktop but never
+Discord; cooldown window.
+
+**Pure — `lib/callouts/discord-format.ts` (+3 tests).** Embed in the required
+order (header→why→trigger→contract→risk→evidence→model→advanced→disclaimer),
+research-only/non-guarantee language, probability hidden when inactive; a final
+banned-language guard redacts non-compliant text.
+
+**Impure — `lib/callouts/runtime.ts` + `/api/callouts` + `app/callouts/page.tsx`.**
+Ties agents→callouts→dedup with per-process prior state. **Discord AUTO-SEND is
+gated off by default** (`AGENT_CALLOUT_DISCORD=1`) — the existing alert Discord
+ledger is untouched, payloads are preview-ready with idempotency keys, and no
+delivery is fabricated (recorded blocker: no test webhook, so live agent-callout
+Discord is opt-in). New "Horizon Callouts" desktop surface with horizon/direction/
+status filters (additive TOOL_NAV entry; no unrelated page redesign).
 
 ## Later phases (explicitly out of scope now)
 
