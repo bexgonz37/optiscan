@@ -35,8 +35,10 @@ COPY --from=builder --chown=nodejs:nodejs /app/.next/static ./.next/static
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
+# The persistent /app/data directory is created here; the actual persistent volume
+# is attached manually through Railway and mounted at /app/data (Railway does not
+# support the Dockerfile VOLUME instruction). The entrypoint fixes its ownership.
 RUN mkdir -p /app/data && chown nodejs:nodejs /app/data
-VOLUME ["/app/data"]
 
 EXPOSE 8780
 

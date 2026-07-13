@@ -47,7 +47,15 @@ test("PORT is respected — no hard-coded runtime port for the server", () => {
 test("database path uses ALERT_DB_DIR and the example points it at the volume", () => {
   assert.ok(/process\.env\.ALERT_DB_DIR/.test(read("lib/db.ts")), "db.ts reads ALERT_DB_DIR");
   assert.ok(/ALERT_DB_DIR=\/app\/data/.test(read(".env.railway.example")), "example sets /app/data");
-  assert.ok(/VOLUME \["\/app\/data"\]/.test(read("Dockerfile")), "volume declared at /app/data");
+  // The image creates /app/data; the persistent volume is attached via Railway.
+  assert.ok(/mkdir -p \/app\/data/.test(read("Dockerfile")), "Dockerfile creates /app/data");
+});
+
+// 4b. Railway rejects the Dockerfile VOLUME instruction — it must never come back.
+test("Dockerfile contains NO VOLUME instruction (Railway uses attached volumes)", () => {
+  const df = read("Dockerfile");
+  // Match a VOLUME *instruction* at the start of a line, not the word in a comment.
+  assert.ok(!/^\s*VOLUME\b/m.test(df), "Railway does not support the Dockerfile VOLUME instruction");
 });
 
 // 5–7. Healthcheck never exposes secrets and never fails for market/model state.
