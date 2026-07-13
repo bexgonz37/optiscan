@@ -8,6 +8,7 @@ import { GlobalAlerts } from "@/components/GlobalAlerts";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { ComplianceFooter } from "@/components/ComplianceFooter";
 import { AxiomShell } from "@/components/AxiomShell";
+import { UnlockGate } from "@/components/UnlockGate";
 
 const chakra = Chakra_Petch({
   subsets: ["latin"],
@@ -50,6 +51,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <ComplianceFooter />
           <GlobalAlerts />
           <MobileBottomNav />
+          <UnlockGate />
         </ToastProvider>
       </body>
     </html>

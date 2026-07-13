@@ -15,6 +15,7 @@ import dynamic from "next/dynamic";
 import { Suspense, useCallback, useEffect, useMemo, useState, useTransition, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { scanHeaders } from "@/hooks/useScanner";
+import { classifyApiError } from "@/lib/client-auth";
 import { useLanguageMode } from "@/hooks/useLanguageMode";
 import { uiDirectiveLabel } from "@/lib/language-modes";
 import { useLiveTapeMap, liveCtxFor } from "@/hooks/useLiveTapeMap";
@@ -342,6 +343,9 @@ function AlertsPageInner() {
 
   return (
     <div className="page-deck">
+      <div className="axiom-compat-note">
+        Live callouts moved to <a href="/callouts">Callouts</a>. This page keeps your accuracy and trade journal.
+      </div>
       <div className="page-deck-toolbar">
         <div className="alerts-tab-header muted">
           {tab === "now"
@@ -355,12 +359,29 @@ function AlertsPageInner() {
         </button>
       </div>
 
-      {error && (
-        <div className="axiom-alert-banner">
-          <div className="label">Alerts unavailable</div>
-          <div className="sub">{error} — run <code>npm install</code> (better-sqlite3) and restart.</div>
-        </div>
-      )}
+      {error && (() => {
+        // Separate error states cleanly. An authorization failure must NEVER show
+        // the database-install hint; only a genuine DB error does.
+        const isAuth = /token|unauthorized/i.test(error);
+        const kind = isAuth ? "auth" : classifyApiError(500, { error });
+        return (
+          <div className="axiom-alert-banner">
+            <div className="label">
+              {isAuth ? "Access token required"
+                : kind === "database" ? "Database unavailable"
+                : kind === "provider" ? "Market data unavailable"
+                : "Alerts unavailable"}
+            </div>
+            <div className="sub">
+              {isAuth
+                ? "This dashboard needs your private OptiScan access token — use the Unlock prompt."
+                : kind === "database"
+                  ? <>{error} — run <code>npm install</code> (better-sqlite3) and restart.</>
+                  : error}
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="acc-tabs acc-tabs-primary">
         {tabBtn("now", "Live callouts")}

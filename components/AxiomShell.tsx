@@ -3,49 +3,56 @@
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { marketSession, type MarketSession } from "@/lib/trading-session";
-import { NavRail } from "@/components/ui/NavRail";
+import { NavRail, type NavItem } from "@/components/ui/NavRail";
+import { apiGetJson } from "@/lib/client-auth";
 
-const MAIN_NAV = [
+// Owner Mode is the default experience: a short DAILY list of the pages that
+// need owner attention, and one collapsed ADVANCED group for everything else.
+const DAILY_NAV: NavItem[] = [
   { href: "/", label: "Command Center" },
-  { href: "/alerts", label: "Options Callouts" },
-  { href: "/watchlist", label: "Watchlist" },
+  { href: "/callouts", label: "Callouts" },
   { href: "/paper", label: "Paper Trading" },
   { href: "/performance", label: "Performance" },
-  { href: "/quant", label: "Research & Backtesting" },
   { href: "/data", label: "System Health" },
-  { href: "/settings", label: "Settings" },
+  { href: "/guide", label: "Guide" },
 ];
 
-const TOOL_NAV = [
-  { href: "/callouts", label: "Horizon Callouts" },
+// Base advanced tools. Improvement Agent is marked inactive (see below) when
+// improvement automation is disabled on the server.
+const ADVANCED_NAV: NavItem[] = [
+  { href: "/watchlist", label: "Watchlist" },
+  { href: "/quant", label: "Research & Backtesting" },
   { href: "/research-learning", label: "Research & Learning" },
   { href: "/improvement", label: "Improvement Agent" },
-  { href: "/swing", label: "Swing Research" },
-  { href: "/guide", label: "Guide" },
+  { href: "/settings", label: "Settings" },
 ];
 
 const PAGE_META: Record<string, { title: string; sub: string }> = {
   "/": { title: "Command Center", sub: "What matters right now" },
   "/data": { title: "System Health", sub: "Data freshness, Discord, and reliability" },
   "/copilot": { title: "Explain Signals", sub: "Coming soon" },
-  "/alerts": { title: "Options Callouts", sub: "Signals, follow-through, and history" },
+  "/callouts": { title: "Callouts", sub: "Every horizon in one place (0DTE–90DTE, momentum stocks, put research)" },
+  "/alerts": { title: "Options Callouts", sub: "Moved into Callouts · accuracy & journal still here" },
   "/watchlist": { title: "Watchlist", sub: "Symbols the scanner is monitoring" },
   "/paper": { title: "Paper Trading", sub: "Autonomous simulated trades, no real money" },
   "/performance": { title: "Performance", sub: "Alert track record and paper account" },
   "/quant": { title: "Research & Backtesting", sub: "Setup stats and backtests" },
-  "/callouts": { title: "Horizon Callouts", sub: "Multi-horizon agent callouts (0DTE–90DTE, calls + put research)" },
   "/research-learning": { title: "Research & Learning", sub: "Model readiness, drift, and bounded continuous learning" },
   "/improvement": { title: "Improvement Agent", sub: "Controlled, propose-only code-improvement agent (never edits code autonomously)" },
-  "/swing": { title: "Swing Research", sub: "1-4 week options research" },
+  "/swing": { title: "Swing Research", sub: "Moved into Callouts → Swing Research tab" },
   "/settings": { title: "Settings", sub: "Alerts, Discord, safety" },
   "/review": { title: "Review", sub: "Methodology and limits" },
-  "/guide": { title: "Guide", sub: "Quick start" },
+  "/guide": { title: "Guide", sub: "How to use OptiScan" },
   "/scanner": { title: "Live Scanner", sub: "0DTE options · share momentum tape" },
 };
 
 function isActive(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
-  if (href === "/alerts") return pathname === "/alerts" || pathname.startsWith("/alert-lab");
+  // The consolidated Callouts destination lights up for the old callout URLs too.
+  if (href === "/callouts") {
+    return pathname === "/callouts" || pathname === "/alerts"
+      || pathname === "/swing" || pathname.startsWith("/alert-lab");
+  }
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
@@ -55,9 +62,27 @@ export function AxiomShell({ children }: { children: ReactNode }) {
   const [clock, setClock] = useState("");
   const [liveOk, setLiveOk] = useState<boolean | null>(null);
   const [liveLabel, setLiveLabel] = useState("Checking data...");
+  const [improvementActive, setImprovementActive] = useState<boolean | null>(null);
 
   const pageKey = pathname === "/" ? "/" : `/${pathname.split("/").filter(Boolean)[0]}`;
   const pageMeta = PAGE_META[pageKey] ?? { title: "OptiScan", sub: "Live terminal" };
+
+  // Mark the Improvement Agent inactive in the sidebar when automation is off
+  // (proposal-only is off by default). Best-effort read; degrades to no label.
+  useEffect(() => {
+    let cancelled = false;
+    void apiGetJson<{ improvement?: { auditEnabled?: boolean } }>("/api/runtime/status").then((r) => {
+      if (cancelled || !r) return;
+      setImprovementActive(Boolean(r.improvement?.auditEnabled));
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const advancedNav: NavItem[] = ADVANCED_NAV.map((item) =>
+    item.href === "/improvement" && improvementActive === false
+      ? { ...item, note: "inactive" }
+      : item,
+  );
   // Full-bleed live chrome is for the live scanner (now /scanner). The Command
   // Center at "/" is a normal, calm page and uses the standard header.
   const isLive = pathname === "/scanner";
@@ -134,8 +159,14 @@ export function AxiomShell({ children }: { children: ReactNode }) {
             }
             tagline="OPTIONS SCANNER"
             sections={[
-              { title: "MAIN", items: MAIN_NAV },
-              { title: "TOOLS", items: TOOL_NAV },
+              { title: "DAILY", items: DAILY_NAV },
+              {
+                title: "ADVANCED TOOLS",
+                items: advancedNav,
+                collapsible: true,
+                collapsedByDefault: true,
+                storageKey: "optiscan:nav:advanced",
+              },
             ]}
             isActive={(href) => isActive(pathname, href)}
             footer={

@@ -57,6 +57,15 @@ export async function GET() {
   const loop = loopState();
   const lastTickAgeMs = loop.lastTickAt == null ? null : Math.max(0, now - loop.lastTickAt);
 
+  // Read-only owner-summary flags (no behavior change; pure reads of config/state).
+  const supervisorEnabled = process.env.SUPERVISOR_RUNTIME === "1";
+  const paperEnabled = process.env.PAPER_TRADING_ENABLED !== "0";
+  let modelState = "INACTIVE_NO_TRAINABLE_DATA";
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    modelState = require("@/lib/model-registry").modelStatus()?.state ?? modelState;
+  } catch { /* model registry unavailable — keep default */ }
+
   // Per-kind freshness rows with the real thresholds attached.
   const freshness = FRESHNESS_KINDS.map((kind) => {
     const sample = dataHealth.freshness[kind] as FreshnessSample | undefined;
@@ -126,5 +135,8 @@ export async function GET() {
     },
     database: db,
     discord,
+    supervisor: { enabled: supervisorEnabled },
+    paper: { enabled: paperEnabled },
+    model: { state: modelState },
   });
 }

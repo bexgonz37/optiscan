@@ -13,19 +13,25 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => readFileSync(join(root, p), "utf8");
 
-test("primary nav lists the eight target destinations", () => {
+test("owner-mode nav lists the daily + advanced destinations", () => {
   const shell = read("components/AxiomShell.tsx");
-  const wanted = [
+  // Owner Mode is the default: a short DAILY list + a collapsed ADVANCED group.
+  const daily = [
     ["/", "Command Center"],
-    ["/alerts", "Options Callouts"],
-    ["/watchlist", "Watchlist"],
+    ["/callouts", "Callouts"],
     ["/paper", "Paper Trading"],
     ["/performance", "Performance"],
-    ["/quant", "Research & Backtesting"],
     ["/data", "System Health"],
+    ["/guide", "Guide"],
+  ];
+  const advanced = [
+    ["/watchlist", "Watchlist"],
+    ["/quant", "Research & Backtesting"],
+    ["/research-learning", "Research & Learning"],
+    ["/improvement", "Improvement Agent"],
     ["/settings", "Settings"],
   ];
-  for (const [href, label] of wanted) {
+  for (const [href, label] of [...daily, ...advanced]) {
     assert.ok(shell.includes(`href: "${href}"`), `nav missing href ${href}`);
     assert.ok(shell.includes(label), `nav missing label "${label}"`);
   }

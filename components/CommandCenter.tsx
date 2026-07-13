@@ -38,8 +38,53 @@ type Overview = {
   provider?: { connected?: boolean; configured?: boolean };
   scanner?: { running?: boolean };
   stale_symbol_count?: number;
-  discord?: { summary?: { status: string; count: number }[] };
+  discord?: { summary?: { status: string; count: number }[]; webhooks?: Record<string, boolean> };
+  supervisor?: { enabled?: boolean };
+  paper?: { enabled?: boolean };
+  model?: { state?: string };
 };
+
+type AttentionItem = { text: string; tone: "ok" | "warn" | "bad" };
+
+/**
+ * Plain-English owner summary. No secrets, no raw error objects — just what is
+ * running and what (if anything) needs attention right now.
+ */
+function buildAttention(ov: Overview | null, openTrades: number, actionable: number, discordFail: number): AttentionItem[] {
+  if (!ov) return [{ text: "Checking system status…", tone: "warn" }];
+  const items: AttentionItem[] = [];
+  const problems: AttentionItem[] = [];
+
+  if (ov.scanner?.running) items.push({ text: "Scanner is running", tone: "ok" });
+  else problems.push({ text: "The scanner is stopped — signals will not update", tone: "bad" });
+
+  items.push({ text: `Market session: ${ov.market_session ?? "unknown"}`, tone: ov.market_session === "closed" ? "warn" : "ok" });
+
+  if (!ov.provider?.configured) problems.push({ text: "Market-data key is not configured", tone: "bad" });
+  else if ((ov.stale_symbol_count ?? 0) > 0) problems.push({ text: "Market data is stale", tone: "warn" });
+  else if (ov.provider?.connected === false) problems.push({ text: "Market data provider is unavailable", tone: "warn" });
+  else items.push({ text: "Market data is healthy", tone: "ok" });
+
+  const optionsHook = ov.discord?.webhooks?.options;
+  if (optionsHook === false) problems.push({ text: "Discord options webhook is not configured", tone: "warn" });
+  else if (discordFail > 0) problems.push({ text: "Some Discord deliveries need review", tone: "warn" });
+  else items.push({ text: "Discord is connected", tone: "ok" });
+
+  if (ov.supervisor?.enabled) items.push({ text: "Supervisor is enabled", tone: "ok" });
+  else problems.push({ text: "The Supervisor is currently disabled — no automatic callouts", tone: "warn" });
+
+  if (ov.paper?.enabled !== false) items.push({ text: `Paper trading is running (${openTrades} open)`, tone: "ok" });
+  else items.push({ text: "Paper trading is stopped", tone: "warn" });
+
+  if (actionable > 0) items.push({ text: `${actionable} new actionable callout${actionable === 1 ? "" : "s"}`, tone: "ok" });
+
+  const model = ov.model?.state ?? "";
+  if (/VALIDATED/.test(model)) items.push({ text: "Prediction model: validated", tone: "ok" });
+  else if (/EXPERIMENTAL/.test(model)) items.push({ text: "Prediction model: experimental (research only)", tone: "warn" });
+  else items.push({ text: "The prediction model is still collecting outcomes", tone: "warn" });
+
+  return [...problems, ...items];
+}
 
 const STATUS_TONE: Record<string, BadgeTone> = {
   ENTRY_CONFIRMED: "live",
@@ -126,6 +171,15 @@ export function CommandCenter() {
   const [trades, setTrades] = useState<any[] | null>(null);
   const [alerts, setAlerts] = useState<any[] | null>(null);
   const [mode, setMode] = usePresentationMode();
+  const [showStartHere, setShowStartHere] = useState(false);
+
+  useEffect(() => {
+    try { setShowStartHere(localStorage.getItem("optiscan:seen-guide") !== "1"); } catch { /* ignore */ }
+  }, []);
+  const dismissStartHere = useCallback(() => {
+    try { localStorage.setItem("optiscan:seen-guide", "1"); } catch { /* ignore */ }
+    setShowStartHere(false);
+  }, []);
 
   const load = useCallback(async () => {
     const h = { cache: "no-store" as const, headers: scanHeaders() };
@@ -150,6 +204,9 @@ export function CommandCenter() {
 
   const openTrades = (trades ?? []).filter((t) => t.status === "ENTERED" || t.status === "READY");
   const discordFail = (overview?.discord?.summary ?? []).filter((s) => ["FAILED", "RETRYING"].includes(s.status)).reduce((n, s) => n + Number(s.count ?? 0), 0);
+  const actionableCount = (buckets?.ACTIONABLE ?? []).length;
+  const attention = buildAttention(overview, openTrades.length, actionableCount, discordFail);
+  const allOk = attention.every((a) => a.tone === "ok");
 
   const statusCells: { k: string; v: string; dot: "ok" | "warn" | "bad" }[] = [
     { k: "Session", v: overview?.market_session ?? "—", dot: overview?.market_session === "closed" ? "warn" : "ok" },
@@ -188,6 +245,37 @@ export function CommandCenter() {
 
   return (
     <div className="ui-page cc-page">
+      {showStartHere ? (
+        <div className="cc-starthere">
+          <span className="cc-starthere-badge">Start here</span>
+          <span>New to OptiScan? The Guide explains every page in plain English.</span>
+          <Link href="/guide" className="ui-btn ui-btn-sm ui-btn-primary" onClick={dismissStartHere}>Open the Guide →</Link>
+          <button type="button" className="cc-starthere-x" onClick={dismissStartHere} aria-label="Dismiss">✕</button>
+        </div>
+      ) : null}
+
+      {/* What needs my attention? */}
+      <section className="cc-attention">
+        <div className="cc-attention-head">
+          <span className="cc-attention-title">What needs my attention?</span>
+          <span className={`cc-attention-overall ${allOk ? "ok" : "warn"}`}>
+            {allOk ? "Everything is running normally" : "Some items need a look"}
+          </span>
+        </div>
+        <ul className="cc-attention-list">
+          {attention.map((a, i) => (
+            <li key={i} className={`cc-attention-item ${a.tone}`}>
+              <span className={`ui-statusdot ${a.tone}`} />{a.text}
+            </li>
+          ))}
+        </ul>
+        <div className="cc-attention-links">
+          <Link href="/callouts" className="ui-btn ui-btn-sm">Review callouts →</Link>
+          <Link href="/paper" className="ui-btn ui-btn-sm">Paper trades →</Link>
+          <Link href="/data" className="ui-btn ui-btn-sm">System health →</Link>
+        </div>
+      </section>
+
       {/* Status Bar */}
       <div className="ui-statusbar">
         {statusCells.map((c) => (

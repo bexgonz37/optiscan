@@ -400,3 +400,74 @@
 
 /* prevent any page-level horizontal scroll from shared components */
 .ui-page, .ui-page * { box-sizing: border-box; }
+
+/* ── Owner UX additions (unlock, nav collapse, callouts tabs, guide, attention) ── */
+
+/* Unlock OptiScan modal + re-entry affordance */
+.unlock-overlay { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(3, 6, 12, 0.72); backdrop-filter: blur(4px); }
+.unlock-card { width: 100%; max-width: 420px; background: var(--panel, #0c121b); border: 1px solid rgba(90, 169, 255, 0.28); border-radius: 12px; padding: 22px 22px 18px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5); }
+.unlock-title { font-size: 1.15rem; font-weight: 700; color: var(--txt, #eaf5fd); margin-bottom: 8px; }
+.unlock-sub { font-size: 0.82rem; color: var(--muted, #8b97a8); line-height: 1.5; margin-bottom: 14px; }
+.unlock-sub code { font-size: 0.78rem; background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 4px; }
+.unlock-input { width: 100%; padding: 11px 12px; border-radius: 8px; border: 1px solid rgba(120, 160, 200, 0.3); background: rgba(0,0,0,0.3); color: var(--txt, #eaf5fd); font-size: 0.95rem; letter-spacing: 0.08em; }
+.unlock-input:focus { outline: none; border-color: var(--accent, #5aa9ff); }
+.unlock-msg { margin-top: 10px; font-size: 0.8rem; color: var(--amber, #f6c454); }
+.unlock-actions { margin-top: 14px; display: flex; justify-content: flex-end; }
+.unlock-hint { margin-top: 12px; font-size: 0.72rem; color: var(--muted, #8b97a8); }
+.unlock-fab { position: fixed; right: 16px; bottom: 76px; z-index: 900; padding: 9px 14px; border-radius: 999px; border: 1px solid rgba(90,169,255,0.4); background: var(--panel, #0c121b); color: var(--txt, #eaf5fd); font-size: 0.8rem; cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,0.4); }
+
+/* Collapsible ADVANCED nav section */
+.railsec-toggle { display: flex; width: 100%; align-items: center; justify-content: space-between; background: none; border: none; cursor: pointer; text-align: left; }
+.railsec-caret { font-size: 9px; opacity: 0.7; }
+.navitem-label { flex: 1; }
+.navitem-note { font-size: 8px; letter-spacing: 0.12em; text-transform: uppercase; opacity: 0.6; border: 1px solid currentColor; border-radius: 4px; padding: 1px 4px; }
+
+/* Compatibility notice on legacy/redirect pages */
+.axiom-compat-note { font-size: 0.78rem; color: var(--muted, #8b97a8); background: rgba(90,169,255,0.06); border: 1px solid rgba(90,169,255,0.16); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; }
+.axiom-compat-note a { color: var(--accent, #5aa9ff); }
+
+/* Callouts tabs */
+.callouts-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.callouts-tab { padding: 6px 12px; border-radius: 999px; border: 1px solid rgba(120,160,200,0.22); background: transparent; color: var(--muted, #8b97a8); font-size: 0.8rem; cursor: pointer; }
+.callouts-tab.on { border-color: var(--accent, #5aa9ff); color: var(--txt, #eaf5fd); background: rgba(90,169,255,0.12); }
+
+/* Command Center — Start Here + Attention summary */
+.cc-starthere { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 14px; border-radius: 10px; border: 1px solid rgba(90,169,255,0.28); background: rgba(90,169,255,0.08); margin-bottom: 12px; font-size: 0.85rem; }
+.cc-starthere-badge { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent, #5aa9ff); border: 1px solid currentColor; border-radius: 5px; padding: 2px 6px; }
+.cc-starthere-x { margin-left: auto; background: none; border: none; color: var(--muted, #8b97a8); cursor: pointer; font-size: 0.9rem; }
+.cc-attention { border: 1px solid rgba(120,160,200,0.16); border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; background: var(--panel, rgba(12,18,27,0.5)); }
+.cc-attention-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.cc-attention-title { font-weight: 700; font-size: 0.95rem; color: var(--txt, #eaf5fd); }
+.cc-attention-overall { font-size: 0.8rem; }
+.cc-attention-overall.ok { color: var(--bull, #34d399); }
+.cc-attention-overall.warn { color: var(--amber, #f6c454); }
+.cc-attention-list { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px 16px; }
+.cc-attention-item { display: flex; align-items: center; gap: 8px; font-size: 0.82rem; color: var(--txt, #dbe6f0); }
+.cc-attention-item.warn { color: var(--amber, #f6c454); }
+.cc-attention-item.bad { color: var(--bear, #f2607a); }
+.cc-attention-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+/* Guide */
+.guide-page { max-width: 900px; }
+.guide-search input { width: 100%; padding: 11px 14px; border-radius: 10px; border: 1px solid rgba(120,160,200,0.25); background: rgba(0,0,0,0.25); color: var(--txt, #eaf5fd); font-size: 0.95rem; margin-bottom: 14px; }
+.guide-toc { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.guide-toc a { font-size: 0.78rem; color: var(--accent, #5aa9ff); border: 1px solid rgba(90,169,255,0.24); border-radius: 999px; padding: 4px 10px; }
+.guide-section { margin-bottom: 26px; scroll-margin-top: 70px; }
+.guide-section h2 { font-size: 1.05rem; font-weight: 700; color: var(--txt, #eaf5fd); margin-bottom: 10px; border-bottom: 1px solid rgba(120,160,200,0.14); padding-bottom: 6px; }
+.guide-body { font-size: 0.86rem; line-height: 1.6; color: var(--txt, #cdd8e4); }
+.guide-body a { color: var(--accent, #5aa9ff); }
+.guide-body h3 { font-size: 0.92rem; font-weight: 700; margin: 14px 0 6px; color: var(--txt, #eaf5fd); }
+.guide-body ul, .guide-body ol { padding-left: 20px; margin: 8px 0; }
+.guide-body li { margin-bottom: 5px; }
+.guide-steps li { margin-bottom: 8px; }
+.guide-empty { color: var(--muted, #8b97a8); font-size: 0.86rem; }
+.guide-table-wrap { overflow-x: auto; margin: 8px 0; }
+.guide-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; min-width: 520px; }
+.guide-table th, .guide-table td { text-align: left; padding: 7px 10px; border-bottom: 1px solid rgba(120,160,200,0.12); vertical-align: top; }
+.guide-table th { color: var(--muted, #8b97a8); font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; }
+.guide-table td strong { color: var(--txt, #eaf5fd); }
+
+@media (max-width: 640px) {
+  .cc-attention-list { grid-template-columns: 1fr; }
+  .unlock-fab { bottom: 84px; }
+}

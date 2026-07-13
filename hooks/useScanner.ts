@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { MomentumRow, UnusualRow, ScanMeta } from "@/lib/types";
+import { authHeaders } from "@/lib/client-auth";
 
 export interface KpiSnapshot {
   signals: number;
@@ -31,15 +32,11 @@ export interface StrongAlert {
 const STRONG_ONLY_MIN = 80;
 const HISTORY = 16;
 
-/** Optional API token (see SCAN_API_TOKEN): set once via
- * localStorage.setItem("optiscan:token", "..."). */
+/** Optional API token (see SCAN_API_TOKEN). Delegates to the one shared client
+ * auth helper (`lib/client-auth`) so the token is read/attached in exactly one
+ * place. Kept as a named export for the many existing call sites. */
 export function scanHeaders(): HeadersInit {
-  try {
-    const t = localStorage.getItem("optiscan:token");
-    return t ? { "x-scan-token": t } : {};
-  } catch {
-    return {};
-  }
+  return authHeaders();
 }
 const EMPTY_KPI: KpiSnapshot = { signals: 0, unusual: 0, strong: 0, avgScore: 0, avgIv: 0, scanned: 0 };
 

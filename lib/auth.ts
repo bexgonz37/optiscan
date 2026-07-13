@@ -28,8 +28,15 @@ export function checkApiToken(req: Request): boolean {
 }
 
 export function unauthorized() {
+  // Owner-facing message only, with no developer or storage-key hints — the
+  // frontend detects the 401 `code` and opens the "Unlock OptiScan" prompt.
   return new Response(
-    JSON.stringify({ ok: false, error: "unauthorized: missing or bad token (set localStorage 'optiscan:token')", signals: [] }),
+    JSON.stringify({
+      ok: false,
+      code: "unauthorized",
+      error: "This dashboard needs your private OptiScan access token.",
+      signals: [],
+    }),
     { status: 401, headers: { "content-type": "application/json" } },
   );
 }

@@ -9,6 +9,7 @@ import { scanHeaders, requestNotifyPermission } from "@/hooks/useScanner";
 import { invalidateLanguageMode } from "@/hooks/useLanguageMode";
 import { HelpSection } from "@/components/HelpSection";
 import { loadDashboardPrefs, saveDashboardPrefs } from "@/lib/dashboard-prefs";
+import { clearToken, hasToken, requestUnlock } from "@/lib/client-auth";
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<any>(null);
@@ -27,6 +28,16 @@ export default function SettingsPage() {
   const [desktopAlerts, setDesktopAlerts] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [testPreview, setTestPreview] = useState<any>(null);
+  const [tokenPresent, setTokenPresent] = useState(false);
+
+  useEffect(() => { setTokenPresent(hasToken()); }, []);
+
+  const lockDashboard = useCallback(() => {
+    clearToken();
+    setTokenPresent(false);
+    setMsg("Dashboard locked — the access token was removed from this browser.");
+    requestUnlock();
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -310,6 +321,30 @@ export default function SettingsPage() {
             <button type="button" className="btn-primary" onClick={() => testDiscord("options")}>Test options webhook</button>
             <button type="button" className="btn-primary" onClick={() => testDiscord("stocks")}>Test stocks webhook</button>
           </div>
+        </div>
+      </div>
+
+      <div className="settings-grid">
+        <div className="panel main settings-panel axiom-panel">
+          <h2>Dashboard access</h2>
+          <p className="settings-desc">
+            Your access token (SCAN_API_TOKEN) is a private owner password stored only in this browser.
+            It is never shown on screen or put in a link. Status:{" "}
+            <strong style={{ color: tokenPresent ? "var(--green)" : "var(--amber)" }}>
+              {tokenPresent ? "unlocked on this device" : "no token stored"}
+            </strong>
+          </p>
+          <div className="btn-row" style={{ marginTop: 12 }}>
+            <button type="button" className="btn-primary" onClick={lockDashboard} disabled={!tokenPresent}>
+              Forget token / Lock dashboard
+            </button>
+            <button type="button" className="btn" onClick={() => requestUnlock()}>
+              Enter / replace token
+            </button>
+          </div>
+          <p className="settings-desc muted text-sm" style={{ marginTop: 8 }}>
+            Use “Forget token” on a shared computer. If you changed the token in Railway, use “Enter / replace token”.
+          </p>
         </div>
       </div>
 

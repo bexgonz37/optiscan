@@ -1,15 +1,22 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import Link from "next/link";
 import {
   PageContainer, Card, StatusBadge, EmptyState, LoadingState, ErrorState, KeyValue,
 } from "@/components/ui/Shell";
-import { scanHeaders } from "@/hooks/useScanner";
+import { apiFetch } from "@/lib/client-auth";
+import { SwingResearchPanel } from "@/components/SwingResearchPanel";
 
 /**
- * Horizon Callouts (Phase 6). One canonical callout per deduplicated opportunity/
- * horizon from the agent Supervisor. Read-only; puts are research-only; nothing
- * here implies a guaranteed outcome.
+ * Callouts (consolidated). ONE owner-facing destination for every opportunity
+ * horizon. Read-only: it renders canonical callouts produced by the agent
+ * Supervisor (via /api/callouts) — the frontend never recomputes a trading
+ * decision. Puts are research-only; nothing here implies a guaranteed outcome.
+ *
+ * The old Options Callouts (/alerts) and Swing Research (/swing) URLs still work;
+ * their live-callout experience is merged here behind simple tabs.
  */
 
 type Callout = {
@@ -33,9 +40,29 @@ type Callout = {
   primaryBlockingReason: string | null;
 };
 
-const HORIZONS = ["all", "0DTE", "1–5 DTE", "6–10 DTE", "11–35 DTE", "36–90 DTE"];
-const DIRS = ["all", "calls", "put research"];
-const STATUSES = ["all", "ACTIONABLE_NOW", "NEAR_TRIGGER", "DEVELOPING", "RESEARCH_ONLY", "NO_VALID_CONTRACT", "DATA_STALE"];
+// Tab keys are stable (deep-linkable via ?tab=); labels are what the owner reads.
+const TABS: { key: string; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "0dte", label: "0DTE" },
+  { key: "1-5", label: "1–5 DTE" },
+  { key: "6-10", label: "6–10 DTE" },
+  { key: "11-35", label: "11–35 DTE" },
+  { key: "36-90", label: "36–90 DTE" },
+  { key: "stocks", label: "Momentum Stocks" },
+  { key: "puts", label: "Put Research" },
+  { key: "rejected", label: "Rejected / Blocked" },
+  { key: "swing", label: "Swing Research" },
+];
+
+const HORIZON_BY_TAB: Record<string, string> = {
+  "0dte": "0DTE",
+  "1-5": "1–5 DTE",
+  "6-10": "6–10 DTE",
+  "11-35": "11–35 DTE",
+  "36-90": "36–90 DTE",
+};
+
+const BLOCKED_STATUSES = new Set(["NO_VALID_CONTRACT", "DATA_STALE", "INVALIDATED", "BLOCKED"]);
 
 function tone(status: string): "bull" | "warn" | "bear" | "muted" {
   if (status === "ACTIONABLE_NOW") return "bull";
@@ -44,18 +71,38 @@ function tone(status: string): "bull" | "warn" | "bear" | "muted" {
   return "muted";
 }
 
-export default function CalloutsPage() {
+function isStock(c: Callout): boolean {
+  return /momentum|stock/i.test(c.strategyAgent ?? "");
+}
+
+function isRejected(c: Callout): boolean {
+  return BLOCKED_STATUSES.has(c.status) || Boolean(c.primaryBlockingReason);
+}
+
+function matchesTab(c: Callout, tab: string): boolean {
+  if (tab === "all") return true;
+  if (tab === "puts") return c.direction === "bearish";
+  if (tab === "stocks") return isStock(c);
+  if (tab === "rejected") return isRejected(c);
+  const horizon = HORIZON_BY_TAB[tab];
+  if (horizon) return c.horizon === horizon;
+  return true;
+}
+
+function CalloutsInner() {
+  const search = useSearchParams();
+  const initialTab = search?.get("tab") ?? "all";
+  const [tab, setTab] = useState(TABS.some((t) => t.key === initialTab) ? initialTab : "all");
   const [callouts, setCallouts] = useState<Callout[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string>("");
   const [tickers, setTickers] = useState("SPY,QQQ");
-  const [fH, setFH] = useState("all");
-  const [fD, setFD] = useState("all");
-  const [fS, setFS] = useState("all");
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch(`/api/callouts?tickers=${encodeURIComponent(tickers)}`, { cache: "no-store", headers: scanHeaders() }).then((x) => x.json());
+      const res = await apiFetch(`/api/callouts?tickers=${encodeURIComponent(tickers)}`, { cache: "no-store" });
+      if (res.status === 401) { setError("This dashboard needs your private OptiScan access token."); return; }
+      const r = await res.json();
       setCallouts(r?.callouts ?? []);
       setNote(r?.note ?? "");
       setError(null);
@@ -64,64 +111,90 @@ export default function CalloutsPage() {
     }
   }, [tickers]);
 
-  useEffect(() => { load(); const id = setInterval(load, 20000); return () => clearInterval(id); }, [load]);
+  useEffect(() => {
+    if (tab === "swing") return; // swing tab uses its own on-demand scan
+    load();
+    const id = setInterval(load, 20000);
+    return () => clearInterval(id);
+  }, [load, tab]);
 
-  const filtered = useMemo(() => (callouts ?? []).filter((c) => {
-    if (fH !== "all" && c.horizon !== fH) return false;
-    if (fD === "calls" && c.direction !== "bullish") return false;
-    if (fD === "put research" && c.direction !== "bearish") return false;
-    if (fS !== "all" && c.status !== fS) return false;
-    return true;
-  }), [callouts, fH, fD, fS]);
+  const filtered = useMemo(
+    () => (callouts ?? []).filter((c) => matchesTab(c, tab)),
+    [callouts, tab],
+  );
 
-  if (error && !callouts) return <PageContainer><ErrorState detail={error} onRetry={load} /></PageContainer>;
-  if (!callouts) return <PageContainer><Card title="Loading callouts"><LoadingState rows={4} /></Card></PageContainer>;
-
-  const sel = (label: string, val: string, set: (v: string) => void, opts: string[]) => (
-    <label style={{ display: "inline-flex", gap: 6, alignItems: "center", fontSize: 13, marginRight: 12 }}>
-      <span style={{ opacity: 0.7 }}>{label}</span>
-      <select value={val} onChange={(e) => set(e.target.value)} style={{ padding: "3px 6px" }}>
-        {opts.map((o) => <option key={o} value={o}>{o}</option>)}
-      </select>
-    </label>
+  const tabBar = (
+    <div className="callouts-tabs" role="tablist" aria-label="Callout horizons">
+      {TABS.map((t) => (
+        <button
+          key={t.key}
+          type="button"
+          role="tab"
+          aria-selected={tab === t.key}
+          className={`callouts-tab${tab === t.key ? " on" : ""}`}
+          onClick={() => setTab(t.key)}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
   );
 
   return (
     <PageContainer>
-      <Card title="Filters" meta={note}>
-        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-          <label style={{ display: "inline-flex", gap: 6, alignItems: "center", fontSize: 13, marginRight: 12 }}>
-            <span style={{ opacity: 0.7 }}>Tickers</span>
-            <input value={tickers} onChange={(e) => setTickers(e.target.value)} onBlur={load} style={{ padding: "3px 6px", width: 160 }} />
-          </label>
-          {sel("Horizon", fH, setFH, HORIZONS)}
-          {sel("Direction", fD, setFD, DIRS)}
-          {sel("Status", fS, setFS, STATUSES)}
-        </div>
-      </Card>
+      <div className="axiom-compat-note">
+        This is the one place for every horizon. Looking for accuracy or your
+        trade journal? They live in <Link href="/performance">Performance</Link>.
+      </div>
+      {tabBar}
 
-      {filtered.length === 0 ? (
-        <Card title="No callouts">
-          <EmptyState icon="🔬" title="No callouts match" reason="No agent produced a callout for these tickers/filters right now. This is expected outside active momentum or when data is stale — nothing is fabricated." />
-        </Card>
+      {tab === "swing" ? (
+        <SwingResearchPanel />
+      ) : error && !callouts ? (
+        <ErrorState detail={error} onRetry={load} />
+      ) : !callouts ? (
+        <Card title="Loading callouts"><LoadingState rows={4} /></Card>
       ) : (
-        filtered.map((c) => (
-          <Card key={c.key} title={`${c.ticker} · ${c.horizon} · ${c.direction === "bearish" ? "PUT (research)" : "CALL"}`} meta={c.strategyAgent}>
-            <div style={{ marginBottom: 6 }}><StatusBadge tone={tone(c.status)}>{c.status.replace(/_/g, " ")}</StatusBadge></div>
-            <p style={{ margin: "6px 0", fontSize: 14 }}>{c.reason}</p>
-            {c.contract && (
-              <KeyValue k="Contract" v={`${c.contract.optionSymbol ?? "—"} · Δ${c.contract.delta ?? "—"} · mid ${c.contract.mid ?? "—"} · spread ${c.contract.spreadPct ?? "—"}%`} />
-            )}
-            <KeyValue k="Quote freshness" v={c.quoteFreshness} tone={c.quoteFreshness === "fresh" ? undefined : "warn"} />
-            <KeyValue k="Contract score" v={c.contractScore ?? "—"} />
-            <KeyValue k="Evidence" v={`${c.evidenceStatus.replace(/_/g, " ")} (sample ${c.sampleSize})`} />
-            <KeyValue k="Model" v={c.probability != null ? `${c.modelState} · p ${(c.probability * 100).toFixed(1)}%` : `${c.modelState.replace(/_/g, " ")} — no probability`} />
-            {c.primaryBlockingReason && <KeyValue k="Blocked by" v={c.primaryBlockingReason} tone="warn" />}
-            {c.researchOnlyWarning && <p style={{ margin: "6px 0 0", fontSize: 12, opacity: 0.8 }}>🔬 {c.researchOnlyWarning}</p>}
-            {c.insufficientEvidenceWarning && <p style={{ margin: "2px 0 0", fontSize: 12, opacity: 0.8 }}>ℹ {c.insufficientEvidenceWarning}</p>}
+        <>
+          <Card title="Symbols" meta={note}>
+            <label style={{ display: "inline-flex", gap: 6, alignItems: "center", fontSize: 13 }}>
+              <span style={{ opacity: 0.7 }}>Tickers</span>
+              <input value={tickers} onChange={(e) => setTickers(e.target.value)} onBlur={load} style={{ padding: "3px 6px", width: 200 }} />
+            </label>
           </Card>
-        ))
+
+          {filtered.length === 0 ? (
+            <Card title="No callouts">
+              <EmptyState icon="🔬" title="No callouts match this tab" reason="No agent produced a callout for these tickers/horizon right now. This is expected outside active momentum or when data is stale — nothing is fabricated." />
+            </Card>
+          ) : (
+            filtered.map((c) => (
+              <Card key={c.key} title={`${c.ticker} · ${c.horizon} · ${c.direction === "bearish" ? "PUT (research)" : "CALL"}`} meta={c.strategyAgent}>
+                <div style={{ marginBottom: 6 }}><StatusBadge tone={tone(c.status)}>{c.status.replace(/_/g, " ")}</StatusBadge></div>
+                <p style={{ margin: "6px 0", fontSize: 14 }}>{c.reason}</p>
+                {c.contract && (
+                  <KeyValue k="Contract" v={`${c.contract.optionSymbol ?? "—"} · Δ${c.contract.delta ?? "—"} · mid ${c.contract.mid ?? "—"} · spread ${c.contract.spreadPct ?? "—"}%`} />
+                )}
+                <KeyValue k="Quote freshness" v={c.quoteFreshness} tone={c.quoteFreshness === "fresh" ? undefined : "warn"} />
+                <KeyValue k="Contract score" v={c.contractScore ?? "—"} />
+                <KeyValue k="Evidence" v={`${c.evidenceStatus.replace(/_/g, " ")} (sample ${c.sampleSize})`} />
+                <KeyValue k="Model" v={c.probability != null ? `${c.modelState} · p ${(c.probability * 100).toFixed(1)}%` : `${c.modelState.replace(/_/g, " ")} — no probability`} />
+                {c.primaryBlockingReason && <KeyValue k="Blocked by" v={c.primaryBlockingReason} tone="warn" />}
+                {c.researchOnlyWarning && <p style={{ margin: "6px 0 0", fontSize: 12, opacity: 0.8 }}>🔬 {c.researchOnlyWarning}</p>}
+                {c.insufficientEvidenceWarning && <p style={{ margin: "2px 0 0", fontSize: 12, opacity: 0.8 }}>ℹ {c.insufficientEvidenceWarning}</p>}
+              </Card>
+            ))
+          )}
+        </>
       )}
     </PageContainer>
+  );
+}
+
+export default function CalloutsPage() {
+  return (
+    <Suspense fallback={<PageContainer><Card title="Loading callouts"><LoadingState rows={4} /></Card></PageContainer>}>
+      <CalloutsInner />
+    </Suspense>
   );
 }

@@ -6,9 +6,11 @@ import { marketSession, type MarketSession } from "@/lib/trading-session";
 import { useEffect, useState } from "react";
 
 const ITEMS = [
-  { href: "/", label: "Live", icon: "◎" },
-  { href: "/alerts", label: "Accuracy", icon: "⚡" },
-  { href: "/settings", label: "Settings", icon: "⚙" },
+  { href: "/", label: "Home", icon: "◎" },
+  { href: "/callouts", label: "Callouts", icon: "⚡" },
+  { href: "/paper", label: "Paper", icon: "📄" },
+  { href: "/data", label: "Health", icon: "✚" },
+  { href: "/guide", label: "Guide", icon: "?" },
 ] as const;
 
 const SESSION_HINT: Record<MarketSession, string> = {
@@ -20,7 +22,10 @@ const SESSION_HINT: Record<MarketSession, string> = {
 
 function isActive(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
-  if (href === "/alerts") return pathname === "/alerts" || pathname.startsWith("/alert-lab");
+  if (href === "/callouts") {
+    return pathname === "/callouts" || pathname === "/alerts"
+      || pathname === "/swing" || pathname.startsWith("/alert-lab");
+  }
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
