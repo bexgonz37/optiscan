@@ -423,6 +423,7 @@ CREATE TABLE IF NOT EXISTS model_registry (
   n_train INTEGER NOT NULL DEFAULT 0,
   base_rate REAL,
   health TEXT,                          -- HEALTHY | WARNING | DEGRADED (Phase 7 drift flag)
+  tier TEXT,                            -- VALIDATED | EXPERIMENTAL (Phase 8)
   trained_at_ms INTEGER NOT NULL,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   UNIQUE(model_name, model_version)
@@ -750,7 +751,9 @@ function migrate(db: Database.Database) {
   for (const [col, sql] of PAPER_COLUMN_MIGRATIONS) if (!paperCols.has(col)) db.exec(sql);
   // Phase 7 (additive): drift-health flag on an existing model_registry table.
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_registry'").get()) {
-    if (!cols("model_registry").has("health")) db.exec("ALTER TABLE model_registry ADD COLUMN health TEXT");
+    const mcols = cols("model_registry");
+    if (!mcols.has("health")) db.exec("ALTER TABLE model_registry ADD COLUMN health TEXT");
+    if (!mcols.has("tier")) db.exec("ALTER TABLE model_registry ADD COLUMN tier TEXT"); // Phase 8
   }
   const alertCols = cols("alerts");
   for (const [col, sql] of ALERT_COLUMN_MIGRATIONS) if (!alertCols.has(col)) db.exec(sql);

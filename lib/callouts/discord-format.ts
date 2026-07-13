@@ -61,10 +61,20 @@ export function formatCalloutDiscord(c: Callout): DiscordCalloutPayload {
   ].join("\n") });
   // 6. Evidence
   fields.push({ name: "Evidence", value: `${c.evidenceStatus.replace(/_/g, " ")} · sample ${c.sampleSize}${c.expectancy != null ? ` · expectancy ${fmtNum(c.expectancy)}` : ""}${c.profitFactor != null ? ` · PF ${fmtNum(c.profitFactor)}` : ""}` });
-  // 7. Model state / probability
-  fields.push({ name: "Model", value: c.probability != null
-    ? `${c.modelState} · p(win) ${fmtNum(c.probability * 100, 1)}% (v${c.modelVersion ?? "?"}, ${c.calibration ?? "calib n/a"})`
-    : `${c.modelState.replace(/_/g, " ")} — no probability shown` });
+  // 7. Model state / probability. An experimental probability MUST carry the
+  //    EXPERIMENTAL — LIMITED DATA — RESEARCH ONLY label; when no model is active
+  //    we show the setup score under the SETUP SCORE — NOT A PROBABILITY label.
+  if (c.probability != null) {
+    const pct = fmtNum(c.probability * 100, 1);
+    const meta = `v${c.modelVersion ?? "?"}, ${c.calibration ?? "calib n/a"}`;
+    const value = c.probabilityIsExperimental
+      ? `${c.modelLabel} · p(win) ${pct}% (${meta}) — not a validated probability`
+      : `${c.modelState.replace(/_/g, " ")} · p(win) ${pct}% (${meta})`;
+    fields.push({ name: "Model", value });
+  } else {
+    const label = c.modelLabel ?? "SETUP SCORE — NOT A PROBABILITY";
+    fields.push({ name: "Model", value: `${c.modelState.replace(/_/g, " ")} — ${label}; no probability shown (setup score ${c.contractScore ?? "—"}).` });
+  }
   // 8. Advanced (compact)
   fields.push({ name: "Advanced", value: `score ${c.contractScore ?? "—"} · freshness ${c.quoteFreshness} · agent ${c.strategyAgent}`, inline: true });
 

@@ -14,13 +14,26 @@ import { scanHeaders } from "@/hooks/useScanner";
  */
 
 type Run = { id: number; kind: string; watermark: number; new_graded: number; drift_state: string | null; created_at_ms: number };
+type ExperimentalMeta = {
+  trainingSample?: number; wins?: number; losses?: number; holdout?: number;
+  brier?: number | null; ece?: number | null; coverage?: number | null; reasonNotValidated?: string | null;
+};
 type Status = {
-  modelStatus?: { status?: string; message?: string; championVersion?: number | null; metrics?: any };
+  modelStatus?: {
+    status?: string; state?: string; tier?: string; message?: string;
+    championVersion?: number | null; metrics?: any; experimental?: ExperimentalMeta | null;
+  };
   latestDrift?: { state: string; reasons: string[]; atMs: number } | null;
   recentRuns?: Run[];
   counts?: { graded: number; ungradable: number; outcomes: number };
   recommendations?: string[];
 };
+
+function modelTone(state: string | undefined): "bull" | "warn" | "bear" | "muted" {
+  if (state === "ACTIVE_VALIDATED") return "bull";
+  if (state === "ACTIVE_EXPERIMENTAL_RESEARCH_ONLY") return "warn";
+  return "muted";
+}
 
 function driftTone(state: string | undefined): "bull" | "warn" | "bear" | "muted" {
   if (state === "HEALTHY") return "bull";
@@ -67,10 +80,19 @@ export default function ResearchLearningPage() {
     <PageContainer>
       <ResponsiveGrid min={240}>
         <Card title="Model readiness" meta="Probability = evidence only; never a trade permission">
-          <div style={{ marginBottom: 6 }}><StatusBadge tone={m.status === "ACTIVE_CHAMPION" ? "bull" : "muted"}>{(m.status ?? "INACTIVE").replace(/_/g, " ")}</StatusBadge></div>
+          <div style={{ marginBottom: 6 }}><StatusBadge tone={modelTone(m.state)}>{(m.state ?? m.status ?? "INACTIVE").replace(/_/g, " ")}</StatusBadge></div>
+          {m.state === "ACTIVE_EXPERIMENTAL_RESEARCH_ONLY" ? (
+            <p style={{ fontSize: 12, fontWeight: 600, color: "#e0a020", margin: "2px 0 6px" }}>EXPERIMENTAL — LIMITED DATA — RESEARCH ONLY · not a validated probability</p>
+          ) : null}
           <KeyValue k="Champion version" v={m.championVersion ?? "—"} />
-          <KeyValue k="Brier (holdout)" v={m.metrics?.brier ?? "—"} />
-          <KeyValue k="Calibration (ECE)" v={m.metrics?.ece ?? "—"} />
+          <KeyValue k="Brier (holdout)" v={m.metrics?.brier ?? m.experimental?.brier ?? "—"} />
+          <KeyValue k="Calibration (ECE)" v={m.metrics?.ece ?? m.experimental?.ece ?? "—"} />
+          {m.experimental ? (
+            <KeyValue k="Sample (W/L · holdout)" v={`${m.experimental.trainingSample ?? 0} (${m.experimental.wins ?? 0}W/${m.experimental.losses ?? 0}L · ${m.experimental.holdout ?? 0})`} />
+          ) : null}
+          {m.state !== "ACTIVE_VALIDATED" && m.experimental?.reasonNotValidated ? (
+            <p style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>Not validated: {m.experimental.reasonNotValidated}</p>
+          ) : null}
           <p style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>{m.message}</p>
         </Card>
         <Card title="Drift monitor">

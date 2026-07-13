@@ -32,6 +32,6 @@ export async function GET(req: Request) {
     ok: true,
     status,
     train,
-    disclaimer: "Probability is a calibrated evidence score for paper/research only. It never authorizes a trade, overrides a safety gate, or guarantees an outcome.",
+    disclaimer: "Probability is a calibrated evidence score for paper/research only. It never authorizes a trade, overrides a safety gate, or guarantees an outcome. An ACTIVE_EXPERIMENTAL_RESEARCH_ONLY state is EXPERIMENTAL — LIMITED DATA — RESEARCH ONLY and is not a validated probability.",
   });
 }

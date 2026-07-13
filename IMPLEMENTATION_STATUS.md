@@ -30,12 +30,12 @@ Autonomous quant-roadmap execution (commit each phase green + pushed to `main`):
 | P4 — Validated probability-model foundation (inactive: no data) | ✅ pushed | `96df168` |
 | P5 — Modular specialized strategy agents | ✅ pushed | `29a86d6` |
 | P6 — Advanced options callouts (desktop + Discord) | ✅ pushed | `616f16a` |
-| P7 — Controlled continuous learning + drift | ✅ pushed | (this commit) |
-| **P8 — Live experimental probability mode** | ⏭️ **NEXT** | — |
-| P9 — Controlled code-improvement agent | ⏳ pending | — |
+| P7 — Controlled continuous learning + drift | ✅ pushed | `3c7b890` |
+| P8 — Live experimental probability mode | ✅ pushed | (this commit) |
+| **P9 — Controlled code-improvement agent** | ⏭️ **NEXT** | — |
 
-**Resume point:** `main` @ `96df168`, tree clean, 653 tests green, tsc clean,
-build green. Reusable substrate now in place for the agents: `contract-selector`,
+**Resume point:** `main` @ P8 commit (below), tree clean, 720 tests green, tsc
+clean, build green. Reusable substrate now in place for the agents: `contract-selector`,
 `data-freshness`, `trade-explanation`/`paper-explain`, `paper-engine`,
 `setup-fingerprint` + `outcome-store`, `setup-statistics` + `statistics-store`
 (evidence engine), `market-context` (+ store), `model-registry` (probability,
@@ -579,6 +579,56 @@ limit, setting, or source file.
 **API + dashboard.** `GET /api/learning?run=1` runs one bounded cycle; the new
 Research & Learning desktop page shows model readiness, drift state, outcome counts,
 the retrain/drift audit trail, data-quality blockers, and recommendations.
+
+## Live Experimental Probability Mode — DONE (Phase 8 of the quant roadmap)
+
+Three explicit, user-facing model states so a real-but-limited dataset can produce
+a *research-only* probability without ever masquerading as validated. Additive
+migration only (guarded `model_registry.tier`); no historical rewrite.
+
+**The three states (`lib/model-experimental.ts`, PURE, +6 tests).**
+- `ACTIVE_VALIDATED` — strict production thresholds met (≥200 graded, ≥40W/≥40L,
+  ≥50 holdout, ≥95% coverage, calibrated). Plain probability.
+- `ACTIVE_EXPERIMENTAL_RESEARCH_ONLY` — a real two-class dataset exists (≥30 graded,
+  ≥8W/≥8L, ≥10 holdout, both classes, beats base rate out of sample) but the
+  validated bar is not met. Every such prediction carries the exact label
+  **EXPERIMENTAL — LIMITED DATA — RESEARCH ONLY** and is explicitly "not a validated
+  probability".
+- `INACTIVE_NO_TRAINABLE_DATA` — not enough trustworthy data; **no probability shown**,
+  fall back to **SETUP SCORE — NOT A PROBABILITY** (the deterministic contract score).
+
+**Tiered promotion (`lib/model-registry.ts`, +9 registry tests).**
+`checkActivationTier` decides VALIDATED / EXPERIMENTAL / NONE from the live rows.
+`trainAndEvaluateOnDb` runs two promotion tracks: VALIDATED → `status='CHAMPION'`
+(`tier='VALIDATED'`); EXPERIMENTAL → `status='EXPERIMENTAL_CHAMPION'`
+(`tier='EXPERIMENTAL'`), each gated on beating the naive base rate, tier-appropriate
+ECE calibration, both classes out of sample, and improving on the prior champion of
+the SAME tier. A validated champion always supersedes (retires) a standing
+experimental one; an experimental champion NEVER displaces a validated one and never
+claims the `ACTIVE_CHAMPION` status. Prior champions are retired (kept for rollback),
+never deleted. `predictForOnDb` returns `{ proba, state, tier, experimental }` and
+flags every experimental prediction research-only.
+
+**Safety invariants (unchanged, enforced by test).** Experimental probability is
+purely informational: actionability is still decided solely by the contract-selection
+/ freshness / session / liquidity / risk gates in the horizon agent, so an
+experimental (or any) probability can NEVER create `ACTIONABLE_NOW`, bypass data
+freshness, override risk/capital controls, enable bearish actionability, or trigger
+live execution. Callout test "experimental probability never flips a callout to
+actionable on its own" locks this in. Puts remain RESEARCH_ONLY; `bearish-gate.ts`
+untouched; no brokerage SDK imported.
+
+**Surfaced everywhere.** `lib/callouts/callout.ts` adds `modelLabel` +
+`probabilityIsExperimental`; `lib/callouts/discord-format.ts` renders the EXPERIMENTAL
+label with "not a validated probability" for experimental predictions and the SETUP
+SCORE fallback when inactive (banned-language guard still applies). `lib/agents/services.ts`
+`modelAgent` now reports the three states. `GET /api/model/status` returns
+`state`/`tier`/`experimental` + an experimental disclaimer; the Research & Learning
+dashboard shows the state badge, the EXPERIMENTAL banner, sample (W/L · holdout), and
+the "not validated because…" reason.
+
+**Current live state:** `INACTIVE_NO_TRAINABLE_DATA` — there are no graded paper
+outcomes yet, so neither tier can activate. Recorded blocker, not fabricated data.
 
 ## Later phases (explicitly out of scope now)
 

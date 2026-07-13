@@ -125,6 +125,44 @@ test("discord hides probability when the model is inactive", () => {
   assert.match(model.value, /no probability shown/);
 });
 
+// ── Phase 8: experimental / setup-score labeling ─────────────────────────────
+
+test("inactive model ⇒ callout carries the SETUP SCORE fallback label", () => {
+  const c = buildCallout(ar({ modelStatus: "INACTIVE_NO_TRAINABLE_DATA", probability: null }));
+  assert.equal(c.modelLabel, "SETUP SCORE — NOT A PROBABILITY");
+  assert.equal(c.probabilityIsExperimental, false);
+});
+
+test("experimental model ⇒ probability carries the EXPERIMENTAL research-only label", () => {
+  const c = buildCallout(ar({ modelStatus: "ACTIVE_EXPERIMENTAL_RESEARCH_ONLY", probability: 0.62 }));
+  assert.equal(c.modelLabel, "EXPERIMENTAL — LIMITED DATA — RESEARCH ONLY");
+  assert.equal(c.probabilityIsExperimental, true);
+  const p = formatCalloutDiscord(c);
+  const model = p.embed.fields.find((f) => f.name === "Model");
+  assert.match(model.value, /EXPERIMENTAL — LIMITED DATA — RESEARCH ONLY/);
+  assert.match(model.value, /not a validated probability/);
+  assert.ok(!containsBannedLanguage(JSON.stringify(p)));
+});
+
+test("validated model ⇒ plain probability, no experimental label", () => {
+  const c = buildCallout(ar({ modelStatus: "ACTIVE_VALIDATED", probability: 0.58 }), { modelVersion: 4, calibration: "ECE 0.05" });
+  assert.equal(c.modelLabel, null);
+  assert.equal(c.probabilityIsExperimental, false);
+  const p = formatCalloutDiscord(c);
+  const model = p.embed.fields.find((f) => f.name === "Model");
+  assert.match(model.value, /p\(win\) 58\.0%/);
+  assert.ok(!/EXPERIMENTAL/.test(model.value));
+});
+
+test("experimental probability never flips a callout to actionable on its own", () => {
+  // A research-only setup with an experimental probability stays non-actionable.
+  const c = buildCallout(ar({
+    candidateStatus: "RESEARCH_ONLY", actionability: "RESEARCH_ONLY", researchOnly: true,
+    modelStatus: "ACTIVE_EXPERIMENTAL_RESEARCH_ONLY", probability: 0.71,
+  }));
+  assert.equal(c.actionable, false);
+});
+
 test("discord put callout is labeled research", () => {
   const p = formatCalloutDiscord(buildCallout(ar({ direction: "bearish", candidateStatus: "RESEARCH_ONLY", researchOnly: true, actionability: "RESEARCH_ONLY", selectedContract: { ...ar().selectedContract, side: "put" } })));
   assert.match(p.embed.title, /PUT \(research\)/);

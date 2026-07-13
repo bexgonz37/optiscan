@@ -7,6 +7,7 @@
  * probability appear ONLY when their evidence/model gates legitimately permit it.
  */
 import type { AgentResult, CandidateStatus } from "../agents/types.ts";
+import { EXPERIMENTAL_LABEL, SETUP_SCORE_LABEL } from "../model-experimental.ts";
 
 /** Phrases that must never appear in any callout text. */
 export const BANNED_PHRASES = [
@@ -48,6 +49,14 @@ export interface Callout {
   profitFactor: number | null;
   modelState: string;
   probability: number | null;
+  /**
+   * Phase 8 disclosure that must accompany the probability/score:
+   *   experimental model ⇒ "EXPERIMENTAL — LIMITED DATA — RESEARCH ONLY"
+   *   no active model    ⇒ "SETUP SCORE — NOT A PROBABILITY"
+   *   validated model    ⇒ null (a plain validated probability)
+   */
+  modelLabel: string | null;
+  probabilityIsExperimental: boolean;
   modelVersion: number | null;
   calibration: string | null;
   primaryBlockingReason: string | null;
@@ -85,6 +94,13 @@ export function buildCallout(r: AgentResult, extras: BuildCalloutExtras = {}): C
 
   const reason = (r.reasons[0] ?? "Setup under evaluation.").slice(0, 240);
 
+  // Phase 8 model-state disclosure. A validated probability stands alone; an
+  // experimental one is always tagged research-only; when no model is active we
+  // fall back to the setup score and say plainly it is not a probability.
+  const experimentalModel = r.modelStatus === "ACTIVE_EXPERIMENTAL_RESEARCH_ONLY";
+  const validatedModel = r.modelStatus === "ACTIVE_VALIDATED";
+  const modelLabel = experimentalModel ? EXPERIMENTAL_LABEL : (validatedModel ? null : SETUP_SCORE_LABEL);
+
   const c: Callout = {
     key: `${r.ticker}|${r.direction}|${r.horizon}`,
     status: r.candidateStatus,
@@ -113,6 +129,8 @@ export function buildCallout(r: AgentResult, extras: BuildCalloutExtras = {}): C
     profitFactor,
     modelState: r.modelStatus,
     probability: r.probability,
+    modelLabel,
+    probabilityIsExperimental: experimentalModel && r.probability != null,
     modelVersion: extras.modelVersion ?? null,
     calibration: extras.calibration ?? null,
     primaryBlockingReason,

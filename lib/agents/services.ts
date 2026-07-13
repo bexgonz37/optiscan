@@ -54,9 +54,12 @@ export function modelAgent(featureInput: Record<string, unknown>): AgentModelSta
     const status = modelStatus();
     const pred = predictFor(featureInput as any);
     return {
-      status: status.status,
+      // Phase 8: expose the three explicit states. An experimental probability is
+      // present but carries ACTIVE_EXPERIMENTAL_RESEARCH_ONLY so downstream never
+      // treats it as validated. A validated champion ⇒ ACTIVE_VALIDATED.
+      status: pred.state ?? status.state,
       modelVersion: pred.modelVersion ?? status.championVersion ?? null,
-      probability: pred.proba, // null unless a validated champion legitimately permits it
+      probability: pred.proba, // null unless a champion (validated or experimental) legitimately permits it
       calibration: status.metrics?.ece != null ? `ECE ${status.metrics.ece}` : null,
     };
   } catch {
