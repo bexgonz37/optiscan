@@ -15,6 +15,9 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
+# Guarantee /app/public exists so the runner's COPY succeeds even when the repo has
+# no public/ assets (Next does not create the folder). A real public/ is preserved.
+RUN mkdir -p /app/public
 
 FROM base AS runner
 WORKDIR /app

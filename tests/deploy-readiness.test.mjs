@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -56,6 +56,21 @@ test("Dockerfile contains NO VOLUME instruction (Railway uses attached volumes)"
   const df = read("Dockerfile");
   // Match a VOLUME *instruction* at the start of a line, not the word in a comment.
   assert.ok(!/^\s*VOLUME\b/m.test(df), "Railway does not support the Dockerfile VOLUME instruction");
+});
+
+// 4c. The runner copies /app/public — that path MUST be guaranteed to exist so the
+// Docker build never fails on a missing public/ directory.
+test("Dockerfile guarantees /app/public exists before the runner copies it", () => {
+  const df = read("Dockerfile");
+  const copiesPublic = /COPY --from=builder[^\n]*\/app\/public/.test(df);
+  if (!copiesPublic) return; // nothing to guard if the copy is removed
+  const publicDir = join(root, "public");
+  const trackedPublicAssets = existsSync(publicDir) && readdirSync(publicDir).length > 0;
+  const builderCreatesPublic = /mkdir -p [^\n]*\/app\/public/.test(df);
+  assert.ok(
+    trackedPublicAssets || builderCreatesPublic,
+    "Dockerfile COPYs /app/public but neither a non-empty public/ exists nor does the builder `mkdir -p /app/public` — the build will fail",
+  );
 });
 
 // 5–7. Healthcheck never exposes secrets and never fails for market/model state.
