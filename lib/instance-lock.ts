@@ -84,6 +84,22 @@ export function acquireScannerLock(
   return { acquired: true, holder: null };
 }
 
+/** Read-only scanner-lock holder + freshness (for the health surface). */
+export function scannerLockHolder(
+  db: DbLike,
+  nowMs: number = Date.now(),
+  staleMs: number = LOCK_STALE_MS,
+): { holder: LockHolder | null; fresh: boolean } {
+  ensureLockTable(db);
+  const row = db.prepare("SELECT pid, hostname, started_at, heartbeat_at FROM scanner_lock WHERE id = 1").get() as
+    | LockHolder
+    | undefined;
+  if (!row) return { holder: null, fresh: false };
+  const beatMs = Date.parse(row.heartbeat_at);
+  const fresh = Number.isFinite(beatMs) && nowMs - beatMs < staleMs;
+  return { holder: row, fresh };
+}
+
 /** Refresh our heartbeat; only touches the row while we still own it. */
 export function heartbeatScannerLock(db: DbLike, pid: number, nowMs: number = Date.now()): void {
   db.prepare("UPDATE scanner_lock SET heartbeat_at = ? WHERE id = 1 AND pid = ?").run(

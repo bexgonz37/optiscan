@@ -106,6 +106,18 @@ async function supervisorJob(nowMs: number): Promise<void> {
   await runSupervisorCycle(nowMs);
 }
 
+/** Whether the low-frequency, PROPOSAL-ONLY improvement audit may run. */
+export function improvementAuditEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.IMPROVEMENT_AUDIT === "1";
+}
+
+async function improvementJob(): Promise<void> {
+  if (!improvementAuditEnabled()) return;
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { runImprovementAudit } = require("@/lib/improvement/runtime");
+  runImprovementAudit(); // records immutable proposals only — never edits code or merges
+}
+
 async function beat(): Promise<void> {
   const s = state();
   const nowMs = Date.now();
@@ -139,6 +151,7 @@ async function beat(): Promise<void> {
   if (jobDue(s.lastRun.maintenance, iv.maintenanceMs, nowMs)) await runJob("maintenance", maintenanceJob, nowMs);
   if (jobDue(s.lastRun.learning, iv.learningMs, nowMs)) await runJob("learning", learningJob, nowMs);
   if (jobDue(s.lastRun.supervisor, iv.supervisorMs, nowMs)) await runJob("supervisor", () => supervisorJob(nowMs), nowMs);
+  if (jobDue(s.lastRun.improvement, iv.improvementMs, nowMs)) await runJob("improvement", improvementJob, nowMs);
 }
 
 /** Start the scheduler once per process. Idempotent; safe to call from boot. */

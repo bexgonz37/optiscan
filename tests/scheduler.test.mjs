@@ -65,3 +65,14 @@ test("scheduler changes no source code / trading rules (only sync/refresh/cycle 
   const sch = read("lib/scheduler.ts");
   assert.ok(!/writeFile|child_process|git |exec\(/.test(sch), "no code mutation / shell");
 });
+
+test("improvement audit is low-frequency, gated (default off), and proposal-only", () => {
+  const sch = read("lib/scheduler.ts");
+  assert.ok(/IMPROVEMENT_AUDIT === "1"/.test(sch), "explicit opt-in flag");
+  assert.ok(/if \(!improvementAuditEnabled\(\)\) return;/.test(sch), "gated off by default");
+  assert.ok(/runImprovementAudit\(\)/.test(sch), "runs the proposal-only audit");
+  // Uses the low-frequency improvement cadence.
+  assert.ok(/jobDue\(s\.lastRun\.improvement, iv\.improvementMs/.test(sch));
+  // Never merges / edits code from the scheduler.
+  assert.ok(!/auto[-_]?merge|writeFile|applyProposal/i.test(sch), "no auto-merge/apply from scheduler");
+});
