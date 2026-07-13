@@ -422,6 +422,7 @@ CREATE TABLE IF NOT EXISTS model_registry (
   training_watermark INTEGER NOT NULL DEFAULT 0,
   n_train INTEGER NOT NULL DEFAULT 0,
   base_rate REAL,
+  health TEXT,                          -- HEALTHY | WARNING | DEGRADED (Phase 7 drift flag)
   trained_at_ms INTEGER NOT NULL,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   UNIQUE(model_name, model_version)
@@ -451,6 +452,32 @@ CREATE TABLE IF NOT EXISTS model_prediction_audit (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_model_pred_audit_fp ON model_prediction_audit(fingerprint_id);
+
+-- Continuous learning + drift audit (Phase 7). Every retrain attempt, skip,
+-- promotion, rejection, and drift snapshot is recorded. The learning loop is
+-- bounded/versioned/reversible and NEVER changes source code or trading rules.
+CREATE TABLE IF NOT EXISTS learning_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,                   -- SKIPPED | PROMOTION | REJECTION
+  watermark INTEGER NOT NULL DEFAULT 0,
+  new_graded INTEGER NOT NULL DEFAULT 0,
+  drift_state TEXT,
+  decision_json TEXT,
+  result_json TEXT,
+  created_at_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_learning_runs_created ON learning_runs(created_at_ms);
+
+CREATE TABLE IF NOT EXISTS drift_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  drift_state TEXT NOT NULL,
+  metrics_json TEXT NOT NULL,
+  reasons_json TEXT,
+  created_at_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_drift_snapshots_created ON drift_snapshots(created_at_ms);
 
 CREATE TABLE IF NOT EXISTS historical_alerts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -721,6 +748,10 @@ function migrate(db: Database.Database) {
   db.exec(SCHEMA);
   const paperCols = cols("paper_trades");
   for (const [col, sql] of PAPER_COLUMN_MIGRATIONS) if (!paperCols.has(col)) db.exec(sql);
+  // Phase 7 (additive): drift-health flag on an existing model_registry table.
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_registry'").get()) {
+    if (!cols("model_registry").has("health")) db.exec("ALTER TABLE model_registry ADD COLUMN health TEXT");
+  }
   const alertCols = cols("alerts");
   for (const [col, sql] of ALERT_COLUMN_MIGRATIONS) if (!alertCols.has(col)) db.exec(sql);
   const journalCols = cols("trade_journal");

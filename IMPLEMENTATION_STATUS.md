@@ -11,7 +11,7 @@ Lab / an embedded LLM.
 
 | Check | Result |
 |---|---|
-| `npm test` | **688 pass**, 0 fail (547 + 38+20+15+33+20 P1–P5 + 15 P6) |
+| `npm test` | **707 pass**, 0 fail (547 + 38+20+15+33+20 P1–P5 + 15 P6 + 19 P7) |
 | `npx tsc --noEmit` | clean |
 | `npm run build` | compiles, all static pages |
 
@@ -29,9 +29,9 @@ Autonomous quant-roadmap execution (commit each phase green + pushed to `main`):
 | P3 — Market context + regime foundation | ✅ pushed | `e172640` |
 | P4 — Validated probability-model foundation (inactive: no data) | ✅ pushed | `96df168` |
 | P5 — Modular specialized strategy agents | ✅ pushed | `29a86d6` |
-| P6 — Advanced options callouts (desktop + Discord) | ✅ pushed | (this commit) |
-| **P7 — Controlled continuous learning + drift** | ⏭️ **NEXT** | — |
-| P8 — Live experimental probability mode | ⏳ pending | — |
+| P6 — Advanced options callouts (desktop + Discord) | ✅ pushed | `616f16a` |
+| P7 — Controlled continuous learning + drift | ✅ pushed | (this commit) |
+| **P8 — Live experimental probability mode** | ⏭️ **NEXT** | — |
 | P9 — Controlled code-improvement agent | ⏳ pending | — |
 
 **Resume point:** `main` @ `96df168`, tree clean, 653 tests green, tsc clean,
@@ -551,6 +551,34 @@ ledger is untouched, payloads are preview-ready with idempotency keys, and no
 delivery is fabricated (recorded blocker: no test webhook, so live agent-callout
 Discord is opt-in). New "Horizon Callouts" desktop surface with horizon/direction/
 status filters (additive TOOL_NAV entry; no unrelated page redesign).
+
+## Bounded Continuous Learning + Drift Monitoring — DONE (Phase 7 of the quant roadmap)
+
+Deterministic, auditable, reversible learning loop over authoritative outcomes.
+Additive migration (`learning_runs`, `drift_snapshots`, guarded `model_registry.health`).
+
+**Pure — `lib/learning/retrain-policy.ts` (+7 tests).** `shouldRetrain` bounds a
+retrain to: ≥25 new graded outcomes since the last trained watermark, ≥24h since the
+last attempt, both classes present, ≥95% coverage, and a moved watermark (no repeat
+training). Configurable/versioned.
+
+**Pure — `lib/learning/drift.ts` (+8 tests).** `classifyDrift` → HEALTHY / WATCH /
+DEGRADED / MODEL_STALE / DATA_DRIFT / PERFORMANCE_DRIFT / INSUFFICIENT_DATA from
+coverage, stale-data & contract-rejection frequency, model age, and base-vs-current
+Brier / win-rate / ECE — with reason codes. Pure diagnosis only.
+
+**Impure — `lib/learning-store.ts` (+4 tests).** `runLearningCycleOnDb` refreshes,
+decides a bounded retrain (delegating to the Phase-4 registry — champion/challenger,
+rollback preserved), records every attempt/skip/promotion/rejection in `learning_runs`,
+snapshots drift, and flags a degraded champion `health='WARNING'` (never inactivating
+blindly, never bypassing a hard gate). Deterministic human-review recommendations are
+generated but NEVER auto-applied. A source-spec test asserts it writes only to
+`learning_runs`/`drift_snapshots`/`model_registry.health` — never a threshold, risk
+limit, setting, or source file.
+
+**API + dashboard.** `GET /api/learning?run=1` runs one bounded cycle; the new
+Research & Learning desktop page shows model readiness, drift state, outcome counts,
+the retrain/drift audit trail, data-quality blockers, and recommendations.
 
 ## Later phases (explicitly out of scope now)
 
