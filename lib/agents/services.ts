@@ -2,22 +2,25 @@
  * agents/services.ts — the shared SERVICE agents (Phase 5). Each is a thin,
  * auditable wrapper that DELEGATES to an existing subsystem — none of them
  * re-implements freshness, selection, risk, statistics, context, or model logic.
- * Impure: resolves `@/lib/*` lazily so the module stays node-importable.
+ *
+ * Standalone-runtime note: dependencies are loaded via `@/lib/*` requests that
+ * are STATIC STRING LITERALS (a top-level import for the pure freshness module,
+ * and literal `require("@/lib/…")` for the DB-backed ones). Webpack can only
+ * resolve/bundle the `@/` alias when the request is a literal — a
+ * `require(variable)` indirection is left as a raw runtime require that Node
+ * cannot resolve in the Next standalone build (it was the cause of
+ * "Cannot find module '@/lib/data-freshness'" on live callouts). The literal
+ * requires stay inside functions so the DB-backed modules load lazily.
  *
  * The Risk Agent's veto is absolute and is enforced again by the Supervisor.
  */
 import type { AgentEvidence, AgentModelState, AgentRiskVerdict } from "./types.ts";
-
-function req<T = any>(mod: string): T {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return require(mod) as T;
-}
+import { actionableFreshness } from "@/lib/data-freshness";
 
 /** 14. Market Data Agent — reuses the freshness subsystem (no new provider call). */
 export function marketDataAgent(ticker: string, kinds: string[]): { ok: boolean; reason: string | null } {
   try {
-    const { actionableFreshness } = req("@/lib/data-freshness");
-    const f = actionableFreshness(ticker, kinds);
+    const f = actionableFreshness(ticker, kinds as any);
     return { ok: Boolean(f?.ok), reason: f?.reason ?? null };
   } catch (err: any) {
     return { ok: false, reason: `freshness unavailable: ${err?.message}` };
@@ -27,7 +30,8 @@ export function marketDataAgent(ticker: string, kinds: string[]): { ok: boolean;
 /** 13. Market Context Agent — reuses the Phase-3 context engine. */
 export function marketContextAgent(): Record<string, unknown> | null {
   try {
-    const { latestMarketContext, buildCurrentMarketContext } = req("@/lib/market-context-store");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { latestMarketContext, buildCurrentMarketContext } = require("@/lib/market-context-store");
     return latestMarketContext() ?? buildCurrentMarketContext();
   } catch {
     return null;
@@ -37,7 +41,8 @@ export function marketContextAgent(): Record<string, unknown> | null {
 /** 17. Performance / 18. Outcome Agent — reuses the authoritative statistics layer. */
 export function performanceAgentByStrategy(strategy: string): AgentEvidence {
   try {
-    const { listStatistics } = req("@/lib/statistics-store");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { listStatistics } = require("@/lib/statistics-store");
     const rows = listStatistics("strategy");
     const hit = rows.find((r: any) => r.groupKey === strategy);
     if (!hit) return { evidenceStatus: "NOT_TRACKED", evidenceSummary: "No graded outcomes for this strategy yet.", gradedSampleSize: 0 };
@@ -50,7 +55,8 @@ export function performanceAgentByStrategy(strategy: string): AgentEvidence {
 /** 19/21. Research & Learning Agent — reuses the model registry (never fabricates). */
 export function modelAgent(featureInput: Record<string, unknown>): AgentModelState {
   try {
-    const { modelStatus, predictFor } = req("@/lib/model-registry");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { modelStatus, predictFor } = require("@/lib/model-registry");
     const status = modelStatus();
     const pred = predictFor(featureInput as any);
     return {
@@ -70,8 +76,10 @@ export function modelAgent(featureInput: Record<string, unknown>): AgentModelSta
 /** 15. Risk Agent — reuses the paper risk engine. Veto is absolute. */
 export function riskAgent(proposed: { ticker: string; optionType: "call" | "put"; dte: number | null; entryLimit: number; contracts: number; stopLossPct: number | null; assetClass?: "option" | "stock" }): AgentRiskVerdict {
   try {
-    const { checkRisk, defaultRiskConfig } = req("@/lib/paper-risk");
-    const { riskContext } = req("@/lib/paper-engine");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { checkRisk, defaultRiskConfig } = require("@/lib/paper-risk");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { riskContext } = require("@/lib/paper-engine");
     const verdict = checkRisk(
       { ticker: proposed.ticker, optionType: proposed.optionType, dte: proposed.dte, entryLimit: proposed.entryLimit, contracts: proposed.contracts, stopLossPct: proposed.stopLossPct, assetClass: proposed.assetClass === "stock" ? "stock" : undefined },
       riskContext(),
@@ -107,7 +115,8 @@ export function missedOpportunityAgent(ticker: string, horizon: string, rejectio
 /** 22. Explanation Agent — reuses the deterministic explanation vocabulary (no generative model). */
 export function explanationAgent(input: any): any {
   try {
-    const { buildPaperExplanation } = req("@/lib/paper-explain");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { buildPaperExplanation } = require("@/lib/paper-explain");
     return buildPaperExplanation(input);
   } catch {
     return null;
@@ -117,7 +126,8 @@ export function explanationAgent(input: any): any {
 /** 19b. Quality-Control Agent — reuses the read-only NBBO diagnostic. */
 export function qualityControlAgent(): Record<string, unknown> {
   try {
-    const { nbboDiagnostic } = req("@/lib/outcome-store");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { nbboDiagnostic } = require("@/lib/outcome-store");
     return nbboDiagnostic();
   } catch (err: any) {
     return { ok: false, note: `qc unavailable: ${err?.message}` };
