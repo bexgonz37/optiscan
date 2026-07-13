@@ -1,8 +1,10 @@
 /**
  * callouts/runtime.ts — turns supervised agent results into canonical callouts
- * (Phase 6). Impure orchestration only: it reuses the agent runtime + the PURE
- * callout/dedup/discord modules. Prior emission state lives on globalThis so
- * dedup/cooldown survive across requests within a process.
+ * (Phase 6 + live runtime wiring). Impure orchestration only: it reuses the agent
+ * runtime + the PURE callout/dedup/discord modules. Prior emission state is now
+ * PERSISTED in SQLite (callout_state) so dedup/cooldown/lifecycle survive process
+ * and worker restarts and horizontal scaling — a restart never resends an
+ * unchanged callout.
  *
  * Discord AUTO-SEND is gated off by default (AGENT_CALLOUT_DISCORD=1). Until then
  * the desktop surface is the active channel and this returns the ready-to-send
@@ -11,16 +13,9 @@
  */
 import { runAgentsForTicker } from "@/lib/agents/runtime";
 import { buildCallout, type Callout } from "@/lib/callouts/callout";
-import { decideEmission, nextCalloutState, type PriorCallout, type EmissionDecision } from "@/lib/callouts/dedup";
+import { decideEmission, type EmissionDecision } from "@/lib/callouts/dedup";
 import { formatCalloutDiscord, type DiscordCalloutPayload } from "@/lib/callouts/discord-format";
-
-type G = typeof globalThis & { __optiscanCalloutState?: Map<string, PriorCallout> };
-
-function priorState(): Map<string, PriorCallout> {
-  const g = globalThis as G;
-  g.__optiscanCalloutState ??= new Map();
-  return g.__optiscanCalloutState;
-}
+import { loadPriorCallouts, persistCalloutState, type CalloutStateWrite } from "@/lib/callouts/state-store";
 
 export interface CalloutBundle {
   callout: Callout;
@@ -35,7 +30,8 @@ export interface CalloutsRunResult {
 }
 
 export async function buildCalloutsForTickers(tickers: string[], nowMs: number = Date.now()): Promise<CalloutsRunResult> {
-  const prev = priorState();
+  // Prior lifecycle/dedup state is hydrated from SQLite (survives restarts).
+  const prev = loadPriorCallouts();
   const callouts: Callout[] = [];
   for (const t of tickers) {
     try {
@@ -54,10 +50,10 @@ export async function buildCalloutsForTickers(tickers: string[], nowMs: number =
     discord: decisions[i].emit ? formatCalloutDiscord(c) : null,
   }));
 
-  // Advance dedup state for the next tick (records emission times).
-  const next = nextCalloutState(callouts, decisions, prev, nowMs);
-  const g = globalThis as G;
-  g.__optiscanCalloutState = next;
+  // Persist post-cycle state (delivery ids are attached by the delivery layer;
+  // here they stay null — preview only). This is what makes dedup restart-safe.
+  const writes: CalloutStateWrite[] = bundles.map((b) => ({ callout: b.callout, decision: b.decision }));
+  persistCalloutState(writes, nowMs);
 
   return {
     bundles,

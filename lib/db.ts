@@ -503,6 +503,26 @@ CREATE TABLE IF NOT EXISTS improvement_proposals (
 );
 CREATE INDEX IF NOT EXISTS idx_improvement_proposals_created ON improvement_proposals(created_at_ms);
 
+-- Canonical multi-horizon callout lifecycle/dedup state (live runtime wiring).
+-- ONE row per canonical opportunity (ticker|direction|horizon). Persisting this
+-- means dedup, cooldowns, and lifecycle transitions survive process/worker
+-- restarts and horizontal scaling — a restart never resends an unchanged callout.
+CREATE TABLE IF NOT EXISTS callout_state (
+  callout_key TEXT PRIMARY KEY,         -- ticker|direction|horizon
+  ticker TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  horizon TEXT NOT NULL,
+  last_status TEXT NOT NULL,
+  last_material_hash TEXT,
+  last_emit_at_ms INTEGER,
+  last_idempotency_key TEXT,
+  last_delivery_id TEXT,
+  last_delivery_status TEXT,
+  updated_at_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_callout_state_updated ON callout_state(updated_at_ms);
+
 CREATE TABLE IF NOT EXISTS historical_alerts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   external_id TEXT UNIQUE,
