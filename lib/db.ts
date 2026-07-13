@@ -480,6 +480,29 @@ CREATE TABLE IF NOT EXISTS drift_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_drift_snapshots_created ON drift_snapshots(created_at_ms);
 
+-- Controlled code-improvement agent (Phase 9). IMMUTABLE, write-once improvement
+-- proposals. The agent NEVER edits code or trading rules autonomously; it records
+-- classified proposals and their disposition. A row is never mutated after insert
+-- (INSERT OR IGNORE by the deterministic content id) so history is never rewritten.
+CREATE TABLE IF NOT EXISTS improvement_proposals (
+  id TEXT PRIMARY KEY,                  -- deterministic content id (impN_<hex>)
+  version INTEGER NOT NULL,
+  category TEXT NOT NULL,
+  title TEXT NOT NULL,
+  rationale TEXT NOT NULL,
+  target_paths_json TEXT NOT NULL,
+  risk TEXT NOT NULL,                   -- LOW | MEDIUM | HIGH
+  forbidden INTEGER NOT NULL DEFAULT 0,
+  forbidden_reasons_json TEXT,
+  branch_name TEXT NOT NULL,
+  disposition TEXT NOT NULL,            -- AUTO_MERGE_ELIGIBLE | HUMAN_REVIEW_REQUIRED | READY_FOR_CODING_AGENT | BLOCKED
+  disposition_reasons_json TEXT,
+  source_recommendation TEXT,
+  created_at_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_improvement_proposals_created ON improvement_proposals(created_at_ms);
+
 CREATE TABLE IF NOT EXISTS historical_alerts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   external_id TEXT UNIQUE,

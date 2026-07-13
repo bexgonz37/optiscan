@@ -19,6 +19,7 @@ const MAIN_NAV = [
 const TOOL_NAV = [
   { href: "/callouts", label: "Horizon Callouts" },
   { href: "/research-learning", label: "Research & Learning" },
+  { href: "/improvement", label: "Improvement Agent" },
   { href: "/swing", label: "Swing Research" },
   { href: "/guide", label: "Guide" },
 ];
@@ -34,6 +35,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   "/quant": { title: "Research & Backtesting", sub: "Setup stats and backtests" },
   "/callouts": { title: "Horizon Callouts", sub: "Multi-horizon agent callouts (0DTE–90DTE, calls + put research)" },
   "/research-learning": { title: "Research & Learning", sub: "Model readiness, drift, and bounded continuous learning" },
+  "/improvement": { title: "Improvement Agent", sub: "Controlled, propose-only code-improvement agent (never edits code autonomously)" },
   "/swing": { title: "Swing Research", sub: "1-4 week options research" },
   "/settings": { title: "Settings", sub: "Alerts, Discord, safety" },
   "/review": { title: "Review", sub: "Methodology and limits" },

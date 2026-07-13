@@ -31,11 +31,11 @@ Autonomous quant-roadmap execution (commit each phase green + pushed to `main`):
 | P5 — Modular specialized strategy agents | ✅ pushed | `29a86d6` |
 | P6 — Advanced options callouts (desktop + Discord) | ✅ pushed | `616f16a` |
 | P7 — Controlled continuous learning + drift | ✅ pushed | `3c7b890` |
-| P8 — Live experimental probability mode | ✅ pushed | (this commit) |
-| **P9 — Controlled code-improvement agent** | ⏭️ **NEXT** | — |
+| P8 — Live experimental probability mode | ✅ pushed | `f8409b8` |
+| P9 — Controlled code-improvement agent | ✅ pushed | (this commit) |
 
-**Resume point:** `main` @ P8 commit (below), tree clean, 720 tests green, tsc
-clean, build green. Reusable substrate now in place for the agents: `contract-selector`,
+**ROADMAP COMPLETE (P1–P9).** `main` clean, 745 tests green, tsc clean, build
+green. Reusable substrate in place: `contract-selector`,
 `data-freshness`, `trade-explanation`/`paper-explain`, `paper-engine`,
 `setup-fingerprint` + `outcome-store`, `setup-statistics` + `statistics-store`
 (evidence engine), `market-context` (+ store), `model-registry` (probability,
@@ -629,6 +629,57 @@ the "not validated because…" reason.
 
 **Current live state:** `INACTIVE_NO_TRAINABLE_DATA` — there are no graded paper
 outcomes yet, so neither tier can activate. Recorded blocker, not fabricated data.
+
+## Controlled Code-Improvement Agent — DONE (Phase 9 of the quant roadmap)
+
+A propose-only agent that NEVER edits code or trading rules autonomously. It
+produces immutable, classified improvement proposals; it has no git/merge/push
+path. Additive migration only (`improvement_proposals`, write-once by content id).
+
+**Pure — `lib/improvement/proposal.ts` (+11 tests).** Immutable, frozen
+`ImprovementProposal` with a deterministic content id (`impN_<16hex>`), per-category
+risk + auto-merge policy (LOW test_coverage/documentation/dead_code/type_safety →
+auto-merge-eligible; MEDIUM refactor/performance/dependency/config → review; HIGH
+risk_policy/strategy_logic/execution_path; forbidden bearish_enablement/
+live_execution/safety_policy). Hard guards force **forbidden + HIGH** whenever a
+target hits a `SAFETY_PROTECTED_PATH` (bearish gate, paper-risk, the agent's own
+policy/store) or a live-execution/brokerage marker, or the title/rationale carries a
+forbidden intent (enable bearish, live/real-money, bypass risk, force-push,
+self-approve, override veto) — so a mislabeled change can never slip through.
+
+**Pure — `lib/improvement/policy.ts` (+8 tests).** `decideDisposition` with strict
+safety-first precedence: forbidden → **BLOCKED**; HIGH → **HUMAN_REVIEW_REQUIRED**
+(never self-approved); no automation → **READY_FOR_CODING_AGENT**; LOW + eligible +
+automation + auto-merge both enabled → **AUTO_MERGE_ELIGIBLE**; otherwise
+**HUMAN_REVIEW_REQUIRED**. `ABSOLUTE_PROHIBITIONS` (never force-push, never
+self-approve high-risk, never enable bearish/live execution, never touch the risk/
+bearish/safety-policy guardrails) are unoverridable by any config.
+
+**Pure — `lib/improvement/audit.ts` (+1 test).** `proposalsFromAudit` derives
+LOW-risk test-coverage proposals ONLY from real, checkable facts (untested modules),
+skipping safety-protected paths. No fabricated rationale.
+
+**Impure — `lib/improvement-store.ts` (+5 tests, incl. source-spec).** Write-once
+proposal ledger (INSERT OR IGNORE by content id ⇒ history never rewritten). Records
+disposition at record time; `improvementStatusOnDb` reports the honest agent state
+(INACTIVE_NO_AUTOMATION / ACTIVE_PROPOSE_ONLY / ACTIVE_AUTO_MERGE_LOW_RISK) with
+recorded blockers. A source-spec test asserts the store's only write target is
+`improvement_proposals` and that it contains no `child_process`/`git push`/`spawn`
+side effects.
+
+**Runtime + API + dashboard.** `lib/improvement/runtime.ts` scans `lib/*.ts` for
+untested modules and records proposals (the only side effect). `GET /api/improvement`
+(`?audit=1` runs one audit) returns state, prohibitions, counts, and the ledger. The
+new `/improvement` desktop page shows the agent state, prohibitions, disposition
+counts, and the immutable proposal table.
+
+**Current live state:** `INACTIVE_NO_AUTOMATION` — no coding-agent / GitHub
+automation is configured (`IMPROVEMENT_AUTOMATION!=1`), so nothing is branched,
+merged, or pushed; eligible proposals are surfaced as READY_FOR_CODING_AGENT. Branch
+protection / required reviews on `main` must be configured **manually** in GitHub —
+this agent does not assume, request, or depend on those permissions. Isolated work
+branches follow `auto-improve/<category>/<compact-utc>` when a coding agent picks a
+proposal up.
 
 ## Later phases (explicitly out of scope now)
 
