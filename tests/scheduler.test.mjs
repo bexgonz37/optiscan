@@ -14,7 +14,7 @@ test("scheduler intervals have safe defaults", () => {
   const iv = schedulerIntervals({});
   assert.equal(iv.maintenanceMs, 5 * 60_000);
   assert.equal(iv.learningMs, 60 * 60_000);
-  assert.equal(iv.supervisorMs, 60_000);
+  assert.equal(iv.supervisorMs, 30_000);
   assert.equal(iv.improvementMs, 6 * 60 * 60_000);
 });
 

@@ -30,6 +30,10 @@ export interface StockCalloutInput {
   actionableNow: boolean;
   session: string; // premarket | regular | afterhours | closed
   nowMs: number;
+  /** Session VWAP at alert time (for the anti-chase / extension gate). Optional. */
+  vwap?: number | null;
+  /** Day change % vs prior close at alert time (for the day-run chase gate). Optional. */
+  dayChangePct?: number | null;
 }
 
 export interface StockGateConfig {
@@ -37,6 +41,10 @@ export interface StockGateConfig {
   maxSpreadPct: number;    // acceptable NBBO spread
   maxQuoteAgeMs: number;   // freshness
   allowExtendedHours: boolean;
+  /** Anti-chase: max % ABOVE session VWAP before the move is "extended" (0 disables). */
+  maxVwapExtensionPct: number;
+  /** Anti-chase: max % already run on the day before it is a chase (0 disables). */
+  maxDayRunPct: number;
 }
 
 export function stockGateConfig(env: NodeJS.ProcessEnv = process.env): StockGateConfig {
@@ -45,6 +53,8 @@ export function stockGateConfig(env: NodeJS.ProcessEnv = process.env): StockGate
     maxSpreadPct: num(env.STOCK_MAX_SPREAD_PCT, 1.5),
     maxQuoteAgeMs: num(env.STOCK_MAX_QUOTE_AGE_MS, 15_000),
     allowExtendedHours: env.PAPER_STOCK_EXTENDED_HOURS === "1" || env.STOCK_EXTENDED_HOURS === "1",
+    maxVwapExtensionPct: num(env.STOCK_MAX_VWAP_EXT_PCT, 2.5),
+    maxDayRunPct: num(env.STOCK_MAX_DAY_RUN_PCT, 6),
   };
 }
 
@@ -71,6 +81,23 @@ export function stockNowOnlyEligible(i: StockCalloutInput, cfg: StockGateConfig 
   if (!i.actionableNow) return { ok: false, reason: "not ACTIONABLE_NOW (WATCH/WAIT/MISSED stays dashboard-only)" };
   if (!isNum(i.confidence) || (i.confidence as number) < cfg.minConfidence) {
     return { ok: false, reason: `confidence ${i.confidence ?? "n/a"} < HIGH threshold ${cfg.minConfidence}` };
+  }
+  // ANTI-CHASE / EXTENSION GATE (long-only). A momentum callout is only "now" when
+  // the move has NOT already run away from the entry. Two independent guards, each
+  // using ONLY verified fields already on the alert (never fabricated) and each
+  // disabled by setting its threshold to 0:
+  //   1. Day-run: the name has already moved too far on the day (a chase).
+  //   2. VWAP extension: price is too far ABOVE session VWAP (top-of-candle chase).
+  // When the underlying field is unavailable the guard is skipped (fail-open on that
+  // one dimension) — the other gates still apply, so we never invent a number.
+  if (cfg.maxDayRunPct > 0 && isNum(i.dayChangePct) && (i.dayChangePct as number) >= cfg.maxDayRunPct) {
+    return { ok: false, reason: `extended: already +${(i.dayChangePct as number).toFixed(1)}% on the day (≥ ${cfg.maxDayRunPct}% chase limit) — dashboard-only, wait for a pullback` };
+  }
+  if (cfg.maxVwapExtensionPct > 0 && isNum(i.vwap) && isNum(i.price) && (i.vwap as number) > 0) {
+    const vwapExtPct = (((i.price as number) - (i.vwap as number)) / (i.vwap as number)) * 100;
+    if (vwapExtPct >= cfg.maxVwapExtensionPct) {
+      return { ok: false, reason: `extended: +${vwapExtPct.toFixed(1)}% above VWAP (≥ ${cfg.maxVwapExtensionPct}% chase limit) — dashboard-only, wait for a pullback into VWAP` };
+    }
   }
   if (!hasTwoSidedStockQuote(i.bid, i.ask)) return { ok: false, reason: "no valid two-sided (NBBO) quote — NO VALID ENTRY" };
   if (!isNum(i.quoteAsOfMs)) {

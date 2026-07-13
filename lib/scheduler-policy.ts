@@ -29,8 +29,11 @@ export function schedulerIntervals(env: NodeJS.ProcessEnv = process.env): Schedu
     maintenanceMs: clampInt(env.SCHED_MAINTENANCE_MS, 5 * 60_000, 60_000, 60 * 60_000),
     // 60 min default; the retrain policy still requires ≥24h between real trainings.
     learningMs: clampInt(env.SCHED_LEARNING_MS, 60 * 60_000, 10 * 60_000, 24 * 60 * 60_000),
-    // 60s default supervisor cadence; never faster than 15s.
-    supervisorMs: clampInt(env.SCHED_SUPERVISOR_MS, 60_000, 15_000, 30 * 60_000),
+    // 30s default supervisor cadence — halves the worst-case lag between an
+    // entry-zone callout being built and it reaching Discord (so an options alert
+    // does not arrive a minute late at the top of the candle). Never faster than
+    // 15s; override with SCHED_SUPERVISOR_MS. Budget-safe: ~12 tickers/cycle.
+    supervisorMs: clampInt(env.SCHED_SUPERVISOR_MS, 30_000, 15_000, 30 * 60_000),
     // 6h default improvement audit; never faster than 1h.
     improvementMs: clampInt(env.SCHED_IMPROVEMENT_MS, 6 * 60 * 60_000, 60 * 60_000, 7 * 24 * 60 * 60_000),
   };

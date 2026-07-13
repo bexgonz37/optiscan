@@ -171,6 +171,8 @@ export async function captureStockAlert(sig: StockSignal): Promise<number | null
         moveAgeSeconds: timing.moveAgeSeconds,
         setupScore: v.score, confidence: v.confidence,
         movePct: sig.movePct, price: sig.price,
+        // Session VWAP for the anti-chase / extension gate (verified, may be null).
+        vwap: sig.vwap ?? null,
         shortRate: sig.shortRate, volumeSurge: sig.surge,
         // NBBO + freshness for the compact card and the now-only stock gate.
         bid: sig.bid ?? null, ask: sig.ask ?? null,

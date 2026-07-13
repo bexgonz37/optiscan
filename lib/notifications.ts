@@ -369,6 +369,9 @@ export async function notifyNewAlert(alertId: number, alertLike: any): Promise<v
         actionableNow: alertLike?.actionableNow !== false,
         session: String(alertLike?.session ?? "regular"),
         nowMs: typeof alertLike?.nowMs === "number" ? alertLike.nowMs : Date.now(),
+        // Real anti-chase inputs (verified at capture; null when unavailable).
+        vwap: typeof alertLike?.vwap === "number" ? alertLike.vwap : null,
+        dayChangePct: typeof alertLike?.movePct === "number" ? alertLike.movePct : null,
       };
       const gate = stockNowOnlyEligible(stockInput);
       if (!gate.ok) {
