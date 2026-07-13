@@ -31,9 +31,11 @@ import {
   createDiscordDelivery,
   updateDiscordDelivery,
   getDiscordDelivery,
+  getDiscordDeliveryByIdempotencyKey,
   retryableDiscordDeliveries,
 } from "@/lib/alert-store";
 import { actionableFreshness, type DataKind } from "@/lib/data-freshness";
+import { legacyOptionsSuppressed } from "@/lib/callouts/routing";
 
 export type DiscordWebhookKind = "options" | "stocks" | "recap" | "default";
 
@@ -130,7 +132,7 @@ function nextRetryIso(retryCount: number): string {
   return new Date(Date.now() + delayMs).toISOString();
 }
 
-async function sendTrackedDiscord(input: {
+export async function sendTrackedDiscord(input: {
   alertId?: number | null;
   payload: any;
   webhook: DiscordWebhookKind;
@@ -293,6 +295,17 @@ export async function notifyNewAlert(alertId: number, alertLike: any): Promise<v
       return;
     }
     const isStock = alertLike?.assetClass === "stock" || alertLike?.asset_class === "stock";
+    // Coexistence rule: when the Supervisor is the canonical callout path, the
+    // LEGACY options Discord sender stands down so the same opportunity is never
+    // sent twice. Stock alerts always use the legacy stock path (the supervisor
+    // does not own them), and paper/alert capture is unaffected.
+    if (!isStock && legacyOptionsSuppressed()) {
+      insertNotificationEvent({
+        alertId, channel: "discord_webhook", status: "skipped",
+        error: "superseded by supervisor canonical callout path (CALLOUT_CANONICAL_PATH=supervisor)",
+      });
+      return;
+    }
     if (isStock) {
       if (!extendedStockNotifyEnabled() && isExtendedStockAlert(alertLike)) {
         insertNotificationEvent({
@@ -485,6 +498,45 @@ export async function confirmAndSendPending(eventId: number): Promise<{ ok: bool
   } catch (err: any) {
     markNotificationEvent(eventId, "failed", err?.message);
     return { ok: false, error: err?.message };
+  }
+}
+
+/**
+ * Deliver ONE canonical Supervisor callout through the existing tracked Discord
+ * infrastructure (delivery ledger, idempotency, retries, status recording). This
+ * is the ONLY new-callout send path — one message per canonical deduplicated
+ * opportunity/horizon, never one per contributing agent.
+ *
+ * Idempotency: if a delivery already exists for the callout's idempotency key and
+ * was SENT, this is a no-op (retries and duplicate cycles never double-post).
+ * Routing reuses the options/stocks webhooks; put research goes to the options
+ * webhook and its payload is already labeled RESEARCH ONLY by the formatter.
+ */
+export async function deliverCalloutDiscord(input: {
+  webhook: "options" | "stocks";
+  payload: any;
+  idempotencyKey: string;
+}): Promise<{ sent: boolean; skipped?: boolean; deliveryId?: string; reason?: string; status: string }> {
+  const { webhook, payload, idempotencyKey } = input;
+  if (!discordWebhookConfigured(webhook)) {
+    const deliveryId = createDiscordDelivery({
+      alertId: null, channelType: "discord_webhook", webhookName: webhook,
+      payloadType: "callout", payload, idempotencyKey,
+      status: "NOT_CONFIGURED", failureReason: `Discord ${webhook} webhook not set`,
+    });
+    return { sent: false, deliveryId, reason: `Discord ${webhook} webhook not set`, status: "NOT_CONFIGURED" };
+  }
+  // Idempotency guard: never re-post a callout state that already went out.
+  const existing = getDiscordDeliveryByIdempotencyKey(idempotencyKey);
+  if (existing && existing.status === "SENT") {
+    return { sent: false, skipped: true, deliveryId: existing.delivery_id, reason: "already sent", status: "SENT" };
+  }
+  try {
+    const res = await sendTrackedDiscord({ alertId: null, payload, webhook, payloadType: "callout", idempotencyKey });
+    return { sent: true, deliveryId: (res as any).deliveryId, status: "SENT" };
+  } catch (err: any) {
+    const failed = getDiscordDeliveryByIdempotencyKey(idempotencyKey);
+    return { sent: false, deliveryId: failed?.delivery_id, reason: err?.message ?? String(err), status: failed?.status ?? "FAILED" };
   }
 }
 

@@ -16,20 +16,39 @@ import { buildCallout, type Callout } from "@/lib/callouts/callout";
 import { decideEmission, type EmissionDecision } from "@/lib/callouts/dedup";
 import { formatCalloutDiscord, type DiscordCalloutPayload } from "@/lib/callouts/discord-format";
 import { loadPriorCallouts, persistCalloutState, type CalloutStateWrite } from "@/lib/callouts/state-store";
+import { calloutWebhook, supervisorDiscordDeliveryEnabled } from "@/lib/callouts/routing";
+import { deliverCalloutDiscord } from "@/lib/notifications";
 
 export interface CalloutBundle {
   callout: Callout;
   decision: EmissionDecision;
   discord: DiscordCalloutPayload | null;
+  deliveryId?: string | null;
+  deliveryStatus?: string | null;
 }
 
 export interface CalloutsRunResult {
   bundles: CalloutBundle[];
   discordAutoSend: boolean;
+  delivered: number;
   note: string;
 }
 
-export async function buildCalloutsForTickers(tickers: string[], nowMs: number = Date.now()): Promise<CalloutsRunResult> {
+export interface BuildCalloutsOptions {
+  /** Actually deliver emitted callouts to Discord (requires config + gating). */
+  deliver?: boolean;
+}
+
+/** Convert the formatter's { content, embed } into a Discord webhook payload. */
+function toWebhookPayload(p: DiscordCalloutPayload): Record<string, unknown> {
+  return { content: p.content, embeds: [p.embed] };
+}
+
+export async function buildCalloutsForTickers(
+  tickers: string[],
+  nowMs: number = Date.now(),
+  opts: BuildCalloutsOptions = {},
+): Promise<CalloutsRunResult> {
   // Prior lifecycle/dedup state is hydrated from SQLite (survives restarts).
   const prev = loadPriorCallouts();
   const callouts: Callout[] = [];
@@ -43,23 +62,48 @@ export async function buildCalloutsForTickers(tickers: string[], nowMs: number =
   }
 
   const decisions = callouts.map((c) => decideEmission(c, prev.get(c.key), { nowMs }));
-  const autoSend = process.env.AGENT_CALLOUT_DISCORD === "1";
+  const autoSend = supervisorDiscordDeliveryEnabled();
   const bundles: CalloutBundle[] = callouts.map((c, i) => ({
     callout: c,
     decision: decisions[i],
     discord: decisions[i].emit ? formatCalloutDiscord(c) : null,
+    deliveryId: null,
+    deliveryStatus: null,
   }));
 
-  // Persist post-cycle state (delivery ids are attached by the delivery layer;
-  // here they stay null — preview only). This is what makes dedup restart-safe.
-  const writes: CalloutStateWrite[] = bundles.map((b) => ({ callout: b.callout, decision: b.decision }));
+  // Deliver ONE tracked message per emitted canonical opportunity/horizon — only
+  // when explicitly asked AND the supervisor path is the canonical Discord sender.
+  let delivered = 0;
+  if (opts.deliver && autoSend) {
+    for (const b of bundles) {
+      if (!b.decision.emit || !b.discord) continue;
+      try {
+        const res = await deliverCalloutDiscord({
+          webhook: calloutWebhook(b.callout),
+          payload: toWebhookPayload(b.discord),
+          idempotencyKey: b.decision.idempotencyKey,
+        });
+        b.deliveryId = res.deliveryId ?? null;
+        b.deliveryStatus = res.status;
+        if (res.sent) delivered++;
+      } catch {
+        // Delivery failure is recorded in the ledger; never abort the cycle.
+      }
+    }
+  }
+
+  // Persist post-cycle state (with any delivery ids). Restart-safe dedup.
+  const writes: CalloutStateWrite[] = bundles.map((b) => ({
+    callout: b.callout, decision: b.decision, deliveryId: b.deliveryId, deliveryStatus: b.deliveryStatus,
+  }));
   persistCalloutState(writes, nowMs);
 
   return {
     bundles,
     discordAutoSend: autoSend,
+    delivered,
     note: autoSend
-      ? "Discord auto-send enabled — payloads carry stable idempotency keys for the delivery ledger."
-      : "Discord auto-send is OFF by default (set AGENT_CALLOUT_DISCORD=1). Desktop is the active channel; payloads are preview-ready.",
+      ? "Supervisor is the canonical Discord path — emitted callouts deliver through the tracked ledger."
+      : "Supervisor Discord delivery OFF (set CALLOUT_CANONICAL_PATH=supervisor and AGENT_CALLOUT_DISCORD=1). Desktop is the active channel; payloads are preview-ready.",
   };
 }

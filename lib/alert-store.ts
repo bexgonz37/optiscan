@@ -1071,6 +1071,11 @@ export function getDiscordDelivery(deliveryId: string) {
   return getDb().prepare("SELECT * FROM discord_deliveries WHERE delivery_id=?").get(deliveryId) as any;
 }
 
+/** Look up an existing delivery by its idempotency key (for callout dedup). */
+export function getDiscordDeliveryByIdempotencyKey(idempotencyKey: string) {
+  return getDb().prepare("SELECT * FROM discord_deliveries WHERE idempotency_key=?").get(idempotencyKey) as any;
+}
+
 export function listDiscordDeliveries(limit = 100, status?: string | null) {
   const capped = Math.max(1, Math.min(500, Number(limit) || 100));
   // LEFT JOIN alerts so the delivery ledger UI can show ticker + setup type
