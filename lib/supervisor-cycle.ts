@@ -19,7 +19,10 @@ import { getZeroDteUniverse } from "@/lib/universe.js";
 import { loopState } from "@/lib/scanner-loop";
 import { buildCycleUniverse, DEFAULT_SUPERVISOR_CORE_TICKERS } from "@/lib/supervisor-universe";
 
-type G = typeof globalThis & { __optiscanSupervisorTelemetry?: SupervisorTelemetry };
+type G = typeof globalThis & {
+  __optiscanSupervisorTelemetry?: SupervisorTelemetry;
+  __optiscanSupervisorRunning?: boolean;
+};
 
 export interface SupervisorTelemetry {
   lastCycleAtMs: number | null;
@@ -27,6 +30,13 @@ export interface SupervisorTelemetry {
   lastCycleCanonical: number;
   lastCycleEmitted: number;
   lastCycleDelivered: number;
+  lastCycleDurationMs: number;
+  lastCycleSymbols: string[];
+  lastChainConcurrency: number;
+  lastOptionsChainsSucceeded: number;
+  lastOptionsChainsFailed: number;
+  lastTickerLatencies: Array<{ ticker: string; ok: boolean; durationMs: number; canonical: number; error?: string }>;
+  overlapPrevented: number;
   cycles: number;
   lastError: string | null;
 }
@@ -35,7 +45,10 @@ function telemetry(): SupervisorTelemetry {
   const g = globalThis as G;
   g.__optiscanSupervisorTelemetry ??= {
     lastCycleAtMs: null, lastCycleTickers: 0, lastCycleCanonical: 0,
-    lastCycleEmitted: 0, lastCycleDelivered: 0, cycles: 0, lastError: null,
+    lastCycleEmitted: 0, lastCycleDelivered: 0, lastCycleDurationMs: 0,
+    lastCycleSymbols: [], lastChainConcurrency: 0, lastOptionsChainsSucceeded: 0,
+    lastOptionsChainsFailed: 0, lastTickerLatencies: [], overlapPrevented: 0,
+    cycles: 0, lastError: null,
   };
   return g.__optiscanSupervisorTelemetry;
 }
@@ -73,14 +86,15 @@ function dynamicCandidates(env: NodeJS.ProcessEnv): string[] {
 
 /**
  * The bounded, session-appropriate ticker universe for one supervisor cycle.
- * Pinned core tickers (SUPERVISOR_CORE_TICKERS, default NVDA,META,SPCX,SPY,AAPL,
- * AMZN) are always included first; the strongest dynamic movers fill the
+ * Pinned core tickers (SUPERVISOR_CORE_TICKERS or OWNER_CORE_TICKERS, default
+ * NVDA,META,SPY,QQQ,AAPL,AMZN,MSFT,TSLA,AMD,GOOGL) are always included first
+ * when capacity allows; the strongest dynamic movers fill the
  * remaining slots up to SUPERVISOR_MAX_TICKERS. See `buildCycleUniverse`.
  */
 export function cycleUniverse(env: NodeJS.ProcessEnv = process.env): string[] {
-  const cap = Math.max(1, Math.min(50, Number(env.SUPERVISOR_MAX_TICKERS ?? 8) || 8));
-  const coreCsv = env.SUPERVISOR_CORE_TICKERS ?? DEFAULT_SUPERVISOR_CORE_TICKERS;
-  return buildCycleUniverse(coreCsv, dynamicCandidates(env), cap);
+  const cap = Math.max(1, Math.min(50, Number(env.SUPERVISOR_MAX_TICKERS ?? 12) || 12));
+  const coreCsv = env.SUPERVISOR_CORE_TICKERS ?? env.OWNER_CORE_TICKERS ?? DEFAULT_SUPERVISOR_CORE_TICKERS;
+  return buildCycleUniverse(coreCsv, dynamicCandidates(env), cap, { rotationOffset: telemetry().cycles });
 }
 
 export interface SupervisorCycleResult {
@@ -97,23 +111,40 @@ export interface SupervisorCycleResult {
  * a failure is recorded in telemetry and never throws into the scheduler.
  */
 export async function runSupervisorCycle(nowMs: number = Date.now(), env: NodeJS.ProcessEnv = process.env): Promise<SupervisorCycleResult> {
+  const g = globalThis as G;
   const t = telemetry();
+  if (g.__optiscanSupervisorRunning) {
+    t.overlapPrevented += 1;
+    t.lastError = "overlap prevented: previous supervisor cycle still running";
+    return { ranAtMs: nowMs, tickers: 0, canonical: 0, emitted: 0, delivered: 0 };
+  }
+  g.__optiscanSupervisorRunning = true;
   const tickers = cycleUniverse(env);
   let canonical = 0, emitted = 0, delivered = 0;
+  const started = Date.now();
   try {
     const res = await buildCalloutsForTickers(tickers, nowMs, { deliver: true });
     canonical = res.bundles.length;
     emitted = res.bundles.filter((b) => b.decision.emit).length;
     delivered = res.delivered;
+    t.lastChainConcurrency = res.execution.concurrency;
+    t.lastOptionsChainsSucceeded = res.execution.succeeded;
+    t.lastOptionsChainsFailed = res.execution.failed;
+    t.lastTickerLatencies = res.execution.tickerResults;
+    t.lastError = null;
   } catch (err: any) {
     t.lastError = err?.message ?? String(err);
+  } finally {
+    g.__optiscanSupervisorRunning = false;
   }
 
   t.lastCycleAtMs = nowMs;
   t.lastCycleTickers = tickers.length;
+  t.lastCycleSymbols = tickers;
   t.lastCycleCanonical = canonical;
   t.lastCycleEmitted = emitted;
   t.lastCycleDelivered = delivered;
+  t.lastCycleDurationMs = Date.now() - started;
   t.cycles += 1;
 
   return { ranAtMs: nowMs, tickers: tickers.length, canonical, emitted, delivered };

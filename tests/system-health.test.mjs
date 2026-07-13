@@ -29,7 +29,9 @@ test("provider health is independent of individual stale symbols", () => {
   const provider = getProviderHealth();
   assert.equal(provider.connected, true, "provider stays connected despite stale symbols");
   const health = getSystemDataHealth();
-  assert.ok(health.stale_symbols.length >= 2, "stale symbols tracked separately");
+  assert.ok(health.blocking_symbols.length >= 2, "blocking symbols tracked separately");
+  assert.ok(health.stale_symbols.includes("NVDA"), "entitlement/provider issues remain in stale/provider bucket");
+  assert.ok(!health.stale_symbols.includes("META"), "ordinary no-data is not mislabeled stale");
   assert.equal(health.provider.connected, true, "system view keeps provider health independent");
 });
 

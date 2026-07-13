@@ -6,7 +6,9 @@
  * `supervisor-cycle.ts`, which delegates the ordering to `buildCycleUniverse`.
  *
  * Ordering contract:
- *   1. Every VALID pinned core ticker is included first, in the order given.
+ *   1. Every VALID pinned core ticker is included first when capacity allows.
+ *      If capacity is smaller than the core set, the core window rotates so no
+ *      tail symbol is starved forever.
  *   2. The strongest dynamic candidates (already ranked strongest-first by the
  *      caller) then fill the remaining capacity.
  *   3. Everything is deduplicated (core vs. core, core vs. dynamic, dynamic vs.
@@ -20,8 +22,8 @@
  * the cycle continues.
  */
 
-/** Default pinned core universe (overridable via SUPERVISOR_CORE_TICKERS). */
-export const DEFAULT_SUPERVISOR_CORE_TICKERS = "NVDA,META,SPCX,SPY,AAPL,AMZN";
+/** Default pinned core universe (overridable via SUPERVISOR_CORE_TICKERS or OWNER_CORE_TICKERS). */
+export const DEFAULT_SUPERVISOR_CORE_TICKERS = "NVDA,META,SPY,QQQ,AAPL,AMZN,MSFT,TSLA,AMD,GOOGL";
 
 // A tradable US ticker: leading letter, then letters/digits, with an optional
 // single-letter class suffix (e.g. BRK.B). Rejects empty strings and garbage so
@@ -54,6 +56,7 @@ export function buildCycleUniverse(
   coreCsv: string | undefined | null,
   dynamicCandidates: readonly string[],
   cap: number,
+  opts: { rotationOffset?: number } = {},
 ): string[] {
   const limit = Math.max(1, Math.min(50, Math.trunc(Number(cap)) || 8));
   const seen = new Set<string>();
@@ -64,8 +67,11 @@ export function buildCycleUniverse(
     seen.add(sym);
     out.push(sym);
   };
-  // Core is pinned first so every valid core symbol is present before any mover.
-  for (const c of parseTickerList(coreCsv)) add(c);
+  const core = parseTickerList(coreCsv);
+  const rotatedCore = core.length > limit
+    ? Array.from({ length: core.length }, (_, i) => core[(i + Math.max(0, Math.trunc(opts.rotationOffset ?? 0))) % core.length])
+    : core;
+  for (const c of rotatedCore) add(c);
   for (const d of dynamicCandidates ?? []) add(d);
   return out;
 }

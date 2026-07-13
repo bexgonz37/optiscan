@@ -57,6 +57,19 @@ test("actionable freshness blocks missing and not-entitled data", () => {
   recordNoData("META", "options_chain", "403 not entitled");
   const verdict = actionableFreshness("META", ["stock_quote", "options_chain"]);
   assert.equal(verdict.ok, false);
-  assert.ok(verdict.reason.includes("options_chain: NOT_ENTITLED"));
-  assert.ok(verdict.reason.includes("stock_quote: NO_DATA"));
+  assert.ok(verdict.reason.includes("options_chain: NO_ENTITLEMENT"));
+  assert.ok(verdict.reason.includes("stock_quote: NOT_REQUESTED_YET"));
+});
+
+test("system health separates blocking not-requested symbols from truly stale/provider symbols", () => {
+  __resetFreshnessForTest();
+  recordNoData("LUNR", "options_chain", "required data type has not been observed in this process");
+  recordNoData("VLO", "news", "no recent catalysts returned");
+  recordNoData("AMD", "options_chain", "polygon timeout after 10000ms: /v3/snapshot/options/AMD");
+  const health = getSystemDataHealth();
+  assert.ok(health.blocking_symbols.includes("LUNR"));
+  assert.ok(health.blocking_symbols.includes("VLO"));
+  assert.ok(health.stale_symbols.includes("AMD"));
+  assert.ok(!health.stale_symbols.includes("LUNR"), "not-requested data is not counted as stale live data");
+  assert.ok(!health.stale_symbols.includes("VLO"), "ordinary no-data rows are not counted as stale live data");
 });

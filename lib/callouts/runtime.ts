@@ -20,6 +20,7 @@ import { calloutWebhook, supervisorDiscordDeliveryEnabled } from "@/lib/callouts
 import { deliverCalloutDiscord } from "@/lib/notifications";
 import { reviewPortfolio } from "@/lib/agents/portfolio";
 import { bridgeCalloutsToPaper, type BridgeSummary } from "@/lib/callouts/paper-bridge";
+import { envConcurrency, mapLimit } from "@/lib/bounded-concurrency";
 
 export interface CalloutBundle {
   callout: Callout;
@@ -40,6 +41,14 @@ export interface CalloutsRunResult {
   portfolioSuppressed?: number;
   /** Supervisor→paper bridge summary (only when the authoritative cycle ran it). */
   paperBridge?: BridgeSummary;
+  execution: {
+    requestedTickers: string[];
+    concurrency: number;
+    tickerResults: Array<{ ticker: string; ok: boolean; durationMs: number; canonical: number; error?: string }>;
+    succeeded: number;
+    failed: number;
+    durationMs: number;
+  };
 }
 
 export interface BuildCalloutsOptions {
@@ -57,17 +66,36 @@ export async function buildCalloutsForTickers(
   nowMs: number = Date.now(),
   opts: BuildCalloutsOptions = {},
 ): Promise<CalloutsRunResult> {
+  const runStarted = Date.now();
+  const requestedTickers = [...new Set((tickers ?? []).map((t) => String(t).trim().toUpperCase()).filter(Boolean))];
+  const concurrency = envConcurrency(process.env, "SUPERVISOR_CHAIN_CONCURRENCY", 3, 12);
   // Prior lifecycle/dedup state is hydrated from SQLite (survives restarts).
   const prev = loadPriorCallouts();
-  const built: Callout[] = [];
-  for (const t of tickers) {
+  const runResults = await mapLimit(requestedTickers, concurrency, async (t) => {
+    const started = Date.now();
     try {
       const run = await runAgentsForTicker(t, nowMs);
-      for (const r of run.supervised.canonical) built.push(buildCallout(r));
-    } catch {
+      return {
+        ticker: t,
+        ok: true,
+        durationMs: Date.now() - started,
+        canonical: run.supervised.canonical.length,
+        callouts: run.supervised.canonical.map((r) => buildCallout(r)),
+      };
+    } catch (err: any) {
       // A single ticker failure never aborts the batch.
+      return {
+        ticker: t,
+        ok: false,
+        durationMs: Date.now() - started,
+        canonical: 0,
+        error: String(err?.message ?? err).slice(0, 180),
+        callouts: [] as Callout[],
+      };
     }
-  }
+  });
+  const built = runResults.flatMap((r) => r.callouts);
+  const tickerResults = runResults.map(({ callouts, ...r }) => r);
 
   // PORTFOLIO-MANAGER pass (agents/portfolio.ts): anti-chase, thesis
   // reconciliation (no contradictory bull+bear actionables per ticker), quality
@@ -140,6 +168,14 @@ export async function buildCalloutsForTickers(
     portfolioEligible: eligible.size,
     portfolioSuppressed: review.suppressed.length,
     paperBridge,
+    execution: {
+      requestedTickers,
+      concurrency,
+      tickerResults,
+      succeeded: tickerResults.filter((r) => r.ok).length,
+      failed: tickerResults.filter((r) => !r.ok).length,
+      durationMs: Date.now() - runStarted,
+    },
     note: autoSend
       ? "Supervisor is the canonical Discord path — emitted callouts deliver through the tracked ledger."
       : "Supervisor Discord delivery OFF (set CALLOUT_CANONICAL_PATH=supervisor and AGENT_CALLOUT_DISCORD=1). Desktop is the active channel; payloads are preview-ready.",

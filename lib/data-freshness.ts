@@ -9,7 +9,14 @@ export type FreshnessStatus =
   | "DISCONNECTED"
   | "MARKET_CLOSED"
   | "NOT_ENTITLED"
-  | "NO_DATA";
+  | "NO_DATA"
+  | "DISABLED"
+  | "NOT_REQUESTED_YET"
+  | "NO_ELIGIBLE_SYMBOLS"
+  | "PROVIDER_ERROR"
+  | "RATE_LIMITED"
+  | "NO_ENTITLEMENT"
+  | "NO_CONTRACTS";
 
 export type DataKind =
   | "stock_quote"
@@ -144,13 +151,26 @@ export function normalizeProviderTimestampMs(
 function classify(kind: DataKind, ageSeconds: number | null, session: MarketSession, note?: string | null): FreshnessStatus {
   const n = String(note ?? "").toLowerCase();
   if (session === "closed") return "MARKET_CLOSED";
-  if (n.includes("not entitled") || n.includes("not authorized") || n.includes("forbidden") || n.includes("403")) return "NOT_ENTITLED";
-  if (n.includes("no polygon") || n.includes("api key") || n.includes("timeout") || n.includes("quota_exceeded")) return "DISCONNECTED";
+  const status = statusFromNote(n);
+  if (status) return status;
   if (ageSeconds == null) return "DEGRADED";
   const max = maxAgeSecondsFor(kind, session);
   if (ageSeconds <= max) return "LIVE";
   if (ageSeconds <= max * 3) return "DELAYED";
   return "STALE";
+}
+
+function statusFromNote(note: string): FreshnessStatus | null {
+  const n = note.toLowerCase();
+  if (n.includes("disabled")) return "DISABLED";
+  if (n.includes("not requested") || n.includes("not been observed")) return "NOT_REQUESTED_YET";
+  if (n.includes("no eligible")) return "NO_ELIGIBLE_SYMBOLS";
+  if (n.includes("no contracts") || n.includes("empty chain") || n.includes("no option contracts")) return "NO_CONTRACTS";
+  if (n.includes("rate limited") || n.includes("429") || n.includes("quota_exceeded") || n.includes("quota exceeded")) return "RATE_LIMITED";
+  if (n.includes("not entitled") || n.includes("not authorized") || n.includes("forbidden") || n.includes("403")) return "NO_ENTITLEMENT";
+  if (n.includes("no polygon") || n.includes("api key")) return "DISCONNECTED";
+  if (n.includes("timeout") || n.includes("provider") || n.includes("polygon ") || n.includes("request failed")) return "PROVIDER_ERROR";
+  return null;
 }
 
 export function recordProviderSuccess(provider = "polygon", latencyMs: number | null = null) {
@@ -206,7 +226,7 @@ export function recordDataSample(input: {
 
 export function recordNoData(symbol: string, kind: DataKind, note = "provider returned no usable data") {
   const sample = recordDataSample({ symbol, kind, note });
-  sample.freshness_status = /not entitled|not authorized|forbidden|403/i.test(note) ? "NOT_ENTITLED" : "NO_DATA";
+  sample.freshness_status = statusFromNote(String(note)) ?? "NO_DATA";
   store().samples.set(key(sample.symbol, sample.kind), sample);
   return sample;
 }
@@ -279,7 +299,20 @@ export function describeBlockingSample(sample: FreshnessSample): string | null {
     case "DISCONNECTED":
       return `${who} is unavailable — the data provider is disconnected${sample.note ? ` (${sample.note})` : ""}.`;
     case "NOT_ENTITLED":
+    case "NO_ENTITLEMENT":
       return `${who} is not available on the current data plan (entitlement limitation).`;
+    case "PROVIDER_ERROR":
+      return `${who} is unavailable because the provider returned an error${sample.note ? ` (${sample.note})` : ""}.`;
+    case "RATE_LIMITED":
+      return `${who} is unavailable because the data provider is rate-limited${sample.note ? ` (${sample.note})` : ""}.`;
+    case "NOT_REQUESTED_YET":
+      return `${who} has not been requested yet in this process.`;
+    case "NO_ELIGIBLE_SYMBOLS":
+      return `${who} has no eligible symbol in the current scan universe.`;
+    case "NO_CONTRACTS":
+      return `${who} has no option contracts in the requested scan window.`;
+    case "DISABLED":
+      return `${who} collection is disabled by runtime configuration.`;
     case "NO_DATA":
       return `${who} has not been received yet, so an actionable alert cannot be confirmed.`;
     case "MARKET_CLOSED":
@@ -306,8 +339,25 @@ export function isBlockingFreshness(status: FreshnessStatus): boolean {
   return status === "STALE"
     || status === "DISCONNECTED"
     || status === "NOT_ENTITLED"
+    || status === "NO_ENTITLEMENT"
     || status === "NO_DATA"
+    || status === "NOT_REQUESTED_YET"
+    || status === "NO_ELIGIBLE_SYMBOLS"
+    || status === "NO_CONTRACTS"
+    || status === "PROVIDER_ERROR"
+    || status === "RATE_LIMITED"
+    || status === "DISABLED"
     || status === "MARKET_CLOSED";
+}
+
+export function isStaleFreshness(status: FreshnessStatus): boolean {
+  return status === "STALE"
+    || status === "DELAYED"
+    || status === "DISCONNECTED"
+    || status === "PROVIDER_ERROR"
+    || status === "RATE_LIMITED"
+    || status === "NOT_ENTITLED"
+    || status === "NO_ENTITLEMENT";
 }
 
 export function actionableFreshness(symbol: string, kinds: DataKind[]) {
@@ -349,7 +399,8 @@ export function getSystemDataHealth(callStats?: Record<string, unknown>) {
   for (const sample of samples) {
     if (!latestByKind[sample.kind]) latestByKind[sample.kind] = sample;
   }
-  const staleSymbols = [...new Set(samples.filter((s) => isBlockingFreshness(s.freshness_status)).map((s) => s.symbol))];
+  const blockingSymbols = [...new Set(samples.filter((s) => isBlockingFreshness(s.freshness_status)).map((s) => s.symbol))];
+  const staleSymbols = [...new Set(samples.filter((s) => isStaleFreshness(s.freshness_status)).map((s) => s.symbol))];
   return {
     application_time: new Date().toISOString(),
     exchange_time: exchangeTime(),
@@ -358,6 +409,7 @@ export function getSystemDataHealth(callStats?: Record<string, unknown>) {
     provider: getProviderHealth(callStats),
     freshness: latestByKind,
     monitored_symbols: [...new Set(samples.map((s) => s.symbol))].sort(),
+    blocking_symbols: blockingSymbols.sort(),
     stale_symbols: staleSymbols.sort(),
     entitlement_limitations: store().provider.entitlement_limitations,
     samples: samples.slice(0, 250),

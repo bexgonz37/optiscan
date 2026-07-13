@@ -14,6 +14,7 @@ import {
 import { discordDeliverySummary, listDiscordDeliveries } from "@/lib/alert-store";
 import { discordWebhookConfigured } from "@/lib/notifications";
 import { marketSession } from "@/lib/trading-session";
+import { supervisorTelemetry } from "@/lib/supervisor-cycle";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -77,7 +78,7 @@ export async function GET() {
       kind,
       label: kindLabel(kind),
       max_age_seconds: maxAgeSecondsFor(kind, session),
-      status: sample?.freshness_status ?? "NO_DATA",
+      status: sample?.freshness_status ?? "NOT_REQUESTED_YET",
       symbol: sample?.symbol ?? null,
       age_seconds: sample?.data_age_seconds ?? null,
       provider_timestamp: sample?.provider_timestamp ?? null,
@@ -87,7 +88,7 @@ export async function GET() {
 
   // Human-readable blocking reasons per stale symbol (provider health stays
   // independent — a single stale symbol does not mark the provider down).
-  const blocked = (dataHealth.stale_symbols ?? []).map((sym) => describeSymbolActionability(sym));
+  const blocked = (dataHealth.blocking_symbols ?? dataHealth.stale_symbols ?? []).map((sym) => describeSymbolActionability(sym));
 
   const discord = {
     webhooks: {
@@ -126,8 +127,10 @@ export async function GET() {
     blocked,
     monitored_symbol_count: dataHealth.monitored_symbols.length,
     stale_symbol_count: dataHealth.stale_symbols.length,
+    blocking_symbol_count: (dataHealth.blocking_symbols ?? []).length,
     monitored_symbols: dataHealth.monitored_symbols,
     stale_symbols: dataHealth.stale_symbols,
+    blocking_symbols: dataHealth.blocking_symbols ?? [],
     entitlement_limitations: dataHealth.entitlement_limitations,
     rate_limit: {
       status: dataHealth.provider.rate_limit_status,
@@ -139,7 +142,7 @@ export async function GET() {
     },
     database: db,
     discord,
-    supervisor: { enabled: supervisorEnabled },
+    supervisor: { enabled: supervisorEnabled, ...supervisorTelemetry() },
     paper: { enabled: paperEnabled },
     model: { state: modelState },
     owner: {
