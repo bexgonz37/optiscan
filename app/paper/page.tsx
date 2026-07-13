@@ -115,6 +115,7 @@ function PaperPageInner() {
   const trades: any[] = data?.trades ?? [];
   const decisions: any[] = data?.decisions ?? [];
   const events: any[] = data?.events ?? [];
+  const daily = data?.daily ?? null;
   const open = trades.filter((t) => ["WATCHING", "READY", "ENTERED"].includes(t.status));
   const closed = trades.filter((t) => !["WATCHING", "READY", "ENTERED"].includes(t.status));
   const filledClosed = closed.filter((t) => t.entryPrice != null && t.exitPrice != null);
@@ -194,6 +195,26 @@ function PaperPageInner() {
             </div>
           </div>
         </Panel>
+
+        {daily ? (
+          <Panel title="Today" meta="Paper-trade readiness" live tip="paperTrading">
+            <p className="text-sm">{daily.text}</p>
+            <div className="paper-buckets">
+              <div className="paper-bucket">
+                <h4>Setup flow</h4>
+                <p className="muted text-xs">
+                  Qualified {daily.qualifyingActionableCallouts ?? 0} · candidates {daily.paperCandidatesCreated ?? 0} · READY {daily.readyOrders ?? 0}
+                </p>
+              </div>
+              <div className="paper-bucket">
+                <h4>Execution</h4>
+                <p className="muted text-xs">
+                  Revalidations {daily.revalidationAttempts ?? 0} · fills {daily.fills ?? 0} · rejected {daily.rejected ?? 0} · expired windows {daily.expiredEntryWindows ?? 0}
+                </p>
+              </div>
+            </div>
+          </Panel>
+        ) : null}
 
         {s ? (
           <div className="axiom-strip paper-strip">

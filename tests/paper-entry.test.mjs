@@ -127,3 +127,17 @@ test("explanation: rejected entry cites the revalidation reason, not a fake cont
   assert.equal(e.actionabilityStatus, "NO_VALID_CONTRACT");
   assert.match(e.revalidated, /no longer in the chain/);
 });
+
+test("stale quote blocks the fill but remains retryable inside the entry window", () => {
+  const d = decideEntryFill({ revalidation: okReval(), quote: q(1.1, 1.2, { asOfMs: NOW - 120_000 }), limit: 1.25, contracts: 1, session: "regular", fillCfg: cfg, nowMs: NOW, entryWindowExpired: false });
+  assert.equal(d.action, "wait");
+  assert.equal(d.toStatus, null);
+  assert.match(d.reason, /stale quote/);
+});
+
+test("wide spread blocks the fill but remains retryable inside the entry window", () => {
+  const d = decideEntryFill({ revalidation: okReval(), quote: q(1.0, 1.4, { spreadPct: 33 }), limit: 1.45, contracts: 1, session: "regular", fillCfg: cfg, nowMs: NOW, entryWindowExpired: false });
+  assert.equal(d.action, "wait");
+  assert.equal(d.toOrderState, "PENDING");
+  assert.match(d.reason, /spread/);
+});

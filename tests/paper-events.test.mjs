@@ -101,3 +101,19 @@ test("option paper entry creation does not require process freshness cache befor
   assert.ok(/fetchOptionChain\(ticker/.test(sweepBody), "the sweep revalidates live chain data before fill");
   assert.ok(/advanceOpenTrade/.test(sweepBody), "fills still go through pre-entry revalidation");
 });
+
+test("temporary paper auto-entry refusals are retried instead of permanently cancelling", () => {
+  const src = read("lib/paper-engine.ts");
+  const helper = src.slice(src.indexOf("function isPermanentAutoEntryRefusal"), src.indexOf("function currentTapeRow"));
+  assert.ok(/cooldown/.test(read("lib/paper-risk.ts")), "risk engine has temporary cooldown failures");
+  assert.ok(!/cooldown/.test(helper), "cooldown remains retryable, not permanent");
+  assert.ok(/auto-entry permanently refused/.test(helper), "permanent markers are explicit");
+});
+
+test("daily paper summary is honest and does not synthesize trades", () => {
+  const src = read("lib/paper-engine.ts");
+  const body = src.slice(src.indexOf("export function dailyPaperSummary"), src.indexOf("function logDecision"));
+  assert.ok(/0 high-confidence actionable setups passed all gates/.test(body), "zero-fill day explains no qualifying setups");
+  assert.ok(/fills === 0/.test(body), "zero-fill reason is explicit");
+  assert.ok(!/INSERT INTO paper_trades/.test(body), "summary is read-only and creates no synthetic daily trade");
+});

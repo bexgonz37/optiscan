@@ -34,10 +34,11 @@ test("core watch: user's names present and always inside the 1s loop universe", 
   for (const t of core) assert.ok(loop.includes(t), `1s loop must scan core name ${t}`);
 });
 
-test("core watch: isCoreSymbol + env override", () => {
+test("core watch: isCoreSymbol follows OWNER_CORE_TICKERS, not UI extras", () => {
   assert.equal(isCoreSymbol("AAPL", {}), true);
   assert.equal(isCoreSymbol("aapl", {}), true);
   assert.equal(isCoreSymbol("WULF", {}), false); // extended universe
-  assert.equal(isCoreSymbol("AAPL", { SCANNER_CORE_WATCH: "TSLA,NVDA" }), false);
-  assert.equal(isCoreSymbol("TSLA", { SCANNER_CORE_WATCH: "TSLA,NVDA" }), true);
+  assert.equal(isCoreSymbol("AAPL", { OWNER_CORE_TICKERS: "TSLA,NVDA", SCANNER_CORE_WATCH: "AAPL" }), false);
+  assert.equal(isCoreSymbol("TSLA", { OWNER_CORE_TICKERS: "TSLA,NVDA" }), true);
+  assert.ok(getCoreWatchUniverse({ OWNER_CORE_TICKERS: "TSLA,NVDA", SCANNER_CORE_WATCH: "AAPL" }).includes("AAPL"), "UI watch extras do not become impulse-priority core");
 });

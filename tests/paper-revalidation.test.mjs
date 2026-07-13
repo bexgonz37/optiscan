@@ -153,3 +153,10 @@ test("preserves the alert-time contract on every rejection", () => {
   assert.equal(r.ok, false);
   assert.equal(r.alertTimeContract.optionSymbol, "O:AAPL_C210", "alert-time contract preserved for audit");
 });
+
+test("missing exact contract is a permanent pre-entry rejection", () => {
+  const r = revalidateContract(input({ freshContracts: [] }));
+  assert.equal(r.ok, false);
+  assert.equal(r.revalidatedContract, null);
+  assert.match(r.reason, /No option contracts|cannot revalidate/);
+});

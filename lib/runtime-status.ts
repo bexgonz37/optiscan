@@ -32,6 +32,7 @@ export interface RuntimeStatus {
   paper: {
     autoEntryEnabled: boolean; allowZeroDte: boolean; tradingEnabled: boolean;
     candidates: { total: number; created: number; rejected: number; eligiblePending: number; last24hCreated: number; last24hRejected: number };
+    daily: Record<string, unknown>;
     recentRejections: { ticker: string; reason: string; atMs: number }[];
     summary: string;
   };
@@ -157,6 +158,10 @@ export function buildRuntimeStatus(nowMs: number = Date.now()): RuntimeStatus {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     return require("@/lib/callouts/paper-bridge").paperCandidateSummary(nowMs);
   }, { total: 0, created: 0, rejected: 0, eligiblePending: 0, last24h: { created: 0, rejected: 0 }, recentRejections: [] } as any);
+  const dailyPaper = safe(() => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require("@/lib/paper-engine").dailyPaperSummary(nowMs);
+  }, { text: "No paper trades today: paper summary unavailable.", qualifyingActionableCallouts: 0, paperCandidatesCreated: 0, readyOrders: 0, revalidationAttempts: 0, fills: 0, rejected: 0, expiredEntryWindows: 0 } as any);
 
   const deliveries: Record<string, number> = {};
   safe(() => {
@@ -245,6 +250,7 @@ export function buildRuntimeStatus(nowMs: number = Date.now()): RuntimeStatus {
         eligiblePending: paperCandidates.eligiblePending,
         last24hCreated: paperCandidates.last24h.created, last24hRejected: paperCandidates.last24h.rejected,
       },
+      daily: dailyPaper,
       recentRejections: paperCandidates.recentRejections,
       summary: `${paperCandidates.total} Supervisor paper candidates · ${paperCandidates.created} created · ${paperCandidates.rejected} rejected · ${paperCandidates.eligiblePending} pending`,
     },

@@ -6,14 +6,39 @@ import {
   isValidTicker,
   DEFAULT_SUPERVISOR_CORE_TICKERS,
 } from "../lib/supervisor-universe.ts";
+import { getOwnerCoreUniverse, isCoreSymbol } from "../lib/universe.js";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const CORE = "NVDA,META,SPY,QQQ,AAPL,AMZN,MSFT,TSLA,AMD,GOOGL";
+const CORE_LIST = ["NVDA", "META", "SPY", "QQQ", "AAPL", "AMZN", "MSFT", "TSLA", "AMD", "GOOGL"];
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 test("default core universe is the required ten-symbol owner list", () => {
   assert.equal(DEFAULT_SUPERVISOR_CORE_TICKERS, CORE);
-  assert.deepEqual(parseTickerList(DEFAULT_SUPERVISOR_CORE_TICKERS), [
-    "NVDA", "META", "SPY", "QQQ", "AAPL", "AMZN", "MSFT", "TSLA", "AMD", "GOOGL",
-  ]);
+  assert.deepEqual(parseTickerList(DEFAULT_SUPERVISOR_CORE_TICKERS), CORE_LIST);
+});
+
+for (const ticker of CORE_LIST) {
+  test(`${ticker} receives owner-core impulse priority membership`, () => {
+    const env = { OWNER_CORE_TICKERS: CORE };
+    assert.equal(isCoreSymbol(ticker, env), true);
+    assert.ok(getOwnerCoreUniverse(env).includes(ticker));
+  });
+}
+
+test("non-core ticker does not receive owner-core priority unless configured", () => {
+  assert.equal(isCoreSymbol("SMCI", { OWNER_CORE_TICKERS: CORE }), false);
+  assert.equal(isCoreSymbol("SMCI", { OWNER_CORE_TICKERS: `${CORE},SMCI` }), true);
+});
+
+test("scanner impulse path is core-driven, not AAPL-specific", () => {
+  const scanner = readFileSync(join(root, "lib/scanner-loop.ts"), "utf8");
+  const impulseBody = scanner.slice(scanner.indexOf("const coreBullishImpulse"), scanner.indexOf("const fired ="));
+  assert.ok(/core\s*&&/.test(impulseBody), "impulse gate is keyed to isCoreSymbol()");
+  assert.ok(!/AAPL/.test(impulseBody), "no AAPL-specific impulse behavior");
+  assert.ok(!/q\.symbol\s*={2,3}\s*["']AAPL["']/.test(scanner), "no direct AAPL symbol check");
 });
 
 test("all ten core symbols are prioritized before dynamic movers (cap 12)", () => {

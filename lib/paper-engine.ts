@@ -321,6 +321,102 @@ export function listPaperDecisions(limit = 120): PaperDecisionLog[] {
   }));
 }
 
+function hasTable(name: string): boolean {
+  return Boolean(getDb().prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name));
+}
+
+export interface DailyPaperSummary {
+  sinceMs: number;
+  qualifyingActionableCallouts: number;
+  paperCandidatesCreated: number;
+  readyOrders: number;
+  revalidationAttempts: number;
+  fills: number;
+  rejected: number;
+  expiredEntryWindows: number;
+  zeroFillReason: string | null;
+  text: string;
+}
+
+function startOfLocalDayMs(nowMs: number): number {
+  const d = new Date(nowMs);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+export function dailyPaperSummary(nowMs: number = Date.now()): DailyPaperSummary {
+  const db = getDb();
+  const sinceMs = startOfLocalDayMs(nowMs);
+  const sinceIso = new Date(sinceMs).toISOString();
+  const count = (sql: string, ...args: any[]) => Number((db.prepare(sql).get(...args) as any)?.n ?? 0);
+  const latestReason = (sql: string, ...args: any[]) => String((db.prepare(sql).get(...args) as any)?.reason ?? "").trim();
+
+  const paperCandidatesTable = hasTable("paper_candidates");
+  const paperEventsTable = hasTable("paper_events");
+  const candidateCallouts = paperCandidatesTable
+    ? count("SELECT COUNT(*) n FROM paper_candidates WHERE created_at_ms >= ?", sinceMs)
+    : 0;
+  const tradeAlerts = count(
+    `SELECT COUNT(*) n FROM alerts
+     WHERE capture_action='TRADE' AND option_symbol IS NOT NULL AND asset_class != 'stock' AND alert_time >= ?`,
+    sinceIso,
+  );
+  const qualifyingActionableCallouts = Math.max(candidateCallouts, tradeAlerts);
+  const paperCandidatesCreated = paperCandidatesTable
+    ? count("SELECT COUNT(*) n FROM paper_candidates WHERE status='CREATED' AND created_at_ms >= ?", sinceMs)
+    : count("SELECT COUNT(*) n FROM paper_trades WHERE option_symbol IS NOT NULL AND created_at_ms >= ?", sinceMs);
+  const readyOrders = count("SELECT COUNT(*) n FROM paper_trades WHERE option_symbol IS NOT NULL AND status='READY' AND created_at_ms >= ?", sinceMs);
+  const revalidationAttempts = paperEventsTable
+    ? count("SELECT COUNT(*) n FROM paper_events WHERE event_type IN ('validation_passed','validation_failed','no_fill') AND created_at_ms >= ?", sinceMs)
+    : count("SELECT COUNT(*) n FROM paper_decisions WHERE decision IN ('entry_filled','entry_rejected') AND created_at_ms >= ?", sinceMs);
+  const fills = count("SELECT COUNT(*) n FROM paper_trades WHERE option_symbol IS NOT NULL AND entry_at_ms >= ?", sinceMs);
+  const rejected = count("SELECT COUNT(*) n FROM paper_trades WHERE option_symbol IS NOT NULL AND status='CANCELLED' AND entry_price IS NULL AND created_at_ms >= ?", sinceMs);
+  const expiredEntryWindows = count(
+    "SELECT COUNT(*) n FROM paper_trades WHERE option_symbol IS NOT NULL AND status IN ('CANCELLED','EXPIRED') AND entry_price IS NULL AND created_at_ms >= ? AND COALESCE(exit_reason, close_reason, '') LIKE '%entry window%'",
+    sinceMs,
+  );
+
+  let zeroFillReason: string | null = null;
+  if (fills === 0) {
+    if (qualifyingActionableCallouts === 0) {
+      zeroFillReason = "0 high-confidence actionable setups passed all gates.";
+    } else if (paperCandidatesCreated === 0) {
+      zeroFillReason = (paperCandidatesTable
+        ? latestReason(
+          "SELECT COALESCE(reject_reason, 'paper candidate was not created') AS reason FROM paper_candidates WHERE created_at_ms >= ? AND status='REJECTED' ORDER BY id DESC LIMIT 1",
+          sinceMs,
+        )
+        : "") || "Qualifying setups existed, but no READY paper order was created.";
+    } else if (readyOrders > 0) {
+      zeroFillReason = `${readyOrders} READY order${readyOrders === 1 ? "" : "s"} still waiting for conservative live fill/revalidation.`;
+    } else if (expiredEntryWindows > 0) {
+      zeroFillReason = `${expiredEntryWindows} entry window${expiredEntryWindows === 1 ? "" : "s"} expired before a conservative fill.`;
+    } else {
+      zeroFillReason = latestReason(
+        "SELECT reason FROM paper_decisions WHERE allowed=0 AND created_at_ms >= ? ORDER BY id DESC LIMIT 1",
+        sinceMs,
+      ) || "No fill occurred yet; check the latest decision log for the active blocker.";
+    }
+  }
+
+  const text = fills > 0
+    ? `${qualifyingActionableCallouts} setup${qualifyingActionableCallouts === 1 ? "" : "s"} qualified: ${fills} filled, ${rejected} rejected, ${readyOrders} still READY.`
+    : `No paper trades today: ${zeroFillReason}`;
+
+  return {
+    sinceMs,
+    qualifyingActionableCallouts,
+    paperCandidatesCreated,
+    readyOrders,
+    revalidationAttempts,
+    fills,
+    rejected,
+    expiredEntryWindows,
+    zeroFillReason,
+    text,
+  };
+}
+
 function logDecision(input: {
   tradeId?: number | null;
   alertId?: number | null;
@@ -352,6 +448,14 @@ function logDecision(input: {
   } catch (err: any) {
     console.warn("[paper] decision log skipped:", err?.message);
   }
+}
+
+function isPermanentAutoEntryRefusal(failures: string[]): boolean {
+  const text = failures.join(" ; ").toLowerCase();
+  if (/alert not found|positive entrylimit|required|no contract attached/.test(text)) return true;
+  if (/0dte contracts are excluded|kill switch/.test(text)) return true;
+  if (/bearish|put/.test(text)) return true;
+  return false;
 }
 
 function openTrades(): PaperTrade[] {
@@ -909,11 +1013,14 @@ export function autoEnterFromAlerts(nowMs: number = Date.now()): number {
       console.log(`[paper] auto-entry: trade #${result.id} from alert #${row.id}`);
     } else {
       console.log(`[paper] auto-entry refused for alert #${row.id}: ${result.risk.failures.join("; ")}`);
-      // Record the refusal so the same alert isn't re-evaluated every sweep.
-      db.prepare(
-        `INSERT INTO paper_trades (alert_id, ticker, option_type, contracts, status, exit_reason, created_at_ms)
-         SELECT id, ticker, LOWER(COALESCE(option_side,'call')), 1, 'CANCELLED', ?, ? FROM alerts WHERE id=?`,
-      ).run(`auto-entry refused: ${result.risk.failures.join("; ")}`, nowMs, row.id);
+      if (isPermanentAutoEntryRefusal(result.risk.failures)) {
+        // Permanent input/policy failures are marked once. Temporary risk/capacity
+        // conditions are only decision-logged and retried until the entry window closes.
+        db.prepare(
+          `INSERT INTO paper_trades (alert_id, ticker, option_type, contracts, status, exit_reason, created_at_ms)
+           SELECT id, ticker, LOWER(COALESCE(option_side,'call')), 1, 'CANCELLED', ?, ? FROM alerts WHERE id=?`,
+        ).run(`auto-entry permanently refused: ${result.risk.failures.join("; ")}`, nowMs, row.id);
+      }
     }
   }
   return created;

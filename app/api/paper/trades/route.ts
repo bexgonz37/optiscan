@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   if (!checkApiToken(req)) return unauthorized();
   ensureServerBoot();
-  const { listPaperTrades, listPaperDecisions, paperEngineState, recentPaperEvents, paperTradeEvents } = await import("@/lib/paper-engine");
+  const { listPaperTrades, listPaperDecisions, paperEngineState, recentPaperEvents, paperTradeEvents, dailyPaperSummary } = await import("@/lib/paper-engine");
   const { summarize, byConfidence, byExpirationLength, bySetup, byExitKind } = await import("@/lib/paper-analytics");
   const { syncPaperOutcomes } = await import("@/lib/outcome-store");
 
@@ -40,6 +40,7 @@ export async function GET(req: Request) {
     ok: true,
     trades,
     summary,
+    daily: dailyPaperSummary(),
     account: {
       startingBalance,
       realizedPnl: summary.totalPnlDollars,

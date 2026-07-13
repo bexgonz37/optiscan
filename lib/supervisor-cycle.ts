@@ -93,7 +93,7 @@ function dynamicCandidates(env: NodeJS.ProcessEnv): string[] {
  */
 export function cycleUniverse(env: NodeJS.ProcessEnv = process.env): string[] {
   const cap = Math.max(1, Math.min(50, Number(env.SUPERVISOR_MAX_TICKERS ?? 12) || 12));
-  const coreCsv = env.SUPERVISOR_CORE_TICKERS ?? env.OWNER_CORE_TICKERS ?? DEFAULT_SUPERVISOR_CORE_TICKERS;
+  const coreCsv = env.OWNER_CORE_TICKERS ?? env.SUPERVISOR_CORE_TICKERS ?? DEFAULT_SUPERVISOR_CORE_TICKERS;
   return buildCycleUniverse(coreCsv, dynamicCandidates(env), cap, { rotationOffset: telemetry().cycles });
 }
 
