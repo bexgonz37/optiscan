@@ -145,12 +145,13 @@ export function computeStockVerdict(i: StockSignalInput, { minScore = STOCK_DEFA
       confidence, score, reasons,
     };
   }
-  // Bearish safety gate (2026-07-10): SHORT verdicts are research-only until
-  // the short strategy is rebuilt and validated (lib/bearish-gate.ts).
+  // Bearish gate (lib/bearish-gate.ts): SHORT verdicts are research-only until
+  // bearish trading is enabled (BEARISH_ACTIONABLE=1); once enabled they pass the
+  // same quality bar as LONG.
   if (side === "SHORT" && !bearishActionable()) {
     return {
       action: "WAIT", side, headline: "Watch ↓ move",
-      reason: `${BEARISH_DISABLED_REASON}: bearish stock callouts are research-only pending strategy rebuild.`,
+      reason: `${BEARISH_DISABLED_REASON}: bearish stock callouts are research-only until bearish trading is enabled.`,
       confidence, score, reasons,
     };
   }

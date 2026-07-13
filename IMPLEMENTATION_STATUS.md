@@ -1,11 +1,46 @@
 # OptiScan — Implementation Status
 
-_Last updated: 2026-07-10. Working repo: `~/Downloads/optiscan-main`, branch `main`._
+_Last updated: 2026-07-13. Working repo: `~/Downloads/optiscan-main`, branch `main`._
 
 This file is the resume point. Read it + the task list before making changes.
-Do **not** repeat Phase 1, redo timestamp normalization, re-enable bearish
-actionable alerts (`BEARISH_ACTIONABLE` stays off), or add the Self-Improvement
+Do **not** repeat Phase 1, redo timestamp normalization, or add the Self-Improvement
 Lab / an embedded LLM.
+
+## Production Refinement Phase (2026-07-13) — quality over quantity
+
+Goal shift: not "find every valid setup" but "find the BEST trades, send FEWER,
+higher-quality alerts." All ADDITIVE and reusing the existing Supervisor / agents /
+selector / risk / paper / model / statistics / lifecycle / Discord — no redesign.
+
+- **Portfolio-manager layer** (`lib/agents/portfolio.ts`, PURE): after the base
+  Supervisor dedups/vetoes, this ranks every idea by a composite quality score
+  (setup + contract quality, liquidity, spread, freshness, evidence, validated
+  probability, status, core-universe priority), reconciles conflicting theses per
+  ticker (no simultaneous bull+bear actionables — mixed → one WATCH), applies
+  anti-chase (extended ACTIONABLE → WAIT_FOR_PULLBACK), and selects only the
+  strongest few for Discord. Wired into `lib/callouts/runtime.ts`; delivery is
+  gated on portfolio eligibility (existing dedup/cooldown untouched).
+- **Owner controls** (`lib/owner-settings.ts`, PURE, env-driven): core/priority
+  tickers, max Discord alerts, min setup quality, bullish/bearish enable, early
+  alerts, alert categories. Surfaced read-only in `/api/system/overview`.
+- **Bearish trading** is now a first-class, owner-controllable capability behind
+  `BEARISH_ACTIONABLE=1`: when enabled, bearish ideas run the SAME risk/selection
+  lifecycle and quality gates as bullish (no separate weaker path, no "disabled"
+  message). Default remains OFF (safe); the owner flips one flag. Model
+  probability stays null for bearish (no bearish model — never fabricated).
+- **Discord format** redesigned trader-first (`lib/callouts/discord-format.ts`):
+  what trade / why now / underlying trigger / option entry (bid-ask-mid-spread +
+  est. fill) / invalidation / horizon / risk, with stats below. Never headlines
+  the OCC symbol; shows "WAIT — NO VALID ENTRY WINDOW" when there is no entry;
+  never fabricates targets.
+- **Stock-alert diagnosis** (§8): options run on the supervisor path; legacy stock
+  alerts require `STOCK_CALLOUTS=1` (`lib/notifications.ts:317`). Added
+  `stockAlertGateReason()` + surfaced it in `/api/system/overview` so the exact
+  reason is visible without logs.
+- Safety intact: evidence/probability/paper/lifecycle/fingerprinting/statistics/
+  scheduler/supervisor/risk/dedup/contract-selection all preserved; no live
+  brokerage; no fabricated probabilities or targets; freshness/risk/liquidity
+  gates unchanged.
 
 ## Verification baseline (green)
 

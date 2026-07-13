@@ -4,10 +4,11 @@
  * selectContract result, freshness, market context, evidence, model state, risk
  * verdict) and produces a normalized AgentResult. The runtime does the I/O.
  *
- * Bearish safety: any bearish/put agent is ALWAYS researchOnly and can never be
- * ACTIONABLE — enforced here AND by lib/bearish-gate.ts (the final authority).
- * A hard gate (stale data, no valid contract, risk veto) always outranks a
- * favorable selection or a model probability.
+ * Bearish trading: gated by lib/bearish-gate.ts (BEARISH_ACTIONABLE). When OFF a
+ * bearish idea is research-only; when ON it runs the SAME risk/selection lifecycle
+ * as bullish (identical quality standards — no separate, weaker path). A hard gate
+ * (stale data, no valid contract, risk veto) always outranks a favorable selection
+ * or a model probability, in either direction.
  */
 import type { SelectionResult } from "../contract-selector.ts";
 import type { MarketSession } from "../trading-session.ts";
@@ -98,12 +99,14 @@ export function evaluateHorizonAgent(config: HorizonAgentConfig, input: HorizonA
     // A contract was selected. Derive the "passed" gates for transparency.
     for (const g of ["mid", "spread", "delta", "dte", "freshness"]) passedGates.push(g);
 
-    if (isBearish) {
-      // Puts are ALWAYS research-only (bearish gate). Never actionable.
+    if (bearish.gated) {
+      // Bearish actionability is OFF (BEARISH_ACTIONABLE≠1) → research-only. When
+      // enabled, a bearish idea falls through to the SAME risk/selection lifecycle
+      // as bullish below (§3: identical quality standards, no separate path).
       candidateStatus = "RESEARCH_ONLY";
       actionability = "RESEARCH_ONLY";
       researchOnly = true;
-      reasons.push(bearish.reason ?? "Bearish/put idea is research-only; the bearish gate governs actionability.");
+      reasons.push(bearish.reason ?? "Bearish idea is research-only until bearish trading is enabled.");
     } else if (input.riskVerdict && !input.riskVerdict.allowed) {
       // Risk veto outranks a favorable selection.
       candidateStatus = "WATCH";

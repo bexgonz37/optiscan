@@ -37,7 +37,7 @@ test("computeStockVerdict: SHORT is research-only while the bearish gate is acti
   };
   const gated = computeStockVerdict(input);
   assert.equal(gated.action, "WAIT");
-  assert.match(gated.reason, /BEARISH_STRATEGY_DISABLED/);
+  assert.match(gated.reason, /BEARISH_TRADING_OFF/);
   process.env.BEARISH_ACTIONABLE = "1";
   const enabled = computeStockVerdict(input);
   assert.equal(enabled.action, "BUY", "old path preserved behind the flag");

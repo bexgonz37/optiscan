@@ -114,7 +114,10 @@ test("nextCalloutState records emission times deterministically", () => {
 test("discord payload has ordered sections and no banned language", () => {
   const p = formatCalloutDiscord(buildCallout(ar()));
   const names = p.embed.fields.map((f) => f.name);
-  assert.deepEqual(names.slice(0, 6), ["Why now", "Trigger", "Contract", "Risk / invalidation", "Evidence", "Model"]);
+  // Trader-first order: what/why/trigger/entry/invalidation/horizon/risk, stats below.
+  assert.deepEqual(names.slice(0, 7), ["Trade", "Why now", "Underlying trigger", "Option entry", "Invalidation", "Horizon", "Risk"]);
+  // Never headlines the raw OCC option symbol.
+  assert.ok(!/^O:/.test(p.embed.title) && !/O:SPY/.test(p.embed.title));
   assert.ok(!containsBannedLanguage(JSON.stringify(p)));
   assert.match(p.embed.description, /outcomes are uncertain/);
 });
@@ -122,7 +125,7 @@ test("discord payload has ordered sections and no banned language", () => {
 test("discord hides probability when the model is inactive", () => {
   const p = formatCalloutDiscord(buildCallout(ar()));
   const model = p.embed.fields.find((f) => f.name === "Model");
-  assert.match(model.value, /no probability shown/);
+  assert.match(model.value, /no probability/);
 });
 
 // ── Phase 8: experimental / setup-score labeling ─────────────────────────────
@@ -165,6 +168,9 @@ test("experimental probability never flips a callout to actionable on its own", 
 
 test("discord put callout is labeled research", () => {
   const p = formatCalloutDiscord(buildCallout(ar({ direction: "bearish", candidateStatus: "RESEARCH_ONLY", researchOnly: true, actionability: "RESEARCH_ONLY", selectedContract: { ...ar().selectedContract, side: "put" } })));
-  assert.match(p.embed.title, /PUT \(research\)/);
+  assert.match(p.embed.title, /PUT/);
   assert.match(p.embed.description, /RESEARCH ONLY/);
+  // A non-actionable put shows no live entry window.
+  const entry = p.embed.fields.find((f) => f.name === "Option entry");
+  assert.match(entry.value, /NO VALID ENTRY WINDOW/);
 });

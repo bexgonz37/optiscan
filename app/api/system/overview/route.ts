@@ -60,6 +60,10 @@ export async function GET() {
   // Read-only owner-summary flags (no behavior change; pure reads of config/state).
   const supervisorEnabled = process.env.SUPERVISOR_RUNTIME === "1";
   const paperEnabled = process.env.PAPER_TRADING_ENABLED !== "0";
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { ownerSettings, stockAlertGateReason } = require("@/lib/owner-settings");
+  const owner = ownerSettings();
+  const stockGate = stockAlertGateReason();
   let modelState = "INACTIVE_NO_TRAINABLE_DATA";
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -138,5 +142,15 @@ export async function GET() {
     supervisor: { enabled: supervisorEnabled },
     paper: { enabled: paperEnabled },
     model: { state: modelState },
+    owner: {
+      core_universe: owner.coreUniverse,
+      max_discord_alerts: owner.maxDiscordAlerts,
+      min_setup_quality: owner.minSetupQuality,
+      bullish_enabled: owner.bullishEnabled,
+      bearish_enabled: owner.bearishEnabled,
+      early_alerts_enabled: owner.earlyAlertsEnabled,
+      categories: [...owner.categories],
+      stock_alerts_blocked_reason: stockGate,
+    },
   });
 }

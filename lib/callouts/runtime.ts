@@ -18,6 +18,7 @@ import { formatCalloutDiscord, type DiscordCalloutPayload } from "@/lib/callouts
 import { loadPriorCallouts, persistCalloutState, type CalloutStateWrite } from "@/lib/callouts/state-store";
 import { calloutWebhook, supervisorDiscordDeliveryEnabled } from "@/lib/callouts/routing";
 import { deliverCalloutDiscord } from "@/lib/notifications";
+import { reviewPortfolio } from "@/lib/agents/portfolio";
 
 export interface CalloutBundle {
   callout: Callout;
@@ -32,6 +33,10 @@ export interface CalloutsRunResult {
   discordAutoSend: boolean;
   delivered: number;
   note: string;
+  /** Portfolio-manager telemetry: how many callouts were Discord-eligible after
+   * ranking/selection, and how many were suppressed (ranked out or gated). */
+  portfolioEligible?: number;
+  portfolioSuppressed?: number;
 }
 
 export interface BuildCalloutsOptions {
@@ -51,17 +56,34 @@ export async function buildCalloutsForTickers(
 ): Promise<CalloutsRunResult> {
   // Prior lifecycle/dedup state is hydrated from SQLite (survives restarts).
   const prev = loadPriorCallouts();
-  const callouts: Callout[] = [];
+  const built: Callout[] = [];
   for (const t of tickers) {
     try {
       const run = await runAgentsForTicker(t, nowMs);
-      for (const r of run.supervised.canonical) callouts.push(buildCallout(r));
+      for (const r of run.supervised.canonical) built.push(buildCallout(r));
     } catch {
       // A single ticker failure never aborts the batch.
     }
   }
 
-  const decisions = callouts.map((c) => decideEmission(c, prev.get(c.key), { nowMs }));
+  // PORTFOLIO-MANAGER pass (agents/portfolio.ts): anti-chase, thesis
+  // reconciliation (no contradictory bull+bear actionables per ticker), quality
+  // ranking, and a top-N selection so ONLY the strongest few reach Discord. It
+  // adjusts lifecycle status / thesis notes and returns the delivery-eligible set.
+  const review = reviewPortfolio(built);
+  const callouts = review.callouts;
+  const eligible = review.eligibleKeys;
+
+  // Emission dedup runs on the reconciled callouts; a callout the portfolio did
+  // NOT select is suppressed here so it is never marked emitted (it can emit later
+  // if it ranks into the top selection) — the existing dedup/cooldown is untouched.
+  const decisions = callouts.map((c) => {
+    const d = decideEmission(c, prev.get(c.key), { nowMs });
+    if (d.emit && !eligible.has(c.key)) {
+      return { ...d, emit: false, kind: "suppress" as const, reason: "portfolio: not in the top-ranked Discord selection" };
+    }
+    return d;
+  });
   const autoSend = supervisorDiscordDeliveryEnabled();
   const bundles: CalloutBundle[] = callouts.map((c, i) => ({
     callout: c,
@@ -102,6 +124,8 @@ export async function buildCalloutsForTickers(
     bundles,
     discordAutoSend: autoSend,
     delivered,
+    portfolioEligible: eligible.size,
+    portfolioSuppressed: review.suppressed.length,
     note: autoSend
       ? "Supervisor is the canonical Discord path — emitted callouts deliver through the tracked ledger."
       : "Supervisor Discord delivery OFF (set CALLOUT_CANONICAL_PATH=supervisor and AGENT_CALLOUT_DISCORD=1). Desktop is the active channel; payloads are preview-ready.",

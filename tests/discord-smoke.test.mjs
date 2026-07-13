@@ -27,7 +27,7 @@ test("options actionable routes to the options channel", () => {
 test("put research routes to options and is labeled RESEARCH", () => {
   const put = byName.put_research;
   assert.equal(put.webhook, "options");
-  assert.match(put.payload.embed.title, /PUT \(research\)/);
+  assert.match(put.payload.embed.title, /PUT/);
   assert.match(JSON.stringify(put.payload), /RESEARCH ONLY/);
 });
 
@@ -44,8 +44,10 @@ test("inactive model shows the SETUP SCORE fallback; experimental shows the EXPE
 
 test("no-valid-contract scenario renders without a fabricated contract", () => {
   const nvc = byName.no_valid_contract;
-  const contractField = nvc.payload.embed.fields.find((f) => f.name === "Contract");
-  assert.ok(contractField, "has a Contract field");
+  // The trader-first format states the missing entry window instead of a contract.
+  const entryField = nvc.payload.embed.fields.find((f) => f.name === "Option entry");
+  assert.ok(entryField, "has an Option entry field");
+  assert.match(entryField.value, /NO VALID ENTRY WINDOW/);
   assert.ok(!/O:TEST_C100/.test(JSON.stringify(nvc.payload)), "no fabricated option symbol");
 });
 

@@ -19,7 +19,7 @@
  * Re-enable (after rebuild + validation only): BEARISH_ACTIONABLE=1.
  */
 
-export const BEARISH_DISABLED_REASON = "BEARISH_STRATEGY_DISABLED";
+export const BEARISH_DISABLED_REASON = "BEARISH_TRADING_OFF";
 
 export function bearishActionable(): boolean {
   return process.env.BEARISH_ACTIONABLE === "1";
@@ -57,6 +57,6 @@ export function gateBearishAction(
   return {
     action: "WAIT",
     gated: true,
-    reason: `${BEARISH_DISABLED_REASON}: bearish outputs are research-only until the short strategy is rebuilt and validated (weak-decline inversions produced low-quality callouts)`,
+    reason: `${BEARISH_DISABLED_REASON}: bearish ideas are research-only until bearish trading is enabled (set BEARISH_ACTIONABLE=1). They pass the same quality gates as bullish once enabled.`,
   };
 }
