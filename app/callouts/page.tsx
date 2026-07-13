@@ -71,6 +71,33 @@ function tone(status: string): "bull" | "warn" | "bear" | "muted" {
   return "muted";
 }
 
+/** "2026-07-14" → "Jul 14". Falls back to the raw string on any parse issue. */
+function expiryLabel(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+/** How many days to expiry, shown as a plain badge (0DTE = expires today). */
+function dteLabel(dte: number | null): string {
+  if (dte == null) return "";
+  if (dte <= 0) return "0DTE · expires today";
+  if (dte === 1) return "1DTE · expires tomorrow";
+  return `${dte}DTE`;
+}
+
+/** Plain-English contract line, e.g. "SPY $755 CALL · exp Jul 14 · 0DTE". */
+function contractHeadline(c: Callout): string {
+  const side = (c.contract?.side ?? (c.direction === "bearish" ? "put" : "call")).toUpperCase();
+  const strike = c.contract?.strike != null ? `$${c.contract.strike}` : "";
+  const parts = [`${c.ticker} ${strike} ${side}`.replace(/\s+/g, " ").trim()];
+  if (c.contract?.expiration) parts.push(`exp ${expiryLabel(c.contract.expiration)}`);
+  const d = dteLabel(c.contract?.dte ?? null);
+  if (d) parts.push(d);
+  return parts.join(" · ");
+}
+
 function isStock(c: Callout): boolean {
   return /momentum|stock/i.test(c.strategyAgent ?? "");
 }
@@ -173,7 +200,19 @@ function CalloutsInner() {
                 <div style={{ marginBottom: 6 }}><StatusBadge tone={tone(c.status)}>{c.status.replace(/_/g, " ")}</StatusBadge></div>
                 <p style={{ margin: "6px 0", fontSize: 14 }}>{c.reason}</p>
                 {c.contract && (
-                  <KeyValue k="Contract" v={`${c.contract.optionSymbol ?? "—"} · Δ${c.contract.delta ?? "—"} · mid ${c.contract.mid ?? "—"} · spread ${c.contract.spreadPct ?? "—"}%`} />
+                  <>
+                    <KeyValue k="Contract" v={contractHeadline(c)} />
+                    <KeyValue
+                      k="Price"
+                      v={[
+                        c.contract.mid != null ? `mid $${Number(c.contract.mid).toFixed(2)}` : null,
+                        c.contract.bid != null && c.contract.ask != null ? `(bid $${Number(c.contract.bid).toFixed(2)} / ask $${Number(c.contract.ask).toFixed(2)})` : null,
+                        c.contract.delta != null ? `Δ ${Math.abs(Number(c.contract.delta)).toFixed(2)}` : null,
+                        c.contract.spreadPct != null ? `spread ${Number(c.contract.spreadPct).toFixed(2)}%` : null,
+                      ].filter(Boolean).join(" · ")}
+                    />
+                    <div style={{ fontSize: 11, opacity: 0.45, marginTop: 2 }}>{c.contract.optionSymbol ?? ""}</div>
+                  </>
                 )}
                 <KeyValue k="Quote freshness" v={c.quoteFreshness} tone={c.quoteFreshness === "fresh" ? undefined : "warn"} />
                 <KeyValue k="Contract score" v={c.contractScore ?? "—"} />
