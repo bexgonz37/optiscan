@@ -43,3 +43,29 @@ export function supervisorDiscordDeliveryEnabled(env: NodeJS.ProcessEnv = proces
 export function legacyOptionsSuppressed(env: NodeJS.ProcessEnv = process.env): boolean {
   return calloutCanonicalPath(env) === "supervisor";
 }
+
+/**
+ * Whether the LEGACY "WATCH" heads-up may post to Discord. WATCH is a non-actionable
+ * dashboard state (armed, not ready) — the desk rule is that Discord only carries
+ * actionable setups, so this is OFF BY DEFAULT and can only be turned on with an
+ * explicit opt-in (DISCORD_WATCH_ALERTS=1). It ALSO stands down whenever the
+ * supervisor is the canonical path, so the two systems never both narrate a ticker.
+ * Dashboards still show WATCH regardless — this gate is purely about Discord.
+ */
+export function legacyWatchDiscordEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (calloutCanonicalPath(env) === "supervisor") return false;
+  return env.DISCORD_WATCH_ALERTS === "1";
+}
+
+/**
+ * True when the LEGACY paper auto-entry path (autoEnterFromAlerts, which creates
+ * paper trades directly from the `alerts` table) must stand down because the
+ * Supervisor→paper bridge is the single authoritative paper-entry path. Without
+ * this, a strong setup that both the scanner (alert) and the supervisor (callout)
+ * flag would create TWO paper trades for one real setup (they dedup on different
+ * keys). Mirrors legacyOptionsSuppressed so paper entry and Discord agree on who
+ * owns the setup.
+ */
+export function legacyPaperAutoEntrySuppressed(env: NodeJS.ProcessEnv = process.env): boolean {
+  return calloutCanonicalPath(env) === "supervisor";
+}

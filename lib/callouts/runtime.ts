@@ -17,6 +17,7 @@ import { decideEmission, type EmissionDecision } from "@/lib/callouts/dedup";
 import { formatCalloutDiscord, type DiscordCalloutPayload } from "@/lib/callouts/discord-format";
 import { loadPriorCallouts, persistCalloutState, type CalloutStateWrite } from "@/lib/callouts/state-store";
 import { calloutWebhook, supervisorDiscordDeliveryEnabled } from "@/lib/callouts/routing";
+import { nowOnlyActionable } from "@/lib/callouts/eligibility";
 import { deliverCalloutDiscord } from "@/lib/notifications";
 import { reviewPortfolio } from "@/lib/agents/portfolio";
 import { bridgeCalloutsToPaper, type BridgeSummary } from "@/lib/callouts/paper-bridge";
@@ -140,6 +141,15 @@ export async function buildCalloutsForTickers(
   if (opts.deliver && autoSend) {
     for (const b of bundles) {
       if (!b.decision.emit || !b.discord) continue;
+      // Defense-in-depth: Discord carries ACTIONABLE_NOW setups ONLY. Even though
+      // the portfolio selection already restricts emission to the actionable-now
+      // set, re-assert the shared now-only rule at the delivery boundary so a
+      // future dedup/portfolio regression can never leak a WAIT/WATCH/NEAR/
+      // MISSED/EXTENDED/RESEARCH_ONLY callout to Discord.
+      if (!nowOnlyActionable(b.callout).ok) {
+        b.deliveryStatus = "skipped: not actionable-now at delivery";
+        continue;
+      }
       try {
         const res = await deliverCalloutDiscord({
           webhook: calloutWebhook(b.callout),

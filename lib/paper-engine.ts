@@ -37,6 +37,7 @@ import { freezePaperFingerprintForTrade, syncPaperOutcomes, outcomesByTradeId, t
 import { humanReadable } from "@/lib/setup-fingerprint";
 import { normalizeProviderTimestampMs } from "@/lib/data-freshness";
 import type { ChainContract } from "@/lib/contract-selector";
+import { legacyPaperAutoEntrySuppressed } from "@/lib/callouts/routing";
 
 const SWEEP_MS = Number(process.env.PAPER_SWEEP_MS ?? 30_000);
 const MAX_FETCHES_PER_SWEEP = Number(process.env.PAPER_SWEEP_MAX_FETCHES ?? 5);
@@ -993,6 +994,11 @@ const AUTO_ENTRY_MAX_AGE_MS = Number(process.env.PAPER_AUTO_ENTRY_MAX_AGE_MS ?? 
 
 export function autoEnterFromAlerts(nowMs: number = Date.now()): number {
   if (!AUTO_ENTRY_ENABLED()) return 0;
+  // When the Supervisor is the canonical path, the Supervisor→paper bridge is the
+  // SINGLE authoritative paper-entry path. This legacy path (which papers straight
+  // from the `alerts` table, deduped only on alert_id) must stand down or the same
+  // real setup would be papered twice — once from the alert, once from the callout.
+  if (legacyPaperAutoEntrySuppressed()) return 0;
   const db = getDb();
   // Fresh TRADE-tier options callouts with a contract, not already papered.
   const candidates = db.prepare(

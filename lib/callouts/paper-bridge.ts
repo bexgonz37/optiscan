@@ -17,6 +17,7 @@
 import type { Callout } from "./callout.ts";
 import { paperCandidateEligibility } from "./eligibility.ts";
 import { estimatedEntryPrice } from "./confidence.ts";
+import { tradingDay } from "../trading-session.ts";
 
 // The DB + paper-engine live behind the "@/" alias and pull in server-only I/O.
 // They are lazy-required (literal specifiers so the webpack alias still resolves)
@@ -46,9 +47,14 @@ export type CreateTradeFn = (input: {
   entryLimit: number | null; thesis: string;
 }) => { ok: boolean; id?: number; risk: { allowed: boolean; failures: string[] } };
 
-/** Trading-day stamp (UTC date) used to scope the dedup key to one day. */
+/**
+ * Trading-day stamp used to scope the dedup key to one day. Uses the US/Eastern
+ * trading day (DST-safe), NOT the UTC date — otherwise a late-afternoon or
+ * after-hours setup after 20:00 ET would roll onto the next UTC calendar day and
+ * mid-session dedup could break (a second identical candidate would look "new").
+ */
 function dayStamp(nowMs: number): string {
-  return new Date(nowMs).toISOString().slice(0, 10);
+  return tradingDay(nowMs);
 }
 
 /** Stable per-day idempotency key for a callout's paper candidate. */

@@ -35,7 +35,7 @@ import {
   retryableDiscordDeliveries,
 } from "@/lib/alert-store";
 import { actionableFreshness, type DataKind } from "@/lib/data-freshness";
-import { legacyOptionsSuppressed } from "@/lib/callouts/routing";
+import { legacyOptionsSuppressed, legacyWatchDiscordEnabled } from "@/lib/callouts/routing";
 
 export type DiscordWebhookKind = "options" | "stocks" | "recap" | "default";
 
@@ -269,6 +269,17 @@ export async function notifyWatchAlert(alertId: number, alertLike: any): Promise
   try {
     const s = getNotificationSettings();
     if (!s?.discord_enabled) return;
+    // Discord only carries ACTIONABLE setups. WATCH ("armed, not ready") is a
+    // dashboard-only state: OFF by default, always stood down under the supervisor
+    // canonical path, and only ever sent when the owner explicitly opts in with
+    // DISCORD_WATCH_ALERTS=1 on the legacy path. The dashboard still shows WATCH.
+    if (!legacyWatchDiscordEnabled()) {
+      insertNotificationEvent({
+        alertId, channel: "discord_webhook", status: "skipped",
+        error: "watch Discord disabled — dashboard-only (opt in with DISCORD_WATCH_ALERTS=1 on the legacy path; never sends under CALLOUT_CANONICAL_PATH=supervisor)",
+      });
+      return;
+    }
     if (!isOptionsSession()) return;
     const ticker = alertLike?.ticker;
     if (ticker && recentWatchDiscordForTicker(ticker, WATCH_DEDUP_MS)) return;

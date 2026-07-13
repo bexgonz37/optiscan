@@ -97,6 +97,21 @@ account — you perform these; the repository ships the configuration.
     (delivery ledger shows callout `payload_type` sends, and `notifyNewAlert` records
     `skipped: superseded by supervisor canonical callout path`). Puts remain
     RESEARCH_ONLY.
+22. **Confirm exactly one PAPER-entry path is active** — with
+    `CALLOUT_CANONICAL_PATH=supervisor`, the legacy `autoEnterFromAlerts` path stands
+    down and the Supervisor→paper bridge is the single authoritative paper source, so
+    a strong setup cannot be papered twice. Verify paper trades trace to
+    `paper_candidates` (source `SUPERVISOR`), not to bare alert auto-entry.
+23. **`AGENT_CALLOUT_DISCORD=1` is MANDATORY for options Discord under the supervisor
+    path.** Because the supervisor path suppresses the legacy options sender, leaving
+    this at `0` silences options Discord entirely. `/api/runtime/status` `config`
+    flags `AGENT_CALLOUT_DISCORD` as blocking `options_alerts` when it is off.
+24. **Premarket/after-hours stock (optional)** — regular-hours stock needs only
+    `STOCK_CALLOUTS=1` + `DISCORD_WEBHOOK_STOCKS`. Extended sessions ALSO require
+    `STOCK_EXTENDED_HOURS=1` (or `PAPER_STOCK_EXTENDED_HOURS=1`) **and** the
+    `extended_stock_notify` DB setting = `1` (Settings page). The `config` section of
+    `/api/runtime/status` shows each gate so a silent premarket does not read as
+    "stale/no data".
 
 ## Stage variable profiles
 
@@ -104,7 +119,11 @@ account — you perform these; the repository ships the configuration.
 |---|---|---|---|
 | `SUPERVISOR_RUNTIME` | `0` | `1` | `1` |
 | `CALLOUT_CANONICAL_PATH` | `legacy` | `legacy` | `supervisor` |
-| `AGENT_CALLOUT_DISCORD` | `0` | `0` | `1` |
+| `AGENT_CALLOUT_DISCORD` | `0` | `0` | `1` (required — else options Discord silent) |
+| `STOCK_CALLOUTS` | `0` | `0`/`1` | `1` |
+| `STOCK_EXTENDED_HOURS` | `0` | `0` | `1` for premarket/after-hours stock |
+| `extended_stock_notify` (DB setting) | `0` | `0` | `1` for premarket/after-hours stock |
+| `DISCORD_WATCH_ALERTS` | unset | unset | unset (WATCH is dashboard-only) |
 | `IMPROVEMENT_AUDIT` | `0` | `0` | `0` (enable later, proposal-only) |
 | Discord webhooks | optional | optional | required for sends |
 
