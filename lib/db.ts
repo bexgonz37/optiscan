@@ -523,6 +523,49 @@ CREATE TABLE IF NOT EXISTS callout_state (
 );
 CREATE INDEX IF NOT EXISTS idx_callout_state_updated ON callout_state(updated_at_ms);
 
+-- Supervisor→paper bridge (additive). ONE auditable row per Supervisor canonical
+-- callout that was eligible to become a paper candidate. Freezes the alert-time
+-- facts (contract, quotes, confidence, timing) and links to the paper_trades row it
+-- created. idempotency_key is UNIQUE so cycles/restarts/retries never duplicate a
+-- candidate for the same setup identity + status + trading day.
+CREATE TABLE IF NOT EXISTS paper_candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  setup_identity TEXT NOT NULL,          -- ticker|direction|horizon (stable identity)
+  source TEXT NOT NULL DEFAULT 'SUPERVISOR',
+  callout_key TEXT,
+  ticker TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  strategy TEXT,
+  horizon TEXT,
+  option_symbol TEXT,
+  strike REAL,
+  expiration TEXT,
+  dte INTEGER,
+  underlying_price REAL,
+  option_bid REAL,
+  option_ask REAL,
+  option_mid REAL,
+  estimated_entry REAL,
+  quote_asof_ms INTEGER,
+  entry_state TEXT,
+  confidence_tier TEXT,
+  setup_score REAL,
+  contract_score REAL,
+  risk_ok INTEGER,
+  lifecycle_status TEXT,
+  callout_ts_ms INTEGER,
+  trigger_ts_ms INTEGER,
+  model_state TEXT,
+  evidence_state TEXT,
+  status TEXT NOT NULL DEFAULT 'ELIGIBLE',  -- ELIGIBLE | CREATED | REJECTED
+  reject_reason TEXT,
+  paper_trade_id INTEGER,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_paper_candidates_created ON paper_candidates(created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_paper_candidates_identity ON paper_candidates(setup_identity);
+
 -- Named worker leases (live runtime wiring). Single-owner guarantee for background
 -- schedulers so two hosted replicas never run the same jobs / double-send. A
 -- crashed owner stops heartbeating and its lease expires on its own.

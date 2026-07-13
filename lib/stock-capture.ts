@@ -53,6 +53,10 @@ export interface StockSignal {
   direction: "bullish" | "bearish" | "choppy";
   directionConfidence: number; // 0-100
   shareVolume: number | null;
+  /** Verified NBBO for the compact card + now-only stock Discord gate. */
+  bid?: number | null;
+  ask?: number | null;
+  quoteProviderTimestamp?: number | string | bigint | Date | null;
   nowMs?: number;
   signalDetectedAtMs?: number | null;
   lastConfirmedAtMs?: number | null;
@@ -168,6 +172,11 @@ export async function captureStockAlert(sig: StockSignal): Promise<number | null
         setupScore: v.score, confidence: v.confidence,
         movePct: sig.movePct, price: sig.price,
         shortRate: sig.shortRate, volumeSurge: sig.surge,
+        // NBBO + freshness for the compact card and the now-only stock gate.
+        bid: sig.bid ?? null, ask: sig.ask ?? null,
+        quoteAsOfMs: normalizeProviderTimestampMs(sig.quoteProviderTimestamp ?? null, nowMs),
+        actionableNow: captureAction === "TRADE",
+        nowMs,
       });
     } else {
       try {

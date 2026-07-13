@@ -314,6 +314,8 @@ async function handleStockTrigger(ticker: string, st: SymState, read: any, quote
   const { captureStockAlert } = await import("@/lib/stock-capture");
   const id = await captureStockAlert({
     ticker, price: quote.price, movePct: quote.changePercent ?? 0,
+    bid: quote.bid ?? null, ask: quote.ask ?? null,
+    quoteProviderTimestamp: quote.quoteProviderTimestamp ?? null,
     shortRate: read.accelRead.shortRate, accel: read.accelRead.accel,
     instantRate: read.instantRate ?? null,
     surge: read.surge, relVol: st.relVol, efficiency: read.efficiency,

@@ -38,8 +38,10 @@ const STATUS_QUALITY: Record<string, number> = {
   EXTENDED: -15, MISSED: -30, WATCH: 0, RESEARCH_ONLY: -4,
 };
 
-/** Statuses that are candidates for a Discord alert (before owner gating). */
-const ALERTABLE = new Set(["ACTIONABLE_NOW", "NEAR_TRIGGER", "DEVELOPING", "WAIT_FOR_PULLBACK"]);
+/** Statuses that are candidates for a Discord alert (before owner gating).
+ * WAIT_FOR_PULLBACK is deliberately NOT alertable — a "wait for a pullback" notice
+ * is dashboard-only research, never a normal now-only Discord alert (audit §5). */
+const ALERTABLE = new Set(["ACTIONABLE_NOW", "NEAR_TRIGGER", "DEVELOPING"]);
 const EARLY_ONLY = new Set(["NEAR_TRIGGER", "DEVELOPING"]);
 
 /** How far ahead one side must score before it "dominates" the other. */

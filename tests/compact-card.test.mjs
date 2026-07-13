@@ -90,7 +90,8 @@ test("only HIGH-confidence actionable setups reach Discord; medium/low stay dash
   assert.equal(confidenceTier(high), "HIGH");
   assert.equal(selectForDiscord([high], S).eligibleKeys.size, 1, "HIGH sends");
 
-  const medium = buildCallout(ar({ candidateStatus: "WAIT_FOR_PULLBACK", actionability: "WATCH" }));
+  // A wide-spread ACTIONABLE_NOW is alertable-but-MEDIUM → hits the confidence gate.
+  const medium = buildCallout(ar({ selectedContract: { ...ar().selectedContract, spreadPct: 40 } }));
   assert.notEqual(confidenceTier(medium), "HIGH");
   const sel = selectForDiscord([medium], S);
   assert.equal(sel.eligibleKeys.size, 0, "non-HIGH stays in the dashboard");

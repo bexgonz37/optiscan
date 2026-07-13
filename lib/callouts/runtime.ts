@@ -19,6 +19,7 @@ import { loadPriorCallouts, persistCalloutState, type CalloutStateWrite } from "
 import { calloutWebhook, supervisorDiscordDeliveryEnabled } from "@/lib/callouts/routing";
 import { deliverCalloutDiscord } from "@/lib/notifications";
 import { reviewPortfolio } from "@/lib/agents/portfolio";
+import { bridgeCalloutsToPaper, type BridgeSummary } from "@/lib/callouts/paper-bridge";
 
 export interface CalloutBundle {
   callout: Callout;
@@ -37,6 +38,8 @@ export interface CalloutsRunResult {
    * ranking/selection, and how many were suppressed (ranked out or gated). */
   portfolioEligible?: number;
   portfolioSuppressed?: number;
+  /** Supervisor→paper bridge summary (only when the authoritative cycle ran it). */
+  paperBridge?: BridgeSummary;
 }
 
 export interface BuildCalloutsOptions {
@@ -73,6 +76,16 @@ export async function buildCalloutsForTickers(
   const review = reviewPortfolio(built);
   const callouts = review.callouts;
   const eligible = review.eligibleKeys;
+
+  // SUPERVISOR→PAPER BRIDGE. Runs only in the authoritative delivery cycle (never on
+  // read-only API fetches) so a GET never creates trades. It is independent of Discord
+  // auto-send — paper eligibility is gated purely by PAPER_TRADING_ENABLED /
+  // PAPER_AUTO_ENTRY + the HIGH + ACTIONABLE_NOW + valid-now rule inside the bridge.
+  let paperBridge: BridgeSummary | undefined;
+  if (opts.deliver) {
+    try { paperBridge = bridgeCalloutsToPaper(callouts, nowMs); }
+    catch (err: any) { console.warn("[callouts] paper bridge failed:", err?.message); }
+  }
 
   // Emission dedup runs on the reconciled callouts; a callout the portfolio did
   // NOT select is suppressed here so it is never marked emitted (it can emit later
@@ -126,6 +139,7 @@ export async function buildCalloutsForTickers(
     delivered,
     portfolioEligible: eligible.size,
     portfolioSuppressed: review.suppressed.length,
+    paperBridge,
     note: autoSend
       ? "Supervisor is the canonical Discord path — emitted callouts deliver through the tracked ledger."
       : "Supervisor Discord delivery OFF (set CALLOUT_CANONICAL_PATH=supervisor and AGENT_CALLOUT_DISCORD=1). Desktop is the active channel; payloads are preview-ready.",

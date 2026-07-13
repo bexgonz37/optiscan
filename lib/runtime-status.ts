@@ -29,6 +29,12 @@ export interface RuntimeStatus {
   scanner: { running: boolean; lastTickAt: number | null; ticks: number; triggers: number; alerts: number; errors: number; session: string | null };
   supervisor: Record<string, unknown>;
   callouts: { canonicalTracked: number; byStatus: Record<string, number>; lastEmitAtMs: number | null; canonicalPath: string; discordDeliveryEnabled: boolean };
+  paper: {
+    autoEntryEnabled: boolean; allowZeroDte: boolean; tradingEnabled: boolean;
+    candidates: { total: number; created: number; rejected: number; eligiblePending: number; last24hCreated: number; last24hRejected: number };
+    recentRejections: { ticker: string; reason: string; atMs: number }[];
+    summary: string;
+  };
   discord: { deliveries: Record<string, number> };
   scheduler: Record<string, unknown>;
   learning: { lastCycleNote: string | null; nextEligibleLearningMs: number | null; driftState: string | null; lastDriftAtMs: number | null };
@@ -84,6 +90,12 @@ export function buildRuntimeStatus(nowMs: number = Date.now()): RuntimeStatus {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     return require("@/lib/callouts/routing").supervisorDiscordDeliveryEnabled();
   }, false);
+
+  // ── Supervisor→paper bridge observability ──────────────────────────────────
+  const paperCandidates = safe(() => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require("@/lib/callouts/paper-bridge").paperCandidateSummary(nowMs);
+  }, { total: 0, created: 0, rejected: 0, eligiblePending: 0, last24h: { created: 0, rejected: 0 }, recentRejections: [] } as any);
 
   const deliveries: Record<string, number> = {};
   safe(() => {
@@ -162,6 +174,18 @@ export function buildRuntimeStatus(nowMs: number = Date.now()): RuntimeStatus {
     callouts: {
       canonicalTracked: calloutSummary.total, byStatus: calloutSummary.byStatus,
       lastEmitAtMs: calloutSummary.lastEmitAtMs, canonicalPath, discordDeliveryEnabled,
+    },
+    paper: {
+      autoEntryEnabled: process.env.PAPER_AUTO_ENTRY === "1",
+      allowZeroDte: process.env.PAPER_ALLOW_ZERO_DTE === "1",
+      tradingEnabled: process.env.PAPER_TRADING_ENABLED !== "0",
+      candidates: {
+        total: paperCandidates.total, created: paperCandidates.created, rejected: paperCandidates.rejected,
+        eligiblePending: paperCandidates.eligiblePending,
+        last24hCreated: paperCandidates.last24h.created, last24hRejected: paperCandidates.last24h.rejected,
+      },
+      recentRejections: paperCandidates.recentRejections,
+      summary: `${paperCandidates.total} Supervisor paper candidates · ${paperCandidates.created} created · ${paperCandidates.rejected} rejected · ${paperCandidates.eligiblePending} pending`,
     },
     discord: { deliveries },
     scheduler: sched,

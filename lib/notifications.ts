@@ -340,6 +340,53 @@ export async function notifyNewAlert(alertId: number, alertLike: any): Promise<v
       }
     }
 
+    // NORMAL stock Discord is a COMPACT day-trade card, sent only for a HIGH-
+    // confidence, ACTIONABLE_NOW setup with a valid, fresh two-sided (NBBO) quote
+    // and acceptable spread. Anything else (no NBBO / stale / wide / not-actionable)
+    // stays dashboard-only — verified live prices only, never an invented entry.
+    if (isStock) {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { stockNowOnlyEligible, formatStockCalloutDiscord } = require("@/lib/stock-callout");
+      const stockInput = {
+        ticker: String(alertLike?.ticker ?? ""),
+        direction: (alertLike?.direction ?? "bullish"),
+        price: typeof alertLike?.price === "number" ? alertLike.price : null,
+        bid: typeof alertLike?.bid === "number" ? alertLike.bid : null,
+        ask: typeof alertLike?.ask === "number" ? alertLike.ask : null,
+        quoteAsOfMs: typeof alertLike?.quoteAsOfMs === "number" ? alertLike.quoteAsOfMs : null,
+        confidence: typeof alertLike?.confidence === "number" ? alertLike.confidence : (typeof alertLike?.setupScore === "number" ? alertLike.setupScore : null),
+        actionableNow: alertLike?.actionableNow !== false,
+        session: String(alertLike?.session ?? "regular"),
+        nowMs: typeof alertLike?.nowMs === "number" ? alertLike.nowMs : Date.now(),
+      };
+      const gate = stockNowOnlyEligible(stockInput);
+      if (!gate.ok) {
+        insertNotificationEvent({ alertId, channel: "discord_webhook", status: "skipped", error: `stock now-only gate: ${gate.reason}` });
+        return;
+      }
+      const card = formatStockCalloutDiscord(stockInput);
+      const stockPayload: any = { content: card.content, embeds: [card.embed] };
+      const webhook: DiscordWebhookKind = "stocks";
+      if (!discordWebhookConfigured(webhook)) {
+        createDiscordDelivery({ alertId, channelType: "discord_webhook", webhookName: webhook, payloadType: "stock_buy", payload: stockPayload, status: "NOT_CONFIGURED", failureReason: "Discord stocks webhook not set" });
+        insertNotificationEvent({ alertId, channel: "discord_webhook", status: "failed", error: "Discord stocks webhook not set" });
+        return;
+      }
+      if (s.discord_requires_manual_confirm) {
+        insertNotificationEvent({ alertId, channel: "discord_webhook", status: "pending_confirm", payloadJson: JSON.stringify({ payload: stockPayload, skipPublicCheck: true, webhook }) });
+        return;
+      }
+      try {
+        const { messageId, webhookUrl } = await postToDiscord(stockPayload, { webhook, skipPublicCheck: true });
+        createDiscordDelivery({ alertId, channelType: "discord_webhook", webhookName: webhook, payloadType: "stock_buy", payload: stockPayload, status: "SENT" });
+        insertNotificationEvent({ alertId, channel: "discord_webhook", status: "sent", payloadJson: JSON.stringify({ kind: "stock_compact", messageId, webhookUrl }) });
+      } catch (err: any) {
+        createDiscordDelivery({ alertId, channelType: "discord_webhook", webhookName: webhook, payloadType: "stock_buy", payload: stockPayload, status: "FAILED", failureReason: err?.message ?? "post failed" });
+        insertNotificationEvent({ alertId, channel: "discord_webhook", status: "failed", error: err?.message ?? "post failed" });
+      }
+      return;
+    }
+
     const languageMode = getSetting("language_mode") === "public" ? "public" : "private";
     const built = buildBuyPayload(alertLike, languageMode);
     let payload: any = "payload" in built ? built.payload : { content: built.content };

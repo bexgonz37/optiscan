@@ -6,6 +6,61 @@ This file is the resume point. Read it + the task list before making changes.
 Do **not** repeat Phase 1, redo timestamp normalization, or add the Self-Improvement
 Lab / an embedded LLM.
 
+## Supervisor→Paper Bridge + now-only alerts + stock repair (2026-07-13)
+
+Root cause (Codex audit): Supervisor canonical callouts persisted to `callout_state`
+but **never created paper candidates or paper_trades** — auto-entry read only legacy
+`alerts` rows (capture_action='TRADE' + option_symbol). The Supervisor flow stopped at
+Discord eligibility.
+
+- **`lib/callouts/eligibility.ts`** (PURE) — the ONE non-negotiable now-only rule
+  shared by Discord + paper: `nowOnlyActionable` (HIGH tier + ACTIONABLE_NOW +
+  actionable + valid/fresh two-sided quote + risk + entry window not late) and
+  `paperCandidateEligibility` (adds PAPER_TRADING_ENABLED/PAPER_AUTO_ENTRY/
+  PAPER_KILL_SWITCH, the 0DTE `PAPER_ALLOW_ZERO_DTE` gate, and the hard bearish
+  block). Returns a precise reason for observability.
+- **`lib/callouts/paper-bridge.ts`** — the authoritative bridge. `bridgeCalloutsToPaperOnDb`
+  (testable core: explicit db + injected createTrade) freezes an auditable
+  `paper_candidates` row (contract, quotes, underlying, confidence, setup/contract
+  score, risk, lifecycle, model/evidence, callout/trigger/quote timestamps,
+  idempotency key) then calls the SHARED `createPaperTrade` → READY trade → the
+  EXISTING sweep does pre-entry revalidation → conservative fill → open → exit →
+  graded outcome. Dedup: UNIQUE `paper:<ticker|dir|horizon>:<status>:<day>` — cycles/
+  restarts/retries never double-create. Rejections stored with reason, never graded.
+  Wired into `callouts/runtime.ts` ONLY when `opts.deliver` (authoritative cycle) —
+  never on read-only GETs.
+- **New table `paper_candidates`** (additive, repeat-safe `CREATE IF NOT EXISTS` in
+  db.ts SCHEMA; UNIQUE idempotency_key).
+- **Now-only Discord (§B/C):** `WAIT_FOR_PULLBACK` removed from `ALERTABLE` (audit §5);
+  only HIGH + ACTIONABLE_NOW reach normal options Discord (early opt-in + mixed-thesis
+  WATCH aside). Confidence stays a deterministic tier, never a probability.
+- **Momentum stock repair (§D):** `lib/stock-callout.ts` (PURE) — now-only NBBO gate
+  (`stockNowOnlyEligible`) + compact card (`stockCompactCard`/`formatStockCalloutDiscord`).
+  NBBO threaded from scanner tape → `captureStockAlert` → `notifyNewAlert`, which now
+  sends a COMPACT stock card via the **stocks** webhook only for a HIGH-confidence,
+  ACTIONABLE_NOW, fresh, two-sided, acceptable-spread, long, session-permitted setup;
+  everything else is dashboard-only (verified live prices; no fabricated entry).
+- **Observability (§E) + timing (§F):** `paperCandidateSummary()` (+ recent rejections
+  with exact reasons) surfaced in `runtime-status.ts` under `paper`. Candidate rows
+  store real timestamps (callout/trigger/quote-as-of); missing → null, never inferred.
+- Tests +49 (`eligibility`, `paper-bridge`, `stock-callout` + compact-card update).
+  Suite: **962 pass**. tsc clean, build clean, migration repeat-safe.
+
+### Railway variables (Phase G) — exact, do NOT enable bearish
+- Supervisor options scanning: `SUPERVISOR_RUNTIME=1`.
+- Supervisor options Discord: `CALLOUT_CANONICAL_PATH=supervisor`, `AGENT_CALLOUT_DISCORD=1`,
+  `DISCORD_WEBHOOK_OPTIONS=<url>`.
+- Momentum stock Discord: `STOCK_CALLOUTS=1`, `DISCORD_WEBHOOK_STOCKS=<url>`
+  (extended hours also needs `STOCK_EXTENDED_HOURS=1` or `PAPER_STOCK_EXTENDED_HOURS=1`;
+  tunable `STOCK_CLEAR_MIN_CONFIDENCE`, `STOCK_MAX_SPREAD_PCT`, `STOCK_MAX_QUOTE_AGE_MS`).
+- Paper trading: `PAPER_TRADING_ENABLED` unset/≠0 (on), `PAPER_AUTO_ENTRY=1`.
+- 0DTE paper: also `PAPER_ALLOW_ZERO_DTE=1` (else 0DTE candidates are blocked, surfaced).
+- Kill switch (optional): `PAPER_KILL_SWITCH=1` to halt paper entries.
+- Persistent SQLite: `ALERT_DB_DIR=/data` (Railway volume).
+- Safe bearish-off production: leave `BEARISH_ACTIONABLE` unset/off (puts stay
+  research-only, never paper-trade). No live execution / brokerage anywhere.
+- Smoke testing: `DISCORD_SMOKE_TEST=1` (permits the dry-run smoke endpoint to send).
+
 ## Compact Trade Cards (2026-07-13) — default Discord + frontend callout
 
 The default callout (Discord + `/callouts`) is now a COMPACT TRADE CARD, not a
