@@ -475,20 +475,11 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
     return { ok: false, risk: { allowed: false, failures: ["ticker, optionSymbol and a positive entryLimit are required (alert had no contract attached?)"] } };
   }
 
-  const fresh = actionableFreshness(base.ticker, ["stock_quote", "options_chain", "options_quote", "greeks"]);
-  if (!fresh.ok) {
-    const risk = { allowed: false, failures: [`stale/unavailable data blocks paper option entry: ${fresh.reason}`] };
-    logDecision({
-      alertId: input.alertId ?? null,
-      ticker: base.ticker,
-      decision: "data_stale_refused",
-      allowed: false,
-      reason: risk.failures.join("; "),
-      risk,
-      snapshot: fresh,
-    });
-    return { ok: false, risk };
-  }
+  // Do not require the process-global freshness cache to already contain every
+  // option data kind before creating a READY paper order. Alert/callout paths
+  // pass a frozen contract; the sweep below revalidates the live chain and quote
+  // before any fill. Requiring actionableFreshness here caused fresh alerts to be
+  // permanently marked CANCELLED when the cache only said NOT_REQUESTED_YET.
 
   const exitCfg = defaultExitConfig();
   const takeProfitPct = base.takeProfitPct ?? exitCfg.takeProfitPct;

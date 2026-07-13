@@ -91,3 +91,13 @@ test("new paper_trades rebuild columns are additive migrations", () => {
     assert.ok(new RegExp(`ALTER TABLE paper_trades ADD COLUMN ${col}`).test(db), `missing additive column: ${col}`);
   }
 });
+
+test("option paper entry creation does not require process freshness cache before revalidation", () => {
+  const src = read("lib/paper-engine.ts");
+  const createBody = src.slice(src.indexOf("export function createPaperTrade"), src.indexOf("/** Manual cancel/close"));
+  assert.ok(/alert-time contract snapshot/.test(createBody), "paper order freezes the alert-time contract");
+  assert.ok(!/actionableFreshness\(base\.ticker/.test(createBody), "creation must not be blocked by NOT_REQUESTED_YET cache state");
+  const sweepBody = src.slice(src.indexOf("export async function sweepPaperTrades"), src.indexOf("// ── Background engine"));
+  assert.ok(/fetchOptionChain\(ticker/.test(sweepBody), "the sweep revalidates live chain data before fill");
+  assert.ok(/advanceOpenTrade/.test(sweepBody), "fills still go through pre-entry revalidation");
+});
