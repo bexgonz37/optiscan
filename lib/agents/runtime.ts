@@ -13,7 +13,8 @@ import { marketSession, type MarketSession } from "@/lib/trading-session";
 import { selectContract, PROFILES, type ChainContract } from "@/lib/contract-selector";
 import { HORIZON_AGENTS } from "@/lib/agents/registry";
 import { evaluateHorizonAgent, type HorizonAgentInputs } from "@/lib/agents/horizon-agent";
-import { superviseResults, type SupervisorOutput } from "@/lib/agents/supervisor";
+import { superviseResults, nextPriorState, type SupervisorOutput, type PriorState } from "@/lib/agents/supervisor";
+import { chainDteCoverage, relevantOptionAgents } from "@/lib/agents/relevance";
 import {
   marketDataAgent, marketContextAgent, performanceAgentByStrategy, modelAgent, riskAgent, qualityControlAgent,
 } from "@/lib/agents/services";
@@ -54,10 +55,25 @@ export interface RunAgentsResult {
   marketContext: Record<string, unknown> | null;
   qualityControl: Record<string, unknown>;
   chainAvailable: boolean;
+  /** Horizon×direction agent ids actually evaluated (chain-supported only). */
+  agentsRun: string[];
+  /** Prior-state map for the NEXT cycle's lifecycle hysteresis. */
+  nextPrior: Map<string, PriorState>;
 }
 
-/** Run all horizon agents for one ticker and return the supervised canonical set. */
-export async function runAgentsForTicker(ticker: string, nowMs: number = Date.now()): Promise<RunAgentsResult> {
+export interface RunAgentsOptions {
+  /** Prior supervisor state (per ticker) so lifecycle hysteresis survives cycles. */
+  previous?: Map<string, PriorState>;
+}
+
+/**
+ * Run the relevant horizon agents for ONE ticker and return the supervised
+ * canonical set. A single 0–90 DTE chain fetch (metered via `polyFetch`) serves
+ * every horizon; horizons the chain does not actually cover are skipped rather
+ * than widened to unsupported contracts. Reuses the freshness / context /
+ * statistics / model / risk / selector services — it duplicates none of them.
+ */
+export async function runAgentsForTicker(ticker: string, nowMs: number = Date.now(), opts: RunAgentsOptions = {}): Promise<RunAgentsResult> {
   const session = marketSession(nowMs);
   const freshness = marketDataAgent(ticker, FRESHNESS_KINDS);
   const context = marketContextAgent();
@@ -74,8 +90,13 @@ export async function runAgentsForTicker(ticker: string, nowMs: number = Date.no
   const spot = underlyingFrom(contracts);
   const asOf = chainAsOf(contracts);
 
+  // Only evaluate horizons the fetched chain genuinely covers (no silent widening
+  // to unsupported expirations). With no chain, no option horizon agent runs.
+  const coverage = chainDteCoverage(contracts);
+  const activeAgents = relevantOptionAgents(HORIZON_AGENTS, coverage);
+
   const results: AgentResult[] = [];
-  for (const cfg of HORIZON_AGENTS) {
+  for (const cfg of activeAgents) {
     const side: "call" | "put" = cfg.direction === "bearish" ? "put" : "call";
     const selection = selectContract(
       { underlying: ticker, spot, side, contracts, session, chainAvailable, chainAsOfMs: asOf, nowMs },
@@ -107,6 +128,16 @@ export async function runAgentsForTicker(ticker: string, nowMs: number = Date.no
     results.push(evaluateHorizonAgent(cfg, input));
   }
 
-  const supervised = superviseResults({ results, nowMs });
-  return { ticker: ticker.toUpperCase(), session, supervised, marketContext: context, qualityControl: qualityControlAgent(), chainAvailable };
+  const supervised = superviseResults({ results, nowMs, previous: opts.previous });
+  const nextPrior = nextPriorState(supervised.canonical, opts.previous, nowMs);
+  return {
+    ticker: ticker.toUpperCase(),
+    session,
+    supervised,
+    marketContext: context,
+    qualityControl: qualityControlAgent(),
+    chainAvailable,
+    agentsRun: activeAgents.map((a) => a.agentId),
+    nextPrior,
+  };
 }
