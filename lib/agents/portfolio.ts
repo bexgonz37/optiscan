@@ -26,6 +26,7 @@
  */
 import type { Callout } from "../callouts/callout.ts";
 import { confidenceTier } from "../callouts/confidence.ts";
+import { nowOnlyActionable } from "../callouts/eligibility.ts";
 import {
   ownerSettings, tickerPriorityRank, isPriorityTicker, type OwnerSettings, type AlertCategory,
 } from "../owner-settings.ts";
@@ -38,12 +39,7 @@ const STATUS_QUALITY: Record<string, number> = {
   EXTENDED: -15, MISSED: -30, WATCH: 0, RESEARCH_ONLY: -4,
 };
 
-/** Statuses that are candidates for a Discord alert (before owner gating).
- * WAIT_FOR_PULLBACK is deliberately NOT alertable — a "wait for a pullback" notice
- * is dashboard-only research, never a normal now-only Discord alert (audit §5). */
-const ALERTABLE = new Set(["ACTIONABLE_NOW", "NEAR_TRIGGER", "DEVELOPING"]);
-const EARLY_ONLY = new Set(["NEAR_TRIGGER", "DEVELOPING"]);
-
+/** Normal Discord delivery is now-only; early/wait/watch states stay dashboard-only. */
 /** How far ahead one side must score before it "dominates" the other. */
 function dominanceMargin(env: NodeJS.ProcessEnv = process.env): number {
   const n = Number(env.OWNER_THESIS_MARGIN);
@@ -197,29 +193,25 @@ export interface DiscordSelection {
 /**
  * §1/§6/§7 — Choose the strongest few callouts for Discord. Ranks by quality
  * (core priority as tie-break), applies owner gates (direction enabled, category
- * enabled, min setup quality, early-alerts), then caps at maxDiscordAlerts. A
- * mixed-thesis WATCH is allowed through as the single disagreement message.
+ * enabled, now-only eligibility, min setup quality), then caps at
+ * maxDiscordAlerts. Early-stage and mixed-thesis WATCH states remain visible in
+ * the dashboard, but normal Discord delivery is ACTIONABLE_NOW only.
  */
 export function selectForDiscord(callouts: Callout[], s: OwnerSettings): DiscordSelection {
   const suppressed: { key: string; reason: string }[] = [];
   const eligible: { c: Callout; quality: number }[] = [];
 
   for (const c of callouts) {
-    const mixedWatch = c.status === "WATCH" && Boolean(c.thesisNote);
-    if (!ALERTABLE.has(c.status) && !mixedWatch) {
-      suppressed.push({ key: c.key, reason: `status ${c.status} is not alertable` });
+    const now = nowOnlyActionable(c);
+    if (!now.ok) {
+      suppressed.push({ key: c.key, reason: `${now.reason} — dashboard only` });
       continue;
     }
     if (c.direction === "bullish" && !s.bullishEnabled) { suppressed.push({ key: c.key, reason: "bullish alerts disabled by owner" }); continue; }
     if (c.direction === "bearish" && !s.bearishEnabled) { suppressed.push({ key: c.key, reason: "bearish alerts disabled by owner" }); continue; }
     if (!s.categories.has(categoryOf(c))) { suppressed.push({ key: c.key, reason: `category ${categoryOf(c)} disabled by owner` }); continue; }
-    if (EARLY_ONLY.has(c.status) && !s.earlyAlertsEnabled) { suppressed.push({ key: c.key, reason: "early-stage alert disabled by owner" }); continue; }
-    // CONFIDENCE GATE: only HIGH-confidence setups send a normal Discord alert.
-    // MEDIUM/LOW stay dashboard-only until they become HIGH. The two explicit
-    // exceptions are the owner's opt-in early-stage alerts (NEAR_TRIGGER/DEVELOPING,
-    // already gated above) and the single mixed-thesis WATCH disagreement notice
-    // (a risk-reduction message, not a trade recommendation).
-    if (!EARLY_ONLY.has(c.status) && !mixedWatch && confidenceTier(c) !== "HIGH") {
+    // Defense-in-depth: nowOnlyActionable already requires HIGH.
+    if (confidenceTier(c) !== "HIGH") {
       suppressed.push({ key: c.key, reason: `not HIGH confidence (${confidenceTier(c).toLowerCase()}) — dashboard only` });
       continue;
     }

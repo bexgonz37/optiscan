@@ -38,6 +38,7 @@ export function nowOnlyActionable(c: Callout, env: NodeJS.ProcessEnv = process.e
   if (c.status !== "ACTIONABLE_NOW") return { ok: false, reason: `status ${c.status} is not ACTIONABLE_NOW` };
   if (!c.actionable) return { ok: false, reason: "not actionable" };
   const es = c.entryState ?? null;
+  if (es !== "ACTIONABLE") return { ok: false, reason: `entry window ${es ?? "missing"} is not ACTIONABLE` };
   if (es != null && LATE_ENTRY_STATES.has(es)) return { ok: false, reason: `entry window ${es} — not valid now` };
   if (!hasTwoSidedQuote(c.contract)) return { ok: false, reason: "no valid two-sided option quote" };
   if (c.quoteFreshness !== "fresh") return { ok: false, reason: `option/underlying quote not fresh (${c.quoteFreshness})` };

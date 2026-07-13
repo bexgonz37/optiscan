@@ -14,7 +14,7 @@ function ar(over = {}, spot = 182.4) {
     agentId: "call_1_5", agentVersion: 1, strategy: "swing_momentum", strategyVersion: 1,
     ticker: "NVDA", direction: "bullish", horizon: "1-5", dteRange: [1, 5],
     candidateStatus: "ACTIONABLE_NOW", lifecycleStatus: null, score: 78,
-    verifiedInputs: { spot }, requiredConditions: ["hold VWAP"], selectorProfile: "swing_momentum",
+    verifiedInputs: { spot, entryWindow: { state: "ACTIONABLE", waitFor: "enter now", validEntry: "valid now", doNotEnter: "loses VWAP", currently: "confirmed", alreadyHappened: null } }, requiredConditions: ["hold VWAP"], selectorProfile: "swing_momentum",
     selectedContract: { optionSymbol: "O:NVDA_C185", strike: 185, expiration: "2026-07-17", dte: 4, side: "call", bid: 2.10, ask: 2.18, mid: 2.14, spreadPct: 3, delta: 0.5, iv: 0.3, volume: 500, openInterest: 1000, breakevenPct: 0.5 },
     passedGates: ["spread"], failedGates: [], evidenceStatus: "NOT_TRACKED",
     statisticsSnapshot: { evidenceStatus: "NOT_TRACKED", evidenceSummary: "", gradedSampleSize: 0 },
@@ -95,7 +95,7 @@ test("only HIGH-confidence actionable setups reach Discord; medium/low stay dash
   assert.notEqual(confidenceTier(medium), "HIGH");
   const sel = selectForDiscord([medium], S);
   assert.equal(sel.eligibleKeys.size, 0, "non-HIGH stays in the dashboard");
-  assert.ok(sel.suppressed.some((x) => /not HIGH confidence/.test(x.reason)));
+  assert.ok(sel.suppressed.some((x) => /need HIGH|not HIGH confidence/.test(x.reason)));
 });
 
 // ── model-inactive setup score is not a probability ──────────────────────────

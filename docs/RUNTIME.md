@@ -80,7 +80,19 @@ stock routes to the stocks webhook.
 SUPERVISOR_RUNTIME=1
 CALLOUT_CANONICAL_PATH=supervisor
 AGENT_CALLOUT_DISCORD=1
-DISCORD_WEBHOOK_OPTIONS=...   # and DISCORD_WEBHOOK_STOCKS for stock callouts
+STOCK_CALLOUTS=1
+PAPER_TRADING_ENABLED=1
+PAPER_AUTO_ENTRY=1
+PAPER_ALLOW_ZERO_DTE=1
+PAPER_KILL_SWITCH=0
+EARLY_ALERTS_ENABLED=0
+ALERT_DB_DIR=/app/data
+DISCORD_WEBHOOK_OPTIONS=...   # required for options Discord
+DISCORD_WEBHOOK_STOCKS=...    # required for stock Discord
+DISCORD_WEBHOOK_RECAP=...     # required for recaps
+SCAN_API_TOKEN=...            # private owner-dashboard token
+POLYGON_API_KEY=...           # required for market data
+# Leave BEARISH_ACTIONABLE unset.
 ```
 
 Setting `CALLOUT_CANONICAL_PATH=supervisor` automatically suppresses the legacy

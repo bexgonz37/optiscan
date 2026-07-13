@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -9,6 +9,16 @@ import {
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => readFileSync(join(root, p), "utf8");
+
+function filesUnder(dir, out = []) {
+  for (const name of readdirSync(join(root, dir))) {
+    const rel = `${dir}/${name}`;
+    const abs = join(root, rel);
+    if (statSync(abs).isDirectory()) filesUnder(rel, out);
+    else out.push(rel);
+  }
+  return out;
+}
 
 let Database = null;
 try {
@@ -49,6 +59,18 @@ test("database path uses ALERT_DB_DIR and the example points it at the volume", 
   assert.ok(/ALERT_DB_DIR=\/app\/data/.test(read(".env.railway.example")), "example sets /app/data");
   // The image creates /app/data; the persistent volume is attached via Railway.
   assert.ok(/mkdir -p \/app\/data/.test(read("Dockerfile")), "Dockerfile creates /app/data");
+});
+
+test("Railway-facing docs/examples never use ALERT_DB_DIR=/data", () => {
+  const files = [
+    ".env.railway.example", "Dockerfile", "docker-entrypoint.sh", "railway.json",
+    "README.md", "IMPLEMENTATION_STATUS.md",
+    ...filesUnder("docs"),
+  ];
+  for (const file of files) {
+    const txt = read(file);
+    assert.ok(!/\bALERT_DB_DIR\s*=\s*\/data\b/.test(txt), `${file} must use ALERT_DB_DIR=/app/data for Railway`);
+  }
 });
 
 // 4b. Railway rejects the Dockerfile VOLUME instruction — it must never come back.

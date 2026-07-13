@@ -58,6 +58,7 @@ function mk(o = {}) {
     primaryBlockingReason: null, researchOnlyWarning: null, insufficientEvidenceWarning: null,
     actionable: o.actionable ?? (status === "ACTIONABLE_NOW"),
     timestamp: 1,
+    entryState: o.entryState ?? (status === "ACTIONABLE_NOW" ? "ACTIONABLE" : null),
   };
 }
 
@@ -161,11 +162,19 @@ test("bearish alerts are gated by the owner switch", () => {
   assert.equal(on.eligibleKeys.size, 1);
 });
 
-test("early-stage alerts require the owner opt-in", () => {
+test("early-stage alerts are ignored for normal Discord even with owner opt-in", () => {
   const off = selectForDiscord([mk({ status: "DEVELOPING", actionable: false })], ownerSettings({}));
-  assert.ok(off.suppressed.some((x) => /early-stage/.test(x.reason)));
+  assert.ok(off.suppressed.some((x) => /not ACTIONABLE_NOW|dashboard only/.test(x.reason)));
   const on = selectForDiscord([mk({ status: "DEVELOPING", actionable: false })], ownerSettings({ EARLY_ALERTS_ENABLED: "1" }));
-  assert.equal(on.eligibleKeys.size, 1);
+  assert.equal(on.eligibleKeys.size, 0);
+});
+
+test("mixed-thesis WATCH cannot send normal Discord", () => {
+  const mixed = mk({ status: "WATCH", actionable: false });
+  mixed.thesisNote = "Market mixed on SPY: bullish and bearish theses disagree.";
+  const sel = selectForDiscord([mixed], ownerSettings({ EARLY_ALERTS_ENABLED: "1", BEARISH_ACTIONABLE: "1" }));
+  assert.equal(sel.eligibleKeys.size, 0);
+  assert.ok(sel.suppressed.some((x) => /not ACTIONABLE_NOW|dashboard only/.test(x.reason)));
 });
 
 test("non-core only reaches Discord when it clearly outranks core (cap = 1)", () => {

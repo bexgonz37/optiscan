@@ -31,9 +31,11 @@ Discord eligibility.
   never on read-only GETs.
 - **New table `paper_candidates`** (additive, repeat-safe `CREATE IF NOT EXISTS` in
   db.ts SCHEMA; UNIQUE idempotency_key).
-- **Now-only Discord (§B/C):** `WAIT_FOR_PULLBACK` removed from `ALERTABLE` (audit §5);
-  only HIGH + ACTIONABLE_NOW reach normal options Discord (early opt-in + mixed-thesis
-  WATCH aside). Confidence stays a deterministic tier, never a probability.
+- **Now-only Discord (§B/C):** normal options Discord uses the shared
+  `nowOnlyActionable` rule. Only HIGH + ACTIONABLE_NOW + explicit ACTIONABLE entry
+  window + fresh two-sided quote + passed risk can send. `EARLY_ALERTS_ENABLED`
+  no longer affects normal Discord delivery, and mixed-thesis WATCH stays
+  dashboard-only. Confidence stays a deterministic tier, never a probability.
 - **Momentum stock repair (§D):** `lib/stock-callout.ts` (PURE) — now-only NBBO gate
   (`stockNowOnlyEligible`) + compact card (`stockCompactCard`/`formatStockCalloutDiscord`).
   NBBO threaded from scanner tape → `captureStockAlert` → `notifyNewAlert`, which now
@@ -56,7 +58,7 @@ Discord eligibility.
 - Paper trading: `PAPER_TRADING_ENABLED` unset/≠0 (on), `PAPER_AUTO_ENTRY=1`.
 - 0DTE paper: also `PAPER_ALLOW_ZERO_DTE=1` (else 0DTE candidates are blocked, surfaced).
 - Kill switch (optional): `PAPER_KILL_SWITCH=1` to halt paper entries.
-- Persistent SQLite: `ALERT_DB_DIR=/data` (Railway volume).
+- Persistent SQLite: `ALERT_DB_DIR=/app/data` (Railway volume).
 - Safe bearish-off production: leave `BEARISH_ACTIONABLE` unset/off (puts stay
   research-only, never paper-trade). No live execution / brokerage anywhere.
 - Smoke testing: `DISCORD_SMOKE_TEST=1` (permits the dry-run smoke endpoint to send).
@@ -79,8 +81,7 @@ behind Advanced.
   quote, acceptable spread, risk passed, and — when an entry window exists — that
   it confirm NOW (not extended/missed/invalidated/waiting/early). Only **HIGH**
   actionable setups send a normal Discord alert (`selectForDiscord` confidence
-  gate); MEDIUM/LOW stay dashboard-only. Exceptions: the owner's opt-in
-  early-stage alerts and the single mixed-thesis WATCH disagreement notice.
+  gate); MEDIUM/LOW, early-stage ideas, and mixed-thesis WATCH stay dashboard-only.
 - **`lib/callouts/discord-format.ts`** rewritten: the default embed is the compact
   card (description = Contract/Expiration/DTE/Stock/Option/Estimated entry/Status/
   Horizon/Time + the labeled setup score). The Advanced block (OCC symbol, greeks,

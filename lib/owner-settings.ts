@@ -29,7 +29,7 @@ export interface OwnerSettings {
   bullishEnabled: boolean;
   /** Whether bearish actionable ideas may alert (mirrors BEARISH_ACTIONABLE). */
   bearishEnabled: boolean;
-  /** Whether early-stage (DEVELOPING/NEAR_TRIGGER) ideas may alert. */
+  /** Legacy visibility flag; normal Discord ignores early-stage ideas. */
   earlyAlertsEnabled: boolean;
   /** Which alert categories are allowed to reach Discord. */
   categories: Set<AlertCategory>;
@@ -70,8 +70,7 @@ export function ownerSettings(env: NodeJS.ProcessEnv = process.env): OwnerSettin
     // Bullish on by default; bearish reuses the existing BEARISH_ACTIONABLE flag.
     bullishEnabled: env.BULLISH_ENABLED !== "0",
     bearishEnabled: env.BEARISH_ACTIONABLE === "1",
-    // Early alerts (DEVELOPING/NEAR_TRIGGER to Discord) are opt-in; default off so
-    // the desk sees confirmed entries first.
+    // Kept visible for operators, but normal Discord delivery is ACTIONABLE_NOW only.
     earlyAlertsEnabled: env.EARLY_ALERTS_ENABLED === "1",
     categories,
   };

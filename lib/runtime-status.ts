@@ -45,6 +45,67 @@ export interface RuntimeStatus {
     moreForExperimental: Record<string, number> | null;
   };
   improvement: { mode: string; auditEnabled: boolean; pendingProposals: number; blocked: number };
+  config: {
+    items: {
+      key: string;
+      state: string;
+      meaning: string;
+      blocks: ("options_alerts" | "stock_alerts" | "paper_trading")[];
+    }[];
+    summary: string[];
+  };
+}
+
+function on(v: unknown): boolean {
+  return v === "1";
+}
+
+function configItem(
+  key: string,
+  state: string,
+  meaning: string,
+  blocks: ("options_alerts" | "stock_alerts" | "paper_trading")[] = [],
+) {
+  return { key, state, meaning, blocks };
+}
+
+function buildConfigVisibility(env: NodeJS.ProcessEnv = process.env) {
+  const supervisorOn = on(env.SUPERVISOR_RUNTIME);
+  const canonicalPath = env.CALLOUT_CANONICAL_PATH === "supervisor" ? "supervisor" : "legacy";
+  const supervisorDiscordOn = canonicalPath === "supervisor" && on(env.AGENT_CALLOUT_DISCORD);
+  const stockOn = on(env.STOCK_CALLOUTS);
+  const paperTradingOn = env.PAPER_TRADING_ENABLED !== "0";
+  const paperAutoOn = on(env.PAPER_AUTO_ENTRY);
+  const zeroDteOn = on(env.PAPER_ALLOW_ZERO_DTE);
+  const killSwitchOn = on(env.PAPER_KILL_SWITCH);
+  const earlyOn = on(env.EARLY_ALERTS_ENABLED);
+  const bearishOn = on(env.BEARISH_ACTIONABLE);
+  const dbDir = env.ALERT_DB_DIR || "data";
+
+  const items = [
+    configItem("SUPERVISOR_RUNTIME", supervisorOn ? "enabled" : "disabled", supervisorOn ? "Supervisor cycle runs automatically." : "Supervisor cycle is off.", supervisorOn ? [] : ["options_alerts", "paper_trading"]),
+    configItem("CALLOUT_CANONICAL_PATH", canonicalPath, canonicalPath === "supervisor" ? "Supervisor is the canonical options sender." : "Legacy options path remains canonical.", canonicalPath === "supervisor" ? [] : ["options_alerts"]),
+    configItem("AGENT_CALLOUT_DISCORD", on(env.AGENT_CALLOUT_DISCORD) ? "enabled" : "disabled", on(env.AGENT_CALLOUT_DISCORD) ? "Supervisor Discord master switch is on." : "Supervisor Discord master switch is off.", on(env.AGENT_CALLOUT_DISCORD) ? [] : ["options_alerts"]),
+    configItem("STOCK_CALLOUTS", stockOn ? "enabled" : "disabled", stockOn ? "Momentum stock callouts may route to the stock webhook." : "Momentum stock Discord is disabled because STOCK_CALLOUTS is off.", stockOn ? [] : ["stock_alerts"]),
+    configItem("PAPER_TRADING_ENABLED", paperTradingOn ? "enabled" : "disabled", paperTradingOn ? "Paper trading subsystem is enabled." : "Paper trading subsystem is disabled.", paperTradingOn ? [] : ["paper_trading"]),
+    configItem("PAPER_AUTO_ENTRY", paperAutoOn ? "enabled" : "disabled", paperAutoOn ? "Paper auto-entry is enabled." : "Paper auto-entry is disabled.", paperAutoOn ? [] : ["paper_trading"]),
+    configItem("PAPER_ALLOW_ZERO_DTE", zeroDteOn ? "enabled" : "disabled", zeroDteOn ? "0DTE paper trading is enabled." : "0DTE paper trading is disabled.", zeroDteOn ? [] : ["paper_trading"]),
+    configItem("PAPER_KILL_SWITCH", killSwitchOn ? "enabled" : "disabled", killSwitchOn ? "Paper kill switch is engaged." : "Paper kill switch is off.", killSwitchOn ? ["paper_trading"] : []),
+    configItem("EARLY_ALERTS_ENABLED", earlyOn ? "enabled" : "disabled", "Early alerts are ignored for normal Discord; ACTIONABLE_NOW is required.", []),
+    configItem("BEARISH_ACTIONABLE", bearishOn ? "enabled" : "disabled", bearishOn ? "Bearish actionability is enabled." : "Bearish actionability is off.", bearishOn ? [] : ["options_alerts", "paper_trading"]),
+    configItem("ALERT_DB_DIR", dbDir, dbDir === "/app/data" ? "Database is using persistent path /app/data." : `Database path is ${dbDir}. Railway should use /app/data.`, dbDir === "/app/data" ? [] : ["paper_trading"]),
+  ];
+
+  const summary = [
+    supervisorDiscordOn ? "Options Discord is enabled." : "Options Discord is disabled by Supervisor routing/config.",
+    stockOn ? "Momentum stock Discord is enabled when DISCORD_WEBHOOK_STOCKS is configured and a fresh actionable setup exists." : "Momentum stock Discord is disabled because STOCK_CALLOUTS is off.",
+    paperAutoOn && paperTradingOn && !killSwitchOn ? "Paper auto-entry is enabled." : "Paper auto-entry is disabled.",
+    zeroDteOn ? "0DTE paper trading is enabled." : "0DTE paper trading is disabled.",
+    "Early alerts are ignored for normal Discord.",
+    bearishOn ? "Bearish actionability is enabled." : "Bearish actionability is off.",
+    dbDir === "/app/data" ? "Database is using persistent path /app/data." : `Database path is ${dbDir}; Railway should use /app/data.`,
+  ];
+  return { items, summary };
 }
 
 export function buildRuntimeStatus(nowMs: number = Date.now()): RuntimeStatus {
@@ -209,5 +270,6 @@ export function buildRuntimeStatus(nowMs: number = Date.now()): RuntimeStatus {
       pendingProposals: improvement.counts?.READY_FOR_CODING_AGENT ?? 0,
       blocked: improvement.counts?.BLOCKED ?? 0,
     },
+    config: buildConfigVisibility(process.env),
   };
 }

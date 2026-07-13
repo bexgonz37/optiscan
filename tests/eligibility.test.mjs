@@ -38,6 +38,7 @@ for (const [label, over, ew] of [
   ["WAIT_FOR_PULLBACK", { candidateStatus: "WAIT_FOR_PULLBACK", actionability: "WATCH" }, { state: "WAIT_FOR_PULLBACK", waitFor: "", validEntry: "", doNotEnter: "", currently: "", alreadyHappened: null }],
   ["WATCH", { candidateStatus: "WATCH", actionability: "WATCH" }, null],
   ["NEAR_TRIGGER", { candidateStatus: "NEAR_TRIGGER", actionability: "WATCH" }, { state: "NEAR_TRIGGER", waitFor: "", validEntry: "", doNotEnter: "", currently: "", alreadyHappened: null }],
+  ["DEVELOPING", { candidateStatus: "DEVELOPING", actionability: "WATCH" }, { state: "EARLY", waitFor: "", validEntry: "", doNotEnter: "", currently: "", alreadyHappened: null }],
   ["MISSED", { candidateStatus: "MISSED", actionability: "WATCH" }, { state: "MISSED", waitFor: "", validEntry: "", doNotEnter: "", currently: "", alreadyHappened: null }],
   ["EXTENDED", { candidateStatus: "EXTENDED", actionability: "WATCH" }, { state: "EXTENDED", waitFor: "", validEntry: "", doNotEnter: "", currently: "", alreadyHappened: null }],
   ["INVALIDATED", { candidateStatus: "INVALIDATED", actionability: "BLOCKED" }, { state: "INVALIDATED", waitFor: "", validEntry: "", doNotEnter: "", currently: "", alreadyHappened: null }],
@@ -52,6 +53,14 @@ for (const [label, over, ew] of [
     assert.equal(selectForDiscord([c], ownerSettings({})).eligibleKeys.size, 0, `${label} not sent to Discord`);
   });
 }
+
+test("mixed-thesis WATCH is dashboard-only and non-paperable", () => {
+  const c = buildCallout(ar({ candidateStatus: "WATCH", actionability: "WATCH" }, null));
+  c.thesisNote = "Market mixed on NVDA: bullish and bearish theses disagree.";
+  assert.equal(nowOnlyActionable(c).ok, false);
+  assert.equal(paperCandidateEligibility(c, PAPER_ON).ok, false);
+  assert.equal(selectForDiscord([c], ownerSettings({ EARLY_ALERTS_ENABLED: "1", BEARISH_ACTIONABLE: "1" })).eligibleKeys.size, 0);
+});
 
 test("stale underlying / option quote is not eligible", () => {
   const c = buildCallout(ar({ freshness: { ok: false, reason: "quote 40s old" } }));

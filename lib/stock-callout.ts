@@ -73,7 +73,10 @@ export function stockNowOnlyEligible(i: StockCalloutInput, cfg: StockGateConfig 
     return { ok: false, reason: `confidence ${i.confidence ?? "n/a"} < HIGH threshold ${cfg.minConfidence}` };
   }
   if (!hasTwoSidedStockQuote(i.bid, i.ask)) return { ok: false, reason: "no valid two-sided (NBBO) quote — NO VALID ENTRY" };
-  if (isNum(i.quoteAsOfMs) && i.nowMs - (i.quoteAsOfMs as number) > cfg.maxQuoteAgeMs) {
+  if (!isNum(i.quoteAsOfMs)) {
+    return { ok: false, reason: "MISSING_QUOTE_TIMESTAMP — freshness unavailable; NO VALID ENTRY" };
+  }
+  if (i.nowMs - (i.quoteAsOfMs as number) > cfg.maxQuoteAgeMs) {
     return { ok: false, reason: `stale quote (${Math.round((i.nowMs - (i.quoteAsOfMs as number)) / 1000)}s old)` };
   }
   const spread = stockSpreadPct(i.bid, i.ask);

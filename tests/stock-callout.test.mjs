@@ -32,8 +32,26 @@ test("stale quote does not send", () => {
   assert.equal(stockNowOnlyEligible(si({ quoteAsOfMs: NOW - 60_000 }), CFG).ok, false);
 });
 
+test("missing quote timestamp does not send (MISSING_QUOTE_TIMESTAMP)", () => {
+  const r = stockNowOnlyEligible(si({ quoteAsOfMs: null }), CFG);
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /MISSING_QUOTE_TIMESTAMP/);
+});
+
+test("invalid quote timestamp does not send (MISSING_QUOTE_TIMESTAMP)", () => {
+  const r = stockNowOnlyEligible(si({ quoteAsOfMs: Number.NaN }), CFG);
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /MISSING_QUOTE_TIMESTAMP/);
+});
+
 test("missing/one-sided NBBO does not send (NO VALID ENTRY)", () => {
   const r = stockNowOnlyEligible(si({ ask: null }), CFG);
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /two-sided|NBBO/i);
+});
+
+test("crossed quote does not send (NO VALID ENTRY)", () => {
+  const r = stockNowOnlyEligible(si({ bid: 27.5, ask: 27.0 }), CFG);
   assert.equal(r.ok, false);
   assert.match(r.reason, /two-sided|NBBO/i);
 });
@@ -89,7 +107,15 @@ test("stock alerts route only through the stocks webhook and use the compact car
   const src = readFileSync(join(root, "lib/notifications.ts"), "utf8");
   assert.match(src, /stockNowOnlyEligible/, "now-only gate applied before sending");
   assert.match(src, /formatStockCalloutDiscord/, "compact stock card used");
+  assert.match(src, /STOCK_CALLOUTS !== "1"/, "STOCK_CALLOUTS=1 required");
+  assert.match(src, /discordWebhookConfigured\(webhook\)/, "stock webhook must be configured");
   assert.match(src, /webhook: DiscordWebhookKind = "stocks"/, "stocks webhook only for stock alerts");
+});
+
+test("stock scanner path keeps its own cooldown to avoid duplicate-cycle resends", () => {
+  const src = readFileSync(join(root, "lib/scanner-loop.ts"), "utf8");
+  assert.match(src, /stockCooldownUntil/, "stock path has a dedicated cooldown");
+  assert.match(src, /if \(stockEnabled\) tasks\.push\(handleStockTrigger/, "stock trigger is gated by STOCK_CALLOUTS");
 });
 
 test("options and stock webhook routing stay separate", () => {

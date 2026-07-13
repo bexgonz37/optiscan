@@ -97,6 +97,7 @@ if (Database) {
     ["WAIT_FOR_PULLBACK", { candidateStatus: "WAIT_FOR_PULLBACK", actionability: "WATCH" }, { ...EW_OK, state: "WAIT_FOR_PULLBACK" }],
     ["WATCH", { candidateStatus: "WATCH", actionability: "WATCH" }, null],
     ["NEAR_TRIGGER", { candidateStatus: "NEAR_TRIGGER", actionability: "WATCH" }, { ...EW_OK, state: "NEAR_TRIGGER" }],
+    ["DEVELOPING", { candidateStatus: "DEVELOPING", actionability: "WATCH" }, { ...EW_OK, state: "EARLY" }],
     ["MISSED", { candidateStatus: "MISSED", actionability: "WATCH" }, { ...EW_OK, state: "MISSED" }],
     ["EXTENDED", { candidateStatus: "EXTENDED", actionability: "WATCH" }, { ...EW_OK, state: "EXTENDED" }],
     ["INVALIDATED", { candidateStatus: "INVALIDATED", actionability: "BLOCKED" }, { ...EW_OK, state: "INVALIDATED" }],
@@ -111,6 +112,15 @@ if (Database) {
       assert.equal(rows(db).length, 0);
     });
   }
+
+  test("mixed-thesis WATCH creates NO paper candidate", () => {
+    const db = new Database(":memory:"); db.exec(DDL);
+    const c = buildCallout(ar({ candidateStatus: "WATCH", actionability: "WATCH" }, null));
+    c.thesisNote = "Market mixed on NVDA: bullish and bearish theses disagree.";
+    const s = bridgeCalloutsToPaperOnDb(db, [c], okCreate, NOW, PAPER_ON);
+    assert.equal(s.created, 0);
+    assert.equal(rows(db).length, 0);
+  });
 
   test("0DTE is blocked when PAPER_ALLOW_ZERO_DTE is off (surfaced, not silent)", () => {
     const db = new Database(":memory:"); db.exec(DDL);
