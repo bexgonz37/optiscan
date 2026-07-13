@@ -11,7 +11,7 @@ Lab / an embedded LLM.
 
 | Check | Result |
 |---|---|
-| `npm test` | **804 pass**, 0 fail (745 through P9 + 59 live-runtime wiring) |
+| `npm test` | **817 pass**, 0 fail (745 through P9 + 59 live-runtime wiring + 13 Railway packaging) |
 | `npx tsc --noEmit` | clean |
 | `npm run build` | compiles, all static pages (1 pre-existing benign dynamic-require warning) |
 
@@ -733,6 +733,41 @@ audit are OFF by default (safe). The scheduler's maintenance + bounded learning 
 run automatically; the model stays `INACTIVE_NO_TRAINABLE_DATA` until real graded
 outcomes exist. To go fully live set `SUPERVISOR_RUNTIME=1`, `CALLOUT_CANONICAL_PATH=supervisor`,
 `AGENT_CALLOUT_DISCORD=1`, and the webhook vars (see `docs/RUNTIME.md`).
+
+## Railway Deployment Packaging — DONE
+
+Packages the single-service runtime for Railway (one service, one replica, SQLite on
+a persistent volume). No new trading logic. Full guides: `docs/RAILWAY_DEPLOYMENT.md`,
+`docs/OPERATIONS.md`, `docs/RUNTIME.md`.
+
+- **Production runner:** the existing `Dockerfile` builds Next.js standalone output
+  and runs `node server.js` → instrumentation `register()` (production) → `ensureServerBoot()`
+  starts scanner + paper engine + scheduler. (Verified empirically that plain
+  `next start` does NOT boot the runtime and warns against standalone — so the image
+  is authoritative.)
+- **Volume safety:** new `docker-entrypoint.sh` runs as root only to `chown` the
+  `/app/data` volume, then drops to the `nodejs` user via `gosu` (signal-safe). Works
+  whether the mount is root- or user-owned.
+- **`railway.json`:** Dockerfile builder, `numReplicas: 1`, healthcheck `/api/healthz`,
+  restart on failure. Railway injects `PORT` (not hard-coded).
+- **`/api/healthz`:** lightweight probe — 200 when the DB opens; never 503 for a
+  closed market, inactive model, unconfigured Discord, or rate-limited provider.
+  Detailed degradation stays in `/api/runtime/status`.
+- **`.env.railway.example`:** full variable inventory (placeholders only) + Stage A/B/C
+  profiles. **DB path:** `${ALERT_DB_DIR}/optiscan.db`, `ALERT_DB_DIR=/app/data`.
+- **Staged go-live:** A (infra, everything safe/off) → B (`SUPERVISOR_RUNTIME=1`,
+  observe, no sends) → C (`CALLOUT_CANONICAL_PATH=supervisor` + `AGENT_CALLOUT_DISCORD=1`,
+  legacy options sender stands down — exactly one options path). Improvement automation
+  stays off; puts RESEARCH_ONLY; no live brokerage.
+- **Readiness tests:** `tests/deploy-readiness.test.mjs` (13) — config parses, PORT
+  respected, DB-path/volume, healthcheck safety, Stage A/B/C send-gating, one replica,
+  repeat-safe migration, no committed secrets, docs match code.
+
+Node engine pinned via `.nvmrc` (20, matches the image base). SQLite → PostgreSQL
+migration is documented as the trigger for multi-replica/multi-service (not done now).
+
+_Deployment is packaging only — no external Railway deploy was performed (no account
+access). The repo is ready to connect to a Railway service._
 
 ## Later phases (explicitly out of scope now)
 
