@@ -11,9 +11,9 @@ Lab / an embedded LLM.
 
 | Check | Result |
 |---|---|
-| `npm test` | **707 pass**, 0 fail (547 + 38+20+15+33+20 P1–P5 + 15 P6 + 19 P7) |
+| `npm test` | **804 pass**, 0 fail (745 through P9 + 59 live-runtime wiring) |
 | `npx tsc --noEmit` | clean |
-| `npm run build` | compiles, all static pages |
+| `npm run build` | compiles, all static pages (1 pre-existing benign dynamic-require warning) |
 
 _(Earlier revisions of this file undercounted tests; the true baseline before
 setup-fingerprinting was 547.)_
@@ -32,10 +32,15 @@ Autonomous quant-roadmap execution (commit each phase green + pushed to `main`):
 | P6 — Advanced options callouts (desktop + Discord) | ✅ pushed | `616f16a` |
 | P7 — Controlled continuous learning + drift | ✅ pushed | `3c7b890` |
 | P8 — Live experimental probability mode | ✅ pushed | `f8409b8` |
-| P9 — Controlled code-improvement agent | ✅ pushed | (this commit) |
+| P9 — Controlled code-improvement agent | ✅ pushed | `8057332` |
+| **Live runtime wiring (A–F)** | ✅ pushed | `5a6979b`…(this commit) |
 
-**ROADMAP COMPLETE (P1–P9).** `main` clean, 745 tests green, tsc clean, build
-green. Reusable substrate in place: `contract-selector`,
+**ROADMAP COMPLETE (P1–P9) + RUNTIME-WIRED.** Phases 5–9 are no longer on-demand
+only — they run automatically from server boot via the scheduler (single-owner
+worker lease), the Supervisor delivers canonical callouts through the tracked Discord
+ledger, and callout lifecycle/dedup is persistent (restart-safe). See "Live Runtime
+Wiring" below and `docs/RUNTIME.md`. `main` clean, tsc clean, build green.
+Reusable substrate in place: `contract-selector`,
 `data-freshness`, `trade-explanation`/`paper-explain`, `paper-engine`,
 `setup-fingerprint` + `outcome-store`, `setup-statistics` + `statistics-store`
 (evidence engine), `market-context` (+ store), `model-registry` (probability,
@@ -680,6 +685,54 @@ protection / required reviews on `main` must be configured **manually** in GitHu
 this agent does not assume, request, or depend on those permissions. Isolated work
 branches follow `auto-improve/<category>/<compact-utc>` when a coding agent picks a
 proposal up.
+
+## Live Runtime Wiring, Discord Delivery & Scheduler — DONE
+
+Turns the on-demand Phase 5–9 capabilities into an automatic background runtime.
+Safe by default: no new env vars ⇒ legacy behavior, nothing new sent. Full ops
+guide in `docs/RUNTIME.md`.
+
+**Commit A `5a6979b` — Supervisor cycle (relevance-gated).** `lib/agents/relevance.ts`
+(pure) runs only horizons the fetched chain genuinely covers (no silent widening).
+`lib/agents/runtime.ts` does ONE metered 0–90 DTE chain fetch per ticker for all
+horizons and threads supervisor prior-state for lifecycle hysteresis.
+`lib/supervisor-cycle.ts` drives a bounded universe. OFF by default (`SUPERVISOR_RUNTIME=1`).
+
+**Commit B `c009649` — Persistent callout lifecycle/dedup.** Additive `callout_state`
+table + `lib/callouts/state-store.ts` hydrate/persist the dedup map so cooldowns and
+lifecycle survive restarts/scaling — a restart never resends an unchanged callout.
+`lib/callouts/material-hash.ts` (pure) hashes decision-relevant fields only.
+
+**Commit C `4dea48c` — Real tracked Discord delivery.** `lib/callouts/routing.ts`
+(pure) routes calls+puts → options webhook (puts labeled RESEARCH ONLY), stock →
+stocks webhook; coexistence gating defaults to LEGACY. `notifications.deliverCalloutDiscord`
+reuses the existing tracked ledger (idempotency, retries, status) — one message per
+canonical opportunity/horizon, never per agent. `notifyNewAlert` stands the legacy
+options path down when `CALLOUT_CANONICAL_PATH=supervisor` (no double-send).
+
+**Commit D `3af1480` — Learning/drift scheduler + worker lease.** Generalized named
+`worker_leases` (heartbeat/staleness/recovery, fake-time testable). `lib/scheduler.ts`
+started from `server-boot`, single-owner, runs maintenance (sync+stats), the bounded
+learning cycle (gated retrain + drift), and the supervisor cycle. `lib/scheduler-policy.ts`
+(pure) clamps cadences. Never fabricates readiness.
+
+**Commit E `c7f5a38` — Improvement audit scheduling + runtime health.** Proposal-only
+improvement audit job (`IMPROVEMENT_AUDIT=1`, low frequency). `GET /api/runtime/status`
++ `lib/runtime-status.ts` aggregate worker/lease ownership, scanner/supervisor
+telemetry, Discord ledger counts, learning/drift, model readiness (outcomes needed
+for experimental/validated), and improvement mode — never exposing secrets.
+
+**Commit F (this commit) — Smoke test + docs.** `lib/callouts/smoke-fixtures.ts`
+(pure) + `lib/callouts/smoke.ts` + `GET /api/dev/discord-smoke` + `scripts/discord-smoke.mjs`:
+disabled by default, sends only TEST/DRY-RUN-labeled fixtures (options/put-research/
+stock/inactive-model/experimental-model/no-valid-contract) with zero paper/outcome/
+model side effects. `docs/RUNTIME.md` documents every flag + the manual send command.
+
+**Current live state.** Supervisor cycle + supervisor Discord delivery + improvement
+audit are OFF by default (safe). The scheduler's maintenance + bounded learning jobs
+run automatically; the model stays `INACTIVE_NO_TRAINABLE_DATA` until real graded
+outcomes exist. To go fully live set `SUPERVISOR_RUNTIME=1`, `CALLOUT_CANONICAL_PATH=supervisor`,
+`AGENT_CALLOUT_DISCORD=1`, and the webhook vars (see `docs/RUNTIME.md`).
 
 ## Later phases (explicitly out of scope now)
 
