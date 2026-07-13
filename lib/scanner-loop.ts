@@ -677,7 +677,23 @@ async function tick() {
       efficiency, nowMs, cooldownUntil: routeCooldownUntil,
       minRate: triggerMinRate, minSurge: triggerMinSurge, minLevelSurge, minEfficiency: triggerMinEff,
     });
-    const fired = persistOk && accelOk && tapeMoving && shouldTriggerOk;
+    const coreBullishImpulse =
+      core &&
+      session === "regular" &&
+      dir.direction === "bullish" &&
+      !dirBear &&
+      nowMs >= routeCooldownUntil &&
+      persistOk &&
+      accelOk &&
+      tapeMoving &&
+      levels.aboveVwap !== false &&
+      (efficiency == null || efficiency >= triggerMinEff) &&
+      accelRead.shortRate != null &&
+      accelRead.shortRate >= Math.max(triggerMinRate * 1.15, 0.2) &&
+      (instantRate == null || instantRate >= triggerMinRate) &&
+      (surge == null || surge >= Math.max(1.05, triggerMinSurge * 0.82)) &&
+      (levels.hodBreak || sustainedOk);
+    const fired = (persistOk && accelOk && tapeMoving && shouldTriggerOk) || coreBullishImpulse;
 
     if (nearTrigger && !fired && shouldRecordNearMiss(st.lastNearMissAt, nowMs)) {
       st.lastNearMissAt = nowMs;

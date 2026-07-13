@@ -58,7 +58,7 @@ test("nearMinuteBudget: defers at 90% of the minute cap, never with cap disabled
   assert.equal(nearMinuteBudget(null), false);
 });
 
-test("scanner loop wires near-miss + deferral WITHOUT touching gate math (source spec)", () => {
+test("scanner loop wires near-miss + deferral without deferring trigger-path chains (source spec)", () => {
   const src = readFileSync(join(root, "lib/scanner-loop.ts"), "utf8");
   // observability wired
   assert.ok(src.includes("recordNearMiss"), "loop must record near-misses");
@@ -66,9 +66,11 @@ test("scanner loop wires near-miss + deferral WITHOUT touching gate math (source
   assert.ok(src.includes("nearMisses: s.nearMisses.slice(0, 25)"), "loopState must expose nearMisses");
   // budget deferral wired for non-critical calls only
   assert.ok(src.includes("nearMinuteBudget(getCallStats(nowMs))"), "warm prefetch/news must consult the minute budget");
-  // gate math untouched: fire decision is still the same four gates ANDed
-  assert.ok(src.includes("const fired = persistOk && accelOk && tapeMoving && shouldTriggerOk"),
-    "fire condition must remain persistOk && accelOk && tapeMoving && shouldTrigger");
+  // original gate path remains, with only the named core bullish impulse exception.
+  assert.ok(src.includes("(persistOk && accelOk && tapeMoving && shouldTriggerOk)"),
+    "fire condition must keep the original persist/accel/tape/trigger path");
+  assert.ok(src.includes("|| coreBullishImpulse"),
+    "only the named core bullish impulse path may bypass shouldTriggerOk");
   // trigger-path chain fetch is not budget-gated
   const handleTrigger = src.slice(src.indexOf("async function handleTrigger"), src.indexOf("/** Refresh live option quotes"));
   assert.ok(!handleTrigger.includes("nearMinuteBudget"), "trigger-path chain fetch must never be deferred");

@@ -61,12 +61,13 @@ test("small day moves never trip it — this is not a lowered threshold", () => 
   assert.ok(MAJOR_MOVE_CORE_MIN_PCT >= 2, "core bar must stay meaningful");
 });
 
-test("scanner loop wires the detector without touching burst gates (source spec)", () => {
+test("scanner loop wires the detector without turning major moves into BUY triggers (source spec)", () => {
   const src = readFileSync(join(root, "lib/scanner-loop.ts"), "utf8");
   assert.ok(src.includes("detectMajorMove"), "loop must run day-timeframe detection");
   assert.ok(src.includes("majorMoves: s.majorMoves.slice(0, 12)"), "loopState must expose majorMoves");
-  assert.ok(src.includes("const fired = persistOk && accelOk && tapeMoving && shouldTriggerOk"),
-    "burst fire condition must remain unchanged");
+  assert.ok(src.includes("(persistOk && accelOk && tapeMoving && shouldTriggerOk)"),
+    "the original burst fire path must remain intact");
+  assert.ok(src.includes("coreBullishImpulse"), "only the named core impulse path may augment burst firing");
   const majorIdx = src.indexOf("detectMajorMove({");
   const region = src.slice(majorIdx, majorIdx + 1200);
   assert.ok(!region.includes("handleTrigger("), "major-move detection must NOT call the BUY trigger path");

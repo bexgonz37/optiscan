@@ -31,6 +31,16 @@ test("SPEC: scanner loop routes options and stock in parallel during RTH", () =>
   assert.ok(/session === "closed"/.test(loop), "loop must pause when closed");
 });
 
+test("SPEC: core bullish impulse can start option selection faster without bypassing final gates", () => {
+  const loop = read("lib/scanner-loop.ts");
+  assert.ok(/coreBullishImpulse/.test(loop), "core impulse branch present");
+  assert.ok(/dir\.direction === "bullish"/.test(loop), "limited to bullish call-style moves");
+  assert.ok(/levels\.aboveVwap !== false/.test(loop), "requires VWAP alignment when known");
+  assert.ok(/Math\.max\(triggerMinRate \* 1\.15, 0\.2\)/.test(loop), "requires Discord-grade speed");
+  assert.ok(/const fired = \(persistOk && accelOk && tapeMoving && shouldTriggerOk\) \|\| coreBullishImpulse/.test(loop), "only accelerates trigger discovery");
+  assert.ok(/captureZeroDte/.test(loop), "still routes through capture/contract/freshness gates");
+});
+
 test("SPEC: options alerts persist asset_class", () => {
   const cap = read("lib/alert-capture.ts");
   assert.ok(cap.includes('assetClass: "options"'), "options alerts must persist asset_class='options'");
