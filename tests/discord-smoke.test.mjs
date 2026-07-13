@@ -44,9 +44,9 @@ test("inactive model shows the SETUP SCORE fallback; experimental shows the EXPE
 
 test("no-valid-contract scenario renders without a fabricated contract", () => {
   const nvc = byName.no_valid_contract;
-  // The trader-first format states the missing entry window instead of a contract.
-  const entryField = nvc.payload.embed.fields.find((f) => f.name === "Option entry");
-  assert.ok(entryField, "has an Option entry field");
+  // The forward-looking format states the missing entry window instead of a contract.
+  const entryField = nvc.payload.embed.fields.find((f) => f.name === "✅ Valid entry");
+  assert.ok(entryField, "has a Valid entry field");
   assert.match(entryField.value, /NO VALID ENTRY WINDOW/);
   assert.ok(!/O:TEST_C100/.test(JSON.stringify(nvc.payload)), "no fabricated option symbol");
 });

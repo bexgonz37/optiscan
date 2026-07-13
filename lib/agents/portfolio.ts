@@ -29,10 +29,12 @@ import {
   ownerSettings, tickerPriorityRank, isPriorityTicker, type OwnerSettings, type AlertCategory,
 } from "../owner-settings.ts";
 
-/** Points a status contributes to portfolio quality (more advanced = stronger). */
+/** Points a status contributes to portfolio quality (more advanced = stronger).
+ * Late/retrospective states are penalized hard so a completed move can never
+ * outrank a genuinely early, valid setup (§10). */
 const STATUS_QUALITY: Record<string, number> = {
-  ACTIONABLE_NOW: 18, NEAR_TRIGGER: 10, WAIT_FOR_PULLBACK: 6, DEVELOPING: 4,
-  EXTENDED: -6, WATCH: 0, RESEARCH_ONLY: -4,
+  ACTIONABLE_NOW: 18, NEAR_TRIGGER: 10, WAIT_FOR_PULLBACK: 4, DEVELOPING: 4,
+  EXTENDED: -15, MISSED: -30, WATCH: 0, RESEARCH_ONLY: -4,
 };
 
 /** Statuses that are candidates for a Discord alert (before owner gating). */
@@ -74,6 +76,15 @@ export function scoreCalloutQuality(c: Callout, s: OwnerSettings): number {
   // Core-universe priority: a small bonus so ties favor the desk's core names,
   // WITHOUT letting a weak core idea outrank a strong non-core one.
   if (isPriorityTicker(c.ticker, s)) q += 6;
+
+  // §10 — TIMING outranks retrospective strength. A genuinely valid entry window
+  // is rewarded; a completed/extended/missed/reversing move is penalized hard so
+  // it cannot be selected over a lower-scoring but early, valid setup.
+  const es = c.entryState ?? null;
+  if (es === "ACTIONABLE") q += 12;
+  else if (es === "NEAR_TRIGGER") q += 4;
+  else if (es === "EXTENDED" || es === "MISSED" || es === "INVALIDATED") q -= 30;
+  else if (es === "WAIT_FOR_PULLBACK" || es === "BLOCKED") q -= 8;
 
   return Math.round(q * 100) / 100;
 }

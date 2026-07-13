@@ -19,6 +19,7 @@ export type CandidateStatus =
   | "WATCH"
   | "WAIT_FOR_PULLBACK"
   | "EXTENDED"
+  | "MISSED"
   | "NO_VALID_CONTRACT"
   | "DATA_STALE"
   | "INVALIDATED"
@@ -117,6 +118,7 @@ export const STATUS_RANK: Record<CandidateStatus, number> = {
   MODEL_EXPERIMENTAL: 24,
   MODEL_INACTIVE: 23,
   NO_VALID_CONTRACT: 20,
+  MISSED: 15,
   DATA_STALE: 10,
   INVALIDATED: 0,
 };

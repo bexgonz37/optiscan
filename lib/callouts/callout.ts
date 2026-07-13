@@ -70,6 +70,22 @@ export interface Callout {
    * stronger). Set by lib/agents/portfolio.ts; undefined before that runs. */
   thesisNote?: string | null;
   portfolioRank?: number | null;
+  /** Forward-looking entry-window language (lib/entry-window.ts). Present when the
+   * live momentum snapshot was available. NEVER a promise — just what to wait for. */
+  entryState?: string | null;       // EARLY | NEAR_TRIGGER | ACTIONABLE | WAIT_FOR_PULLBACK | EXTENDED | MISSED | INVALIDATED | BLOCKED
+  waitFor?: string | null;          // NEXT REQUIRED CONDITION
+  validEntry?: string | null;       // VALID ENTRY ONLY IF
+  doNotEnter?: string | null;       // DO NOT ENTER IF / DO NOT CHASE
+  currently?: string | null;        // CURRENT STATE
+  alreadyHappened?: string | null;  // ALREADY HAPPENED (historical context only)
+  /** Alert-timing diagnostics (lib/alert-timing.ts / §8). */
+  timing?: {
+    quoteAgeMs: number | null;
+    secondsSinceTrigger: number | null;
+    distanceFromTriggerPct: number | null;
+    entryWindowValid: boolean;
+    lateReason: string | null;
+  } | null;
 }
 
 const HORIZON_LABEL: Record<string, string> = {
@@ -99,6 +115,15 @@ export function buildCallout(r: AgentResult, extras: BuildCalloutExtras = {}): C
       : null;
 
   const reason = (r.reasons[0] ?? "Setup under evaluation.").slice(0, 240);
+
+  // Forward-looking entry-window language (lib/entry-window.ts), when present.
+  const ew = (r.verifiedInputs as any)?.entryWindow as
+    | { state: string; waitFor: string; validEntry: string; doNotEnter: string; currently: string; alreadyHappened: string | null }
+    | null | undefined;
+  // A late/extended/missed/reversing state is NEVER actionable, regardless of the
+  // agent verdict — this is the anti-chase authority at the callout boundary.
+  const lateStates = new Set(["EXTENDED", "MISSED", "INVALIDATED", "WAIT_FOR_PULLBACK", "BLOCKED"]);
+  const entryLate = ew ? lateStates.has(ew.state) : false;
 
   // Phase 8 model-state disclosure. A validated probability stands alone; an
   // experimental one is always tagged research-only; when no model is active we
@@ -148,8 +173,21 @@ export function buildCallout(r: AgentResult, extras: BuildCalloutExtras = {}): C
         ? "RESEARCH ONLY — bearish trading is not enabled."
         : (r.researchOnly ? "Research only — not currently actionable." : null),
     insufficientEvidenceWarning: r.evidenceStatus === "ESTABLISHED_EVIDENCE" ? null : "Not enough graded outcomes yet for statistical conclusions.",
-    actionable: r.actionability === "ACTIONABLE" && (!isBearish || bearishActionable()),
+    actionable: r.actionability === "ACTIONABLE" && (!isBearish || bearishActionable()) && !entryLate,
     timestamp: r.timestamp,
+    entryState: ew?.state ?? null,
+    waitFor: ew?.waitFor ?? null,
+    validEntry: ew?.validEntry ?? null,
+    doNotEnter: ew?.doNotEnter ?? null,
+    currently: ew?.currently ?? null,
+    alreadyHappened: ew?.alreadyHappened ?? null,
+    timing: ew ? {
+      quoteAgeMs: null,
+      secondsSinceTrigger: null,
+      distanceFromTriggerPct: null,
+      entryWindowValid: ew.state === "ACTIONABLE",
+      lateReason: entryLate ? ew.currently : null,
+    } : null,
   };
   return c;
 }

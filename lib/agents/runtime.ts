@@ -18,6 +18,8 @@ import { chainDteCoverage, relevantOptionAgents } from "@/lib/agents/relevance";
 import {
   marketDataAgent, marketContextAgent, performanceAgentByStrategy, modelAgent, riskAgent, qualityControlAgent,
 } from "@/lib/agents/services";
+import { assessEntryWindow, entryWindowConfig } from "@/lib/entry-window";
+import { loopState } from "@/lib/scanner-loop";
 import type { FeatureInput } from "@/lib/model-features";
 import type { AgentResult } from "@/lib/agents/types";
 
@@ -90,6 +92,23 @@ export async function runAgentsForTicker(ticker: string, nowMs: number = Date.no
   const spot = underlyingFrom(contracts);
   const asOf = chainAsOf(contracts);
 
+  // Live momentum snapshot for the FORWARD-LOOKING entry window (anti-late). The
+  // scanner tape carries the underlying's current direction/extension/volume; with
+  // no snapshot the entry window cannot confirm an entry and never returns
+  // ACTIONABLE. Best-effort: a scanner that has not booted yields null (→ WATCH/
+  // early), never a false actionable.
+  let tapeRow: any = null;
+  try {
+    const tape: any[] = (loopState() as any)?.tape ?? [];
+    tapeRow = tape.find((r) => String(r?.symbol ?? "").toUpperCase() === ticker.toUpperCase()) ?? null;
+  } catch { tapeRow = null; }
+  const momentum = tapeRow
+    ? { shortRate: tapeRow.shortRate ?? null, accel: tapeRow.accel ?? null, aboveVwap: tapeRow.aboveVwap ?? null, vwapDistPct: tapeRow.vwapDistPct ?? null, movePct: tapeRow.movePct ?? null, relVol: tapeRow.relVol ?? null }
+    : null;
+  const ewCfg = entryWindowConfig();
+  const quoteAgeMs = asOf != null ? Math.max(0, nowMs - asOf) : null;
+  const maxEntrySpreadPct = Number(process.env.ENTRY_MAX_SPREAD_PCT ?? 8) || 8;
+
   // Only evaluate horizons the fetched chain genuinely covers (no silent widening
   // to unsupported expirations). With no chain, no option horizon agent runs.
   const coverage = chainDteCoverage(contracts);
@@ -118,12 +137,24 @@ export async function runAgentsForTicker(ticker: string, nowMs: number = Date.no
       });
     }
 
+    // Forward-looking entry window for THIS side (anti-late authority).
+    const entryWindow = assessEntryWindow({
+      side,
+      regularSession: session === "regular",
+      momentum,
+      quoteAgeMs,
+      spreadPct: selection.ok ? selection.marketData.spreadPct : null,
+      maxSpreadPct: maxEntrySpreadPct,
+      cfg: ewCfg,
+    });
+
     const input: HorizonAgentInputs = {
       ticker, session, nowMs, selection, freshness,
       marketContext: context, evidence, model, riskVerdict,
       lifecycleStatus: null,
       triggerConditions: [],
       invalidationConditions: [],
+      entryWindow,
     };
     results.push(evaluateHorizonAgent(cfg, input));
   }

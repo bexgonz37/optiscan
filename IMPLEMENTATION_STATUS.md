@@ -6,6 +6,46 @@ This file is the resume point. Read it + the task list before making changes.
 Do **not** repeat Phase 1, redo timestamp normalization, or add the Self-Improvement
 Lab / an embedded LLM.
 
+## Forward-Looking Alert Quality (2026-07-13) — anti-late / entry-window
+
+Root cause of "wrong / late" calls (e.g. an NVDA CALL while it was falling):
+`agents/runtime.ts` fed every horizon agent EMPTY `triggerConditions`/
+`invalidationConditions` and null lifecycle, so `ACTIONABLE_NOW` meant only "a
+tradable contract exists during RTH" — it never checked whether the UNDERLYING
+had actually set up a valid entry, already extended, or reversed.
+
+Fix (additive, PURE core + minimal wiring):
+- **`lib/entry-window.ts`** — deterministic, forward-looking entry-window model.
+  From the live scanner tape (direction, VWAP distance, accel, relVol) + quote/
+  spread age it returns EARLY / NEAR_TRIGGER / ACTIONABLE / WAIT_FOR_PULLBACK /
+  EXTENDED / MISSED / INVALIDATED / BLOCKED, plus WAIT-FOR / VALID-ENTRY / DO-NOT-
+  ENTER / CURRENTLY / ALREADY-HAPPENED language. Uses only entry-time info; no
+  future data. It is the FINAL anti-late authority: a tradable contract on an
+  extended/reversing/unconfirmed underlying is downgraded, never ACTIONABLE. No
+  live momentum snapshot ⇒ never actionable.
+- Wired through `agents/runtime.ts` → `horizon-agent.ts` → `callout.ts`. The
+  callout now carries `entryState/waitFor/validEntry/doNotEnter/currently/
+  alreadyHappened/timing`; `actionable` is false for any late state.
+- **MISSED** status added end-to-end (types + rank); it is NOT Discord-emittable
+  (visible for learning, never sent) and never actionable → never a paper entry.
+- Discord redesigned forward-first (`discord-format.ts`): Trade → ⏳ Wait for →
+  ✅ Valid entry (or "WAIT — NO VALID ENTRY WINDOW") → ⛔ Do not enter if → 📍
+  Currently (with an ALREADY-TOO-LATE flag) → Horizon → Risk; ALREADY-HAPPENED is
+  labeled context, never the entry.
+- Ranking (`agents/portfolio.ts`): timing/entry-window validity now outranks
+  retrospective strength — an early VALID setup beats a higher-scoring COMPLETED
+  move (EXTENDED/MISSED penalized hard; ACTIONABLE rewarded). Late states are
+  never selected for Discord.
+- **`lib/alert-timing.ts`** — PURE quality-metrics aggregator (before/at/late,
+  downgraded-to-missed, avg trigger→Discord latency, % valid window at send, %
+  rejected for extension, paper fills inside vs outside window). Computes, never
+  fabricates.
+- Owner knobs: `ENTRY_MAX_VWAP_DIST_PCT`, `ENTRY_EXTENDED_VWAP_DIST_PCT`,
+  `ENTRY_MIN_RELVOL`, `ENTRY_STALE_QUOTE_MS`, `ENTRY_MAX_SPREAD_PCT`.
+- Safety unchanged: no live execution, no fabricated targets/probabilities,
+  contract-selector / liquidity / spread / freshness / risk / evidence / model
+  leakage protections and bearish default all preserved.
+
 ## Production Refinement Phase (2026-07-13) — quality over quantity
 
 Goal shift: not "find every valid setup" but "find the BEST trades, send FEWER,

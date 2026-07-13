@@ -11,7 +11,7 @@ import { containsBannedLanguage, type Callout } from "./callout.ts";
 
 const STATUS_EMOJI: Record<string, string> = {
   ACTIONABLE_NOW: "🟢", NEAR_TRIGGER: "🟡", DEVELOPING: "🔵", WAIT_FOR_PULLBACK: "🟠",
-  EXTENDED: "⚪", RESEARCH_ONLY: "🔬", INVALIDATED: "⛔", NO_VALID_CONTRACT: "⚠",
+  EXTENDED: "⚪", MISSED: "🚫", RESEARCH_ONLY: "🔬", INVALIDATED: "⛔", NO_VALID_CONTRACT: "⚠",
   DATA_STALE: "⌛", MODEL_EXPERIMENTAL: "🧪", MODEL_INACTIVE: "◻", INSUFFICIENT_EVIDENCE: "ℹ", WATCH: "👁",
 };
 
@@ -64,37 +64,42 @@ export function formatCalloutDiscord(c: Callout): DiscordCalloutPayload {
   const title = `${emoji} ${c.ticker} ${sideWord} · ${c.horizon} · ${c.status.replace(/_/g, " ")}`;
 
   const hasEntry = c.actionable && Boolean(c.contract) && c.quoteFreshness === "fresh";
+  const isLate = c.entryState === "EXTENDED" || c.entryState === "MISSED" || c.entryState === "INVALIDATED";
   const fields: DiscordCalloutPayload["embed"]["fields"] = [];
+
+  // FORWARD-LOOKING FIRST: what to wait for, whether there is a valid entry NOW,
+  // what invalidates it, and whether it is already too late. (§5)
 
   // 1. WHAT TRADE
   fields.push({ name: "Trade", value: tradeHeadline(c) });
 
-  // 2. WHY NOW
-  fields.push({ name: "Why now", value: c.reason || "—" });
+  // 2. WAIT FOR — the NEXT required condition (not a past-move summary).
+  fields.push({ name: "⏳ Wait for", value: c.waitFor || c.trigger || "Live confirmation of the setup before entry." });
 
-  // 3. UNDERLYING TRIGGER (kept separate from the option entry)
-  fields.push({ name: "Underlying trigger", value: c.trigger || "No specific level given." });
-
-  // 4. OPTION ENTRY — ideal entry + live bid/ask/mid + estimated fill; or a clear
-  //    "no entry window" state. Targets are NOT fabricated.
-  if (!hasEntry) {
-    const why = !c.contract ? (c.primaryBlockingReason ?? "no valid contract")
-      : c.quoteFreshness !== "fresh" ? "quote not fresh"
-      : "not an actionable entry right now";
-    fields.push({ name: "Option entry", value: `WAIT — NO VALID ENTRY WINDOW (${why}).` });
-  } else {
+  // 3. VALID ENTRY — the window + live option quote when actually actionable.
+  if (hasEntry) {
     const k = c.contract!;
     fields.push({
-      name: "Option entry",
+      name: "✅ Valid entry",
       value: [
+        c.validEntry || "Valid now while the trigger holds and the quote stays fresh.",
         `bid ${fmtNum(k.bid)} / ask ${fmtNum(k.ask)} / mid ${fmtNum(k.mid)} · spread ${fmtNum(k.spreadPct, 1)}%`,
         c.estimatedFillNote ?? "Estimated paper fill ≈ ask + bounded slippage (simulated, not a real fill).",
       ].join("\n"),
     });
+  } else {
+    const why = isLate ? "the move already ran"
+      : !c.contract ? (c.primaryBlockingReason ?? "no valid contract")
+      : c.quoteFreshness !== "fresh" ? "quote not fresh"
+      : "trigger not confirmed yet";
+    fields.push({ name: "✅ Valid entry", value: `WAIT — NO VALID ENTRY WINDOW (${why}). ${c.validEntry ?? ""}`.trim() });
   }
 
-  // 5. INVALIDATION
-  fields.push({ name: "Invalidation", value: c.invalidation || "Thesis break / structure change." });
+  // 4. DO NOT ENTER IF / DO NOT CHASE
+  fields.push({ name: "⛔ Do not enter if", value: c.doNotEnter || c.invalidation || "The thesis level breaks or the setup changes." });
+
+  // 5. CURRENTLY — plain state, with an explicit too-late flag.
+  fields.push({ name: "📍 Currently", value: `${c.currently ?? c.reason ?? "—"}${isLate ? " — ALREADY TOO LATE, do not chase." : ""}` });
 
   // 6. EXPECTED HOLDING HORIZON
   fields.push({ name: "Horizon", value: `${c.horizon}${c.contract?.dte != null ? ` · ${dteWord(c.contract.dte)}` : ""}`, inline: true });
@@ -106,6 +111,10 @@ export function formatCalloutDiscord(c: Callout): DiscordCalloutPayload {
     inline: true,
   });
 
+  // Historical context — LABELED, never presented as the entry itself.
+  if (c.alreadyHappened) fields.push({ name: "ALREADY HAPPENED (context only)", value: c.alreadyHappened });
+  // Structural invalidation, when distinct from the entry-window rule.
+  if (c.invalidation && c.invalidation !== c.doNotEnter) fields.push({ name: "Invalidation", value: c.invalidation });
   // Management guidance ONLY when genuinely supported (never fabricated).
   if (c.management) fields.push({ name: "Management", value: c.management });
   // Thesis-reconciliation note (portfolio layer), when present.

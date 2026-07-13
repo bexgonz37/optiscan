@@ -114,8 +114,8 @@ test("nextCalloutState records emission times deterministically", () => {
 test("discord payload has ordered sections and no banned language", () => {
   const p = formatCalloutDiscord(buildCallout(ar()));
   const names = p.embed.fields.map((f) => f.name);
-  // Trader-first order: what/why/trigger/entry/invalidation/horizon/risk, stats below.
-  assert.deepEqual(names.slice(0, 7), ["Trade", "Why now", "Underlying trigger", "Option entry", "Invalidation", "Horizon", "Risk"]);
+  // Forward-looking order: trade → wait for → valid entry → do not enter → currently.
+  assert.deepEqual(names.slice(0, 7), ["Trade", "⏳ Wait for", "✅ Valid entry", "⛔ Do not enter if", "📍 Currently", "Horizon", "Risk"]);
   // Never headlines the raw OCC option symbol.
   assert.ok(!/^O:/.test(p.embed.title) && !/O:SPY/.test(p.embed.title));
   assert.ok(!containsBannedLanguage(JSON.stringify(p)));
@@ -171,6 +171,6 @@ test("discord put callout is labeled research", () => {
   assert.match(p.embed.title, /PUT/);
   assert.match(p.embed.description, /RESEARCH ONLY/);
   // A non-actionable put shows no live entry window.
-  const entry = p.embed.fields.find((f) => f.name === "Option entry");
+  const entry = p.embed.fields.find((f) => f.name === "✅ Valid entry");
   assert.match(entry.value, /NO VALID ENTRY WINDOW/);
 });

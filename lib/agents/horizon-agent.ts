@@ -13,6 +13,7 @@
 import type { SelectionResult } from "../contract-selector.ts";
 import type { MarketSession } from "../trading-session.ts";
 import { gateBearishAction } from "../bearish-gate.ts";
+import { entryStateToCandidateStatus, type EntryWindowResult } from "../entry-window.ts";
 import type {
   AgentResult, AgentDirection, AgentHorizon, AgentActionability, CandidateStatus,
   AgentContractRef, AgentEvidence, AgentModelState, AgentRiskVerdict,
@@ -42,6 +43,11 @@ export interface HorizonAgentInputs {
   lifecycleStatus?: string | null;
   triggerConditions?: string[];
   invalidationConditions?: string[];
+  /** Forward-looking entry-window verdict (lib/entry-window.ts). When present it
+   * is the FINAL authority on whether a selected contract is actionable NOW —
+   * anti-late: a tradable contract on an extended/reversing/unconfirmed underlying
+   * is downgraded, never ACTIONABLE. */
+  entryWindow?: EntryWindowResult | null;
 }
 
 function contractRef(sel: SelectionResult, side: "call" | "put"): AgentContractRef | null {
@@ -114,10 +120,22 @@ export function evaluateHorizonAgent(config: HorizonAgentConfig, input: HorizonA
       researchOnly = false;
       reasons.push(`Risk veto: ${input.riskVerdict.failures.join("; ")}`);
     } else if (sel.actionable) {
-      candidateStatus = "ACTIONABLE_NOW";
-      actionability = "ACTIONABLE";
-      researchOnly = false;
-      reasons.push(...(sel.reasons ?? []).slice(0, 3));
+      // A tradable contract exists — but ACTIONABLE requires the FORWARD-LOOKING
+      // entry window to also confirm (anti-late). If the underlying is extended,
+      // reversing, or unconfirmed, downgrade instead of headlining a chase.
+      const ew = input.entryWindow ?? null;
+      if (ew && !ew.actionable) {
+        candidateStatus = entryStateToCandidateStatus(ew.state) as CandidateStatus;
+        actionability = "WATCH";
+        researchOnly = false;
+        reasons.push(ew.currently, ...(sel.reasons ?? []).slice(0, 1));
+      } else {
+        candidateStatus = "ACTIONABLE_NOW";
+        actionability = "ACTIONABLE";
+        researchOnly = false;
+        if (ew) reasons.push(ew.currently);
+        reasons.push(...(sel.reasons ?? []).slice(0, 3));
+      }
     } else {
       candidateStatus = "RESEARCH_ONLY";
       actionability = "RESEARCH_ONLY";
@@ -135,6 +153,12 @@ export function evaluateHorizonAgent(config: HorizonAgentConfig, input: HorizonA
 
   const evidence = input.evidence ?? null;
 
+  // Forward-looking language comes from the entry window when available, so the
+  // callout says what to WAIT FOR next rather than describing a past move.
+  const ew = input.entryWindow ?? null;
+  const requiredConditions = ew ? [ew.waitFor] : (input.triggerConditions ?? []);
+  const invalidationConditions = ew ? [ew.doNotEnter] : (input.invalidationConditions ?? []);
+
   return {
     agentId: config.agentId,
     agentVersion: config.agentVersion,
@@ -151,8 +175,9 @@ export function evaluateHorizonAgent(config: HorizonAgentConfig, input: HorizonA
       spot: sel.ok ? sel.marketData.spot : null,
       session: input.session,
       chainAsOfMs: sel.ok ? sel.marketData.chainAsOfMs : null,
+      entryWindow: ew ? { state: ew.state, waitFor: ew.waitFor, validEntry: ew.validEntry, doNotEnter: ew.doNotEnter, currently: ew.currently, alreadyHappened: ew.alreadyHappened } : null,
     },
-    requiredConditions: input.triggerConditions ?? [],
+    requiredConditions,
     selectorProfile: config.selectorProfile,
     selectedContract: contractRef(sel, side),
     passedGates,
@@ -165,7 +190,7 @@ export function evaluateHorizonAgent(config: HorizonAgentConfig, input: HorizonA
     researchOnly,
     reasons,
     improvementConditions,
-    invalidationConditions: input.invalidationConditions ?? [],
+    invalidationConditions,
     freshness: input.freshness,
     marketContext: input.marketContext ?? null,
     riskVerdict: input.riskVerdict ?? { allowed: true, failures: [], vetoed: false },
