@@ -11,7 +11,7 @@ Lab / an embedded LLM.
 
 | Check | Result |
 |---|---|
-| `npm test` | **653 pass**, 0 fail, 0 skip (547 + 38 P1 + 20 P2 + 15 P3 + 33 P4) |
+| `npm test` | **673 pass**, 0 fail (547 + 38 P1 + 20 P2 + 15 P3 + 33 P4 + 20 P5) |
 | `npx tsc --noEmit` | clean |
 | `npm run build` | compiles, all static pages |
 
@@ -28,9 +28,11 @@ Autonomous quant-roadmap execution (commit each phase green + pushed to `main`):
 | P2 — Trustworthy statistics + evidence engine | ✅ pushed | `9a4fd2c` |
 | P3 — Market context + regime foundation | ✅ pushed | `e172640` |
 | P4 — Validated probability-model foundation (inactive: no data) | ✅ pushed | `96df168` |
-| **P5 — Modular specialized strategy agents** | ⏭️ **NEXT** | — |
-| P6 — Advanced options callouts (desktop + Discord) | ⏳ pending | — |
+| P5 — Modular specialized strategy agents | ✅ pushed | (this commit) |
+| **P6 — Advanced options callouts (desktop + Discord)** | ⏭️ **NEXT** | — |
 | P7 — Controlled continuous learning + drift | ⏳ pending | — |
+| P8 — Live experimental probability mode | ⏳ pending | — |
+| P9 — Controlled code-improvement agent | ⏳ pending | — |
 
 **Resume point:** `main` @ `96df168`, tree clean, 653 tests green, tsc clean,
 build green. Reusable substrate now in place for the agents: `contract-selector`,
@@ -470,6 +472,52 @@ SCAFFOLDING ONLY to exercise the gate/promotion path; production fabricates noth
 **Hard-gate precedence (unchanged):** a probability can never override stale-data
 blocks, session rules, contract validation, liquidity/spread/risk/capital limits,
 bearish safety, or selector rejection.
+
+## Modular Specialized Strategy Agents — DONE (Phase 5 of the quant roadmap)
+
+One shared, deterministic, auditable agent runtime. Reuses every existing service;
+duplicates none. Additive (new selector profiles + strategy-version keys only).
+
+**Pure — `lib/agents/types.ts` (+ tests).** The ONE normalized `AgentResult`
+contract (agentId/version, strategy/version, ticker, direction, horizon, dteRange,
+candidateStatus, lifecycleStatus, score, verifiedInputs, requiredConditions,
+selectorProfile, selectedContract, passed/failedGates, evidence, statistics
+snapshot, modelStatus, probability, actionability, researchOnly, reasons,
+improvement/invalidation conditions, freshness, marketContext, riskVerdict,
+timestamp) + `resultKey` + `STATUS_RANK`.
+
+**Pure — `lib/agents/horizon-agent.ts` (+9 tests).** `evaluateHorizonAgent`
+consumes gathered, verified inputs (a `selectContract` result, freshness, context,
+evidence, model, risk) and emits a normalized result. **A hard gate always
+outranks a favorable selection or a model probability** (stale ⇒ DATA_STALE/BLOCKED;
+no contract ⇒ NO_VALID_CONTRACT; risk-fail ⇒ WATCH/BLOCKED). **Puts are ALWAYS
+research-only**, even if a selection is marked actionable; model probability only
+attaches to a bullish active model.
+
+**Pure — `lib/agents/registry.ts` + `supervisor.ts` (+6 tests).** 10 horizon agents
+(5 bullish call + 5 put research over 0DTE/1–5/6–10/11–35/36–90) reusing centralized
+selector profiles, plus the long-only momentum stock agent. The Supervisor dedups to
+ONE canonical result per (ticker,direction,horizon), re-enforces the risk veto,
+applies lifecycle hysteresis (never holding a hard-gate status), ranks
+deterministically, and preserves every contributing result for audit — it **never
+makes a blocked setup actionable because agents agree** and never lets a probability
+override a hard gate.
+
+**Impure — `lib/agents/services.ts` + `runtime.ts` (+5 source-spec tests).** The
+shared service agents (Market Data, Market Context, Performance/Outcome, Model,
+Risk [fails closed], Missed-Opportunity [counterfactual research only — never a
+graded outcome], Explanation, Quality-Control) are thin wrappers that DELEGATE to
+`data-freshness`, `market-context-store`, `statistics-store`, `model-registry`,
+`paper-risk`, `paper-explain`, `outcome-store`. The runtime gathers a fresh chain
+(metered provider), runs all agents through the pure evaluator, and supervises. It
+writes no trades and fabricates no fills.
+
+**Selector (`contract-selector.ts`).** Additive centralized horizon profiles
+`short_dated_call` (1–5), `weekly_call` (6–10), `multiweek_call` (11–35),
+`leaps_research_call` (36–90) — all gate logic still lives in one `selectContract`.
+
+**API.** `GET /api/agents?ticker=SPY` returns the canonical set + all contributors +
+audit + context + QC.
 
 ## Later phases (explicitly out of scope now)
 

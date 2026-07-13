@@ -232,6 +232,58 @@ export const PROFILES: Record<string, ContractProfile> = {
     maxChainAgeMode: "session",
     requireBreakeven: false,
   },
+  // ── Centralized horizon profiles (Phase 5) ─────────────────────────────────
+  // Distinct DTE windows; ALL gate logic still lives in selectContract/
+  // evaluateTradability — only the window/thresholds differ per horizon. Puts
+  // reuse the SAME profile (the selector never marks a put actionable).
+  short_dated_call: {
+    name: "short_dated_call",
+    mode: "zero_dte",
+    dteMin: 1, dteMax: 5,
+    deltaMin: 0.35, deltaMax: 0.65,
+    maxSpreadPct: Number(process.env.SHORT_CALL_MAX_SPREAD_PCT ?? 6),
+    minOpenInterest: Number(process.env.SHORT_CALL_MIN_OI ?? 100), minVolume: 0, minMid: 0.05,
+    requireActionableSession: true,
+    actionableSessions: ["regular"],
+    maxChainAgeMode: Number(process.env.SHORT_CALL_MAX_CHAIN_AGE_SEC ?? 300),
+    requireBreakeven: false,
+  },
+  weekly_call: {
+    name: "weekly_call",
+    mode: "zero_dte",
+    dteMin: 6, dteMax: 10,
+    deltaMin: 0.40, deltaMax: 0.70,
+    maxSpreadPct: Number(process.env.WEEKLY_CALL_MAX_SPREAD_PCT ?? 8),
+    minOpenInterest: Number(process.env.WEEKLY_CALL_MIN_OI ?? 250), minVolume: 0, minMid: 0.1,
+    requireActionableSession: true,
+    actionableSessions: ["regular"],
+    maxChainAgeMode: Number(process.env.WEEKLY_CALL_MAX_CHAIN_AGE_SEC ?? 600),
+    requireBreakeven: false,
+  },
+  multiweek_call: {
+    name: "multiweek_call",
+    mode: "zero_dte",
+    dteMin: 11, dteMax: 35,
+    deltaMin: 0.40, deltaMax: 0.70,
+    maxSpreadPct: Number(process.env.MULTIWEEK_CALL_MAX_SPREAD_PCT ?? 8),
+    minOpenInterest: Number(process.env.MULTIWEEK_CALL_MIN_OI ?? 250), minVolume: 0, minMid: 0.1,
+    requireActionableSession: true,
+    actionableSessions: ["regular"],
+    maxChainAgeMode: Number(process.env.MULTIWEEK_CALL_MAX_CHAIN_AGE_SEC ?? 600),
+    requireBreakeven: false,
+  },
+  leaps_research_call: {
+    name: "leaps_research_call",
+    mode: "zero_dte",
+    dteMin: 36, dteMax: 90,
+    deltaMin: 0.40, deltaMax: 0.70,
+    maxSpreadPct: Number(process.env.LEAPS_MAX_SPREAD_PCT ?? 10),
+    minOpenInterest: Number(process.env.LEAPS_MIN_OI ?? 250), minVolume: 0, minMid: 0.1,
+    requireActionableSession: true,
+    actionableSessions: ["regular"],
+    maxChainAgeMode: Number(process.env.LEAPS_MAX_CHAIN_AGE_SEC ?? 600),
+    requireBreakeven: false,
+  },
 };
 
 export type RejectionCode =

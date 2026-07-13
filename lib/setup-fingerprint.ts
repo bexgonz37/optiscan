@@ -39,6 +39,11 @@ export const STRATEGY_VERSIONS: Record<string, number> = {
   swing_position: 1,
   near_money_context: 1,
   momentum_stock: 1,
+  // Phase 5 horizon profiles (additive — new keys never change existing fingerprints).
+  short_dated_call: 1,
+  weekly_call: 1,
+  multiweek_call: 1,
+  leaps_research_call: 1,
 };
 
 export function strategyVersionFor(strategy: string | null | undefined): number {
