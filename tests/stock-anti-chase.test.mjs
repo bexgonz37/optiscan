@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { stockGateConfig, stockNowOnlyEligible } from "../lib/stock-callout.ts";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { stockGateConfig, stockNowOnlyEligible, stockExtensionReason } from "../lib/stock-callout.ts";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const read = (p) => readFileSync(join(root, p), "utf8");
 
 const NOW = Date.parse("2026-07-13T17:00:00Z"); // 1pm ET, regular session
 
@@ -60,4 +66,25 @@ test("custom thresholds are honored", () => {
   // Tighten day-run to 3% → a +4% day is now a chase.
   const cfg = stockGateConfig({ STOCK_MAX_DAY_RUN_PCT: "3" });
   assert.equal(stockNowOnlyEligible(base({ dayChangePct: 4 }), cfg).ok, false);
+});
+
+// ── the shared helper (used by BOTH Discord and paper stock entry) ───────────
+test("stockExtensionReason returns a reason when extended, null when clean", () => {
+  const cfg = stockGateConfig({});
+  assert.equal(stockExtensionReason({ price: 100, vwap: 99.8, dayChangePct: 2 }, cfg), null);
+  assert.match(stockExtensionReason({ price: 100, vwap: 99.8, dayChangePct: 10 }, cfg), /on the day/);
+  assert.match(stockExtensionReason({ price: 100, vwap: 96, dayChangePct: 3 }, cfg), /above VWAP/);
+  // Day-run works from the alert's stored day move even with no VWAP (paper path).
+  assert.match(stockExtensionReason({ price: 119.79, vwap: null, dayChangePct: 10.2 }, cfg), /\+10\.2% on the day/);
+  assert.equal(stockExtensionReason({ price: null, vwap: null, dayChangePct: null }, cfg), null);
+});
+
+test("the paper stock-scalp path applies the SAME anti-chase gate (no chase paper trades)", () => {
+  const src = read("lib/paper-engine.ts");
+  assert.ok(/import \{ stockExtensionReason, stockGateConfig \} from "@\/lib\/stock-callout"/.test(src));
+  const fn = src.slice(src.indexOf("export function autoEnterStockScalps"));
+  const body = fn.slice(0, fn.indexOf("\nexport ", 1) === -1 ? fn.length : fn.indexOf("\nexport ", 1));
+  assert.ok(/stockExtensionReason\(/.test(body), "paper stock entry checks the extension gate");
+  assert.ok(/percent_move_at_alert/.test(body), "uses the alert's stored day move");
+  assert.ok(/markStockRefused\(/.test(body), "terminally refuses a chase (not retried)");
 });

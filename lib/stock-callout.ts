@@ -60,6 +60,32 @@ export function stockGateConfig(env: NodeJS.ProcessEnv = process.env): StockGate
 
 export interface StockEligibility { ok: boolean; reason: string }
 
+/**
+ * Anti-chase / extension check (long-only), shared by the stock Discord gate AND
+ * the paper stock-scalp entry so a chase is never alerted OR paper-traded. Returns
+ * a precise reason string when the move is already extended, else null. Two
+ * independent guards, each using ONLY verified fields (never fabricated) and each
+ * disabled by setting its threshold to 0; a guard whose field is unavailable is
+ * skipped (fail-open on that dimension only).
+ *   1. Day-run: already moved too far on the day (a chase).
+ *   2. VWAP extension: price too far ABOVE session VWAP (top-of-candle chase).
+ */
+export function stockExtensionReason(
+  i: { price: number | null; vwap: number | null; dayChangePct: number | null },
+  cfg: StockGateConfig = stockGateConfig(),
+): string | null {
+  if (cfg.maxDayRunPct > 0 && isNum(i.dayChangePct) && (i.dayChangePct as number) >= cfg.maxDayRunPct) {
+    return `extended: already +${(i.dayChangePct as number).toFixed(1)}% on the day (≥ ${cfg.maxDayRunPct}% chase limit) — dashboard-only, wait for a pullback`;
+  }
+  if (cfg.maxVwapExtensionPct > 0 && isNum(i.vwap) && isNum(i.price) && (i.vwap as number) > 0) {
+    const vwapExtPct = (((i.price as number) - (i.vwap as number)) / (i.vwap as number)) * 100;
+    if (vwapExtPct >= cfg.maxVwapExtensionPct) {
+      return `extended: +${vwapExtPct.toFixed(1)}% above VWAP (≥ ${cfg.maxVwapExtensionPct}% chase limit) — dashboard-only, wait for a pullback into VWAP`;
+    }
+  }
+  return null;
+}
+
 /** True when a usable two-sided NBBO quote exists (both sides, positive, not crossed). */
 export function hasTwoSidedStockQuote(bid: number | null, ask: number | null): boolean {
   return isNum(bid) && isNum(ask) && (bid as number) > 0 && (ask as number) > 0 && (ask as number) >= (bid as number);
@@ -82,23 +108,10 @@ export function stockNowOnlyEligible(i: StockCalloutInput, cfg: StockGateConfig 
   if (!isNum(i.confidence) || (i.confidence as number) < cfg.minConfidence) {
     return { ok: false, reason: `confidence ${i.confidence ?? "n/a"} < HIGH threshold ${cfg.minConfidence}` };
   }
-  // ANTI-CHASE / EXTENSION GATE (long-only). A momentum callout is only "now" when
-  // the move has NOT already run away from the entry. Two independent guards, each
-  // using ONLY verified fields already on the alert (never fabricated) and each
-  // disabled by setting its threshold to 0:
-  //   1. Day-run: the name has already moved too far on the day (a chase).
-  //   2. VWAP extension: price is too far ABOVE session VWAP (top-of-candle chase).
-  // When the underlying field is unavailable the guard is skipped (fail-open on that
-  // one dimension) — the other gates still apply, so we never invent a number.
-  if (cfg.maxDayRunPct > 0 && isNum(i.dayChangePct) && (i.dayChangePct as number) >= cfg.maxDayRunPct) {
-    return { ok: false, reason: `extended: already +${(i.dayChangePct as number).toFixed(1)}% on the day (≥ ${cfg.maxDayRunPct}% chase limit) — dashboard-only, wait for a pullback` };
-  }
-  if (cfg.maxVwapExtensionPct > 0 && isNum(i.vwap) && isNum(i.price) && (i.vwap as number) > 0) {
-    const vwapExtPct = (((i.price as number) - (i.vwap as number)) / (i.vwap as number)) * 100;
-    if (vwapExtPct >= cfg.maxVwapExtensionPct) {
-      return { ok: false, reason: `extended: +${vwapExtPct.toFixed(1)}% above VWAP (≥ ${cfg.maxVwapExtensionPct}% chase limit) — dashboard-only, wait for a pullback into VWAP` };
-    }
-  }
+  // ANTI-CHASE / EXTENSION GATE (long-only) — shared with the paper stock path so a
+  // chase is neither alerted NOR paper-traded.
+  const chase = stockExtensionReason({ price: i.price, vwap: i.vwap ?? null, dayChangePct: i.dayChangePct ?? null }, cfg);
+  if (chase) return { ok: false, reason: chase };
   if (!hasTwoSidedStockQuote(i.bid, i.ask)) return { ok: false, reason: "no valid two-sided (NBBO) quote — NO VALID ENTRY" };
   if (!isNum(i.quoteAsOfMs)) {
     return { ok: false, reason: "MISSING_QUOTE_TIMESTAMP — freshness unavailable; NO VALID ENTRY" };

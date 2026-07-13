@@ -38,6 +38,7 @@ import { humanReadable } from "@/lib/setup-fingerprint";
 import { normalizeProviderTimestampMs } from "@/lib/data-freshness";
 import type { ChainContract } from "@/lib/contract-selector";
 import { legacyPaperAutoEntrySuppressed } from "@/lib/callouts/routing";
+import { stockExtensionReason, stockGateConfig } from "@/lib/stock-callout";
 
 const SWEEP_MS = Number(process.env.PAPER_SWEEP_MS ?? 30_000);
 const MAX_FETCHES_PER_SWEEP = Number(process.env.PAPER_SWEEP_MAX_FETCHES ?? 5);
@@ -1123,11 +1124,24 @@ export function autoEnterStockScalps(nowMs: number = Date.now()): number {
   ).all(new Date(nowMs - AUTO_ENTRY_MAX_AGE_MS).toISOString()) as any[];
 
   let created = 0;
+  const stockCfg = stockGateConfig();
   for (const a of candidates) {
     const tape = currentTapeRow(a.ticker);
     const side = stockSideFromAlert(a);
     // Reference price for sizing/exposure only — the FILL uses the verified quote.
     const refPrice = Number(latestStockPaperPrice(a.ticker) ?? a.price_at_alert ?? 0);
+    // ANTI-CHASE: the SAME extension gate the Discord path uses, so an already-run
+    // move is never paper-traded either (long-only; day-run from the alert's stored
+    // day move). Terminal-marked so it is not retried all window.
+    const chase = stockExtensionReason(
+      { price: Number.isFinite(refPrice) && refPrice > 0 ? refPrice : (a.price_at_alert ?? null), vwap: null, dayChangePct: a.percent_move_at_alert ?? null },
+      stockCfg,
+    );
+    if (chase) {
+      logDecision({ alertId: a.id, ticker: a.ticker, decision: "entry_cancelled", allowed: false, reason: `stock scalp anti-chase: ${chase}`, nowMs });
+      markStockRefused(a, side, stockPaperShares(Number.isFinite(refPrice) && refPrice > 0 ? refPrice : 1, STOCK_SCALP_STOP_PCT), `stock scalp refused: ${chase}`, nowMs);
+      continue;
+    }
     if (!Number.isFinite(refPrice) || refPrice <= 0) {
       logDecision({ alertId: a.id, ticker: a.ticker, decision: "entry_cancelled", allowed: false, reason: "stock scalp skipped: no live/share price available", nowMs });
       continue; // transient — retry within the entry window (no terminal marker)
