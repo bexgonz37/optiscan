@@ -6,6 +6,55 @@ This file is the resume point. Read it + the task list before making changes.
 Do **not** repeat Phase 1, redo timestamp normalization, or add the Self-Improvement
 Lab / an embedded LLM.
 
+## First controlled AI phase — nightly diagnosis + weekly proposals (2026-07-14)
+
+Advisory AI layer: **offline, scheduled, auditable, human-approved.** It reads
+deterministic data and narrates/proposes; it never touches the live signal path,
+never trades, never edits/merges/deploys code. All code lives under `lib/ai/`;
+the "no LLM in the signal path" boundary is test-enforced (`architecture.test.mjs`).
+
+**New modules (`lib/ai/`)**
+- `config.ts` — env config; AI OFF by default (needs `AI_ENABLED=1` **and** a key).
+- `pricing.ts` — model price table + estimated-cost math (unknown model → Opus-tier fallback).
+- `provider.ts` — the ONE Anthropic abstraction over `fetch` (no SDK dep). Hard timeout,
+  bounded retries, strict-JSON validation, token usage. Never throws; fails closed.
+- `store.ts` — `ai_reports` / `ai_lessons` / `ai_proposals` / `ai_job_runs` read/write +
+  monthly cost gate. Testable `*OnDb` cores + lazy wrappers.
+- `nightly-summary.ts` (PURE) — deterministic nightly stats (calls/puts, 0DTE vs longer,
+  by-strategy, time-of-day, rejection reasons + liquidity/contract classification,
+  realized vs opportunity grade, signal-correct-exit-failed vs both-failed, prioritized
+  issue). Empty input → 0/null, never fabricated.
+- `schemas.ts` — response validators + the anti-fabrication guard (every number in the
+  nightly narrative must appear in the deterministic summary).
+- `prompts.ts` (PURE), `queries.ts`, `nightly.ts` (orchestration), `lessons.ts` (deterministic
+  candidate lessons + dedup), `weekly.ts` (proposals), `safety.ts` (hard forbidden-intent
+  screen), `schedule.ts` (ET/holiday-aware run keys), `runtime.ts` (scheduler entry),
+  `overview.ts` (dashboard read model).
+
+**Reused infrastructure (no duplicates):** the scheduler + `"scheduler"` worker lease
+(`instance-lock.ts`), the DB + guarded-migration pattern, `paper_trade_outcomes` +
+`paper_candidates` for evidence, `trading-session.ts` for the ET calendar, the recap
+webhook in `notifications.ts`, and the `checkApiToken` API pattern. The immutable
+`improvement_proposals` ledger is left as-is; AI proposals use a separate mutable-status
+`ai_proposals` table because an approval workflow cannot live on a write-once ledger.
+
+**Scheduling:** the offline jobs run **detached** from the scheduler beat (never awaited,
+so a slow model call can't delay the supervisor/Discord jobs), lease-protected, idempotent
+(one report per ET day/week), fail-closed. Nightly after 20:15 ET on trading weekdays;
+weekly Friday ≥21:00 ET / Saturday.
+
+**Cost controls:** per-run audit (`ai_job_runs`: model, tokens, est. cost, latency,
+retries, status). Monthly soft limit warns; hard limit skips optional jobs while the
+deterministic summary is still stored. Nightly uses the lower-cost model; weekly uses the
+stronger one.
+
+**Dashboard/API:** `GET/POST /api/ai` (auth-gated) + `/ai` page (flags, cost, latest
+nightly, lessons, pending proposals with accept/reject). See `docs/AI_OPERATIONS.md`.
+
+Verification: full suite **1124/1124**, tsc clean, build OK, AI migrations idempotent.
+Env vars + schedules + limits documented in `docs/AI_OPERATIONS.md` and
+`docs/RAILWAY_DEPLOYMENT.md`. **Nothing auto-deploys; the AI never self-approves.**
+
 ## Simplified options Discord contract line (2026-07-14)
 
 Actionable options Discord callouts (supervisor path) are now ONE canonical line and

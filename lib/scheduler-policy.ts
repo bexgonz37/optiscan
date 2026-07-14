@@ -14,6 +14,7 @@ export interface SchedulerIntervals {
   learningMs: number;      // model-readiness + bounded retrain check + drift snapshot
   supervisorMs: number;    // supervisor callout cycle
   improvementMs: number;   // low-frequency improvement audit
+  aiCheckMs: number;       // how often to CHECK whether an offline AI job is due
 }
 
 function clampInt(v: string | undefined, def: number, min: number, max: number): number {
@@ -36,6 +37,9 @@ export function schedulerIntervals(env: NodeJS.ProcessEnv = process.env): Schedu
     supervisorMs: clampInt(env.SCHED_SUPERVISOR_MS, 30_000, 15_000, 30 * 60_000),
     // 6h default improvement audit; never faster than 1h.
     improvementMs: clampInt(env.SCHED_IMPROVEMENT_MS, 6 * 60 * 60_000, 60 * 60_000, 7 * 24 * 60 * 60_000),
+    // 5 min default AI-due CHECK (not the job itself); the job is idempotent and
+    // detached. Never faster than 1 min, never slower than 1h.
+    aiCheckMs: clampInt(env.SCHED_AI_CHECK_MS, 5 * 60_000, 60_000, 60 * 60_000),
   };
 }
 

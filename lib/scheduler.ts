@@ -20,7 +20,7 @@ import { schedulerIntervals, jobDue } from "@/lib/scheduler-policy";
 const LEASE_NAME = "scheduler";
 const BASE_TICK_MS = 15_000;
 
-type JobName = "maintenance" | "learning" | "supervisor" | "improvement";
+type JobName = "maintenance" | "learning" | "supervisor" | "improvement" | "aiJobs";
 
 export interface SchedulerState {
   started: boolean;
@@ -43,8 +43,8 @@ function state(): SchedulerState {
   const g = globalThis as G;
   g.__optiscanScheduler ??= {
     started: false, isOwner: false, ownerPid: null, lastBeatAtMs: null,
-    lastRun: { maintenance: null, learning: null, supervisor: null, improvement: null },
-    runs: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0 },
+    lastRun: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null },
+    runs: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0 },
     note: "not started", lastError: null,
   };
   return g.__optiscanScheduler;
@@ -118,6 +118,30 @@ async function improvementJob(): Promise<void> {
   runImprovementAudit(); // records immutable proposals only — never edits code or merges
 }
 
+/**
+ * Offline AI jobs (nightly miss-diagnosis / weekly proposals). Run DETACHED so a
+ * slow model call can never delay the supervisor/maintenance jobs in this beat.
+ * The job is idempotent (one report per day/week) and fails closed; AI being
+ * disabled makes it a fast no-op. An in-flight guard prevents overlap.
+ */
+function launchAiJobs(nowMs: number): void {
+  const b = busy();
+  if (b.has("aiJobs")) return;
+  b.add("aiJobs");
+  void (async () => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { runAiScheduledJobs } = require("@/lib/ai/runtime");
+      await runAiScheduledJobs({ nowMs });
+      state().runs.aiJobs += 1;
+    } catch (err: any) {
+      state().lastError = `aiJobs: ${err?.message ?? String(err)}`;
+    } finally {
+      b.delete("aiJobs");
+    }
+  })();
+}
+
 async function beat(): Promise<void> {
   const s = state();
   const nowMs = Date.now();
@@ -152,6 +176,11 @@ async function beat(): Promise<void> {
   if (jobDue(s.lastRun.learning, iv.learningMs, nowMs)) await runJob("learning", learningJob, nowMs);
   if (jobDue(s.lastRun.supervisor, iv.supervisorMs, nowMs)) await runJob("supervisor", () => supervisorJob(nowMs), nowMs);
   if (jobDue(s.lastRun.improvement, iv.improvementMs, nowMs)) await runJob("improvement", improvementJob, nowMs);
+  // AI jobs: pace the DUE-check, then launch detached (never awaited in the beat).
+  if (jobDue(s.lastRun.aiJobs, iv.aiCheckMs, nowMs)) {
+    s.lastRun.aiJobs = nowMs;
+    launchAiJobs(nowMs);
+  }
 }
 
 /** Start the scheduler once per process. Idempotent; safe to call from boot. */

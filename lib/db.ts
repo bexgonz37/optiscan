@@ -717,6 +717,129 @@ CREATE TABLE IF NOT EXISTS model_predictions (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_model_predictions_alert ON model_predictions(alert_id);
+
+-- ── Advisory AI layer (offline, scheduled, human-approved) ──────────────────
+-- These four tables back the nightly miss-diagnosis, minimal lessons memory,
+-- weekly strategy-improvement proposals, and AI cost/audit log. The AI layer is
+-- a READER/NARRATOR of deterministic data + a PROPOSER into a human-approved
+-- workflow. It never edits code, merges, deploys, or touches the live signal
+-- path. Every numeric claim in a stored narrative traces to the deterministic
+-- summary_json stored alongside it.
+
+-- Nightly (and weekly) reports: the deterministic summary is ALWAYS stored; the
+-- validated AI narrative is stored when the model ran and passed validation (null
+-- when AI is disabled/skipped/over-budget). UNIQUE(report_type, period_key) makes
+-- the job idempotent and restart-safe (a re-run for the same day/week is a no-op).
+CREATE TABLE IF NOT EXISTS ai_reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  report_type TEXT NOT NULL,             -- 'nightly' | 'weekly'
+  period_key TEXT NOT NULL,              -- ET trading day (nightly) or ISO year-week (weekly)
+  period_start_ms INTEGER,
+  period_end_ms INTEGER,
+  summary_json TEXT NOT NULL,            -- deterministic statistics (never fabricated)
+  narrative_json TEXT,                   -- validated AI narrative (null when model skipped)
+  narrative_status TEXT NOT NULL DEFAULT 'PENDING', -- PENDING | OK | SKIPPED | VALIDATION_FAILED | ERROR
+  model TEXT,
+  ai_job_run_id INTEGER,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE(report_type, period_key)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_reports_type ON ai_reports(report_type, created_at_ms);
+
+-- Minimal lessons memory (relational; NOT a vector store). One durable lesson per
+-- row with its evidence, sample size, decision state, and post-implementation
+-- result. dedup_key is UNIQUE so a repeated nightly finding updates the existing
+-- lesson instead of creating a near-duplicate every night.
+CREATE TABLE IF NOT EXISTS ai_lessons (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  dedup_key TEXT NOT NULL UNIQUE,        -- deterministic identity (finding_type|strategy|session|duration|...)
+  finding_type TEXT NOT NULL,            -- e.g. 'late_callout' | 'liquidity_reject' | 'exit_management' | 'crossing_rescue'
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  evidence_json TEXT NOT NULL,           -- structured deterministic evidence
+  sample_size INTEGER NOT NULL DEFAULT 0,
+  affected_ticker TEXT,
+  affected_strategy TEXT,
+  affected_session TEXT,
+  affected_duration TEXT,                -- '0DTE' | 'longer' | null
+  date_range_start TEXT,
+  date_range_end TEXT,
+  source_report_id INTEGER REFERENCES ai_reports(id) ON DELETE SET NULL,
+  status TEXT NOT NULL DEFAULT 'OPEN',   -- OPEN | ACCEPTED | REJECTED | NEEDS_MORE_DATA
+  confidence TEXT NOT NULL DEFAULT 'LOW',-- LOW | MEDIUM | HIGH (deterministic tier)
+  decision_state TEXT NOT NULL DEFAULT 'NEEDS_MORE_DATA', -- accepted|rejected|needs-more-data
+  decision_notes TEXT,
+  linked_proposal_id INTEGER REFERENCES ai_proposals(id) ON DELETE SET NULL,
+  strategy_version TEXT,
+  result_after_implementation TEXT,
+  occurrences INTEGER NOT NULL DEFAULT 1,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ai_lessons_status ON ai_lessons(status, updated_at_ms);
+
+-- Weekly strategy-improvement proposals with a HUMAN approval workflow. Distinct
+-- from the immutable deterministic improvement_proposals ledger (which cannot
+-- hold an approval lifecycle): these are advisory, mutable-status, and PENDING
+-- until a human accepts/rejects. The AI never applies, merges, or deploys them.
+CREATE TABLE IF NOT EXISTS ai_proposals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  dedup_key TEXT NOT NULL UNIQUE,        -- period_key|affected_strategy|title-slug
+  period_key TEXT NOT NULL,              -- ISO year-week the proposal was generated for
+  title TEXT NOT NULL,
+  problem TEXT NOT NULL,
+  evidence_json TEXT NOT NULL,
+  sample_size INTEGER NOT NULL DEFAULT 0,
+  affected_strategy TEXT,
+  affected_session TEXT,
+  affected_config TEXT,
+  proposed_change TEXT NOT NULL,
+  relevant_files_json TEXT,
+  change_level TEXT,                     -- 'config-only' | 'code-level'
+  expected_benefit TEXT,
+  downside_risk TEXT,
+  overfitting_risk TEXT,
+  required_tests TEXT,
+  backtest_plan TEXT,
+  shadow_test_plan TEXT,
+  paper_test_plan TEXT,
+  rollback_plan TEXT,
+  suggested_patch TEXT,
+  confidence TEXT NOT NULL DEFAULT 'LOW',
+  status TEXT NOT NULL DEFAULT 'PENDING_APPROVAL', -- PENDING_APPROVAL | ACCEPTED | REJECTED
+  decision_notes TEXT,
+  source_report_id INTEGER REFERENCES ai_reports(id) ON DELETE SET NULL,
+  model TEXT,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ai_proposals_status ON ai_proposals(status, created_at_ms);
+
+-- AI cost + audit log. ONE row per provider job attempt-set (including skips), so
+-- monthly spend, latency, retries, and failures are fully auditable. month_key
+-- (YYYY-MM in ET) powers the soft/hard monthly limit checks.
+CREATE TABLE IF NOT EXISTS ai_job_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_type TEXT NOT NULL,                -- 'nightly_diagnosis' | 'weekly_proposals' | 'recap'
+  model TEXT,
+  status TEXT NOT NULL,                  -- SUCCESS | ERROR | TIMEOUT | VALIDATION_FAILED | SKIPPED_DISABLED | SKIPPED_HARD_LIMIT | SKIPPED_NO_KEY
+  error_category TEXT,                   -- timeout | http | validation | network | disabled | budget | none
+  error TEXT,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  estimated_cost_usd REAL NOT NULL DEFAULT 0,
+  latency_ms INTEGER NOT NULL DEFAULT 0,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  month_key TEXT NOT NULL,               -- YYYY-MM (ET) for spend rollups
+  created_at_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ai_job_runs_month ON ai_job_runs(month_key, status);
+CREATE INDEX IF NOT EXISTS idx_ai_job_runs_type ON ai_job_runs(job_type, created_at_ms);
 `;
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */

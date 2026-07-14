@@ -125,7 +125,43 @@ account — you perform these; the repository ships the configuration.
 | `extended_stock_notify` (DB setting) | `0` | `0` | `1` for premarket/after-hours stock |
 | `DISCORD_WATCH_ALERTS` | unset | unset | unset (WATCH is dashboard-only) |
 | `IMPROVEMENT_AUDIT` | `0` | `0` | `0` (enable later, proposal-only) |
+| `AI_ENABLED` | `0` | `0` | `0` (enable later; advisory AI is off by default) |
 | Discord webhooks | optional | optional | required for sends |
+
+## Advisory AI layer (nightly diagnosis + weekly proposals)
+
+Off by default; enable only after the deterministic runtime is validated. The AI
+jobs run **in-process, detached** from the scheduler beat (no new service) and never
+block scanning, Discord, paper trading, or health checks. Full reference:
+`docs/AI_OPERATIONS.md`.
+
+Minimum to turn on:
+
+```
+AI_ENABLED=1
+ANTHROPIC_API_KEY=sk-ant-...            # secret; set in Railway variables, never commit
+AI_NIGHTLY_DIAGNOSIS_ENABLED=1
+AI_WEEKLY_PROPOSALS_ENABLED=1           # optional
+# AI_RECAP_ENABLED=1                    # optional; requires DISCORD_WEBHOOK_RECAP
+```
+
+Model routing + cost guards (safe defaults shown):
+
+```
+AI_NIGHTLY_MODEL=claude-haiku-4-5       # lower-cost narration
+AI_WEEKLY_MODEL=claude-sonnet-5         # stronger reasoning for proposals
+AI_MONTHLY_SOFT_LIMIT_USD=5             # warn threshold
+AI_MONTHLY_HARD_LIMIT_USD=20            # optional AI jobs stop here; deterministic paths continue
+AI_MAX_OUTPUT_TOKENS_PER_JOB=4000
+AI_JOB_TIMEOUT_MS=60000
+AI_MAX_RETRIES=2
+```
+
+Nightly runs after 20:15 ET on trading weekdays; weekly runs Friday ≥21:00 ET /
+Saturday (America/New_York, holiday-aware). Reports/lessons/proposals are visible at
+`/ai` (auth-gated). Nothing auto-applies, auto-merges, or auto-deploys; a human
+approves every proposal. **No Railway service/cron changes are required** — the jobs
+use the existing scheduler + worker lease.
 
 ## Improvement agent (initial hosted mode)
 

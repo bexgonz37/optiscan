@@ -34,12 +34,16 @@ test("SPEC: catalyst attach is fire-and-forget after insert — never blocks or 
   assert.ok(cap.includes('catalystSource: "pending"'), "alerts insert with catalyst pending");
 });
 
-test("SPEC: scanner is AI-free — no model calls anywhere in lib/", () => {
+test("SPEC: the scanner/signal path is AI-free — no model calls outside lib/ai/", () => {
   const walk = (dir) =>
     readdirSync(join(root, dir), { withFileTypes: true }).flatMap((e) =>
       e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)],
     );
+  // The advisory AI layer lives ONLY in lib/ai/ (offline, scheduled, out of the
+  // hot path). Everything else in lib/ must remain free of any model reference —
+  // this is the enforced "no LLM in the live signal path" boundary.
   for (const f of walk("lib")) {
+    if (f.replace(/\\/g, "/").startsWith("lib/ai/")) continue;
     const src = read(f);
     // \b guards: "stillMoving" contains "llm" — match whole tokens only.
     assert.ok(!/\bopenai\b|anthropic\.com|\bclaude\b|\bgpt-|\bllm\b/i.test(src), `AI reference found in ${f}`);

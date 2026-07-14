@@ -1,6 +1,10 @@
 # OptiScan — AI Architecture Roadmap
 
-**Status:** Design review / roadmap. **Nothing in this document is implemented yet.**
+**Status:** First controlled AI phase **IMPLEMENTED** (2026-07-14): nightly
+miss-diagnosis, minimal lessons memory, weekly strategy-improvement proposals, and
+the provider/cost/scheduling/audit layer — all under `lib/ai/`, OFF by default.
+Operations, env vars, schedules, and limits live in `docs/AI_OPERATIONS.md`. The
+X-draft/content items (§8) and experiment comparison (step 8) remain design-only.
 **Author role:** Principal AI Architect review.
 **Core principle:** Deterministic trading logic is the source of truth. AI is advisory, offline, and proposal-only. AI never touches the live signal path and never trades.
 
@@ -232,14 +236,17 @@ These are architectural invariants, not toggles. They do not expire.
 
 ## Future Implementation Sequence
 
-1. Finish and verify the existing OptiScan roadmap.
-2. Prepare Railway deployment readiness.
-3. Add X drafts for every qualifying callout using deterministic templates.
-4. Add nightly miss-diagnosis reporting.
-5. Add minimal lessons and decision memory.
-6. Add weekly strategy-improvement proposals.
-7. Add optional LLM wording for X drafts and daily recaps.
-8. Add proposal testing and experiment comparison later.
+1. Finish and verify the existing OptiScan roadmap. — done
+2. Prepare Railway deployment readiness. — done
+3. Add X drafts for every qualifying callout using deterministic templates. — pending (design only)
+4. Add nightly miss-diagnosis reporting. — **DONE (2026-07-14)** — `lib/ai/nightly*.ts`
+5. Add minimal lessons and decision memory. — **DONE (2026-07-14)** — `ai_lessons` + `lib/ai/lessons.ts`
+6. Add weekly strategy-improvement proposals. — **DONE (2026-07-14)** — `ai_proposals` + `lib/ai/weekly.ts`
+7. Add optional model wording for X drafts and daily recaps. — pending (recap uses a deterministic template for now)
+8. Add proposal testing and experiment comparison later. — pending
+
+Provider/cost/scheduling/audit and the private AI Lab dashboard/API were built as
+the shared substrate for steps 4–6. See `docs/AI_OPERATIONS.md`.
 
 ---
 
