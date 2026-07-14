@@ -44,8 +44,15 @@ export function entryWindowConfig(env: NodeJS.ProcessEnv = process.env): EntryWi
     return Number.isFinite(n) && n > 0 ? n : d;
   };
   return {
-    maxEntryVwapDistPct: num(env.ENTRY_MAX_VWAP_DIST_PCT, 0.6),
-    extendedVwapDistPct: num(env.ENTRY_EXTENDED_VWAP_DIST_PCT, 1.2),
+    // Momentum calibration (2026-07-14): a real breakout entry sits ~0.5–1.5%
+    // above VWAP while it is accelerating — the old 0.6% zone was a mean-reversion
+    // "buy the VWAP retest" band that structurally EXCLUDED breakout call/put
+    // setups (e.g. NVDA's 10:30 breakout at +0.7–0.9% above VWAP), so they never
+    // fired ACTIONABLE. Widen the band to catch breakouts; the accelerating +
+    // relVol + fresh-quote gates still keep us out of the exhaustion top, and
+    // anything beyond the extended cap is still "no chase". Fully env-overridable.
+    maxEntryVwapDistPct: num(env.ENTRY_MAX_VWAP_DIST_PCT, 1.5),
+    extendedVwapDistPct: num(env.ENTRY_EXTENDED_VWAP_DIST_PCT, 3.0),
     minRelVol: num(env.ENTRY_MIN_RELVOL, 1.2),
     staleQuoteMs: num(env.ENTRY_STALE_QUOTE_MS, 12_000),
   };

@@ -27,18 +27,24 @@ test("a CALL while the underlying is FALLING → INVALIDATED (the NVDA bug)", ()
 });
 
 test("price materially beyond the trigger → EXTENDED / WAIT_FOR_PULLBACK / MISSED, never actionable", () => {
-  // Extended + decelerating + already moved → MISSED.
-  const missed = assessEntryWindow({ ...base, momentum: { shortRate: 0.1, accel: -0.02, aboveVwap: true, vwapDistPct: 1.8, movePct: 1.5, relVol: 1.5 } });
+  // Extended (beyond the 3% cap) + decelerating + already moved → MISSED.
+  const missed = assessEntryWindow({ ...base, momentum: { shortRate: 0.1, accel: -0.02, aboveVwap: true, vwapDistPct: 3.5, movePct: 1.5, relVol: 1.5 } });
   assert.equal(missed.state, "MISSED");
   assert.equal(missed.actionable, false);
-  // Extended but still accelerating → wait for a pullback.
-  const wait = assessEntryWindow({ ...base, momentum: { shortRate: 0.3, accel: 0.05, aboveVwap: true, vwapDistPct: 1.8, movePct: 1.5, relVol: 1.5 } });
+  // Extended but still accelerating → wait for a pullback (do not chase).
+  const wait = assessEntryWindow({ ...base, momentum: { shortRate: 0.3, accel: 0.05, aboveVwap: true, vwapDistPct: 3.5, movePct: 1.5, relVol: 1.5 } });
   assert.equal(wait.state, "WAIT_FOR_PULLBACK");
   assert.match(wait.doNotEnter, /do not chase/i);
 });
 
-test("past the ideal entry zone but not extended → WAIT_FOR_PULLBACK", () => {
+test("an accelerating breakout ~0.9% above VWAP is ACTIONABLE (momentum calibration, the NVDA-breakout fix)", () => {
   const r = assessEntryWindow({ ...base, momentum: { ...goodCallMomentum, vwapDistPct: 0.9 } });
+  assert.equal(r.state, "ACTIONABLE");
+  assert.equal(r.actionable, true);
+});
+
+test("past the (widened) entry zone but not extended → WAIT_FOR_PULLBACK", () => {
+  const r = assessEntryWindow({ ...base, momentum: { ...goodCallMomentum, vwapDistPct: 2.0 } });
   assert.equal(r.state, "WAIT_FOR_PULLBACK");
   assert.equal(r.actionable, false);
 });
@@ -80,7 +86,7 @@ test("PUT mirror: falling underlying below VWAP inside zone → ACTIONABLE", () 
 
 // ── forward-looking language separates context from action ───────────────────
 test("late states carry ALREADY-HAPPENED context distinct from the entry", () => {
-  const r = assessEntryWindow({ ...base, momentum: { shortRate: 0.1, accel: -0.02, aboveVwap: true, vwapDistPct: 1.8, movePct: 1.5, relVol: 1.5 } });
+  const r = assessEntryWindow({ ...base, momentum: { shortRate: 0.1, accel: -0.02, aboveVwap: true, vwapDistPct: 3.5, movePct: 1.5, relVol: 1.5 } });
   assert.ok(r.alreadyHappened, "has historical context");
   assert.match(r.currently, /passed|extended|stand aside/i);
 });
