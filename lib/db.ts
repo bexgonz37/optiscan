@@ -764,6 +764,9 @@ const ALERT_COLUMN_MIGRATIONS: [string, string][] = [
   ["last_validated_at", "ALTER TABLE alerts ADD COLUMN last_validated_at TEXT"],
   ["last_trigger_event_at", "ALTER TABLE alerts ADD COLUMN last_trigger_event_at TEXT"],
   ["invalidation_reason", "ALTER TABLE alerts ADD COLUMN invalidation_reason TEXT"],
+  ["vwap_at_alert", "ALTER TABLE alerts ADD COLUMN vwap_at_alert REAL"],
+  ["vwap_dist_pct_at_alert", "ALTER TABLE alerts ADD COLUMN vwap_dist_pct_at_alert REAL"],
+  ["above_vwap", "ALTER TABLE alerts ADD COLUMN above_vwap INTEGER"],
 ];
 const JOURNAL_COLUMN_MIGRATIONS: [string, string][] = [
   ["contract", "ALTER TABLE trade_journal ADD COLUMN contract TEXT"],

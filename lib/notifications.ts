@@ -267,6 +267,20 @@ export async function postScoreboardEmbed(
 /** Quiet WATCH post — no role mention, 30 min dedup per ticker. */
 export async function notifyWatchAlert(alertId: number, alertLike: any): Promise<void> {
   try {
+    if (legacyOptionsSuppressed()) {
+      insertNotificationEvent({
+        alertId, channel: "discord_webhook", status: "skipped",
+        error: "legacy watch Discord suppressed by supervisor canonical callout path",
+      });
+      return;
+    }
+    if (process.env.DISCORD_WATCH_ALERTS !== "1") {
+      insertNotificationEvent({
+        alertId, channel: "discord_webhook", status: "skipped",
+        error: "watch Discord disabled; only actionable callouts send by default",
+      });
+      return;
+    }
     const s = getNotificationSettings();
     if (!s?.discord_enabled) return;
     // Discord only carries ACTIONABLE setups. WATCH ("armed, not ready") is a

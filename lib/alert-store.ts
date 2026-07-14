@@ -98,6 +98,9 @@ export interface NewAlert {
   lastValidatedAt?: string | null;
   lastTriggerEventAt?: string | null;
   invalidationReason?: string | null;
+  vwapAtAlert?: number | null;
+  vwapDistPctAtAlert?: number | null;
+  aboveVwap?: boolean | null;
   optionsPressureLabel?: string | null;
   optionsPressureJson?: string | null;
   snapshot?: {
@@ -159,8 +162,9 @@ export function insertAlert(a: NewAlert): number | null {
           continuation_score, exhaustion_score, long_call_score, long_put_score, zero_dte_contract_score, risk_flags,
           options_pressure_label, options_pressure_json, short_rate_at_alert, volume_surge_at_alert, alert_tier, capture_action, capture_confidence, asset_class, session,
           move_classification, signal_detected_at, last_confirmed_at, move_began_at, data_timestamp, expires_at, last_validated_at, last_trigger_event_at, invalidation_reason,
+          vwap_at_alert, vwap_dist_pct_at_alert, above_vwap,
           status
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'tracking')`,
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'tracking')`,
       )
       .run(
         alert.ticker, alert.source, alert.alertType ?? null, alert.direction, alert.optionSymbol, alert.optionSide,
@@ -189,6 +193,9 @@ export function insertAlert(a: NewAlert): number | null {
         alert.lastValidatedAt ?? null,
         alert.lastTriggerEventAt ?? null,
         alert.invalidationReason ?? null,
+        alert.vwapAtAlert ?? null,
+        alert.vwapDistPctAtAlert ?? null,
+        alert.aboveVwap == null ? null : (alert.aboveVwap ? 1 : 0),
       );
     if (res.changes === 0) return null;
     const id = Number(res.lastInsertRowid);

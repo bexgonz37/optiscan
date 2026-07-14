@@ -5,6 +5,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   stockNowOnlyEligible, stockCompactCard, formatStockCalloutDiscord, stockSpreadPct, stockGateConfig,
+  stockExtensionReason, stockVwapDistPct,
 } from "../lib/stock-callout.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -15,6 +16,7 @@ const CFG = stockGateConfig({});
 function si(over = {}) {
   return {
     ticker: "SMCI", direction: "bullish", price: 27.18, bid: 27.18, ask: 27.24,
+    movePct: 2.1, vwap: 27.0, vwapDistPct: 0.67,
     quoteAsOfMs: NOW - 1000, confidence: 78, actionableNow: true, session: "regular", nowMs: NOW, ...over,
   };
 }
@@ -68,6 +70,27 @@ test("bearish/short direction does not send (long-only stock alerts)", () => {
   assert.equal(stockNowOnlyEligible(si({ direction: "bearish" }), CFG).ok, false);
 });
 
+test("anti-chase blocks stock moves that already ran too far on the day", () => {
+  const r = stockNowOnlyEligible(si({ ticker: "USO", movePct: 10.2, vwapDistPct: 1.1 }), CFG);
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /day move/);
+});
+
+test("anti-chase blocks stock moves too far above VWAP", () => {
+  const r = stockNowOnlyEligible(si({ movePct: 3.2, vwapDistPct: 3.0 }), CFG);
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /VWAP/);
+});
+
+test("anti-chase can be loosened or disabled by env thresholds", () => {
+  assert.equal(stockNowOnlyEligible(si({ movePct: 10.2, vwapDistPct: 3.0 }), stockGateConfig({ STOCK_MAX_DAY_RUN_PCT: "12", STOCK_MAX_VWAP_EXT_PCT: "4" })).ok, true);
+  assert.equal(stockNowOnlyEligible(si({ movePct: 10.2, vwapDistPct: 3.0 }), stockGateConfig({ STOCK_MAX_DAY_RUN_PCT: "0", STOCK_MAX_VWAP_EXT_PCT: "0" })).ok, true);
+});
+
+test("anti-chase fails open for missing extension fields only", () => {
+  assert.equal(stockExtensionReason(si({ movePct: null, vwap: null, vwapDistPct: null }), CFG), null);
+});
+
 test("closed / disallowed extended session does not send", () => {
   assert.equal(stockNowOnlyEligible(si({ session: "closed" }), CFG).ok, false);
   assert.equal(stockNowOnlyEligible(si({ session: "premarket" }), CFG).ok, false);
@@ -102,6 +125,12 @@ test("stockSpreadPct computes from the NBBO, null when one-sided", () => {
   assert.equal(stockSpreadPct(27.18, null), null);
 });
 
+test("stockVwapDistPct computes signed VWAP extension from real price and VWAP", () => {
+  assert.equal(stockVwapDistPct({ price: 104, vwap: 100 }), 4);
+  assert.equal(stockVwapDistPct({ price: 96, vwap: 100 }), -4);
+  assert.equal(stockVwapDistPct({ price: 104, vwap: null }), null);
+});
+
 // ── delivery routing (source-spec) ───────────────────────────────────────────
 test("stock alerts route only through the stocks webhook and use the compact card", () => {
   const src = readFileSync(join(root, "lib/notifications.ts"), "utf8");
@@ -110,6 +139,32 @@ test("stock alerts route only through the stocks webhook and use the compact car
   assert.match(src, /STOCK_CALLOUTS !== "1"/, "STOCK_CALLOUTS=1 required");
   assert.match(src, /discordWebhookConfigured\(webhook\)/, "stock webhook must be configured");
   assert.match(src, /webhook: DiscordWebhookKind = "stocks"/, "stocks webhook only for stock alerts");
+});
+
+test("stock capture persists VWAP extension for Discord and paper parity", () => {
+  const capture = readFileSync(join(root, "lib/stock-capture.ts"), "utf8");
+  assert.match(capture, /stockVwapDistPct/, "computes signed VWAP extension");
+  assert.match(capture, /vwapAtAlert: sig\.vwap/, "persists numeric VWAP");
+  assert.match(capture, /vwapDistPctAtAlert: vwapDistPct/, "persists signed VWAP distance");
+  assert.match(capture, /vwap: sig\.vwap, vwapDistPct/, "passes VWAP extension into Discord gate");
+
+  const store = readFileSync(join(root, "lib/alert-store.ts"), "utf8");
+  assert.match(store, /vwap_at_alert/);
+  assert.match(store, /vwap_dist_pct_at_alert/);
+  assert.match(store, /above_vwap/);
+});
+
+test("stock paper scalps use the same anti-chase gate before creating trades", () => {
+  const src = readFileSync(join(root, "lib/paper-engine.ts"), "utf8");
+  assert.match(src, /stockExtensionReason/, "paper path imports shared anti-chase helper");
+  assert.match(src, /vwap_dist_pct_at_alert/, "paper path uses persisted VWAP extension");
+  assert.match(src, /stock scalp refused: \$\{extensionReason\}/, "paper path records terminal chase refusal");
+});
+
+test("supervisor Discord boundary re-checks now-only actionability", () => {
+  const src = readFileSync(join(root, "lib/callouts/runtime.ts"), "utf8");
+  assert.match(src, /nowOnlyActionable/);
+  assert.match(src, /if \(!nowOnlyActionable\(b\.callout\)\.ok\) continue;/);
 });
 
 test("stock scanner path keeps its own cooldown to avoid duplicate-cycle resends", () => {
