@@ -18,6 +18,7 @@ import { formatCalloutDiscord, type DiscordCalloutPayload } from "@/lib/callouts
 import { loadPriorCallouts, persistCalloutState, type CalloutStateWrite } from "@/lib/callouts/state-store";
 import { calloutWebhook, supervisorDiscordDeliveryEnabled } from "@/lib/callouts/routing";
 import { nowOnlyActionable } from "@/lib/callouts/eligibility";
+import { optionAlertDeliverable, canonicalOptionContract, sameOptionContract } from "@/lib/callouts/option-line";
 import { deliverCalloutDiscord } from "@/lib/notifications";
 import { reviewPortfolio } from "@/lib/agents/portfolio";
 import { bridgeCalloutsToPaper, type BridgeSummary } from "@/lib/callouts/paper-bridge";
@@ -57,9 +58,10 @@ export interface BuildCalloutsOptions {
   deliver?: boolean;
 }
 
-/** Convert the formatter's { content, embed } into a Discord webhook payload. */
+/** Convert the formatter's { content, embed? } into a Discord webhook payload.
+ * Options callouts are a single content line with no embed; stock cards carry one. */
 function toWebhookPayload(p: DiscordCalloutPayload): Record<string, unknown> {
-  return { content: p.content, embeds: [p.embed] };
+  return p.embed ? { content: p.content, embeds: [p.embed] } : { content: p.content };
 }
 
 export async function buildCalloutsForTickers(
@@ -150,9 +152,25 @@ export async function buildCalloutsForTickers(
         b.deliveryStatus = "skipped: not actionable-now at delivery";
         continue;
       }
+      const webhook = calloutWebhook(b.callout);
+      // Options carry the exact selected contract or nothing. Block (never send a
+      // generic/incomplete options alert) when the contract can't be verified, and
+      // assert the published contract is the SAME one the paper bridge trades — both
+      // read Callout.contract, so a divergence here means a code regression.
+      if (webhook === "options") {
+        const deliverable = optionAlertDeliverable(b.callout);
+        if (!deliverable.ok) {
+          b.deliveryStatus = `skipped: CONTRACT DATA INCOMPLETE — ${deliverable.reason}`;
+          continue;
+        }
+        if (!sameOptionContract(canonicalOptionContract(b.callout), b.callout.contract)) {
+          b.deliveryStatus = "skipped: contract identity mismatch (Discord vs paper)";
+          continue;
+        }
+      }
       try {
         const res = await deliverCalloutDiscord({
-          webhook: calloutWebhook(b.callout),
+          webhook,
           payload: toWebhookPayload(b.discord),
           idempotencyKey: b.decision.idempotencyKey,
         });

@@ -1,19 +1,21 @@
 /**
- * callouts/discord-format.ts — deterministic COMPACT-TRADE-CARD Discord builder.
- * PURE. The DEFAULT payload is a compact card: ticker + direction + confidence
- * tier, the exact contract (strike / expiration / DTE), the underlying price and
- * the live option bid/ask/mid at alert time, a realistic estimated entry, a plain
- * entry status, the horizon, and the alert time. Nothing is fabricated; the raw
- * OCC symbol is never the headline; no banned/guarantee language is ever emitted.
+ * callouts/discord-format.ts — deterministic Discord builder. PURE.
  *
- * All the technical detail (OCC symbol, greeks, OI/volume, spread%, contract
- * score/rank, agent, evidence, model state, risk, VWAP/relVol/accel, reasons,
- * prior context) stays available but moves BELOW a compact divider — and is only
- * appended when DISCORD_ADVANCED_DETAILS=1 (default off). It only builds the
- * payload; the delivery ledger does the sending.
+ * OPTIONS callouts render as ONE canonical line and nothing else, e.g.
+ *   "$NVDA 18 JUL 26 $180 CALL $3.25"
+ * — the exact contract OptiScan selected (the same contract the paper bridge
+ * trades). No greeks, confidence, targets, entry zones, setup names, or free text
+ * (lib/callouts/option-line.ts). When the exact contract cannot be verified the
+ * line is null and the delivery gate withholds the alert.
+ *
+ * STOCK/momentum callouts (routed to the stocks webhook) keep the existing compact
+ * card unchanged. Nothing is fabricated; no banned/guarantee language is emitted.
+ * This module only builds the payload; the delivery ledger does the sending.
  */
 import { containsBannedLanguage, type Callout } from "./callout.ts";
 import { compactCard, discordAdvancedEnabled } from "./confidence.ts";
+import { calloutWebhook } from "./routing.ts";
+import { optionContractLine } from "./option-line.ts";
 
 const STATUS_EMOJI: Record<string, string> = {
   ACTIONABLE_NOW: "🟢", NEAR_TRIGGER: "🟡", DEVELOPING: "🔵", WAIT_FOR_PULLBACK: "🟠",
@@ -29,7 +31,8 @@ function fmtNum(v: number | null | undefined, dp = 2): string {
 
 export interface DiscordCalloutPayload {
   content: string;
-  embed: {
+  /** Present only for stock/momentum callouts; options are a single content line. */
+  embed?: {
     title: string;
     description: string;
     color: number;
@@ -38,8 +41,25 @@ export interface DiscordCalloutPayload {
   };
 }
 
-/** Build the compact-card Discord payload for one callout. */
+/**
+ * Single canonical options line, e.g. "$NVDA 18 JUL 26 $180 CALL $3.25". When the
+ * exact contract cannot be verified this returns a payload whose content flags the
+ * gap; that payload is never delivered (the runtime delivery gate independently
+ * blocks options alerts without a verified contract — never a generic alert).
+ */
+function formatOptionsLine(c: Callout): DiscordCalloutPayload {
+  const line = optionContractLine(c);
+  const content = line ?? `${STATUS_EMOJI.NO_VALID_CONTRACT} ${c.ticker} — options contract data incomplete; alert withheld`;
+  const safe = containsBannedLanguage(content.toLowerCase()) ? "[redacted: non-compliant language]" : content;
+  return { content: safe };
+}
+
+/** Build the Discord payload for one callout (options → single line; stock → card). */
 export function formatCalloutDiscord(c: Callout, env: NodeJS.ProcessEnv = process.env): DiscordCalloutPayload {
+  // OPTIONS: one canonical contract line, nothing else.
+  if (calloutWebhook(c) === "options") return formatOptionsLine(c);
+
+  // STOCK/momentum: the existing compact card (unchanged).
   const card = compactCard(c, env);
   const emoji = STATUS_EMOJI[c.status] ?? TIER_EMOJI[card.tier] ?? "•";
 
@@ -69,7 +89,7 @@ export function formatCalloutDiscord(c: Callout, env: NodeJS.ProcessEnv = proces
   const description = cardLines.join("\n");
 
   // ── Advanced (below the divider) — appended ONLY when explicitly enabled. ────
-  const fields: DiscordCalloutPayload["embed"]["fields"] = [];
+  const fields: NonNullable<DiscordCalloutPayload["embed"]>["fields"] = [];
   if (discordAdvancedEnabled(env)) {
     const k = c.contract;
     fields.push({ name: "──────── Advanced ────────", value: "Technical detail (not needed to read the trade)." });
@@ -123,7 +143,7 @@ export function formatCalloutDiscord(c: Callout, env: NodeJS.ProcessEnv = proces
   };
 
   // Safety: a callout must never contain banned/guarantee language.
-  if (containsBannedLanguage(JSON.stringify(payload).toLowerCase())) {
+  if (payload.embed && containsBannedLanguage(JSON.stringify(payload).toLowerCase())) {
     payload.embed.description = "[redacted: non-compliant language]";
     payload.embed.fields = payload.embed.fields.map((f) => ({ ...f, value: "[redacted: non-compliant language]" }));
   }

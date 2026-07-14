@@ -109,41 +109,21 @@ test("nextCalloutState records emission times deterministically", () => {
   assert.equal(state.get(c.key).lastEmitMs, NOW);
 });
 
-// ── Discord formatting ───────────────────────────────────────────────────────
+// ── Discord formatting (options = one canonical contract line) ───────────────
 
-test("discord DEFAULT payload is a compact card with the exact contract + real prices", () => {
+test("options Discord payload is a single contract line — no card, no OCC, no extra text", () => {
   const p = formatCalloutDiscord(buildCallout(ar()));
-  const d = p.embed.description;
-  // Compact card lines the trader reads first.
-  assert.match(d, /Contract: SPY \$500 Call/);
-  assert.match(d, /Expiration: Jul 9/);
-  assert.match(d, /DTE: 0/);
-  assert.match(d, /Option: \$1\.10 bid \/ \$1\.20 ask \(mid \$1\.15\)/);
-  assert.match(d, /Estimated entry: \$/); // a real, computed entry (ask + bounded slippage)
-  assert.match(d, /Status: ACTIONABLE NOW/);
-  // Title leads with the human trade + confidence tier, NEVER the OCC symbol.
-  assert.match(p.embed.title, /SPY CALL · (HIGH|MEDIUM|LOW) CONFIDENCE/);
-  assert.ok(!/^O:/.test(p.embed.title) && !/O:SPY/.test(p.embed.title));
-  // Advanced detail is HIDDEN by default (no OCC symbol / greeks fields).
-  assert.equal(p.embed.fields.length, 0, "compact by default — no advanced fields");
-  assert.ok(!/O:SPY/.test(JSON.stringify(p)), "no raw OCC symbol in the default card");
+  assert.equal(p.embed, undefined, "options carry no embed");
+  assert.equal(p.content, "$SPY 09 JUL 26 $500 CALL $1.15");
+  // No confidence, greeks, targets, setup names, or raw OCC symbol.
+  assert.ok(!/CONFIDENCE|SETUP SCORE|p\(win\)|target|O:SPY_C500/i.test(p.content));
   assert.ok(!containsBannedLanguage(JSON.stringify(p)));
-  assert.match(d, /outcomes are uncertain/);
 });
 
-test("discord shows the SETUP SCORE (not a probability) when the model is inactive", () => {
+test("options single line uses the midpoint price at alert time", () => {
+  // mid 1.15 is preferred over bid/ask.
   const p = formatCalloutDiscord(buildCallout(ar()));
-  assert.match(p.embed.description, /SETUP SCORE — NOT A WIN PROBABILITY: 78/);
-  assert.ok(!/p\(win\)/.test(p.embed.description), "no probability shown for an inactive model");
-});
-
-test("discord Advanced block is appended only when DISCORD_ADVANCED_DETAILS=1", () => {
-  const c = buildCallout(ar());
-  const off = formatCalloutDiscord(c, {});
-  assert.equal(off.embed.fields.length, 0);
-  const on = formatCalloutDiscord(c, { DISCORD_ADVANCED_DETAILS: "1" });
-  assert.ok(on.embed.fields.some((f) => /Advanced/.test(f.name)), "advanced divider present");
-  assert.ok(on.embed.fields.some((f) => f.value.includes("O:SPY_C500")), "OCC symbol lives under Advanced");
+  assert.match(p.content, /\$1\.15$/);
 });
 
 // ── Phase 8: experimental / setup-score labeling ─────────────────────────────
@@ -154,25 +134,23 @@ test("inactive model ⇒ callout carries the SETUP SCORE fallback label", () => 
   assert.equal(c.probabilityIsExperimental, false);
 });
 
-test("experimental model ⇒ probability carries the EXPERIMENTAL research-only label", () => {
+test("experimental model ⇒ probability carries the EXPERIMENTAL research-only label (callout)", () => {
+  // The label lives on the callout (dashboard); it is NOT surfaced on the options
+  // Discord line, which stays a bare contract line.
   const c = buildCallout(ar({ modelStatus: "ACTIVE_EXPERIMENTAL_RESEARCH_ONLY", probability: 0.62 }));
   assert.equal(c.modelLabel, "EXPERIMENTAL — LIMITED DATA — RESEARCH ONLY");
   assert.equal(c.probabilityIsExperimental, true);
-  const p = formatCalloutDiscord(c, { DISCORD_ADVANCED_DETAILS: "1" });
-  const model = p.embed.fields.find((f) => f.name === "Model");
-  assert.match(model.value, /EXPERIMENTAL — LIMITED DATA — RESEARCH ONLY/);
-  assert.match(model.value, /not a validated probability/);
-  assert.ok(!containsBannedLanguage(JSON.stringify(p)));
+  const p = formatCalloutDiscord(c);
+  assert.equal(p.embed, undefined);
+  assert.ok(!/EXPERIMENTAL|p\(win\)/.test(p.content), "no model text on the options line");
 });
 
-test("validated model ⇒ plain probability, no experimental label", () => {
+test("validated model ⇒ plain probability on the callout, not on the Discord line", () => {
   const c = buildCallout(ar({ modelStatus: "ACTIVE_VALIDATED", probability: 0.58 }), { modelVersion: 4, calibration: "ECE 0.05" });
   assert.equal(c.modelLabel, null);
   assert.equal(c.probabilityIsExperimental, false);
-  const p = formatCalloutDiscord(c, { DISCORD_ADVANCED_DETAILS: "1" });
-  const model = p.embed.fields.find((f) => f.name === "Model");
-  assert.match(model.value, /p\(win\) 58\.0%/);
-  assert.ok(!/EXPERIMENTAL/.test(model.value));
+  const p = formatCalloutDiscord(c);
+  assert.ok(!/58|p\(win\)/.test(p.content), "probability never appears on the options line");
 });
 
 test("experimental probability never flips a callout to actionable on its own", () => {
@@ -184,10 +162,10 @@ test("experimental probability never flips a callout to actionable on its own", 
   assert.equal(c.actionable, false);
 });
 
-test("discord put callout is labeled research", () => {
+test("discord put callout renders a single PUT contract line", () => {
+  // Research puts are never delivered (not actionable-now), but when formatted they
+  // still render as one bare PUT line — no card, no RESEARCH prose on the line.
   const p = formatCalloutDiscord(buildCallout(ar({ direction: "bearish", candidateStatus: "RESEARCH_ONLY", researchOnly: true, actionability: "RESEARCH_ONLY", selectedContract: { ...ar().selectedContract, side: "put" } })));
-  assert.match(p.embed.title, /PUT/);
-  assert.match(p.embed.description, /RESEARCH ONLY/);
-  // A non-actionable put shows no tradable entry in the compact card.
-  assert.match(p.embed.description, /Estimated entry: NO VALID ENTRY YET/);
+  assert.equal(p.embed, undefined);
+  assert.equal(p.content, "$SPY 09 JUL 26 $500 PUT $1.15");
 });

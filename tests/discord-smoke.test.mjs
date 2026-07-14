@@ -5,7 +5,6 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSmokeCallouts, SMOKE_LABEL } from "../lib/callouts/smoke-fixtures.ts";
 import { containsBannedLanguage } from "../lib/callouts/callout.ts";
-import { formatCalloutDiscord } from "../lib/callouts/discord-format.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => readFileSync(join(root, p), "utf8");
@@ -17,46 +16,51 @@ test("every smoke payload is unmistakably labeled TEST / DRY RUN", () => {
   assert.ok(items.length >= 6);
   for (const it of items) {
     assert.ok(it.payload.content.includes(SMOKE_LABEL), `${it.name} missing label in content`);
-    assert.ok(it.payload.embed.title.startsWith("[TEST]"), `${it.name} missing [TEST] title`);
+    // Stock cards carry a [TEST] embed title; options are a single labeled content line.
+    if (it.payload.embed) assert.ok(it.payload.embed.title.startsWith("[TEST]"), `${it.name} missing [TEST] title`);
   }
 });
 
-test("options actionable routes to the options channel", () => {
-  assert.equal(byName.options_actionable.webhook, "options");
+test("options actionable routes to the options channel as a single contract line", () => {
+  const it = byName.options_actionable;
+  assert.equal(it.webhook, "options");
+  assert.equal(it.payload.embed, undefined, "options carry no embed");
+  assert.match(it.payload.content, /\$TEST 11 JUL 26 \$100 CALL \$1\.05/);
 });
 
-test("put research routes to options and is labeled RESEARCH", () => {
+test("put research routes to options as a single PUT line (no card)", () => {
   const put = byName.put_research;
   assert.equal(put.webhook, "options");
-  assert.match(put.payload.embed.title, /PUT/);
-  assert.match(JSON.stringify(put.payload), /RESEARCH ONLY/);
+  assert.equal(put.payload.embed, undefined);
+  assert.match(put.payload.content, /\$TEST 11 JUL 26 \$100 PUT \$1\.05/);
 });
 
-test("momentum-stock routes to the stocks channel", () => {
+test("momentum-stock routes to the stocks channel and keeps its compact card", () => {
   assert.equal(byName.stock_momentum.webhook, "stocks");
+  assert.ok(byName.stock_momentum.payload.embed, "stock keeps an embed card");
 });
 
-test("inactive model shows the SETUP SCORE (not a probability) on the compact card", () => {
-  // Compact card carries the labeled setup score; the model detail lives under Advanced.
-  assert.match(byName.model_inactive.payload.embed.description, /SETUP SCORE — NOT A WIN PROBABILITY/);
-  const expAdvanced = formatCalloutDiscord(byName.model_experimental.callout, { DISCORD_ADVANCED_DETAILS: "1" });
-  const expModel = expAdvanced.embed.fields.find((f) => f.name === "Model");
-  assert.match(expModel.value, /EXPERIMENTAL — LIMITED DATA — RESEARCH ONLY/);
+test("options lines never carry SETUP SCORE / probability / greeks text", () => {
+  for (const name of ["options_actionable", "model_inactive", "model_experimental"]) {
+    const p = byName[name].payload;
+    assert.equal(p.embed, undefined);
+    assert.ok(!/SETUP SCORE|p\(win\)|EXPERIMENTAL|CONFIDENCE|Δ/i.test(p.content), `${name} line stays bare`);
+  }
 });
 
-test("no-valid-contract scenario renders without a fabricated contract", () => {
+test("no-valid-contract scenario is withheld, never a fabricated contract", () => {
   const nvc = byName.no_valid_contract;
-  // The compact card states there is no tradable entry instead of a contract.
-  assert.match(nvc.payload.embed.description, /Estimated entry: NO VALID ENTRY YET/);
-  assert.match(nvc.payload.embed.description, /Status: NO VALID ENTRY/);
+  assert.equal(nvc.webhook, "options");
+  assert.equal(nvc.payload.embed, undefined);
+  // The options line is null → an explicit incomplete marker, never a fake symbol/strike.
+  assert.match(nvc.payload.content, /contract data incomplete|withheld/i);
   assert.ok(!/O:TEST_C100/.test(JSON.stringify(nvc.payload)), "no fabricated option symbol");
 });
 
-test("the compact card is the DEFAULT (advanced fields hidden unless enabled)", () => {
-  for (const it of items) {
-    assert.equal(it.payload.embed.fields.length, 0, `${it.name} should have no advanced fields by default`);
-    assert.match(it.payload.embed.title, /(HIGH|MEDIUM|LOW) CONFIDENCE/, `${it.name} title carries a confidence tier`);
-  }
+test("stock cards stay compact (no advanced fields) with a confidence-tier title", () => {
+  const stock = byName.stock_momentum.payload;
+  assert.equal(stock.embed.fields.length, 0, "stock card has no advanced fields by default");
+  assert.match(stock.embed.title, /(HIGH|MEDIUM|LOW) CONFIDENCE/);
 });
 
 test("no smoke payload contains banned/guarantee language", () => {

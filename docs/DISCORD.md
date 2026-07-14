@@ -11,7 +11,7 @@ verdicts, same accuracy math. Nothing new in the signal path.
 
 | Channel | Who posts | What |
 |---|---|---|
-| `#options-callouts` | webhook A | 0DTE BUY tickets during market hours (existing `captureZeroDte` clear-signal path) |
+| `#options-callouts` | webhook A | Actionable options BUY tickets as a single canonical contract line (see §Options line format) |
 | `#stock-callouts` | webhook B | Shares LONG/SHORT momentum — premarket, RTH, and after-hours (re-enable `lib/stock-signals.ts` engine behind `STOCK_CALLOUTS=1`, capture with `asset_class='stock'`) |
 | `#track-record` | webhook C | Auto daily scoreboard at 4:05 PM ET + weekly recap Sunday. Read-only. |
 | `#how-it-works` | manual | One pinned post: what fires a callout, what the grades mean, disclaimers |
@@ -24,6 +24,30 @@ optional and separate.
 With `STOCK_CALLOUTS=1`, shares run in premarket, regular hours, and after-hours.
 During regular hours the unchanged 0DTE path runs in parallel. Each product has
 its own per-symbol cooldown, so one product cannot suppress the other.
+
+## Options line format (supervisor path)
+
+Every actionable options callout on the supervisor path (`CALLOUT_CANONICAL_PATH=supervisor`)
+is delivered as ONE line and nothing else — no embed, greeks, confidence, targets,
+entry zones, or setup names:
+
+```
+$NVDA 18 JUL 26 $180 CALL $3.25
+$SPY 17 JUL 26 $625 PUT $2.14
+```
+
+- `$NVDA` underlying · `18 JUL 26` expiration (DD MON YY) · `$180` strike · `CALL`/`PUT`
+  · `$3.25` contract price at alert time (**midpoint** preferred, else **ask** — no
+  separate last-trade field on the verified contract).
+- The line is built by `lib/callouts/option-line.ts` straight off the callout's verified
+  `contract` — the **same** `AgentResult.selectedContract` the paper bridge trades — so
+  Discord can never publish a different contract than the one OptiScan paper-trades. The
+  runtime asserts this identity (`sameOptionContract`) before sending.
+- **Block, never fabricate.** If the exact contract cannot be verified (missing OCC symbol,
+  strike, expiration, or a usable mid/ask price) the alert is **withheld** with a recorded
+  `CONTRACT DATA INCOMPLETE — <reason>` status; OptiScan never sends a generic options alert.
+- Routing is unchanged (options → `DISCORD_WEBHOOK_OPTIONS`). Stock/momentum callouts keep
+  their existing compact card (untouched).
 
 Rules that make it worth $15:
 - **BUYs only ping.** WATCH posts are quiet (no @role mention). 2–6 BUYs/day by design.

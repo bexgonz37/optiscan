@@ -15,7 +15,7 @@ export function smokeTestEnabled(env: NodeJS.ProcessEnv = process.env): boolean 
 }
 
 function toWebhookPayload(p: SmokeCallout["payload"]): Record<string, unknown> {
-  return { content: p.content, embeds: [p.embed] };
+  return p.embed ? { content: p.content, embeds: [p.embed] } : { content: p.content };
 }
 
 function hourBucket(nowMs: number): string {

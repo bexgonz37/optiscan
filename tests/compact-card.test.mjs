@@ -98,26 +98,22 @@ test("only HIGH-confidence actionable setups reach Discord; medium/low stay dash
   assert.ok(sel.suppressed.some((x) => /need HIGH|not HIGH confidence/.test(x.reason)));
 });
 
-// ── model-inactive setup score is not a probability ──────────────────────────
+// ── model-inactive setup score is not a probability (compact card / dashboard) ─
 test("model-inactive setup score is labeled NOT a probability", () => {
   const card = compactCard(buildCallout(ar()));
   assert.equal(card.setupScoreLine, "SETUP SCORE — NOT A WIN PROBABILITY: 78");
+});
+
+// ── options Discord payload is a single contract line, nothing else ──────────
+test("options Discord payload is a single contract line (no embed, no greeks/confidence)", () => {
   const p = formatCalloutDiscord(buildCallout(ar()));
-  assert.ok(!/p\(win\)/.test(p.embed.description), "no probability shown when model inactive");
+  assert.equal(p.embed, undefined, "options carry no embed card");
+  assert.equal(p.content, "$NVDA 17 JUL 26 $185 CALL $2.14");
+  // No probability, greeks, confidence, targets, or raw OCC symbol in the line.
+  assert.ok(!/p\(win\)|CONFIDENCE|Δ|delta|target|O:NVDA_C185/i.test(p.content));
 });
 
-// ── advanced hidden by default ───────────────────────────────────────────────
-test("advanced technical detail is hidden by default and appears only when enabled", () => {
-  const c = buildCallout(ar());
-  const def = formatCalloutDiscord(c);
-  assert.equal(def.embed.fields.length, 0);
-  assert.ok(!/O:NVDA_C185/.test(JSON.stringify(def)), "OCC symbol hidden by default");
-  const adv = formatCalloutDiscord(c, { DISCORD_ADVANCED_DETAILS: "1" });
-  assert.ok(adv.embed.fields.length > 0);
-  assert.ok(/O:NVDA_C185/.test(JSON.stringify(adv)), "OCC symbol available under Advanced");
-});
-
-test("compact card never contains banned/guarantee language", () => {
+test("options single line never contains banned/guarantee language", () => {
   const p = formatCalloutDiscord(buildCallout(ar()));
   assert.ok(!containsBannedLanguage(JSON.stringify(p)));
 });

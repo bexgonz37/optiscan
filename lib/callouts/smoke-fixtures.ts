@@ -57,10 +57,9 @@ export interface SmokeCallout {
 
 /** Prefix the payload with the TEST/DRY-RUN label so it can never be mistaken for a live signal. */
 function labeled(p: DiscordCalloutPayload): DiscordCalloutPayload {
-  return {
-    content: `${SMOKE_LABEL}\n${p.content}`,
-    embed: { ...p.embed, title: `[TEST] ${p.embed.title}` },
-  };
+  const content = `${SMOKE_LABEL}\n${p.content}`;
+  // Options are a single content line (no embed); stock cards keep their embed.
+  return p.embed ? { content, embed: { ...p.embed, title: `[TEST] ${p.embed.title}` } } : { content };
 }
 
 /** Build the labeled, routed, formatted smoke callouts (no side effects). */

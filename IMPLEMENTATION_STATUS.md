@@ -6,6 +6,29 @@ This file is the resume point. Read it + the task list before making changes.
 Do **not** repeat Phase 1, redo timestamp normalization, or add the Self-Improvement
 Lab / an embedded LLM.
 
+## Simplified options Discord contract line (2026-07-14)
+
+Actionable options Discord callouts (supervisor path) are now ONE canonical line and
+nothing else — no embed, greeks, confidence, targets, entry zones, or setup names:
+
+```
+$NVDA 18 JUL 26 $180 CALL $3.25
+```
+
+- **`lib/callouts/option-line.ts`** (PURE, new) — the single source for the line and the
+  canonical contract identity. Reads the callout's verified `contract` (the same
+  `AgentResult.selectedContract` the paper bridge trades). Price = **mid** preferred, else
+  **ask** (no last-trade field). Expiration `DD MON YY`, strike minimal-decimals. Nothing is
+  fabricated.
+- **`lib/callouts/discord-format.ts`** — options → single content line (no embed); stock/
+  momentum cards unchanged (`DiscordCalloutPayload.embed` is now optional).
+- **`lib/callouts/runtime.ts`** — delivery gate blocks an actionable options alert whose exact
+  contract cannot be verified (`CONTRACT DATA INCOMPLETE — <reason>`), and asserts the
+  published contract equals the paper-traded contract (`sameOptionContract`). Never a generic
+  options alert, never a Discord-A/paper-B mismatch.
+- Routing preserved (options webhook). Tests: `tests/option-line.test.mjs` (+ updated
+  `callouts` / `compact-card` / `discord-smoke`). Suite 1072/1072, tsc clean, build OK.
+
 ## Opportunity-to-expiration grading + breakout-crossing latch (2026-07-14)
 
 Git repo: `github.com/bexgonz37/optiscan`, branch `main`. AI architecture direction is
