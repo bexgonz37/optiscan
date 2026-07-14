@@ -76,6 +76,10 @@ export async function captureStockAlert(sig: StockSignal): Promise<number | null
   const stockEnabled = process.env.STOCK_CALLOUTS === "1";
   if (!stockEnabled) return null;
   if (session === "closed") return null;
+  const vwapDistPct =
+    typeof sig.price === "number" && typeof sig.vwap === "number" && sig.vwap > 0
+      ? +(((sig.price - sig.vwap) / sig.vwap) * 100).toFixed(2)
+      : null;
 
   const minScore = getSettingNum("stock_min_score", Number(process.env.STOCK_MIN_SCORE ?? STOCK_DEFAULT_MIN_SCORE));
   const dataTimestampMs = normalizeProviderTimestampMs(sig.dataTimestampMs ?? null, nowMs);
@@ -154,6 +158,9 @@ export async function captureStockAlert(sig: StockSignal): Promise<number | null
     lastValidatedAt: isoOrNull(nowMs),
     lastTriggerEventAt: isoOrNull(sig.lastTriggerEventAtMs ?? nowMs),
     invalidationReason: timing.actionable ? null : timing.reasons.join(" "),
+    vwapAtAlert: sig.vwap ?? null,
+    vwapDistPctAtAlert: vwapDistPct,
+    aboveVwap: sig.aboveVwap,
     snapshot: null, catalystRecords: [],
   });
 

@@ -376,6 +376,8 @@ export async function notifyNewAlert(alertId: number, alertLike: any): Promise<v
         ticker: String(alertLike?.ticker ?? ""),
         direction: (alertLike?.direction ?? "bullish"),
         price: typeof alertLike?.price === "number" ? alertLike.price : null,
+        movePct: typeof alertLike?.movePct === "number" ? alertLike.movePct : null,
+        vwapDistPct: typeof alertLike?.vwapDistPct === "number" ? alertLike.vwapDistPct : null,
         bid: typeof alertLike?.bid === "number" ? alertLike.bid : null,
         ask: typeof alertLike?.ask === "number" ? alertLike.ask : null,
         quoteAsOfMs: typeof alertLike?.quoteAsOfMs === "number" ? alertLike.quoteAsOfMs : null,
