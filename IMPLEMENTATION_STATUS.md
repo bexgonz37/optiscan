@@ -6,6 +6,78 @@ This file is the resume point. Read it + the task list before making changes.
 Do **not** repeat Phase 1, redo timestamp normalization, or add the Self-Improvement
 Lab / an embedded LLM.
 
+## Opportunity-to-expiration grading + breakout-crossing latch (2026-07-14)
+
+Git repo: `github.com/bexgonz37/optiscan`, branch `main`. AI architecture direction is
+recorded separately in `docs/AI_ARCHITECTURE_ROADMAP.md` (design only — nothing built).
+
+### A. Opportunity-to-expiration accuracy metric
+Realized grading (`trade-outcome.ts`) scores net P&L at the actual paper exit, which
+usually closes well before an option expires. That undercounts whether the **callout**
+was right. New, independent metric: *did the call/put ever go green enough to book a
+profit at any point up to expiration?*
+- **`lib/callout-opportunity.ts`** (PURE) — `gradeOpportunity` → `HIT` / `NONE` /
+  `UNGRADABLE` from the lifetime peak favorable %, threshold `OPPORTUNITY_MIN_FAVORABLE_PCT`
+  (default **25**). Never fabricates: no recorded peak ⇒ `UNGRADABLE`, not a guessed 0.
+- **`opportunity_peak_pct`** on `paper_trades` — high-watered **past the paper exit until
+  the contract expires**, reusing chains the sweep/scanner already fetch (`trackOpportunityToExpiration`
+  in `paper-engine.ts`). **No extra provider calls, no status/fill/exit changes.** A ticker
+  with no further chain fetches keeps its held-window peak (window reported `held`, honest).
+- Lifetime peak = `max(held-window mfe, post-exit peak)`; graded on every outcome and
+  exposed on the outcome read-model (`opportunity_grade`, `peak_favorable_pct`,
+  `opportunity_threshold_pct`, `opportunity_window`). Guarded additive migrations +
+  base-schema columns; validated idempotent.
+
+### B. Late/missed breakout — root cause + fix
+**Root cause (from the deterministic pipeline; raw NVDA per-eval records were not
+available locally to confirm from stored data):** the entry gate (`entry-window.ts`) is a
+single-instant snapshot and the supervisor samples it only every `SCHED_SUPERVISOR_MS`
+(~30s). A fast breakout **crosses the entry band between evaluations**, so a periodic
+snapshot sees `NEAR_TRIGGER` (before) then `WAIT_FOR_PULLBACK` (after) and never
+`ACTIONABLE`. This is a sampling/cadence problem (root causes #1 + #3), **not** a
+band-width problem.
+
+**Why blind VWAP-band widening was rejected:** widening the always-on band would fire for
+any candidate merely *sitting* at 1.5–2.1% off VWAP regardless of whether it crossed
+through — i.e. it reintroduces top-of-candle chasing, the exact symptom already being
+fought. The band stays at `ENTRY_MAX_VWAP_DIST_PCT` (1.5).
+
+**Fix — deterministic breakout-crossing latch** (`lib/breakout-latch.ts`, PURE, consumed
+by `entry-window.ts`, driven by `agents/runtime.ts`): two consecutive supervisor snapshots
+bracket the crossing. If a prior cycle stamped the candidate as *developing* on the
+favorable side within a TTL, and it is now only just past the band (≤ `CROSS_LATCH_TOLERANCE_PCT`
+beyond it, always < the extended cap) and **still fully confirmed** (aligned, accelerating,
+on volume, regular hours, fresh quote), rescue it to `ACTIONABLE` **once**. Guarantees:
+- No band widening; the rescue requires a proven prior developing stamp.
+- Hard anti-chase: rescue window is `(1.5%, 1.5%+0.6%]`; ≥ `ENTRY_EXTENDED_VWAP_DIST_PCT`
+  (3%) is always `EXTENDED`/`MISSED`, never rescued.
+- Fires once per episode; invalidation (reverse/extended/blocked) clears it.
+- Latch state is **in-process** → empty on restart → **no post-restart ghost alerts**;
+  single Railway replica so no cross-worker sharing needed.
+- **No extra provider calls** (reuses existing momentum snapshots).
+- Every downstream gate unchanged: risk veto, eligibility (`nowOnlyActionable`), portfolio
+  ranking, emission dedup, the actionable-only Discord boundary, and the paper bridge.
+- Instrumentation: `alert-timing.ts` now records `crossingRescued` + a `crossingRescues`
+  summary count so future rescues are stored evidence.
+
+### New environment variables (all have production-safe defaults)
+- `OPPORTUNITY_MIN_FAVORABLE_PCT` (default 25) — profit-opportunity threshold %.
+- `CROSS_LATCH_TTL_MS` (default 90000) — developing-stamp lifetime.
+- `CROSS_LATCH_TOLERANCE_PCT` (default 0.6) — max |VWAP dist| beyond the band a crossing may be rescued.
+
+### Verification baseline (2026-07-14)
+- Full suite: **1059 tests, 1059 pass, 0 fail** (`node --experimental-strip-types --test tests/*.test.mjs`).
+- TypeScript: `tsc --noEmit` clean. Production build: succeeds. Additive migrations: validated apply + idempotent.
+
+### Operational notes (Railway, later)
+- No action required to deploy — all new env vars default safe; the latch is in-process
+  and single-replica-safe. Watch `crossingRescues` in alert-timing after go-live to confirm
+  the latch is recovering real breakouts; if a faster reaction is ever wanted, `SCHED_SUPERVISOR_MS`
+  can be lowered (costs more chain fetches) — the latch does not require it.
+- Safety boundaries unchanged: `BEARISH_ACTIONABLE` off (puts research-only), no live
+  brokerage, `IMPROVEMENT_AUTOMATION`/`IMPROVEMENT_AUTO_MERGE` off, paper stays simulated
+  with real provider quotes.
+
 ## Supervisor→Paper Bridge + now-only alerts + stock repair (2026-07-13)
 
 Root cause (Codex audit): Supervisor canonical callouts persisted to `callout_state`

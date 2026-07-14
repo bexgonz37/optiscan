@@ -47,6 +47,67 @@ test("past the (widened) entry zone but not extended → WAIT_FOR_PULLBACK", () 
   const r = assessEntryWindow({ ...base, momentum: { ...goodCallMomentum, vwapDistPct: 2.0 } });
   assert.equal(r.state, "WAIT_FOR_PULLBACK");
   assert.equal(r.actionable, false);
+  assert.equal(r.crossingLatched, false);
+});
+
+// ── deterministic breakout-crossing latch (the between-cycle NVDA fix) ────────
+const ACTIVE = { active: true, alreadyFired: false, crossToleranceVwapDistPct: 0.6 };
+
+test("a confirmed breakout that crossed the band between cycles is RESCUED to ACTIONABLE", () => {
+  // Just past the 1.5% band (1.9% ≤ 1.5 + 0.6 crossing ceiling), still confirmed
+  // on volume + accelerating, with an active prior developing stamp.
+  const r = assessEntryWindow({ ...base, momentum: { ...goodCallMomentum, vwapDistPct: 1.9 }, crossing: ACTIVE });
+  assert.equal(r.state, "ACTIONABLE");
+  assert.equal(r.actionable, true);
+  assert.equal(r.crossingLatched, true);
+  assert.match(r.reasons.join(" "), /crossed the entry zone between checks/i);
+});
+
+test("crossing WITHOUT confirmation (weak volume) is NOT rescued — stays WAIT_FOR_PULLBACK", () => {
+  const r = assessEntryWindow({ ...base, momentum: { ...goodCallMomentum, vwapDistPct: 1.9, relVol: 0.8 }, crossing: ACTIVE });
+  assert.equal(r.state, "WAIT_FOR_PULLBACK");
+  assert.equal(r.actionable, false);
+  assert.equal(r.crossingLatched, false);
+});
+
+test("anti-chase: a crossing beyond the crossing ceiling is NOT rescued (no top-of-candle chase)", () => {
+  // 2.3% is past 1.5 + 0.6 = 2.1% ceiling → not a rescue, wait for pullback.
+  const r = assessEntryWindow({ ...base, momentum: { ...goodCallMomentum, vwapDistPct: 2.3 }, crossing: ACTIVE });
+  assert.equal(r.state, "WAIT_FOR_PULLBACK");
+  assert.equal(r.crossingLatched, false);
+});
+
+test("anti-chase: an extended move (≥3%) is EXTENDED and never rescued even with an active latch", () => {
+  const r = assessEntryWindow({ ...base, momentum: { shortRate: 0.3, accel: 0.05, aboveVwap: true, vwapDistPct: 3.5, movePct: 1.5, relVol: 1.5 }, crossing: ACTIVE });
+  assert.notEqual(r.state, "ACTIONABLE");
+  assert.equal(r.crossingLatched, false);
+});
+
+test("dedup: an already-fired crossing signal does NOT rescue again", () => {
+  const r = assessEntryWindow({ ...base, momentum: { ...goodCallMomentum, vwapDistPct: 1.9 }, crossing: { active: false, alreadyFired: true, crossToleranceVwapDistPct: 0.6 } });
+  assert.equal(r.state, "WAIT_FOR_PULLBACK");
+  assert.equal(r.crossingLatched, false);
+});
+
+test("a stale/inactive crossing signal does NOT rescue (restart & TTL safety)", () => {
+  const r = assessEntryWindow({ ...base, momentum: { ...goodCallMomentum, vwapDistPct: 1.9 }, crossing: { active: false, alreadyFired: false, crossToleranceVwapDistPct: 0.6 } });
+  assert.equal(r.state, "WAIT_FOR_PULLBACK");
+  // No crossing input at all behaves identically (no regression).
+  const r2 = assessEntryWindow({ ...base, momentum: { ...goodCallMomentum, vwapDistPct: 1.9 } });
+  assert.equal(r2.state, "WAIT_FOR_PULLBACK");
+});
+
+test("crossing that has reversed is INVALIDATED, never rescued", () => {
+  const r = assessEntryWindow({ ...base, momentum: { shortRate: -0.3, accel: -0.05, aboveVwap: false, vwapDistPct: -0.5, movePct: -1.2, relVol: 1.5 }, crossing: ACTIVE });
+  assert.equal(r.state, "INVALIDATED");
+  assert.equal(r.crossingLatched, false);
+});
+
+test("developing flag: NEAR_TRIGGER and ACTIONABLE are stampable; WAIT/EARLY are not", () => {
+  assert.equal(assessEntryWindow({ ...base, momentum: goodCallMomentum }).developing, true);            // ACTIONABLE
+  assert.equal(assessEntryWindow({ ...base, momentum: { ...goodCallMomentum, relVol: 0.8 } }).developing, true); // NEAR_TRIGGER
+  assert.equal(assessEntryWindow({ ...base, momentum: { ...goodCallMomentum, vwapDistPct: 2.0 } }).developing, false); // WAIT
+  assert.equal(assessEntryWindow({ ...base, momentum: null }).developing, false);                       // EARLY
 });
 
 test("fresh, approaching, weak volume → NEAR_TRIGGER (not actionable yet)", () => {
@@ -94,7 +155,7 @@ test("late states carry ALREADY-HAPPENED context distinct from the entry", () =>
 // ── metrics (§9) ─────────────────────────────────────────────────────────────
 test("alert-timing summary computes (never fabricates) the quality metrics", () => {
   const recs = [
-    { entryState: "ACTIONABLE", secondsSinceTrigger: 3, distanceFromTriggerPct: 0.2, entryWindowValid: true, sent: true, triggerToDiscordMs: 4000, downgradedMissed: false, rejectedForExtension: false, paperFilledInsideWindow: true },
+    { entryState: "ACTIONABLE", secondsSinceTrigger: 3, distanceFromTriggerPct: 0.2, entryWindowValid: true, sent: true, triggerToDiscordMs: 4000, downgradedMissed: false, rejectedForExtension: false, paperFilledInsideWindow: true, crossingRescued: true },
     { entryState: "NEAR_TRIGGER", secondsSinceTrigger: null, distanceFromTriggerPct: null, entryWindowValid: false, sent: true, triggerToDiscordMs: null, downgradedMissed: false, rejectedForExtension: false, paperFilledInsideWindow: null },
     { entryState: "EXTENDED", secondsSinceTrigger: 200, distanceFromTriggerPct: 1.8, entryWindowValid: false, sent: false, triggerToDiscordMs: null, downgradedMissed: false, rejectedForExtension: true, paperFilledInsideWindow: null },
     { entryState: "MISSED", secondsSinceTrigger: 400, distanceFromTriggerPct: 2.2, entryWindowValid: false, sent: false, triggerToDiscordMs: null, downgradedMissed: true, rejectedForExtension: true, paperFilledInsideWindow: false },
@@ -110,8 +171,10 @@ test("alert-timing summary computes (never fabricates) the quality metrics", () 
   assert.equal(s.pctValidWindowAtSend, 50); // 1 of 2 sent had a valid window
   assert.equal(s.paperFillsInsideWindow, 1);
   assert.equal(s.paperFillsOutsideWindow, 1);
+  assert.equal(s.crossingRescues, 1); // one callout was rescued by the crossing latch
   // Empty input → nulls, not fabricated numbers.
   const empty = summarizeAlertTiming([]);
   assert.equal(empty.avgTriggerToDiscordMs, null);
   assert.equal(empty.pctValidWindowAtSend, null);
+  assert.equal(empty.crossingRescues, 0);
 });

@@ -27,6 +27,13 @@ export interface AlertTimingRecord {
   rejectedForExtension: boolean;
   /** Paper fill outcome (null = no paper fill from this alert). */
   paperFilledInsideWindow: boolean | null;
+  /**
+   * Was this callout rescued to ACTIONABLE by the deterministic breakout-crossing
+   * latch (the breakout crossed the entry band between supervisor cycles)? Optional
+   * so pre-latch records remain valid; instrumentation for measuring how often the
+   * latch recovers an otherwise-missed breakout. Never fabricated.
+   */
+  crossingRescued?: boolean;
 }
 
 export interface AlertTimingSummary {
@@ -41,6 +48,8 @@ export interface AlertTimingSummary {
   pctRejectedForExtension: number | null;
   paperFillsInsideWindow: number;
   paperFillsOutsideWindow: number;
+  /** How many callouts the breakout-crossing latch rescued to ACTIONABLE. */
+  crossingRescues: number;
 }
 
 const EARLY_STATES = new Set(["EARLY", "NEAR_TRIGGER", "DEVELOPING"]);
@@ -51,6 +60,7 @@ export function summarizeAlertTiming(records: AlertTimingRecord[]): AlertTimingS
   let sentBeforeTrigger = 0, sentAtTrigger = 0, sentLate = 0;
   let downgradedToMissed = 0, rejectedForExtension = 0;
   let paperInside = 0, paperOutside = 0;
+  let crossingRescues = 0;
   const latencies: number[] = [];
   let sentCount = 0, sentWithValidWindow = 0;
 
@@ -68,6 +78,7 @@ export function summarizeAlertTiming(records: AlertTimingRecord[]): AlertTimingS
     if (r.rejectedForExtension) rejectedForExtension++;
     if (r.paperFilledInsideWindow === true) paperInside++;
     else if (r.paperFilledInsideWindow === false) paperOutside++;
+    if (r.crossingRescued === true) crossingRescues++;
   }
 
   const pct = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 1000) / 10 : null);
@@ -83,5 +94,6 @@ export function summarizeAlertTiming(records: AlertTimingRecord[]): AlertTimingS
     pctRejectedForExtension: pct(rejectedForExtension, total),
     paperFillsInsideWindow: paperInside,
     paperFillsOutsideWindow: paperOutside,
+    crossingRescues,
   };
 }

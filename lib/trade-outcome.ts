@@ -15,6 +15,8 @@
  * Only actually-filled, terminal trades may be graded. A filled trade missing
  * required exit information is graded UNGRADABLE (never silently dropped).
  */
+import { gradeOpportunity, type OpportunityGrade, type OpportunityWindow } from "./callout-opportunity.ts";
+
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
 export const OUTCOME_VERSION = 1;
@@ -50,6 +52,14 @@ export interface OutcomeInput {
   maePct: number | null;
   entryAtMs: number | null;
   exitAtMs: number | null;
+  /**
+   * Lifetime peak favorable % (entry→expiration where sampling ran), used for the
+   * "was there ever a profit opportunity?" grade. Falls back to mfePct when the
+   * lifetime figure is absent. Optional so legacy callers are unaffected.
+   */
+  peakFavorablePct?: number | null;
+  /** Which window peakFavorablePct covers ("to_expiration" | "held"). */
+  peakFavorableWindow?: OpportunityWindow;
   /** Pre-rebuild trade with incomplete entry-time provenance. */
   legacy?: boolean;
 }
@@ -70,6 +80,15 @@ export interface GradedOutcome {
   exitSlippage: number | null;
   mfePct: number | null;
   maePct: number | null;
+  /**
+   * Opportunity grade — did the callout EVER present a bookable profit (peak
+   * favorable ≥ threshold), at any point up to expiration? Independent of the
+   * realized grade above: a realized LOSS can still be an opportunity HIT.
+   */
+  opportunityGrade: OpportunityGrade;
+  peakFavorablePct: number | null;
+  opportunityThresholdPct: number;
+  opportunityWindow: OpportunityWindow;
   outcomeVersion: number;
 }
 
@@ -77,6 +96,22 @@ export interface GradedOutcome {
 export function gradeOutcome(input: OutcomeInput, env: NodeJS.ProcessEnv = process.env): GradedOutcome {
   const reasons: string[] = [];
   const tol = breakevenToleranceDollars(env);
+
+  // Opportunity is graded independently of realized P&L (and of realized
+  // gradability): the lifetime peak favorable answers "was the callout ever
+  // right?", even for a trade that was stopped out or has incomplete exit data.
+  // Prefer the lifetime peak; fall back to the held-window mfe.
+  const lifetimePeak = isNum(input.peakFavorablePct)
+    ? input.peakFavorablePct
+    : (isNum(input.mfePct) ? input.mfePct : null);
+  const opp = gradeOpportunity(
+    {
+      filled: input.filled && (isNum(input.entryPrice) && (input.entryPrice as number) > 0),
+      peakFavorablePct: lifetimePeak,
+      window: input.peakFavorableWindow ?? (isNum(input.peakFavorablePct) ? "to_expiration" : "held"),
+    },
+    env,
+  );
 
   const qty = isNum(input.quantity) && input.quantity > 0 ? input.quantity : null;
   const entry = isNum(input.entryPrice) && input.entryPrice > 0 ? input.entryPrice : null;
@@ -120,6 +155,10 @@ export function gradeOutcome(input: OutcomeInput, env: NodeJS.ProcessEnv = proce
       exitSlippage,
       mfePct: isNum(input.mfePct) ? input.mfePct : null,
       maePct: isNum(input.maePct) ? input.maePct : null,
+      opportunityGrade: opp.opportunityGrade,
+      peakFavorablePct: opp.peakFavorablePct,
+      opportunityThresholdPct: opp.thresholdPct,
+      opportunityWindow: opp.window,
       outcomeVersion: OUTCOME_VERSION,
     };
   }
@@ -157,6 +196,10 @@ export function gradeOutcome(input: OutcomeInput, env: NodeJS.ProcessEnv = proce
     exitSlippage,
     mfePct: isNum(input.mfePct) ? input.mfePct : null,
     maePct: isNum(input.maePct) ? input.maePct : null,
+    opportunityGrade: opp.opportunityGrade,
+    peakFavorablePct: opp.peakFavorablePct,
+    opportunityThresholdPct: opp.thresholdPct,
+    opportunityWindow: opp.window,
     outcomeVersion: OUTCOME_VERSION,
   };
 }

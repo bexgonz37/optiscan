@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS paper_trades (
   entry_delta REAL, entry_spread_pct REAL, rel_vol_entry REAL, above_vwap_entry INTEGER,
   short_rate_entry REAL, session_at_entry TEXT, risk_amount REAL, snapshot_version INTEGER,
   entry_fees REAL, exit_fees REAL, entry_slippage REAL, exit_slippage REAL,
-  mfe_pct REAL, mae_pct REAL, exit_reason TEXT, close_reason TEXT,
+  mfe_pct REAL, mae_pct REAL, opportunity_peak_pct REAL, exit_reason TEXT, close_reason TEXT,
   fingerprint_id TEXT, fingerprint_version INTEGER, fingerprint_dimensions_json TEXT, strategy_version INTEGER
 );`;
 const NEW_TABLES_DDL = `
@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS paper_trade_outcomes (
   entry_price REAL, exit_price REAL, quantity REAL, gross_pnl REAL,
   entry_fees REAL, exit_fees REAL, entry_slippage REAL, exit_slippage REAL,
   net_pnl REAL, return_pct REAL, risk_amount REAL, r_multiple REAL, mfe_pct REAL, mae_pct REAL,
+  opportunity_grade TEXT, peak_favorable_pct REAL, opportunity_threshold_pct REAL, opportunity_window TEXT,
   terminal_kind TEXT, exit_reason TEXT, close_reason TEXT, entry_session TEXT, exit_session TEXT,
   grade TEXT NOT NULL, grading_status TEXT NOT NULL, data_quality_status TEXT NOT NULL,
   data_quality_reasons_json TEXT, snapshot_version INTEGER, outcome_version INTEGER NOT NULL,
@@ -114,6 +115,26 @@ if (Database) {
     assert.equal(o.selector_profile, "zero_dte_momentum"); // (28) selector retained
     assert.equal(o.option_symbol, "O:SPY260709C00500000");
     assert.equal(o.terminal_kind, "TARGET");
+    // Opportunity grade: peak favorable +60% ≥ 25% threshold ⇒ HIT (independent of realized P&L).
+    assert.equal(o.opportunity_grade, "HIT");
+    assert.equal(o.peak_favorable_pct, 60);
+    assert.equal(o.opportunity_threshold_pct, 25);
+  });
+
+  // Opportunity is graded independently of realized P&L: a stopped-out LOSS whose
+  // contract still ran +50% before expiration is an opportunity HIT.
+  test("a realized LOSS whose contract ran green is still an opportunity HIT", () => {
+    const db = freshDb();
+    const id = insertTrade(db, {
+      status: "STOPPED_OUT", exit_price: 0.6, exit_reason: "stop_loss: stop",
+      mfe_pct: 12, opportunity_peak_pct: 55, // held window only +12%, but ran +55% after exit
+    });
+    syncOutcomesOnDb(db, Date.now());
+    const o = db.prepare("SELECT * FROM paper_trade_outcomes WHERE paper_trade_id=?").get(id);
+    assert.equal(o.grade, "LOSS");                 // realized: stopped out
+    assert.equal(o.opportunity_grade, "HIT");      // opportunity: ran +55% to expiration
+    assert.equal(o.peak_favorable_pct, 55);        // lifetime peak = max(mfe 12, post-exit 55)
+    assert.equal(o.opportunity_window, "to_expiration");
   });
 
   // (15) idempotent across repeated sweeps + process restarts

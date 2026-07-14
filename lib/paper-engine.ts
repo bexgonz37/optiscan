@@ -10,7 +10,7 @@
  * live scanner for quota.
  */
 
-import { getDb } from "@/lib/db";
+import { getDb, tradingDay } from "@/lib/db";
 import { fetchOptionChain, getCallStats } from "@/lib/polygon-provider";
 import { nearMinuteBudget } from "@/lib/near-miss";
 import { marketSession, type MarketSession } from "@/lib/trading-session";
@@ -750,6 +750,41 @@ function snapFromContracts(contracts: any[], optionSymbol: string | null): Marke
   };
 }
 
+/**
+ * Opportunity tracking: after a paper trade EXITS, keep updating its lifetime
+ * peak favorable % from any chain we already fetched for the underlying, until
+ * the contract expires. This answers "did the call/put ever go green enough to
+ * book a profit before expiration?" — independent of where the paper trade
+ * actually exited. It NEVER re-opens, re-exits, or changes the trade's status;
+ * it only high-waters an additive column. No extra provider calls (it reuses a
+ * chain the sweep/scanner already fetched), and it never fabricates — an exited
+ * contract on a ticker with no further chain fetches simply keeps its held-window
+ * peak (window stays "held", reported honestly at grade time).
+ */
+function trackOpportunityToExpiration(ticker: string, contracts: any[], nowMs: number): void {
+  if (!contracts?.length) return;
+  const db = getDb();
+  const today = tradingDay(nowMs);
+  const rows = db.prepare(
+    `SELECT id, option_symbol, entry_price, expiration FROM paper_trades
+     WHERE ticker=? AND option_symbol IS NOT NULL AND entry_price IS NOT NULL
+       AND status IN ('EXITED','STOPPED_OUT','TAKE_PROFIT')`,
+  ).all(ticker) as any[];
+  const upd = db.prepare(
+    "UPDATE paper_trades SET opportunity_peak_pct = MAX(COALESCE(opportunity_peak_pct, ?), ?) WHERE id=?",
+  );
+  for (const r of rows) {
+    // Skip contracts already past expiration (nothing left to book).
+    if (r.expiration && String(r.expiration) < today) continue;
+    if (!(r.entry_price > 0)) continue;
+    const snap = snapFromContracts(contracts, r.option_symbol);
+    const mid = snap?.quote?.mid;
+    if (typeof mid !== "number" || !(mid > 0)) continue; // stale/missing mark → no update, never fabricated
+    const favorablePct = +(((mid - r.entry_price) / r.entry_price) * 100).toFixed(2);
+    upd.run(favorablePct, favorablePct, r.id);
+  }
+}
+
 /** Map an exit kind to its lifecycle event type (for the immutable event log). */
 const EXIT_EVENT: Record<ExitDecision["kind"], PaperEventType> = {
   stop_loss: "stop_triggered",
@@ -962,6 +997,9 @@ export function evaluatePaperTradesWithChain(ticker: string, contracts: any[], n
     const snap = snapFromContracts(contracts, t.optionSymbol);
     if (snap && advanceOpenTrade(t, snap, contracts, nowMs)) advanced += 1;
   }
+  // Extend opportunity tracking past exit for already-closed contracts on this
+  // underlying, reusing the chain we already have (no extra fetch).
+  try { trackOpportunityToExpiration(ticker, contracts, nowMs); } catch { /* bookkeeping never breaks the sweep */ }
   return advanced;
 }
 
@@ -1339,6 +1377,8 @@ export async function sweepPaperTrades(nowMs: number = Date.now()): Promise<{ ad
       const snap = snapFromContracts(chain.contracts, t.optionSymbol);
       if (snap && advanceOpenTrade(t, snap, chain.contracts, nowMs)) advanced += 1;
     }
+    // Extend opportunity tracking past exit for closed contracts on this ticker.
+    try { trackOpportunityToExpiration(ticker, chain.contracts, nowMs); } catch { /* never breaks the sweep */ }
   }
   return { advanced: advanced + stockAdvanced, fetched };
 }

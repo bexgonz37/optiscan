@@ -17,6 +17,8 @@
  * forward-looking wait/entry/invalidation language.
  */
 
+import type { CrossingSignal } from "./breakout-latch.ts";
+
 export type EntryState =
   | "EARLY"            // setup forming, no trigger yet
   | "NEAR_TRIGGER"     // approaching the trigger; watch for confirmation
@@ -81,6 +83,14 @@ export interface EntryWindowInput {
   spreadPct: number | null;
   maxSpreadPct: number;                // reuse the contract-selector spread limit
   cfg?: EntryWindowConfig;
+  /**
+   * Deterministic breakout-crossing latch (see breakout-latch.ts). When a prior
+   * cycle saw this candidate developing on the favorable side within the TTL and
+   * price has since crossed just past the band (still confirmed & not extended),
+   * the entry is still valid — it crossed BETWEEN sampling cycles. Null/omitted =
+   * no rescue (behaviour is identical to before). NEVER widens the band.
+   */
+  crossing?: CrossingSignal | null;
 }
 
 export interface EntryWindowResult {
@@ -98,6 +108,14 @@ export interface EntryWindowResult {
   reasons: string[];
   /** True only when state === ACTIONABLE (there is a valid entry right now). */
   actionable: boolean;
+  /**
+   * A live developing setup on the favorable side (NEAR_TRIGGER or ACTIONABLE) —
+   * the caller stamps the crossing latch on this so a subsequent just-past
+   * evaluation can be recognised as a between-cycle crossing.
+   */
+  developing: boolean;
+  /** True only when this ACTIONABLE result was rescued by the crossing latch. */
+  crossingLatched: boolean;
 }
 
 /** Current tape direction from the short-window rate. */
@@ -141,6 +159,8 @@ export function assessEntryWindow(input: EntryWindowInput): EntryWindowResult {
       alreadyHappened: null,
       reasons: ["no live momentum snapshot — cannot confirm a forward-looking entry"],
       actionable: false,
+      developing: false,
+      crossingLatched: false,
     };
   }
 
@@ -168,6 +188,8 @@ export function assessEntryWindow(input: EntryWindowInput): EntryWindowResult {
       alreadyHappened: moved ? `Any earlier ${dirWord} move has reversed.` : null,
       reasons: [...reasons, `underlying is ${dir} and on the wrong side of VWAP for a ${input.side}`],
       actionable: false,
+      developing: false,
+      crossingLatched: false,
     };
   }
 
@@ -183,11 +205,40 @@ export function assessEntryWindow(input: EntryWindowInput): EntryWindowResult {
       alreadyHappened: `The ${dirWord} move already ran ${dist.toFixed(2)}% from VWAP.`,
       reasons: [...reasons, `extended ${dist.toFixed(2)}% from VWAP (≥ ${cfg.extendedVwapDistPct}%)`, accelerating ? "still accelerating" : "decelerating"],
       actionable: false,
+      developing: false,
+      crossingLatched: false,
     };
   }
 
-  // 5. Past the ideal entry zone but not extended → wait for pullback.
+  // 5. Past the ideal entry zone but not extended → wait for pullback,
+  //    UNLESS the breakout crossed the band between sampling cycles (latch).
   if (dist != null && dist > cfg.maxEntryVwapDistPct) {
+    // CROSSING RESCUE (safety-critical): only when a prior developing stamp is
+    // active within TTL, price is only just past the band (≤ crossTolerance
+    // beyond it — and step 4 already returned for anything ≥ the extended cap, so
+    // this is always well short of a chase), and the move is STILL fully
+    // confirmed — aligned on the favorable side, accelerating, on volume, in
+    // regular hours. Freshness/spread are already guaranteed here (a stale quote
+    // or blown spread returned BLOCKED in step 1). This does NOT widen the
+    // always-on band; it rescues a proven between-cycle crossing exactly once.
+    const cross = input.crossing;
+    const crossTol = cross?.crossToleranceVwapDistPct ?? 0;
+    const withinCrossTolerance = dist <= cfg.maxEntryVwapDistPct + crossTol;
+    if (cross?.active && !cross.alreadyFired && withinCrossTolerance
+        && aligned && onFavorableSide && accelerating && confirmedVol && input.regularSession) {
+      return {
+        state: "ACTIONABLE",
+        waitFor: "Breakout crossed the entry zone between checks — enter now, still valid.",
+        validEntry: `Valid now: ${dirWord} ${levelWord} on volume, only ${dist.toFixed(2)}% past VWAP (crossed the zone between checks, not extended).`,
+        doNotEnter: `Do not enter if it loses ${wantUp ? "VWAP" : "the lower reclaim"}, relative volume fades, or it extends past ${cfg.extendedVwapDistPct}%.`,
+        currently: "Trigger confirmed on a between-cycle crossing — still inside the valid entry (not extended).",
+        alreadyHappened: null,
+        reasons: [...reasons, `crossed the entry zone between checks: ${dist.toFixed(2)}% from VWAP (≤ ${(cfg.maxEntryVwapDistPct + crossTol).toFixed(2)}% crossing ceiling), still accelerating on volume`],
+        actionable: true,
+        developing: true,
+        crossingLatched: true,
+      };
+    }
     return {
       state: "WAIT_FOR_PULLBACK",
       waitFor: `A pullback into the entry zone (within ${cfg.maxEntryVwapDistPct}% of VWAP).`,
@@ -197,6 +248,8 @@ export function assessEntryWindow(input: EntryWindowInput): EntryWindowResult {
       alreadyHappened: `Price has moved ${dist.toFixed(2)}% from VWAP.`,
       reasons: [...reasons, `${dist.toFixed(2)}% from VWAP (> ${cfg.maxEntryVwapDistPct}% entry zone)`],
       actionable: false,
+      developing: false,
+      crossingLatched: false,
     };
   }
 
@@ -211,6 +264,8 @@ export function assessEntryWindow(input: EntryWindowInput): EntryWindowResult {
       alreadyHappened: null,
       reasons: [...reasons, `${dir} on the favorable side, accelerating, relVol ${(m.relVol ?? 0).toFixed(2)}`],
       actionable: true,
+      developing: true,
+      crossingLatched: false,
     };
   }
 
@@ -230,6 +285,10 @@ export function assessEntryWindow(input: EntryWindowInput): EntryWindowResult {
       !input.regularSession ? "outside regular hours" : "",
     ].filter(Boolean),
     actionable: false,
+    // NEAR_TRIGGER is a developing setup worth stamping so a between-cycle
+    // crossing can be rescued next cycle; EARLY (nothing aligned yet) is not.
+    developing: nearTrigger,
+    crossingLatched: false,
   };
 }
 
@@ -243,6 +302,8 @@ function blocked(waitFor: string, reasons: string[]): EntryWindowResult {
     alreadyHappened: null,
     reasons,
     actionable: false,
+    developing: false,
+    crossingLatched: false,
   };
 }
 

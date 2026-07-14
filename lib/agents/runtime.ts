@@ -19,11 +19,21 @@ import {
   marketDataAgent, marketContextAgent, performanceAgentByStrategy, modelAgent, riskAgent, qualityControlAgent,
 } from "@/lib/agents/services";
 import { assessEntryWindow, entryWindowConfig } from "@/lib/entry-window";
+import { latchConfig, updateLatch, crossingSignal, markFired, type LatchState } from "@/lib/breakout-latch";
 import { loopState } from "@/lib/scanner-loop";
 import type { FeatureInput } from "@/lib/model-features";
 import type { AgentResult } from "@/lib/agents/types";
 
 const FRESHNESS_KINDS = ["stock_quote", "options_chain", "options_quote", "greeks"];
+
+/**
+ * In-process breakout-crossing latch state, keyed by ticker:side:strategy. Held
+ * in memory ON PURPOSE: a process restart starts empty, so a crossing can only be
+ * rescued if THIS process observed the prior developing stamp → no post-restart
+ * ghost alerts. Railway runs a single replica, so cross-worker sharing is not
+ * required; entries self-expire by TTL and are pruned when cleared.
+ */
+const LATCH_STATE = new Map<string, LatchState>();
 
 function underlyingFrom(contracts: any[]): number | null {
   const c = contracts.find((x) => typeof x?.underlyingPrice === "number");
@@ -106,6 +116,7 @@ export async function runAgentsForTicker(ticker: string, nowMs: number = Date.no
     ? { shortRate: tapeRow.shortRate ?? null, accel: tapeRow.accel ?? null, aboveVwap: tapeRow.aboveVwap ?? null, vwapDistPct: tapeRow.vwapDistPct ?? null, movePct: tapeRow.movePct ?? null, relVol: tapeRow.relVol ?? null }
     : null;
   const ewCfg = entryWindowConfig();
+  const latchCfg = latchConfig();
   const quoteAgeMs = asOf != null ? Math.max(0, nowMs - asOf) : null;
   const maxEntrySpreadPct = Number(process.env.ENTRY_MAX_SPREAD_PCT ?? 8) || 8;
 
@@ -138,7 +149,7 @@ export async function runAgentsForTicker(ticker: string, nowMs: number = Date.no
     }
 
     // Forward-looking entry window for THIS side (anti-late authority).
-    const entryWindow = assessEntryWindow({
+    const ewInput = {
       side,
       regularSession: session === "regular",
       momentum,
@@ -146,7 +157,35 @@ export async function runAgentsForTicker(ticker: string, nowMs: number = Date.no
       spreadPct: selection.ok ? selection.marketData.spreadPct : null,
       maxSpreadPct: maxEntrySpreadPct,
       cfg: ewCfg,
-    });
+    };
+    // Deterministic breakout-crossing latch (breakout-latch.ts): a fast breakout
+    // can cross the entry band BETWEEN ~30s supervisor cycles, so a single-instant
+    // snapshot sees NEAR_TRIGGER then WAIT_FOR_PULLBACK and never ACTIONABLE. Two
+    // consecutive snapshots bracket the crossing: if a prior cycle stamped this
+    // candidate as developing and it is now just past the band but still fully
+    // confirmed and not extended, rescue it to ACTIONABLE — once. No band widening,
+    // no extra provider calls, all downstream gates unchanged.
+    const latchKey = `${ticker.toUpperCase()}:${side}:${cfg.strategy}`;
+    const base = assessEntryWindow(ewInput);
+    const invalidated = ["INVALIDATED", "BLOCKED", "EXTENDED", "MISSED"].includes(base.state);
+    let latch = updateLatch(LATCH_STATE.get(latchKey), { developingNow: base.developing, invalidated, nowMs, cfg: latchCfg });
+    let entryWindow = base;
+    if (base.state === "ACTIONABLE") {
+      // Normal actionable fire — mark the episode fired so a later just-past
+      // reading cannot re-rescue the same move (dedup across cycles).
+      latch = markFired(latch, nowMs);
+    } else {
+      const signal = crossingSignal(latch, nowMs, latchCfg);
+      if (signal.active) {
+        const rescued = assessEntryWindow({ ...ewInput, crossing: signal });
+        if (rescued.crossingLatched) {
+          entryWindow = rescued;
+          latch = markFired(latch, nowMs); // fire once per crossing episode
+        }
+      }
+    }
+    if (latch.developingSinceMs == null && latch.firedAtMs == null) LATCH_STATE.delete(latchKey);
+    else LATCH_STATE.set(latchKey, latch);
 
     const input: HorizonAgentInputs = {
       ticker, session, nowMs, selection, freshness,

@@ -67,6 +67,13 @@ function fingerprintInputFromRow(db: any, r: any): FingerprintInput {
 function outcomeInputFromRow(r: any): OutcomeInput {
   const instrumentOption = Boolean(r.option_symbol);
   const direction: 1 | -1 = !instrumentOption && r.option_type === "put" ? -1 : 1;
+  // Lifetime peak favorable = the better of the held-window mfe and the
+  // post-exit-to-expiration peak. The window is "to_expiration" when we tracked
+  // past the exit, or when the trade was held all the way to expiry.
+  const mfe = isNum(r.mfe_pct) ? r.mfe_pct : null;
+  const oppPeak = isNum(r.opportunity_peak_pct) ? r.opportunity_peak_pct : null;
+  const lifetimePeak = oppPeak != null ? (mfe != null ? Math.max(mfe, oppPeak) : oppPeak) : mfe;
+  const peakFavorableWindow = (oppPeak != null || r.status === "EXPIRED") ? "to_expiration" : "held";
   return {
     filled: r.entry_price != null,
     terminal: TERMINAL_FILLED.has(r.status),
@@ -82,6 +89,8 @@ function outcomeInputFromRow(r: any): OutcomeInput {
     riskAmount: r.risk_amount ?? null,
     mfePct: r.mfe_pct ?? null,
     maePct: r.mae_pct ?? null,
+    peakFavorablePct: lifetimePeak,
+    peakFavorableWindow,
     entryAtMs: r.entry_at_ms ?? null,
     exitAtMs: r.exit_at_ms ?? null,
     legacy: r.snapshot_version == null,
@@ -129,8 +138,9 @@ export function generateOutcomeOnDb(db: any, r: any, nowMs: number): boolean {
        gross_pnl, entry_fees, exit_fees, entry_slippage, exit_slippage, net_pnl, return_pct,
        risk_amount, r_multiple, mfe_pct, mae_pct, terminal_kind, exit_reason, close_reason,
        entry_session, exit_session, grade, grading_status, data_quality_status,
-       data_quality_reasons_json, snapshot_version, outcome_version, created_at_ms
-     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       data_quality_reasons_json, snapshot_version, outcome_version,
+       opportunity_grade, peak_favorable_pct, opportunity_threshold_pct, opportunity_window, created_at_ms
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     r.id, r.alert_id ?? null, r.opportunity_id ?? null, fp.id, fp.version,
     r.strategy ?? r.selector_profile ?? null, fp.strategyVersion,
@@ -140,7 +150,8 @@ export function generateOutcomeOnDb(db: any, r: any, nowMs: number): boolean {
     graded.grossPnl, graded.entryFees, graded.exitFees, graded.entrySlippage, graded.exitSlippage, graded.netPnl, graded.returnPct,
     r.risk_amount ?? null, graded.rMultiple, graded.mfePct, graded.maePct, terminalKind(r.status, r.exit_reason), r.exit_reason ?? null, r.close_reason ?? null,
     r.session_at_entry ?? null, exitSession, graded.grade, graded.gradingStatus, graded.dataQualityStatus,
-    JSON.stringify(graded.dataQualityReasons), r.snapshot_version ?? null, graded.outcomeVersion, nowMs,
+    JSON.stringify(graded.dataQualityReasons), r.snapshot_version ?? null, graded.outcomeVersion,
+    graded.opportunityGrade, graded.peakFavorablePct, graded.opportunityThresholdPct, graded.opportunityWindow, nowMs,
   );
   return res.changes > 0;
 }
@@ -217,6 +228,10 @@ export interface PaperOutcomeRow {
   holdMinutes: number | null;
   mfePct: number | null;
   maePct: number | null;
+  opportunityGrade: string | null;
+  peakFavorablePct: number | null;
+  opportunityThresholdPct: number | null;
+  opportunityWindow: string | null;
   terminalKind: string | null;
   entrySession: string | null;
   exitSession: string | null;
@@ -245,6 +260,10 @@ function mapOutcomeRow(r: any): PaperOutcomeRow {
     holdMinutes: r.hold_minutes ?? null,
     mfePct: r.mfe_pct ?? null,
     maePct: r.mae_pct ?? null,
+    opportunityGrade: r.opportunity_grade ?? null,
+    peakFavorablePct: r.peak_favorable_pct ?? null,
+    opportunityThresholdPct: r.opportunity_threshold_pct ?? null,
+    opportunityWindow: r.opportunity_window ?? null,
     terminalKind: r.terminal_kind ?? null,
     entrySession: r.entry_session ?? null,
     exitSession: r.exit_session ?? null,

@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS paper_trades (
   exit_reason TEXT,
   mfe_pct REAL,
   mae_pct REAL,
+  opportunity_peak_pct REAL,            -- lifetime peak favorable %, tracked past exit to expiration
   last_mark REAL,
   last_mark_at_ms INTEGER,
   short_rate_entry REAL,                -- thesis snapshot for smart exits
@@ -345,6 +346,10 @@ CREATE TABLE IF NOT EXISTS paper_trade_outcomes (
   r_multiple REAL,                      -- net_pnl / risk_amount
   mfe_pct REAL,
   mae_pct REAL,
+  opportunity_grade TEXT,               -- HIT | NONE | UNGRADABLE (peak favorable ≥ threshold to expiration)
+  peak_favorable_pct REAL,              -- lifetime peak favorable % (held window extended to expiration)
+  opportunity_threshold_pct REAL,       -- the profit-opportunity threshold applied
+  opportunity_window TEXT,              -- held | to_expiration | none
   terminal_kind TEXT,                   -- STOP | TARGET | TIMEOUT | EXPIRATION | MANUAL | SMART | EXITED
   exit_reason TEXT,
   close_reason TEXT,
@@ -830,6 +835,19 @@ const PAPER_COLUMN_MIGRATIONS: Array<[string, string]> = [
   ["fingerprint_version", "ALTER TABLE paper_trades ADD COLUMN fingerprint_version INTEGER"],
   ["fingerprint_dimensions_json", "ALTER TABLE paper_trades ADD COLUMN fingerprint_dimensions_json TEXT"],
   ["strategy_version", "ALTER TABLE paper_trades ADD COLUMN strategy_version INTEGER"],
+  // Opportunity tracking (2026-07-14): lifetime peak favorable %, continued PAST
+  // the paper exit until the contract's expiration (best-effort, sampled from
+  // chains the sweep already fetches). Answers "did the call/put ever go green
+  // enough to book a profit before expiration?" — distinct from realized P&L.
+  ["opportunity_peak_pct", "ALTER TABLE paper_trades ADD COLUMN opportunity_peak_pct REAL"],
+];
+
+/** Opportunity-grade columns on the authoritative outcomes table (additive). */
+const PAPER_OUTCOME_COLUMN_MIGRATIONS: Array<[string, string]> = [
+  ["opportunity_grade", "ALTER TABLE paper_trade_outcomes ADD COLUMN opportunity_grade TEXT"],
+  ["peak_favorable_pct", "ALTER TABLE paper_trade_outcomes ADD COLUMN peak_favorable_pct REAL"],
+  ["opportunity_threshold_pct", "ALTER TABLE paper_trade_outcomes ADD COLUMN opportunity_threshold_pct REAL"],
+  ["opportunity_window", "ALTER TABLE paper_trade_outcomes ADD COLUMN opportunity_window TEXT"],
 ];
 
 function migrate(db: Database.Database) {
@@ -849,6 +867,10 @@ function migrate(db: Database.Database) {
   db.exec(SCHEMA);
   const paperCols = cols("paper_trades");
   for (const [col, sql] of PAPER_COLUMN_MIGRATIONS) if (!paperCols.has(col)) db.exec(sql);
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_trade_outcomes'").get()) {
+    const outcomeCols = cols("paper_trade_outcomes");
+    for (const [col, sql] of PAPER_OUTCOME_COLUMN_MIGRATIONS) if (!outcomeCols.has(col)) db.exec(sql);
+  }
   // Phase 7 (additive): drift-health flag on an existing model_registry table.
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_registry'").get()) {
     const mcols = cols("model_registry");
