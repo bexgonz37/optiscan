@@ -46,6 +46,16 @@ import { getSystemDataHealth } from "@/lib/data-freshness";
 import { bearishActionable } from "@/lib/bearish-gate";
 import { upsertOpportunities } from "@/lib/opportunity-store";
 import { signalsFromTape } from "@/lib/opportunity-map";
+import {
+  EMPTY_STOCK_MOMENTUM_LATCH,
+  markStockMomentumLatchFired,
+  stockMomentumLatchConfig,
+  stockMomentumLatchRescue,
+  updateStockMomentumLatch,
+  type StockMomentumLatchState,
+  type StockMomentumSnapshot,
+} from "@/lib/stock-momentum-latch";
+import { recordMomentumDiagnostic } from "@/lib/momentum-diagnostics";
 
 const OPP_INGEST_MS = Number(process.env.OPP_INGEST_MS ?? 5000);
 const OPPORTUNITY_TRACKING = process.env.OPPORTUNITY_TRACKING !== "0";
@@ -54,7 +64,7 @@ const LOOP_MS = Number(process.env.SCANNER_LOOP_MS ?? 1000);
 const ACTIVE_REFRESH_MS = Number(process.env.SCANNER_ACTIVE_REFRESH_MS ?? 7000);
 const TRIGGER_COOLDOWN_MS = Number(process.env.SCANNER_TRIGGER_COOLDOWN_MS ?? 10 * 60 * 1000);
 const CORE_TRIGGER_COOLDOWN_MS = Number(process.env.SCANNER_CORE_TRIGGER_COOLDOWN_MS ?? 3 * 60 * 1000);
-const DISCOVERY_MS = Number(process.env.SCANNER_DISCOVERY_MS ?? 30_000);
+const DISCOVERY_MS = Number(process.env.SCANNER_DISCOVERY_MS ?? 15_000);
 const DISCOVERY_TOP_N = Number(process.env.SCANNER_DISCOVERY_TOP_N ?? 30);
 const PROMOTION_MS = Number(process.env.SCANNER_PROMOTION_MS ?? 5 * 60_000);
 const DISCOVERY_MIN_VOLUME = Number(process.env.SCANNER_DISCOVERY_MIN_VOLUME ?? 50_000);
@@ -66,6 +76,7 @@ const TAPE_ENRICH_MS = Number(process.env.SCANNER_TAPE_ENRICH_MS ?? 30_000);
 // quota burn. 45s caps that at ~1 fetch/min/symbol.
 const SKIP_RETRY_COOLDOWN_MS = Number(process.env.SCANNER_SKIP_RETRY_COOLDOWN_MS ?? 45_000);
 const RING_MAX = 360; // ~6 minutes of 1s ticks
+const MOMENTUM_STRATEGY_VERSION = "stock-momentum-latch-v1";
 
 interface Tick { t: number; p: number; v: number }
 interface SymState {
@@ -89,6 +100,8 @@ interface SymState {
   lastConfirmedAt: number;
   lastTriggerEventAt: number;
   lastMoveDirection: "bullish" | "bearish" | "choppy" | null;
+  momentumLatch: StockMomentumLatchState;
+  momentumFirstDetectedAt: number;
 }
 
 interface LoopState {
@@ -255,6 +268,7 @@ function sym(s: LoopState, ticker: string): SymState {
       prefetchedChain: null, prefetchAt: 0,
       vwap: null, vwapAt: 0, relVol: null, lastAlertAt: 0, lastOptionsAlertAt: 0, lastNearMissAt: 0, lastMajorMoveAt: 0,
       moveBeganAt: 0, lastConfirmedAt: 0, lastTriggerEventAt: 0, lastMoveDirection: null,
+      momentumLatch: { ...EMPTY_STOCK_MOMENTUM_LATCH }, momentumFirstDetectedAt: 0,
     };
     s.symbols.set(ticker, st);
   }
@@ -267,6 +281,8 @@ function sym(s: LoopState, ticker: string): SymState {
   st.lastConfirmedAt ??= 0;
   st.lastTriggerEventAt ??= 0;
   st.lastMoveDirection ??= null;
+  st.momentumLatch ??= { ...EMPTY_STOCK_MOMENTUM_LATCH };
+  st.momentumFirstDetectedAt ??= 0;
   return st;
 }
 
@@ -302,7 +318,7 @@ function prefetchChain(ticker: string, st: SymState, nowMs: number) {
 }
 
 /** Extended-hours trigger: regular-stock callout, NO option chain fetch. */
-async function handleStockTrigger(ticker: string, st: SymState, read: any, quote: any, nowMs: number) {
+async function handleStockTrigger(ticker: string, st: SymState, read: any, quote: any, nowMs: number, opts: { rescued?: boolean; quoteAgeMs?: number | null; reason?: string | null } = {}) {
   if (process.env.STOCK_CALLOUTS !== "1") return;
   const s = state();
   const core = isCoreSymbol(ticker);
@@ -338,6 +354,45 @@ async function handleStockTrigger(ticker: string, st: SymState, read: any, quote
   } else {
     st.stockCooldownUntil = Math.max(st.stockCooldownUntil, nowMs + SKIP_RETRY_COOLDOWN_MS);
   }
+  let persistedDecision: { score: number | null; confidence: number | null; captureAction: string | null; reason: string | null } | null = null;
+  if (id != null) {
+    try {
+      const { getDb } = await import("@/lib/db");
+      const row: any = getDb().prepare("SELECT signal_score, capture_confidence, capture_action, invalidation_reason FROM alerts WHERE id=?").get(id);
+      persistedDecision = row ? {
+        score: row.signal_score ?? null,
+        confidence: row.capture_confidence ?? null,
+        captureAction: row.capture_action ?? null,
+        reason: row.invalidation_reason ?? null,
+      } : null;
+    } catch { /* diagnostic enrichment is best-effort */ }
+  }
+  recordMomentumDiagnostic({
+    ticker,
+    evalAtMs: nowMs,
+    session: marketSession(nowMs),
+    price: quote.price ?? null,
+    movePct: quote.changePercent ?? null,
+    velocityPctMin: read.accelRead?.shortRate ?? null,
+    instantPctMin: read.instantRate ?? null,
+    acceleration: read.accelRead?.accel ?? null,
+    relVol: st.relVol,
+    volumeSurge: read.surge ?? null,
+    vwapDistPct: read.levels?.vwapDistPct ?? null,
+    quoteAgeMs: opts.quoteAgeMs ?? null,
+    score: persistedDecision?.score ?? null,
+    confidence: persistedDecision?.confidence ?? null,
+    entryState: opts.rescued ? "RESCUED" : (persistedDecision?.captureAction ?? "ACTIONABLE"),
+    actionable: id != null,
+    decision: id != null ? (opts.rescued ? "RESCUED_SENT" : "SENT") : "REJECTED",
+    reason: id != null ? (opts.reason ?? persistedDecision?.reason ?? null) : "capture rejected (verdict, timing, dedup, or now-only gate)",
+    latchState: opts.rescued ? "rescued" : "fired",
+    firstDetectedMs: st.momentumFirstDetectedAt || null,
+    firstActionableMs: id != null ? nowMs : null,
+    triggerToDiscordMs: id != null && st.momentumFirstDetectedAt ? nowMs - st.momentumFirstDetectedAt : null,
+    strategyVersion: MOMENTUM_STRATEGY_VERSION,
+  });
+  if (id != null) st.momentumFirstDetectedAt = 0;
 }
 
 async function handleTrigger(ticker: string, st: SymState, read: any, quote: any, nowMs: number) {
@@ -500,6 +555,7 @@ async function tick() {
   const minAccel = getSettingNum("scanner_min_accel", Number(process.env.SCANNER_MIN_ACCEL ?? 0));
   const minEfficiency = getSettingNum("scanner_min_efficiency", Number(process.env.SCANNER_MIN_EFFICIENCY ?? 0.30));
   const minLevelSurge = getSettingNum("scanner_min_level_surge", Number(process.env.SCANNER_MIN_LEVEL_SURGE ?? 1.25));
+  const stockLatchCfg = stockMomentumLatchConfig();
 
   if (nowMs - s.lastDiscoveryAt >= DISCOVERY_MS) {
     s.lastDiscoveryAt = nowMs;
@@ -694,16 +750,52 @@ async function tick() {
       (surge == null || surge >= Math.max(1.05, triggerMinSurge * 0.82)) &&
       (levels.hodBreak || sustainedOk);
     const fired = (persistOk && accelOk && tapeMoving && shouldTriggerOk) || coreBullishImpulse;
+    const stockQuoteAgeMs = (() => {
+      const ts = toMs(q.quoteProviderTimestamp ?? q.providerTimestamp ?? q.lastTradeTimestamp ?? null, nowMs);
+      return ts != null ? Math.max(0, nowMs - ts) : null;
+    })();
+    let stockRescued = false;
+    let stockRescueReason: string | null = null;
+    if (stockEnabled) {
+      const stockSnap: StockMomentumSnapshot = {
+        direction: dir.direction as StockMomentumSnapshot["direction"],
+        shortRate: accelRead.shortRate,
+        instantRate,
+        acceleration: accelRead.accel,
+        surge,
+        relVol: st.relVol,
+        vwapDistPct: levels.vwapDistPct,
+        dayChangePct: q.changePercent ?? null,
+        quoteAgeMs: stockQuoteAgeMs,
+      };
+      const before = st.momentumLatch;
+      st.momentumLatch = updateStockMomentumLatch(st.momentumLatch, { snapshot: stockSnap, nowMs, fired, cfg: stockLatchCfg });
+      if (st.momentumLatch.developingSinceMs != null && st.momentumFirstDetectedAt === 0) {
+        st.momentumFirstDetectedAt = st.momentumLatch.developingSinceMs;
+      }
+      if (before.developingSinceMs != null && st.momentumLatch.developingSinceMs == null && st.momentumLatch.invalidatedAtMs != null) {
+        st.momentumFirstDetectedAt = 0;
+      }
+      if (!fired) {
+        const rescue = stockMomentumLatchRescue(st.momentumLatch, stockSnap, nowMs, stockLatchCfg);
+        if (rescue.rescue) {
+          stockRescued = true;
+          stockRescueReason = rescue.reason;
+          st.momentumLatch = markStockMomentumLatchFired(st.momentumLatch, nowMs);
+        }
+      }
+    }
 
-    if (nearTrigger && !fired && shouldRecordNearMiss(st.lastNearMissAt, nowMs)) {
+    if (nearTrigger && !fired && !stockRescued && shouldRecordNearMiss(st.lastNearMissAt, nowMs)) {
       st.lastNearMissAt = nowMs;
       const gates = {
         persistOk, accelOk, tapeMoving, shouldTrigger: shouldTriggerOk,
         cooldownBlocked: nowMs < routeCooldownUntil,
       };
+      const failedGate = firstFailedGate(gates) ?? "unknown";
       recordNearMiss(s.nearMisses, {
         t: nowMs, symbol: q.symbol, session,
-        failedGate: firstFailedGate(gates) ?? "unknown",
+        failedGate,
         gates,
         values: {
           shortRate: accelRead.shortRate, accel: accelRead.accel, surge, efficiency,
@@ -714,15 +806,40 @@ async function tick() {
           minEfficiency: triggerMinEff, minAccel,
         },
       });
+      if (stockEnabled && dir.direction === "bullish" && Math.abs(accelRead.shortRate ?? 0) >= triggerMinRate * 0.6) {
+        recordMomentumDiagnostic({
+          ticker: q.symbol,
+          evalAtMs: nowMs,
+          session,
+          price: q.price,
+          movePct: q.changePercent ?? null,
+          velocityPctMin: accelRead.shortRate,
+          instantPctMin: instantRate,
+          acceleration: accelRead.accel,
+          relVol: st.relVol,
+          volumeSurge: surge,
+          vwapDistPct: levels.vwapDistPct,
+          quoteAgeMs: stockQuoteAgeMs,
+          score: null,
+          confidence: null,
+          entryState: "NEAR_TRIGGER",
+          actionable: false,
+          decision: "NEAR_MISS",
+          reason: `blocked: ${failedGate}`,
+          latchState: st.momentumLatch.developingSinceMs != null ? "developing" : "idle",
+          firstDetectedMs: st.momentumFirstDetectedAt || null,
+          strategyVersion: MOMENTUM_STRATEGY_VERSION,
+        });
+      }
     }
 
-    if (fired) {
+    if (fired || stockRescued) {
       // fire-and-forget: the 1s heartbeat must never wait on a chain fetch.
       st.lastTriggerEventAt = nowMs;
       const read = { accelRead, instantRate, surge, efficiency, levels, dir };
       const tasks: Promise<unknown>[] = [];
-      if (session === "regular") tasks.push(handleTrigger(q.symbol, st, read, q, nowMs));
-      if (stockEnabled) tasks.push(handleStockTrigger(q.symbol, st, read, q, nowMs));
+      if (fired && session === "regular") tasks.push(handleTrigger(q.symbol, st, read, q, nowMs));
+      if (stockEnabled) tasks.push(handleStockTrigger(q.symbol, st, read, q, nowMs, { rescued: stockRescued && !fired, quoteAgeMs: stockQuoteAgeMs, reason: stockRescueReason }));
       const fire = Promise.allSettled(tasks);
       fire.then((results) => {
         for (const result of results) {

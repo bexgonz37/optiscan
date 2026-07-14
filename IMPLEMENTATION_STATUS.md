@@ -149,6 +149,48 @@ on volume, regular hours, fresh quote), rescue it to `ACTIONABLE` **once**. Guar
 - Safety boundaries unchanged: `BEARISH_ACTIONABLE` off (puts research-only), no live
   brokerage, `IMPROVEMENT_AUTOMATION`/`IMPROVEMENT_AUTO_MERGE` off, paper stays simulated
   with real provider quotes.
+## Fast-moving momentum stock callouts (2026-07-14)
+
+Root cause: the stock callout path was deterministic but single-snapshot. A fast
+non-core mover had to wait for discovery/promotion, then satisfy speed, volume,
+freshness, timing, and anti-chase in the same loop snapshot. In practice, speed
+could cross first, volume/relVol could confirm a few seconds later, and the move
+could then be rejected as extended. Production DB records were not available
+locally; existing near-miss state was in-memory only, so the fix also persists
+bounded decision diagnostics.
+
+Fix:
+- `SCANNER_DISCOVERY_MS` default reduced from 30s to 15s. This adds one broad
+  discovery bulk quote every 15s (roughly +2 calls/minute vs +1/minute before);
+  no extra option-chain calls.
+- `lib/stock-momentum-latch.ts` adds a pure, in-memory crossing latch for long
+  stock momentum. It records a short-lived speed crossing while the stock is
+  still inside quote freshness and anti-chase caps, then permits a stock-only
+  rescue only if volume confirmation arrives before the TTL. A restart starts
+  empty, so there are no ghost alerts.
+- `lib/scanner-loop.ts` wires the latch without changing options behavior:
+  normal `fired` still drives options during regular hours; stock-only rescues
+  call only `handleStockTrigger`. Final stock capture/Discord gates still enforce
+  ACTIONABLE_NOW, fresh NBBO, spread, confidence, session, VWAP/day-run anti-chase,
+  duplicate cooldowns, and paper safeguards.
+- `lib/momentum-diagnostics.ts` + `momentum_diagnostics` table persist bounded
+  decision rows: sent/rescued/rejected/near-miss, velocity, acceleration, relVol,
+  volume surge, VWAP distance, quote age, latch state, first-detected/actionable
+  times, trigger latency, and strategy version. AI/learning can summarize these
+  records later, but they do not influence live decisions.
+- Broad threshold loosening was rejected because it would weaken anti-chase and
+  spam controls. The latch is narrower: it only bridges the timing gap between
+  exceptional speed and late volume confirmation.
+
+Operational knobs: `SCANNER_DISCOVERY_MS`, `STOCK_MOMENTUM_LATCH`,
+`STOCK_MOMENTUM_LATCH_TTL_MS`, `STOCK_LATCH_MIN_VELOCITY_PCT_MIN`,
+`STOCK_LATCH_MIN_INSTANT_PCT_MIN`, `STOCK_LATCH_MIN_ACCEL`,
+`STOCK_LATCH_MIN_VOL_SURGE`, `STOCK_LATCH_MIN_REL_VOL`,
+`MOMENTUM_DIAGNOSTIC_RETENTION_DAYS`. Rollback: set `STOCK_MOMENTUM_LATCH=0`
+and, if desired, set `SCANNER_DISCOVERY_MS=30000`.
+
+Verification in this workspace: focused stock/momentum suite **65 pass**;
+`tsc --noEmit` clean.
 
 ## Supervisor→Paper Bridge + now-only alerts + stock repair (2026-07-13)
 

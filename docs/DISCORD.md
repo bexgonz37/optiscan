@@ -23,7 +23,9 @@ optional and separate.
 
 With `STOCK_CALLOUTS=1`, shares run in premarket, regular hours, and after-hours.
 During regular hours the unchanged 0DTE path runs in parallel. Each product has
-its own per-symbol cooldown, so one product cannot suppress the other.
+its own per-symbol cooldown, so one product cannot suppress the other. The
+stock crossing latch may rescue a fast stock setup, but only into the same
+ACTIONABLE_NOW stock capture path; WAIT/WATCH/near-miss states are never posted.
 
 ## Options line format (supervisor path)
 
@@ -116,7 +118,11 @@ WATCH post (no mention, compact, neutral color `2895667`):
 
 ## 3. `#stock-callouts` — shares ping (day trading, all sessions)
 
-Same skeleton, no contract line, session named. LONG green / SHORT coral.
+Current stock callouts use the compact deterministic stock card only: stock,
+verified price, live NBBO entry range, ACTIONABLE NOW status, session, and ET
+time. No options contract line, no AI prose, and no fabricated entry. LONG-only
+stock alerts route to `DISCORD_WEBHOOK_STOCKS`; bearish stock remains protected
+by the existing bearish-actionable safeguards.
 
 ```json
 {

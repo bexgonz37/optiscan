@@ -112,6 +112,11 @@ account — you perform these; the repository ships the configuration.
     `extended_stock_notify` DB setting = `1` (Settings page). The `config` section of
     `/api/runtime/status` shows each gate so a silent premarket does not read as
     "stale/no data".
+25. **Fast-moving stock capture** — keep `STOCK_MOMENTUM_LATCH=1` (default) and
+    the default `SCANNER_DISCOVERY_MS=15000` unless provider quota requires a
+    rollback. The latch does not send WAIT/WATCH; it only allows a stock-only
+    capture after a recent speed crossing gets real volume confirmation and the
+    normal now-only Discord gate still passes.
 
 ## Stage variable profiles
 
@@ -121,6 +126,8 @@ account — you perform these; the repository ships the configuration.
 | `CALLOUT_CANONICAL_PATH` | `legacy` | `legacy` | `supervisor` |
 | `AGENT_CALLOUT_DISCORD` | `0` | `0` | `1` (required — else options Discord silent) |
 | `STOCK_CALLOUTS` | `0` | `0`/`1` | `1` |
+| `STOCK_MOMENTUM_LATCH` | `1` | `1` | `1` |
+| `SCANNER_DISCOVERY_MS` | `15000` | `15000` | `15000` |
 | `STOCK_EXTENDED_HOURS` | `0` | `0` | `1` for premarket/after-hours stock |
 | `extended_stock_notify` (DB setting) | `0` | `0` | `1` for premarket/after-hours stock |
 | `DISCORD_WATCH_ALERTS` | unset | unset | unset (WATCH is dashboard-only) |

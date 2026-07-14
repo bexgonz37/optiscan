@@ -75,6 +75,30 @@ All booleans use the repo convention `=== "1"`.
 | `SCHED_SUPERVISOR_MS` | 60000 | supervisor cadence (clamped 15 s–30 min) |
 | `SCHED_IMPROVEMENT_MS` | 21600000 | improvement audit cadence (clamped 1 h–7 d) |
 
+### Momentum stock fast-mover settings
+
+The stock scanner remains deterministic and keeps ACTIONABLE-only Discord. The
+fast-mover repair adds a short-lived in-memory crossing latch and a bounded
+diagnostic table; neither uses AI or changes probability gates.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SCANNER_DISCOVERY_MS` | 15000 | broad stock discovery cadence for promoting non-core movers into the 1s loop |
+| `STOCK_MOMENTUM_LATCH` | on | `0` disables the stock crossing latch rollback switch |
+| `STOCK_MOMENTUM_LATCH_TTL_MS` | 20000 | max time between speed crossing and volume confirmation |
+| `STOCK_LATCH_MIN_VELOCITY_PCT_MIN` | 0.22 | aligned short-window speed needed to arm the latch |
+| `STOCK_LATCH_MIN_INSTANT_PCT_MIN` | 0.24 | aligned 5s speed alternative for exceptional moves |
+| `STOCK_LATCH_MIN_ACCEL` | 0 | optional aligned acceleration floor |
+| `STOCK_LATCH_MIN_VOL_SURGE` | 1.18 | volume-surge confirmation for rescue |
+| `STOCK_LATCH_MIN_REL_VOL` | 1.35 | relative-volume confirmation when surge is unavailable/delayed |
+| `MOMENTUM_DIAGNOSTIC_RETENTION_DAYS` | 14 | retention for bounded stock momentum decision diagnostics |
+
+Provider impact: the discovery default changes from one broad bulk quote every
+30s to one every 15s. The latch itself reuses already-fetched 1s tape and adds no
+provider calls or option-chain fetches. Railway compute impact is small: one
+in-memory state object per scanned symbol plus bounded SQLite writes on
+sent/rejected/near-miss decisions, not every tick.
+
 Discord webhooks (existing): `DISCORD_WEBHOOK_OPTIONS`, `DISCORD_WEBHOOK_STOCKS`,
 `DISCORD_WEBHOOK_RECAP`, fallback `DISCORD_WEBHOOK_URL`. Option calls **and** put
 research route to the options webhook (puts are labeled `RESEARCH ONLY`); momentum
@@ -87,6 +111,7 @@ SUPERVISOR_RUNTIME=1
 CALLOUT_CANONICAL_PATH=supervisor
 AGENT_CALLOUT_DISCORD=1
 STOCK_CALLOUTS=1
+STOCK_MOMENTUM_LATCH=1
 PAPER_TRADING_ENABLED=1
 PAPER_AUTO_ENTRY=1
 PAPER_ALLOW_ZERO_DTE=1

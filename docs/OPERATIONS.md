@@ -43,6 +43,10 @@ The scanner runs on a market-session cadence. When the session is `closed`,
   non-actionable.
 - **No valid contract:** status `NO_VALID_CONTRACT`; no fabricated contract.
 - **Paper order:** simulated only; slippage embedded in fills; never a real order.
+- **Fast stock move missed or rejected:** inspect `momentum_diagnostics` on the
+  Railway volume for the ticker/day. It records near-miss, rejected, sent, and
+  latch-rescued stock decisions with speed, volume, VWAP distance, quote age,
+  latch state, first-detected/actionable timestamps, and strategy version.
 - **Model inactive (`INACTIVE_NO_TRAINABLE_DATA`):** no probability shown; the setup
   score is labeled "SETUP SCORE — NOT A PROBABILITY". Normal until graded outcomes
   accumulate.
@@ -100,6 +104,8 @@ restart does not resend unchanged callouts.
 | Stop the scheduler | `SCHEDULER_DISABLED=1` | no maintenance/learning/supervisor/improvement jobs |
 | Emergency scanner shutdown | `SCANNER_REALTIME=0` | scanner loop does not start |
 | Emergency paper shutdown | `PAPER_TRADING_ENABLED=0` | paper engine does not start |
+| Disable stock crossing latch | `STOCK_MOMENTUM_LATCH=0` | stock path returns to single-snapshot firing |
+| Revert stock discovery cadence | `SCANNER_DISCOVERY_MS=30000` | restores prior broad discovery rate |
 | Disable improvement audit | remove `IMPROVEMENT_AUDIT` (or `=0`) | no proposal generation |
 
 After changing a variable, **redeploy/restart** for it to take effect.

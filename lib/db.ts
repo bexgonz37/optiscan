@@ -234,6 +234,40 @@ CREATE TABLE IF NOT EXISTS discord_deliveries (
 CREATE INDEX IF NOT EXISTS idx_discord_deliveries_status ON discord_deliveries(status, next_retry_at);
 CREATE INDEX IF NOT EXISTS idx_discord_deliveries_alert ON discord_deliveries(alert_id);
 
+CREATE TABLE IF NOT EXISTS momentum_diagnostics (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticker TEXT NOT NULL,
+  eval_at_ms INTEGER NOT NULL,
+  trading_day TEXT NOT NULL,
+  session TEXT,
+  price REAL,
+  move_pct REAL,
+  velocity_pct_min REAL,
+  instant_pct_min REAL,
+  acceleration REAL,
+  rel_vol REAL,
+  volume_surge REAL,
+  vwap_dist_pct REAL,
+  quote_age_ms INTEGER,
+  candidate_rank INTEGER,
+  score REAL,
+  confidence REAL,
+  entry_state TEXT,
+  actionable INTEGER NOT NULL DEFAULT 0,
+  decision TEXT NOT NULL,
+  reason TEXT,
+  latch_state TEXT,
+  first_detected_ms INTEGER,
+  first_actionable_ms INTEGER,
+  discord_delivered_ms INTEGER,
+  trigger_to_discord_ms INTEGER,
+  strategy_version TEXT,
+  created_at_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_momentum_diag_day ON momentum_diagnostics(trading_day, eval_at_ms);
+CREATE INDEX IF NOT EXISTS idx_momentum_diag_ticker ON momentum_diagnostics(ticker, eval_at_ms);
+
 CREATE TABLE IF NOT EXISTS paper_decisions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   trade_id INTEGER REFERENCES paper_trades(id) ON DELETE SET NULL,
