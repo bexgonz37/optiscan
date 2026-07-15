@@ -1090,6 +1090,11 @@ const MOMENTUM_DIAGNOSTIC_COLUMN_MIGRATIONS: Array<[string, string]> = [
   ["volume_rate", "ALTER TABLE momentum_diagnostics ADD COLUMN volume_rate REAL"],
   ["volume_acceleration", "ALTER TABLE momentum_diagnostics ADD COLUMN volume_acceleration REAL"],
   ["rank_delta", "ALTER TABLE momentum_diagnostics ADD COLUMN rank_delta INTEGER"],
+  // Directional evidence (2026-07-15, META fix): baseline type, session return,
+  // velocity/accel sign+value, intended direction, delivery-time direction status +
+  // quote age, final channel/result, suppression reason — one JSON blob so the
+  // diagnostics UI and nightly AI can see WHY a bullish alert did or didn't fire.
+  ["direction_json", "ALTER TABLE momentum_diagnostics ADD COLUMN direction_json TEXT"],
 ];
 
 function migrate(db: Database.Database) {

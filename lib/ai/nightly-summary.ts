@@ -62,6 +62,9 @@ export interface MomentumMissDigest {
   extendedRejections: number;
   staleRejected: number;
   avgLatencyMs: number | null;
+  /** Directional-safety counts (META fix): wrong-direction alerts held back. */
+  deliveryRevalidationFailed?: number;
+  directionSuppressed?: number;
   /** Post-trade alert-earliness rollup (§Part 6) — deterministic, hindsight-free. */
   earliness?: {
     graded: number;
@@ -300,6 +303,10 @@ export function buildNightlySummary(input: NightlySummaryInput): NightlySummary 
   // Momentum stock funnel.
   if (momentum && momentum.rescued > 0) patterns.push(`${momentum.rescued} momentum stock callout(s) were rescued by the crossing latch.`);
   if (momentum && momentum.nearMisses >= 2) patterns.push(`${momentum.nearMisses} momentum near-miss(es); ${momentum.extendedRejections} arrived already extended, ${momentum.staleRejected} on stale quotes.`);
+  // Directional safety (META after-hours fix): the bullish invariant + delivery revalidation.
+  if (momentum && ((momentum.directionSuppressed ?? 0) > 0 || (momentum.deliveryRevalidationFailed ?? 0) > 0)) {
+    patterns.push(`Direction safety: ${momentum.directionSuppressed ?? 0} wrong-direction bullish setup(s) suppressed (${momentum.deliveryRevalidationFailed ?? 0} at delivery-time revalidation) — a stock must show current-session upward evidence, not a stale regular-session gain.`);
+  }
   // Alert-earliness quality (§Part 6): how fresh were the alerts that actually sent?
   if (momentum?.earliness && momentum.earliness.graded > 0) {
     const e = momentum.earliness;

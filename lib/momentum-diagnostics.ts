@@ -65,6 +65,10 @@ export interface MomentumDiagnosticInput {
   discordDeliveredMs?: number | null;
   triggerToDiscordMs?: number | null;
   strategyVersion?: string | null;
+  /** Directional-evidence JSON (baseline, session return, velocity/accel sign+value,
+   * intended direction, delivery direction status + quote age, final channel/result,
+   * suppression reason). §Part 6 — deterministic, hindsight-free. */
+  directionJson?: string | null;
 }
 
 export interface MomentumDiagnosticRow extends MomentumDiagnosticInput {
@@ -87,8 +91,8 @@ export function recordMomentumDiagnostic(input: MomentumDiagnosticInput): void {
         ret_10s_pct, ret_30s_pct, ret_60s_pct, volume_rate, volume_acceleration,
         rank_delta, score, confidence, entry_state, actionable,
         decision, reason, latch_state, first_detected_ms, first_actionable_ms,
-        discord_delivered_ms, trigger_to_discord_ms, strategy_version, created_at_ms)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        discord_delivered_ms, trigger_to_discord_ms, strategy_version, direction_json, created_at_ms)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(
       input.ticker,
       input.evalAtMs,
@@ -133,6 +137,7 @@ export function recordMomentumDiagnostic(input: MomentumDiagnosticInput): void {
       nullableNum(input.discordDeliveredMs),
       nullableNum(input.triggerToDiscordMs),
       input.strategyVersion ?? null,
+      input.directionJson ?? null,
       createdAtMs,
     );
     const retentionDays = Number(process.env.MOMENTUM_DIAGNOSTIC_RETENTION_DAYS ?? 14);
@@ -192,6 +197,7 @@ export function listMomentumDiagnostics(limit = 500): MomentumDiagnosticRow[] {
     discordDeliveredMs: r.discord_delivered_ms,
     triggerToDiscordMs: r.trigger_to_discord_ms,
     strategyVersion: r.strategy_version,
+    directionJson: r.direction_json ?? null,
     createdAtMs: r.created_at_ms,
   }));
 }
@@ -220,7 +226,7 @@ export function momentumDiagnosticsForDay(day: string, db: DbLike = lazyDb(), li
       entryState: r.entry_state, actionable: Boolean(r.actionable), decision: r.decision, reason: r.reason,
       latchState: r.latch_state, firstDetectedMs: r.first_detected_ms, firstActionableMs: r.first_actionable_ms,
       discordDeliveredMs: r.discord_delivered_ms, triggerToDiscordMs: r.trigger_to_discord_ms,
-      strategyVersion: r.strategy_version, createdAtMs: r.created_at_ms,
+      strategyVersion: r.strategy_version, directionJson: r.direction_json ?? null, createdAtMs: r.created_at_ms,
     }));
   } catch {
     return [];
@@ -264,9 +270,13 @@ export function summarizeMomentumDiagnostics(rows: MomentumDiagnosticRow[]) {
       firstActionableMs: r.firstActionableMs, firstSeenMs: r.firstSeenMs,
     }));
   const earliness = summarizeEarliness(sentRows);
+  // Directional-safety counts (§Part 6 / META fix): how often the bullish
+  // invariant or delivery-time revalidation held a wrong-direction alert back.
+  const deliveryRevalidationFailed = rows.filter((r) => r.entryState === "DELIVERY_REVALIDATION_FAILED" || /DELIVERY_REVALIDATION_FAILED/.test(String(r.reason ?? ""))).length;
+  const directionSuppressed = rows.filter((r) => /direction invariant|not bullish|weak bounce|still falling|reversal|DELIVERY_REVALIDATION_FAILED/i.test(String(r.reason ?? "")) || r.entryState === "CLASS_SUPPRESSED").length;
   return {
     total: rows.length, sent, rescued, nearMisses, rejected, extendedRejections, staleRejected, avgLatencyMs,
-    earliness,
+    earliness, deliveryRevalidationFailed, directionSuppressed,
     medianDiscoveryLatencyMs: median(rows.map((r) => r.firstRankedMs != null && r.firstSeenMs != null ? r.firstRankedMs - r.firstSeenMs : null)),
     medianPromotionLatencyMs: median(rows.map((r) => r.firstPromotedMs != null && r.firstRankedMs != null ? r.firstPromotedMs - r.firstRankedMs : null)),
     medianActionableLatencyMs: median(rows.map((r) => r.firstActionableMs != null && r.firstSeenMs != null ? r.firstActionableMs - r.firstSeenMs : null)),

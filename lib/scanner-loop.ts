@@ -418,6 +418,13 @@ async function handleStockTrigger(ticker: string, st: SymState, read: any, quote
     instantRate: read.instantRate ?? null,
     volumeAcceleration: opts.volumeAcceleration ?? null,
     rankDelta: opts.rankDelta ?? null,
+    // Session-current short-window returns — the directional evidence the bullish
+    // invariant requires (never the stale regular-session day move).
+    ret5sPct: opts.ret5s ?? null,
+    ret10sPct: opts.ret10s ?? null,
+    ret30sPct: opts.ret30s ?? null,
+    ret60sPct: opts.ret60s ?? null,
+    classification: opts.classification ?? null,
     surge: read.surge, relVol: st.relVol, efficiency: read.efficiency,
     vwap: st.vwap, aboveVwap: read.levels.aboveVwap,
     hodBreak: read.levels.hodBreak, lodBreak: read.levels.lodBreak,
@@ -493,6 +500,19 @@ async function handleStockTrigger(ticker: string, st: SymState, read: any, quote
     discordDeliveredMs: id != null ? nowMs : null,
     triggerToDiscordMs: id != null && st.momentumFirstDetectedAt ? nowMs - st.momentumFirstDetectedAt : null,
     strategyVersion: MOMENTUM_STRATEGY_VERSION,
+    directionJson: JSON.stringify({
+      baselineType: marketSession(nowMs),
+      sessionReturnPct: quote.changePercent ?? null,
+      ret5sPct: opts.ret5s ?? null, ret10sPct: opts.ret10s ?? null, ret30sPct: opts.ret30s ?? null, ret60sPct: opts.ret60s ?? null,
+      velocitySign: read.accelRead?.shortRate != null ? Math.sign(read.accelRead.shortRate) : null, velocityValue: read.accelRead?.shortRate ?? null,
+      accelSign: read.accelRead?.accel != null ? Math.sign(read.accelRead.accel) : null, accelValue: read.accelRead?.accel ?? null,
+      intendedDirection: read.dir?.direction ?? null,
+      classification: opts.classification ?? null,
+      deliveryDirectionOk: id != null, deliveryQuoteAgeMs: opts.quoteAgeMs ?? null,
+      finalChannel: id != null ? "stocks" : "none",
+      finalResult: id != null ? (opts.rescued ? "RESCUED_SENT" : "SENT") : "REJECTED",
+      suppressionReason: id != null ? null : "capture rejected (verdict/timing/direction/dedup gate)",
+    }),
   });
   if (id != null) st.momentumFirstDetectedAt = 0;
 }

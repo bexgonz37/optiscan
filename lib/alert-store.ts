@@ -418,6 +418,17 @@ export function finalizeAlert(alertId: number, isFalsePositive: boolean) {
   getDb().prepare("UPDATE alerts SET status='complete', is_false_positive=? WHERE id=?").run(isFalsePositive ? 1 : 0, alertId);
 }
 
+/**
+ * Downgrade an alert whose delivery-time revalidation failed: it stays in the lab
+ * for measurement but is no longer TRADE-tier, so neither Discord nor the paper
+ * auto-entry path treats it as actionable. The exact reason is persisted.
+ */
+export function suppressAlertDelivery(alertId: number, reason: string) {
+  getDb().prepare(
+    "UPDATE alerts SET capture_action='WAIT', alert_tier='research', invalidation_reason=? WHERE id=?",
+  ).run(reason, alertId);
+}
+
 /** EOD outcome facts the Alert Lab measures beyond price checkpoints:
  * did the call side work, did the put side work (>= threshold favorable move
  * in that direction at any point), did the tracked contract's spread widen
