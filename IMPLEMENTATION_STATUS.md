@@ -1,6 +1,22 @@
 # OptiScan — Implementation Status
 
-_Last updated: 2026-07-13. Working repo: `~/Downloads/optiscan-main`, branch `main`._
+_Last updated: 2026-07-15. Working repo: `~/Downloads/optiscan-main`, branch `main`._
+
+## ⚠️ CANONICAL WORKING DIRECTORY (read first, every session)
+
+- **Canonical working repo: `C:\Users\bexgo\Downloads\optiscan-main`** (branch `main`).
+- **Canonical remote source of truth: `github.com/bexgonz37/optiscan.git` → `origin/main`.**
+  Railway deploys from GitHub `main`, so `origin/main` is authoritative.
+- **Always `git fetch` and confirm `origin/main` before resuming.** Fast-forward the
+  canonical repo to `origin/main` first; never work from a stale copy.
+- **Never select another OptiScan folder based only on modification date.** Recency of
+  file mtimes is NOT a signal of which copy is canonical.
+- **`C:\Users\bexgo\optiscan_audit` is a temporary safety/WIP copy, NOT the canonical
+  repo.** Its unmerged momentum/options WIP is preserved on branch
+  `wip/momentum-options-investigation` (+ patch/bundle in `~/optiscan_wip_backup/`);
+  that WIP is superseded by `a91aaae` and must not be reapplied blindly.
+- **`C:\Users\bexgo\optiscan` is OBSOLETE (143 commits behind) and must not be used.**
+- Do not delete the alternate folders yet; just do not work in them.
 
 This file is the resume point. Read it + the task list before making changes.
 Do **not** repeat Phase 1, redo timestamp normalization, or add the Self-Improvement
