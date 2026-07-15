@@ -69,6 +69,14 @@ account — you perform these; the repository ships the configuration.
 11. **Inspect runtime logs** — expect `[optiscan] scanner + alert tracker started at
     process boot` and `[scheduler] started`.
 12. **Open the health endpoint** — `https://<domain>/api/healthz` → `{"ok":true,...}`.
+    It now also returns `commit`, `commitShort`, and `branch` (from Railway's injected
+    `RAILWAY_GIT_COMMIT_SHA` / `RAILWAY_GIT_BRANCH`). **This is how you confirm which
+    commit is actually deployed vs `origin/main`:** compare `commitShort` to
+    `git rev-parse --short origin/main`. If they differ, Railway has not finished
+    deploying the latest push (or auto-deploy is off) — check Railway → the service →
+    **Deployments** (top/active deployment shows the source commit + status) and
+    **Settings → Source** (connected repo + branch). `commit` is null only on hosts
+    that do not inject the SHA; it is never a secret.
 13. **Open runtime status** — `https://<domain>/api/runtime/status` with header
     `x-scan-token: <SCAN_API_TOKEN>`. Confirm scanner/scheduler/model/improvement
     sections render.
@@ -133,6 +141,36 @@ account — you perform these; the repository ships the configuration.
 | `DISCORD_WATCH_ALERTS` | unset | unset | unset (WATCH is dashboard-only) |
 | `IMPROVEMENT_AUDIT` | `0` | `0` | `0` (enable later, proposal-only) |
 | `AI_ENABLED` | `0` | `0` | `0` (enable later; advisory AI is off by default) |
+
+## Diagnosing "few / no alerts" from stored data
+
+Both callout paths now persist a bounded, per-decision diagnostic so a quiet day is
+explainable **after a restart** (in-memory telemetry is cleared on every deploy):
+
+- **`options_diagnostics`** — one row per supervisor cycle: tickers considered, chains
+  fetched, canonical callouts, emitted, delivered, the delivery-stage skip counts, and
+  — critically — `delivery_gate_reason` when callouts were emittable but undelivered
+  because the config gate is off. The nightly AI summary embeds the digest; when
+  `emitted>0` and `delivered==0` under a disabled gate, the report's `prioritizedIssue`
+  becomes `options_delivery_disabled` (a mis-config outranks every signal issue).
+- **`momentum_diagnostics`** — one row per momentum-stock decision (sent / rescued /
+  rejected / near-miss), now also read by the nightly AI (previously written-only).
+
+**If you see no options alerts, check in this order:** (1) `/api/runtime/status` →
+`deploy.commitShort` matches `origin/main`; (2) `config` items — `SUPERVISOR_RUNTIME`,
+`CALLOUT_CANONICAL_PATH=supervisor`, `AGENT_CALLOUT_DISCORD=1`, `DISCORD_WEBHOOK_OPTIONS`
+set; (3) the latest `ai_reports` nightly `options` digest / `delivery_gate_reason`.
+**If you see no momentum alerts:** `STOCK_CALLOUTS=1` + `DISCORD_WEBHOOK_STOCKS` (the
+whole momentum path, including the a91aaae crossing latch, is inert without it), plus
+the extended-hours gates for premarket.
+
+### Diagnostic tuning variables (all safe defaults)
+
+| Variable | Default | Effect |
+|---|---|---|
+| `SCANNER_SEED_TOP_N` | `6` | freshly-promoted discovery names candle-seeded per cycle so velocity/persistence windows are warm on arrival (reduces late detection). Bounded 0–12; budget-guarded. |
+| `OPTIONS_DIAGNOSTIC_RETENTION_DAYS` | `14` | options_diagnostics retention window. |
+| `MOMENTUM_DIAGNOSTIC_RETENTION_DAYS` | `14` | momentum_diagnostics retention window. |
 | Discord webhooks | optional | optional | required for sends |
 
 ## Advisory AI layer (nightly diagnosis + weekly proposals)

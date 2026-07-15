@@ -23,6 +23,25 @@ narrates/reasons over the summary. Every number in a stored narrative must appea
 in the deterministic summary (`schemas.ts` anti-fabrication guard) or the narrative
 is rejected. Empty inputs yield `0`/`null`, never invented figures.
 
+### Deterministic summary inputs
+
+The nightly summary is built from persisted rows only (no live provider calls):
+
+- **Graded outcomes** (`paper_trade_outcomes`) + **paper candidates** (`paper_candidates`).
+- **Momentum-stock digest** — summarized from the bounded `momentum_diagnostics` table
+  (sent / rescued / rejected / near-miss, extended vs stale rejections, avg
+  trigger→Discord latency). Surfaces near-miss and crossing-latch-rescue patterns.
+- **Options-funnel digest** — summarized from the bounded `options_diagnostics` table
+  (one row per supervisor cycle: tickers → chains → canonical → emitted → delivered,
+  delivery-stage skips, and the config `delivery_gate_reason`). When callouts were
+  emittable but undelivered because the Discord gate is off, the summary's
+  `prioritizedIssue` is `options_delivery_disabled` — a mis-config outranks every
+  signal issue, because nothing else matters if alerts physically cannot send.
+
+Both digests are deterministic and never fabricated; a day with no diagnostics yields
+`null` digests and an explicit `dataGaps` note. The AI reads these summaries only — it
+never sees raw ticks/cycles and **never affects a live trading decision**.
+
 ---
 
 ## Environment variables

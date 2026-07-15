@@ -4,7 +4,17 @@
  * near-misses only.
  */
 
-import { getDb, tradingDay } from "@/lib/db";
+import { tradingDay } from "./trading-session.ts";
+
+// Lazy DB resolution (not a static `@/lib/db` import) so this module — and anything
+// that imports it, including the DB-free AI layer — loads under the bare test runner
+// where the `@/` alias is unavailable. Impure fns default to the real DB; callers
+// (e.g. the nightly job / tests) may inject a handle.
+type DbLike = { prepare: (sql: string) => any };
+function lazyDb(): DbLike {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  return require("@/lib/db").getDb();
+}
 
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const nullableNum = (v: unknown) => (isNum(v) ? v : null);
@@ -47,7 +57,7 @@ export interface MomentumDiagnosticRow extends MomentumDiagnosticInput {
 
 export function recordMomentumDiagnostic(input: MomentumDiagnosticInput): void {
   try {
-    const db = getDb();
+    const db = lazyDb();
     const createdAtMs = Date.now();
     db.prepare(
       `INSERT INTO momentum_diagnostics
@@ -96,7 +106,7 @@ export function recordMomentumDiagnostic(input: MomentumDiagnosticInput): void {
 }
 
 export function listMomentumDiagnostics(limit = 500): MomentumDiagnosticRow[] {
-  const db = getDb();
+  const db = lazyDb();
   const rows = db.prepare("SELECT * FROM momentum_diagnostics ORDER BY eval_at_ms DESC, id DESC LIMIT ?").all(limit) as any[];
   return rows.map((r) => ({
     id: r.id,
@@ -128,6 +138,29 @@ export function listMomentumDiagnostics(limit = 500): MomentumDiagnosticRow[] {
     strategyVersion: r.strategy_version,
     createdAtMs: r.created_at_ms,
   }));
+}
+
+/** Day-filtered read for the nightly AI (bounded; empty when the table is absent). */
+export function momentumDiagnosticsForDay(day: string, db: DbLike = lazyDb(), limit = 20000): MomentumDiagnosticRow[] {
+  try {
+    const has = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='momentum_diagnostics'").get();
+    if (!has) return [];
+    const rows = db.prepare(
+      "SELECT * FROM momentum_diagnostics WHERE trading_day = ? ORDER BY eval_at_ms ASC LIMIT ?",
+    ).all(day, limit) as any[];
+    return rows.map((r) => ({
+      id: r.id, ticker: r.ticker, evalAtMs: r.eval_at_ms, tradingDay: r.trading_day, session: r.session,
+      price: r.price, movePct: r.move_pct, velocityPctMin: r.velocity_pct_min, instantPctMin: r.instant_pct_min,
+      acceleration: r.acceleration, relVol: r.rel_vol, volumeSurge: r.volume_surge, vwapDistPct: r.vwap_dist_pct,
+      quoteAgeMs: r.quote_age_ms, candidateRank: r.candidate_rank, score: r.score, confidence: r.confidence,
+      entryState: r.entry_state, actionable: Boolean(r.actionable), decision: r.decision, reason: r.reason,
+      latchState: r.latch_state, firstDetectedMs: r.first_detected_ms, firstActionableMs: r.first_actionable_ms,
+      discordDeliveredMs: r.discord_delivered_ms, triggerToDiscordMs: r.trigger_to_discord_ms,
+      strategyVersion: r.strategy_version, createdAtMs: r.created_at_ms,
+    }));
+  } catch {
+    return [];
+  }
 }
 
 export function summarizeMomentumDiagnostics(rows: MomentumDiagnosticRow[]) {

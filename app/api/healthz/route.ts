@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { ensureServerBoot } from "@/lib/server-boot";
+import { deployInfo } from "@/lib/build-info";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,6 +34,10 @@ export async function GET() {
     dbOk = false;
   }
 
-  const body = { ok: dbOk, db: dbOk, boot: bootOk, service: "optiscan", nowMs: Date.now() };
+  // Deployed commit (Railway injects the SHA at runtime) — the only reliable way to
+  // confirm which commit is live vs origin/main. Read via the build-info helper so this
+  // route reads no env directly. Not a secret; safe to expose.
+  const { commit, commitShort, branch } = deployInfo();
+  const body = { ok: dbOk, db: dbOk, boot: bootOk, service: "optiscan", commit, commitShort, branch, nowMs: Date.now() };
   return NextResponse.json(body, { status: dbOk ? 200 : 503 });
 }

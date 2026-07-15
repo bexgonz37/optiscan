@@ -69,6 +69,11 @@ const DISCOVERY_TOP_N = Number(process.env.SCANNER_DISCOVERY_TOP_N ?? 30);
 const PROMOTION_MS = Number(process.env.SCANNER_PROMOTION_MS ?? 5 * 60_000);
 const DISCOVERY_MIN_VOLUME = Number(process.env.SCANNER_DISCOVERY_MIN_VOLUME ?? 50_000);
 const TAPE_ENRICH_MS = Number(process.env.SCANNER_TAPE_ENRICH_MS ?? 30_000);
+// How many freshly-promoted discovery names get their ring candle-seeded per
+// discovery cycle so velocity/persistence windows are warm on arrival (instead of
+// a ~10-tick cold warmup that makes a fast mover alert late). Budget-guarded at the
+// call site; bounded so a burst of new movers can't blow the minute quota.
+const SEED_TOP_N = Math.max(0, Math.min(12, Number(process.env.SCANNER_SEED_TOP_N ?? 6)));
 // When a trigger's capture returns null (SKIP tier / dedup) the full cooldown
 // is intentionally NOT consumed (so an improving setup can still fire), but a
 // short retry window is required: with no cooldown at all, a hot symbol that
@@ -223,8 +228,8 @@ async function refreshDiscovery(nowMs: number) {
   // move was minutes old (the "RIVN alerted at the top" failure). Seed its
   // ring from 1-min candle history so persistence/velocity windows are warm
   // on arrival. Bounded + budget-aware; gates themselves are unchanged.
-  if (newlyPromoted.length && !nearMinuteBudget(getCallStats(nowMs))) {
-    for (const ticker of newlyPromoted.slice(0, 4)) {
+  if (newlyPromoted.length && SEED_TOP_N > 0 && !nearMinuteBudget(getCallStats(nowMs))) {
+    for (const ticker of newlyPromoted.slice(0, SEED_TOP_N)) {
       seedRingFromCandles(ticker, nowMs).catch(() => { /* seeding is best-effort */ });
     }
   }

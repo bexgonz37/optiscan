@@ -16,10 +16,10 @@ import { buildCallout, type Callout } from "@/lib/callouts/callout";
 import { decideEmission, type EmissionDecision } from "@/lib/callouts/dedup";
 import { formatCalloutDiscord, type DiscordCalloutPayload } from "@/lib/callouts/discord-format";
 import { loadPriorCallouts, persistCalloutState, type CalloutStateWrite } from "@/lib/callouts/state-store";
-import { calloutWebhook, supervisorDiscordDeliveryEnabled } from "@/lib/callouts/routing";
+import { calloutWebhook, supervisorDiscordDeliveryEnabled, optionsDeliveryGateReason } from "@/lib/callouts/routing";
 import { nowOnlyActionable } from "@/lib/callouts/eligibility";
 import { optionAlertDeliverable, canonicalOptionContract, sameOptionContract } from "@/lib/callouts/option-line";
-import { deliverCalloutDiscord } from "@/lib/notifications";
+import { deliverCalloutDiscord, discordWebhookConfigured } from "@/lib/notifications";
 import { reviewPortfolio } from "@/lib/agents/portfolio";
 import { bridgeCalloutsToPaper, type BridgeSummary } from "@/lib/callouts/paper-bridge";
 import { envConcurrency, mapLimit } from "@/lib/bounded-concurrency";
@@ -51,7 +51,29 @@ export interface CalloutsRunResult {
     failed: number;
     durationMs: number;
   };
+  /** Deterministic options-funnel counts for persistent diagnostics. */
+  funnel: CalloutFunnel;
 }
+
+export interface CalloutFunnel {
+  tickersConsidered: number;
+  chainsOk: number;
+  chainsFailed: number;
+  tickersWithCanonical: number;
+  canonical: number;
+  portfolioSuppressed: number;
+  dedupSuppressed: number;
+  emitted: number;
+  delivered: number;
+  notActionableNow: number;
+  contractIncomplete: number;
+  contractMismatch: number;
+  discordAutoSend: boolean;
+  /** Non-null when emitted>0 but delivery is blocked by config (the key "no alerts" cause). */
+  deliveryGateReason: string | null;
+  topReason: string | null;
+}
+
 
 export interface BuildCalloutsOptions {
   /** Actually deliver emitted callouts to Discord (requires config + gating). */
@@ -189,6 +211,37 @@ export async function buildCalloutsForTickers(
   }));
   persistCalloutState(writes, nowMs);
 
+  // Deterministic options funnel for persistent diagnostics. Delivery-stage skips are
+  // read from the exact deliveryStatus strings set in the loop above so a code change
+  // there is reflected here. portfolio vs dedup suppression is split by the reason tag.
+  const emittedCount = decisions.filter((d) => d.emit).length;
+  const suppressed = decisions.filter((d) => !d.emit);
+  const portfolioSuppressed = suppressed.filter((d) => d.reason?.startsWith("portfolio:")).length;
+  const dedupSuppressed = suppressed.length - portfolioSuppressed;
+  const notActionableNow = bundles.filter((b) => b.deliveryStatus?.startsWith("skipped: not actionable-now")).length;
+  const contractIncomplete = bundles.filter((b) => b.deliveryStatus?.startsWith("skipped: CONTRACT DATA INCOMPLETE")).length;
+  const contractMismatch = bundles.filter((b) => b.deliveryStatus?.startsWith("skipped: contract identity mismatch")).length;
+  const tickersWithCanonical = runResults.filter((r) => (r.canonical ?? 0) > 0).length;
+  const gateReason = optionsDeliveryGateReason(process.env, discordWebhookConfigured("options"));
+  const funnel: CalloutFunnel = {
+    tickersConsidered: requestedTickers.length,
+    chainsOk: tickerResults.filter((r) => r.ok).length,
+    chainsFailed: tickerResults.filter((r) => !r.ok).length,
+    tickersWithCanonical,
+    canonical: callouts.length,
+    portfolioSuppressed,
+    dedupSuppressed,
+    emitted: emittedCount,
+    delivered,
+    notActionableNow,
+    contractIncomplete,
+    contractMismatch,
+    discordAutoSend: autoSend,
+    deliveryGateReason: emittedCount > 0 && delivered === 0 ? gateReason : (autoSend ? null : gateReason),
+    topReason: null,
+  };
+  funnel.topReason = deriveFunnelTopReason(funnel);
+
   return {
     bundles,
     discordAutoSend: autoSend,
@@ -204,8 +257,19 @@ export async function buildCalloutsForTickers(
       failed: tickerResults.filter((r) => !r.ok).length,
       durationMs: Date.now() - runStarted,
     },
+    funnel,
     note: autoSend
       ? "Supervisor is the canonical Discord path — emitted callouts deliver through the tracked ledger."
       : "Supervisor Discord delivery OFF (set CALLOUT_CANONICAL_PATH=supervisor and AGENT_CALLOUT_DISCORD=1). Desktop is the active channel; payloads are preview-ready.",
   };
+}
+
+/** One-line deterministic diagnosis of where this cycle's options funnel narrowed. */
+function deriveFunnelTopReason(f: CalloutFunnel): string {
+  if (f.emitted > 0 && f.delivered === 0 && f.deliveryGateReason) return `delivery blocked by config: ${f.deliveryGateReason}`;
+  if (f.canonical === 0 && f.tickersConsidered > 0) return "no canonical callout (agent/selector/entry-window rejected all candidates)";
+  if (f.emitted === 0 && f.canonical > 0) return `canonical but not emitted (portfolio ${f.portfolioSuppressed} / dedup ${f.dedupSuppressed})`;
+  if (f.delivered === 0 && f.emitted > 0) return `emitted but not delivered (not-actionable-now ${f.notActionableNow}, contract-incomplete ${f.contractIncomplete}, mismatch ${f.contractMismatch})`;
+  if (f.delivered > 0) return `${f.delivered} delivered`;
+  return "idle cycle";
 }

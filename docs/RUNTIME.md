@@ -84,6 +84,7 @@ diagnostic table; neither uses AI or changes probability gates.
 | Variable | Default | Meaning |
 |---|---|---|
 | `SCANNER_DISCOVERY_MS` | 15000 | broad stock discovery cadence for promoting non-core movers into the 1s loop |
+| `SCANNER_SEED_TOP_N` | 6 | freshly-promoted discovery names whose ring is candle-seeded per cycle so velocity/persistence windows are warm on arrival instead of a ~10-tick cold warmup (reduces late detection of fast movers). Bounded 0–12; budget-guarded, adds no chain fetches. |
 | `STOCK_MOMENTUM_LATCH` | on | `0` disables the stock crossing latch rollback switch |
 | `STOCK_MOMENTUM_LATCH_TTL_MS` | 20000 | max time between speed crossing and volume confirmation |
 | `STOCK_LATCH_MIN_VELOCITY_PCT_MIN` | 0.22 | aligned short-window speed needed to arm the latch |
@@ -94,10 +95,23 @@ diagnostic table; neither uses AI or changes probability gates.
 | `MOMENTUM_DIAGNOSTIC_RETENTION_DAYS` | 14 | retention for bounded stock momentum decision diagnostics |
 
 Provider impact: the discovery default changes from one broad bulk quote every
-30s to one every 15s. The latch itself reuses already-fetched 1s tape and adds no
-provider calls or option-chain fetches. Railway compute impact is small: one
+30s to one every 15s. The scanning model is a **single bulk snapshot per tick over
+the realtime universe (core ∪ promoted), evaluated in memory** — it is NOT a
+sequential per-symbol quote loop, so per-ticker evaluation latency is negligible;
+the real detection latency is discovery cadence + promotion warmup (which
+`SCANNER_SEED_TOP_N` shortens). The latch itself reuses already-fetched 1s tape and
+adds no provider calls or option-chain fetches. Railway compute impact is small: one
 in-memory state object per scanned symbol plus bounded SQLite writes on
 sent/rejected/near-miss decisions, not every tick.
+
+### Options-funnel diagnostics (`options_diagnostics`)
+
+The supervisor records ONE bounded row per cycle (never per tick): tickers → chains →
+canonical → emitted → delivered, the delivery-stage skips, and the config
+`delivery_gate_reason` (e.g. `AGENT_CALLOUT_DISCORD != 1`). This makes a "no options
+alerts" day diagnosable after a restart and feeds the nightly AI digest. Retention:
+`OPTIONS_DIAGNOSTIC_RETENTION_DAYS` (default 14). `/api/runtime/status` also carries
+`deploy.commit` so you can confirm the live commit vs `origin/main`.
 
 Discord webhooks (existing): `DISCORD_WEBHOOK_OPTIONS`, `DISCORD_WEBHOOK_STOCKS`,
 `DISCORD_WEBHOOK_RECAP`, fallback `DISCORD_WEBHOOK_URL`. Option calls **and** put

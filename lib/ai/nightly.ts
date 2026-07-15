@@ -12,7 +12,7 @@ import { tradingDay } from "../trading-session.ts";
 import { aiConfig, type AiConfig } from "./config.ts";
 import { buildNightlySummary, type NightlySummary } from "./nightly-summary.ts";
 import { deriveCandidateLessons } from "./lessons.ts";
-import { gatherOutcomesForDay, gatherCandidatesForDay, gatherLiveInstrumentation } from "./queries.ts";
+import { gatherOutcomesForDay, gatherCandidatesForDay, gatherLiveInstrumentation, gatherMomentumDigestForDay, gatherOptionsDigestForDay } from "./queries.ts";
 import { nightlyNarrationPrompt } from "./prompts.ts";
 import { validateNightlyNarrative, type NightlyNarrative } from "./schemas.ts";
 import { runStructuredAiJob, type ProviderDeps } from "./provider.ts";
@@ -71,7 +71,9 @@ export async function runNightlyDiagnosis(opts: NightlyJobOptions = {}): Promise
     const outcomes = gatherOutcomesForDay(day, nowMs, db);
     const candidates = gatherCandidatesForDay(day, nowMs, db);
     const live = gatherLiveInstrumentation(day);
-    summary = buildNightlySummary({ tradingDay: day, periodStartMs: null, periodEndMs: nowMs, outcomes, candidates, live });
+    const momentum = gatherMomentumDigestForDay(day, db);
+    const options = gatherOptionsDigestForDay(day, db);
+    summary = buildNightlySummary({ tradingDay: day, periodStartMs: null, periodEndMs: nowMs, outcomes, candidates, live, momentum, options });
   } catch (err: any) {
     return { ...result, skippedReason: `summary failed: ${err?.message ?? err}` };
   }

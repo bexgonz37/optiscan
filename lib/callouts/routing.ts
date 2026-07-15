@@ -36,6 +36,19 @@ export function supervisorDiscordDeliveryEnabled(env: NodeJS.ProcessEnv = proces
 }
 
 /**
+ * Why the supervisor cannot deliver options callouts to Discord, or null when it can.
+ * Order matters: canonical path first, then the master switch, then the webhook. PURE —
+ * the webhook-configured boolean is passed in so this stays unit-testable. This is the
+ * exact reason recorded in options_diagnostics when emittable callouts go undelivered.
+ */
+export function optionsDeliveryGateReason(env: NodeJS.ProcessEnv = process.env, webhookConfigured = false): string | null {
+  if (calloutCanonicalPath(env) !== "supervisor") return "CALLOUT_CANONICAL_PATH != supervisor (legacy path owns options; supervisor callouts are preview-only)";
+  if (env.AGENT_CALLOUT_DISCORD !== "1") return "AGENT_CALLOUT_DISCORD != 1 (supervisor Discord master switch is off)";
+  if (!webhookConfigured) return "DISCORD_WEBHOOK_OPTIONS is not configured";
+  return null;
+}
+
+/**
  * True when the LEGACY options Discord path should stand down for a given asset
  * class because the supervisor is the canonical sender — prevents double-send.
  * Only options are owned by the supervisor; stock alerts always use legacy.

@@ -48,6 +48,36 @@ export interface LiveInstrumentation {
   avgTriggerToDiscordMs: number | null;
 }
 
+/**
+ * Pre-computed momentum-stock decision digest (from the persisted
+ * momentum_diagnostics table). Structural type only — the impure summarizer lives
+ * in lib/momentum-diagnostics.ts so this module stays DB-free and pure.
+ */
+export interface MomentumMissDigest {
+  total: number;
+  sent: number;
+  rescued: number;
+  nearMisses: number;
+  rejected: number;
+  extendedRejections: number;
+  staleRejected: number;
+  avgLatencyMs: number | null;
+}
+
+/** Pre-computed options-funnel digest (from the persisted options_diagnostics table). */
+export interface OptionsFunnelDigest {
+  cycles: number;
+  setupsQualified: number;
+  chainsFetched: number;
+  canonical: number;
+  emitted: number;
+  delivered: number;
+  emittedButUndelivered: number;
+  configBlockedCycles: number;
+  topDeliveryGateReason: string | null;
+  diagnosis: string | null;
+}
+
 export interface NightlySummaryInput {
   tradingDay: string;
   periodStartMs: number | null;
@@ -55,6 +85,10 @@ export interface NightlySummaryInput {
   outcomes: OutcomeInput[];
   candidates: CandidateInput[];
   live?: LiveInstrumentation | null;
+  /** Deterministic momentum-stock diagnostics for the day (null when none recorded). */
+  momentum?: MomentumMissDigest | null;
+  /** Deterministic options-funnel diagnostics for the day (null when none recorded). */
+  options?: OptionsFunnelDigest | null;
 }
 
 interface PerfBucket {
@@ -161,6 +195,10 @@ export interface NightlySummary {
   prioritizedIssue: string | null;
   dataGaps: string[];
   overall: PerfBucket;
+  /** Momentum-stock miss digest (null when no diagnostics were recorded). */
+  momentum: MomentumMissDigest | null;
+  /** Options-funnel digest (null when no supervisor cycles were recorded). */
+  options: OptionsFunnelDigest | null;
 }
 
 export const NIGHTLY_SUMMARY_VERSION = 1;
@@ -221,10 +259,14 @@ export function buildNightlySummary(input: NightlySummaryInput): NightlySummary 
   }
 
   const live = input.live ?? null;
+  const momentum = input.momentum ?? null;
+  const options = input.options ?? null;
   const dataGaps: string[] = [];
   if (!live?.available) dataGaps.push("live near-miss / alert-timing / crossing-rescue instrumentation unavailable (in-memory; cleared on restart)");
   if (input.outcomes.length === 0) dataGaps.push("no graded paper-trade outcomes for this day");
   if (input.candidates.length === 0) dataGaps.push("no paper candidates recorded for this day");
+  if (!momentum || momentum.total === 0) dataGaps.push("no momentum-stock diagnostics recorded (STOCK_CALLOUTS off, or no movers evaluated)");
+  if (!options || options.cycles === 0) dataGaps.push("no options-funnel diagnostics recorded (SUPERVISOR_RUNTIME off, or no cycles ran)");
 
   // Deterministic patterns + one prioritized issue (the narrator explains these,
   // it does not choose them). Ordered by evidence weight.
@@ -236,9 +278,24 @@ export function buildNightlySummary(input: NightlySummaryInput): NightlySummary 
   if (isNum(live?.crossingRescues) && (live!.crossingRescues as number) > 0) patterns.push(`${live!.crossingRescues} breakout-crossing rescues fired.`);
   if (contractDataRejections >= 1) patterns.push(`${contractDataRejections} callouts blocked by incomplete contract data.`);
   if (liquidityRejections >= 1) patterns.push(`${liquidityRejections} callouts blocked by liquidity/spread.`);
+  // Options funnel — the config-gate case is the highest-signal "no alerts" cause.
+  if (options && options.configBlockedCycles > 0) {
+    patterns.push(`Options Discord delivery is DISABLED by config on ${options.configBlockedCycles} cycle(s): ${options.topDeliveryGateReason ?? "supervisor delivery off"} — ${options.emittedButUndelivered} emittable callout(s) were never sent.`);
+  } else if (options && options.cycles > 0 && options.canonical === 0) {
+    patterns.push(`${options.cycles} supervisor cycle(s) produced 0 canonical options callouts (candidates died at the agent/selector/entry-window stage).`);
+  } else if (options && options.delivered > 0) {
+    patterns.push(`${options.delivered} options callout(s) delivered across ${options.cycles} cycle(s).`);
+  }
+  // Momentum stock funnel.
+  if (momentum && momentum.rescued > 0) patterns.push(`${momentum.rescued} momentum stock callout(s) were rescued by the crossing latch.`);
+  if (momentum && momentum.nearMisses >= 2) patterns.push(`${momentum.nearMisses} momentum near-miss(es); ${momentum.extendedRejections} arrived already extended, ${momentum.staleRejected} on stale quotes.`);
 
   let prioritizedIssue: string | null = null;
-  if (signalCorrectExitFailed >= 2 && signalCorrectExitFailed >= bothFailed) {
+  if (options && options.configBlockedCycles > 0 && options.emittedButUndelivered > 0) {
+    // A silent, mis-configured delivery path outranks every downstream signal issue —
+    // nothing else matters if actionable alerts physically cannot be sent.
+    prioritizedIssue = "options_delivery_disabled";
+  } else if (signalCorrectExitFailed >= 2 && signalCorrectExitFailed >= bothFailed) {
     prioritizedIssue = "exit_management";
   } else if (topReason && topReason[1] >= 3) {
     prioritizedIssue = LIQUIDITY_RE.test(topReason[0]) ? "liquidity" : CONTRACT_RE.test(topReason[0]) ? "contract_data" : "rejection_pattern";
@@ -246,6 +303,8 @@ export function buildNightlySummary(input: NightlySummaryInput): NightlySummary 
     prioritizedIssue = "signal_quality";
   } else if (isNum(live?.lateCalloutCount) && (live!.lateCalloutCount as number) >= 2) {
     prioritizedIssue = "late_callouts";
+  } else if (momentum && momentum.nearMisses >= 3 && momentum.sent === 0) {
+    prioritizedIssue = "momentum_misses";
   }
 
   return {
@@ -279,5 +338,7 @@ export function buildNightlySummary(input: NightlySummaryInput): NightlySummary 
     prioritizedIssue,
     dataGaps,
     overall: finalizeBucket(overall),
+    momentum,
+    options,
   };
 }

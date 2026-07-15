@@ -6,7 +6,9 @@
  * buffer (marked unavailable when a restart has cleared it).
  */
 import { tradingDay } from "../trading-session.ts";
-import type { OutcomeInput, CandidateInput, LiveInstrumentation } from "./nightly-summary.ts";
+import type { OutcomeInput, CandidateInput, LiveInstrumentation, MomentumMissDigest, OptionsFunnelDigest } from "./nightly-summary.ts";
+import { momentumDiagnosticsForDay, summarizeMomentumDiagnostics } from "../momentum-diagnostics.ts";
+import { optionsDiagnosticsForDay, summarizeOptionsDiagnostics } from "../options-diagnostics.ts";
 
 function lazyDb(): any {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -104,6 +106,40 @@ export function gatherCandidatesForDays(daySet: Set<string>, nowMs: number = Dat
       status: r.status ?? "", rejectReason: r.reject_reason ?? null, entryState: r.entry_state ?? null,
       confidenceTier: r.confidence_tier ?? null, direction: r.direction ?? null,
     }));
+}
+
+/**
+ * Persisted momentum-stock diagnostics for the day → the deterministic digest the
+ * nightly summary embeds. Reads the bounded momentum_diagnostics table (survives
+ * restarts, unlike the in-memory near-miss buffer). Null when nothing was recorded.
+ */
+export function gatherMomentumDigestForDay(day: string, db: any = lazyDb()): MomentumMissDigest | null {
+  const rows = momentumDiagnosticsForDay(day, db);
+  if (!rows.length) return null;
+  return summarizeMomentumDiagnostics(rows);
+}
+
+/**
+ * Persisted options-funnel diagnostics for the day → the deterministic digest the
+ * nightly summary embeds. Reads the bounded options_diagnostics table. Null when no
+ * supervisor cycles recorded (e.g. SUPERVISOR_RUNTIME off).
+ */
+export function gatherOptionsDigestForDay(day: string, db: any = lazyDb()): OptionsFunnelDigest | null {
+  const rows = optionsDiagnosticsForDay(day, db);
+  if (!rows.length) return null;
+  const s = summarizeOptionsDiagnostics(rows);
+  return {
+    cycles: s.cycles,
+    setupsQualified: s.setupsQualified,
+    chainsFetched: s.chainsFetched,
+    canonical: s.canonical,
+    emitted: s.emitted,
+    delivered: s.delivered,
+    emittedButUndelivered: s.emittedButUndelivered,
+    configBlockedCycles: s.configBlockedCycles,
+    topDeliveryGateReason: s.topDeliveryGateReason,
+    diagnosis: s.diagnosis,
+  };
 }
 
 /**

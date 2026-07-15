@@ -21,6 +21,8 @@ function safe<T>(fn: () => T, fallback: T): T {
 
 export interface RuntimeStatus {
   nowMs: number;
+  /** Deployed build identity — confirm the live commit vs origin/main. */
+  deploy: { commit: string | null; commitShort: string | null; branch: string | null };
   worker: {
     scanner: { holderPid: number | null; fresh: boolean; hostname: string | null; heartbeatAt: string | null; running: boolean };
     scheduler: { holderPid: number | null; fresh: boolean; hostname: string | null; heartbeatAt: string | null; started: boolean; isOwner: boolean; note: string };
@@ -245,8 +247,11 @@ export function buildRuntimeStatus(nowMs: number = Date.now()): RuntimeStatus {
     return require("@/lib/scheduler").improvementAuditEnabled();
   }, false);
 
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const deploy = safe(() => require("@/lib/build-info").deployInfo(), { commit: null, commitShort: null, branch: null });
   return {
     nowMs,
+    deploy,
     worker: {
       scanner: {
         holderPid: scannerHolder.holder?.pid ?? null, fresh: scannerHolder.fresh,

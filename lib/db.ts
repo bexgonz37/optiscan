@@ -268,6 +268,40 @@ CREATE TABLE IF NOT EXISTS momentum_diagnostics (
 CREATE INDEX IF NOT EXISTS idx_momentum_diag_day ON momentum_diagnostics(trading_day, eval_at_ms);
 CREATE INDEX IF NOT EXISTS idx_momentum_diag_ticker ON momentum_diagnostics(ticker, eval_at_ms);
 
+-- Options-alert funnel diagnostics: ONE row per authoritative supervisor cycle
+-- (never per tick). Records how the bounded ticker universe flowed through the
+-- pipeline — chains fetched → canonical callouts → emitted → delivered — plus the
+-- delivery-stage skip counts and, critically, the CONFIG-GATE reason when a callout
+-- became actionable/emittable but could not be delivered (e.g. AGENT_CALLOUT_DISCORD
+-- off). Makes a "no options alerts" day diagnosable after the fact and lets the
+-- nightly AI narrate it. Bounded retention; only verified deterministic counts.
+CREATE TABLE IF NOT EXISTS options_diagnostics (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cycle_at_ms INTEGER NOT NULL,
+  trading_day TEXT NOT NULL,
+  session TEXT,
+  tickers_considered INTEGER NOT NULL DEFAULT 0,
+  chains_ok INTEGER NOT NULL DEFAULT 0,
+  chains_failed INTEGER NOT NULL DEFAULT 0,
+  tickers_with_canonical INTEGER NOT NULL DEFAULT 0,
+  canonical INTEGER NOT NULL DEFAULT 0,
+  portfolio_suppressed INTEGER NOT NULL DEFAULT 0,
+  dedup_suppressed INTEGER NOT NULL DEFAULT 0,
+  emitted INTEGER NOT NULL DEFAULT 0,
+  delivered INTEGER NOT NULL DEFAULT 0,
+  not_actionable_now INTEGER NOT NULL DEFAULT 0,
+  contract_incomplete INTEGER NOT NULL DEFAULT 0,
+  contract_mismatch INTEGER NOT NULL DEFAULT 0,
+  discord_auto_send INTEGER NOT NULL DEFAULT 0,   -- 1 when supervisor path may send
+  delivery_gate_reason TEXT,                      -- non-null when emitted>0 but blocked by config
+  top_reason TEXT,
+  duration_ms INTEGER,
+  strategy_version TEXT,
+  created_at_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_options_diag_day ON options_diagnostics(trading_day, cycle_at_ms);
+
 CREATE TABLE IF NOT EXISTS paper_decisions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   trade_id INTEGER REFERENCES paper_trades(id) ON DELETE SET NULL,

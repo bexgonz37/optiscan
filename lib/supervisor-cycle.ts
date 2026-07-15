@@ -14,10 +14,14 @@
  * bearish idea actionable, and never lets a probability or agent agreement override
  * a hard gate — those invariants live in the agent/supervisor/callout layers.
  */
-import { buildCalloutsForTickers } from "@/lib/callouts/runtime";
+import { buildCalloutsForTickers, type CalloutFunnel } from "@/lib/callouts/runtime";
 import { getZeroDteUniverse } from "@/lib/universe.js";
 import { loopState } from "@/lib/scanner-loop";
 import { buildCycleUniverse, DEFAULT_SUPERVISOR_CORE_TICKERS } from "@/lib/supervisor-universe";
+import { recordOptionsDiagnostic } from "@/lib/options-diagnostics";
+import { marketSession } from "@/lib/trading-session";
+
+const SUPERVISOR_STRATEGY_VERSION = "supervisor-options-v1";
 
 type G = typeof globalThis & {
   __optiscanSupervisorTelemetry?: SupervisorTelemetry;
@@ -39,6 +43,8 @@ export interface SupervisorTelemetry {
   overlapPrevented: number;
   cycles: number;
   lastError: string | null;
+  /** Last cycle's options funnel (live surface; the persistent record is in options_diagnostics). */
+  lastFunnel: CalloutFunnel | null;
 }
 
 function telemetry(): SupervisorTelemetry {
@@ -48,7 +54,7 @@ function telemetry(): SupervisorTelemetry {
     lastCycleEmitted: 0, lastCycleDelivered: 0, lastCycleDurationMs: 0,
     lastCycleSymbols: [], lastChainConcurrency: 0, lastOptionsChainsSucceeded: 0,
     lastOptionsChainsFailed: 0, lastTickerLatencies: [], overlapPrevented: 0,
-    cycles: 0, lastError: null,
+    cycles: 0, lastError: null, lastFunnel: null,
   };
   return g.__optiscanSupervisorTelemetry;
 }
@@ -131,7 +137,32 @@ export async function runSupervisorCycle(nowMs: number = Date.now(), env: NodeJS
     t.lastOptionsChainsSucceeded = res.execution.succeeded;
     t.lastOptionsChainsFailed = res.execution.failed;
     t.lastTickerLatencies = res.execution.tickerResults;
+    t.lastFunnel = res.funnel;
     t.lastError = null;
+    // Persist the options funnel (bounded, non-throwing) so a "no options alerts"
+    // day is diagnosable after a restart and the nightly AI can narrate it.
+    const f = res.funnel;
+    recordOptionsDiagnostic({
+      cycleAtMs: nowMs,
+      session: marketSession(nowMs),
+      tickersConsidered: f.tickersConsidered,
+      chainsOk: f.chainsOk,
+      chainsFailed: f.chainsFailed,
+      tickersWithCanonical: f.tickersWithCanonical,
+      canonical: f.canonical,
+      portfolioSuppressed: f.portfolioSuppressed,
+      dedupSuppressed: f.dedupSuppressed,
+      emitted: f.emitted,
+      delivered: f.delivered,
+      notActionableNow: f.notActionableNow,
+      contractIncomplete: f.contractIncomplete,
+      contractMismatch: f.contractMismatch,
+      discordAutoSend: f.discordAutoSend,
+      deliveryGateReason: f.deliveryGateReason,
+      topReason: f.topReason,
+      durationMs: res.execution.durationMs,
+      strategyVersion: SUPERVISOR_STRATEGY_VERSION,
+    });
   } catch (err: any) {
     t.lastError = err?.message ?? String(err);
   } finally {

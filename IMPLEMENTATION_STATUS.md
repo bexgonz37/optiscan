@@ -22,6 +22,55 @@ This file is the resume point. Read it + the task list before making changes.
 Do **not** repeat Phase 1, redo timestamp normalization, or add the Self-Improvement
 Lab / an embedded LLM.
 
+## Alert diagnosability + deployed-commit visibility (2026-07-15)
+
+Audited why so few options alerts and late momentum alerts reach Discord. **The
+dominant cause of both symptoms is production configuration, not scanner logic** —
+and there was no persisted evidence to prove it after a restart. Findings + the
+smallest safe deterministic fixes:
+
+**Options root cause (config gate, first to check).** The supervisor options→Discord
+path requires ALL of `SUPERVISOR_RUNTIME=1`, `CALLOUT_CANONICAL_PATH=supervisor`,
+`AGENT_CALLOUT_DISCORD=1`, `DISCORD_WEBHOOK_OPTIONS`. With `CALLOUT_CANONICAL_PATH=supervisor`
+but `AGENT_CALLOUT_DISCORD≠1`, the legacy sender stands down AND the supervisor stays
+silent → **zero options alerts** even when callouts are emittable
+(`lib/callouts/routing.ts:optionsDeliveryGateReason`). Bearish/puts are research-only
+by design (unchanged).
+
+**Momentum root cause.** Scanning is a **single bulk snapshot per tick over core ∪
+promoted, evaluated in memory** — NOT sequential (ruled out). Real latency = discovery
+cadence (15s) + promotion warmup (~10 ticks) for brand-new movers; only the top few
+promoted names were ring-seeded. The a91aaae crossing latch only helps symbols already
+in the 1s loop AND is **inert unless `STOCK_CALLOUTS=1`** (the whole momentum path
+early-returns otherwise).
+
+**Changes (additive; no threshold widening; no LLM in the signal path):**
+- `lib/options-diagnostics.ts` + `options_diagnostics` table — ONE bounded row per
+  supervisor cycle (tickers→chains→canonical→emitted→delivered + delivery-stage skips +
+  the config `delivery_gate_reason`). Wired in `supervisor-cycle.ts`; funnel computed in
+  `callouts/runtime.ts` (`CalloutFunnel`). Answers "how many qualified / chains fetched /
+  rejected at which gate / most common reason / ACTIONABLE-but-undelivered".
+- Nightly AI now **reads** both `options_diagnostics` and `momentum_diagnostics`
+  (previously momentum was written-only): `queries.ts` gatherers → `nightly-summary.ts`
+  digests. Config-blocked delivery sets `prioritizedIssue = options_delivery_disabled`
+  (a mis-config outranks every signal issue).
+- `/api/healthz` + `/api/runtime/status` now expose `commit`/`commitShort`/`branch`
+  (`lib/build-info.ts`, from Railway's injected SHA) — confirm the live commit vs
+  `origin/main`. healthz stays secret-free (helper import, no `process.env` in the route).
+- `SCANNER_SEED_TOP_N` (default 6, bounded 0–12, budget-guarded) — seed more freshly
+  promoted movers' rings so fast movers detect earlier. `optionsDeliveryGateReason`
+  moved to `routing.ts` (pure, testable).
+- New env: `SCANNER_SEED_TOP_N`, `OPTIONS_DIAGNOSTIC_RETENTION_DAYS`,
+  `MOMENTUM_DIAGNOSTIC_RETENTION_DAYS` (all safe defaults). One-line options format,
+  Discord↔paper contract identity, actionable-only delivery, and bearish/real-money
+  safeguards all unchanged.
+
+Verification: full suite **1149 pass / 0 fail** (+15 `tests/options-diagnostics.test.mjs`),
+`tsc --noEmit` clean, production build OK, `options_diagnostics` migration idempotent
+(SCHEMA applied twice in-test). Tests cover the funnel summarizer, the delivery-gate
+reason, the config-blocked nightly prioritization, the persistence round-trip, the
+bulk-snapshot (not sequential) scanning model, the seed knob, and `deployInfo`.
+
 ## First controlled AI phase — nightly diagnosis + weekly proposals (2026-07-14)
 
 Advisory AI layer: **offline, scheduled, auditable, human-approved.** It reads
