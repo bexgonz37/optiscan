@@ -1054,6 +1054,10 @@ const PAPER_COLUMN_MIGRATIONS: Array<[string, string]> = [
   // (profile, risk budget, every cap, the binding constraint) frozen at creation
   // so the trade detail page shows exactly why this size was chosen or refused.
   ["sizing_json", "ALTER TABLE paper_trades ADD COLUMN sizing_json TEXT"],
+  // Portfolio isolation (2026-07-15): PRIMARY (default) vs the independent
+  // AGGRESSIVE_CHALLENGE $10k→$100k paper-only options portfolio. Same signals +
+  // exact OCC contracts, fully separate balance / positions / P&L / drawdown.
+  ["portfolio", "ALTER TABLE paper_trades ADD COLUMN portfolio TEXT NOT NULL DEFAULT 'PRIMARY'"],
 ];
 
 /** Opportunity-grade columns on the authoritative outcomes table (additive). */

@@ -33,28 +33,28 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: true, tradeId: Number(tradeIdParam), events: paperTradeEvents(Number(tradeIdParam)) });
   }
 
-  const trades = listPaperTrades();
-  const summary = summarize(trades);
-  const optionsPerf = optionsPerformance(trades.map((t) => ({
-    optionSymbol: t.optionSymbol,
-    optionType: t.optionType,
-    status: t.status,
-    dteAtEntry: t.dteAtEntry,
-    contracts: t.contracts,
-    entryPrice: t.entryPrice,
-    exitPrice: t.exitPrice,
-    lastMark: t.lastMark,
-    entryAtMs: t.entryAtMs,
-    exitAtMs: t.exitAtMs,
+  const allTrades = listPaperTrades();
+  // Primary and Challenge statistics are NEVER mixed. Primary is the default
+  // account; the Challenge is the independent AGGRESSIVE_CHALLENGE portfolio.
+  const trades = allTrades.filter((t) => (t.portfolio ?? "PRIMARY") === "PRIMARY");
+  const challengeTrades = allTrades.filter((t) => t.portfolio === "CHALLENGE");
+  const toPerfRow = (t: typeof allTrades[number]) => ({
+    optionSymbol: t.optionSymbol, optionType: t.optionType, status: t.status,
+    dteAtEntry: t.dteAtEntry, contracts: t.contracts, entryPrice: t.entryPrice,
+    exitPrice: t.exitPrice, lastMark: t.lastMark, entryAtMs: t.entryAtMs, exitAtMs: t.exitAtMs,
     strategy: t.strategy,
     entrySlippage: (t.entryCosts?.slippage as number | null) ?? null,
     exitSlippage: (t.exitCosts?.slippage as number | null) ?? null,
     entryFees: (t.entryCosts?.fees as number | null) ?? null,
     exitFees: (t.exitCosts?.fees as number | null) ?? null,
     opportunityPeakPct: t.opportunityPeakPct,
-  })), Number(process.env.PAPER_OPPORTUNITY_HIT_PCT ?? 30));
+  });
+  const hitPct = Number(process.env.PAPER_OPPORTUNITY_HIT_PCT ?? 30);
+  const summary = summarize(trades);
+  const optionsPerf = optionsPerformance(trades.map(toPerfRow), hitPct);
   const startingBalance = Number(process.env.PAPER_STARTING_BALANCE_USD ?? process.env.PAPER_STARTING_BALANCE ?? 5000);
   const equity = +(startingBalance + summary.totalPnlDollars).toFixed(2);
+  const engine = paperEngineState();
   return NextResponse.json({
     ok: true,
     trades,
@@ -67,6 +67,13 @@ export async function GET(req: Request) {
       equity,
       buyingPowerNote: "Risk engine reserves are enforced by max risk, max ticker exposure, and max open trades.",
     },
+    // Independent AGGRESSIVE_CHALLENGE — separate rows, balance, P&L, and analytics.
+    challenge: {
+      ...engine.challenge,
+      trades: challengeTrades,
+      summary: summarize(challengeTrades),
+      optionsPerformance: optionsPerformance(challengeTrades.map(toPerfRow), hitPct),
+    },
     buckets: {
       byConfidence: byConfidence(trades),
       byExpirationLength: byExpirationLength(trades),
@@ -75,7 +82,7 @@ export async function GET(req: Request) {
     },
     decisions: listPaperDecisions(),
     events: recentPaperEvents(200),
-    engine: paperEngineState(),
+    engine,
   });
 }
 

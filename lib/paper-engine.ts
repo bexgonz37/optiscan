@@ -24,6 +24,7 @@ import { checkRisk, defaultRiskConfig, type ProposedTrade, type RiskConfig, type
 import { dollarsAtRisk } from "@/lib/paper-trading";
 import { paperExperimentalOversize, paperMinPositionDollars, paperTargetProfitDollars, unitsForDollarExposure } from "@/lib/paper-sizing";
 import { paperSizingConfig, sizePosition, type PaperSizingConfig, type SizingResult } from "@/lib/paper-position-sizer";
+import { challengeConfig, challengeAcceptsEntries, CHALLENGE_PORTFOLIO, PRIMARY_PORTFOLIO } from "@/lib/paper-challenge";
 import { actionableFreshness } from "@/lib/data-freshness";
 import type { OptionQuote } from "@/lib/execution/broker";
 import { revalidateContract, type AlertTimeContract, type RevalidationResult } from "@/lib/paper-revalidation";
@@ -238,6 +239,7 @@ export function listPaperTrades(limit = 200): Array<PaperTrade & {
   fingerprintDimensions: Record<string, unknown> | null;
   sizing: Record<string, unknown> | null;
   opportunityPeakPct: number | null;
+  portfolio: string;
   outcome: PaperOutcomeRow | null;
   explanation: PaperExplanation;
 }> {
@@ -321,6 +323,7 @@ export function listPaperTrades(limit = 200): Array<PaperTrade & {
       fillAssumptions: parseJsonObj(r.fill_assumptions_json),
       sizing: parseJsonObj(r.sizing_json),
       opportunityPeakPct: r.opportunity_peak_pct ?? null,
+      portfolio: r.portfolio ?? "PRIMARY",
       explanation,
     };
   });
@@ -418,15 +421,15 @@ export function dailyPaperSummary(nowMs: number = Date.now()): DailyPaperSummary
   const qualifyingActionableCallouts = Math.max(candidateCallouts, tradeAlerts);
   const paperCandidatesCreated = paperCandidatesTable
     ? count("SELECT COUNT(*) n FROM paper_candidates WHERE status='CREATED' AND created_at_ms >= ?", sinceMs)
-    : count("SELECT COUNT(*) n FROM paper_trades WHERE option_symbol IS NOT NULL AND created_at_ms >= ?", sinceMs);
-  const readyOrders = count("SELECT COUNT(*) n FROM paper_trades WHERE option_symbol IS NOT NULL AND status='READY' AND created_at_ms >= ?", sinceMs);
+    : count("SELECT COUNT(*) n FROM paper_trades WHERE COALESCE(portfolio,'PRIMARY')='PRIMARY' AND option_symbol IS NOT NULL AND created_at_ms >= ?", sinceMs);
+  const readyOrders = count("SELECT COUNT(*) n FROM paper_trades WHERE COALESCE(portfolio,'PRIMARY')='PRIMARY' AND option_symbol IS NOT NULL AND status='READY' AND created_at_ms >= ?", sinceMs);
   const revalidationAttempts = paperEventsTable
     ? count("SELECT COUNT(*) n FROM paper_events WHERE event_type IN ('validation_passed','validation_failed','no_fill') AND created_at_ms >= ?", sinceMs)
     : count("SELECT COUNT(*) n FROM paper_decisions WHERE decision IN ('entry_filled','entry_rejected') AND created_at_ms >= ?", sinceMs);
-  const fills = count("SELECT COUNT(*) n FROM paper_trades WHERE option_symbol IS NOT NULL AND entry_at_ms >= ?", sinceMs);
-  const rejected = count("SELECT COUNT(*) n FROM paper_trades WHERE option_symbol IS NOT NULL AND status='CANCELLED' AND entry_price IS NULL AND created_at_ms >= ?", sinceMs);
+  const fills = count("SELECT COUNT(*) n FROM paper_trades WHERE COALESCE(portfolio,'PRIMARY')='PRIMARY' AND option_symbol IS NOT NULL AND entry_at_ms >= ?", sinceMs);
+  const rejected = count("SELECT COUNT(*) n FROM paper_trades WHERE COALESCE(portfolio,'PRIMARY')='PRIMARY' AND option_symbol IS NOT NULL AND status='CANCELLED' AND entry_price IS NULL AND created_at_ms >= ?", sinceMs);
   const expiredEntryWindows = count(
-    "SELECT COUNT(*) n FROM paper_trades WHERE option_symbol IS NOT NULL AND status IN ('CANCELLED','EXPIRED') AND entry_price IS NULL AND created_at_ms >= ? AND COALESCE(exit_reason, close_reason, '') LIKE '%entry window%'",
+    "SELECT COUNT(*) n FROM paper_trades WHERE COALESCE(portfolio,'PRIMARY')='PRIMARY' AND option_symbol IS NOT NULL AND status IN ('CANCELLED','EXPIRED') AND entry_price IS NULL AND created_at_ms >= ? AND COALESCE(exit_reason, close_reason, '') LIKE '%entry window%'",
     sinceMs,
   );
 
@@ -512,16 +515,16 @@ function isPermanentAutoEntryRefusal(failures: string[]): boolean {
   return false;
 }
 
-function openTrades(): PaperTrade[] {
+function openTrades(portfolio: string = PRIMARY_PORTFOLIO): PaperTrade[] {
   const db = getDb();
   return (db.prepare(
-    "SELECT * FROM paper_trades WHERE status IN ('WATCHING','READY','ENTERED') ORDER BY id ASC",
-  ).all() as any[]).map(rowToTrade);
+    "SELECT * FROM paper_trades WHERE status IN ('WATCHING','READY','ENTERED') AND COALESCE(portfolio,'PRIMARY')=? ORDER BY id ASC",
+  ).all(portfolio) as any[]).map(rowToTrade);
 }
 
-// ── Risk context from realized history ──────────────────────────────────────
+// ── Risk context from realized history (scoped per portfolio) ────────────────
 
-export function riskContext(): RiskContext {
+export function riskContext(portfolio: string = PRIMARY_PORTFOLIO): RiskContext {
   const db = getDb();
   const dayMs = Date.now() - 24 * 3600_000; // rolling 24h ≈ trading day for paper purposes
   const nowMs = Date.now();
@@ -529,8 +532,8 @@ export function riskContext(): RiskContext {
   const realized = (sinceMs: number): number => {
     const rows = db.prepare(
     `SELECT entry_price, exit_price, contracts, option_symbol, option_type FROM paper_trades
-       WHERE exit_at_ms >= ? AND entry_price IS NOT NULL AND exit_price IS NOT NULL`,
-    ).all(sinceMs) as any[];
+       WHERE exit_at_ms >= ? AND entry_price IS NOT NULL AND exit_price IS NOT NULL AND COALESCE(portfolio,'PRIMARY')=?`,
+    ).all(sinceMs, portfolio) as any[];
     return rows.reduce((s, r) => {
       const multiplier = r.option_symbol ? 100 : 1;
       const direction = !r.option_symbol && r.option_type === "put" ? -1 : 1;
@@ -539,16 +542,16 @@ export function riskContext(): RiskContext {
   };
   const recentClosed = db.prepare(
     `SELECT exit_at_ms, entry_price, exit_price, contracts, option_symbol, option_type FROM paper_trades
-     WHERE exit_at_ms IS NOT NULL AND entry_price IS NOT NULL AND exit_price IS NOT NULL
+     WHERE exit_at_ms IS NOT NULL AND entry_price IS NOT NULL AND exit_price IS NOT NULL AND COALESCE(portfolio,'PRIMARY')=?
      ORDER BY exit_at_ms DESC LIMIT 20`,
-  ).all() as any[];
+  ).all(portfolio) as any[];
   const lastLoss = recentClosed.find((r) => {
     const multiplier = r.option_symbol ? 100 : 1;
     const direction = !r.option_symbol && r.option_type === "put" ? -1 : 1;
     return (r.exit_price - r.entry_price) * direction * multiplier * (r.contracts ?? 1) < 0;
   });
   return {
-    openTrades: openTrades(),
+    openTrades: openTrades(portfolio),
     realizedTodayDollars: realized(dayMs),
     realizedWeekDollars: realized(weekMs),
     lastLossAtMs: lastLoss?.exit_at_ms ?? null,
@@ -556,22 +559,27 @@ export function riskContext(): RiskContext {
   };
 }
 
-/** Capital context from open positions + realized P/L (buying-power reservation). */
-export function capitalContext(nowMs = Date.now()): CapitalContext {
+/** Starting balance for a portfolio (Challenge has its own independent stake). */
+function startingBalanceFor(portfolio: string): number {
+  return portfolio === CHALLENGE_PORTFOLIO
+    ? challengeConfig().startingBalanceUsd
+    : defaultCapitalConfig().startingBalance;
+}
+
+/** Capital context from open positions + realized P/L, scoped per portfolio. */
+export function capitalContext(nowMs = Date.now(), portfolio: string = PRIMARY_PORTFOLIO): CapitalContext {
   const db = getDb();
-  const cfg = defaultCapitalConfig();
   const realized: any = db.prepare(
     `SELECT COALESCE(SUM((exit_price - entry_price) * (CASE WHEN option_symbol IS NULL AND option_type='put' THEN -1 ELSE 1 END)
        * (CASE WHEN option_symbol IS NULL THEN 1 ELSE 100 END) * contracts), 0) AS pnl
-     FROM paper_trades WHERE entry_price IS NOT NULL AND exit_price IS NOT NULL`,
-  ).get();
+     FROM paper_trades WHERE entry_price IS NOT NULL AND exit_price IS NOT NULL AND COALESCE(portfolio,'PRIMARY')=?`,
+  ).get(portfolio);
   const open = db.prepare(
-    "SELECT ticker, option_symbol, entry_price, entry_limit, contracts, strategy FROM paper_trades WHERE status IN ('ENTERED')",
-  ).all() as any[];
+    "SELECT ticker, option_symbol, entry_price, entry_limit, contracts, strategy FROM paper_trades WHERE status IN ('ENTERED') AND COALESCE(portfolio,'PRIMARY')=?",
+  ).all(portfolio) as any[];
   const reserved = open.reduce((s, r) => s + (r.entry_price ?? r.entry_limit ?? 0) * (r.option_symbol ? 100 : 1) * (r.contracts ?? 1), 0);
-  const dayStart = new Date(nowMs); dayStart.setHours(0, 0, 0, 0);
   return {
-    equityDollars: cfg.startingBalance + Number(realized?.pnl ?? 0),
+    equityDollars: startingBalanceFor(portfolio) + Number(realized?.pnl ?? 0),
     reservedOpenDollars: +reserved.toFixed(2),
     openPositions: open.length,
     openContractSymbols: new Set(open.map((r) => r.option_symbol).filter(Boolean)),
@@ -594,6 +602,8 @@ export interface CreatePaperTradeInput {
   stopLossPct?: number | null;
   takeProfitPct?: number | null;
   thesis?: string | null;
+  /** PRIMARY (default) or CHALLENGE — the independent aggressive portfolio. */
+  portfolio?: string;
 }
 
 export interface CreateResult {
@@ -601,6 +611,8 @@ export interface CreateResult {
   id?: number;
   risk: RiskVerdict;
   note?: string;
+  /** The Challenge mirror created alongside a Primary entry (when enabled/active). */
+  challenge?: { ok: boolean; id?: number; reason?: string };
 }
 
 export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
@@ -658,9 +670,14 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
   // Deterministic risk-based sizing. An explicit `contracts` (manual override)
   // is honoured; otherwise the sizer decides the count from equity + the loss at
   // the stop, clamped by every hard cap. The full calc is frozen for the detail page.
-  const rc = riskContext();
-  const cc = capitalContext();
-  const sizingCfg = paperSizingConfig();
+  // Contexts + sizing are scoped to the target portfolio (Challenge sizes off its
+  // own $10k stake and its own aggressive caps — never Primary's).
+  const portfolio = base.portfolio === CHALLENGE_PORTFOLIO ? CHALLENGE_PORTFOLIO : PRIMARY_PORTFOLIO;
+  const rc = riskContext(portfolio);
+  const cc = capitalContext(Date.now(), portfolio);
+  const sizingCfg = portfolio === CHALLENGE_PORTFOLIO
+    ? paperSizingConfig({ ...process.env, PAPER_RISK_PROFILE: challengeConfig().riskProfile })
+    : paperSizingConfig();
   let sizingResult: SizingResult | null = null;
   let contracts = base.contracts;
   if (contracts == null) {
@@ -730,8 +747,8 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
        (alert_id, ticker, option_symbol, option_type, strike, expiration, dte_at_entry, contracts,
         status, order_state, thesis, confidence, entry_limit, stop_loss_pct, take_profit_pct,
         short_rate_entry, above_vwap_entry, rel_vol_entry, created_at_ms,
-        strategy, selector_profile, alert_time_contract_json, risk_amount, snapshot_version, sizing_json)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        strategy, selector_profile, alert_time_contract_json, risk_amount, snapshot_version, sizing_json, portfolio)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     base.alertId ?? null, base.ticker, base.optionSymbol, proposed.optionType,
     base.strike ?? null, base.expiration ?? null, base.dte ?? null, proposed.contracts,
@@ -741,6 +758,7 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
     thesisSnapshot.relVol, nowMs,
     strategy, strategy, JSON.stringify(alertTimeContract), riskAmount, 1,
     sizingResult ? JSON.stringify({ ...sizingResult.calc, reason: sizingResult.reason, contracts: proposed.contracts }) : JSON.stringify({ manualContracts: proposed.contracts, reason: "explicit contract count (manual override)" }),
+    portfolio,
   );
   const id = Number(info.lastInsertRowid);
   emitEvents(id, base.alertId ?? null, base.ticker, ["candidate_created", "order_submitted"], { toState: "PENDING", reason: "risk + capital passed; entry order active", nowMs });
@@ -750,12 +768,62 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
     ticker: base.ticker,
     decision: "entry_order_created",
     allowed: true,
-    reason: "risk passed; limit buy order is active",
+    reason: `risk passed; limit buy order is active (${portfolio})`,
     risk,
-    snapshot: proposed,
+    snapshot: { ...proposed, portfolio },
     nowMs,
   });
-  return { ok: true, id, risk, note: "entry limit order active (READY)" };
+
+  // MIRROR TO CHALLENGE: a Primary options entry also opens an independent
+  // AGGRESSIVE_CHALLENGE position on the SAME alert + exact OCC contract, sized by
+  // the Challenge's own aggressive profile against its own $10k stake. It never
+  // recurses (the mirror is portfolio=CHALLENGE) and never mixes balances.
+  let challenge: CreateResult["challenge"];
+  if (portfolio === PRIMARY_PORTFOLIO && base.optionSymbol) {
+    challenge = maybeMirrorToChallenge(base, id);
+  }
+
+  return { ok: true, id, risk, note: `entry limit order active (READY, ${portfolio})`, challenge };
+}
+
+/**
+ * Create the Challenge mirror of a Primary options entry when the Challenge is
+ * enabled and still ACTIVE (not TARGET_REACHED / FAILED). Deduped per alert so a
+ * single setup opens at most one Challenge position. Uses the identical resolved
+ * OCC contract and entry limit as Primary — only the SIZE differs.
+ */
+function maybeMirrorToChallenge(base: CreatePaperTradeInput, primaryId: number): CreateResult["challenge"] {
+  const cfg = challengeConfig();
+  if (!cfg.enabled) return { ok: false, reason: "challenge disabled (PAPER_CHALLENGE_ENABLED!=1)" };
+  const db = getDb();
+  if (base.alertId != null) {
+    const dup = db.prepare("SELECT 1 FROM paper_trades WHERE alert_id=? AND portfolio=? LIMIT 1").get(base.alertId, CHALLENGE_PORTFOLIO);
+    if (dup) return { ok: false, reason: "challenge already mirrored for this alert" };
+  }
+  const equity = capitalContext(Date.now(), CHALLENGE_PORTFOLIO).equityDollars;
+  if (!challengeAcceptsEntries(equity, cfg)) {
+    return { ok: false, reason: `challenge not accepting entries (status ${deriveChallengeStatusFor(equity)})` };
+  }
+  const res = createPaperTrade({
+    alertId: base.alertId ?? null,
+    ticker: base.ticker,
+    optionSymbol: base.optionSymbol,
+    optionType: base.optionType,
+    strike: base.strike ?? null,
+    expiration: base.expiration ?? null,
+    dte: base.dte ?? null,
+    entryLimit: base.entryLimit,
+    stopLossPct: base.stopLossPct ?? null,
+    takeProfitPct: base.takeProfitPct ?? null,
+    thesis: `AGGRESSIVE_CHALLENGE mirror of #${primaryId}: ${base.thesis ?? ""}`.slice(0, 240),
+    portfolio: CHALLENGE_PORTFOLIO,
+  });
+  return { ok: res.ok, id: res.id, reason: res.ok ? undefined : res.risk.failures.join("; ") };
+}
+
+function deriveChallengeStatusFor(equity: number): string {
+  const cfg = challengeConfig();
+  return equity <= cfg.failureFloorUsd ? "FAILED" : equity >= cfg.targetUsd ? "TARGET_REACHED" : "ACTIVE";
 }
 
 /** Manual cancel/close. Close uses last mark (documented — no fresh fetch). */
@@ -1506,6 +1574,47 @@ export function paperEngineState() {
     // Risk-based sizing profile the sizer is actually using this session.
     sizingProfile: sizing.profile,
     sizing,
+    challenge: challengeAccountState(),
+  };
+}
+
+/**
+ * Independent AGGRESSIVE_CHALLENGE account state, computed from CHALLENGE-tagged
+ * rows only (never mixed with Primary). Balance, equity, open positions, realized
+ * + unrealized P&L, drawdown, and the deterministic ACTIVE / TARGET_REACHED /
+ * FAILED status. No resets, no replenishment.
+ */
+export function challengeAccountState() {
+  const cfg = challengeConfig();
+  const db = getDb();
+  const realized: any = db.prepare(
+    `SELECT COALESCE(SUM((exit_price - entry_price) * 100 * contracts), 0) AS pnl
+     FROM paper_trades WHERE portfolio=? AND option_symbol IS NOT NULL AND entry_price IS NOT NULL AND exit_price IS NOT NULL`,
+  ).get(CHALLENGE_PORTFOLIO);
+  const realizedPnl = +Number(realized?.pnl ?? 0).toFixed(2);
+  const equity = +(cfg.startingBalanceUsd + realizedPnl).toFixed(2);
+  const openRows = db.prepare(
+    `SELECT entry_price, last_mark, contracts FROM paper_trades
+     WHERE portfolio=? AND option_symbol IS NOT NULL AND status='ENTERED' AND entry_price IS NOT NULL`,
+  ).all(CHALLENGE_PORTFOLIO) as any[];
+  const unrealizedPnl = +openRows.reduce((s, r) => s + ((r.last_mark ?? r.entry_price) - r.entry_price) * 100 * (r.contracts ?? 1), 0).toFixed(2);
+  const status = equity <= cfg.failureFloorUsd ? "FAILED" : equity >= cfg.targetUsd ? "TARGET_REACHED" : "ACTIVE";
+  return {
+    enabled: cfg.enabled,
+    portfolio: CHALLENGE_PORTFOLIO,
+    startingBalanceUsd: cfg.startingBalanceUsd,
+    targetUsd: cfg.targetUsd,
+    failureFloorUsd: cfg.failureFloorUsd,
+    riskProfile: cfg.riskProfile,
+    realizedPnl,
+    unrealizedPnl,
+    equity,
+    openPositions: openRows.length,
+    progressPct: cfg.targetUsd > cfg.startingBalanceUsd
+      ? +(((equity - cfg.startingBalanceUsd) / (cfg.targetUsd - cfg.startingBalanceUsd)) * 100).toFixed(1)
+      : null,
+    status,
+    acceptsEntries: cfg.enabled && status === "ACTIVE",
   };
 }
 

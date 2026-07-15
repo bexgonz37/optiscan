@@ -17,17 +17,52 @@ function lazyDb(): any {
 
 const LOOKBACK_MS = 3 * 24 * 3600_000; // generous window; filtered to the exact ET day in JS
 
-/** Graded outcomes whose paper trade ENTERED on the given ET trading day. */
-export function gatherOutcomesForDay(day: string, nowMs: number = Date.now(), db: any = lazyDb()): OutcomeInput[] {
-  const rows = db.prepare(
-    `SELECT o.strategy AS strategy, o.direction AS direction, o.dte_at_entry AS dte_at_entry,
+/**
+ * Can we scope outcomes by portfolio? Requires the paper_trades table AND the
+ * paper_trade_id link on paper_trade_outcomes. Old schemas / minimal test stubs
+ * lack these — there everything is PRIMARY (the Challenge is a newer feature).
+ */
+function canScopePortfolio(db: any): boolean {
+  try {
+    const hasTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_trades'").get();
+    if (!hasTable) return false;
+    const cols = new Set((db.prepare("PRAGMA table_info(paper_trade_outcomes)").all() as any[]).map((c) => c.name));
+    return cols.has("paper_trade_id");
+  } catch {
+    return false;
+  }
+}
+
+/** Build the SELECT + args for outcomes since `sinceMs`, optionally portfolio-scoped. */
+function outcomesQuery(db: any, sinceMs: number, portfolio: string): { sql: string; args: any[] } {
+  const cols = `o.strategy AS strategy, o.direction AS direction, o.dte_at_entry AS dte_at_entry,
             o.entry_session AS entry_session, o.entry_time_ms AS entry_time_ms, o.terminal_kind AS terminal_kind,
             o.grade AS grade, o.grading_status AS grading_status, o.return_pct AS return_pct,
-            o.opportunity_grade AS opportunity_grade, o.peak_favorable_pct AS peak_favorable_pct
-       FROM paper_trade_outcomes o
-      WHERE o.entry_time_ms IS NOT NULL AND o.entry_time_ms >= ?
-      ORDER BY o.entry_time_ms ASC`,
-  ).all(nowMs - LOOKBACK_MS) as any[];
+            o.opportunity_grade AS opportunity_grade, o.peak_favorable_pct AS peak_favorable_pct`;
+  if (canScopePortfolio(db)) {
+    return {
+      sql: `SELECT ${cols} FROM paper_trade_outcomes o
+             LEFT JOIN paper_trades p ON p.id = o.paper_trade_id
+            WHERE o.entry_time_ms IS NOT NULL AND o.entry_time_ms >= ? AND COALESCE(p.portfolio,'PRIMARY') = ?
+            ORDER BY o.entry_time_ms ASC`,
+      args: [sinceMs, portfolio],
+    };
+  }
+  // Legacy/minimal schema: no portfolio dimension → all rows are PRIMARY.
+  if (portfolio !== "PRIMARY") return { sql: "SELECT NULL WHERE 0", args: [] };
+  return {
+    sql: `SELECT ${cols} FROM paper_trade_outcomes o
+          WHERE o.entry_time_ms IS NOT NULL AND o.entry_time_ms >= ? ORDER BY o.entry_time_ms ASC`,
+    args: [sinceMs],
+  };
+}
+
+/** Graded outcomes whose paper trade ENTERED on the given ET trading day. */
+export function gatherOutcomesForDay(day: string, nowMs: number = Date.now(), db: any = lazyDb(), portfolio: string = "PRIMARY"): OutcomeInput[] {
+  // Scope to a single portfolio so Primary and Challenge stats are never mixed in
+  // the AI analysis (the Challenge is analyzed separately).
+  const q = outcomesQuery(db, nowMs - LOOKBACK_MS, portfolio);
+  const rows = db.prepare(q.sql).all(...q.args) as any[];
   return rows
     .filter((r) => tradingDay(Number(r.entry_time_ms)) === day)
     .map((r): OutcomeInput => ({
@@ -72,16 +107,9 @@ export function recentTradingDays(nowMs: number, days: number): Set<string> {
 }
 
 /** Graded outcomes whose entry ET day is in `daySet` (weekly aggregation). */
-export function gatherOutcomesForDays(daySet: Set<string>, nowMs: number = Date.now(), db: any = lazyDb()): OutcomeInput[] {
-  const rows = db.prepare(
-    `SELECT o.strategy AS strategy, o.direction AS direction, o.dte_at_entry AS dte_at_entry,
-            o.entry_session AS entry_session, o.entry_time_ms AS entry_time_ms, o.terminal_kind AS terminal_kind,
-            o.grade AS grade, o.grading_status AS grading_status, o.return_pct AS return_pct,
-            o.opportunity_grade AS opportunity_grade, o.peak_favorable_pct AS peak_favorable_pct
-       FROM paper_trade_outcomes o
-      WHERE o.entry_time_ms IS NOT NULL AND o.entry_time_ms >= ?
-      ORDER BY o.entry_time_ms ASC`,
-  ).all(nowMs - 9 * 24 * 3600_000) as any[];
+export function gatherOutcomesForDays(daySet: Set<string>, nowMs: number = Date.now(), db: any = lazyDb(), portfolio: string = "PRIMARY"): OutcomeInput[] {
+  const q = outcomesQuery(db, nowMs - 9 * 24 * 3600_000, portfolio);
+  const rows = db.prepare(q.sql).all(...q.args) as any[];
   return rows
     .filter((r) => daySet.has(tradingDay(Number(r.entry_time_ms))))
     .map((r): OutcomeInput => ({

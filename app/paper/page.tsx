@@ -126,6 +126,7 @@ function PaperPageInner() {
 
   const s: Summary | null = data?.summary ?? null;
   const optionsPerf: any = data?.optionsPerformance ?? null;
+  const challenge: any = data?.challenge ?? null;
   const engine = data?.engine ?? null;
   const account: PaperAccount | null = data?.account ?? null;
   const trades: any[] = data?.trades ?? [];
@@ -308,8 +309,43 @@ function PaperPageInner() {
             </p>
           </Panel>
         ) : null}
+        {challenge && challenge.enabled ? (
+          <Panel
+            title="Aggressive challenge — $10k → $100k"
+            meta="Independent options-only portfolio · same signals + exact contracts as Primary · separate P&L, never mixed"
+            tip="paperTrading"
+          >
+            <div className="utility-badges" style={{ marginBottom: 10 }}>
+              <span className={`pill badge${challenge.status === "TARGET_REACHED" ? " badge-live" : challenge.status === "FAILED" ? " badge-warn" : ""}`}>
+                {challenge.status === "TARGET_REACHED" ? "🎯 TARGET REACHED" : challenge.status === "FAILED" ? "💀 FAILED (no reset)" : "ACTIVE"}
+              </span>
+              <span className="pill badge">Profile {challenge.riskProfile}</span>
+              <span className="pill badge">{challenge.acceptsEntries ? "Taking entries" : "Not taking entries"}</span>
+            </div>
+            <div className="axiom-strip paper-strip">
+              <StatTile label="Challenge equity" value={dollars(challenge.equity)} hint={`start ${dollars(challenge.startingBalanceUsd)} → target ${dollars(challenge.targetUsd)}`} metric="paperTrading" />
+              <StatTile label="Progress to $100k" value={num(challenge.progressPct, "%")} hint="0% = start · 100% = target" metric="paperTrading" />
+              <StatTile label="Realized P/L" value={dollars(challenge.realizedPnl)} hint="challenge only" metric="paperTrading" />
+              <StatTile label="Unrealized P/L" value={dollars(challenge.unrealizedPnl)} hint="open challenge marks" metric="paperTrading" />
+              <StatTile label="Open positions" value={String(challenge.openPositions ?? 0)} hint="challenge only" metric="paperTrading" />
+              <StatTile label="Failure floor" value={dollars(challenge.failureFloorUsd)} hint="equity here = FAILED, no reset" metric="paperTrading" />
+              {challenge.optionsPerformance ? (
+                <>
+                  <StatTile label="Win rate" value={num(challenge.optionsPerformance.winRatePct, "%")} hint="graded challenge trades" metric="winRate" />
+                  <StatTile label="Profit factor" value={num(challenge.optionsPerformance.profitFactor, "", 2)} hint="challenge" metric="profitFactor" />
+                  <StatTile label="Return on premium" value={num(challenge.optionsPerformance.returnOnPremiumPct, "%")} hint="challenge" metric="paperTrading" />
+                  <StatTile label="Max drawdown" value={dollars(challenge.optionsPerformance.maxDrawdownDollars)} hint="challenge equity curve" metric="maxDrawdown" />
+                </>
+              ) : null}
+            </div>
+            <p className="muted text-xs" style={{ marginTop: 10 }}>
+              The challenge takes larger risk but is bounded by hard contract, exposure, buying-power and daily-loss caps, and fails honestly if it loses the account. No automatic reset or replenishment · no broker or real-money path.
+            </p>
+          </Panel>
+        ) : null}
+
         {optionsPerf ? (
-          <Panel title="Options performance" meta="Option-contract P&L only — never blended with stock P&L" tip="paperTrading">
+          <Panel title="Options performance" meta="Option-contract P&L only — never blended with stock P&L (Primary account)" tip="paperTrading">
             <div className="axiom-strip paper-strip">
               <StatTile label="Open options" value={String(optionsPerf.openCount ?? 0)} hint="live option positions" metric="paperTrading" />
               <StatTile label="Closed options" value={String(optionsPerf.closedCount ?? 0)} hint="terminal option trades" metric="paperTrading" />
