@@ -70,8 +70,16 @@ test("bearish/short direction does not send (long-only stock alerts)", () => {
   assert.equal(stockNowOnlyEligible(si({ direction: "bearish" }), CFG).ok, false);
 });
 
-test("anti-chase blocks stock moves that already ran too far on the day", () => {
+test("day-run anti-chase is opt-in because stock alerts require +10% broad eligibility", () => {
   const r = stockNowOnlyEligible(si({ ticker: "USO", movePct: 10.2, dayChangePct: 10.2, vwap: 27.0 }), CFG);
+  assert.equal(r.ok, true);
+  const strict = stockNowOnlyEligible(si({ ticker: "USO", movePct: 10.2, dayChangePct: 10.2, vwap: 27.0 }), stockGateConfig({ STOCK_MAX_DAY_RUN_PCT: "6" }));
+  assert.equal(strict.ok, false);
+  assert.match(strict.reason, /day/);
+});
+
+test("custom anti-chase blocks stock moves that already ran too far on the day", () => {
+  const r = stockNowOnlyEligible(si({ ticker: "USO", movePct: 10.2, dayChangePct: 10.2, vwap: 27.0 }), stockGateConfig({ STOCK_MAX_DAY_RUN_PCT: "6" }));
   assert.equal(r.ok, false);
   assert.match(r.reason, /day/);
 });
@@ -166,7 +174,7 @@ test("supervisor Discord boundary re-checks now-only actionability", () => {
 test("stock scanner path keeps its own cooldown to avoid duplicate-cycle resends", () => {
   const src = readFileSync(join(root, "lib/scanner-loop.ts"), "utf8");
   assert.match(src, /stockCooldownUntil/, "stock path has a dedicated cooldown");
-  assert.match(src, /if \(stockEnabled && stockClassGate\.allowed\) tasks\.push\(handleStockTrigger/, "stock trigger is gated by STOCK_CALLOUTS and the fresh-mover class gate");
+  assert.match(src, /if \(stockEnabled && stockClassGate\.allowed && stockPolicyGate\.ok\) tasks\.push\(handleStockTrigger/, "stock trigger is gated by STOCK_CALLOUTS, fresh-mover class, and stock policy");
 });
 
 test("options and stock webhook routing stay separate", () => {

@@ -58,6 +58,7 @@ import {
 import { recordMomentumDiagnostic } from "@/lib/momentum-diagnostics";
 import { classifyStockMomentum, freshMoverGateAllowed } from "@/lib/stock-momentum-classifier";
 import { rankDiscovery, promotionSet, type DiscoveryQuote } from "@/lib/discovery-ranking";
+import { fastStockMomentumEligibility, stockMomentumPolicyConfig } from "@/lib/stock-momentum-policy";
 
 const OPP_INGEST_MS = Number(process.env.OPP_INGEST_MS ?? 5000);
 const OPPORTUNITY_TRACKING = process.env.OPPORTUNITY_TRACKING !== "0";
@@ -69,7 +70,7 @@ const CORE_TRIGGER_COOLDOWN_MS = Number(process.env.SCANNER_CORE_TRIGGER_COOLDOW
 const DISCOVERY_MS = Number(process.env.SCANNER_DISCOVERY_MS ?? 10_000);
 const DISCOVERY_TOP_N = Number(process.env.SCANNER_DISCOVERY_TOP_N ?? 30);
 const PROMOTION_MS = Number(process.env.SCANNER_PROMOTION_MS ?? 5 * 60_000);
-const DISCOVERY_MIN_VOLUME = Number(process.env.SCANNER_DISCOVERY_MIN_VOLUME ?? 50_000);
+const DISCOVERY_MIN_VOLUME = Number(process.env.STOCK_MOMENTUM_MIN_DAY_VOLUME ?? process.env.SCANNER_DISCOVERY_MIN_VOLUME ?? 500_000);
 const TAPE_ENRICH_MS = Number(process.env.SCANNER_TAPE_ENRICH_MS ?? 30_000);
 // How many freshly-promoted discovery names get their ring candle-seeded per
 // discovery cycle so velocity/persistence windows are warm on arrival (instead of
@@ -678,6 +679,7 @@ async function tick() {
   const minEfficiency = getSettingNum("scanner_min_efficiency", Number(process.env.SCANNER_MIN_EFFICIENCY ?? 0.30));
   const minLevelSurge = getSettingNum("scanner_min_level_surge", Number(process.env.SCANNER_MIN_LEVEL_SURGE ?? 1.25));
   const stockLatchCfg = stockMomentumLatchConfig();
+  const stockPolicyCfg = stockMomentumPolicyConfig();
 
   if (nowMs - s.lastDiscoveryAt >= DISCOVERY_MS) {
     s.lastDiscoveryAt = nowMs;
@@ -797,6 +799,25 @@ async function tick() {
       ret30sPct: ret30s,
       ret60sPct: ret60s,
     });
+    const stockPolicyGate = fastStockMomentumEligibility({
+      symbol: q.symbol,
+      price: q.price,
+      dayVolume: q.volume ?? null,
+      gainFromPrevClosePct: q.changePercent ?? null,
+      direction: dir.direction,
+      ret10sPct: ret10s,
+      ret30sPct: ret30s,
+      ret60sPct: ret60s,
+      velocityPctPerMin: accelRead.shortRate,
+      volumeAcceleration: volAccel,
+      volumeRate: volRate10s,
+      spreadPct,
+      quoteAgeMs: stockQuoteAgeMs,
+      aboveVwap: levels.aboveVwap,
+      hodBreak: levels.hodBreak,
+      vwapDistPct: levels.vwapDistPct,
+      classification: stockClass.classification,
+    }, stockPolicyCfg);
     const row = {
       symbol: q.symbol, price: q.price, movePct: q.changePercent, volume: q.volume ?? null,
       bid: q.bid ?? null, ask: q.ask ?? null, quoteProviderTimestamp: q.quoteProviderTimestamp ?? null,
@@ -812,6 +833,8 @@ async function tick() {
       volumeAcceleration: volAccel,
       classification: stockClass.classification,
       dominantReason: stockClass.dominantReason,
+      stockPolicyOk: stockPolicyGate.ok,
+      stockPolicyReason: stockPolicyGate.reason,
       promoted: s.promoted.has(q.symbol),
       core: isCoreSymbol(q.symbol),
     };
@@ -1016,6 +1039,21 @@ async function tick() {
     // unaffected — it keeps its own gates). Suppression only; records a visible
     // REJECTED diagnostic so the dashboard/AI can see what was held back and why.
     const stockClassGate = freshMoverGateAllowed(stockClass.classification);
+    if (stockEnabled && (fired || stockRescued) && stockClassGate.allowed && !stockPolicyGate.ok) {
+      recordMomentumDiagnostic({
+        ticker: q.symbol, evalAtMs: nowMs, session, price: q.price, movePct: q.changePercent ?? null,
+        velocityPctMin: accelRead.shortRate, instantPctMin: instantRate, acceleration: accelRead.accel,
+        relVol: st.relVol, volumeSurge: surge, vwapDistPct: levels.vwapDistPct, quoteAgeMs: stockQuoteAgeMs,
+        classification: stockClass.classification, dominantReason: stockClass.dominantReason,
+        firstSeenMs: st.firstSeenAt || null, firstRankedMs: st.firstRankedAt || null, firstPromotedMs: st.firstPromotedAt || null,
+        firstSeenMovePct: st.firstSeenMovePct, firstRankedMovePct: st.firstRankedMovePct, firstPromotedMovePct: st.firstPromotedMovePct,
+        ret5sPct: ret5s, ret10sPct: ret10s, ret30sPct: ret30s, ret60sPct: ret60s,
+        volumeRate: volRate10s, volumeAcceleration: volAccel, rankDelta,
+        entryState: "POLICY_SUPPRESSED", actionable: false, decision: "REJECTED",
+        reason: `stock policy: ${stockPolicyGate.reason}`, latchState: "policy_suppressed",
+        strategyVersion: MOMENTUM_STRATEGY_VERSION,
+      });
+    }
     if (stockEnabled && (fired || stockRescued) && !stockClassGate.allowed) {
       recordMomentumDiagnostic({
         ticker: q.symbol, evalAtMs: nowMs, session, price: q.price, movePct: q.changePercent ?? null,
@@ -1038,7 +1076,7 @@ async function tick() {
       const read = { accelRead, instantRate, surge, efficiency, levels, dir };
       const tasks: Promise<unknown>[] = [];
       if (fired && session === "regular") tasks.push(handleTrigger(q.symbol, st, read, q, nowMs));
-      if (stockEnabled && stockClassGate.allowed) tasks.push(handleStockTrigger(q.symbol, st, read, q, nowMs, {
+      if (stockEnabled && stockClassGate.allowed && stockPolicyGate.ok) tasks.push(handleStockTrigger(q.symbol, st, read, q, nowMs, {
         rescued: stockRescued && !fired,
         quoteAgeMs: stockQuoteAgeMs,
         reason: stockRescueReason,

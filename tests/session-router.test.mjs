@@ -27,7 +27,7 @@ test("SPEC: scanner loop routes options and stock in parallel during RTH", () =>
   assert.ok(loop.includes("optionsCooldownUntil"), "options path needs an independent cooldown");
   assert.ok(loop.includes("stockCooldownUntil"), "stock path needs an independent cooldown");
   assert.ok(/if \(fired && session === "regular"\) tasks\.push\(handleTrigger/.test(loop), "options path runs in RTH on real triggers");
-  assert.ok(/if \(stockEnabled && stockClassGate\.allowed\) tasks\.push\(handleStockTrigger/.test(loop), "stock path runs when enabled AND the fresh-mover class gate allows it (slow grinders / late tops suppressed)");
+  assert.ok(/if \(stockEnabled && stockClassGate\.allowed && stockPolicyGate\.ok\) tasks\.push\(handleStockTrigger/.test(loop), "stock path runs when enabled, the fresh-mover class gate allows it, and the broad/fast stock policy passes");
   assert.ok(/session === "closed"/.test(loop), "loop must pause when closed");
 });
 

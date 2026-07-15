@@ -54,7 +54,7 @@ export function stockGateConfig(env: NodeJS.ProcessEnv = process.env): StockGate
     maxQuoteAgeMs: num(env.STOCK_MAX_QUOTE_AGE_MS, 15_000),
     allowExtendedHours: env.PAPER_STOCK_EXTENDED_HOURS === "1" || env.STOCK_EXTENDED_HOURS === "1",
     maxVwapExtensionPct: num(env.STOCK_MAX_VWAP_EXT_PCT, 2.5),
-    maxDayRunPct: num(env.STOCK_MAX_DAY_RUN_PCT, 6),
+    maxDayRunPct: num(env.STOCK_MAX_DAY_RUN_PCT, 0),
   };
 }
 

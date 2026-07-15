@@ -22,7 +22,7 @@ function base(over = {}) {
 test("config exposes the anti-chase thresholds with sane defaults", () => {
   const cfg = stockGateConfig({});
   assert.equal(cfg.maxVwapExtensionPct, 2.5);
-  assert.equal(cfg.maxDayRunPct, 6);
+  assert.equal(cfg.maxDayRunPct, 0);
 });
 
 test("a clean, near-VWAP momentum setup still passes", () => {
@@ -30,9 +30,17 @@ test("a clean, near-VWAP momentum setup still passes", () => {
   assert.equal(r.ok, true, r.reason);
 });
 
-test("a name that has already run too far on the day is blocked as a chase (USO case)", () => {
+test("day-run chase blocking is opt-in because the stock radar starts at +10%", () => {
   // USO-like: up ~+10% on the day, price pushed to the after-hours high.
   const r = stockNowOnlyEligible(base({ dayChangePct: 10.2, session: "afterhours" }), stockGateConfig({ STOCK_EXTENDED_HOURS: "1" }));
+  assert.equal(r.ok, true, r.reason);
+  const strict = stockNowOnlyEligible(base({ dayChangePct: 10.2, session: "afterhours" }), stockGateConfig({ STOCK_EXTENDED_HOURS: "1", STOCK_MAX_DAY_RUN_PCT: "6" }));
+  assert.equal(strict.ok, false);
+  assert.match(strict.reason, /extended: already \+10\.2% on the day/);
+});
+
+test("a custom day-run threshold blocks as a chase when explicitly enabled", () => {
+  const r = stockNowOnlyEligible(base({ dayChangePct: 10.2, session: "afterhours" }), stockGateConfig({ STOCK_EXTENDED_HOURS: "1", STOCK_MAX_DAY_RUN_PCT: "6" }));
   assert.equal(r.ok, false);
   assert.match(r.reason, /extended: already \+10\.2% on the day/);
 });
@@ -44,10 +52,10 @@ test("price too far above VWAP is blocked as a top-of-candle chase", () => {
   assert.match(r.reason, /above VWAP/);
 });
 
-test("the gate is exactly at the threshold boundary (>= blocks)", () => {
-  // dayChangePct exactly 6 → blocked; 5.9 → allowed.
-  assert.equal(stockNowOnlyEligible(base({ dayChangePct: 6 }), stockGateConfig({})).ok, false);
-  assert.equal(stockNowOnlyEligible(base({ dayChangePct: 5.9 }), stockGateConfig({})).ok, true);
+test("a custom day-run gate is exactly at the threshold boundary (>= blocks)", () => {
+  const cfg = stockGateConfig({ STOCK_MAX_DAY_RUN_PCT: "6" });
+  assert.equal(stockNowOnlyEligible(base({ dayChangePct: 6 }), cfg).ok, false);
+  assert.equal(stockNowOnlyEligible(base({ dayChangePct: 5.9 }), cfg).ok, true);
 });
 
 test("missing VWAP / day-change does NOT fabricate an extension block (fail-open per dimension)", () => {
@@ -72,10 +80,10 @@ test("custom thresholds are honored", () => {
 test("stockExtensionReason returns a reason when extended, null when clean", () => {
   const cfg = stockGateConfig({});
   assert.equal(stockExtensionReason({ price: 100, vwap: 99.8, dayChangePct: 2 }, cfg), null);
-  assert.match(stockExtensionReason({ price: 100, vwap: 99.8, dayChangePct: 10 }, cfg), /on the day/);
+  assert.equal(stockExtensionReason({ price: 100, vwap: 99.8, dayChangePct: 10 }, cfg), null);
   assert.match(stockExtensionReason({ price: 100, vwap: 96, dayChangePct: 3 }, cfg), /above VWAP/);
   // Day-run works from the alert's stored day move even with no VWAP (paper path).
-  assert.match(stockExtensionReason({ price: 119.79, vwap: null, dayChangePct: 10.2 }, cfg), /\+10\.2% on the day/);
+  assert.match(stockExtensionReason({ price: 119.79, vwap: null, dayChangePct: 10.2 }, stockGateConfig({ STOCK_MAX_DAY_RUN_PCT: "6" })), /\+10\.2% on the day/);
   assert.equal(stockExtensionReason({ price: null, vwap: null, dayChangePct: null }, cfg), null);
 });
 

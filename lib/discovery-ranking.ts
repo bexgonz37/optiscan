@@ -31,6 +31,9 @@ export interface DiscoverySnapshot {
 }
 
 export interface DiscoveryRankConfig {
+  minPrice: number;
+  maxPrice: number;
+  minGainFromPrevClosePct: number;
   minVolume: number;
   topN: number;
   /** Day-move %, contribution capped here (don't reward total gain past this). */
@@ -45,12 +48,15 @@ export interface DiscoveryRankConfig {
 
 export function discoveryRankConfig(env: NodeJS.ProcessEnv = process.env): DiscoveryRankConfig {
   return {
-    minVolume: num(env.SCANNER_DISCOVERY_MIN_VOLUME, 50_000),
+    minPrice: num(env.STOCK_MOMENTUM_MIN_PRICE, 0.5),
+    maxPrice: num(env.STOCK_MOMENTUM_MAX_PRICE, 50),
+    minGainFromPrevClosePct: num(env.STOCK_MOMENTUM_MIN_GAIN_FROM_PREV_CLOSE_PCT, 10),
+    minVolume: num(env.STOCK_MOMENTUM_MIN_DAY_VOLUME ?? env.SCANNER_DISCOVERY_MIN_VOLUME, 500_000),
     topN: num(env.SCANNER_DISCOVERY_TOP_N, 30),
-    moveCapPct: num(env.SCANNER_DISCOVERY_MOVE_CAP_PCT, 6),
-    extensionPct: num(env.SCANNER_DISCOVERY_EXTENSION_PCT, 8),
+    moveCapPct: num(env.SCANNER_DISCOVERY_MOVE_CAP_PCT, 20),
+    extensionPct: num(env.SCANNER_DISCOVERY_EXTENSION_PCT, 25),
     immediatePromotePctPerMin: num(env.SCANNER_DISCOVERY_IMMEDIATE_PCT_PER_MIN, 1.2),
-    freshAccelWeight: num(env.SCANNER_DISCOVERY_FRESH_WEIGHT, 9),
+    freshAccelWeight: num(env.SCANNER_DISCOVERY_FRESH_WEIGHT, 25),
   };
 }
 
@@ -77,7 +83,9 @@ export function moveVelocityPctPerMin(cur: number | null, prev: DiscoverySnapsho
 }
 
 /**
- * Rank the discovery universe. Names failing the price/volume floor are dropped.
+ * Rank the discovery universe. Names failing the broad stock-runner floor are
+ * dropped: $0.50-$50, cumulative day volume >= floor (including premarket),
+ * and at least +10% from the previous regular-session close by default.
  * The composite score rewards CURRENT acceleration (Δmove/min in the move's own
  * direction) and penalizes extension, so a fresh fast mover outranks a stock
  * that is merely already up a lot.
@@ -89,7 +97,15 @@ export function rankDiscovery(
   cfg: DiscoveryRankConfig = discoveryRankConfig(),
 ): RankedDiscovery[] {
   const scored = quotes
-    .filter((q) => q.symbol && isNum(q.price) && (q.price as number) > 0 && isNum(q.changePercent) && (q.volume ?? 0) >= cfg.minVolume)
+    .filter((q) =>
+      q.symbol &&
+      isNum(q.price) &&
+      (q.price as number) >= cfg.minPrice &&
+      (q.price as number) <= cfg.maxPrice &&
+      isNum(q.changePercent) &&
+      (q.changePercent as number) >= cfg.minGainFromPrevClosePct &&
+      (q.volume ?? 0) >= cfg.minVolume
+    )
     .map((q) => {
       const move = Math.abs(q.changePercent as number);
       const vel = moveVelocityPctPerMin(q.changePercent as number, prev.get(q.symbol), nowMs);
@@ -99,12 +115,12 @@ export function rankDiscovery(
       const volume = Math.log10(Math.max(1, q.volume ?? 0));
       const extensionPenalty = Math.max(0, move - cfg.extensionPct) * 2.5;
       const score = +(
-        Math.min(move, cfg.moveCapPct) * 6
+        Math.min(move, cfg.moveCapPct) * 2
         + volume * 5
         + freshAccel * cfg.freshAccelWeight
         - extensionPenalty
       ).toFixed(3);
-      const immediatePromote = freshAccel >= cfg.immediatePromotePctPerMin && move < cfg.extensionPct;
+      const immediatePromote = freshAccel >= cfg.immediatePromotePctPerMin;
       const reason = immediatePromote
         ? `fresh acceleration ${freshAccel.toFixed(2)}%/min (immediate promote)`
         : isNum(vel)
