@@ -22,8 +22,8 @@
  * the cycle continues.
  */
 
-/** Default pinned core universe (overridable via SUPERVISOR_CORE_TICKERS or OWNER_CORE_TICKERS). */
-export const DEFAULT_SUPERVISOR_CORE_TICKERS = "NVDA,META,SPY,QQQ,AAPL,AMZN,MSFT,TSLA,AMD,GOOGL";
+/** Default pinned options core universe (overridable via SUPERVISOR_CORE_TICKERS or OWNER_CORE_TICKERS). */
+export const DEFAULT_SUPERVISOR_CORE_TICKERS = "SPY,QQQ,NVDA,AAPL,META,TSLA,AMD,AMZN,MSFT,GOOGL,NFLX,AVGO,IWM,SPCX";
 
 // A tradable US ticker: leading letter, then letters/digits, with an optional
 // single-letter class suffix (e.g. BRK.B). Rejects empty strings and garbage so

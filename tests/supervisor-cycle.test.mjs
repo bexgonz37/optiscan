@@ -36,11 +36,11 @@ test("agent runtime still routes every provider call through the metered provide
   assert.ok(!/fetch\(`?https?:/.test(src), "no raw HTTP");
 });
 
-test("supervisor uses owner core fallback, cap 12, overlap guard, and bounded chain concurrency", () => {
+test("supervisor uses owner core fallback, cap 14, overlap guard, and bounded chain concurrency", () => {
   const cycle = read("lib/supervisor-cycle.ts");
   const runtime = read("lib/callouts/runtime.ts");
   assert.ok(/OWNER_CORE_TICKERS/.test(cycle), "owner core env feeds supervisor when supervisor core env is absent");
-  assert.ok(/SUPERVISOR_MAX_TICKERS \?\? 12/.test(cycle), "default cap covers all ten core tickers plus movers");
+  assert.ok(/SUPERVISOR_MAX_TICKERS \?\? 14/.test(cycle), "default cap covers the full confirmed options core");
   assert.ok(/__optiscanSupervisorRunning/.test(cycle), "overlapping cycles are prevented");
   assert.ok(/SUPERVISOR_CHAIN_CONCURRENCY/.test(runtime), "options chain ticker work is bounded-parallel");
   assert.ok(/mapLimit/.test(runtime), "runtime uses the shared bounded queue");

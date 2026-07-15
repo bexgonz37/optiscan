@@ -93,12 +93,12 @@ function dynamicCandidates(env: NodeJS.ProcessEnv): string[] {
 /**
  * The bounded, session-appropriate ticker universe for one supervisor cycle.
  * Pinned core tickers (SUPERVISOR_CORE_TICKERS or OWNER_CORE_TICKERS, default
- * NVDA,META,SPY,QQQ,AAPL,AMZN,MSFT,TSLA,AMD,GOOGL) are always included first
+ * SPY,QQQ,NVDA,AAPL,META,TSLA,AMD,AMZN,MSFT,GOOGL,NFLX,AVGO,IWM,SPCX) are always included first
  * when capacity allows; the strongest dynamic movers fill the
  * remaining slots up to SUPERVISOR_MAX_TICKERS. See `buildCycleUniverse`.
  */
 export function cycleUniverse(env: NodeJS.ProcessEnv = process.env): string[] {
-  const cap = Math.max(1, Math.min(50, Number(env.SUPERVISOR_MAX_TICKERS ?? 12) || 12));
+  const cap = Math.max(1, Math.min(50, Number(env.SUPERVISOR_MAX_TICKERS ?? 14) || 14));
   const coreCsv = env.OWNER_CORE_TICKERS ?? env.SUPERVISOR_CORE_TICKERS ?? DEFAULT_SUPERVISOR_CORE_TICKERS;
   return buildCycleUniverse(coreCsv, dynamicCandidates(env), cap, { rotationOffset: telemetry().cycles });
 }

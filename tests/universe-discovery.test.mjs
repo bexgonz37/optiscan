@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { getZeroDteUniverse, getZeroDteDiscoveryUniverse, getCoreWatchUniverse, isCoreSymbol } from "../lib/universe.js";
+import { OPTIONS_CORE_SYMBOLS } from "../lib/options-universe-policy.ts";
 
 test("0DTE extras append without replacing the liquid core", () => {
   const symbols = getZeroDteUniverse({ SCANNER_0DTE_UNIVERSE_EXTRA: "SPCX, RIVN" });
@@ -26,10 +27,10 @@ test("broad discovery defaults beyond 35 names and supports override", () => {
 // ── Core Watch (default UI universe) ─────────────────────────────────────────
 test("core watch: user's names present and always inside the 1s loop universe", () => {
   const core = getCoreWatchUniverse({});
-  for (const t of ["AAPL", "NVDA", "META", "TSLA", "AMZN", "MSFT", "SPY", "QQQ", "HOOD", "SPCX"]) {
+  for (const t of OPTIONS_CORE_SYMBOLS) {
     assert.ok(core.includes(t), `core watch missing ${t}`);
   }
-  assert.ok(core.length >= 16 && core.length <= 20, `core watch should be ~18, got ${core.length}`);
+  assert.ok(core.length >= 18 && core.length <= 22, `core watch should be ~19, got ${core.length}`);
   const loop = getZeroDteUniverse({});
   for (const t of core) assert.ok(loop.includes(t), `1s loop must scan core name ${t}`);
 });
