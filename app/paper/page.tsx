@@ -27,6 +27,13 @@ interface Summary {
 interface BucketRow { bucket: string; count: number; winRatePct: number | null; avgPnlPct: number | null; totalDollars: number }
 interface PaperAccount { startingBalance: number; realizedPnl: number; equity: number; buyingPowerNote?: string }
 
+const BUCKET_LABELS: [string, string][] = [
+  ["byConfidence", "Confidence at entry"],
+  ["byExpirationLength", "Expiration length"],
+  ["bySetup", "Setup"],
+  ["byExitKind", "Exit kind"],
+];
+
 function num(v: number | null | undefined, suffix = "", digits = 1): string {
   if (v == null || Number.isNaN(v)) return "—";
   if (!Number.isFinite(v)) return "∞";
@@ -44,6 +51,14 @@ function timeAgo(ms: number | null | undefined): string {
   if (mins < 1) return "just now";
   if (mins < 60) return `${mins}m ago`;
   return `${Math.round(mins / 60)}h ago`;
+}
+
+function bucketTotal(rows: BucketRow[] | null | undefined): number {
+  return (rows ?? []).reduce((s, r) => s + Number(r.count ?? 0), 0);
+}
+
+function sortedBuckets(rows: BucketRow[] | null | undefined): BucketRow[] {
+  return [...(rows ?? [])].sort((a, b) => Math.abs(b.totalDollars) - Math.abs(a.totalDollars));
 }
 
 const STATE_CLASS: Record<string, string> = {
@@ -116,6 +131,7 @@ function PaperPageInner() {
   const decisions: any[] = data?.decisions ?? [];
   const events: any[] = data?.events ?? [];
   const daily = data?.daily ?? null;
+  const buckets = data?.buckets ?? {};
   const open = trades.filter((t) => ["WATCHING", "READY", "ENTERED"].includes(t.status));
   const closed = trades.filter((t) => !["WATCHING", "READY", "ENTERED"].includes(t.status));
   const filledClosed = closed.filter((t) => t.entryPrice != null && t.exitPrice != null);
@@ -235,6 +251,53 @@ function PaperPageInner() {
           </div>
         ) : null}
 
+        {s ? (
+          <Panel title="Analytics dashboard" meta="Realized fills only; no fabricated history" tip="paperTrading">
+            <div className="paper-buckets">
+              {BUCKET_LABELS.map(([key, title]) => {
+                const rows = sortedBuckets(buckets[key] as BucketRow[] | undefined);
+                const total = bucketTotal(rows);
+                const best = [...rows].sort((a, b) => b.totalDollars - a.totalDollars)[0] ?? null;
+                const worst = [...rows].sort((a, b) => a.totalDollars - b.totalDollars)[0] ?? null;
+                return (
+                  <div key={key} className="paper-bucket">
+                    <h4>{title}</h4>
+                    {rows.length ? (
+                      <>
+                        <p className="muted text-xs">
+                          {total} graded trade{total === 1 ? "" : "s"} in this cut. Strongest bucket:{" "}
+                          <b>{best?.bucket ?? "n/a"}</b> ({dollars(best?.totalDollars)}). Weakest bucket:{" "}
+                          <b>{worst?.bucket ?? "n/a"}</b> ({dollars(worst?.totalDollars)}).
+                        </p>
+                        <table className="mini-table">
+                          <thead><tr><th>Bucket</th><th>N</th><th>Win%</th><th>Avg%</th><th>$</th></tr></thead>
+                          <tbody>
+                            {rows.slice(0, 4).map((b) => (
+                              <tr key={b.bucket}>
+                                <td>{b.bucket}</td>
+                                <td className="num">{b.count}</td>
+                                <td className="num">{num(b.winRatePct, "%")}</td>
+                                <td className="num">{num(b.avgPnlPct, "%")}</td>
+                                <td className={`num ${b.totalDollars >= 0 ? "up" : "dn"}`}>{dollars(b.totalDollars)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </>
+                    ) : (
+                      <p className="muted text-xs">
+                        No filled-and-closed paper trades yet. This cut appears only after real paper outcomes are graded.
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <p className="muted text-xs" style={{ marginTop: 10 }}>
+              These cuts are for pattern-finding only. They do not place trades, do not change strategy settings, and do not include blocked/refused attempts in win rate.
+            </p>
+          </Panel>
+        ) : null}
         <Panel title="Open trades" meta={`${open.length} active · ~7s marks on hot symbols`} live tip="paperTrading">
           {open.length ? (
             <ul className="ledger axiom-ledger">
@@ -383,9 +446,11 @@ function PaperPageInner() {
         </Panel>
 
         {data?.buckets ? (
-          <Panel title="Performance buckets" meta="Where the edge is (or isn't)" tip="paperTrading">
+          <Panel title="Bucket detail" meta="Full realized bucket cuts" tip="paperTrading">
             <div className="paper-buckets">
-              {([["Confidence at entry", data.buckets.byConfidence], ["Expiration length", data.buckets.byExpirationLength], ["Setup", data.buckets.bySetup], ["Exit kind", data.buckets.byExitKind]] as [string, BucketRow[]][]).map(([title, rows]) => (
+              {BUCKET_LABELS.map(([key, title]) => {
+                const rows = data.buckets[key] as BucketRow[] | undefined;
+                return (
                 <div key={title} className="paper-bucket">
                   <h4>{title}</h4>
                   {rows?.length ? (
@@ -404,7 +469,7 @@ function PaperPageInner() {
                     </table>
                   ) : <div className="muted text-xs">no data yet</div>}
                 </div>
-              ))}
+              );})}
             </div>
           </Panel>
         ) : null}
