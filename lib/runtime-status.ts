@@ -56,6 +56,7 @@ export interface RuntimeStatus {
       blocks: ("options_alerts" | "stock_alerts" | "paper_trading")[];
     }[];
     summary: string[];
+    readiness: AlertReadiness;
   };
 }
 
@@ -80,6 +81,22 @@ function configItem(
 export interface ConfigVisibilityExtras {
   extendedStockNotify?: boolean;   // DB setting extended_stock_notify=1
   stockWebhookConfigured?: boolean; // whether the stocks webhook URL is set (presence only)
+  optionsWebhookConfigured?: boolean; // whether the options webhook URL is set (presence only)
+  session?: string;                // current market session (regular/pre/post/closed)
+}
+
+/** One alert channel's readiness: is it able to send, and if not, exactly why. */
+export interface AlertChannelReadiness {
+  ready: boolean;
+  blockedBy: string[];
+}
+
+/** Crisp, at-a-glance answer to "can each alert type actually send right now?" */
+export interface AlertReadiness {
+  session: string | null;
+  optionsCallouts: AlertChannelReadiness;
+  stockCallouts: AlertChannelReadiness;
+  premarketNotifications: AlertChannelReadiness;
 }
 
 export function buildConfigVisibility(env: NodeJS.ProcessEnv = process.env, extras: ConfigVisibilityExtras = {}) {
@@ -90,6 +107,7 @@ export function buildConfigVisibility(env: NodeJS.ProcessEnv = process.env, extr
   const stockExtendedHoursOn = on(env.STOCK_EXTENDED_HOURS) || on(env.PAPER_STOCK_EXTENDED_HOURS);
   const extendedStockNotifyOn = extras.extendedStockNotify === true;
   const stockWebhookOn = extras.stockWebhookConfigured === true;
+  const optionsWebhookOn = extras.optionsWebhookConfigured === true;
   const paperTradingOn = env.PAPER_TRADING_ENABLED !== "0";
   const paperAutoOn = on(env.PAPER_AUTO_ENTRY);
   const zeroDteOn = on(env.PAPER_ALLOW_ZERO_DTE);
@@ -108,6 +126,7 @@ export function buildConfigVisibility(env: NodeJS.ProcessEnv = process.env, extr
     configItem("SUPERVISOR_RUNTIME", supervisorOn ? "enabled" : "disabled", supervisorOn ? "Supervisor cycle runs automatically." : "Supervisor cycle is off.", supervisorOn ? [] : ["options_alerts", "paper_trading"]),
     configItem("CALLOUT_CANONICAL_PATH", canonicalPath, canonicalPath === "supervisor" ? "Supervisor is the canonical options sender." : "Legacy options path remains canonical.", canonicalPath === "supervisor" ? [] : ["options_alerts"]),
     configItem("AGENT_CALLOUT_DISCORD", on(env.AGENT_CALLOUT_DISCORD) ? "enabled" : "disabled", on(env.AGENT_CALLOUT_DISCORD) ? "Supervisor Discord master switch is on." : "Supervisor Discord master switch is off — options Discord will NOT send under the supervisor path until this is 1.", supervisorDiscordOn ? [] : ["options_alerts"]),
+    configItem("DISCORD_WEBHOOK_OPTIONS", optionsWebhookOn ? "configured" : "missing", optionsWebhookOn ? "Options webhook is configured." : "No options webhook configured — options callouts cannot be delivered even when emittable.", optionsWebhookOn ? [] : ["options_alerts"]),
     configItem("STOCK_CALLOUTS", stockOn ? "enabled" : "disabled", stockOn ? "Momentum stock callouts may route to the stock webhook." : "Momentum stock Discord is disabled because STOCK_CALLOUTS is off.", stockOn ? [] : ["stock_alerts"]),
     configItem("STOCK_EXTENDED_HOURS", stockExtendedHoursOn ? "enabled" : "disabled", stockExtendedHoursOn ? "Premarket/after-hours stock setups may pass the extended-hours gate (also honors PAPER_STOCK_EXTENDED_HOURS)." : "Premarket/after-hours stock Discord is blocked — set STOCK_EXTENDED_HOURS=1 (or PAPER_STOCK_EXTENDED_HOURS=1) to allow extended sessions. Regular-hours stock is unaffected.", stockOn && !stockExtendedHoursOn ? ["stock_alerts"] : []),
     configItem("extended_stock_notify", extendedStockNotifyOn ? "enabled" : "disabled", extendedStockNotifyOn ? "The extended_stock_notify setting permits premarket/after-hours stock Discord." : "DB setting extended_stock_notify is off — premarket/after-hours stock alerts stay dashboard-only. Enable it in Settings.", stockOn && stockExtendedHoursOn && !extendedStockNotifyOn ? ["stock_alerts"] : []),
@@ -136,7 +155,34 @@ export function buildConfigVisibility(env: NodeJS.ProcessEnv = process.env, extr
     bearishOn ? "Bearish actionability is enabled." : "Bearish actionability is off.",
     dbDir === "/app/data" ? "Database is using persistent path /app/data." : `Database path is ${dbDir}; Railway should use /app/data.`,
   ];
-  return { items, summary };
+
+  // Crisp, at-a-glance readiness: can each alert type actually send right now, and
+  // if not, exactly which gate is blocking it? This is the single place to look when
+  // "no alerts are coming through". Deterministic; derived only from the flags above.
+  const optionsBlockers: string[] = [];
+  if (!supervisorOn) optionsBlockers.push("SUPERVISOR_RUNTIME != 1");
+  if (canonicalPath !== "supervisor") optionsBlockers.push("CALLOUT_CANONICAL_PATH != supervisor");
+  if (!on(env.AGENT_CALLOUT_DISCORD)) optionsBlockers.push("AGENT_CALLOUT_DISCORD != 1");
+  if (!optionsWebhookOn) optionsBlockers.push("DISCORD_WEBHOOK_OPTIONS missing");
+
+  const stockBlockers: string[] = [];
+  if (!stockOn) stockBlockers.push("STOCK_CALLOUTS != 1");
+  if (!stockWebhookOn) stockBlockers.push("DISCORD_WEBHOOK_STOCKS missing");
+
+  const premarketBlockers: string[] = [];
+  if (!stockOn) premarketBlockers.push("STOCK_CALLOUTS != 1");
+  if (!stockExtendedHoursOn) premarketBlockers.push("STOCK_EXTENDED_HOURS (or PAPER_STOCK_EXTENDED_HOURS) != 1");
+  if (!extendedStockNotifyOn) premarketBlockers.push("extended_stock_notify setting off (enable in Settings)");
+  if (!stockWebhookOn) premarketBlockers.push("DISCORD_WEBHOOK_STOCKS missing");
+
+  const readiness: AlertReadiness = {
+    session: extras.session ?? null,
+    optionsCallouts: { ready: optionsBlockers.length === 0, blockedBy: optionsBlockers },
+    stockCallouts: { ready: stockBlockers.length === 0, blockedBy: stockBlockers },
+    premarketNotifications: { ready: premarketBlockers.length === 0, blockedBy: premarketBlockers },
+  };
+
+  return { items, summary, readiness };
 }
 
 export function buildRuntimeStatus(nowMs: number = Date.now()): RuntimeStatus {
@@ -318,6 +364,14 @@ export function buildRuntimeStatus(nowMs: number = Date.now()): RuntimeStatus {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         return require("@/lib/notifications").discordWebhookConfigured("stocks");
       }, false),
+      optionsWebhookConfigured: safe(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        return require("@/lib/notifications").discordWebhookConfigured("options");
+      }, false),
+      session: safe(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        return require("@/lib/trading-session").marketSession(nowMs);
+      }, undefined),
     }),
   };
 }

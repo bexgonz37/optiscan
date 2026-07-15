@@ -52,6 +52,24 @@ export function isoWeekKey(ymd: string): string {
   return `${date.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 }
 
+/**
+ * The next timestamp (ms) at which the nightly window OPENS after the current one —
+ * i.e. the next rising edge of `nightlyRunKey`. If a window is open now, this returns
+ * the NEXT day's opening (so the dashboard can show "next eligible run" distinct from
+ * "due now"). Bounded forward scan in 5-minute steps; null if none within 14 days.
+ * PURE. Whether that run actually fires still depends on config + idempotency.
+ */
+export function nextNightlyEligibleMs(nowMs: number, cutoffMin: number = NIGHTLY_CUTOFF_MIN): number | null {
+  const STEP = 5 * 60_000;
+  let prevDue = nightlyRunKey(nowMs, cutoffMin) != null;
+  for (let t = nowMs + STEP; t <= nowMs + 14 * 24 * 3600_000; t += STEP) {
+    const due = nightlyRunKey(t, cutoffMin) != null;
+    if (due && !prevDue) return t;
+    prevDue = due;
+  }
+  return null;
+}
+
 /** Friday-night cutoff (minutes since ET midnight) for the weekly job. Default 21:00. */
 const WEEKLY_FRIDAY_CUTOFF_MIN = 21 * 60;
 
@@ -66,4 +84,16 @@ export function weeklyRunKey(nowMs: number, fridayCutoffMin: number = WEEKLY_FRI
   const okSaturday = weekday === "Sat";
   if (!okFriday && !okSaturday) return null;
   return isoWeekKey(tradingDay(nowMs));
+}
+
+/** Next rising edge of the weekly window after the current one. PURE; null within 14 days ⇒ null. */
+export function nextWeeklyEligibleMs(nowMs: number, fridayCutoffMin: number = WEEKLY_FRIDAY_CUTOFF_MIN): number | null {
+  const STEP = 5 * 60_000;
+  let prevDue = weeklyRunKey(nowMs, fridayCutoffMin) != null;
+  for (let t = nowMs + STEP; t <= nowMs + 14 * 24 * 3600_000; t += STEP) {
+    const due = weeklyRunKey(t, fridayCutoffMin) != null;
+    if (due && !prevDue) return t;
+    prevDue = due;
+  }
+  return null;
 }
