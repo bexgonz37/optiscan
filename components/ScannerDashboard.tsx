@@ -65,6 +65,17 @@ function fmtVol(n: number | null): string {
   return String(Math.round(n));
 }
 
+function momentumClassLabel(classification?: string | null): string | null {
+  switch (classification) {
+    case "FRESH_ACCELERATION": return "Fresh acceleration";
+    case "CONTINUATION": return "Continuation";
+    case "SLOW_GRINDER": return "Slow grinder";
+    case "LATE_EXHAUSTION": return "Late exhaustion";
+    case "NOISY_ILLIQUID_SPIKE": return "Noisy/illiquid";
+    default: return null;
+  }
+}
+
 export function ScannerDashboard({
   onOpenChart,
   onLoopStatus,
@@ -271,6 +282,7 @@ export function ScannerDashboard({
                     <Th k="rvol" label="RVOL" title="Volume vs normal today" />
                     <Th k="volume" label="Volume" />
                     <th title="Volume burst in the last minute">Vol surge</th>
+                    <th title="10s volume rate minus 60s volume rate">Vol accel</th>
                     <Th k="vwap" label="VWAP" title="Distance from volume-weighted average price" />
                     <th title="High or low of day break">Level</th>
                   </>
@@ -292,10 +304,16 @@ export function ScannerDashboard({
                         sub={
                           <>
                             <TickValue value={r.price}>{fmtPrice(r.price)}</TickValue>
-                            {(r.catalystFresh && r.catalystType && r.catalystType !== "no_clear_catalyst") ||
+                            {momentumClassLabel(r.classification) ||
+                            (r.catalystFresh && r.catalystType && r.catalystType !== "no_clear_catalyst") ||
                             r.haltStatus === "halted" ||
                             r.haltStatus === "resumed" ? (
                               <div className="tape-badges">
+                                {momentumClassLabel(r.classification) ? (
+                                  <span className="tag t-vol" title={r.dominantReason ?? "Momentum timing class"}>
+                                    {momentumClassLabel(r.classification)}
+                                  </span>
+                                ) : null}
                                 {r.catalystFresh && r.catalystType && r.catalystType !== "no_clear_catalyst" ? (
                                   <span className="tag t-vol" title="Fresh catalyst (&lt;30m)">
                                     {String(r.catalystType).replace(/_/g, " ")}
@@ -339,6 +357,7 @@ export function ScannerDashboard({
                         <td className="num">{r.relVol != null ? `${r.relVol.toFixed(1)}x` : "—"}</td>
                         <td className="num muted">{fmtVol(r.volume)}</td>
                         <td className="num">{r.surge != null ? `${r.surge.toFixed(1)}x` : "—"}</td>
+                        <td className="num">{r.volumeAcceleration != null ? `${r.volumeAcceleration > 0 ? "+" : ""}${r.volumeAcceleration.toFixed(2)}` : "—"}</td>
                         <td className={`text-xs ${r.aboveVwap == null ? "dim" : r.aboveVwap ? "pos" : "neg"}`}>
                           {r.vwapDistPct != null ? `${r.vwapDistPct > 0 ? "+" : ""}${r.vwapDistPct.toFixed(2)}%` : r.aboveVwap == null ? "—" : r.aboveVwap ? "Above" : "Below"}
                         </td>

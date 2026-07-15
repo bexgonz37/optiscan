@@ -108,6 +108,10 @@ test("database schema includes bounded stock momentum diagnostics", () => {
   assert.match(src, /CREATE TABLE IF NOT EXISTS momentum_diagnostics/);
   assert.match(src, /trigger_to_discord_ms/);
   assert.match(src, /strategy_version/);
+  assert.match(src, /classification TEXT/);
+  assert.match(src, /first_promoted_ms INTEGER/);
+  assert.match(src, /ret_10s_pct REAL/);
+  assert.match(src, /volume_acceleration REAL/);
 });
 
 test("diagnostic store records bounded decision rows and exposes summary counts", () => {
@@ -117,4 +121,6 @@ test("diagnostic store records bounded decision rows and exposes summary counts"
   assert.match(src, /RESCUED_SENT/);
   assert.match(src, /NEAR_MISS/);
   assert.match(src, /avgLatencyMs/);
+  assert.match(src, /freshAccelerationAlerts/);
+  assert.match(src, /medianActionableLatencyMs/);
 });

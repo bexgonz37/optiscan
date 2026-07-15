@@ -33,8 +33,10 @@ export interface LiveTapeRow {
   shortRate: number | null;
 
   instantRate?: number | null;
+  accel?: number | null;
 
   surge: number | null;
+  volumeAcceleration?: number | null;
 
   relVol: number | null;
 
@@ -53,6 +55,12 @@ export interface LiveTapeRow {
   catalystFresh?: boolean;
 
   haltStatus?: string | null;
+  classification?: string | null;
+  dominantReason?: string | null;
+  ret5s?: number | null;
+  ret10s?: number | null;
+  ret30s?: number | null;
+  ret60s?: number | null;
 
 }
 

@@ -56,6 +56,7 @@ import {
   type StockMomentumSnapshot,
 } from "@/lib/stock-momentum-latch";
 import { recordMomentumDiagnostic } from "@/lib/momentum-diagnostics";
+import { classifyStockMomentum } from "@/lib/stock-momentum-classifier";
 
 const OPP_INGEST_MS = Number(process.env.OPP_INGEST_MS ?? 5000);
 const OPPORTUNITY_TRACKING = process.env.OPPORTUNITY_TRACKING !== "0";
@@ -64,7 +65,7 @@ const LOOP_MS = Number(process.env.SCANNER_LOOP_MS ?? 1000);
 const ACTIVE_REFRESH_MS = Number(process.env.SCANNER_ACTIVE_REFRESH_MS ?? 7000);
 const TRIGGER_COOLDOWN_MS = Number(process.env.SCANNER_TRIGGER_COOLDOWN_MS ?? 10 * 60 * 1000);
 const CORE_TRIGGER_COOLDOWN_MS = Number(process.env.SCANNER_CORE_TRIGGER_COOLDOWN_MS ?? 3 * 60 * 1000);
-const DISCOVERY_MS = Number(process.env.SCANNER_DISCOVERY_MS ?? 15_000);
+const DISCOVERY_MS = Number(process.env.SCANNER_DISCOVERY_MS ?? 10_000);
 const DISCOVERY_TOP_N = Number(process.env.SCANNER_DISCOVERY_TOP_N ?? 30);
 const PROMOTION_MS = Number(process.env.SCANNER_PROMOTION_MS ?? 5 * 60_000);
 const DISCOVERY_MIN_VOLUME = Number(process.env.SCANNER_DISCOVERY_MIN_VOLUME ?? 50_000);
@@ -107,6 +108,15 @@ interface SymState {
   lastMoveDirection: "bullish" | "bearish" | "choppy" | null;
   momentumLatch: StockMomentumLatchState;
   momentumFirstDetectedAt: number;
+  firstSeenAt: number;
+  firstSeenMovePct: number | null;
+  firstRankedAt: number;
+  firstRankedMovePct: number | null;
+  firstPromotedAt: number;
+  firstPromotedMovePct: number | null;
+  firstEligibleAt: number;
+  firstEligibleMovePct: number | null;
+  lastRank: number | null;
 }
 
 interface LoopState {
@@ -218,10 +228,24 @@ async function refreshDiscovery(nowMs: number) {
   s.discoveryCount = (res.quotes ?? []).length;
   const ranked = (res.quotes ?? [])
     .filter((q: any) => q?.symbol && q.price > 0 && q.changePercent != null && (q.volume ?? 0) >= DISCOVERY_MIN_VOLUME)
-    .sort((a: any, b: any) => Math.abs(b.changePercent) - Math.abs(a.changePercent))
+    .sort((a: any, b: any) => {
+      const score = (q: any) => {
+        const move = Math.abs(Number(q.changePercent ?? 0));
+        const volume = Math.log10(Math.max(1, Number(q.volume ?? 0)));
+        const extensionPenalty = Math.max(0, move - 6) * 2.5;
+        return Math.min(move, 6) * 8 + volume * 5 - extensionPenalty;
+      };
+      return score(b) - score(a);
+    })
     .slice(0, Math.max(0, DISCOVERY_TOP_N));
   const newlyPromoted = ranked.filter((q: any) => !s.promoted.has(q.symbol)).map((q: any) => q.symbol);
-  for (const q of ranked) s.promoted.set(q.symbol, nowMs + PROMOTION_MS);
+  ranked.forEach((q: any, idx: number) => {
+    const st = sym(s, q.symbol);
+    if (!st.firstRankedAt) { st.firstRankedAt = nowMs; st.firstRankedMovePct = q.changePercent ?? null; }
+    if (!s.promoted.has(q.symbol)) { st.firstPromotedAt = nowMs; st.firstPromotedMovePct = q.changePercent ?? null; }
+    st.lastRank = idx + 1;
+    s.promoted.set(q.symbol, nowMs + PROMOTION_MS);
+  });
   for (const [ticker, expiresAt] of s.promoted) if (expiresAt <= nowMs) s.promoted.delete(ticker);
   // Latency fix (2026-07-09): a freshly promoted discovery name used to sit
   // through a 10-tick live warmup before it could ever trigger — by then the
@@ -274,6 +298,9 @@ function sym(s: LoopState, ticker: string): SymState {
       vwap: null, vwapAt: 0, relVol: null, lastAlertAt: 0, lastOptionsAlertAt: 0, lastNearMissAt: 0, lastMajorMoveAt: 0,
       moveBeganAt: 0, lastConfirmedAt: 0, lastTriggerEventAt: 0, lastMoveDirection: null,
       momentumLatch: { ...EMPTY_STOCK_MOMENTUM_LATCH }, momentumFirstDetectedAt: 0,
+      firstSeenAt: 0, firstSeenMovePct: null, firstRankedAt: 0, firstRankedMovePct: null,
+      firstPromotedAt: 0, firstPromotedMovePct: null, firstEligibleAt: 0, firstEligibleMovePct: null,
+      lastRank: null,
     };
     s.symbols.set(ticker, st);
   }
@@ -288,7 +315,41 @@ function sym(s: LoopState, ticker: string): SymState {
   st.lastMoveDirection ??= null;
   st.momentumLatch ??= { ...EMPTY_STOCK_MOMENTUM_LATCH };
   st.momentumFirstDetectedAt ??= 0;
+  st.firstSeenAt ??= 0;
+  st.firstSeenMovePct ??= null;
+  st.firstRankedAt ??= 0;
+  st.firstRankedMovePct ??= null;
+  st.firstPromotedAt ??= 0;
+  st.firstPromotedMovePct ??= null;
+  st.firstEligibleAt ??= 0;
+  st.firstEligibleMovePct ??= null;
+  st.lastRank ??= null;
   return st;
+}
+
+function pctReturnOver(ring: Tick[], nowMs: number, windowMs: number): number | null {
+  const last = ring[ring.length - 1];
+  if (!last) return null;
+  let base: Tick | null = null;
+  for (let i = ring.length - 1; i >= 0; i--) {
+    if (ring[i].t <= nowMs - windowMs) { base = ring[i]; break; }
+  }
+  base ??= ring[0] ?? null;
+  if (!base || !base.p) return null;
+  return +(((last.p - base.p) / base.p) * 100).toFixed(3);
+}
+
+function volumeRate(ring: Tick[], nowMs: number, windowMs: number): number | null {
+  const last = ring[ring.length - 1];
+  if (!last) return null;
+  let base: Tick | null = null;
+  for (let i = ring.length - 1; i >= 0; i--) {
+    if (ring[i].t <= nowMs - windowMs) { base = ring[i]; break; }
+  }
+  base ??= ring[0] ?? null;
+  if (!base) return null;
+  const seconds = Math.max(1, (last.t - base.t) / 1000);
+  return +(((last.v - base.v) / seconds)).toFixed(2);
 }
 
 /** VWAP + relVol from 1-min candles, cached 60s, near-trigger symbols only. */
@@ -323,7 +384,20 @@ function prefetchChain(ticker: string, st: SymState, nowMs: number) {
 }
 
 /** Extended-hours trigger: regular-stock callout, NO option chain fetch. */
-async function handleStockTrigger(ticker: string, st: SymState, read: any, quote: any, nowMs: number, opts: { rescued?: boolean; quoteAgeMs?: number | null; reason?: string | null } = {}) {
+async function handleStockTrigger(ticker: string, st: SymState, read: any, quote: any, nowMs: number, opts: {
+  rescued?: boolean;
+  quoteAgeMs?: number | null;
+  reason?: string | null;
+  volumeRate?: number | null;
+  volumeAcceleration?: number | null;
+  rankDelta?: number | null;
+  classification?: string | null;
+  dominantReason?: string | null;
+  ret5s?: number | null;
+  ret10s?: number | null;
+  ret30s?: number | null;
+  ret60s?: number | null;
+} = {}) {
   if (process.env.STOCK_CALLOUTS !== "1") return;
   const s = state();
   const core = isCoreSymbol(ticker);
@@ -339,6 +413,8 @@ async function handleStockTrigger(ticker: string, st: SymState, read: any, quote
     quoteProviderTimestamp: quote.quoteProviderTimestamp ?? null,
     shortRate: read.accelRead.shortRate, accel: read.accelRead.accel,
     instantRate: read.instantRate ?? null,
+    volumeAcceleration: opts.volumeAcceleration ?? null,
+    rankDelta: opts.rankDelta ?? null,
     surge: read.surge, relVol: st.relVol, efficiency: read.efficiency,
     vwap: st.vwap, aboveVwap: read.levels.aboveVwap,
     hodBreak: read.levels.hodBreak, lodBreak: read.levels.lodBreak,
@@ -387,6 +463,23 @@ async function handleStockTrigger(ticker: string, st: SymState, read: any, quote
     quoteAgeMs: opts.quoteAgeMs ?? null,
     score: persistedDecision?.score ?? null,
     confidence: persistedDecision?.confidence ?? null,
+    classification: opts.classification ?? null,
+    dominantReason: opts.dominantReason ?? null,
+    firstSeenMs: st.firstSeenAt || null,
+    firstRankedMs: st.firstRankedAt || null,
+    firstPromotedMs: st.firstPromotedAt || null,
+    firstSeenMovePct: st.firstSeenMovePct,
+    firstRankedMovePct: st.firstRankedMovePct,
+    firstPromotedMovePct: st.firstPromotedMovePct,
+    firstActionableMovePct: id != null ? quote.changePercent ?? null : null,
+    discordMovePct: id != null ? quote.changePercent ?? null : null,
+    ret5sPct: opts.ret5s ?? null,
+    ret10sPct: opts.ret10s ?? null,
+    ret30sPct: opts.ret30s ?? null,
+    ret60sPct: opts.ret60s ?? null,
+    volumeRate: opts.volumeRate ?? null,
+    volumeAcceleration: opts.volumeAcceleration ?? null,
+    rankDelta: opts.rankDelta ?? null,
     entryState: opts.rescued ? "RESCUED" : (persistedDecision?.captureAction ?? "ACTIONABLE"),
     actionable: id != null,
     decision: id != null ? (opts.rescued ? "RESCUED_SENT" : "SENT") : "REJECTED",
@@ -394,6 +487,7 @@ async function handleStockTrigger(ticker: string, st: SymState, read: any, quote
     latchState: opts.rescued ? "rescued" : "fired",
     firstDetectedMs: st.momentumFirstDetectedAt || null,
     firstActionableMs: id != null ? nowMs : null,
+    discordDeliveredMs: id != null ? nowMs : null,
     triggerToDiscordMs: id != null && st.momentumFirstDetectedAt ? nowMs - st.momentumFirstDetectedAt : null,
     strategyVersion: MOMENTUM_STRATEGY_VERSION,
   });
@@ -586,6 +680,7 @@ async function tick() {
   for (const q of quotes) {
     if (q.price == null) continue;
     const st = sym(s, q.symbol);
+    if (!st.firstSeenAt) { st.firstSeenAt = nowMs; st.firstSeenMovePct = q.changePercent ?? null; }
     st.ring.push({ t: nowMs, p: q.price, v: q.volume ?? 0 });
     if (st.ring.length > RING_MAX) st.ring.shift();
 
@@ -615,6 +710,9 @@ async function tick() {
     const accelRead = acceleration(st.ring, { shortMs, nowMs } as any);
     const instantRead = acceleration(st.ring, { shortMs: 5000, nowMs } as any);
     const surge = volumeSurge(st.ring, { shortMs: surgeShortMs, longMs: surgeLongMs, nowMs } as any);
+    const volRate10s = volumeRate(st.ring, nowMs, 10_000);
+    const volRate60s = volumeRate(st.ring, nowMs, 60_000);
+    const volAccel = volRate10s != null && volRate60s != null ? +(volRate10s - volRate60s).toFixed(2) : null;
     const efficiency = pathEfficiency(st.ring, { nowMs } as any);
     const triggerMinRate = core ? minRate * 0.9 : minRate;
     const triggerMinSurge = core ? Math.max(1.22, minSurge - 0.08) : minSurge;
@@ -642,6 +740,37 @@ async function tick() {
       if (st.recentRates.length > 5) st.recentRates.shift();
     }
 
+    const stockQuoteAgeMs = (() => {
+      const ts = toMs(q.quoteProviderTimestamp ?? q.providerTimestamp ?? q.lastTradeTimestamp ?? null, nowMs);
+      return ts != null ? Math.max(0, nowMs - ts) : null;
+    })();
+    const spreadPct =
+      typeof q.bid === "number" && typeof q.ask === "number" && q.bid > 0 && q.ask >= q.bid
+        ? +(((q.ask - q.bid) / ((q.ask + q.bid) / 2)) * 100).toFixed(3)
+        : null;
+    const instantRate = instantRead.shortRate;
+    const rankDelta = null;
+    const stockClass = classifyStockMomentum({
+      direction: dir.direction,
+      shortRate: accelRead.shortRate,
+      instantRate,
+      acceleration: accelRead.accel,
+      volumeSurge: surge,
+      relVol: st.relVol,
+      volumeAcceleration: volAccel,
+      movePct: q.changePercent ?? null,
+      vwapDistPct: levels.vwapDistPct,
+      hodBreak: levels.hodBreak,
+      lodBreak: levels.lodBreak,
+      efficiency,
+      quoteAgeMs: stockQuoteAgeMs,
+      spreadPct,
+      rankDelta,
+    });
+    const ret5s = pctReturnOver(st.ring, nowMs, 5_000);
+    const ret10s = pctReturnOver(st.ring, nowMs, 10_000);
+    const ret30s = pctReturnOver(st.ring, nowMs, 30_000);
+    const ret60s = pctReturnOver(st.ring, nowMs, 60_000);
     const row = {
       symbol: q.symbol, price: q.price, movePct: q.changePercent, volume: q.volume ?? null,
       bid: q.bid ?? null, ask: q.ask ?? null, quoteProviderTimestamp: q.quoteProviderTimestamp ?? null,
@@ -649,6 +778,14 @@ async function tick() {
       direction: dir.direction, confidence: dir.confidence,
       hodBreak: levels.hodBreak, lodBreak: levels.lodBreak, aboveVwap: levels.aboveVwap,
       vwapDistPct: levels.vwapDistPct, relVol: st.relVol,
+      ret5s,
+      ret10s,
+      ret30s,
+      ret60s,
+      volumeRate: volRate10s,
+      volumeAcceleration: volAccel,
+      classification: stockClass.classification,
+      dominantReason: stockClass.dominantReason,
       promoted: s.promoted.has(q.symbol),
       core: isCoreSymbol(q.symbol),
     };
@@ -689,7 +826,6 @@ async function tick() {
 
     const levelBreak = levels.hodBreak || levels.lodBreak;
     const dirBear = dir.direction === "bearish";
-    const instantRate = instantRead.shortRate;
     const sustainedOk =
       accelRead.shortRate != null &&
       instantRate != null &&
@@ -755,10 +891,6 @@ async function tick() {
       (surge == null || surge >= Math.max(1.05, triggerMinSurge * 0.82)) &&
       (levels.hodBreak || sustainedOk);
     const fired = (persistOk && accelOk && tapeMoving && shouldTriggerOk) || coreBullishImpulse;
-    const stockQuoteAgeMs = (() => {
-      const ts = toMs(q.quoteProviderTimestamp ?? q.providerTimestamp ?? q.lastTradeTimestamp ?? null, nowMs);
-      return ts != null ? Math.max(0, nowMs - ts) : null;
-    })();
     let stockRescued = false;
     let stockRescueReason: string | null = null;
     if (stockEnabled) {
@@ -827,6 +959,21 @@ async function tick() {
           quoteAgeMs: stockQuoteAgeMs,
           score: null,
           confidence: null,
+          classification: stockClass.classification,
+          dominantReason: stockClass.dominantReason,
+          firstSeenMs: st.firstSeenAt || null,
+          firstRankedMs: st.firstRankedAt || null,
+          firstPromotedMs: st.firstPromotedAt || null,
+          firstSeenMovePct: st.firstSeenMovePct,
+          firstRankedMovePct: st.firstRankedMovePct,
+          firstPromotedMovePct: st.firstPromotedMovePct,
+          ret5sPct: ret5s,
+          ret10sPct: ret10s,
+          ret30sPct: ret30s,
+          ret60sPct: ret60s,
+          volumeRate: volRate10s,
+          volumeAcceleration: volAccel,
+          rankDelta,
           entryState: "NEAR_TRIGGER",
           actionable: false,
           decision: "NEAR_MISS",
@@ -844,7 +991,20 @@ async function tick() {
       const read = { accelRead, instantRate, surge, efficiency, levels, dir };
       const tasks: Promise<unknown>[] = [];
       if (fired && session === "regular") tasks.push(handleTrigger(q.symbol, st, read, q, nowMs));
-      if (stockEnabled) tasks.push(handleStockTrigger(q.symbol, st, read, q, nowMs, { rescued: stockRescued && !fired, quoteAgeMs: stockQuoteAgeMs, reason: stockRescueReason }));
+      if (stockEnabled) tasks.push(handleStockTrigger(q.symbol, st, read, q, nowMs, {
+        rescued: stockRescued && !fired,
+        quoteAgeMs: stockQuoteAgeMs,
+        reason: stockRescueReason,
+        volumeRate: volRate10s,
+        volumeAcceleration: volAccel,
+        rankDelta,
+        classification: stockClass.classification,
+        dominantReason: stockClass.dominantReason,
+        ret5s,
+        ret10s,
+        ret30s,
+        ret60s,
+      }));
       const fire = Promise.allSettled(tasks);
       fire.then((results) => {
         for (const result of results) {
@@ -872,7 +1032,18 @@ async function tick() {
     }
   }
 
-  s.movers = movers.sort((a, b) => Math.abs(b.shortRate ?? 0) - Math.abs(a.shortRate ?? 0)).slice(0, 20);
+  s.movers = movers
+    .sort((a, b) => {
+      const classBoost = (r: any) =>
+        r.classification === "FRESH_ACCELERATION" ? 1
+        : r.classification === "CONTINUATION" ? 0.4
+        : r.classification === "SLOW_GRINDER" ? -0.8
+        : r.classification === "LATE_EXHAUSTION" || r.classification === "NOISY_ILLIQUID_SPIKE" ? -1
+        : 0;
+      const score = (r: any) => Math.abs(r.shortRate ?? 0) + Math.abs(r.instantRate ?? 0) * 0.25 + classBoost(r);
+      return score(b) - score(a);
+    })
+    .slice(0, 20);
 
   for (const row of tape) {
     const cached = s.tapeBadgeCache.get(row.symbol);

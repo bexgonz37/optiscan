@@ -64,3 +64,34 @@ test("computeStockVerdict: choppy tape skips (fake-move filter)", () => {
   assert.equal(computeStockVerdict({ ...strongLong, direction: "choppy" }).action, "SKIP");
   assert.equal(computeStockVerdict({ ...strongLong, efficiency: 0.2 }).action, "SKIP");
 });
+
+test("computeStockVerdict: slow grinders wait instead of notifying", () => {
+  const v = computeStockVerdict({
+    ...strongLong,
+    shortRate: 0.08,
+    instantRate: 0.06,
+    accel: 0.0,
+    surge: 1.05,
+    relVol: 1.1,
+    hodBreak: false,
+    movePct: 2.0,
+  });
+  assert.equal(v.classification, "SLOW_GRINDER");
+  assert.equal(v.action, "WAIT");
+});
+
+test("computeStockVerdict: late exhaustion waits even with a big day move", () => {
+  const v = computeStockVerdict({
+    ...strongLong,
+    shortRate: 0.16,
+    instantRate: 0.1,
+    accel: -0.08,
+    surge: 1.0,
+    relVol: 1.0,
+    hodBreak: false,
+    movePct: 8.2,
+    vwapDistPct: 3.0,
+  });
+  assert.equal(v.classification, "LATE_EXHAUSTION");
+  assert.equal(v.action, "WAIT");
+});

@@ -35,6 +35,23 @@ export interface MomentumDiagnosticInput {
   vwapDistPct?: number | null;
   quoteAgeMs?: number | null;
   candidateRank?: number | null;
+  classification?: string | null;
+  dominantReason?: string | null;
+  firstSeenMs?: number | null;
+  firstRankedMs?: number | null;
+  firstPromotedMs?: number | null;
+  firstSeenMovePct?: number | null;
+  firstRankedMovePct?: number | null;
+  firstPromotedMovePct?: number | null;
+  firstActionableMovePct?: number | null;
+  discordMovePct?: number | null;
+  ret5sPct?: number | null;
+  ret10sPct?: number | null;
+  ret30sPct?: number | null;
+  ret60sPct?: number | null;
+  volumeRate?: number | null;
+  volumeAcceleration?: number | null;
+  rankDelta?: number | null;
   score?: number | null;
   confidence?: number | null;
   entryState?: string | null;
@@ -63,10 +80,14 @@ export function recordMomentumDiagnostic(input: MomentumDiagnosticInput): void {
       `INSERT INTO momentum_diagnostics
        (ticker, eval_at_ms, trading_day, session, price, move_pct, velocity_pct_min,
         instant_pct_min, acceleration, rel_vol, volume_surge, vwap_dist_pct,
-        quote_age_ms, candidate_rank, score, confidence, entry_state, actionable,
+        quote_age_ms, candidate_rank, classification, dominant_reason, first_seen_ms,
+        first_ranked_ms, first_promoted_ms, first_seen_move_pct, first_ranked_move_pct,
+        first_promoted_move_pct, first_actionable_move_pct, discord_move_pct, ret_5s_pct,
+        ret_10s_pct, ret_30s_pct, ret_60s_pct, volume_rate, volume_acceleration,
+        rank_delta, score, confidence, entry_state, actionable,
         decision, reason, latch_state, first_detected_ms, first_actionable_ms,
         discord_delivered_ms, trigger_to_discord_ms, strategy_version, created_at_ms)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(
       input.ticker,
       input.evalAtMs,
@@ -82,6 +103,23 @@ export function recordMomentumDiagnostic(input: MomentumDiagnosticInput): void {
       nullableNum(input.vwapDistPct),
       nullableNum(input.quoteAgeMs),
       nullableNum(input.candidateRank),
+      input.classification ?? null,
+      input.dominantReason ?? null,
+      nullableNum(input.firstSeenMs),
+      nullableNum(input.firstRankedMs),
+      nullableNum(input.firstPromotedMs),
+      nullableNum(input.firstSeenMovePct),
+      nullableNum(input.firstRankedMovePct),
+      nullableNum(input.firstPromotedMovePct),
+      nullableNum(input.firstActionableMovePct),
+      nullableNum(input.discordMovePct),
+      nullableNum(input.ret5sPct),
+      nullableNum(input.ret10sPct),
+      nullableNum(input.ret30sPct),
+      nullableNum(input.ret60sPct),
+      nullableNum(input.volumeRate),
+      nullableNum(input.volumeAcceleration),
+      nullableNum(input.rankDelta),
       nullableNum(input.score),
       nullableNum(input.confidence),
       input.entryState ?? null,
@@ -124,6 +162,23 @@ export function listMomentumDiagnostics(limit = 500): MomentumDiagnosticRow[] {
     vwapDistPct: r.vwap_dist_pct,
     quoteAgeMs: r.quote_age_ms,
     candidateRank: r.candidate_rank,
+    classification: r.classification ?? null,
+    dominantReason: r.dominant_reason ?? null,
+    firstSeenMs: r.first_seen_ms,
+    firstRankedMs: r.first_ranked_ms,
+    firstPromotedMs: r.first_promoted_ms,
+    firstSeenMovePct: r.first_seen_move_pct,
+    firstRankedMovePct: r.first_ranked_move_pct,
+    firstPromotedMovePct: r.first_promoted_move_pct,
+    firstActionableMovePct: r.first_actionable_move_pct,
+    discordMovePct: r.discord_move_pct,
+    ret5sPct: r.ret_5s_pct,
+    ret10sPct: r.ret_10s_pct,
+    ret30sPct: r.ret_30s_pct,
+    ret60sPct: r.ret_60s_pct,
+    volumeRate: r.volume_rate,
+    volumeAcceleration: r.volume_acceleration,
+    rankDelta: r.rank_delta,
     score: r.score,
     confidence: r.confidence,
     entryState: r.entry_state,
@@ -152,7 +207,15 @@ export function momentumDiagnosticsForDay(day: string, db: DbLike = lazyDb(), li
       id: r.id, ticker: r.ticker, evalAtMs: r.eval_at_ms, tradingDay: r.trading_day, session: r.session,
       price: r.price, movePct: r.move_pct, velocityPctMin: r.velocity_pct_min, instantPctMin: r.instant_pct_min,
       acceleration: r.acceleration, relVol: r.rel_vol, volumeSurge: r.volume_surge, vwapDistPct: r.vwap_dist_pct,
-      quoteAgeMs: r.quote_age_ms, candidateRank: r.candidate_rank, score: r.score, confidence: r.confidence,
+      quoteAgeMs: r.quote_age_ms, candidateRank: r.candidate_rank,
+      classification: r.classification ?? null, dominantReason: r.dominant_reason ?? null,
+      firstSeenMs: r.first_seen_ms, firstRankedMs: r.first_ranked_ms, firstPromotedMs: r.first_promoted_ms,
+      firstSeenMovePct: r.first_seen_move_pct, firstRankedMovePct: r.first_ranked_move_pct,
+      firstPromotedMovePct: r.first_promoted_move_pct, firstActionableMovePct: r.first_actionable_move_pct,
+      discordMovePct: r.discord_move_pct, ret5sPct: r.ret_5s_pct, ret10sPct: r.ret_10s_pct,
+      ret30sPct: r.ret_30s_pct, ret60sPct: r.ret_60s_pct, volumeRate: r.volume_rate,
+      volumeAcceleration: r.volume_acceleration, rankDelta: r.rank_delta,
+      score: r.score, confidence: r.confidence,
       entryState: r.entry_state, actionable: Boolean(r.actionable), decision: r.decision, reason: r.reason,
       latchState: r.latch_state, firstDetectedMs: r.first_detected_ms, firstActionableMs: r.first_actionable_ms,
       discordDeliveredMs: r.discord_delivered_ms, triggerToDiscordMs: r.trigger_to_discord_ms,
@@ -174,5 +237,28 @@ export function summarizeMomentumDiagnostics(rows: MomentumDiagnosticRow[]) {
     const vals = rows.map((r) => r.triggerToDiscordMs).filter(isNum);
     return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
   })();
-  return { total: rows.length, sent, rescued, nearMisses, rejected, extendedRejections, staleRejected, avgLatencyMs };
+  const median = (vals: Array<number | null | undefined>) => {
+    const xs = vals.filter(isNum).sort((a, b) => a - b);
+    if (!xs.length) return null;
+    const mid = Math.floor(xs.length / 2);
+    return xs.length % 2 ? xs[mid] : Math.round((xs[mid - 1] + xs[mid]) / 2);
+  };
+  const freshAccelerationAlerts = rows.filter((r) => (r.decision === "SENT" || r.decision === "RESCUED_SENT") && r.classification === "FRESH_ACCELERATION").length;
+  const slowGrinderAlerts = rows.filter((r) => (r.decision === "SENT" || r.decision === "RESCUED_SENT") && r.classification === "SLOW_GRINDER").length;
+  const lateRejections = rows.filter((r) => r.decision === "REJECTED" && (r.classification === "LATE_EXHAUSTION" || r.classification === "NOISY_ILLIQUID_SPIKE")).length;
+  const fastMoversDiscoveredAfterExtension = rows.filter((r) =>
+    (r.firstPromotedMovePct != null && Math.abs(r.firstPromotedMovePct) >= 6)
+    || (r.firstRankedMovePct != null && Math.abs(r.firstRankedMovePct) >= 6)
+  ).length;
+  return {
+    total: rows.length, sent, rescued, nearMisses, rejected, extendedRejections, staleRejected, avgLatencyMs,
+    medianDiscoveryLatencyMs: median(rows.map((r) => r.firstRankedMs != null && r.firstSeenMs != null ? r.firstRankedMs - r.firstSeenMs : null)),
+    medianPromotionLatencyMs: median(rows.map((r) => r.firstPromotedMs != null && r.firstRankedMs != null ? r.firstPromotedMs - r.firstRankedMs : null)),
+    medianActionableLatencyMs: median(rows.map((r) => r.firstActionableMs != null && r.firstSeenMs != null ? r.firstActionableMs - r.firstSeenMs : null)),
+    medianDiscordLatencyMs: median(rows.map((r) => r.discordDeliveredMs != null && r.firstSeenMs != null ? r.discordDeliveredMs - r.firstSeenMs : null)),
+    freshAccelerationAlerts,
+    slowGrinderAlerts,
+    lateRejections,
+    fastMoversDiscoveredAfterExtension,
+  };
 }

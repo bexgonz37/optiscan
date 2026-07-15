@@ -47,10 +47,18 @@ function timingHeadline(alert: StockAlertLike, mode: "private" | "public"): stri
   const dir = alert.direction === "bearish" ? "bearish" : alert.direction === "bullish" ? "bullish" : "mixed";
   const label = mode === "public" ? alert.public_label : alert.private_label;
   switch (alert.move_classification) {
+    case "FRESH_ACCELERATION":
+      return dir === "bearish" ? "Fresh downside acceleration" : dir === "bullish" ? "Fresh upside acceleration" : "Fresh acceleration";
     case "FRESH_MOVE":
       return dir === "bearish" ? "Fresh breakdown" : dir === "bullish" ? "Fresh breakout" : "Fresh move";
     case "CONTINUATION":
       return dir === "bearish" ? "Downside continuation" : dir === "bullish" ? "Upside continuation" : "Continuation";
+    case "SLOW_GRINDER":
+      return "Slow grinder - wait for acceleration";
+    case "LATE_EXHAUSTION":
+      return "Late move - do not chase";
+    case "NOISY_ILLIQUID_SPIKE":
+      return "Noisy/illiquid spike - blocked";
     case "PULLBACK_SETUP":
       return "Pullback setup";
     case "OLD_MOVE":

@@ -3,6 +3,8 @@
  * Used by the main Dashboard scanner table — separate from trade verdict / alerts.
  */
 
+import { classifyStockMomentum, type StockMomentumClass } from "./stock-momentum-classifier.ts";
+
 export interface TapeRow {
   symbol: string;
   price: number | null;
@@ -13,6 +15,7 @@ export interface TapeRow {
   instantRate?: number | null;
   accel: number | null;
   surge: number | null;
+  volumeAcceleration?: number | null;
   efficiency: number | null;
   relVol: number | null;
   aboveVwap: boolean | null;
@@ -22,6 +25,12 @@ export interface TapeRow {
   direction: string;
   confidence: number;
   promoted?: boolean;
+  classification?: StockMomentumClass | string | null;
+  dominantReason?: string | null;
+  ret5s?: number | null;
+  ret10s?: number | null;
+  ret30s?: number | null;
+  ret60s?: number | null;
   /** True when the symbol is in the Core Watch universe (default UI list). */
   core?: boolean;
   catalystType?: string | null;
@@ -43,7 +52,34 @@ export function computeWatchScore(r: TapeRow): number {
   if (r.relVol != null) s += clamp(r.relVol / 3, 0, 1) * 18;
   else if (r.volume != null) s += clamp(r.volume / 5_000_000, 0, 1) * 10;
 
-  if (r.movePct != null) s += clamp(Math.abs(r.movePct) / 8, 0, 1) * 12;
+  if (r.movePct != null) {
+    s += clamp(Math.abs(r.movePct) / 8, 0, 1) * 8;
+    s -= clamp((Math.abs(r.movePct) - 6) / 6, 0, 1) * 8;
+  }
+
+  if (r.instantRate != null) s += clamp(Math.abs(r.instantRate) / 0.5, 0, 1) * 8;
+  if (r.volumeAcceleration != null) s += clamp(r.volumeAcceleration / 0.4, 0, 1) * 6;
+
+  const classified = r.classification
+    ? { classification: r.classification }
+    : classifyStockMomentum({
+      direction: r.direction,
+      shortRate: r.shortRate,
+      instantRate: r.instantRate,
+      acceleration: r.accel,
+      volumeSurge: r.surge,
+      relVol: r.relVol,
+      volumeAcceleration: r.volumeAcceleration,
+      movePct: r.movePct,
+      vwapDistPct: r.vwapDistPct,
+      hodBreak: r.hodBreak,
+      lodBreak: r.lodBreak,
+      efficiency: r.efficiency,
+    });
+  if (classified.classification === "FRESH_ACCELERATION") s += 18;
+  else if (classified.classification === "CONTINUATION") s += 8;
+  else if (classified.classification === "SLOW_GRINDER") s -= 20;
+  else if (classified.classification === "LATE_EXHAUSTION" || classified.classification === "NOISY_ILLIQUID_SPIKE") s -= 30;
 
   if (r.aboveVwap != null && r.shortRate != null && Math.abs(r.shortRate) >= 0.05) {
     const aligned = r.shortRate > 0 ? r.aboveVwap : !r.aboveVwap;

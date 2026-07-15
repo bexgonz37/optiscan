@@ -45,6 +45,7 @@ export interface StockSignal {
   accel: number | null;
   surge: number | null;
   relVol: number | null;
+  volumeAcceleration?: number | null;
   efficiency: number | null;
   vwap: number | null;
   aboveVwap: boolean | null;
@@ -63,6 +64,7 @@ export interface StockSignal {
   moveBeganAtMs?: number | null;
   dataTimestampMs?: number | string | bigint | Date | null;
   lastTriggerEventAtMs?: number | null;
+  rankDelta?: number | null;
 }
 
 function isoOrNull(ms?: number | null): string | null {
@@ -83,6 +85,11 @@ export async function captureStockAlert(sig: StockSignal): Promise<number | null
 
   const minScore = getSettingNum("stock_min_score", Number(process.env.STOCK_MIN_SCORE ?? STOCK_DEFAULT_MIN_SCORE));
   const dataTimestampMs = normalizeProviderTimestampMs(sig.dataTimestampMs ?? null, nowMs);
+  const quoteAgeMs = normalizeProviderTimestampMs(sig.quoteProviderTimestamp ?? null, nowMs);
+  const spreadPct =
+    typeof sig.bid === "number" && typeof sig.ask === "number" && sig.bid > 0 && sig.ask >= sig.bid
+      ? +(((sig.ask - sig.bid) / ((sig.ask + sig.bid) / 2)) * 100).toFixed(3)
+      : null;
   const timing = classifyMoveTiming({
     direction: sig.direction,
     shortRate: sig.shortRate,
@@ -104,6 +111,9 @@ export async function captureStockAlert(sig: StockSignal): Promise<number | null
     shortRate: sig.shortRate, accel: sig.accel, surge: sig.surge, relVol: sig.relVol,
     efficiency: sig.efficiency, aboveVwap: sig.aboveVwap,
     hodBreak: sig.hodBreak, lodBreak: sig.lodBreak, movePct: sig.movePct,
+    instantRate: sig.instantRate, volumeAcceleration: sig.volumeAcceleration, vwapDistPct,
+    quoteAgeMs: quoteAgeMs == null ? null : Math.max(0, nowMs - quoteAgeMs), spreadPct,
+    rankDelta: sig.rankDelta,
   }, { minScore });
 
   // Persist BUYs and near-miss WAITs (accuracy lab needs both); drop SKIPs.
@@ -138,6 +148,8 @@ export async function captureStockAlert(sig: StockSignal): Promise<number | null
       rawVerdict: v.action,
       side: v.side,
       confidence: v.confidence,
+      classification: v.classification,
+      dominantReason: v.dominantReason,
       timing,
     }),
     aiExplanation: explanation, publicExplanation: explanation,
@@ -149,7 +161,7 @@ export async function captureStockAlert(sig: StockSignal): Promise<number | null
     captureAction,
     captureConfidence: v.confidence,
     assetClass: "stock", session,
-    moveClassification: timing.classification,
+    moveClassification: v.classification,
     signalDetectedAt: isoOrNull(sig.signalDetectedAtMs ?? sig.lastTriggerEventAtMs ?? nowMs),
     lastConfirmedAt: isoOrNull(sig.lastConfirmedAtMs ?? sig.lastTriggerEventAtMs ?? nowMs),
     moveBeganAt: isoOrNull(sig.moveBeganAtMs ?? sig.lastTriggerEventAtMs ?? nowMs),
@@ -173,7 +185,7 @@ export async function captureStockAlert(sig: StockSignal): Promise<number | null
         ticker: sig.ticker, direction: sig.direction,
         stockHeadline: v.headline,
         stockReason: `${timing.statusLabel}: ${v.reason}`,
-        moveClassification: timing.classification,
+        moveClassification: v.classification,
         signalAgeSeconds: timing.signalAgeSeconds,
         moveAgeSeconds: timing.moveAgeSeconds,
         setupScore: v.score, confidence: v.confidence,
@@ -183,7 +195,7 @@ export async function captureStockAlert(sig: StockSignal): Promise<number | null
         shortRate: sig.shortRate, volumeSurge: sig.surge,
         // NBBO + freshness for the compact card and the now-only stock gate.
         bid: sig.bid ?? null, ask: sig.ask ?? null,
-        quoteAsOfMs: normalizeProviderTimestampMs(sig.quoteProviderTimestamp ?? null, nowMs),
+        quoteAsOfMs: quoteAgeMs,
         actionableNow: captureAction === "TRADE",
         nowMs,
       });

@@ -250,6 +250,23 @@ CREATE TABLE IF NOT EXISTS momentum_diagnostics (
   vwap_dist_pct REAL,
   quote_age_ms INTEGER,
   candidate_rank INTEGER,
+  classification TEXT,
+  dominant_reason TEXT,
+  first_seen_ms INTEGER,
+  first_ranked_ms INTEGER,
+  first_promoted_ms INTEGER,
+  first_seen_move_pct REAL,
+  first_ranked_move_pct REAL,
+  first_promoted_move_pct REAL,
+  first_actionable_move_pct REAL,
+  discord_move_pct REAL,
+  ret_5s_pct REAL,
+  ret_10s_pct REAL,
+  ret_30s_pct REAL,
+  ret_60s_pct REAL,
+  volume_rate REAL,
+  volume_acceleration REAL,
+  rank_delta INTEGER,
   score REAL,
   confidence REAL,
   entry_state TEXT,
@@ -1051,6 +1068,26 @@ const AI_JOB_RUN_COLUMN_MIGRATIONS: Array<[string, string]> = [
   ["diagnostic_json", "ALTER TABLE ai_job_runs ADD COLUMN diagnostic_json TEXT"],
 ];
 
+const MOMENTUM_DIAGNOSTIC_COLUMN_MIGRATIONS: Array<[string, string]> = [
+  ["classification", "ALTER TABLE momentum_diagnostics ADD COLUMN classification TEXT"],
+  ["dominant_reason", "ALTER TABLE momentum_diagnostics ADD COLUMN dominant_reason TEXT"],
+  ["first_seen_ms", "ALTER TABLE momentum_diagnostics ADD COLUMN first_seen_ms INTEGER"],
+  ["first_ranked_ms", "ALTER TABLE momentum_diagnostics ADD COLUMN first_ranked_ms INTEGER"],
+  ["first_promoted_ms", "ALTER TABLE momentum_diagnostics ADD COLUMN first_promoted_ms INTEGER"],
+  ["first_seen_move_pct", "ALTER TABLE momentum_diagnostics ADD COLUMN first_seen_move_pct REAL"],
+  ["first_ranked_move_pct", "ALTER TABLE momentum_diagnostics ADD COLUMN first_ranked_move_pct REAL"],
+  ["first_promoted_move_pct", "ALTER TABLE momentum_diagnostics ADD COLUMN first_promoted_move_pct REAL"],
+  ["first_actionable_move_pct", "ALTER TABLE momentum_diagnostics ADD COLUMN first_actionable_move_pct REAL"],
+  ["discord_move_pct", "ALTER TABLE momentum_diagnostics ADD COLUMN discord_move_pct REAL"],
+  ["ret_5s_pct", "ALTER TABLE momentum_diagnostics ADD COLUMN ret_5s_pct REAL"],
+  ["ret_10s_pct", "ALTER TABLE momentum_diagnostics ADD COLUMN ret_10s_pct REAL"],
+  ["ret_30s_pct", "ALTER TABLE momentum_diagnostics ADD COLUMN ret_30s_pct REAL"],
+  ["ret_60s_pct", "ALTER TABLE momentum_diagnostics ADD COLUMN ret_60s_pct REAL"],
+  ["volume_rate", "ALTER TABLE momentum_diagnostics ADD COLUMN volume_rate REAL"],
+  ["volume_acceleration", "ALTER TABLE momentum_diagnostics ADD COLUMN volume_acceleration REAL"],
+  ["rank_delta", "ALTER TABLE momentum_diagnostics ADD COLUMN rank_delta INTEGER"],
+];
+
 function migrate(db: Database.Database) {
   // Column migrations must run before SCHEMA: idx_alerts_dedup references the
   // 'session' column, which pre-stocks-mode databases don't have yet.
@@ -1079,6 +1116,10 @@ function migrate(db: Database.Database) {
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ai_job_runs'").get()) {
     const aiJobCols = cols("ai_job_runs");
     for (const [col, sql] of AI_JOB_RUN_COLUMN_MIGRATIONS) if (!aiJobCols.has(col)) db.exec(sql);
+  }
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='momentum_diagnostics'").get()) {
+    const momentumDiagCols = cols("momentum_diagnostics");
+    for (const [col, sql] of MOMENTUM_DIAGNOSTIC_COLUMN_MIGRATIONS) if (!momentumDiagCols.has(col)) db.exec(sql);
   }
   // Phase 7 (additive): drift-health flag on an existing model_registry table.
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_registry'").get()) {

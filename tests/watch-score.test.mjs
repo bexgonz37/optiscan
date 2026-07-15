@@ -62,3 +62,33 @@ test("sortTape: volume surge uses relative burst, not absolute share volume", ()
   ];
   assert.equal(sortTape(rows, "surge", -1)[0].symbol, "BURST");
 });
+
+test("computeWatchScore: fresh acceleration outranks a larger slow grinder", () => {
+  const fresh = {
+    ...hot,
+    symbol: "FRESH",
+    movePct: 2.1,
+    shortRate: 0.32,
+    instantRate: 0.4,
+    accel: 0.08,
+    surge: 1.9,
+    relVol: 2.4,
+    volumeAcceleration: 0.3,
+    classification: "FRESH_ACCELERATION",
+  };
+  const grinder = {
+    ...hot,
+    symbol: "GRIND",
+    movePct: 7.8,
+    shortRate: 0.08,
+    instantRate: 0.05,
+    accel: 0.0,
+    surge: 1.05,
+    relVol: 1.1,
+    volumeAcceleration: 0.01,
+    hodBreak: false,
+    classification: "SLOW_GRINDER",
+  };
+  assert.ok(computeWatchScore(fresh) > computeWatchScore(grinder));
+  assert.equal(sortTape([grinder, fresh], "watch", -1)[0].symbol, "FRESH");
+});
