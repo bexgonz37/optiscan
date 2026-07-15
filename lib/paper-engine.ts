@@ -23,6 +23,7 @@ import { evaluateExit, defaultExitConfig, type LiveTapeSnapshot, type EntryThesi
 import { checkRisk, defaultRiskConfig, type ProposedTrade, type RiskConfig, type RiskContext, type RiskVerdict } from "@/lib/paper-risk";
 import { dollarsAtRisk } from "@/lib/paper-trading";
 import { paperExperimentalOversize, paperMinPositionDollars, paperTargetProfitDollars, unitsForDollarExposure } from "@/lib/paper-sizing";
+import { paperSizingConfig, sizePosition, type PaperSizingConfig, type SizingResult } from "@/lib/paper-position-sizer";
 import { actionableFreshness } from "@/lib/data-freshness";
 import type { OptionQuote } from "@/lib/execution/broker";
 import { revalidateContract, type AlertTimeContract, type RevalidationResult } from "@/lib/paper-revalidation";
@@ -52,26 +53,73 @@ const PAPER_STOCK_SESSIONS = () => new Set(
     .filter(Boolean),
 );
 
-function riskConfigForProposed(proposed: ProposedTrade): RiskConfig {
+/**
+ * Risk config calibrated to the active risk profile + live equity. The dollar
+ * caps SCALE with the profile (aggressive is larger than standard) but remain
+ * HARD and bounded — they are never widened to match whatever the proposal
+ * happens to be. The behavioural safeguards (kill switch, max open trades, 0DTE
+ * policy, no-averaging-down, daily/weekly loss, cooldown) are untouched. Because
+ * the sizer already bounds each position to riskBudget, a validly-sized trade
+ * always clears these caps; an over-limit MANUAL proposal still gets refused.
+ */
+function riskConfigForProfile(proposed: ProposedTrade, equity: number, sizingCfg: PaperSizingConfig): RiskConfig {
   const cfg = defaultRiskConfig();
-  if (!paperExperimentalOversize()) return cfg;
-
-  const multiplier = proposed.assetClass === "stock" ? 1 : 100;
-  const exposure = proposed.entryLimit * multiplier * proposed.contracts;
-  const risk = dollarsAtRisk(proposed.entryLimit, proposed.contracts, proposed.stopLossPct, multiplier);
-  const positionTarget = paperMinPositionDollars();
-  const profitGoal = paperTargetProfitDollars();
-
+  const isZeroDte = proposed.dte != null && proposed.dte <= 0;
+  const riskBudget = equity * (sizingCfg.riskPerTradePct / 100) * (isZeroDte ? sizingCfg.zeroDteRiskMultiplier : 1);
+  const positionCap = equity * (sizingCfg.maxPositionPct / 100);
+  const dailyLossCap = equity * (sizingCfg.maxDailyLossPct / 100);
   return {
     ...cfg,
-    // Paper-only experiment mode: keep kill switch, max open positions,
-    // 0DTE policy, and no-averaging-down intact, but widen dollar caps so
-    // the simulator can hold the requested paper position size.
-    maxRiskPerTrade: Math.max(cfg.maxRiskPerTrade, Math.ceil(risk)),
-    maxExposurePerTicker: Math.max(cfg.maxExposurePerTicker, Math.ceil(exposure)),
-    maxDailyLoss: Math.max(cfg.maxDailyLoss, Math.ceil(profitGoal || positionTarget || risk)),
-    maxWeeklyLoss: Math.max(cfg.maxWeeklyLoss, Math.ceil((profitGoal || positionTarget || risk) * 3)),
+    // +$2 tolerance absorbs cent-rounding between the sizer's floor and dollarsAtRisk.
+    maxRiskPerTrade: Math.max(cfg.maxRiskPerTrade, Math.ceil(riskBudget) + 2),
+    maxExposurePerTicker: Math.max(cfg.maxExposurePerTicker, Math.ceil(positionCap) + 2),
+    maxOpenTrades: Math.max(cfg.maxOpenTrades, sizingCfg.maxOpenOptionsPositions),
+    maxDailyLoss: Math.max(cfg.maxDailyLoss, Math.ceil(dailyLossCap)),
+    maxWeeklyLoss: Math.max(cfg.maxWeeklyLoss, Math.ceil(dailyLossCap * 3)),
   };
+}
+
+/** Capital config calibrated to the active risk profile + live equity (hard, bounded). */
+function capitalConfigForProfile(equity: number, sizingCfg: PaperSizingConfig): ReturnType<typeof defaultCapitalConfig> {
+  const cfg = defaultCapitalConfig();
+  return {
+    ...cfg,
+    maxPositionDollars: Math.max(cfg.maxPositionDollars, Math.ceil(equity * sizingCfg.maxPositionPct / 100) + 2),
+    maxConcurrentPositions: Math.max(cfg.maxConcurrentPositions, sizingCfg.maxOpenOptionsPositions),
+    maxBuyingPowerUtilization: Math.max(cfg.maxBuyingPowerUtilization, sizingCfg.maxTotalExposurePct / 100),
+  };
+}
+
+/** Deterministic risk-based contract count for an option paper entry. */
+function sizeOptionContracts(
+  base: { ticker: string; entryLimit: number; stopLossPct: number | null; dte: number | null },
+  equity: number,
+  rc: RiskContext,
+  cc: CapitalContext,
+  sizingCfg: PaperSizingConfig,
+): SizingResult {
+  const fill = defaultFillConfig();
+  const openExposure = cc.reservedOpenDollars;
+  const openTickerExposure = rc.openTrades
+    .filter((t) => t.ticker === base.ticker && t.optionSymbol)
+    .reduce((s, t) => s + (t.entryPrice ?? t.entryLimit ?? 0) * 100 * (t.contracts ?? 1), 0);
+  const buyingPower = Math.max(0, equity * (sizingCfg.maxTotalExposurePct / 100) - openExposure);
+  return sizePosition(
+    {
+      equityDollars: equity,
+      entryPrice: base.entryLimit,
+      multiplier: 100,
+      stopLossPct: base.stopLossPct,
+      openExposureDollars: openExposure,
+      openTickerExposureDollars: openTickerExposure,
+      availableBuyingPowerDollars: buyingPower,
+      realizedDailyLossDollars: Math.max(0, -rc.realizedTodayDollars),
+      isZeroDte: base.dte != null && base.dte <= 0,
+      slippagePerUnit: fill.maxSlippageAbs,
+      feePerUnit: fill.feePerContract,
+    },
+    sizingCfg,
+  );
 }
 
 // ── Row mapping ──────────────────────────────────────────────────────────────
@@ -188,6 +236,8 @@ export function listPaperTrades(limit = 200): Array<PaperTrade & {
   fingerprintId: string | null;
   fingerprintVersion: number | null;
   fingerprintDimensions: Record<string, unknown> | null;
+  sizing: Record<string, unknown> | null;
+  opportunityPeakPct: number | null;
   outcome: PaperOutcomeRow | null;
   explanation: PaperExplanation;
 }> {
@@ -269,6 +319,8 @@ export function listPaperTrades(limit = 200): Array<PaperTrade & {
       preentrySnapshot: preentry,
       preentryDrift: drift,
       fillAssumptions: parseJsonObj(r.fill_assumptions_json),
+      sizing: parseJsonObj(r.sizing_json),
+      opportunityPeakPct: r.opportunity_peak_pct ?? null,
       explanation,
     };
   });
@@ -581,6 +633,18 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
     return { ok: false, risk: { allowed: false, failures: ["ticker, optionSymbol and a positive entryLimit are required (alert had no contract attached?)"] } };
   }
 
+  // Options are only tradable while the options market is open. Do NOT create a
+  // dead READY option order during equity premarket / after-hours — the listed
+  // option is not fillable and the entry window would just lapse. Premarket stock
+  // setups may still be queued for options evaluation at the options-market open
+  // (env escape PAPER_OPTIONS_REQUIRE_RTH=0 for backfills/tests only).
+  const creationSession = marketSession(Date.now());
+  if (creationSession !== "regular" && process.env.PAPER_OPTIONS_REQUIRE_RTH !== "0") {
+    const reason = `options market not open (${creationSession}) — option paper entries are queued for the options-market open; stock momentum setups are still evaluated`;
+    logDecision({ alertId: base.alertId ?? null, ticker: base.ticker, decision: "options_market_closed", allowed: false, reason, snapshot: { session: creationSession, optionSymbol: base.optionSymbol } });
+    return { ok: false, risk: { allowed: false, failures: [reason] } };
+  }
+
   // Do not require the process-global freshness cache to already contain every
   // option data kind before creating a READY paper order. Alert/callout paths
   // pass a frozen contract; the sweep below revalidates the live chain and quote
@@ -589,20 +653,36 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
 
   const exitCfg = defaultExitConfig();
   const takeProfitPct = base.takeProfitPct ?? exitCfg.takeProfitPct;
-  const contracts = base.contracts ?? unitsForDollarExposure({
-    entryPrice: base.entryLimit,
-    minPositionDollars: paperMinPositionDollars(),
-    multiplier: 100,
-  });
+  const stopLossPct = base.stopLossPct ?? exitCfg.stopLossPct;
+
+  // Deterministic risk-based sizing. An explicit `contracts` (manual override)
+  // is honoured; otherwise the sizer decides the count from equity + the loss at
+  // the stop, clamped by every hard cap. The full calc is frozen for the detail page.
+  const rc = riskContext();
+  const cc = capitalContext();
+  const sizingCfg = paperSizingConfig();
+  let sizingResult: SizingResult | null = null;
+  let contracts = base.contracts;
+  if (contracts == null) {
+    sizingResult = sizeOptionContracts(
+      { ticker: base.ticker, entryLimit: base.entryLimit, stopLossPct, dte: base.dte ?? null },
+      cc.equityDollars, rc, cc, sizingCfg,
+    );
+    if (sizingResult.rejected) {
+      logDecision({ alertId: base.alertId ?? null, ticker: base.ticker, decision: "sizing_refused", allowed: false, reason: sizingResult.reason, risk: { allowed: false, failures: [sizingResult.reason] }, snapshot: sizingResult.calc });
+      return { ok: false, risk: { allowed: false, failures: [sizingResult.reason] } };
+    }
+    contracts = sizingResult.contracts;
+  }
   const proposed: ProposedTrade = {
     ticker: base.ticker,
     optionType: base.optionType ?? "call",
     dte: base.dte ?? null,
     entryLimit: base.entryLimit,
     contracts,
-    stopLossPct: base.stopLossPct ?? exitCfg.stopLossPct,
+    stopLossPct,
   };
-  const risk = checkRisk(proposed, riskContext(), riskConfigForProposed(proposed));
+  const risk = checkRisk(proposed, rc, riskConfigForProfile(proposed, cc.equityDollars, sizingCfg));
   if (!risk.allowed) {
     logDecision({
       alertId: base.alertId ?? null,
@@ -611,7 +691,7 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
       allowed: false,
       reason: risk.failures.join("; "),
       risk,
-      snapshot: proposed,
+      snapshot: { ...proposed, sizing: sizingResult?.calc ?? null },
     });
     return { ok: false, risk };
   }
@@ -621,7 +701,8 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
   const costDollars = base.entryLimit * 100 * proposed.contracts;
   const capital = checkCapital(
     { ticker: base.ticker, optionSymbol: base.optionSymbol, strategy, costDollars, units: proposed.contracts },
-    capitalContext(),
+    cc,
+    capitalConfigForProfile(cc.equityDollars, sizingCfg),
   );
   if (!capital.allowed) {
     logDecision({
@@ -649,8 +730,8 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
        (alert_id, ticker, option_symbol, option_type, strike, expiration, dte_at_entry, contracts,
         status, order_state, thesis, confidence, entry_limit, stop_loss_pct, take_profit_pct,
         short_rate_entry, above_vwap_entry, rel_vol_entry, created_at_ms,
-        strategy, selector_profile, alert_time_contract_json, risk_amount, snapshot_version)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        strategy, selector_profile, alert_time_contract_json, risk_amount, snapshot_version, sizing_json)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     base.alertId ?? null, base.ticker, base.optionSymbol, proposed.optionType,
     base.strike ?? null, base.expiration ?? null, base.dte ?? null, proposed.contracts,
@@ -659,6 +740,7 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
     thesisSnapshot.shortRate, thesisSnapshot.aboveVwap == null ? null : (thesisSnapshot.aboveVwap ? 1 : 0),
     thesisSnapshot.relVol, nowMs,
     strategy, strategy, JSON.stringify(alertTimeContract), riskAmount, 1,
+    sizingResult ? JSON.stringify({ ...sizingResult.calc, reason: sizingResult.reason, contracts: proposed.contracts }) : JSON.stringify({ manualContracts: proposed.contracts, reason: "explicit contract count (manual override)" }),
   );
   const id = Number(info.lastInsertRowid);
   emitEvents(id, base.alertId ?? null, base.ticker, ["candidate_created", "order_submitted"], { toState: "PENDING", reason: "risk + capital passed; entry order active", nowMs });
@@ -1119,18 +1201,21 @@ function stockExtendedHoursAllowed(): boolean {
   return process.env.PAPER_STOCK_EXTENDED_HOURS === "1";
 }
 
+/**
+ * Deterministic risk-based share count for a momentum stock scalp. Same
+ * philosophy as the option sizer: size from equity × risk% ÷ loss-at-stop, then
+ * clamp by the max-position % cap. Bounded; profile-aware (aggressive risks more
+ * but stays capped). Returns 0 when not even one share fits the caps.
+ */
 function stockPaperShares(price: number, stopLossPct: number): number {
-  const targetShares = unitsForDollarExposure({
-    entryPrice: price,
-    minPositionDollars: paperMinPositionDollars(),
-    multiplier: 1,
-  });
-  if (paperExperimentalOversize()) return targetShares;
-
-  const riskCfg = defaultRiskConfig();
-  const riskShares = Math.floor(riskCfg.maxRiskPerTrade / Math.max(0.01, price * (stopLossPct / 100)));
-  const exposureShares = Math.floor(riskCfg.maxExposurePerTicker / Math.max(0.01, price));
-  return Math.max(1, Math.min(riskShares, exposureShares));
+  if (!(price > 0)) return 0;
+  const sizingCfg = paperSizingConfig();
+  const equity = capitalContext().equityDollars;
+  const riskBudget = equity * (sizingCfg.riskPerTradePct / 100);
+  const stopFrac = Math.max(0.0001, stopLossPct / 100);
+  const byRisk = Math.floor(riskBudget / (price * stopFrac));
+  const byPosition = Math.floor((equity * sizingCfg.maxPositionPct / 100) / price);
+  return Math.max(0, Math.min(byRisk, byPosition));
 }
 
 const STOCK_STRATEGY = "momentum_stock";
@@ -1193,8 +1278,15 @@ export function autoEnterStockScalps(nowMs: number = Date.now()): number {
       continue;
     }
 
+    if (shares <= 0) {
+      logDecision({ alertId: a.id, ticker: a.ticker, decision: "sizing_refused", allowed: false, reason: "risk-based sizing yielded 0 shares within caps", nowMs });
+      markStockRefused(a, side, 0, "stock scalp refused: 0 shares within risk caps", nowMs);
+      continue;
+    }
+    const stockSizingCfg = paperSizingConfig();
+    const stockEquity = capitalContext().equityDollars;
     const proposed: ProposedTrade = { ticker: a.ticker, optionType: side, dte: null, entryLimit: refPrice, contracts: shares, stopLossPct: STOCK_SCALP_STOP_PCT, assetClass: "stock" };
-    const risk = checkRisk(proposed, riskContext(), riskConfigForProposed(proposed));
+    const risk = checkRisk(proposed, riskContext(), riskConfigForProfile(proposed, stockEquity, stockSizingCfg));
     if (!risk.allowed) {
       logDecision({ alertId: a.id, ticker: a.ticker, decision: "risk_refused", allowed: false, reason: risk.failures.join("; "), risk, snapshot: proposed, nowMs });
       markStockRefused(a, side, shares, `stock scalp refused: ${risk.failures.join("; ")}`, nowMs);
@@ -1202,7 +1294,7 @@ export function autoEnterStockScalps(nowMs: number = Date.now()): number {
     }
 
     // Capital / buying-power gate (rebuild) — composed with the risk engine.
-    const capital = checkCapital({ ticker: a.ticker, optionSymbol: null, strategy: STOCK_STRATEGY, costDollars: refPrice * shares, units: shares }, capitalContext());
+    const capital = checkCapital({ ticker: a.ticker, optionSymbol: null, strategy: STOCK_STRATEGY, costDollars: refPrice * shares, units: shares }, capitalContext(), capitalConfigForProfile(stockEquity, stockSizingCfg));
     if (!capital.allowed) {
       logDecision({ alertId: a.id, ticker: a.ticker, decision: "capital_refused", allowed: false, reason: capital.failures.join("; "), snapshot: { costDollars: refPrice * shares }, nowMs });
       markStockRefused(a, side, shares, `stock scalp refused: ${capital.failures.join("; ")}`, nowMs);
@@ -1398,6 +1490,7 @@ export function paperEngineState() {
   const risk = defaultRiskConfig();
   const experimentalPositionDollars = paperMinPositionDollars();
   const targetProfitDollars = paperTargetProfitDollars();
+  const sizing = paperSizingConfig();
   return {
     ...state,
     autoEntryEnabled: process.env.PAPER_AUTO_ENTRY === "1",
@@ -1410,6 +1503,9 @@ export function paperEngineState() {
     targetProfitDollars,
     sweepMs: SWEEP_MS,
     risk,
+    // Risk-based sizing profile the sizer is actually using this session.
+    sizingProfile: sizing.profile,
+    sizing,
   };
 }
 

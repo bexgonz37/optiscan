@@ -125,6 +125,7 @@ function PaperPageInner() {
   }, [load]);
 
   const s: Summary | null = data?.summary ?? null;
+  const optionsPerf: any = data?.optionsPerformance ?? null;
   const engine = data?.engine ?? null;
   const account: PaperAccount | null = data?.account ?? null;
   const trades: any[] = data?.trades ?? [];
@@ -189,6 +190,15 @@ function PaperPageInner() {
 
         <Panel title="Risk rules the agent cannot override" meta="Beginner guardrails · enforced before every entry" tip="paperTrading">
           <div className="paper-buckets">
+            <div className="paper-bucket">
+              <h4>Risk profile &amp; sizing</h4>
+              <p className="muted text-xs">
+                Profile <b>{engine?.sizingProfile ?? "standard"}</b> (PAPER_RISK_PROFILE). Sizes from equity × risk% ÷ loss-at-stop, then clamps to every hard cap.
+                {engine?.sizing ? (
+                  <> Risk/trade {num(engine.sizing.riskPerTradePct, "%")} · max position {num(engine.sizing.maxPositionPct, "%")} · max exposure {num(engine.sizing.maxTotalExposurePct, "%")} · max {engine.sizing.maxContractsPerTrade} contracts/trade · daily-loss stop {num(engine.sizing.maxDailyLossPct, "%")}.</>
+                ) : null}
+              </p>
+            </div>
             <div className="paper-bucket">
               <h4>Position limits</h4>
               <p className="muted text-xs">
@@ -298,6 +308,102 @@ function PaperPageInner() {
             </p>
           </Panel>
         ) : null}
+        {optionsPerf ? (
+          <Panel title="Options performance" meta="Option-contract P&L only — never blended with stock P&L" tip="paperTrading">
+            <div className="axiom-strip paper-strip">
+              <StatTile label="Open options" value={String(optionsPerf.openCount ?? 0)} hint="live option positions" metric="paperTrading" />
+              <StatTile label="Closed options" value={String(optionsPerf.closedCount ?? 0)} hint="terminal option trades" metric="paperTrading" />
+              <StatTile label="Contracts traded" value={String(optionsPerf.contractsTraded ?? 0)} hint={`avg ${num(optionsPerf.avgContractsPerTrade, "", 1)}/trade`} metric="paperTrading" />
+              <StatTile label="Realized (opt)" value={dollars(optionsPerf.realizedDollars)} hint="option-contract dollars" metric="paperTrading" />
+              <StatTile label="Unrealized (opt)" value={dollars(optionsPerf.unrealizedDollars)} hint="open option marks" metric="paperTrading" />
+              <StatTile label="Return on premium" value={num(optionsPerf.returnOnPremiumPct, "%")} hint="realized ÷ premium paid" metric="paperTrading" />
+              <StatTile label="Win rate" value={num(optionsPerf.winRatePct, "%")} hint="graded option trades" metric="winRate" />
+              <StatTile label="Profit factor" value={num(optionsPerf.profitFactor, "", 2)} hint="gross win ÷ loss" metric="profitFactor" />
+              <StatTile label="Expectancy" value={dollars(optionsPerf.expectancyDollars)} hint="per option trade" metric="expectancy" />
+              <StatTile label="Max drawdown" value={dollars(optionsPerf.maxDrawdownDollars)} hint="option equity curve" metric="maxDrawdown" />
+              <StatTile label="Avg winner / loser" value={`${dollars(optionsPerf.avgWinnerDollars)} / ${dollars(optionsPerf.avgLoserDollars)}`} hint="option $" metric="paperTrading" />
+              <StatTile label="Avg premium / pos value" value={`${optionsPerf.avgPremiumPaid != null ? fmtPrice(optionsPerf.avgPremiumPaid) : "—"} / ${dollars(optionsPerf.avgPositionValueDollars)}`} hint="per contract / per position" metric="paperTrading" />
+              <StatTile label="Slippage / fees" value={`${dollars(optionsPerf.totalSlippageDollars)} / ${dollars(optionsPerf.totalFeesDollars)}`} hint="simulated costs (separate from P&L)" metric="paperTrading" />
+            </div>
+            <div className="paper-buckets" style={{ marginTop: 12 }}>
+              <div className="paper-bucket">
+                <h4>CALL vs PUT research</h4>
+                <table className="mini-table">
+                  <thead><tr><th>Side</th><th>N</th><th>Win%</th><th>$</th><th>RoP%</th></tr></thead>
+                  <tbody>
+                    {(["call", "put"]).map((side) => {
+                      const g = optionsPerf.byType?.[side];
+                      return g ? (
+                        <tr key={side}>
+                          <td>{side.toUpperCase()}</td><td className="num">{g.count}</td>
+                          <td className="num">{num(g.winRatePct, "%")}</td>
+                          <td className={`num ${g.realizedDollars >= 0 ? "up" : "dn"}`}>{dollars(g.realizedDollars)}</td>
+                          <td className="num">{num(g.returnOnPremiumPct, "%")}</td>
+                        </tr>
+                      ) : null;
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div className="paper-bucket">
+                <h4>0DTE vs weekly vs longer</h4>
+                <table className="mini-table">
+                  <thead><tr><th>Duration</th><th>N</th><th>Win%</th><th>$</th><th>RoP%</th></tr></thead>
+                  <tbody>
+                    {(["0DTE", "weekly", "longer"]).map((k) => {
+                      const g = optionsPerf.byDuration?.[k];
+                      return g && g.count ? (
+                        <tr key={k}>
+                          <td>{k}</td><td className="num">{g.count}</td>
+                          <td className="num">{num(g.winRatePct, "%")}</td>
+                          <td className={`num ${g.realizedDollars >= 0 ? "up" : "dn"}`}>{dollars(g.realizedDollars)}</td>
+                          <td className="num">{num(g.returnOnPremiumPct, "%")}</td>
+                        </tr>
+                      ) : null;
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div className="paper-bucket">
+                <h4>Opportunity vs realized</h4>
+                <p className="muted text-xs">
+                  Signal HIT &amp; captured: <b>{optionsPerf.opportunity?.hitAndCaptured ?? 0}</b>.
+                  Signal correct but exit failed: <b>{optionsPerf.opportunity?.signalHitExitMissed ?? 0}</b>.
+                  Signal itself failed: <b>{optionsPerf.opportunity?.signalFailed ?? 0}</b>.
+                  <br />(HIT = the contract offered ≥{optionsPerf.opportunity?.thresholdPct ?? 30}% before expiration.)
+                </p>
+              </div>
+              {optionsPerf.byStrategy?.length ? (
+                <div className="paper-bucket">
+                  <h4>By strategy</h4>
+                  <table className="mini-table">
+                    <thead><tr><th>Strategy</th><th>N</th><th>Win%</th><th>$</th></tr></thead>
+                    <tbody>
+                      {optionsPerf.byStrategy.slice(0, 5).map((g: any) => (
+                        <tr key={g.strategy}><td>{g.strategy}</td><td className="num">{g.count}</td><td className="num">{num(g.winRatePct, "%")}</td><td className={`num ${g.realizedDollars >= 0 ? "up" : "dn"}`}>{dollars(g.realizedDollars)}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+              {optionsPerf.byTimeOfDay?.length ? (
+                <div className="paper-bucket">
+                  <h4>By time of day (entry, ET)</h4>
+                  <table className="mini-table">
+                    <thead><tr><th>Phase</th><th>N</th><th>Win%</th><th>$</th></tr></thead>
+                    <tbody>
+                      {optionsPerf.byTimeOfDay.slice(0, 6).map((g: any) => (
+                        <tr key={g.phase}><td>{g.phase}</td><td className="num">{g.count}</td><td className="num">{num(g.winRatePct, "%")}</td><td className={`num ${g.realizedDollars >= 0 ? "up" : "dn"}`}>{dollars(g.realizedDollars)}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+            </div>
+            <p className="muted text-xs" style={{ marginTop: 10 }}>{optionsPerf.note}</p>
+          </Panel>
+        ) : null}
+
         <Panel title="Open trades" meta={`${open.length} active · ~7s marks on hot symbols`} live tip="paperTrading">
           {open.length ? (
             <ul className="ledger axiom-ledger">
@@ -321,6 +427,14 @@ function PaperPageInner() {
                         At entry: Δ {Number(t.entrySnapshot.delta).toFixed(2)}
                         {t.entrySnapshot.iv != null ? ` · IV ${(Number(t.entrySnapshot.iv) * 100).toFixed(0)}%` : ""}
                         {t.entrySnapshot.spreadPct != null ? ` · spread ${Number(t.entrySnapshot.spreadPct).toFixed(1)}%` : ""}
+                      </small>
+                    ) : null}
+                    {t.sizing ? (
+                      <small className="muted">
+                        Sizing ({t.sizing.profile ?? "manual"}): {t.contracts} contract(s)
+                        {t.sizing.bindingConstraint ? ` · binding: ${t.sizing.bindingConstraint}` : ""}
+                        {t.sizing.riskBudgetDollars != null ? ` · risk budget $${Number(t.sizing.riskBudgetDollars).toFixed(0)}` : ""}
+                        {t.sizing.byRisk != null ? ` · caps[risk ${t.sizing.byRisk}, pos ${t.sizing.byPosition}, exp ${t.sizing.byExposure}, max ${t.sizing.byMaxContracts}]` : ""}
                       </small>
                     ) : null}
                     {t.explanation?.revalidated ? <small className="muted">Revalidation: {t.explanation.revalidated}</small> : null}
@@ -364,6 +478,10 @@ function PaperPageInner() {
                     ) : d.snapshot?.contracts ? (
                       <small className="muted">
                         Paper option size: {d.snapshot.contracts} contract(s) @ {d.snapshot.entryLimit}
+                      </small>
+                    ) : d.snapshot?.bindingConstraint ? (
+                      <small className="muted">
+                        Sizing calc: binding {d.snapshot.bindingConstraint} · risk budget ${Number(d.snapshot.riskBudgetDollars ?? 0).toFixed(0)} · caps[risk {d.snapshot.byRisk}, pos {d.snapshot.byPosition}, exp {d.snapshot.byExposure}]
                       </small>
                     ) : null}
                   </span>

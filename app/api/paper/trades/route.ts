@@ -11,6 +11,7 @@ export async function GET(req: Request) {
   ensureServerBoot();
   const { listPaperTrades, listPaperDecisions, paperEngineState, recentPaperEvents, paperTradeEvents, dailyPaperSummary } = await import("@/lib/paper-engine");
   const { summarize, byConfidence, byExpirationLength, bySetup, byExitKind } = await import("@/lib/paper-analytics");
+  const { optionsPerformance } = await import("@/lib/paper-options-analytics");
   const { syncPaperOutcomes } = await import("@/lib/outcome-store");
 
   const url = new URL(req.url);
@@ -34,12 +35,31 @@ export async function GET(req: Request) {
 
   const trades = listPaperTrades();
   const summary = summarize(trades);
-  const startingBalance = Number(process.env.PAPER_STARTING_BALANCE ?? 5000);
+  const optionsPerf = optionsPerformance(trades.map((t) => ({
+    optionSymbol: t.optionSymbol,
+    optionType: t.optionType,
+    status: t.status,
+    dteAtEntry: t.dteAtEntry,
+    contracts: t.contracts,
+    entryPrice: t.entryPrice,
+    exitPrice: t.exitPrice,
+    lastMark: t.lastMark,
+    entryAtMs: t.entryAtMs,
+    exitAtMs: t.exitAtMs,
+    strategy: t.strategy,
+    entrySlippage: (t.entryCosts?.slippage as number | null) ?? null,
+    exitSlippage: (t.exitCosts?.slippage as number | null) ?? null,
+    entryFees: (t.entryCosts?.fees as number | null) ?? null,
+    exitFees: (t.exitCosts?.fees as number | null) ?? null,
+    opportunityPeakPct: t.opportunityPeakPct,
+  })), Number(process.env.PAPER_OPPORTUNITY_HIT_PCT ?? 30));
+  const startingBalance = Number(process.env.PAPER_STARTING_BALANCE_USD ?? process.env.PAPER_STARTING_BALANCE ?? 5000);
   const equity = +(startingBalance + summary.totalPnlDollars).toFixed(2);
   return NextResponse.json({
     ok: true,
     trades,
     summary,
+    optionsPerformance: optionsPerf,
     daily: dailyPaperSummary(),
     account: {
       startingBalance,

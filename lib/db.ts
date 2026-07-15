@@ -1050,6 +1050,10 @@ const PAPER_COLUMN_MIGRATIONS: Array<[string, string]> = [
   // chains the sweep already fetches). Answers "did the call/put ever go green
   // enough to book a profit before expiration?" — distinct from realized P&L.
   ["opportunity_peak_pct", "ALTER TABLE paper_trades ADD COLUMN opportunity_peak_pct REAL"],
+  // Risk-based sizing (2026-07-15): the deterministic position-sizer calculation
+  // (profile, risk budget, every cap, the binding constraint) frozen at creation
+  // so the trade detail page shows exactly why this size was chosen or refused.
+  ["sizing_json", "ALTER TABLE paper_trades ADD COLUMN sizing_json TEXT"],
 ];
 
 /** Opportunity-grade columns on the authoritative outcomes table (additive). */
