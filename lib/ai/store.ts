@@ -37,6 +37,7 @@ export interface AiJobRunInput {
   estimatedCostUsd?: number;
   latencyMs?: number;
   retryCount?: number;
+  diagnostic?: unknown;
   nowMs?: number;
 }
 
@@ -45,13 +46,14 @@ export function recordAiJobRunOnDb(db: DbLike, r: AiJobRunInput): number {
   const info = db.prepare(
     `INSERT INTO ai_job_runs
        (job_type, model, status, error_category, error, input_tokens, output_tokens,
-        estimated_cost_usd, latency_ms, retry_count, month_key, created_at_ms)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+        estimated_cost_usd, latency_ms, retry_count, diagnostic_json, month_key, created_at_ms)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     r.jobType, r.model ?? null, r.status, r.errorCategory ?? null, (r.error ?? null) && String(r.error).slice(0, 500),
     Math.max(0, Math.floor(r.inputTokens ?? 0)), Math.max(0, Math.floor(r.outputTokens ?? 0)),
     Math.max(0, r.estimatedCostUsd ?? 0), Math.max(0, Math.floor(r.latencyMs ?? 0)),
-    Math.max(0, Math.floor(r.retryCount ?? 0)), monthKey(nowMs), nowMs,
+    Math.max(0, Math.floor(r.retryCount ?? 0)), r.diagnostic == null ? null : JSON.stringify(r.diagnostic).slice(0, 4000),
+    monthKey(nowMs), nowMs,
   );
   return Number(info.lastInsertRowid);
 }
@@ -121,7 +123,7 @@ export function aiUsageOnDb(db: DbLike, mk: string = monthKey()): AiUsage {
 /** Recent AI job failures (for the ops surface). */
 export function recentJobFailuresOnDb(db: DbLike, limit = 20): any[] {
   return db.prepare(
-    `SELECT id, job_type, model, status, error_category, error, retry_count, latency_ms, created_at_ms
+    `SELECT id, job_type, model, status, error_category, error, diagnostic_json, retry_count, latency_ms, created_at_ms
        FROM ai_job_runs WHERE status NOT IN ('SUCCESS') ORDER BY created_at_ms DESC LIMIT ?`,
   ).all(limit) as any[];
 }
@@ -169,6 +171,8 @@ export interface AiReportRow {
   narrative: any | null;
   narrativeStatus: string;
   model: string | null;
+  diagnostic: any | null;
+  aiJobRunId: number | null;
   createdAtMs: number;
   updatedAtMs: number;
 }
@@ -180,6 +184,8 @@ function mapReport(r: any): AiReportRow {
     periodStartMs: r.period_start_ms ?? null, periodEndMs: r.period_end_ms ?? null,
     summary: parse(r.summary_json), narrative: parse(r.narrative_json),
     narrativeStatus: r.narrative_status, model: r.model ?? null,
+    diagnostic: parse(r.diagnostic_json),
+    aiJobRunId: r.ai_job_run_id ?? null,
     createdAtMs: r.created_at_ms, updatedAtMs: r.updated_at_ms,
   };
 }
@@ -213,14 +219,16 @@ export function insertReportOnDb(
 export function setReportNarrativeOnDb(
   db: DbLike,
   reportId: number,
-  input: { narrative: unknown | null; status: string; model: string | null; aiJobRunId?: number | null; nowMs?: number },
+  input: { narrative: unknown | null; status: string; model: string | null; aiJobRunId?: number | null; diagnostic?: unknown | null; nowMs?: number },
 ): void {
   const nowMs = input.nowMs ?? Date.now();
   db.prepare(
-    "UPDATE ai_reports SET narrative_json=?, narrative_status=?, model=?, ai_job_run_id=?, updated_at_ms=? WHERE id=?",
+    "UPDATE ai_reports SET narrative_json=?, narrative_status=?, model=?, ai_job_run_id=?, diagnostic_json=?, updated_at_ms=? WHERE id=?",
   ).run(
     input.narrative == null ? null : JSON.stringify(input.narrative),
-    input.status, input.model ?? null, input.aiJobRunId ?? null, nowMs, reportId,
+    input.status, input.model ?? null, input.aiJobRunId ?? null,
+    input.diagnostic == null ? null : JSON.stringify(input.diagnostic).slice(0, 4000),
+    nowMs, reportId,
   );
 }
 

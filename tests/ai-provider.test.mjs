@@ -37,6 +37,24 @@ test("success path validates and returns typed data + token usage", async () => 
   assert.equal(res.inputTokens, 100);
   assert.equal(res.outputTokens, 40);
   assert.equal(res.retries, 0);
+  assert.equal(res.diagnostics.httpStatus, 200);
+});
+
+test("tool-use response validates from tool input instead of free text", async () => {
+  const res = await runStructuredAiJob({ ...BASE, toolName: "nightly_narrative", toolInputSchema: { type: "object" } }, (j) => {
+    if (!j.headline) throw new Error("no headline");
+    return j;
+  }, {
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ content: [{ type: "tool_use", name: "nightly_narrative", input: { headline: "ok" } }], usage: { input_tokens: 50, output_tokens: 25 } }),
+    }),
+    env: KEY_ENV,
+  });
+  assert.equal(res.ok, true);
+  assert.equal(res.data.headline, "ok");
+  assert.equal(res.diagnostics.responseType, "tool_use");
 });
 
 test("malformed (non-JSON) response is rejected as a validation miss and retried, then fails closed", async () => {
@@ -47,17 +65,19 @@ test("malformed (non-JSON) response is rejected as a validation miss and retried
   });
   assert.equal(res.ok, false);
   assert.equal(res.errorCategory, "validation");
-  assert.equal(calls, 3, "1 initial + 2 bounded retries");
+  assert.equal(calls, 2, "malformed model content gets one bounded retry");
 });
 
 test("validation failure is bounded by maxRetries", async () => {
   let calls = 0;
-  const res = await runStructuredAiJob({ ...BASE, maxRetries: 1 }, () => { throw new Error("always invalid"); }, {
+  const res = await runStructuredAiJob({ ...BASE, maxRetries: 5 }, () => { throw new Error("always invalid"); }, {
     fetchImpl: async () => { calls++; return fakeFetch(JSON.stringify({ x: 1 }))(); }, env: KEY_ENV,
   });
   assert.equal(res.ok, false);
-  assert.equal(calls, 2, "1 initial + 1 retry");
+  assert.equal(calls, 2, "schema failures get one bounded retry, not the full transient retry budget");
   assert.equal(res.errorCategory, "validation");
+  assert.equal(res.diagnostics.validationErrors.length, 2);
+  assert.equal(res.diagnostics.stoppedEarly, true);
 });
 
 test("timeout (AbortError) fails closed and is categorized", async () => {

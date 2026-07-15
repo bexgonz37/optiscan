@@ -67,6 +67,31 @@ export interface NightlyNarrative {
   prioritizedIssue: string;
 }
 
+export const NIGHTLY_NARRATIVE_TOOL_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "headline",
+    "whatHappened",
+    "repeatedPatterns",
+    "successPatterns",
+    "bottlenecks",
+    "supportedConclusions",
+    "needsMoreEvidence",
+    "prioritizedIssue",
+  ],
+  properties: {
+    headline: { type: "string", minLength: 1 },
+    whatHappened: { type: "string", minLength: 1 },
+    repeatedPatterns: { type: "array", items: { type: "string" } },
+    successPatterns: { type: "array", items: { type: "string" } },
+    bottlenecks: { type: "array", items: { type: "string" } },
+    supportedConclusions: { type: "array", items: { type: "string" } },
+    needsMoreEvidence: { type: "array", items: { type: "string" } },
+    prioritizedIssue: { type: "string", minLength: 1 },
+  },
+} as const;
+
 /**
  * Validate the nightly narrative structure AND enforce the anti-fabrication guard
  * against the numbers present in the deterministic summary.

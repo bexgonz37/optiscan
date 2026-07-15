@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runNightlyDiagnosis } from "../lib/ai/nightly.ts";
+import { retryNightlyNarrative, runNightlyDiagnosis } from "../lib/ai/nightly.ts";
 import { aiConfig } from "../lib/ai/config.ts";
 import { getReportOnDb, listLessonsOnDb, recordAiJobRunOnDb, monthKey } from "../lib/ai/store.ts";
 
@@ -18,7 +18,7 @@ const ENTRY = Date.parse("2026-07-13T14:00:00Z");         // 10:00 ET on DAY
 const DDL = `
 CREATE TABLE ai_reports (id INTEGER PRIMARY KEY AUTOINCREMENT, report_type TEXT NOT NULL, period_key TEXT NOT NULL,
   period_start_ms INTEGER, period_end_ms INTEGER, summary_json TEXT NOT NULL, narrative_json TEXT,
-  narrative_status TEXT NOT NULL DEFAULT 'PENDING', model TEXT, ai_job_run_id INTEGER,
+  narrative_status TEXT NOT NULL DEFAULT 'PENDING', model TEXT, ai_job_run_id INTEGER, diagnostic_json TEXT,
   created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL, UNIQUE(report_type, period_key));
 CREATE TABLE ai_lessons (id INTEGER PRIMARY KEY AUTOINCREMENT, dedup_key TEXT NOT NULL UNIQUE, finding_type TEXT NOT NULL,
   title TEXT NOT NULL, summary TEXT NOT NULL, evidence_json TEXT NOT NULL, sample_size INTEGER NOT NULL DEFAULT 0,
@@ -30,6 +30,7 @@ CREATE TABLE ai_lessons (id INTEGER PRIMARY KEY AUTOINCREMENT, dedup_key TEXT NO
 CREATE TABLE ai_job_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, job_type TEXT NOT NULL, model TEXT, status TEXT NOT NULL,
   error_category TEXT, error TEXT, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
   estimated_cost_usd REAL NOT NULL DEFAULT 0, latency_ms INTEGER NOT NULL DEFAULT 0, retry_count INTEGER NOT NULL DEFAULT 0,
+  diagnostic_json TEXT,
   month_key TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
 CREATE TABLE paper_trade_outcomes (id INTEGER PRIMARY KEY AUTOINCREMENT, strategy TEXT, direction TEXT, dte_at_entry INTEGER,
   entry_session TEXT, entry_time_ms INTEGER, terminal_kind TEXT, grade TEXT NOT NULL, grading_status TEXT NOT NULL,
@@ -122,5 +123,22 @@ test("idempotent: a second run for the same day is a no-op", { skip }, async () 
   const second = await runNightlyDiagnosis({ nowMs: NOW + 60000, day: DAY, db, config: ENABLED, provider: okProvider(), env: { AI_LESSON_MIN_SAMPLE: "2" } });
   assert.match(second.skippedReason ?? "", /already reported/);
   assert.equal(db.prepare("SELECT COUNT(*) n FROM ai_reports").get().n, 1);
+  db.close();
+});
+
+test("manual retry uses the stored deterministic summary and records diagnostics", { skip }, async () => {
+  const db = freshDb();
+  const badProvider = { env: { ANTHROPIC_API_KEY: "k" }, fetchImpl: async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ content: [{ type: "text", text: JSON.stringify({ headline: "missing fields" }) }], usage: { input_tokens: 100, output_tokens: 20 } }) }) };
+  const first = await runNightlyDiagnosis({ nowMs: NOW, day: DAY, db, config: ENABLED, provider: badProvider, env: { AI_LESSON_MIN_SAMPLE: "2" } });
+  assert.equal(first.narrativeStatus, "VALIDATION_FAILED");
+  const rep = getReportOnDb(db, "nightly", DAY);
+  assert.ok(rep.diagnostic.validationErrors.length >= 1);
+
+  const retry = await retryNightlyNarrative({ nowMs: NOW + 1000, periodKey: DAY, db, config: ENABLED, provider: okProvider() });
+  assert.equal(retry.narrativeStatus, "OK");
+  const after = getReportOnDb(db, "nightly", DAY);
+  assert.equal(after.summary.signalCorrectExitFailed, 3, "stored summary preserved");
+  assert.equal(after.narrative.prioritizedIssue, "exit_management");
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM ai_job_runs WHERE job_type='nightly_diagnosis_retry'").get().n, 1);
   db.close();
 });

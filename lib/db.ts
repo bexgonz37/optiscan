@@ -809,6 +809,7 @@ CREATE TABLE IF NOT EXISTS ai_reports (
   narrative_status TEXT NOT NULL DEFAULT 'PENDING', -- PENDING | OK | SKIPPED | VALIDATION_FAILED | ERROR
   model TEXT,
   ai_job_run_id INTEGER,
+  diagnostic_json TEXT,                  -- bounded provider/validation diagnostic, never secrets/raw key
   created_at_ms INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -902,6 +903,7 @@ CREATE TABLE IF NOT EXISTS ai_job_runs (
   estimated_cost_usd REAL NOT NULL DEFAULT 0,
   latency_ms INTEGER NOT NULL DEFAULT 0,
   retry_count INTEGER NOT NULL DEFAULT 0,
+  diagnostic_json TEXT,                  -- bounded provider status/validation metadata, no secrets
   month_key TEXT NOT NULL,               -- YYYY-MM (ET) for spend rollups
   created_at_ms INTEGER NOT NULL,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
@@ -1041,6 +1043,14 @@ const PAPER_OUTCOME_COLUMN_MIGRATIONS: Array<[string, string]> = [
   ["opportunity_window", "ALTER TABLE paper_trade_outcomes ADD COLUMN opportunity_window TEXT"],
 ];
 
+const AI_REPORT_COLUMN_MIGRATIONS: Array<[string, string]> = [
+  ["diagnostic_json", "ALTER TABLE ai_reports ADD COLUMN diagnostic_json TEXT"],
+];
+
+const AI_JOB_RUN_COLUMN_MIGRATIONS: Array<[string, string]> = [
+  ["diagnostic_json", "ALTER TABLE ai_job_runs ADD COLUMN diagnostic_json TEXT"],
+];
+
 function migrate(db: Database.Database) {
   // Column migrations must run before SCHEMA: idx_alerts_dedup references the
   // 'session' column, which pre-stocks-mode databases don't have yet.
@@ -1061,6 +1071,14 @@ function migrate(db: Database.Database) {
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_trade_outcomes'").get()) {
     const outcomeCols = cols("paper_trade_outcomes");
     for (const [col, sql] of PAPER_OUTCOME_COLUMN_MIGRATIONS) if (!outcomeCols.has(col)) db.exec(sql);
+  }
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ai_reports'").get()) {
+    const aiReportCols = cols("ai_reports");
+    for (const [col, sql] of AI_REPORT_COLUMN_MIGRATIONS) if (!aiReportCols.has(col)) db.exec(sql);
+  }
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ai_job_runs'").get()) {
+    const aiJobCols = cols("ai_job_runs");
+    for (const [col, sql] of AI_JOB_RUN_COLUMN_MIGRATIONS) if (!aiJobCols.has(col)) db.exec(sql);
   }
   // Phase 7 (additive): drift-health flag on an existing model_registry table.
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_registry'").get()) {

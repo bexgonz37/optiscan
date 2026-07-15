@@ -61,6 +61,14 @@ export default function AiLabPage() {
     } finally { setBusy(false); }
   }, [load]);
 
+  const retryNightly = useCallback(async (reportId: number) => {
+    setBusy(true);
+    try {
+      await fetch("/api/ai", { method: "POST", headers: { ...scanHeaders(), "content-type": "application/json" }, body: JSON.stringify({ action: "retry_nightly_narrative", reportId }) });
+      await load();
+    } finally { setBusy(false); }
+  }, [load]);
+
   useEffect(() => { load(); const id = setInterval(load, 60000); return () => clearInterval(id); }, [load]);
 
   if (error && !ov) return <PageContainer><ErrorState title="AI Lab unavailable" detail={error} onRetry={load} /></PageContainer>;
@@ -72,6 +80,7 @@ export default function AiLabPage() {
   const cost = ov?.cost;
   const nightly = ov?.latestNightly;
   const narrative = nightly?.narrative;
+  const diagnostic = nightly?.diagnostic;
   const pending = ov?.proposals?.pending ?? [];
   const accepted = ov?.proposals?.accepted ?? [];
   const rejected = ov?.proposals?.rejected ?? [];
@@ -191,6 +200,29 @@ export default function AiLabPage() {
                 Deterministic summary stored; narrative status: <strong>{nightly.narrativeStatus}</strong>
                 {nightly.narrativeStatus === "SKIPPED" && " (AI narration disabled or over budget — the numbers above are still real)."}
               </p>
+            )}
+            {!narrative && ["VALIDATION_FAILED", "ERROR", "SKIPPED"].includes(String(nightly.narrativeStatus)) && (
+              <button disabled={busy} onClick={() => retryNightly(Number(nightly.id))} style={{ fontSize: 12, padding: "4px 9px", marginTop: 6 }}>
+                Retry narrative
+              </button>
+            )}
+            {diagnostic && (
+              <DetailsDisclosure summary="Narrative failure details">
+                <ResponsiveGrid min={180}>
+                  <KeyValue k="Provider" v={diagnostic.provider ?? "anthropic"} />
+                  <KeyValue k="HTTP" v={diagnostic.httpStatus ?? "n/a"} />
+                  <KeyValue k="Response type" v={diagnostic.responseType ?? "n/a"} />
+                  <KeyValue k="Attempts" v={diagnostic.attempts ?? "n/a"} />
+                  <KeyValue k="Stopped early" v={diagnostic.stoppedEarly ? "yes" : "no"} tone={diagnostic.stoppedEarly ? "warn" : "muted"} />
+                  <KeyValue k="Markdown fences" v={diagnostic.markdownFenceStripped ? "stripped" : "no"} />
+                </ResponsiveGrid>
+                {Array.isArray(diagnostic.validationErrors) && diagnostic.validationErrors.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    {diagnostic.validationErrors.map((s: string, i: number) => <p key={i} style={{ fontSize: 12, margin: "2px 0" }}>{s}</p>)}
+                  </div>
+                )}
+                {diagnostic.parseError && <p style={{ fontSize: 12, margin: "6px 0 0" }}>{diagnostic.parseError}</p>}
+              </DetailsDisclosure>
             )}
             {Array.isArray(nightly.summary?.patterns) && nightly.summary.patterns.length > 0 && (
               <DetailsDisclosure summary="Deterministic patterns">

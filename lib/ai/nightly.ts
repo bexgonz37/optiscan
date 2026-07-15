@@ -1,12 +1,9 @@
 /**
- * ai/nightly.ts — the nightly miss-diagnosis job orchestration. Impure (DB +
- * provider), but every step fails closed: the deterministic summary is computed
- * and STORED first (always), candidate lessons are derived deterministically, and
- * only THEN is the optional LLM narration attempted. An AI/network/budget failure
- * leaves the stored summary + lessons intact and never throws to the scheduler.
+ * ai/nightly.ts - nightly miss-diagnosis orchestration.
  *
- * Idempotent: one ai_reports row per (nightly, trading-day). A re-run for a day
- * that already has a report is a no-op — safe across restarts and duplicate beats.
+ * Deterministic summaries are stored first and always survive provider failures.
+ * Optional AI narration is advisory only, validated, budget-gated, and isolated
+ * from scanner/Discord/paper paths.
  */
 import { tradingDay } from "../trading-session.ts";
 import { aiConfig, type AiConfig } from "./config.ts";
@@ -14,12 +11,12 @@ import { buildNightlySummary, type NightlySummary } from "./nightly-summary.ts";
 import { deriveCandidateLessons } from "./lessons.ts";
 import { gatherOutcomesForDay, gatherCandidatesForDay, gatherLiveInstrumentation, gatherMomentumDigestForDay, gatherOptionsDigestForDay } from "./queries.ts";
 import { nightlyNarrationPrompt } from "./prompts.ts";
-import { validateNightlyNarrative, type NightlyNarrative } from "./schemas.ts";
+import { NIGHTLY_NARRATIVE_TOOL_SCHEMA, validateNightlyNarrative, type NightlyNarrative } from "./schemas.ts";
 import { runStructuredAiJob, type ProviderDeps } from "./provider.ts";
 import { estimateCostUsd } from "./pricing.ts";
 import {
   insertReportOnDb, setReportNarrativeOnDb, upsertLessonOnDb, recordAiJobRunOnDb,
-  costGateOnDb, type DbLike,
+  costGateOnDb, getReportOnDb, type AiReportRow, type DbLike,
 } from "./store.ts";
 import { deliverNightlyRecapOnDb } from "./recap.ts";
 
@@ -37,6 +34,7 @@ export interface NightlyJobResult {
   narrativeStatus: string;
   lessonsCreated: number;
   costUsd: number;
+  diagnostic?: unknown;
 }
 
 export interface NightlyJobOptions {
@@ -48,6 +46,89 @@ export interface NightlyJobOptions {
   provider?: ProviderDeps;
   /** Override config (tests). */
   config?: AiConfig;
+}
+
+function aiFailureDiagnostic(call: Awaited<ReturnType<typeof runStructuredAiJob<NightlyNarrative>>>) {
+  return {
+    provider: "anthropic",
+    httpStatus: call.diagnostics.httpStatus,
+    responseType: call.diagnostics.responseType,
+    contentTypes: call.diagnostics.contentTypes,
+    markdownFenceStripped: call.diagnostics.markdownFenceStripped,
+    extractedJson: call.diagnostics.extractedJson,
+    validationErrors: call.diagnostics.validationErrors.slice(0, 5),
+    parseError: call.diagnostics.parseError,
+    stoppedEarly: call.diagnostics.stoppedEarly,
+    attempts: call.diagnostics.attempts,
+    errorCategory: call.errorCategory,
+    error: call.error,
+  };
+}
+
+async function narrateStoredNightlyReport(
+  db: DbLike,
+  report: AiReportRow,
+  cfg: AiConfig,
+  opts: { nowMs: number; provider?: ProviderDeps; jobType?: string },
+): Promise<{ status: string; costUsd: number; diagnostic?: unknown; jobRunId?: number | null; skippedReason?: string }> {
+  const jobType = opts.jobType ?? "nightly_diagnosis";
+  if (report.narrativeStatus === "OK" && report.narrative) {
+    return { status: "OK", costUsd: 0, jobRunId: report.aiJobRunId, skippedReason: "report already has a validated narrative" };
+  }
+
+  if (!cfg.nightlyDiagnosisEnabled) {
+    const diagnostic = { reason: "AI nightly diagnosis disabled or API key missing", flags: { enabled: cfg.enabled, hasApiKey: cfg.hasApiKey, nightlyDiagnosisEnabled: cfg.nightlyDiagnosisEnabled } };
+    const jobRunId = recordAiJobRunOnDb(db, { jobType, model: cfg.nightlyModel, status: "SKIPPED_DISABLED", errorCategory: "disabled", diagnostic, nowMs: opts.nowMs });
+    setReportNarrativeOnDb(db, report.id, { narrative: null, status: "SKIPPED", model: cfg.nightlyModel, aiJobRunId: jobRunId, diagnostic, nowMs: opts.nowMs });
+    return { status: "SKIPPED", costUsd: 0, diagnostic, jobRunId };
+  }
+
+  const gate = costGateOnDb(db, cfg, opts.nowMs);
+  if (!gate.allowed) {
+    const diagnostic = { reason: "monthly hard limit reached", spendUsd: gate.spendUsd, hardLimitUsd: gate.hardLimitUsd };
+    const jobRunId = recordAiJobRunOnDb(db, {
+      jobType, model: cfg.nightlyModel, status: "SKIPPED_HARD_LIMIT", errorCategory: "budget",
+      error: `monthly hard limit reached ($${gate.spendUsd.toFixed(2)} >= $${gate.hardLimitUsd})`,
+      diagnostic, nowMs: opts.nowMs,
+    });
+    setReportNarrativeOnDb(db, report.id, { narrative: null, status: "SKIPPED", model: cfg.nightlyModel, aiJobRunId: jobRunId, diagnostic, nowMs: opts.nowMs });
+    return { status: "SKIPPED", costUsd: 0, diagnostic, jobRunId };
+  }
+
+  const { system, user } = nightlyNarrationPrompt(report.summary);
+  const call = await runStructuredAiJob<NightlyNarrative>(
+    {
+      model: cfg.nightlyModel,
+      system,
+      user,
+      maxOutputTokens: cfg.maxOutputTokensPerJob,
+      timeoutMs: cfg.jobTimeoutMs,
+      maxRetries: cfg.maxRetries,
+      toolName: "nightly_narrative",
+      toolInputSchema: NIGHTLY_NARRATIVE_TOOL_SCHEMA as unknown as Record<string, unknown>,
+    },
+    (json) => validateNightlyNarrative(json, report.summary),
+    opts.provider,
+  );
+
+  const costUsd = estimateCostUsd(cfg.nightlyModel, call.inputTokens, call.outputTokens);
+  const diagnostic = call.ok ? null : aiFailureDiagnostic(call);
+  const status = call.ok ? "SUCCESS" : call.errorCategory === "timeout" ? "TIMEOUT" : call.errorCategory === "validation" ? "VALIDATION_FAILED" : "ERROR";
+  const jobRunId = recordAiJobRunOnDb(db, {
+    jobType, model: cfg.nightlyModel, status,
+    errorCategory: call.ok ? "none" : call.errorCategory, error: call.error,
+    inputTokens: call.inputTokens, outputTokens: call.outputTokens, estimatedCostUsd: costUsd,
+    latencyMs: call.latencyMs, retryCount: call.retries, diagnostic, nowMs: opts.nowMs,
+  });
+
+  if (call.ok && call.data) {
+    setReportNarrativeOnDb(db, report.id, { narrative: call.data, status: "OK", model: cfg.nightlyModel, aiJobRunId: jobRunId, diagnostic: null, nowMs: opts.nowMs });
+    return { status: "OK", costUsd, jobRunId };
+  }
+
+  const reportStatus = call.errorCategory === "validation" ? "VALIDATION_FAILED" : "ERROR";
+  setReportNarrativeOnDb(db, report.id, { narrative: null, status: reportStatus, model: cfg.nightlyModel, aiJobRunId: jobRunId, diagnostic, nowMs: opts.nowMs });
+  return { status: reportStatus, costUsd, diagnostic, jobRunId };
 }
 
 /**
@@ -66,7 +147,6 @@ export async function runNightlyDiagnosis(opts: NightlyJobOptions = {}): Promise
     narrativeStatus: "PENDING", lessonsCreated: 0, costUsd: 0,
   };
 
-  // 1. Deterministic summary — always computed and stored (idempotent).
   let summary: NightlySummary;
   try {
     const outcomes = gatherOutcomesForDay(day, nowMs, db);
@@ -86,66 +166,59 @@ export async function runNightlyDiagnosis(opts: NightlyJobOptions = {}): Promise
   result.reportId = report.id;
   result.ran = true;
 
-  // Already reported this day (restart/duplicate beat) — nothing more to do.
   if (!created) {
     return { ...result, narrativeStatus: report.narrativeStatus, skippedReason: "already reported for this trading day" };
   }
 
-  // 2. Candidate lessons — deterministic, evidence-gated, deduped.
   const minSample = Number(opts.env?.AI_LESSON_MIN_SAMPLE ?? process.env.AI_LESSON_MIN_SAMPLE ?? 3);
   try {
     for (const l of deriveCandidateLessons(summary, { minSample })) {
       const { created: madeNew } = upsertLessonOnDb(db, { ...l, sourceReportId: report.id, nowMs });
       if (madeNew) result.lessonsCreated += 1;
     }
-  } catch { /* lessons are best-effort; never block the report */ }
+  } catch {
+    // Lessons are best-effort; never block the report.
+  }
 
-  // 2b. Optional private recap — DETERMINISTIC (no LLM), routed ONLY to the recap
-  // webhook. Fires whenever AI_RECAP_ENABLED regardless of narration success, since
-  // it uses only stored summary values. A missing recap webhook is a no-op (the
-  // report is still stored; AI Lab shows the recap status).
   if (cfg.recapEnabled) {
     try { await deliverNightlyRecapOnDb(db, summary, cfg, { env: opts.env, nowMs }); }
-    catch { /* recap is best-effort; never block the report */ }
+    catch {
+      // Recap is best-effort; never block the report.
+    }
   }
 
-  // 3. Optional LLM narration — gated by config + monthly budget. Fails closed.
-  if (!cfg.nightlyDiagnosisEnabled) {
-    setReportNarrativeOnDb(db, report.id, { narrative: null, status: "SKIPPED", model: null, nowMs });
-    recordAiJobRunOnDb(db, { jobType: "nightly_diagnosis", model: cfg.nightlyModel, status: "SKIPPED_DISABLED", errorCategory: "disabled", nowMs });
-    return { ...result, narrativeStatus: "SKIPPED" };
-  }
-
-  const gate = costGateOnDb(db, cfg, nowMs);
-  if (!gate.allowed) {
-    setReportNarrativeOnDb(db, report.id, { narrative: null, status: "SKIPPED", model: cfg.nightlyModel, nowMs });
-    recordAiJobRunOnDb(db, { jobType: "nightly_diagnosis", model: cfg.nightlyModel, status: "SKIPPED_HARD_LIMIT", errorCategory: "budget", error: `monthly hard limit reached ($${gate.spendUsd.toFixed(2)} ≥ $${gate.hardLimitUsd})`, nowMs });
-    return { ...result, narrativeStatus: "SKIPPED" };
-  }
-
-  const { system, user } = nightlyNarrationPrompt(summary);
-  const call = await runStructuredAiJob<NightlyNarrative>(
-    { model: cfg.nightlyModel, system, user, maxOutputTokens: cfg.maxOutputTokensPerJob, timeoutMs: cfg.jobTimeoutMs, maxRetries: cfg.maxRetries },
-    (json) => validateNightlyNarrative(json, summary),
-    opts.provider,
-  );
-  const costUsd = estimateCostUsd(cfg.nightlyModel, call.inputTokens, call.outputTokens);
-  result.costUsd = costUsd;
-  const jobRunId = recordAiJobRunOnDb(db, {
-    jobType: "nightly_diagnosis", model: cfg.nightlyModel,
-    status: call.ok ? "SUCCESS" : call.errorCategory === "timeout" ? "TIMEOUT" : call.errorCategory === "validation" ? "VALIDATION_FAILED" : "ERROR",
-    errorCategory: call.ok ? "none" : call.errorCategory, error: call.error,
-    inputTokens: call.inputTokens, outputTokens: call.outputTokens, estimatedCostUsd: costUsd,
-    latencyMs: call.latencyMs, retryCount: call.retries, nowMs,
-  });
-
-  if (call.ok && call.data) {
-    setReportNarrativeOnDb(db, report.id, { narrative: call.data, status: "OK", model: cfg.nightlyModel, aiJobRunId: jobRunId, nowMs });
-    result.narrativeStatus = "OK";
-  } else {
-    setReportNarrativeOnDb(db, report.id, { narrative: null, status: call.errorCategory === "validation" ? "VALIDATION_FAILED" : "ERROR", model: cfg.nightlyModel, aiJobRunId: jobRunId, nowMs });
-    result.narrativeStatus = call.errorCategory === "validation" ? "VALIDATION_FAILED" : "ERROR";
-  }
-
+  const narrated = await narrateStoredNightlyReport(db, report, cfg, { nowMs, provider: opts.provider, jobType: "nightly_diagnosis" });
+  result.costUsd = narrated.costUsd;
+  result.narrativeStatus = narrated.status;
+  result.diagnostic = narrated.diagnostic;
   return result;
+}
+
+/** Manual retry: narrate an existing stored summary without recalculating outcomes. */
+export async function retryNightlyNarrative(opts: NightlyJobOptions & { reportId?: number; periodKey?: string } = {}): Promise<NightlyJobResult> {
+  const nowMs = opts.nowMs ?? Date.now();
+  const db = opts.db ?? lazyDb();
+  const cfg = opts.config ?? aiConfig(opts.env);
+  const periodKey = opts.periodKey ?? opts.day ?? tradingDay(nowMs);
+  const row = opts.reportId
+    ? (db.prepare("SELECT * FROM ai_reports WHERE id=? AND report_type='nightly'").get(opts.reportId) as any)
+    : null;
+  const report = row ? getReportOnDb(db, "nightly", row.period_key) : getReportOnDb(db, "nightly", periodKey);
+
+  if (!report) {
+    return { ran: false, skippedReason: `stored nightly report not found for ${periodKey}`, tradingDay: periodKey, reportId: null, summary: null, narrativeStatus: "MISSING", lessonsCreated: 0, costUsd: 0 };
+  }
+
+  const narrated = await narrateStoredNightlyReport(db, report, cfg, { nowMs, provider: opts.provider, jobType: "nightly_diagnosis_retry" });
+  return {
+    ran: true,
+    skippedReason: narrated.skippedReason,
+    tradingDay: report.periodKey,
+    reportId: report.id,
+    summary: report.summary,
+    narrativeStatus: narrated.status,
+    lessonsCreated: 0,
+    costUsd: narrated.costUsd,
+    diagnostic: narrated.diagnostic,
+  };
 }

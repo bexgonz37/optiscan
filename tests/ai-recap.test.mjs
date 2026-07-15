@@ -71,6 +71,7 @@ test("nightly recap delivery uses only the private recap webhook", { skip }, asy
       id INTEGER PRIMARY KEY AUTOINCREMENT, job_type TEXT NOT NULL, model TEXT, status TEXT NOT NULL,
       error_category TEXT, error TEXT, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
       estimated_cost_usd REAL NOT NULL DEFAULT 0, latency_ms INTEGER NOT NULL DEFAULT 0, retry_count INTEGER NOT NULL DEFAULT 0,
+      diagnostic_json TEXT,
       month_key TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
     CREATE TABLE ai_lessons (
       id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, dedup_key TEXT, finding_type TEXT,
