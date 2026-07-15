@@ -5,6 +5,7 @@
  */
 
 import { tradingDay } from "./trading-session.ts";
+import { summarizeEarliness, type EarlinessInput } from "./alert-earliness.ts";
 
 // Lazy DB resolution (not a static `@/lib/db` import) so this module — and anything
 // that imports it, including the DB-free AI layer — loads under the bare test runner
@@ -250,8 +251,22 @@ export function summarizeMomentumDiagnostics(rows: MomentumDiagnosticRow[]) {
     (r.firstPromotedMovePct != null && Math.abs(r.firstPromotedMovePct) >= 6)
     || (r.firstRankedMovePct != null && Math.abs(r.firstRankedMovePct) >= 6)
   ).length;
+  // Post-trade alert-earliness grading (§Part 6) over the alerts that actually
+  // sent — deterministic, hindsight-free, feeds the nightly AI so it can explain
+  // whether we alerted fresh or after the move had run.
+  const sentRows: EarlinessInput[] = rows
+    .filter((r) => r.decision === "SENT" || r.decision === "RESCUED_SENT")
+    .map((r) => ({
+      movePct: r.movePct, firstSeenMovePct: r.firstSeenMovePct,
+      ret10sPct: r.ret10sPct, ret30sPct: r.ret30sPct, ret60sPct: r.ret60sPct,
+      velocityPctMin: r.velocityPctMin, acceleration: r.acceleration, vwapDistPct: r.vwapDistPct,
+      classification: r.classification, firstDetectedMs: r.firstDetectedMs,
+      firstActionableMs: r.firstActionableMs, firstSeenMs: r.firstSeenMs,
+    }));
+  const earliness = summarizeEarliness(sentRows);
   return {
     total: rows.length, sent, rescued, nearMisses, rejected, extendedRejections, staleRejected, avgLatencyMs,
+    earliness,
     medianDiscoveryLatencyMs: median(rows.map((r) => r.firstRankedMs != null && r.firstSeenMs != null ? r.firstRankedMs - r.firstSeenMs : null)),
     medianPromotionLatencyMs: median(rows.map((r) => r.firstPromotedMs != null && r.firstRankedMs != null ? r.firstPromotedMs - r.firstRankedMs : null)),
     medianActionableLatencyMs: median(rows.map((r) => r.firstActionableMs != null && r.firstSeenMs != null ? r.firstActionableMs - r.firstSeenMs : null)),

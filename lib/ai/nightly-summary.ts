@@ -62,6 +62,17 @@ export interface MomentumMissDigest {
   extendedRejections: number;
   staleRejected: number;
   avgLatencyMs: number | null;
+  /** Post-trade alert-earliness rollup (§Part 6) — deterministic, hindsight-free. */
+  earliness?: {
+    graded: number;
+    ungradable: number;
+    counts: Record<string, number>;
+    pctEarly: number | null;
+    pctLateOrExhausted: number | null;
+    medianOnsetToAlertMs: number | null;
+    slowGrinderAlerts: number;
+    fastRunnerAlerts: number;
+  };
 }
 
 /** Pre-computed options-funnel digest (from the persisted options_diagnostics table). */
@@ -289,6 +300,12 @@ export function buildNightlySummary(input: NightlySummaryInput): NightlySummary 
   // Momentum stock funnel.
   if (momentum && momentum.rescued > 0) patterns.push(`${momentum.rescued} momentum stock callout(s) were rescued by the crossing latch.`);
   if (momentum && momentum.nearMisses >= 2) patterns.push(`${momentum.nearMisses} momentum near-miss(es); ${momentum.extendedRejections} arrived already extended, ${momentum.staleRejected} on stale quotes.`);
+  // Alert-earliness quality (§Part 6): how fresh were the alerts that actually sent?
+  if (momentum?.earliness && momentum.earliness.graded > 0) {
+    const e = momentum.earliness;
+    patterns.push(`Alert earliness: ${e.pctEarly ?? 0}% EARLY, ${e.pctLateOrExhausted ?? 0}% LATE/EXHAUSTED across ${e.graded} graded alert(s); median acceleration-onset→alert ${e.medianOnsetToAlertMs != null ? Math.round(e.medianOnsetToAlertMs / 1000) + "s" : "n/a"} (fast-runner ${e.fastRunnerAlerts}, slow-grinder ${e.slowGrinderAlerts}).`);
+    if ((e.pctLateOrExhausted ?? 0) >= 40) patterns.push(`WARNING: ${e.pctLateOrExhausted}% of momentum alerts landed LATE/EXHAUSTED — alerts are firing after the move rather than into fresh acceleration.`);
+  }
 
   let prioritizedIssue: string | null = null;
   if (options && options.configBlockedCycles > 0 && options.emittedButUndelivered > 0) {

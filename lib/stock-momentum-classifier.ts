@@ -29,6 +29,12 @@ export interface StockMomentumClassInput {
   quoteAgeMs?: number | null;
   spreadPct?: number | null;
   rankDelta?: number | null;
+  /** Recent trailing returns (%) over the last 10/30/60s — used to catch slow
+   * grinders (positive day, flat recent) and late tops (recent rollover). Optional:
+   * when absent the classifier behaves exactly as before (velocity/accel only). */
+  ret10sPct?: number | null;
+  ret30sPct?: number | null;
+  ret60sPct?: number | null;
 }
 
 export interface StockMomentumClassification {
@@ -66,6 +72,22 @@ export function classifyStockMomentum(input: StockMomentumClassInput): StockMome
   if ((input.efficiency ?? 0.5) < 0.28) reasons.push("one-print/choppy tape");
   if (reasons.length) {
     return { classification: "NOISY_ILLIQUID_SPIKE", scoreBoost: -35, dominantReason: reasons[0], reasons, fresh: false, late: false };
+  }
+
+  // Recent-return refinements (only when trailing returns are provided). These
+  // catch two failure modes the velocity/accel windows alone can miss:
+  //   • slow grinder: up on the day but the last 30–60s barely moved.
+  //   • late top: recent 10–30s already rolling over while extended on the day.
+  const alignedRet10 = aligned(input, input.ret10sPct);
+  const alignedRet30 = aligned(input, input.ret30sPct);
+  const alignedRet60 = aligned(input, input.ret60sPct);
+  if (isNum(alignedRet30) && isNum(alignedRet60) && absMove >= 0.6 && alignedRet60 < 0.12 && alignedRet30 < 0.08 && speed < 0.20) {
+    reasons.push(`up ${absMove.toFixed(1)}% on the day but only ${alignedRet60.toFixed(2)}% in the last 60s — grinding, not accelerating`);
+    return { classification: "SLOW_GRINDER", scoreBoost: -24, dominantReason: reasons[0], reasons, fresh: false, late: false };
+  }
+  if (isNum(alignedRet10) && isNum(alignedRet30) && absMove >= 1.0 && alignedRet10 < 0 && alignedRet30 <= 0) {
+    reasons.push(`recent 10s/30s returns are rolling over (${alignedRet10.toFixed(2)}%/${alignedRet30.toFixed(2)}%) while up ${absMove.toFixed(1)}% — late/exhausting`);
+    return { classification: "LATE_EXHAUSTION", scoreBoost: -26, dominantReason: reasons[0], reasons, fresh: false, late: true };
   }
 
   const accelerating = (accel ?? 0) > 0.015;
@@ -110,4 +132,27 @@ export function classifyStockMomentum(input: StockMomentumClassInput): StockMome
     fresh: false,
     late: false,
   };
+}
+
+/**
+ * Classes that must NOT fire a live stock momentum alert. A slow grinder, a late
+ * exhaustion top, and a noisy/illiquid one-print spike are exactly the setups the
+ * day-trader profile penalizes — they stay dashboard-only. FRESH_ACCELERATION and
+ * CONTINUATION may fire (still subject to every downstream freshness/NBBO/anti-chase
+ * gate). This is a suppression gate: it can only REJECT, never lower a threshold or
+ * force an alert. Disable with STOCK_MOMENTUM_CLASS_GATE=0.
+ */
+const LIVE_ALERT_BLOCKED_CLASSES = new Set<StockMomentumClass>([
+  "SLOW_GRINDER", "LATE_EXHAUSTION", "NOISY_ILLIQUID_SPIKE",
+]);
+
+export function freshMoverGateAllowed(
+  classification: StockMomentumClass,
+  env: NodeJS.ProcessEnv = process.env,
+): { allowed: boolean; reason: string } {
+  if (env.STOCK_MOMENTUM_CLASS_GATE === "0") return { allowed: true, reason: "class gate disabled (STOCK_MOMENTUM_CLASS_GATE=0)" };
+  if (LIVE_ALERT_BLOCKED_CLASSES.has(classification)) {
+    return { allowed: false, reason: `${classification} is not a fresh fast mover — dashboard-only` };
+  }
+  return { allowed: true, reason: `${classification} qualifies for a live momentum alert` };
 }

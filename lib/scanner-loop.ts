@@ -56,7 +56,8 @@ import {
   type StockMomentumSnapshot,
 } from "@/lib/stock-momentum-latch";
 import { recordMomentumDiagnostic } from "@/lib/momentum-diagnostics";
-import { classifyStockMomentum } from "@/lib/stock-momentum-classifier";
+import { classifyStockMomentum, freshMoverGateAllowed } from "@/lib/stock-momentum-classifier";
+import { rankDiscovery, promotionSet, type DiscoveryQuote } from "@/lib/discovery-ranking";
 
 const OPP_INGEST_MS = Number(process.env.OPP_INGEST_MS ?? 5000);
 const OPPORTUNITY_TRACKING = process.env.OPPORTUNITY_TRACKING !== "0";
@@ -136,6 +137,8 @@ interface LoopState {
   lastDiscoveryAt: number;
   discoveryCount: number;
   promoted: Map<string, number>;
+  /** Previous discovery snapshot per symbol (day-move + time) for Δmove/min velocity. */
+  discoveryPrev: Map<string, { changePercent: number | null; atMs: number }>;
   lastTapeEnrichAt: number;
   lastRecapAt: number;
   tapeBadgeCache: Map<string, { catalystType?: string; catalystFresh?: boolean; haltStatus?: string | null }>;
@@ -153,6 +156,7 @@ function state(): LoopState {
       running: false, intervalMs: LOOP_MS, targetMs: LOOP_MS, lastTickAt: null,
       ticks: 0, triggers: 0, alerts: 0, errors: 0, note: null, session: null,
       symbols: new Map(), movers: [], tape: [], lastDiscoveryAt: 0, discoveryCount: 0, promoted: new Map(),
+      discoveryPrev: new Map(),
       lastTapeEnrichAt: 0, lastRecapAt: 0, tapeBadgeCache: new Map(),
       nearMisses: [],
       majorMoves: [],
@@ -164,6 +168,7 @@ function state(): LoopState {
   g.__optiscanLoop.lastDiscoveryAt ??= 0;
   g.__optiscanLoop.discoveryCount ??= 0;
   g.__optiscanLoop.promoted ??= new Map();
+  g.__optiscanLoop.discoveryPrev ??= new Map();
   g.__optiscanLoop.lastTapeEnrichAt ??= 0;
   g.__optiscanLoop.lastRecapAt ??= 0;
   g.__optiscanLoop.tapeBadgeCache ??= new Map();
@@ -225,28 +230,26 @@ async function refreshDiscovery(nowMs: number) {
     s.note = res?.note ?? "discovery snapshot unavailable";
     return;
   }
-  s.discoveryCount = (res.quotes ?? []).length;
-  const ranked = (res.quotes ?? [])
-    .filter((q: any) => q?.symbol && q.price > 0 && q.changePercent != null && (q.volume ?? 0) >= DISCOVERY_MIN_VOLUME)
-    .sort((a: any, b: any) => {
-      const score = (q: any) => {
-        const move = Math.abs(Number(q.changePercent ?? 0));
-        const volume = Math.log10(Math.max(1, Number(q.volume ?? 0)));
-        const extensionPenalty = Math.max(0, move - 6) * 2.5;
-        return Math.min(move, 6) * 8 + volume * 5 - extensionPenalty;
-      };
-      return score(b) - score(a);
-    })
-    .slice(0, Math.max(0, DISCOVERY_TOP_N));
-  const newlyPromoted = ranked.filter((q: any) => !s.promoted.has(q.symbol)).map((q: any) => q.symbol);
-  ranked.forEach((q: any, idx: number) => {
-    const st = sym(s, q.symbol);
-    if (!st.firstRankedAt) { st.firstRankedAt = nowMs; st.firstRankedMovePct = q.changePercent ?? null; }
-    if (!s.promoted.has(q.symbol)) { st.firstPromotedAt = nowMs; st.firstPromotedMovePct = q.changePercent ?? null; }
-    st.lastRank = idx + 1;
-    s.promoted.set(q.symbol, nowMs + PROMOTION_MS);
+  const quotes: DiscoveryQuote[] = res.quotes ?? [];
+  s.discoveryCount = quotes.length;
+  // Fresh-acceleration-aware ranking (Δmove/min from the previous snapshot). A
+  // stock that just STARTED moving fast outranks one that is merely already up a
+  // lot; exceptional fresh movers are promoted immediately regardless of rank.
+  const ranked = rankDiscovery(quotes, s.discoveryPrev, nowMs);
+  const promote = promotionSet(ranked);
+  const newlyPromoted = promote.filter((r) => !s.promoted.has(r.symbol)).map((r) => r.symbol);
+  promote.forEach((r) => {
+    const st = sym(s, r.symbol);
+    const changePct = quotes.find((q) => q.symbol === r.symbol)?.changePercent ?? null;
+    if (!st.firstRankedAt) { st.firstRankedAt = nowMs; st.firstRankedMovePct = changePct; }
+    if (!s.promoted.has(r.symbol)) { st.firstPromotedAt = nowMs; st.firstPromotedMovePct = changePct; }
+    st.lastRank = r.rank;
+    s.promoted.set(r.symbol, nowMs + PROMOTION_MS);
   });
   for (const [ticker, expiresAt] of s.promoted) if (expiresAt <= nowMs) s.promoted.delete(ticker);
+  // Remember this snapshot's day-move per symbol so the NEXT cycle can compute
+  // move-velocity. Bounded to the discovered set (self-pruning each cycle).
+  s.discoveryPrev = new Map(quotes.filter((q) => q.symbol).map((q) => [q.symbol, { changePercent: q.changePercent ?? null, atMs: nowMs }]));
   // Latency fix (2026-07-09): a freshly promoted discovery name used to sit
   // through a 10-tick live warmup before it could ever trigger — by then the
   // move was minutes old (the "RIVN alerted at the top" failure). Seed its
@@ -750,6 +753,10 @@ async function tick() {
         : null;
     const instantRate = instantRead.shortRate;
     const rankDelta = null;
+    const ret5s = pctReturnOver(st.ring, nowMs, 5_000);
+    const ret10s = pctReturnOver(st.ring, nowMs, 10_000);
+    const ret30s = pctReturnOver(st.ring, nowMs, 30_000);
+    const ret60s = pctReturnOver(st.ring, nowMs, 60_000);
     const stockClass = classifyStockMomentum({
       direction: dir.direction,
       shortRate: accelRead.shortRate,
@@ -766,11 +773,10 @@ async function tick() {
       quoteAgeMs: stockQuoteAgeMs,
       spreadPct,
       rankDelta,
+      ret10sPct: ret10s,
+      ret30sPct: ret30s,
+      ret60sPct: ret60s,
     });
-    const ret5s = pctReturnOver(st.ring, nowMs, 5_000);
-    const ret10s = pctReturnOver(st.ring, nowMs, 10_000);
-    const ret30s = pctReturnOver(st.ring, nowMs, 30_000);
-    const ret60s = pctReturnOver(st.ring, nowMs, 60_000);
     const row = {
       symbol: q.symbol, price: q.price, movePct: q.changePercent, volume: q.volume ?? null,
       bid: q.bid ?? null, ask: q.ask ?? null, quoteProviderTimestamp: q.quoteProviderTimestamp ?? null,
@@ -985,13 +991,34 @@ async function tick() {
       }
     }
 
+    // FRESH-MOVER CLASS GATE: a slow grinder, a late/exhausted top, or a noisy
+    // illiquid spike never fires a live STOCK alert (options 0DTE path is
+    // unaffected — it keeps its own gates). Suppression only; records a visible
+    // REJECTED diagnostic so the dashboard/AI can see what was held back and why.
+    const stockClassGate = freshMoverGateAllowed(stockClass.classification);
+    if (stockEnabled && (fired || stockRescued) && !stockClassGate.allowed) {
+      recordMomentumDiagnostic({
+        ticker: q.symbol, evalAtMs: nowMs, session, price: q.price, movePct: q.changePercent ?? null,
+        velocityPctMin: accelRead.shortRate, instantPctMin: instantRate, acceleration: accelRead.accel,
+        relVol: st.relVol, volumeSurge: surge, vwapDistPct: levels.vwapDistPct, quoteAgeMs: stockQuoteAgeMs,
+        classification: stockClass.classification, dominantReason: stockClass.dominantReason,
+        firstSeenMs: st.firstSeenAt || null, firstRankedMs: st.firstRankedAt || null, firstPromotedMs: st.firstPromotedAt || null,
+        firstSeenMovePct: st.firstSeenMovePct, firstRankedMovePct: st.firstRankedMovePct, firstPromotedMovePct: st.firstPromotedMovePct,
+        ret5sPct: ret5s, ret10sPct: ret10s, ret30sPct: ret30s, ret60sPct: ret60s,
+        volumeRate: volRate10s, volumeAcceleration: volAccel, rankDelta,
+        entryState: "CLASS_SUPPRESSED", actionable: false, decision: "REJECTED",
+        reason: `class gate: ${stockClassGate.reason}`, latchState: "class_suppressed",
+        strategyVersion: MOMENTUM_STRATEGY_VERSION,
+      });
+    }
+
     if (fired || stockRescued) {
       // fire-and-forget: the 1s heartbeat must never wait on a chain fetch.
       st.lastTriggerEventAt = nowMs;
       const read = { accelRead, instantRate, surge, efficiency, levels, dir };
       const tasks: Promise<unknown>[] = [];
       if (fired && session === "regular") tasks.push(handleTrigger(q.symbol, st, read, q, nowMs));
-      if (stockEnabled) tasks.push(handleStockTrigger(q.symbol, st, read, q, nowMs, {
+      if (stockEnabled && stockClassGate.allowed) tasks.push(handleStockTrigger(q.symbol, st, read, q, nowMs, {
         rescued: stockRescued && !fired,
         quoteAgeMs: stockQuoteAgeMs,
         reason: stockRescueReason,

@@ -166,7 +166,7 @@ test("supervisor Discord boundary re-checks now-only actionability", () => {
 test("stock scanner path keeps its own cooldown to avoid duplicate-cycle resends", () => {
   const src = readFileSync(join(root, "lib/scanner-loop.ts"), "utf8");
   assert.match(src, /stockCooldownUntil/, "stock path has a dedicated cooldown");
-  assert.match(src, /if \(stockEnabled\) tasks\.push\(handleStockTrigger/, "stock trigger is gated by STOCK_CALLOUTS");
+  assert.match(src, /if \(stockEnabled && stockClassGate\.allowed\) tasks\.push\(handleStockTrigger/, "stock trigger is gated by STOCK_CALLOUTS and the fresh-mover class gate");
 });
 
 test("options and stock webhook routing stay separate", () => {
