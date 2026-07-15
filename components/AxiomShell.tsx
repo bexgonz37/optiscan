@@ -13,6 +13,7 @@ const DAILY_NAV: NavItem[] = [
   { href: "/callouts", label: "Callouts" },
   { href: "/paper", label: "Paper Trading" },
   { href: "/performance", label: "Performance" },
+  { href: "/ai", label: "AI Lab" },
   { href: "/data", label: "System Health" },
   { href: "/guide", label: "Guide" },
 ];
@@ -35,6 +36,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   "/alerts": { title: "Options Callouts", sub: "Moved into Callouts · accuracy & journal still here" },
   "/watchlist": { title: "Watchlist", sub: "Symbols the scanner is monitoring" },
   "/paper": { title: "Paper Trading", sub: "Autonomous simulated trades, no real money" },
+  "/ai": { title: "AI Lab", sub: "Advisory nightly diagnosis & weekly proposals — off by default, human-approved" },
   "/performance": { title: "Performance", sub: "Alert track record and paper account" },
   "/quant": { title: "Research & Backtesting", sub: "Setup stats and backtests" },
   "/research-learning": { title: "Research & Learning", sub: "Model readiness, drift, and bounded continuous learning" },

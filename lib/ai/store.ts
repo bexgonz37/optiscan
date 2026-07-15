@@ -126,6 +126,37 @@ export function recentJobFailuresOnDb(db: DbLike, limit = 20): any[] {
   ).all(limit) as any[];
 }
 
+export interface AiJobRunStats {
+  lastRunAtMs: number | null;
+  lastRunType: string | null;
+  lastRunStatus: string | null;
+  lastSuccessAtMs: number | null;
+  lastSuccessType: string | null;
+  lastFailureAtMs: number | null;
+  lastFailureType: string | null;
+  lastFailureError: string | null;
+  totalRuns: number;
+}
+
+/** Deterministic "when did the AI job machinery last run / succeed / fail" summary. */
+export function aiJobRunStatsOnDb(db: DbLike): AiJobRunStats {
+  const last = db.prepare("SELECT job_type, status, created_at_ms FROM ai_job_runs ORDER BY created_at_ms DESC LIMIT 1").get() as any;
+  const ok = db.prepare("SELECT job_type, created_at_ms FROM ai_job_runs WHERE status='SUCCESS' ORDER BY created_at_ms DESC LIMIT 1").get() as any;
+  const fail = db.prepare("SELECT job_type, error, created_at_ms FROM ai_job_runs WHERE status IN ('ERROR','TIMEOUT','VALIDATION_FAILED') ORDER BY created_at_ms DESC LIMIT 1").get() as any;
+  const total = db.prepare("SELECT COUNT(*) AS n FROM ai_job_runs").get() as any;
+  return {
+    lastRunAtMs: last?.created_at_ms ?? null,
+    lastRunType: last?.job_type ?? null,
+    lastRunStatus: last?.status ?? null,
+    lastSuccessAtMs: ok?.created_at_ms ?? null,
+    lastSuccessType: ok?.job_type ?? null,
+    lastFailureAtMs: fail?.created_at_ms ?? null,
+    lastFailureType: fail?.job_type ?? null,
+    lastFailureError: fail?.error ?? null,
+    totalRuns: Number(total?.n ?? 0),
+  };
+}
+
 // ── Reports (nightly / weekly) ───────────────────────────────────────────────
 
 export interface AiReportRow {

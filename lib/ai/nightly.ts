@@ -21,6 +21,7 @@ import {
   insertReportOnDb, setReportNarrativeOnDb, upsertLessonOnDb, recordAiJobRunOnDb,
   costGateOnDb, type DbLike,
 } from "./store.ts";
+import { deliverNightlyRecapOnDb } from "./recap.ts";
 
 function lazyDb(): DbLike {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -99,6 +100,15 @@ export async function runNightlyDiagnosis(opts: NightlyJobOptions = {}): Promise
     }
   } catch { /* lessons are best-effort; never block the report */ }
 
+  // 2b. Optional private recap — DETERMINISTIC (no LLM), routed ONLY to the recap
+  // webhook. Fires whenever AI_RECAP_ENABLED regardless of narration success, since
+  // it uses only stored summary values. A missing recap webhook is a no-op (the
+  // report is still stored; AI Lab shows the recap status).
+  if (cfg.recapEnabled) {
+    try { await deliverNightlyRecapOnDb(db, summary, cfg, { env: opts.env, nowMs }); }
+    catch { /* recap is best-effort; never block the report */ }
+  }
+
   // 3. Optional LLM narration — gated by config + monthly budget. Fails closed.
   if (!cfg.nightlyDiagnosisEnabled) {
     setReportNarrativeOnDb(db, report.id, { narrative: null, status: "SKIPPED", model: null, nowMs });
@@ -137,27 +147,5 @@ export async function runNightlyDiagnosis(opts: NightlyJobOptions = {}): Promise
     result.narrativeStatus = call.errorCategory === "validation" ? "VALIDATION_FAILED" : "ERROR";
   }
 
-  // 4. Optional private recap through the EXISTING recap webhook (never the paid channel).
-  if (cfg.recapEnabled && result.narrativeStatus === "OK" && gate.allowed) {
-    try { await sendNightlyRecap(summary, call.data!, db, cfg, nowMs); } catch { /* recap is best-effort */ }
-  }
-
   return result;
-}
-
-/** Concise private recap (roadmap §8 / Phase 8). Best-effort; never the paid channel. */
-async function sendNightlyRecap(summary: NightlySummary, narrative: NightlyNarrative, db: DbLike, cfg: AiConfig, nowMs: number): Promise<void> {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const notif = require("@/lib/notifications");
-  if (!notif.discordWebhookConfigured?.("recap")) return; // only if a dedicated recap destination exists
-  const c = summary.counts;
-  const lines = [
-    "**OptiScan Nightly Review**",
-    `Graded: ${c.outcomesGraded} | Rejected: ${c.rejected} | Near misses: ${c.nearMisses ?? "n/a"} | Crossing rescues: ${c.crossingRescues ?? "n/a"}`,
-    `Top issue: ${summary.prioritizedIssue ?? "none"}`,
-    narrative.headline ? `Summary: ${narrative.headline.slice(0, 160)}` : "",
-    "Full report available in AI Lab.",
-  ].filter(Boolean);
-  await notif.postToDiscord({ content: lines.join("\n") }, { webhook: "recap", skipPublicCheck: true });
-  recordAiJobRunOnDb(db, { jobType: "recap", model: cfg.recapModel, status: "SUCCESS", errorCategory: "none", nowMs });
 }

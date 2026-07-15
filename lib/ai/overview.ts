@@ -7,7 +7,8 @@
 import { aiConfig } from "./config.ts";
 import {
   listReportsOnDb, listLessonsOnDb, listProposalsOnDb, aiUsageOnDb, recentJobFailuresOnDb,
-  costGateOnDb, type DbLike, type AiReportRow, type LessonRow, type ProposalRow,
+  aiJobRunStatsOnDb, costGateOnDb, type DbLike, type AiReportRow, type LessonRow, type ProposalRow,
+  type AiJobRunStats,
 } from "./store.ts";
 import { nightlyRunKey, weeklyRunKey, nextNightlyEligibleMs, nextWeeklyEligibleMs } from "./schedule.ts";
 
@@ -34,7 +35,10 @@ export interface AiOverview {
     atSoftLimit: boolean;
     atHardLimit: boolean;
     usage: ReturnType<typeof aiUsageOnDb>;
+    inputTokens: number;
+    outputTokens: number;
   };
+  runs: AiJobRunStats;
   schedule: {
     nightlyDueNow: boolean;
     weeklyDueNow: boolean;
@@ -65,6 +69,11 @@ export function aiOverviewOnDb(db: DbLike, env: NodeJS.ProcessEnv = process.env,
   const nightly = listReportsOnDb(db, "nightly", 30);
   const proposals = listProposalsOnDb(db, 100);
   const lastNightly = nightly[0] ?? null;
+  const usage = aiUsageOnDb(db);
+  const tokenTotals = Object.values(usage.byJobType).reduce(
+    (acc, j: any) => { acc.i += Number(j.inputTokens ?? 0); acc.o += Number(j.outputTokens ?? 0); return acc; },
+    { i: 0, o: 0 },
+  );
   return {
     flags: {
       enabled: cfg.enabled,
@@ -76,14 +85,17 @@ export function aiOverviewOnDb(db: DbLike, env: NodeJS.ProcessEnv = process.env,
       weeklyModel: cfg.weeklyModel,
     },
     cost: {
-      monthKey: gate ? (aiUsageOnDb(db).monthKey) : "",
+      monthKey: usage.monthKey,
       spendUsd: gate.spendUsd,
       softLimitUsd: gate.softLimitUsd,
       hardLimitUsd: gate.hardLimitUsd,
       atSoftLimit: gate.atSoftLimit,
       atHardLimit: gate.atHardLimit,
-      usage: aiUsageOnDb(db),
+      usage,
+      inputTokens: tokenTotals.i,
+      outputTokens: tokenTotals.o,
     },
+    runs: aiJobRunStatsOnDb(db),
     schedule: {
       nightlyDueNow: nightlyRunKey(nowMs) != null,
       weeklyDueNow: weeklyRunKey(nowMs) != null,
