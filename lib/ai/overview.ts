@@ -11,6 +11,8 @@ import {
   type AiJobRunStats,
 } from "./store.ts";
 import { nightlyRunKey, weeklyRunKey, nextNightlyEligibleMs, nextWeeklyEligibleMs } from "./schedule.ts";
+import { buildQuantDashboard, type QuantDashboard } from "./quant-dashboard.ts";
+import { momentumDiagnosticsForDay } from "../momentum-diagnostics.ts";
 
 function lazyDb(): DbLike {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -61,14 +63,19 @@ export interface AiOverview {
     rejected: ProposalRow[];
   };
   jobFailures: any[];
+  quantDashboard: QuantDashboard;
 }
 
 export function aiOverviewOnDb(db: DbLike, env: NodeJS.ProcessEnv = process.env, nowMs: number = Date.now()): AiOverview {
   const cfg = aiConfig(env);
   const gate = costGateOnDb(db, cfg, nowMs);
   const nightly = listReportsOnDb(db, "nightly", 30);
+  const weekly = listReportsOnDb(db, "weekly", 20);
   const proposals = listProposalsOnDb(db, 100);
+  const lessons = listLessonsOnDb(db, 100);
+  const jobFailures = recentJobFailuresOnDb(db, 20);
   const lastNightly = nightly[0] ?? null;
+  const latestMomentumDiagnostics = lastNightly?.periodKey ? momentumDiagnosticsForDay(lastNightly.periodKey, db, 500) : [];
   const usage = aiUsageOnDb(db);
   const tokenTotals = Object.values(usage.byJobType).reduce(
     (acc, j: any) => { acc.i += Number(j.inputTokens ?? 0); acc.o += Number(j.outputTokens ?? 0); return acc; },
@@ -109,14 +116,23 @@ export function aiOverviewOnDb(db: DbLike, env: NodeJS.ProcessEnv = process.env,
     },
     latestNightly: lastNightly,
     nightlyHistory: nightly,
-    weeklyHistory: listReportsOnDb(db, "weekly", 20),
-    lessons: listLessonsOnDb(db, 100),
+    weeklyHistory: weekly,
+    lessons,
     proposals: {
       pending: proposals.filter((p) => p.status === "PENDING_APPROVAL"),
       accepted: proposals.filter((p) => p.status === "ACCEPTED"),
       rejected: proposals.filter((p) => p.status === "REJECTED"),
     },
-    jobFailures: recentJobFailuresOnDb(db, 20),
+    jobFailures,
+    quantDashboard: buildQuantDashboard({
+      nightlyReports: nightly,
+      weeklyReports: weekly,
+      lessons,
+      proposals,
+      jobFailures,
+      latestMomentumDiagnostics,
+      env,
+    }),
   };
 }
 
