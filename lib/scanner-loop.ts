@@ -25,7 +25,7 @@
  */
 
 import { toMs } from "@/lib/timestamps";
-import { fetchBulkQuotes, fetchCandles, fetchOptionChain, fetchTopMovers, isRecapNoiseSymbol } from "@/lib/polygon-provider";
+import { fetchBulkQuotes, fetchCandles, fetchMarketSnapshot, fetchOptionChain, fetchTopMovers, isRecapNoiseSymbol } from "@/lib/polygon-provider";
 import { vwap as sessionVwap, sessionBars, relativeVolume } from "@/lib/momentum-signals";
 import {
   acceleration, volumeSurge, pathEfficiency, detectLevels, directionRead,
@@ -58,7 +58,7 @@ import {
 import { recordMomentumDiagnostic } from "@/lib/momentum-diagnostics";
 import { classifyStockMomentum, freshMoverGateAllowed } from "@/lib/stock-momentum-classifier";
 import { rankDiscovery, promotionSet, type DiscoveryQuote } from "@/lib/discovery-ranking";
-import { fastStockMomentumEligibility, stockMomentumPolicyConfig } from "@/lib/stock-momentum-policy";
+import { broadStockEligibility, fastStockMomentumEligibility, stockMomentumPolicyConfig } from "@/lib/stock-momentum-policy";
 
 const OPP_INGEST_MS = Number(process.env.OPP_INGEST_MS ?? 5000);
 const OPPORTUNITY_TRACKING = process.env.OPPORTUNITY_TRACKING !== "0";
@@ -137,6 +137,16 @@ interface LoopState {
   tape: any[];
   lastDiscoveryAt: number;
   discoveryCount: number;
+  /** Live discovery funnel for the dashboard: how broad the scan actually was. */
+  discoveryStats: {
+    atMs: number;
+    curatedCount: number;   // curated scan list size
+    broadCount: number;     // whole-market snapshot size (0 when broad off/unavailable)
+    broadPass: number;      // names passing the broad stock-runner floor
+    universeSize: number;   // total distinct symbols ranked this cycle
+    promoted: number;       // names promoted into the 1s momentum loop
+    source: "broad+curated" | "curated" | "unavailable";
+  } | null;
   promoted: Map<string, number>;
   /** Previous discovery snapshot per symbol (day-move + time) for Δmove/min velocity. */
   discoveryPrev: Map<string, { changePercent: number | null; atMs: number }>;
@@ -156,7 +166,7 @@ function state(): LoopState {
     g.__optiscanLoop = {
       running: false, intervalMs: LOOP_MS, targetMs: LOOP_MS, lastTickAt: null,
       ticks: 0, triggers: 0, alerts: 0, errors: 0, note: null, session: null,
-      symbols: new Map(), movers: [], tape: [], lastDiscoveryAt: 0, discoveryCount: 0, promoted: new Map(),
+      symbols: new Map(), movers: [], tape: [], lastDiscoveryAt: 0, discoveryCount: 0, discoveryStats: null, promoted: new Map(),
       discoveryPrev: new Map(),
       lastTapeEnrichAt: 0, lastRecapAt: 0, tapeBadgeCache: new Map(),
       nearMisses: [],
@@ -168,6 +178,7 @@ function state(): LoopState {
   g.__optiscanLoop.session ??= null;
   g.__optiscanLoop.lastDiscoveryAt ??= 0;
   g.__optiscanLoop.discoveryCount ??= 0;
+  g.__optiscanLoop.discoveryStats ??= null;
   g.__optiscanLoop.promoted ??= new Map();
   g.__optiscanLoop.discoveryPrev ??= new Map();
   g.__optiscanLoop.lastTapeEnrichAt ??= 0;
@@ -231,7 +242,42 @@ async function refreshDiscovery(nowMs: number) {
     s.note = res?.note ?? "discovery snapshot unavailable";
     return;
   }
-  const quotes: DiscoveryQuote[] = res.quotes ?? [];
+  const curated: DiscoveryQuote[] = res.quotes ?? [];
+
+  // BROAD DISCOVERY (2026-07-16 premarket-runner fix): the curated scan list can
+  // never see a random stock up 50% premarket. Pull the whole-market snapshot in
+  // ONE call, pre-filter to the broad stock-runner floor ($0.50–$50, ≥500k
+  // day-to-date volume incl. premarket, ≥+10% from prev close), and merge those
+  // real runners with the curated names before ranking. Bounded: one extra call
+  // per discovery cycle, skipped when the minute budget is tight. Disable with
+  // STOCK_BROAD_DISCOVERY=0.
+  const policyCfg = stockMomentumPolicyConfig();
+  const bySym = new Map<string, DiscoveryQuote>();
+  for (const q of curated) if (q.symbol) bySym.set(q.symbol, q);
+  let broadCount = 0;
+  let broadPass = 0;
+  let source: "broad+curated" | "curated" | "unavailable" = "curated";
+  if (process.env.STOCK_BROAD_DISCOVERY !== "0" && !nearMinuteBudget(getCallStats(nowMs))) {
+    const broad: any = await fetchMarketSnapshot();
+    if (broad?.available && Array.isArray(broad.quotes)) {
+      broadCount = broad.quotes.length;
+      source = "broad+curated";
+      for (const q of broad.quotes) {
+        if (!q?.symbol) continue;
+        const elig = broadStockEligibility(
+          { symbol: q.symbol, price: q.price, dayVolume: q.volume, gainFromPrevClosePct: q.changePercent },
+          policyCfg,
+        );
+        if (!elig.ok) continue;
+        broadPass += 1;
+        // Broad runner wins over a stale curated row (fresher whole-market print).
+        bySym.set(q.symbol, { symbol: q.symbol, price: q.price, changePercent: q.changePercent, volume: q.volume });
+      }
+    } else {
+      source = broadCount ? "broad+curated" : "curated";
+    }
+  }
+  const quotes: DiscoveryQuote[] = Array.from(bySym.values());
   s.discoveryCount = quotes.length;
   // Fresh-acceleration-aware ranking (Δmove/min from the previous snapshot). A
   // stock that just STARTED moving fast outranks one that is merely already up a
@@ -239,6 +285,15 @@ async function refreshDiscovery(nowMs: number) {
   const ranked = rankDiscovery(quotes, s.discoveryPrev, nowMs);
   const promote = promotionSet(ranked);
   const newlyPromoted = promote.filter((r) => !s.promoted.has(r.symbol)).map((r) => r.symbol);
+  s.discoveryStats = {
+    atMs: nowMs,
+    curatedCount: curated.length,
+    broadCount,
+    broadPass,
+    universeSize: quotes.length,
+    promoted: promote.length,
+    source,
+  };
   promote.forEach((r) => {
     const st = sym(s, r.symbol);
     const changePct = quotes.find((q) => q.symbol === r.symbol)?.changePercent ?? null;
@@ -1240,6 +1295,7 @@ export function loopState() {
     note: s.note, session: s.session ?? marketSession(), movers: s.movers, tape: s.tape,
     coreSymbols: getZeroDteUniverse().length,
     discoverySymbols: s.discoveryCount,
+    discoveryStats: s.discoveryStats,
     promotedSymbols: [...s.promoted.keys()],
     nearMisses: s.nearMisses.slice(0, 25),
     majorMoves: s.majorMoves.slice(0, 12),
