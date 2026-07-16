@@ -43,6 +43,7 @@ export interface WeeklyPromptContext {
   rejectedLessons: unknown[];
   priorProposals: unknown[];
   currentConfig: Record<string, unknown>;
+  quantResearch?: unknown;
   relevantFiles: string[];
   strategyVersion: string | null;
 }
@@ -68,6 +69,7 @@ export function weeklyProposalPrompt(ctx: WeeklyPromptContext): Prompt {
     "Rejected lessons (do not re-propose):", JSON.stringify(ctx.rejectedLessons),
     "Prior proposals (avoid duplicates):", JSON.stringify(ctx.priorProposals),
     "Current relevant configuration:", JSON.stringify(ctx.currentConfig),
+    "Weekly AI quant research context (calculation inventory, gate trace requirements, and experiment rules):", JSON.stringify(ctx.quantResearch ?? null),
     "Relevant files you may reference (curated; the ONLY files you may name):", JSON.stringify(ctx.relevantFiles),
   ].join("\n");
   return { system, user };

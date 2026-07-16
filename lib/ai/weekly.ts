@@ -14,6 +14,7 @@ import { buildNightlySummary, type NightlySummary } from "./nightly-summary.ts";
 import { isoWeekKey } from "./schedule.ts";
 import { recentTradingDays, gatherOutcomesForDays, gatherCandidatesForDays } from "./queries.ts";
 import { weeklyProposalPrompt } from "./prompts.ts";
+import { weeklyQuantResearchContext } from "./quant-research.ts";
 import { validateWeeklyProposals, type WeeklyProposalDraft } from "./schemas.ts";
 import { screenProposalSafety } from "./safety.ts";
 import { runStructuredAiJob, type ProviderDeps } from "./provider.ts";
@@ -98,12 +99,15 @@ export async function runWeeklyProposals(opts: WeeklyJobOptions = {}): Promise<W
   };
 
   // 1. Deterministic weekly summary — always stored (idempotent per week).
-  let summary: NightlySummary;
+  let summary: NightlySummary & { quantResearch?: ReturnType<typeof weeklyQuantResearchContext> };
   try {
     const days = recentTradingDays(nowMs, 7);
     const outcomes = gatherOutcomesForDays(days, nowMs, db);
     const candidates = gatherCandidatesForDays(days, nowMs, db);
-    summary = buildNightlySummary({ tradingDay: weekKey, periodStartMs: nowMs - 7 * 24 * 3600_000, periodEndMs: nowMs, outcomes, candidates, live: null });
+    summary = {
+      ...buildNightlySummary({ tradingDay: weekKey, periodStartMs: nowMs - 7 * 24 * 3600_000, periodEndMs: nowMs, outcomes, candidates, live: null }),
+      quantResearch: weeklyQuantResearchContext(),
+    };
   } catch (err: any) {
     return { ...result, skippedReason: `weekly summary failed: ${err?.message ?? err}` };
   }
@@ -136,6 +140,7 @@ export async function runWeeklyProposals(opts: WeeklyJobOptions = {}): Promise<W
     rejectedLessons: lessons.filter((l) => l.status === "REJECTED"),
     priorProposals: listProposalsOnDb(db, 20).map((p) => ({ title: p.title, status: p.status, affectedStrategy: p.affectedStrategy })),
     currentConfig: weeklyContextConfig(opts.env),
+    quantResearch: summary.quantResearch,
     relevantFiles: CURATED_STRATEGY_FILES,
     strategyVersion: currentStrategyVersion(db),
   });
