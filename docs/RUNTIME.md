@@ -32,22 +32,26 @@ expires so another replica can take over — no permanent deadlock):
 
 Each supervisor cycle scans a bounded universe built as: every **valid** pinned
 core ticker first (`SUPERVISOR_CORE_TICKERS`, falling back to `OWNER_CORE_TICKERS`,
-default `NVDA,META,SPY,QQQ,AAPL,AMZN,MSFT,TSLA,AMD,GOOGL`), then the strongest
+default `SPY,QQQ,NVDA,AAPL,META,TSLA,AMD,AMZN,MSFT,GOOGL,NFLX,AVGO,IWM,SPCX`),
+then the strongest
 **dynamic movers** from the live scanner (falling back to the
 static 0DTE watchlist when the scanner has no movers), filling the remaining slots
 up to `SUPERVISOR_MAX_TICKERS`. The list is deduplicated (core vs. movers vs.
-watchlist) and capped. With `SUPERVISOR_MAX_TICKERS=12` and the ten default core
-symbols, two slots remain for the strongest movers. If a lower cap is configured,
-the core window rotates by cycle so tail symbols are not permanently starved.
+watchlist) and capped. With `SUPERVISOR_MAX_TICKERS=14`, the confirmed options core
+fits in one cycle. If a lower cap is configured, the core window rotates by cycle so
+tail symbols are not permanently starved.
 
 Core tickers are only *scanned first* — they are not forced actionable. A core
 symbol with unavailable/stale data or no supported options chain fails honestly for
 that symbol (downstream freshness/relevance/risk gates) while the rest of the cycle
-continues. Option-chain work is bounded-parallel (`SUPERVISOR_CHAIN_CONCURRENCY`,
+continues. Dynamic non-core additions must prove options-chain usability before
+promotion; core names are still contract-gated at entry time and are not forced
+actionable. Option-chain work is bounded-parallel (`SUPERVISOR_CHAIN_CONCURRENCY`,
 default 3), and overlapping supervisor cycles are skipped rather than duplicated.
 Invalid/garbage entries in `SUPERVISOR_CORE_TICKERS` are dropped and never crash
-the cycle. Puts remain `RESEARCH_ONLY`; no contracts are fabricated and no
-unsupported DTE coverage is widened.
+the cycle. Verified option puts may be actionable for paper/options when all
+deterministic option gates pass; bearish stock/short actionability remains gated by
+`BEARISH_ACTIONABLE`.
 
 The retrain policy is unchanged: ≥25 new graded outcomes, ≥24 h between trainings,
 both classes present, sufficient coverage, moved watermark. With zero graded
@@ -62,10 +66,12 @@ All booleans use the repo convention `=== "1"`.
 |---|---|---|
 | `SCHEDULER_DISABLED` | unset | `1` = do not start the scheduler at all (kill switch) |
 | `SUPERVISOR_RUNTIME` | off | `1` = run the automatic supervisor callout cycle |
-| `OWNER_CORE_TICKERS` | same ten-name core | owner-facing core list; used by supervisor when `SUPERVISOR_CORE_TICKERS` is unset |
-| `SUPERVISOR_CORE_TICKERS` | `NVDA,META,SPY,QQQ,AAPL,AMZN,MSFT,TSLA,AMD,GOOGL` | comma/space-separated pinned core symbols included before dynamic movers when capacity allows |
-| `SUPERVISOR_MAX_TICKERS` | 12 | cap on tickers per supervisor cycle (1-50) |
+| `OWNER_CORE_TICKERS` | same 14-name core | owner-facing core list; used by supervisor when `SUPERVISOR_CORE_TICKERS` is unset |
+| `SUPERVISOR_CORE_TICKERS` | `SPY,QQQ,NVDA,AAPL,META,TSLA,AMD,AMZN,MSFT,GOOGL,NFLX,AVGO,IWM,SPCX` | comma/space-separated pinned core symbols included before dynamic movers when capacity allows |
+| `SUPERVISOR_MAX_TICKERS` | 14 | cap on tickers per supervisor cycle (1-50) |
 | `SUPERVISOR_CHAIN_CONCURRENCY` | 3 | bounded parallel ticker evaluations for option-chain work (1-12) |
+| `OPTIONS_PUTS_ENABLED` | on | `0` disables verified option-put actionability |
+| `OPTIONS_PUT_CALLOUTS` | on | `0` disables verified option-put callout actionability |
 | `CALLOUT_CANONICAL_PATH` | `legacy` | `supervisor` makes the new path canonical for OPTIONS callouts and stands the legacy options Discord sender down (no double-send) |
 | `AGENT_CALLOUT_DISCORD` | off | `1` = master switch permitting supervisor Discord delivery (existing var) |
 | `IMPROVEMENT_AUDIT` | off | `1` = run the low-frequency, proposal-only improvement audit |
@@ -86,6 +92,14 @@ diagnostic table; neither uses AI or changes probability gates.
 | `SCANNER_DISCOVERY_MS` | 15000 | broad stock discovery cadence for promoting non-core movers into the 1s loop |
 | `SCANNER_SEED_TOP_N` | 6 | freshly-promoted discovery names whose ring is candle-seeded per cycle so velocity/persistence windows are warm on arrival instead of a ~10-tick cold warmup (reduces late detection of fast movers). Bounded 0–12; budget-guarded, adds no chain fetches. |
 | `STOCK_MOMENTUM_LATCH` | on | `0` disables the stock crossing latch rollback switch |
+| `STOCK_MOMENTUM_MIN_PRICE` | 0.5 | broad stock discovery minimum price |
+| `STOCK_MOMENTUM_MAX_PRICE` | 50 | broad stock discovery maximum price |
+| `STOCK_MOMENTUM_MIN_DAY_VOLUME` | 500000 | minimum day volume for broad stock discovery |
+| `STOCK_MOMENTUM_MIN_GAIN_FROM_PREV_CLOSE_PCT` | 10 | minimum day gain before a stock can be promoted |
+| `STOCK_FAST_MIN_RET_10S_PCT` | 0.40 | fast stock 10-second move threshold |
+| `STOCK_FAST_MIN_RET_30S_PCT` | 1.00 | fast stock 30-second move threshold |
+| `STOCK_FAST_MIN_RET_60S_PCT` | 1.50 | fast stock 60-second move threshold |
+| `STOCK_FAST_MIN_VELOCITY_PCT_PER_MIN` | 2.00 | fast stock velocity threshold |
 | `STOCK_MOMENTUM_LATCH_TTL_MS` | 20000 | max time between speed crossing and volume confirmation |
 | `STOCK_LATCH_MIN_VELOCITY_PCT_MIN` | 0.22 | aligned short-window speed needed to arm the latch |
 | `STOCK_LATCH_MIN_INSTANT_PCT_MIN` | 0.24 | aligned 5s speed alternative for exceptional moves |
@@ -115,8 +129,17 @@ alerts" day diagnosable after a restart and feeds the nightly AI digest. Retenti
 
 Discord webhooks (existing): `DISCORD_WEBHOOK_OPTIONS`, `DISCORD_WEBHOOK_STOCKS`,
 `DISCORD_WEBHOOK_RECAP`, fallback `DISCORD_WEBHOOK_URL`. Option calls **and** put
-research route to the options webhook (puts are labeled `RESEARCH ONLY`); momentum
-stock routes to the stocks webhook.
+callouts route to the options webhook; momentum stock routes to the stocks webhook.
+Verified puts are actionability-gated by contract data, not by bearish-stock
+permission.
+
+### Paper portfolio settings
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PAPER_CHALLENGE_MAX_POSITION_PCT` | 60 | challenge portfolio max simulated position size |
+| `PAPER_CHALLENGE_MAX_TOTAL_EXPOSURE_PCT` | 60 | challenge portfolio max simulated total exposure |
+| `PAPER_STOCK_DAY_STARTING_BALANCE_USD` | 10000 | stock day-trader paper portfolio starting balance |
 
 ### To turn the supervisor callout path fully live
 
@@ -130,6 +153,11 @@ PAPER_TRADING_ENABLED=1
 PAPER_AUTO_ENTRY=1
 PAPER_ALLOW_ZERO_DTE=1
 PAPER_KILL_SWITCH=0
+OPTIONS_PUTS_ENABLED=1
+OPTIONS_PUT_CALLOUTS=1
+PAPER_CHALLENGE_MAX_POSITION_PCT=60
+PAPER_CHALLENGE_MAX_TOTAL_EXPOSURE_PCT=60
+PAPER_STOCK_DAY_STARTING_BALANCE_USD=10000
 EARLY_ALERTS_ENABLED=0
 ALERT_DB_DIR=/app/data
 DISCORD_WEBHOOK_OPTIONS=...   # required for options Discord

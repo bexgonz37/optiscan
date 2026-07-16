@@ -23,6 +23,12 @@ narrates/reasons over the summary. Every number in a stored narrative must appea
 in the deterministic summary (`schemas.ts` anti-fabrication guard) or the narrative
 is rejected. Empty inputs yield `0`/`null`, never invented figures.
 
+Weekly proposals also receive a machine-readable quant research context: the
+calculation inventory, gate-trace requirements, experiment rules, and human-approval
+promotion rule. This context is deliberately attached to the weekly proposal prompt
+only. The nightly job remains a deterministic-summary plus narration flow and does
+not get the weekly quant research package.
+
 ### Deterministic summary inputs
 
 The nightly summary is built from persisted rows only (no live provider calls):
@@ -150,7 +156,8 @@ hand-maintained** file list (`CURATED_STRATEGY_FILES` in `lib/ai/weekly.ts`).
   that would enable bearish actionable alerts, real-money execution, auto-merge/deploy,
   or bypass a gate is **dropped**, not stored.
 - No fabricated statistics — every stored number traces to a deterministic summary.
-- Bearish stays research-only; puts stay research-only where required.
+- Bearish stock/short actionability stays gated; verified option puts may be
+  actionable only when deterministic options gates pass and the put toggles are on.
 
 ---
 

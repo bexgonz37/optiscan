@@ -35,7 +35,11 @@ test("runtime status exposes non-secret alert and paper config visibility", () =
     "SUPERVISOR_RUNTIME", "CALLOUT_CANONICAL_PATH", "AGENT_CALLOUT_DISCORD",
     "STOCK_CALLOUTS", "PAPER_TRADING_ENABLED", "PAPER_AUTO_ENTRY",
     "PAPER_ALLOW_ZERO_DTE", "PAPER_KILL_SWITCH", "EARLY_ALERTS_ENABLED",
-    "BEARISH_ACTIONABLE", "ALERT_DB_DIR",
+    "BEARISH_ACTIONABLE", "OPTIONS_PUTS_ENABLED", "STOCK_MOMENTUM_MIN_PRICE",
+    "STOCK_MOMENTUM_MAX_PRICE", "STOCK_MOMENTUM_MIN_DAY_VOLUME",
+    "STOCK_MOMENTUM_MIN_GAIN_FROM_PREV_CLOSE_PCT", "PAPER_CHALLENGE_MAX_POSITION_PCT",
+    "PAPER_CHALLENGE_MAX_TOTAL_EXPOSURE_PCT", "PAPER_STOCK_DAY_STARTING_BALANCE_USD",
+    "ALERT_DB_DIR",
   ]) {
     assert.ok(src.includes(key), `runtime config visibility missing ${key}`);
   }
@@ -46,6 +50,9 @@ test("runtime status exposes non-secret alert and paper config visibility", () =
     "0DTE paper trading is disabled",
     "Early alerts are ignored for normal Discord",
     "Bearish actionability is off",
+    "Verified option puts are enabled for paper/actionable options only",
+    "Stock momentum discovery policy:",
+    "Paper portfolios are separated:",
     "Database is using persistent path /app/data",
   ]) {
     assert.ok(src.includes(phrase), `runtime summary missing: ${phrase}`);

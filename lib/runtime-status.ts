@@ -114,8 +114,16 @@ export function buildConfigVisibility(env: NodeJS.ProcessEnv = process.env, extr
   const killSwitchOn = on(env.PAPER_KILL_SWITCH);
   const earlyOn = on(env.EARLY_ALERTS_ENABLED);
   const bearishOn = on(env.BEARISH_ACTIONABLE);
+  const verifiedPutsOn = env.OPTIONS_PUTS_ENABLED !== "0" && env.OPTIONS_PUT_CALLOUTS !== "0";
   const watchDiscordOn = canonicalPath !== "supervisor" && on(env.DISCORD_WATCH_ALERTS);
   const dbDir = env.ALERT_DB_DIR || "data";
+  const stockMinPrice = env.STOCK_MOMENTUM_MIN_PRICE ?? "0.5";
+  const stockMaxPrice = env.STOCK_MOMENTUM_MAX_PRICE ?? "50";
+  const stockMinVolume = env.STOCK_MOMENTUM_MIN_DAY_VOLUME ?? "500000";
+  const stockMinGain = env.STOCK_MOMENTUM_MIN_GAIN_FROM_PREV_CLOSE_PCT ?? "10";
+  const challengeMaxPositionPct = env.PAPER_CHALLENGE_MAX_POSITION_PCT ?? "60";
+  const challengeMaxExposurePct = env.PAPER_CHALLENGE_MAX_TOTAL_EXPOSURE_PCT ?? env.PAPER_MAX_TOTAL_EXPOSURE_PCT ?? "60";
+  const stockDayStartingBalance = env.PAPER_STOCK_DAY_STARTING_BALANCE_USD ?? "10000";
 
   // Premarket/after-hours stock Discord needs ALL of: STOCK_CALLOUTS=1, an
   // extended-hours env flag, the extended_stock_notify DB setting, and a stock
@@ -138,6 +146,10 @@ export function buildConfigVisibility(env: NodeJS.ProcessEnv = process.env, extr
     configItem("DISCORD_WATCH_ALERTS", watchDiscordOn ? "enabled" : "disabled", watchDiscordOn ? "Legacy WATCH heads-up may post to Discord (opt-in, legacy path only)." : "WATCH alerts are dashboard-only (default). They never send under the supervisor path.", []),
     configItem("EARLY_ALERTS_ENABLED", earlyOn ? "enabled" : "disabled", "Early alerts are ignored for normal Discord; ACTIONABLE_NOW is required.", []),
     configItem("BEARISH_ACTIONABLE", bearishOn ? "enabled" : "disabled", bearishOn ? "Bearish actionability is enabled." : "Bearish actionability is off.", bearishOn ? [] : ["options_alerts", "paper_trading"]),
+    configItem("OPTIONS_PUTS_ENABLED", verifiedPutsOn ? "enabled" : "disabled", verifiedPutsOn ? "Verified option puts may be actionable in paper when all deterministic option gates pass; bearish stock/short remains gated." : "Verified option put actionability is disabled.", verifiedPutsOn ? [] : ["options_alerts", "paper_trading"]),
+    configItem("STOCK_MOMENTUM_POLICY", `${stockMinPrice}-${stockMaxPrice} dollars, >=${stockMinVolume} volume, >=${stockMinGain}% day gain`, "Broad stock discovery only promotes low-priced, high-volume, already-moving names before fast-tape gates run.", []),
+    configItem("PAPER_CHALLENGE_RISK", `${challengeMaxPositionPct}% position / ${challengeMaxExposurePct}% exposure`, "Challenge paper portfolio sizing is separate from Primary and the stock day trader portfolio.", []),
+    configItem("PAPER_STOCK_DAY_STARTING_BALANCE_USD", stockDayStartingBalance, "Stock day-trader paper fills use their own starting balance and portfolio bucket.", []),
     configItem("ALERT_DB_DIR", dbDir, dbDir === "/app/data" ? "Database is using persistent path /app/data." : `Database path is ${dbDir}. Railway should use /app/data.`, dbDir === "/app/data" ? [] : ["paper_trading"]),
   ];
 
@@ -153,6 +165,9 @@ export function buildConfigVisibility(env: NodeJS.ProcessEnv = process.env, extr
     zeroDteOn ? "0DTE paper trading is enabled." : "0DTE paper trading is disabled.",
     "Early/WATCH states are dashboard-only; Discord carries ACTIONABLE_NOW only.",
     bearishOn ? "Bearish actionability is enabled." : "Bearish actionability is off.",
+    verifiedPutsOn ? "Verified option puts are enabled for paper/actionable options only; bearish stock remains gated." : "Verified option puts are disabled.",
+    `Stock momentum discovery policy: ${stockMinPrice}-${stockMaxPrice} dollars, >=${stockMinVolume} volume, >=${stockMinGain}% day gain.`,
+    `Paper portfolios are separated: Challenge risk ${challengeMaxPositionPct}%/${challengeMaxExposurePct}%, Stock Day balance ${stockDayStartingBalance}.`,
     dbDir === "/app/data" ? "Database is using persistent path /app/data." : `Database path is ${dbDir}; Railway should use /app/data.`,
   ];
 

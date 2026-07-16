@@ -164,12 +164,23 @@ test(".env.railway.example has placeholders only (no real secrets)", () => {
 // 15. Deployment docs match actual variable parsing.
 test("core deployment variables in the example are actually read by the code", () => {
   const codeBlob = ["lib/db.ts","lib/callouts/routing.ts","lib/scheduler.ts","lib/scheduler-policy.ts",
-    "lib/supervisor-cycle.ts","lib/auth.ts","lib/polygon-provider.js","lib/notifications.ts","lib/scanner-loop.ts"]
+    "lib/supervisor-cycle.ts","lib/auth.ts","lib/polygon-provider.js","lib/notifications.ts",
+    "lib/scanner-loop.ts","lib/stock-momentum-policy.ts","lib/bearish-gate.ts","lib/paper-engine.ts"]
     .map(read).join("\n");
   for (const v of ["ALERT_DB_DIR","POLYGON_API_KEY","SCAN_API_TOKEN","SUPERVISOR_RUNTIME",
     "CALLOUT_CANONICAL_PATH","AGENT_CALLOUT_DISCORD","SUPERVISOR_MAX_TICKERS",
-    "SUPERVISOR_CORE_TICKERS","SCHEDULER_DISABLED"]) {
+    "SUPERVISOR_CORE_TICKERS","OPTIONS_PUTS_ENABLED","OPTIONS_PUT_CALLOUTS",
+    "STOCK_MOMENTUM_MIN_PRICE","STOCK_MOMENTUM_MAX_PRICE","STOCK_MOMENTUM_MIN_DAY_VOLUME",
+    "STOCK_MOMENTUM_MIN_GAIN_FROM_PREV_CLOSE_PCT","PAPER_CHALLENGE_MAX_POSITION_PCT",
+    "PAPER_CHALLENGE_MAX_TOTAL_EXPOSURE_PCT","PAPER_STOCK_DAY_STARTING_BALANCE_USD",
+    "SCHEDULER_DISABLED"]) {
     assert.ok(codeBlob.includes(v), `documented var not read by code: ${v}`);
     assert.ok(read(".env.railway.example").includes(v), `var missing from example: ${v}`);
   }
+});
+
+test("AI operations documents weekly-only quant research context", () => {
+  const aiOps = read("docs/AI_OPERATIONS.md");
+  assert.ok(/weekly proposal prompt\s+only/i.test(aiOps), "weekly quant context must stay weekly-only");
+  assert.ok(/nightly job remains/i.test(aiOps), "nightly must remain distinct from weekly quant research");
 });
