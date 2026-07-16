@@ -802,7 +802,25 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
   // stock-day request — those would recurse or mismatch the account).
   const targetPortfolio = input.portfolio ?? PRIMARY_PORTFOLIO;
   if (targetPortfolio !== PRIMARY_PORTFOLIO || !input.optionSymbol) return primary;
-  const challenge = maybeMirrorToChallenge(input, primary.id ?? null);
+  // FAILURE ISOLATION: a Challenge failure — exception, sizing refusal, disabled,
+  // FAILED/TARGET_REACHED, duplicate — must NEVER change the Primary result or throw
+  // into the caller (the paper bridge → Discord delivery). Any throw is caught,
+  // recorded, and returned as a non-ok challenge result. Primary is returned as-is.
+  let challenge: CreateResult["challenge"];
+  try {
+    challenge = maybeMirrorToChallenge(input, primary.id ?? null);
+  } catch (err: any) {
+    const reason = `challenge exception (isolated): ${err?.message ?? String(err)}`;
+    console.warn("[challenge]", reason);
+    try {
+      recordChallengeExec({
+        ticker: input.ticker ?? null, optionSymbol: input.optionSymbol ?? null,
+        side: input.optionType ?? null, entryLimit: input.entryLimit ?? null,
+        equity: null, result: "rejected", reason,
+      });
+    } catch { /* telemetry is best-effort */ }
+    challenge = { ok: false, reason };
+  }
   return { ...primary, challenge };
 }
 

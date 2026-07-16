@@ -30,10 +30,17 @@ const liveCreateTrade: CreateTradeFn = (input) => require("@/lib/paper-engine").
 export interface BridgeSummary {
   evaluated: number;
   eligible: number;
-  created: number;
+  created: number;              // Primary paper trades created
   duplicates: number;
-  rejected: number;
+  rejected: number;             // Primary paper rejections (non-fatal)
   rejections: { ticker: string; reason: string }[];
+  // Challenge is INDEPENDENTLY observable — its success/failure never affects the
+  // Primary counts above or Discord delivery.
+  challengeCreated: number;
+  challengeRejected: number;
+  // Paper-create exceptions that were caught and isolated (never fatal to the
+  // callout cycle or to Discord delivery).
+  exceptions: number;
 }
 
 /** Minimal DB surface the bridge needs (better-sqlite3 shaped). */
@@ -45,7 +52,10 @@ export type CreateTradeFn = (input: {
   ticker: string; optionSymbol: string | null; optionType: "call" | "put";
   strike: number | null; expiration: string | null; dte: number | null;
   entryLimit: number | null; thesis: string;
-}) => { ok: boolean; id?: number; risk: { allowed: boolean; failures: string[] } };
+}) => {
+  ok: boolean; id?: number; risk: { allowed: boolean; failures: string[] };
+  challenge?: { ok: boolean; id?: number; reason?: string };
+};
 
 /**
  * Trading-day stamp used to scope the dedup key to one day. Uses the US/Eastern
@@ -80,7 +90,7 @@ export function bridgeCalloutsToPaperOnDb(
   nowMs: number = Date.now(),
   env: NodeJS.ProcessEnv = process.env,
 ): BridgeSummary {
-  const summary: BridgeSummary = { evaluated: 0, eligible: 0, created: 0, duplicates: 0, rejected: 0, rejections: [] };
+  const summary: BridgeSummary = { evaluated: 0, eligible: 0, created: 0, duplicates: 0, rejected: 0, rejections: [], challengeCreated: 0, challengeRejected: 0, exceptions: 0 };
 
   for (const c of callouts) {
     summary.evaluated += 1;
@@ -130,17 +140,32 @@ export function bridgeCalloutsToPaperOnDb(
     // Create the READY paper trade from the FROZEN alert-time contract. createPaperTrade
     // re-runs freshness + risk + capital; the sweep then does pre-entry revalidation and
     // the conservative fill. No substitution, no fabricated fill.
-    const res = createTrade({
-      ticker: c.ticker,
-      optionSymbol: k.optionSymbol,
-      optionType: (k.side as "call" | "put" | null) ?? (c.direction === "bearish" ? "put" : "call"),
-      strike: k.strike ?? null,
-      expiration: k.expiration ?? null,
-      dte: k.dte ?? null,
-      entryLimit,
-      thesis: `SUPERVISOR ${c.confidenceTier} ${c.status}: ${(c.reason ?? c.waitFor ?? "actionable now").slice(0, 180)}`,
-    });
+    //
+    // FAILURE ISOLATION (2026-07-16): a paper-create exception on ONE callout must
+    // NEVER abort the rest of the batch or the caller's Discord delivery. Catch it,
+    // record it, and continue to the next callout. (The caller also wraps the whole
+    // bridge in try/catch as defence-in-depth — this keeps the remaining callouts.)
+    let res: ReturnType<CreateTradeFn>;
+    try {
+      res = createTrade({
+        ticker: c.ticker,
+        optionSymbol: k.optionSymbol,
+        optionType: (k.side as "call" | "put" | null) ?? (c.direction === "bearish" ? "put" : "call"),
+        strike: k.strike ?? null,
+        expiration: k.expiration ?? null,
+        dte: k.dte ?? null,
+        entryLimit,
+        thesis: `SUPERVISOR ${c.confidenceTier} ${c.status}: ${(c.reason ?? c.waitFor ?? "actionable now").slice(0, 180)}`,
+      });
+    } catch (err: any) {
+      summary.exceptions += 1;
+      const reason = `paper create exception (isolated): ${err?.message ?? String(err)}`;
+      summary.rejections.push({ ticker: c.ticker, reason });
+      try { db.prepare("UPDATE paper_candidates SET status='REJECTED', reject_reason=? WHERE id=?").run(reason, candidateId); } catch { /* candidate write best-effort */ }
+      continue; // next ticker — never fatal
+    }
 
+    // Primary outcome (independent of Challenge).
     if (res.ok) {
       summary.created += 1;
       db.prepare("UPDATE paper_candidates SET status='CREATED', paper_trade_id=? WHERE id=?").run(res.id ?? null, candidateId);
@@ -149,6 +174,12 @@ export function bridgeCalloutsToPaperOnDb(
       summary.rejected += 1;
       summary.rejections.push({ ticker: c.ticker, reason });
       db.prepare("UPDATE paper_candidates SET status='REJECTED', reject_reason=? WHERE id=?").run(reason, candidateId);
+    }
+    // Challenge outcome (INDEPENDENT — success/failure here never changes the Primary
+    // result above nor blocks delivery; it is only counted for observability).
+    if (res.challenge) {
+      if (res.challenge.ok) summary.challengeCreated += 1;
+      else summary.challengeRejected += 1;
     }
   }
   return summary;
