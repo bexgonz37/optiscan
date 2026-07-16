@@ -46,6 +46,28 @@ test("calls vs puts and win-rate are computed over graded rows only", () => {
   assert.equal(s.counts.outcomesUngradable, 1);
 });
 
+test("breakeven rate is computed deterministically over graded rows only", () => {
+  const s = buildNightlySummary({
+    tradingDay: "2026-07-13", periodStartMs: null, periodEndMs: null,
+    outcomes: [
+      outcome({ grade: "BREAKEVEN", returnPct: 0 }),
+      outcome({ grade: "BREAKEVEN", returnPct: 0 }),
+      outcome({ grade: "BREAKEVEN", returnPct: 0 }),
+      outcome({ grade: "LOSS", returnPct: -40, opportunityGrade: "NONE" }),
+      outcome({ grade: "LOSS", returnPct: -40, opportunityGrade: "NONE" }),
+      outcome({ grade: "LOSS", returnPct: -40, opportunityGrade: "NONE" }),
+      outcome({ grade: "LOSS", returnPct: -40, opportunityGrade: "NONE" }),
+      outcome({ grade: "LOSS", returnPct: -40, opportunityGrade: "NONE" }),
+      outcome({ grade: "LOSS", returnPct: -40, opportunityGrade: "NONE" }),
+      outcome({ grade: "LOSS", returnPct: -40, opportunityGrade: "NONE" }),
+    ],
+    candidates: [], live: null,
+  });
+  assert.equal(s.overall.n, 10);
+  assert.equal(s.overall.breakeven, 3);
+  assert.equal(s.overall.breakevenRatePct, 30);
+});
+
 test("0DTE vs longer bucketing", () => {
   const s = buildNightlySummary({
     tradingDay: "2026-07-13", periodStartMs: null, periodEndMs: null,

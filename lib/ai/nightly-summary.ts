@@ -112,6 +112,7 @@ interface PerfBucket {
   breakeven: number;
   ungradable: number;
   winRate: number | null;          // over GRADED only
+  breakevenRatePct: number | null; // over GRADED only
   avgReturnPct: number | null;     // over rows with a return
   opportunityHits: number;
   opportunityGradable: number;
@@ -119,7 +120,7 @@ interface PerfBucket {
 }
 
 function newBucket(): { _ret: number[] } & PerfBucket {
-  return { n: 0, wins: 0, losses: 0, breakeven: 0, ungradable: 0, winRate: null, avgReturnPct: null, opportunityHits: 0, opportunityGradable: 0, opportunityHitRate: null, _ret: [] };
+  return { n: 0, wins: 0, losses: 0, breakeven: 0, ungradable: 0, winRate: null, breakevenRatePct: null, avgReturnPct: null, opportunityHits: 0, opportunityGradable: 0, opportunityHitRate: null, _ret: [] };
 }
 
 function addOutcome(b: ReturnType<typeof newBucket>, o: OutcomeInput): void {
@@ -142,10 +143,11 @@ function addOutcome(b: ReturnType<typeof newBucket>, o: OutcomeInput): void {
 function finalizeBucket(b: ReturnType<typeof newBucket>): PerfBucket {
   const graded = b.wins + b.losses + b.breakeven;
   const winRate = graded > 0 ? round1((b.wins / graded) * 100) : null;
+  const breakevenRatePct = graded > 0 ? round1((b.breakeven / graded) * 100) : null;
   const avgReturnPct = b._ret.length ? round2(b._ret.reduce((a, c) => a + c, 0) / b._ret.length) : null;
   const opportunityHitRate = b.opportunityGradable > 0 ? round1((b.opportunityHits / b.opportunityGradable) * 100) : null;
   const { _ret, ...rest } = b;
-  return { ...rest, winRate, avgReturnPct, opportunityHitRate };
+  return { ...rest, winRate, breakevenRatePct, avgReturnPct, opportunityHitRate };
 }
 
 const round1 = (n: number) => Math.round(n * 10) / 10;

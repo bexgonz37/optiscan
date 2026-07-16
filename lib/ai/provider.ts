@@ -41,6 +41,12 @@ export interface AiSchemaViolation {
   expectedValue: string | null;
   receivedValue: unknown;
   message: string;
+  token?: string;
+  semanticType?: string;
+  context?: string;
+  normalizedValue?: unknown;
+  closestAllowedEvidence?: unknown[];
+  sourceFieldExpected?: string | null;
 }
 
 export interface AiProviderDiagnostics {
@@ -147,7 +153,12 @@ function parserOutput(json: unknown): AiParserOutput {
   };
 }
 
-function fieldFromValidationMessage(message: string): string | null {
+function validationDetailFromError(err: unknown): any {
+  return err && typeof err === "object" ? (err as any).validationDetail : null;
+}
+
+function fieldFromValidationMessage(message: string, detail?: any): string | null {
+  if (detail?.claim) return "antiFabricationNumbers";
   const proposal = /proposal\[(\d+)\]\.field '([^']+)'/i.exec(message);
   if (proposal) return `proposals[${proposal[1]}].${proposal[2]}`;
   const field = /field '([^']+)'/i.exec(message);
@@ -155,35 +166,52 @@ function fieldFromValidationMessage(message: string): string | null {
   const proposalObject = /proposal\[(\d+)\] must be an object/i.exec(message);
   if (proposalObject) return `proposals[${proposalObject[1]}]`;
   if (/weekly proposals must be an array/i.test(message)) return "root";
-  if (/narrative contains a number/i.test(message)) return "antiFabricationNumbers";
+  if (/narrative contains a number|unsupported quantitative claim/i.test(message)) return "antiFabricationNumbers";
   return null;
 }
 
-function expectedFromValidationMessage(message: string): string | null {
+function expectedFromValidationMessage(message: string, detail?: any): string | null {
+  if (detail?.claim?.semanticType) return `matching deterministic evidence for ${detail.claim.semanticType}`;
   if (/must be a non-empty string/i.test(message)) return "non-empty string";
   if (/must be an array/i.test(message)) return "array";
   if (/must be an object/i.test(message)) return "object";
   if (/weekly proposals must be an array/i.test(message)) return "array or object with proposals array";
-  if (/narrative contains a number/i.test(message)) return "every number must already appear in the deterministic summary";
+  if (/narrative contains a number|unsupported quantitative claim/i.test(message)) return "every quantitative claim must match deterministic evidence of the same semantic type";
   return null;
 }
 
-function receivedFromValidationMessage(message: string, json: unknown, field: string | null): unknown {
+function receivedFromValidationMessage(message: string, json: unknown, field: string | null, detail?: any): unknown {
+  if (detail?.claim) return {
+    token: detail.claim.token,
+    semanticType: detail.claim.semanticType,
+    normalizedValue: detail.claim.normalizedValue,
+    context: detail.claim.context,
+  };
   const fabricated = /number not present in the deterministic summary: ([^ ]+)/i.exec(message);
   if (fabricated) return fabricated[1];
   return valueAtPath(json, field);
 }
 
-function validationViolation(input: AiCallInput, json: unknown, message: string): AiSchemaViolation {
-  const field = fieldFromValidationMessage(message);
-  const stage = /narrative contains a number/i.test(message) ? "anti_fabrication" : "schema";
+function validationViolation(input: AiCallInput, json: unknown, message: string, err?: unknown): AiSchemaViolation {
+  const detail = validationDetailFromError(err);
+  const field = fieldFromValidationMessage(message, detail);
+  const stage = detail?.claim || /narrative contains a number|unsupported quantitative claim/i.test(message) ? "anti_fabrication" : "schema";
+  const claim = detail?.claim;
   return {
     stage,
     validatorName: input.validatorName ?? null,
     failingField: field,
-    expectedValue: expectedFromValidationMessage(message),
-    receivedValue: receivedFromValidationMessage(message, json, field),
+    expectedValue: expectedFromValidationMessage(message, detail),
+    receivedValue: receivedFromValidationMessage(message, json, field, detail),
     message: message.slice(0, 500),
+    ...(claim ? {
+      token: claim.token,
+      semanticType: claim.semanticType,
+      context: claim.context,
+      normalizedValue: claim.normalizedValue,
+      closestAllowedEvidence: claim.closestAllowedEvidence,
+      sourceFieldExpected: claim.sourceFieldExpected,
+    } : {}),
   };
 }
 
@@ -362,7 +390,7 @@ export async function runStructuredAiJob<T>(
         diagnostics.validationErrors.push(message.slice(0, 300));
         let parsedJson: unknown = null;
         try { parsedJson = extractJsonWithMeta(text).json; } catch { parsedJson = null; }
-        const violation = validationViolation(input, parsedJson, message);
+        const violation = validationViolation(input, parsedJson, message, verr);
         diagnostics.validationStage = violation.stage;
         diagnostics.failingField = violation.failingField;
         diagnostics.expectedValue = violation.expectedValue;

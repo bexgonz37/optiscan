@@ -5,10 +5,11 @@
  * model receives SUMMARIES only — never raw market tape and never the repository.
  */
 import type { NightlySummary } from "./nightly-summary.ts";
+import { buildQuantEvidenceRegistry } from "./schemas.ts";
 
 export interface Prompt { system: string; user: string; }
 
-export const NIGHTLY_NARRATION_PROMPT_VERSION = "nightly-narration-v1";
+export const NIGHTLY_NARRATION_PROMPT_VERSION = "nightly-narration-v2";
 export const WEEKLY_PROPOSAL_PROMPT_VERSION = "weekly-proposals-v1";
 
 const SAFETY = [
@@ -21,17 +22,25 @@ const SAFETY = [
 
 /** Nightly miss-diagnosis narration prompt over the deterministic summary. */
 export function nightlyNarrationPrompt(summary: NightlySummary): Prompt {
+  const evidence = buildQuantEvidenceRegistry(summary);
   const system = [
     SAFETY,
     "Task: explain the day's scanner results for the operator.",
     "Output JSON with exactly these keys:",
     "headline (string), whatHappened (string), repeatedPatterns (string[]), successPatterns (string[]),",
     "bottlenecks (string[]), supportedConclusions (string[]), needsMoreEvidence (string[]), prioritizedIssue (string).",
-    "Cite counts/values from the JSON. Keep it concise and operator-readable.",
+    "Cite only counts/values present in the structured evidence registry.",
+    "Do not calculate percentages, ratios, averages, totals, conversions, or durations yourself.",
+    "Preserve supplied time-bucket labels exactly. If a derived metric is absent, cite only the raw count.",
+    "Do not introduce unprovided dollar amounts, percentages, sample sizes, time durations, or performance claims.",
+    "Keep it concise and operator-readable.",
   ].join(" ");
   const user = [
     "Deterministic nightly summary (the ONLY source of truth):",
     JSON.stringify(summary),
+    "",
+    "Structured quantitative evidence registry (the ONLY quantitative claims you may make):",
+    JSON.stringify(evidence),
     "",
     "Write the narrative. The prioritizedIssue must correspond to the summary's prioritizedIssue when present.",
   ].join("\n");

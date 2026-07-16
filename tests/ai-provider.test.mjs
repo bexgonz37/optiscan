@@ -89,6 +89,34 @@ test("validation failure is bounded by maxRetries", async () => {
   assert.equal(res.diagnostics.stoppedEarly, true);
 });
 
+test("anti-fabrication validation details are preserved in diagnostics", async () => {
+  const err = new Error("narrative contains an unsupported quantitative claim: 88%");
+  err.validationDetail = {
+    claim: {
+      token: "88%",
+      semanticType: "percentage",
+      context: "win rate was 88%",
+      normalizedValue: 88,
+      result: "rejected",
+      closestAllowedEvidence: [{ type: "percentage", value: 30, source: "overall.breakevenRatePct" }],
+      sourceFieldExpected: "overall.breakevenRatePct",
+    },
+    rejectedClaims: [],
+    allowedEvidenceSample: [],
+  };
+  const res = await runStructuredAiJob({ ...BASE, maxRetries: 0, validatorName: "validateNightlyNarrative", promptVersion: "nightly-narration-v2" }, () => { throw err; }, {
+    fetchImpl: fakeFetch(JSON.stringify({ headline: "88% win rate" })), env: KEY_ENV,
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.diagnostics.validationStage, "anti_fabrication");
+  assert.equal(res.diagnostics.failingField, "antiFabricationNumbers");
+  assert.equal(res.diagnostics.expectedValue, "matching deterministic evidence for percentage");
+  assert.equal(res.diagnostics.schemaViolations[0].token, "88%");
+  assert.equal(res.diagnostics.schemaViolations[0].semanticType, "percentage");
+  assert.equal(res.diagnostics.schemaViolations[0].context, "win rate was 88%");
+  assert.equal(res.diagnostics.schemaViolations[0].sourceFieldExpected, "overall.breakevenRatePct");
+});
+
 test("timeout (AbortError) fails closed and is categorized", async () => {
   const res = await runStructuredAiJob({ ...BASE, maxRetries: 0 }, (j) => j, {
     fetchImpl: async () => { const e = new Error("aborted"); e.name = "TimeoutError"; throw e; }, env: KEY_ENV,
