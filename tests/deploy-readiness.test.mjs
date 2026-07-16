@@ -165,7 +165,8 @@ test(".env.railway.example has placeholders only (no real secrets)", () => {
 test("core deployment variables in the example are actually read by the code", () => {
   const codeBlob = ["lib/db.ts","lib/callouts/routing.ts","lib/scheduler.ts","lib/scheduler-policy.ts",
     "lib/supervisor-cycle.ts","lib/auth.ts","lib/polygon-provider.js","lib/notifications.ts",
-    "lib/scanner-loop.ts","lib/stock-momentum-policy.ts","lib/bearish-gate.ts","lib/paper-engine.ts"]
+    "lib/scanner-loop.ts","lib/stock-momentum-policy.ts","lib/bearish-gate.ts","lib/paper-engine.ts",
+    "lib/paper-challenge.ts"]
     .map(read).join("\n");
   for (const v of ["ALERT_DB_DIR","POLYGON_API_KEY","SCAN_API_TOKEN","SUPERVISOR_RUNTIME",
     "CALLOUT_CANONICAL_PATH","AGENT_CALLOUT_DISCORD","SUPERVISOR_MAX_TICKERS",

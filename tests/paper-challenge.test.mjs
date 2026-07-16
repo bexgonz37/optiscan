@@ -83,11 +83,13 @@ test("Primary options entry mirrors to CHALLENGE with the SAME contract, separat
   assert.match(src, /maybeMirrorToChallenge/, "mirror hook present");
   assert.match(src, /optionSymbol: base\.optionSymbol/, "mirror reuses the exact OCC contract");
   assert.match(src, /portfolio: CHALLENGE_PORTFOLIO/, "mirror is tagged CHALLENGE");
-  assert.match(src, /PAPER_RISK_PROFILE: challengeConfig\(\)\.riskProfile/, "challenge sizes off its own profile");
-  assert.match(src, /PAPER_CHALLENGE_MAX_POSITION_PCT \?\? "60"/, "challenge can use up to 60% per simulated position by default");
-  assert.match(src, /portfolio === CHALLENGE_PORTFOLIO\s*\? paperSizingConfig/, "60% challenge sizing is scoped to CHALLENGE only");
+  assert.match(src, /challengeSizingEnv\(process\.env\)/, "challenge sizes off its own aggressive sizer env");
+  assert.match(src, /portfolio === CHALLENGE_PORTFOLIO\s*\?\s*paperSizingConfig\(challengeSizingEnv/, "aggressive challenge sizing is scoped to CHALLENGE only");
   assert.match(src, /riskContext\(portfolio\)/, "risk context scoped per portfolio");
   assert.match(src, /capitalContext\(Date\.now\(\), portfolio\)/, "capital context scoped per portfolio");
+  // The 60% position ceiling default now lives in the Challenge config.
+  const chal = readFileSync(join(root, "lib/paper-challenge.ts"), "utf8");
+  assert.match(chal, /PAPER_CHALLENGE_MAX_POSITION_PCT, 60/, "challenge can use up to 60% per simulated position by default");
 });
 
 test("mirror dedups per alert and only opens while ACTIVE", () => {

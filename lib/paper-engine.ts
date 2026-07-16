@@ -24,7 +24,7 @@ import { checkRisk, defaultRiskConfig, type ProposedTrade, type RiskConfig, type
 import { dollarsAtRisk } from "@/lib/paper-trading";
 import { paperExperimentalOversize, paperMinPositionDollars, paperTargetProfitDollars, unitsForDollarExposure } from "@/lib/paper-sizing";
 import { paperSizingConfig, sizePosition, type PaperSizingConfig, type SizingResult } from "@/lib/paper-position-sizer";
-import { challengeConfig, challengeAcceptsEntries, CHALLENGE_PORTFOLIO, PRIMARY_PORTFOLIO, STOCK_DAY_TRADER_PORTFOLIO } from "@/lib/paper-challenge";
+import { challengeConfig, challengeAcceptsEntries, challengeSizingEnv, challengeSizingExamples, CHALLENGE_PORTFOLIO, PRIMARY_PORTFOLIO, STOCK_DAY_TRADER_PORTFOLIO } from "@/lib/paper-challenge";
 import { actionableFreshness } from "@/lib/data-freshness";
 import type { OptionQuote } from "@/lib/execution/broker";
 import { revalidateContract, type AlertTimeContract, type RevalidationResult } from "@/lib/paper-revalidation";
@@ -611,11 +611,19 @@ export interface CreateResult {
   id?: number;
   risk: RiskVerdict;
   note?: string;
+  /** The deterministic sizing calculation (binding constraint + every cap), when sized. */
+  sizing?: Record<string, unknown> | null;
   /** The Challenge mirror created alongside a Primary entry (when enabled/active). */
   challenge?: { ok: boolean; id?: number; reason?: string };
 }
 
-export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
+/**
+ * Create ONE paper trade in a single portfolio (Primary OR Challenge). This is the
+ * self-contained risk/capital/sizing/READY path — it does NOT mirror to any other
+ * portfolio. The public `createPaperTrade` wrapper drives Primary and, INDEPENDENTLY,
+ * the Challenge, so a Primary rejection can never suppress a Challenge entry.
+ */
+function createSinglePaperTrade(input: CreatePaperTradeInput): CreateResult {
   const db = getDb();
   let base: CreatePaperTradeInput = { ...input };
   let confidence: number | null = null;
@@ -675,13 +683,11 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
   const portfolio = base.portfolio === CHALLENGE_PORTFOLIO ? CHALLENGE_PORTFOLIO : PRIMARY_PORTFOLIO;
   const rc = riskContext(portfolio);
   const cc = capitalContext(Date.now(), portfolio);
+  // Challenge sizes off its OWN aggressive sizer (loss-at-stop budget + 60% ceiling
+  // + its own exposure/daily-loss/contract caps). Primary uses the global config
+  // untouched. challengeSizingEnv maps every PAPER_CHALLENGE_* knob onto the sizer.
   const sizingCfg = portfolio === CHALLENGE_PORTFOLIO
-    ? paperSizingConfig({
-      ...process.env,
-      PAPER_RISK_PROFILE: challengeConfig().riskProfile,
-      PAPER_MAX_POSITION_PCT: process.env.PAPER_CHALLENGE_MAX_POSITION_PCT ?? "60",
-      PAPER_MAX_TOTAL_EXPOSURE_PCT: process.env.PAPER_CHALLENGE_MAX_TOTAL_EXPOSURE_PCT ?? process.env.PAPER_MAX_TOTAL_EXPOSURE_PCT ?? "60",
-    })
+    ? paperSizingConfig(challengeSizingEnv(process.env))
     : paperSizingConfig();
   let sizingResult: SizingResult | null = null;
   let contracts = base.contracts;
@@ -692,7 +698,7 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
     );
     if (sizingResult.rejected) {
       logDecision({ alertId: base.alertId ?? null, ticker: base.ticker, decision: "sizing_refused", allowed: false, reason: sizingResult.reason, risk: { allowed: false, failures: [sizingResult.reason] }, snapshot: sizingResult.calc });
-      return { ok: false, risk: { allowed: false, failures: [sizingResult.reason] } };
+      return { ok: false, risk: { allowed: false, failures: [sizingResult.reason] }, sizing: sizingResult.calc as unknown as Record<string, unknown> };
     }
     contracts = sizingResult.contracts;
   }
@@ -779,16 +785,25 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
     nowMs,
   });
 
-  // MIRROR TO CHALLENGE: a Primary options entry also opens an independent
-  // AGGRESSIVE_CHALLENGE position on the SAME alert + exact OCC contract, sized by
-  // the Challenge's own aggressive profile against its own $10k stake. It never
-  // recurses (the mirror is portfolio=CHALLENGE) and never mixes balances.
-  let challenge: CreateResult["challenge"];
-  if (portfolio === PRIMARY_PORTFOLIO && base.optionSymbol) {
-    challenge = maybeMirrorToChallenge(base, id);
-  }
+  return { ok: true, id, risk, note: `entry limit order active (READY, ${portfolio})`, sizing: (sizingResult?.calc ?? null) as Record<string, unknown> | null };
+}
 
-  return { ok: true, id, risk, note: `entry limit order active (READY, ${portfolio})`, challenge };
+/**
+ * Public entry point. Creates the Primary paper trade AND — independently, on the
+ * SAME canonical signal + exact OCC contract — evaluates the Challenge. The two
+ * portfolios consume the signal separately: the Challenge is attempted even when
+ * Primary is refused by its own conservative sizing/capital caps (Part 4 fix). The
+ * Challenge still obeys all of its OWN gates (enabled, ACTIVE, options market open,
+ * fresh contract, buying power, spread/liquidity, aggressive risk caps, dedup).
+ */
+export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
+  const primary = createSinglePaperTrade(input);
+  // Only a PRIMARY options request fans out to the Challenge (never a Challenge or
+  // stock-day request — those would recurse or mismatch the account).
+  const targetPortfolio = input.portfolio ?? PRIMARY_PORTFOLIO;
+  if (targetPortfolio !== PRIMARY_PORTFOLIO || !input.optionSymbol) return primary;
+  const challenge = maybeMirrorToChallenge(input, primary.id ?? null);
+  return { ...primary, challenge };
 }
 
 /**
@@ -797,19 +812,28 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
  * single setup opens at most one Challenge position. Uses the identical resolved
  * OCC contract and entry limit as Primary — only the SIZE differs.
  */
-function maybeMirrorToChallenge(base: CreatePaperTradeInput, primaryId: number): CreateResult["challenge"] {
+function maybeMirrorToChallenge(base: CreatePaperTradeInput, primaryId: number | null): CreateResult["challenge"] {
   const cfg = challengeConfig();
-  if (!cfg.enabled) return { ok: false, reason: "challenge disabled (PAPER_CHALLENGE_ENABLED!=1)" };
+  const equity = cfg.enabled ? capitalContext(Date.now(), CHALLENGE_PORTFOLIO).equityDollars : cfg.startingBalanceUsd;
+  const sig = { ticker: base.ticker ?? null, optionSymbol: base.optionSymbol ?? null, side: base.optionType ?? null, entryLimit: base.entryLimit ?? null, equity };
+  if (!cfg.enabled) {
+    recordChallengeExec({ ...sig, result: "disabled", reason: "challenge disabled (PAPER_CHALLENGE_ENABLED!=1)" });
+    return { ok: false, reason: "challenge disabled (PAPER_CHALLENGE_ENABLED!=1)" };
+  }
   const db = getDb();
   if (base.alertId != null) {
     const dup = db.prepare("SELECT 1 FROM paper_trades WHERE alert_id=? AND portfolio=? LIMIT 1").get(base.alertId, CHALLENGE_PORTFOLIO);
-    if (dup) return { ok: false, reason: "challenge already mirrored for this alert" };
+    if (dup) { recordChallengeExec({ ...sig, result: "duplicate", reason: "challenge already mirrored for this alert" }); return { ok: false, reason: "challenge already mirrored for this alert" }; }
   }
-  const equity = capitalContext(Date.now(), CHALLENGE_PORTFOLIO).equityDollars;
   if (!challengeAcceptsEntries(equity, cfg)) {
-    return { ok: false, reason: `challenge not accepting entries (status ${deriveChallengeStatusFor(equity)})` };
+    const reason = `challenge not accepting entries (status ${deriveChallengeStatusFor(equity)})`;
+    recordChallengeExec({ ...sig, result: "not_active", reason });
+    return { ok: false, reason };
   }
-  const res = createPaperTrade({
+  // Independent create in the Challenge portfolio — its OWN aggressive sizing, risk,
+  // capital, and dedup. createSinglePaperTrade (not createPaperTrade) so it never
+  // recurses back into the mirror.
+  const res = createSinglePaperTrade({
     alertId: base.alertId ?? null,
     ticker: base.ticker,
     optionSymbol: base.optionSymbol,
@@ -820,10 +844,41 @@ function maybeMirrorToChallenge(base: CreatePaperTradeInput, primaryId: number):
     entryLimit: base.entryLimit,
     stopLossPct: base.stopLossPct ?? null,
     takeProfitPct: base.takeProfitPct ?? null,
-    thesis: `AGGRESSIVE_CHALLENGE mirror of #${primaryId}: ${base.thesis ?? ""}`.slice(0, 240),
+    thesis: `AGGRESSIVE_CHALLENGE${primaryId != null ? ` mirror of #${primaryId}` : " (independent; Primary refused)"}: ${base.thesis ?? ""}`.slice(0, 240),
     portfolio: CHALLENGE_PORTFOLIO,
   });
+  const binding = (res.sizing as any)?.bindingConstraint ?? null;
+  recordChallengeExec({
+    ...sig,
+    result: res.ok ? "filled" : "rejected",
+    reason: res.ok ? undefined : res.risk.failures.join("; "),
+    tradeId: res.id ?? null,
+    bindingConstraint: binding,
+    sizing: (res.sizing as Record<string, unknown> | null) ?? null,
+  });
   return { ok: res.ok, id: res.id, reason: res.ok ? undefined : res.risk.failures.join("; ") };
+}
+
+/** Last Challenge execution event — powers the Challenge Execution panel (Part 5). */
+interface ChallengeExecEvent {
+  atMs: number;
+  ticker: string | null;
+  optionSymbol: string | null;
+  side: string | null;
+  entryLimit: number | null;
+  equity: number | null;
+  result: "filled" | "rejected" | "disabled" | "duplicate" | "not_active";
+  reason?: string;
+  tradeId?: number | null;
+  bindingConstraint?: string | null;
+  sizing?: Record<string, unknown> | null;
+}
+function recordChallengeExec(e: Omit<ChallengeExecEvent, "atMs">): void {
+  const g = globalThis as typeof globalThis & { __optiscanChallengeExec?: ChallengeExecEvent };
+  g.__optiscanChallengeExec = { atMs: Date.now(), ...e };
+}
+function lastChallengeExec(): ChallengeExecEvent | null {
+  return (globalThis as typeof globalThis & { __optiscanChallengeExec?: ChallengeExecEvent }).__optiscanChallengeExec ?? null;
 }
 
 function deriveChallengeStatusFor(equity: number): string {
@@ -1606,6 +1661,16 @@ export function challengeAccountState() {
   ).all(CHALLENGE_PORTFOLIO) as any[];
   const unrealizedPnl = +openRows.reduce((s, r) => s + ((r.last_mark ?? r.entry_price) - r.entry_price) * 100 * (r.contracts ?? 1), 0).toFixed(2);
   const status = equity <= cfg.failureFloorUsd ? "FAILED" : equity >= cfg.targetUsd ? "TARGET_REACHED" : "ACTIVE";
+  // Open cost-basis exposure + available buying power (equity minus reserved).
+  const openExposure = +openRows.reduce((s, r) => s + (r.entry_price ?? 0) * 100 * (r.contracts ?? 1), 0).toFixed(2);
+  const buyingPower = +Math.max(0, equity - openExposure).toFixed(2);
+  // Realized loss so far today (positive number), scoped to the Challenge.
+  const dayStartMs = Date.now() - 24 * 3600_000;
+  const dayRealized: any = db.prepare(
+    `SELECT COALESCE(SUM((exit_price - entry_price) * 100 * contracts), 0) AS pnl
+     FROM paper_trades WHERE portfolio=? AND option_symbol IS NOT NULL AND entry_price IS NOT NULL AND exit_price IS NOT NULL AND exit_at_ms >= ?`,
+  ).get(CHALLENGE_PORTFOLIO, dayStartMs);
+  const dailyRealizedLoss = +Math.max(0, -Number(dayRealized?.pnl ?? 0)).toFixed(2);
   return {
     enabled: cfg.enabled,
     portfolio: CHALLENGE_PORTFOLIO,
@@ -1617,11 +1682,30 @@ export function challengeAccountState() {
     unrealizedPnl,
     equity,
     openPositions: openRows.length,
+    openExposureDollars: openExposure,
+    exposurePctOfEquity: equity > 0 ? +((openExposure / equity) * 100).toFixed(1) : null,
+    availableBuyingPowerDollars: buyingPower,
+    dailyRealizedLossDollars: dailyRealizedLoss,
     progressPct: cfg.targetUsd > cfg.startingBalanceUsd
       ? +(((equity - cfg.startingBalanceUsd) / (cfg.targetUsd - cfg.startingBalanceUsd)) * 100).toFixed(1)
       : null,
     status,
     acceptsEntries: cfg.enabled && status === "ACTIVE",
+    // Effective aggressive caps (resolved defaults + env overrides) for the panel.
+    caps: {
+      maxLossAtStopPct: cfg.maxLossAtStopPct,
+      maxPositionPct: cfg.maxPositionPct,
+      maxTotalExposurePct: cfg.maxTotalExposurePct,
+      maxDailyLossPct: cfg.maxDailyLossPct,
+      maxOpenPositions: cfg.maxOpenPositions,
+      maxContractsPerTrade: cfg.maxContractsPerTrade,
+      minContractsPerTrade: cfg.minContractsPerTrade,
+      allowZeroDte: cfg.allowZeroDte,
+    },
+    // The last Challenge execution attempt (signal → sizing → result), for the panel.
+    lastExecution: lastChallengeExec(),
+    // Deterministic aggressive sizing examples at the current equity (no live fill).
+    sizingExamples: challengeSizingExamples(equity),
   };
 }
 

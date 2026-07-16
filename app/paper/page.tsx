@@ -338,6 +338,55 @@ function PaperPageInner() {
                 </>
               ) : null}
             </div>
+
+            {/* Execution proof — last signal → sizing → order, binding cap, live buying power. */}
+            <div className="utility-badges" style={{ marginTop: 12, marginBottom: 6 }}>
+              <span className="pill badge">Max position {num(challenge.caps?.maxPositionPct, "%")}</span>
+              <span className="pill badge">Max loss-at-stop {num(challenge.caps?.maxLossAtStopPct, "%")}</span>
+              <span className="pill badge">Max exposure {num(challenge.caps?.maxTotalExposurePct, "%")}</span>
+              <span className="pill badge">Max daily loss {num(challenge.caps?.maxDailyLossPct, "%")}</span>
+              <span className="pill badge">Max open {String(challenge.caps?.maxOpenPositions ?? "—")}</span>
+              <span className="pill badge">0DTE {challenge.caps?.allowZeroDte ? "on" : "off"}</span>
+            </div>
+            <div className="axiom-strip paper-strip">
+              <StatTile label="Available buying power" value={dollars(challenge.availableBuyingPowerDollars)} hint="challenge only" metric="paperTrading" />
+              <StatTile label="Open exposure" value={dollars(challenge.openExposureDollars)} hint={`${num(challenge.exposurePctOfEquity, "%")} of equity`} metric="paperTrading" />
+              <StatTile label="Daily realized loss" value={dollars(challenge.dailyRealizedLossDollars)} hint="resets each session" metric="paperTrading" />
+            </div>
+
+            <div style={{ marginTop: 10 }}>
+              <strong className="text-xs">Last challenge execution</strong>
+              {challenge.lastExecution ? (
+                <div className="muted text-xs" style={{ marginTop: 4 }}>
+                  {new Date(challenge.lastExecution.atMs).toLocaleTimeString()} · {challenge.lastExecution.ticker ?? "—"} {challenge.lastExecution.side ?? ""} {challenge.lastExecution.optionSymbol ?? ""} ·{" "}
+                  <span className={`pill badge${challenge.lastExecution.result === "filled" ? " badge-live" : challenge.lastExecution.result === "rejected" ? " badge-warn" : ""}`}>{challenge.lastExecution.result}</span>
+                  {challenge.lastExecution.bindingConstraint ? <> · binding: {challenge.lastExecution.bindingConstraint}</> : null}
+                  {challenge.lastExecution.reason ? <> · {challenge.lastExecution.reason}</> : null}
+                </div>
+              ) : <div className="muted text-xs" style={{ marginTop: 4 }}>No challenge signal received yet this session.</div>}
+            </div>
+
+            {Array.isArray(challenge.sizingExamples) && challenge.sizingExamples.length ? (
+              <div style={{ marginTop: 10, overflowX: "auto" }}>
+                <strong className="text-xs">Deterministic aggressive sizing @ {dollars(challenge.equity)} equity (30% stop)</strong>
+                <table className="text-xs" style={{ marginTop: 4, width: "100%", borderCollapse: "collapse" }}>
+                  <thead><tr style={{ textAlign: "left" }}><th>Premium</th><th>Contracts</th><th>Cost basis</th><th>% equity</th><th>Loss @ stop</th><th>Binding</th></tr></thead>
+                  <tbody>
+                    {challenge.sizingExamples.map((e: any) => (
+                      <tr key={e.premium}>
+                        <td>{dollars(e.premium)}</td>
+                        <td>{e.rejected ? "—" : e.contracts}</td>
+                        <td>{e.rejected ? "rejected" : dollars(e.costBasisDollars)}</td>
+                        <td>{e.rejected ? "—" : `${e.costBasisPctOfEquity}%`}</td>
+                        <td>{e.rejected ? "—" : `${dollars(e.modeledLossAtStopDollars)} (${e.modeledLossAtStopPctOfEquity}%)`}</td>
+                        <td>{e.bindingConstraint}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+
             <p className="muted text-xs" style={{ marginTop: 10 }}>
               The challenge takes larger risk but is bounded by hard contract, exposure, buying-power and daily-loss caps, and fails honestly if it loses the account. No automatic reset or replenishment · no broker or real-money path.
             </p>

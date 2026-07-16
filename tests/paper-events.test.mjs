@@ -94,7 +94,9 @@ test("new paper_trades rebuild columns are additive migrations", () => {
 
 test("option paper entry creation does not require process freshness cache before revalidation", () => {
   const src = read("lib/paper-engine.ts");
-  const createBody = src.slice(src.indexOf("export function createPaperTrade"), src.indexOf("/** Manual cancel/close"));
+  // The single-portfolio create path holds the freeze/freshness logic (the public
+  // createPaperTrade is now a thin wrapper that also fans out to the Challenge).
+  const createBody = src.slice(src.indexOf("function createSinglePaperTrade"), src.indexOf("/** Manual cancel/close"));
   assert.ok(/alert-time contract snapshot/.test(createBody), "paper order freezes the alert-time contract");
   assert.ok(!/actionableFreshness\(base\.ticker/.test(createBody), "creation must not be blocked by NOT_REQUESTED_YET cache state");
   const sweepBody = src.slice(src.indexOf("export async function sweepPaperTrades"), src.indexOf("// ── Background engine"));
