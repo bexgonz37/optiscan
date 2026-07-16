@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { buildCallout, containsBannedLanguage, BANNED_PHRASES } from "../lib/callouts/callout.ts";
 import { decideEmission, isMeaningfulTransition, calloutIdempotencyKey, nextCalloutState, EMITTABLE } from "../lib/callouts/dedup.ts";
 import { formatCalloutDiscord } from "../lib/callouts/discord-format.ts";
+import { nowOnlyActionable } from "../lib/callouts/eligibility.ts";
+import { calloutWebhook } from "../lib/callouts/routing.ts";
 
 const NOW = Date.parse("2026-07-09T15:00:00Z");
 
@@ -177,4 +179,19 @@ test("discord put callout renders a single PUT contract line", () => {
   const p = formatCalloutDiscord(buildCallout(ar({ direction: "bearish", candidateStatus: "RESEARCH_ONLY", researchOnly: true, actionability: "RESEARCH_ONLY", selectedContract: { ...ar().selectedContract, side: "put" } })));
   assert.equal(p.embed, undefined);
   assert.equal(p.content, "$SPY 09 JUL 26 $500 PUT $1.15");
+});
+
+test("eligible verified PUT can reach the private options Discord boundary", () => {
+  const c = buildCallout(ar({
+    direction: "bearish",
+    verifiedInputs: { entryWindow: { state: "ACTIONABLE", waitFor: "enter now", validEntry: "valid now", doNotEnter: "loses VWAP", currently: "confirmed", alreadyHappened: null } },
+    selectedContract: { ...ar().selectedContract, optionSymbol: "O:SPY260717P00625000", strike: 625, expiration: "2026-07-17", side: "put", bid: 2.10, ask: 2.18, mid: 2.14, delta: -0.5 },
+  }));
+  assert.equal(c.actionable, true);
+  assert.equal(c.researchOnlyWarning, null);
+  assert.equal(nowOnlyActionable(c, { OPTIONS_PUTS_ENABLED: "1", OPTIONS_PUT_CALLOUTS: "1" }).ok, true);
+  assert.equal(calloutWebhook(c), "options");
+  const p = formatCalloutDiscord(c);
+  assert.equal(p.embed, undefined);
+  assert.equal(p.content, "$SPY 17 JUL 26 $625 PUT $2.14");
 });

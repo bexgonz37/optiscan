@@ -10,11 +10,14 @@ test("weekly quant research context is machine-readable and offline-only", () =>
   assert.equal(ctx.livePathAuthority, "deterministic_only");
   assert.ok(ctx.calculationInventory.some((x) => x.ownerFile === "lib/stock-momentum-policy.ts"));
   assert.ok(ctx.calculationInventory.some((x) => x.ownerFile === "lib/callouts/eligibility.ts"));
+  assert.ok(ctx.calculationInventory.every((x) => x.formula && x.unit && x.currentThresholds && x.hardGates));
+  assert.ok(ctx.gateAttribution.some((x) => /accepted versus rejected/i.test(x)));
+  assert.ok(ctx.thresholdExperimentEvidence.some((x) => /baseline_current_policy/.test(String(x.name))));
   assert.match(ctx.promotionRule, /human approval/i);
 });
 
 test("weekly prompt includes quant research but nightly prompt does not", () => {
-  const quantResearch = weeklyQuantResearchContext();
+  const quantResearch = weeklyQuantResearchContext({ metrics: { portfolios: { PRIMARY: {}, CHALLENGE: {}, STOCK_DAY_TRADER: {} } } });
   const weekly = weeklyProposalPrompt({
     weekKey: "2026-W29",
     weeklySummary: { trades: 0 },
@@ -29,6 +32,9 @@ test("weekly prompt includes quant research but nightly prompt does not", () => 
   });
   assert.match(weekly.user, /Weekly AI quant research context/);
   assert.match(weekly.user, /stock-momentum-policy/);
+  assert.match(weekly.user, /formula/);
+  assert.match(weekly.user, /baseline/i);
+  assert.match(weekly.user, /PRIMARY/);
 
   const nightly = nightlyNarrationPrompt({ tradingDay: "2026-07-15", totalTrades: 0 });
   assert.doesNotMatch(nightly.user, /Weekly AI quant research context/);

@@ -15,6 +15,7 @@ import { isoWeekKey } from "./schedule.ts";
 import { recentTradingDays, gatherOutcomesForDays, gatherCandidatesForDays } from "./queries.ts";
 import { weeklyProposalPrompt } from "./prompts.ts";
 import { weeklyQuantResearchContext } from "./quant-research.ts";
+import { PRIMARY_PORTFOLIO, CHALLENGE_PORTFOLIO, STOCK_DAY_TRADER_PORTFOLIO } from "../paper-challenge.ts";
 import { validateWeeklyProposals, type WeeklyProposalDraft } from "./schemas.ts";
 import { screenProposalSafety } from "./safety.ts";
 import { runStructuredAiJob, type ProviderDeps } from "./provider.ts";
@@ -66,6 +67,56 @@ function currentStrategyVersion(db: DbLike): string | null {
   } catch { return null; }
 }
 
+function weeklyQuantMetrics(input: {
+  primary: NightlySummary;
+  challenge: NightlySummary;
+  stockDayTrader: NightlySummary;
+}): Record<string, unknown> {
+  const portfolio = (summary: NightlySummary) => ({
+    sampleSizes: {
+      overall: summary.overall.n,
+      graded: summary.counts.outcomesGraded,
+      ungradable: summary.counts.outcomesUngradable,
+      calls: summary.callsVsPuts.call.n,
+      puts: summary.callsVsPuts.put.n,
+    },
+    callsVsPuts: summary.callsVsPuts,
+    stockSessions: summary.byTimeOfDay,
+    acceptedVsRejected: {
+      created: summary.counts.created,
+      eligible: summary.counts.eligible,
+      rejected: summary.counts.rejected,
+      rejectionReasons: summary.rejectionReasons,
+      waitWatchReasons: summary.waitWatchReasons,
+    },
+    entryQualityVsExitQuality: {
+      opportunityGrade: summary.opportunityGrade,
+      realizedGrade: summary.realizedGrade,
+      signalCorrectExitFailed: summary.signalCorrectExitFailed,
+      bothFailed: summary.bothFailed,
+    },
+    baseline: {
+      winRate: summary.overall.winRate,
+      avgReturnPct: summary.overall.avgReturnPct,
+      opportunityHitRate: summary.overall.opportunityHitRate,
+      prioritizedIssue: summary.prioritizedIssue,
+      patterns: summary.patterns,
+    },
+  });
+  return {
+    baselineVsChallenger: {
+      baseline: "current deterministic production policy",
+      challenger: null,
+      rule: "challenger metrics must be computed by deterministic replay/shadow tests before the AI may recommend promotion",
+    },
+    portfolios: {
+      [PRIMARY_PORTFOLIO]: portfolio(input.primary),
+      [CHALLENGE_PORTFOLIO]: portfolio(input.challenge),
+      [STOCK_DAY_TRADER_PORTFOLIO]: portfolio(input.stockDayTrader),
+    },
+  };
+}
+
 export interface WeeklyJobResult {
   ran: boolean;
   skippedReason?: string;
@@ -102,11 +153,19 @@ export async function runWeeklyProposals(opts: WeeklyJobOptions = {}): Promise<W
   let summary: NightlySummary & { quantResearch?: ReturnType<typeof weeklyQuantResearchContext> };
   try {
     const days = recentTradingDays(nowMs, 7);
-    const outcomes = gatherOutcomesForDays(days, nowMs, db);
+    const outcomes = gatherOutcomesForDays(days, nowMs, db, PRIMARY_PORTFOLIO);
+    const challengeOutcomes = gatherOutcomesForDays(days, nowMs, db, CHALLENGE_PORTFOLIO);
+    const stockDayOutcomes = gatherOutcomesForDays(days, nowMs, db, STOCK_DAY_TRADER_PORTFOLIO);
     const candidates = gatherCandidatesForDays(days, nowMs, db);
+    const primary = buildNightlySummary({ tradingDay: weekKey, periodStartMs: nowMs - 7 * 24 * 3600_000, periodEndMs: nowMs, outcomes, candidates, live: null });
+    const challenge = buildNightlySummary({ tradingDay: weekKey, periodStartMs: nowMs - 7 * 24 * 3600_000, periodEndMs: nowMs, outcomes: challengeOutcomes, candidates: [], live: null });
+    const stockDayTrader = buildNightlySummary({ tradingDay: weekKey, periodStartMs: nowMs - 7 * 24 * 3600_000, periodEndMs: nowMs, outcomes: stockDayOutcomes, candidates: [], live: null });
     summary = {
-      ...buildNightlySummary({ tradingDay: weekKey, periodStartMs: nowMs - 7 * 24 * 3600_000, periodEndMs: nowMs, outcomes, candidates, live: null }),
-      quantResearch: weeklyQuantResearchContext(),
+      ...primary,
+      quantResearch: weeklyQuantResearchContext({
+        env: opts.env,
+        metrics: weeklyQuantMetrics({ primary, challenge, stockDayTrader }),
+      }),
     };
   } catch (err: any) {
     return { ...result, skippedReason: `weekly summary failed: ${err?.message ?? err}` };

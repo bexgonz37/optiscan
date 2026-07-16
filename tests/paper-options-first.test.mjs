@@ -62,6 +62,34 @@ if (Database) {
     assert.equal(row.option_symbol, OCC);
     assert.equal(c.contract.optionSymbol, OCC);
   });
+
+  test("verified PUT uses the same OCC contract for candidate and paper-trade input", () => {
+    const db = new Database(":memory:"); db.exec(DDL);
+    const putOcc = "O:SPY260717P00625000";
+    const captured = [];
+    const capture = (input) => { captured.push(input); return { ok: true, id: 77, risk: { allowed: true, failures: [] } }; };
+    const c = buildCallout(ar({
+      ticker: "SPY",
+      direction: "bearish",
+      selectedContract: {
+        ...ar().selectedContract,
+        optionSymbol: putOcc,
+        strike: 625,
+        expiration: "2026-07-17",
+        side: "put",
+        delta: -0.5,
+      },
+    }));
+    bridgeCalloutsToPaperOnDb(db, [c], capture, NOW, { ...PAPER_ON, OPTIONS_PUTS_ENABLED: "1", OPTIONS_PUT_CALLOUTS: "1" });
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].optionSymbol, putOcc);
+    assert.equal(captured[0].optionType, "put");
+    assert.equal(captured[0].strike, 625);
+    assert.equal(captured[0].expiration, "2026-07-17");
+    const row = db.prepare("SELECT option_symbol, direction FROM paper_candidates").get();
+    assert.equal(row.option_symbol, putOcc);
+    assert.equal(row.direction, "bearish");
+  });
 }
 
 // ── source-spec wiring (createPaperTrade path needs the DB alias, so assert on source) ──
