@@ -31,6 +31,8 @@ type Overview = {
   jobFailures?: any[];
 };
 
+const RETRYABLE_NIGHTLY_STATUSES = new Set(["VALIDATION_FAILED", "ERROR", "SKIPPED"]);
+
 const fmtTime = (ms?: number | null) =>
   ms ? new Date(ms).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) + " ET" : "—";
 const fmtNum = (n?: number | null) => (typeof n === "number" ? n.toLocaleString() : "—");
@@ -86,6 +88,8 @@ export default function AiLabPage() {
   const [ov, setOv] = useState<Overview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [retryingKey, setRetryingKey] = useState<string | null>(null);
+  const [retryMessage, setRetryMessage] = useState<{ key: string; text: string; ok: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
@@ -108,12 +112,27 @@ export default function AiLabPage() {
     } finally { setBusy(false); }
   }, [load]);
 
-  const retryNightly = useCallback(async (reportId: number) => {
-    setBusy(true);
+  const retryNightly = useCallback(async (report: any) => {
+    const hasReportId = Number.isFinite(Number(report?.id));
+    const key = hasReportId ? `id:${Number(report.id)}` : `period:${String(report?.periodKey ?? "")}`;
+    const body = hasReportId
+      ? { action: "retry_nightly_narrative", reportId: Number(report.id) }
+      : { action: "retry_nightly_narrative", periodKey: String(report?.periodKey ?? "") };
+    setRetryingKey(key);
+    setRetryMessage(null);
     try {
-      await fetch("/api/ai", { method: "POST", headers: { ...scanHeaders(), "content-type": "application/json" }, body: JSON.stringify({ action: "retry_nightly_narrative", reportId }) });
+      const res = await fetch("/api/ai", { method: "POST", headers: { ...scanHeaders(), "content-type": "application/json" }, body: JSON.stringify(body) });
+      const raw = await res.text();
+      let payload: any = null;
+      try { payload = raw ? JSON.parse(raw) : null; } catch { payload = null; }
+      if (!res.ok || payload?.ok === false) {
+        const detail = payload?.error ?? (raw || `HTTP ${res.status}`);
+        setRetryMessage({ key, text: String(detail), ok: false });
+        return;
+      }
+      setRetryMessage({ key, text: "Retry started successfully.", ok: true });
       await load();
-    } finally { setBusy(false); }
+    } finally { setRetryingKey(null); }
   }, [load]);
 
   useEffect(() => { load(); const id = setInterval(load, 60000); return () => clearInterval(id); }, [load]);
@@ -157,6 +176,31 @@ export default function AiLabPage() {
     { key: "day", header: "Period", render: (r) => r.periodKey },
     { key: "status", header: "Narrative", render: (r) => <StatusBadge tone={r.narrativeStatus === "OK" ? "bull" : r.narrativeStatus === "SKIPPED" ? "muted" : "warn"}>{r.narrativeStatus}</StatusBadge> },
     { key: "issue", header: "Top issue", render: (r) => r.summary?.prioritizedIssue ?? "—" },
+    {
+      key: "retry", header: "Action", render: (r) => {
+        const retryable = RETRYABLE_NIGHTLY_STATUSES.has(String(r.narrativeStatus));
+        if (!retryable) return <span style={{ fontSize: 12, opacity: 0.55 }}>—</span>;
+        const hasReportId = Number.isFinite(Number(r.id));
+        const key = hasReportId ? `id:${Number(r.id)}` : `period:${String(r.periodKey ?? "")}`;
+        const active = retryingKey === key;
+        return (
+          <div style={{ display: "grid", gap: 6, minWidth: 150 }}>
+            <button disabled={Boolean(retryingKey)} onClick={() => retryNightly(r)} style={{ fontSize: 12, padding: "4px 9px", fontWeight: 700 }}>
+              {active ? "Retrying..." : "Retry Narrative"}
+            </button>
+            {retryMessage?.key === key && (
+              <span style={{ fontSize: 12, color: retryMessage.ok ? "var(--bull)" : "var(--bear)" }}>{retryMessage.text}</span>
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      key: "diagnostic", header: "Diagnostics", render: (r) =>
+        RETRYABLE_NIGHTLY_STATUSES.has(String(r.narrativeStatus))
+          ? <ValidationDetails diagnostic={r.diagnostic} summary="Structured validation diagnostic" />
+          : null,
+    },
     { key: "at", header: "Created", render: (r) => fmtTime(r.createdAtMs) },
   ];
   const lessonCols: Column<any>[] = [
@@ -252,9 +296,12 @@ export default function AiLabPage() {
               </p>
             )}
             {!narrative && ["VALIDATION_FAILED", "ERROR", "SKIPPED"].includes(String(nightly.narrativeStatus)) && (
-              <button disabled={busy} onClick={() => retryNightly(Number(nightly.id))} style={{ fontSize: 12, padding: "4px 9px", marginTop: 6 }}>
-                Retry narrative
-              </button>
+              <div style={{ display: "grid", gap: 6, justifyItems: "start", marginTop: 6 }}>
+                <button disabled={Boolean(retryingKey)} onClick={() => retryNightly(nightly)} style={{ fontSize: 12, padding: "4px 9px", fontWeight: 700 }}>
+                  {retryingKey ? "Retrying..." : "Retry Narrative"}
+                </button>
+                {retryMessage && <span style={{ fontSize: 12, color: retryMessage.ok ? "var(--bull)" : "var(--bear)" }}>{retryMessage.text}</span>}
+              </div>
             )}
             {diagnostic && (
               <DetailsDisclosure summary="Narrative failure details">
