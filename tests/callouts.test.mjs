@@ -30,11 +30,20 @@ test("bullish actionable callout is actionable and free of banned language", () 
   assert.ok(!containsBannedLanguage(JSON.stringify(c)));
 });
 
-test("put callout is always research-only, never actionable", () => {
+test("non-actionable put callout stays research-only", () => {
   const c = buildCallout(ar({ direction: "bearish", candidateStatus: "RESEARCH_ONLY", actionability: "RESEARCH_ONLY", researchOnly: true, selectedContract: { ...ar().selectedContract, side: "put" } }));
   assert.equal(c.actionable, false);
   assert.ok(c.researchOnlyWarning);
-  assert.match(c.researchOnlyWarning, /RESEARCH ONLY/);
+  assert.match(c.researchOnlyWarning, /Research only/i);
+});
+
+test("verified actionable put callout can be actionable", () => {
+  const c = buildCallout(ar({
+    direction: "bearish",
+    selectedContract: { ...ar().selectedContract, optionSymbol: "O:SPY_P500", side: "put", delta: -0.5 },
+  }));
+  assert.equal(c.actionable, true);
+  assert.equal(c.researchOnlyWarning, null);
 });
 
 test("insufficient-evidence warning present until established", () => {

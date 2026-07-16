@@ -35,7 +35,7 @@ test("bullish agent with clean actionable selection ⇒ ACTIONABLE_NOW", () => {
   assert.equal(r.ticker, "SPY");
 });
 
-test("PUT agent is ALWAYS research-only even with a clean actionable selection", () => {
+test("non-actionable PUT selections remain research-only", () => {
   const r = evaluateHorizonAgent(cfgPut, { ticker: "spy", session: "regular", nowMs: NOW, selection: okSelection({ actionable: false, researchOnly: true }), freshness: freshOk });
   assert.equal(r.actionability, "RESEARCH_ONLY");
   assert.equal(r.researchOnly, true);
@@ -43,10 +43,20 @@ test("PUT agent is ALWAYS research-only even with a clean actionable selection",
   assert.equal(r.direction, "bearish");
 });
 
-test("even if a put selection is marked actionable, the agent forces research-only", () => {
+test("verified actionable PUT selections can become actionable by default", () => {
+  const r = evaluateHorizonAgent(cfgPut, { ticker: "spy", session: "regular", nowMs: NOW, selection: okSelection({ actionable: true }), freshness: freshOk });
+  assert.equal(r.actionability, "ACTIONABLE");
+  assert.equal(r.researchOnly, false);
+  assert.equal(r.candidateStatus, "ACTIONABLE_NOW");
+});
+
+test("verified PUT selections can be explicitly disabled back to research-only", () => {
+  const old = process.env.OPTIONS_PUTS_ENABLED;
+  process.env.OPTIONS_PUTS_ENABLED = "0";
   const r = evaluateHorizonAgent(cfgPut, { ticker: "spy", session: "regular", nowMs: NOW, selection: okSelection({ actionable: true }), freshness: freshOk });
   assert.equal(r.actionability, "RESEARCH_ONLY");
   assert.equal(r.researchOnly, true);
+  if (old == null) delete process.env.OPTIONS_PUTS_ENABLED; else process.env.OPTIONS_PUTS_ENABLED = old;
 });
 
 test("stale data ⇒ DATA_STALE + BLOCKED regardless of selection", () => {

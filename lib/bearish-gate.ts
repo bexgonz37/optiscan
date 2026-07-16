@@ -25,6 +25,10 @@ export function bearishActionable(): boolean {
   return process.env.BEARISH_ACTIONABLE === "1";
 }
 
+export function verifiedOptionsPutsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.OPTIONS_PUTS_ENABLED !== "0" && env.OPTIONS_PUT_CALLOUTS !== "0";
+}
+
 export interface BearishGateResult {
   action: string;
   gated: boolean;
@@ -49,14 +53,17 @@ export function isBearishIntent(input: {
 export function gateBearishAction(
   input: { direction?: string | null; optionSide?: string | null; side?: string | null },
   action: string,
+  env: NodeJS.ProcessEnv = process.env,
 ): BearishGateResult {
   const actionable = ["TRADE", "BUY", "ENTRY_CONFIRMED", "ACTIONABLE"].includes(String(action).toUpperCase());
-  if (!actionable || bearishActionable() || !isBearishIntent(input)) {
+  const optSide = String(input.optionSide ?? input.side ?? "").toLowerCase();
+  const isVerifiedPut = optSide === "put";
+  if (!actionable || env.BEARISH_ACTIONABLE === "1" || !isBearishIntent(input) || (isVerifiedPut && verifiedOptionsPutsEnabled(env))) {
     return { action, gated: false, reason: null };
   }
   return {
     action: "WAIT",
     gated: true,
-    reason: `${BEARISH_DISABLED_REASON}: bearish ideas are research-only until bearish trading is enabled (set BEARISH_ACTIONABLE=1). They pass the same quality gates as bullish once enabled.`,
+    reason: `${BEARISH_DISABLED_REASON}: bearish stock/short ideas are research-only until bearish trading is enabled (set BEARISH_ACTIONABLE=1). Verified option puts use OPTIONS_PUTS_ENABLED and still pass the normal options gates.`,
   };
 }

@@ -47,9 +47,10 @@ test("bullish behavior is untouched by the gate", () => {
   assert.equal(v.side, "LONG");
 });
 
-test("gateBearishAction: demotes put/short/bearish TRADEs, passes bullish", () => {
+test("gateBearishAction: allows verified puts by default, keeps stock shorts gated, passes bullish", () => {
   assert.equal(gateBearishAction({ direction: "bearish" }, "TRADE").action, "WAIT");
-  assert.equal(gateBearishAction({ optionSide: "put" }, "TRADE").gated, true);
+  assert.equal(gateBearishAction({ optionSide: "put" }, "TRADE").gated, false);
+  assert.equal(gateBearishAction({ optionSide: "put" }, "TRADE", { OPTIONS_PUTS_ENABLED: "0" }).gated, true);
   assert.equal(gateBearishAction({ side: "short" }, "BUY").gated, true);
   assert.equal(gateBearishAction({ direction: "bullish", optionSide: "call" }, "TRADE").gated, false);
   assert.equal(gateBearishAction({ direction: "bearish" }, "WAIT").gated, false, "non-actionable passes through");

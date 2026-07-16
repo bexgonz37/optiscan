@@ -80,8 +80,8 @@ test("createPaperTrade sizes through the deterministic risk-based sizer", () => 
   assert.match(src, /sizing_json/, "the sizing calc is persisted for the detail page");
 });
 
-test("puts remain research-only unless BEARISH_ACTIONABLE=1 (eligibility unchanged)", () => {
+test("verified puts use the options-put paper gate, not the stock-short gate", () => {
   const src = readFileSync(join(root, "lib/callouts/eligibility.ts"), "utf8");
-  assert.match(src, /BEARISH_ACTIONABLE !== "1"/, "bearish gate intact");
-  assert.match(src, /research-only/, "puts labelled research-only");
+  assert.match(src, /verifiedOptionsPutsEnabled/, "put paper eligibility uses the options put switch");
+  assert.match(src, /OPTIONS_PUTS_ENABLED=0/, "put disable reason is explicit");
 });

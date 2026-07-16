@@ -91,12 +91,17 @@ test("0DTE respects PAPER_ALLOW_ZERO_DTE", () => {
   assert.equal(paperCandidateEligibility(zeroDte, PAPER_ON).ok, true);
 });
 
-test("a put with bearish disabled can never be paper-eligible", () => {
+test("research-only put is not paper-eligible, verified actionable put is", () => {
   const put = buildCallout(ar({
     direction: "bearish", candidateStatus: "RESEARCH_ONLY", actionability: "RESEARCH_ONLY", researchOnly: true,
     selectedContract: { ...ar().selectedContract, side: "put" },
   }, null));
   assert.equal(paperCandidateEligibility(put, { ...PAPER_ON }).ok, false);
-  // Even if it were somehow actionable, the explicit bearish gate blocks it.
-  assert.equal(paperCandidateEligibility(put, { ...PAPER_ON, BEARISH_ACTIONABLE: "0" }).ok, false);
+
+  const actionablePut = buildCallout(ar({
+    direction: "bearish",
+    selectedContract: { ...ar().selectedContract, side: "put" },
+  }));
+  assert.equal(paperCandidateEligibility(actionablePut, { ...PAPER_ON }).ok, true);
+  assert.equal(paperCandidateEligibility(actionablePut, { ...PAPER_ON, OPTIONS_PUTS_ENABLED: "0" }).ok, false);
 });

@@ -3,12 +3,13 @@
  *
  * Turns ONE canonical AgentResult (already deduped by the Supervisor) into a
  * single callout with the specified status set, verified fields, and language
- * that never implies a guarantee. Puts are always RESEARCH_ONLY; expectancy /
- * probability appear ONLY when their evidence/model gates legitimately permit it.
+ * that never implies a guarantee. Verified puts can be actionable through the
+ * private options/paper path; expectancy / probability appear ONLY when their
+ * evidence/model gates legitimately permit it.
  */
 import type { AgentResult, CandidateStatus } from "../agents/types.ts";
 import { EXPERIMENTAL_LABEL, SETUP_SCORE_LABEL } from "../model-experimental.ts";
-import { bearishActionable } from "../bearish-gate.ts";
+import { bearishActionable, verifiedOptionsPutsEnabled } from "../bearish-gate.ts";
 import { confidenceTier, estimatedEntryPrice, entryStatusLabel } from "./confidence.ts";
 
 /** Phrases that must never appear in any callout text. */
@@ -179,15 +180,16 @@ export function buildCallout(r: AgentResult, extras: BuildCalloutExtras = {}): C
     modelVersion: extras.modelVersion ?? null,
     calibration: extras.calibration ?? null,
     primaryBlockingReason,
-    // Bearish is research-only ONLY while bearish trading is disabled; once enabled
-    // it earns/loses actionability on the same terms as bullish (never a hard
-    // "disabled" message — it either qualifies or it does not).
+    // Bearish stock/short ideas stay research-only until BEARISH_ACTIONABLE=1;
+    // verified option puts use the options-put switch and normal gates.
     researchOnlyWarning:
-      (isBearish && !bearishActionable())
-        ? "RESEARCH ONLY — bearish trading is not enabled."
-        : (r.researchOnly ? "Research only — not currently actionable." : null),
+      (isBearish && r.selectedContract?.side !== "put" && !bearishActionable())
+        ? "RESEARCH ONLY - bearish trading is not enabled."
+        : (isBearish && r.selectedContract?.side === "put" && !verifiedOptionsPutsEnabled()
+          ? "RESEARCH ONLY - verified option puts are disabled."
+          : (r.researchOnly ? "Research only - not currently actionable." : null)),
     insufficientEvidenceWarning: r.evidenceStatus === "ESTABLISHED_EVIDENCE" ? null : "Not enough graded outcomes yet for statistical conclusions.",
-    actionable: r.actionability === "ACTIONABLE" && (!isBearish || bearishActionable()) && !entryLate,
+    actionable: r.actionability === "ACTIONABLE" && (!isBearish || bearishActionable() || (r.selectedContract?.side === "put" && verifiedOptionsPutsEnabled())) && !entryLate,
     timestamp: r.timestamp,
     entryState: ew?.state ?? null,
     waitFor: ew?.waitFor ?? null,

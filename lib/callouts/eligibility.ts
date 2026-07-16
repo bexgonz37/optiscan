@@ -14,6 +14,7 @@
  */
 import type { Callout } from "./callout.ts";
 import { confidenceTier } from "./confidence.ts";
+import { verifiedOptionsPutsEnabled } from "../bearish-gate.ts";
 
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
@@ -62,10 +63,11 @@ export function paperCandidateEligibility(c: Callout, env: NodeJS.ProcessEnv = p
 
   const base = nowOnlyActionable(c, env);
   if (!base.ok) return base;
-
-  // Puts NEVER paper trade while bearish actionability is absent/off.
-  if (c.direction === "bearish" && env.BEARISH_ACTIONABLE !== "1") {
-    return { ok: false, reason: "bearish actionability disabled (BEARISH_ACTIONABLE!=1) — puts are research-only" };
+  if (c.direction === "bearish" && c.contract?.side === "put" && !verifiedOptionsPutsEnabled(env)) {
+    return { ok: false, reason: "verified put paper entry disabled (OPTIONS_PUTS_ENABLED=0 or OPTIONS_PUT_CALLOUTS=0)" };
+  }
+  if (c.direction === "bearish" && c.contract?.side !== "put" && env.BEARISH_ACTIONABLE !== "1") {
+    return { ok: false, reason: "bearish stock/short actionability disabled (BEARISH_ACTIONABLE!=1)" };
   }
   // 0DTE respects PAPER_ALLOW_ZERO_DTE — surfaced, never silently bypassed.
   const dte = c.contract?.dte;
