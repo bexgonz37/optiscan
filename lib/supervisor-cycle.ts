@@ -14,7 +14,7 @@
  * bearish idea actionable, and never lets a probability or agent agreement override
  * a hard gate — those invariants live in the agent/supervisor/callout layers.
  */
-import { buildCalloutsForTickers, type CalloutFunnel } from "@/lib/callouts/runtime";
+import { buildCalloutsForTickers, type CalloutFunnel, type SuppressedCalloutItem } from "@/lib/callouts/runtime";
 import { getZeroDteUniverse } from "@/lib/universe.js";
 import { loopState } from "@/lib/scanner-loop";
 import { buildCycleUniverse, DEFAULT_SUPERVISOR_CORE_TICKERS, parseTickerList } from "@/lib/supervisor-universe";
@@ -45,6 +45,8 @@ export interface SupervisorTelemetry {
   lastError: string | null;
   /** Last cycle's options funnel (live surface; the persistent record is in options_diagnostics). */
   lastFunnel: CalloutFunnel | null;
+  /** Last cycle's per-suppressed-item diagnostics (why each candidate did not emit). */
+  lastSuppressedItems: SuppressedCalloutItem[];
 }
 
 function telemetry(): SupervisorTelemetry {
@@ -54,7 +56,7 @@ function telemetry(): SupervisorTelemetry {
     lastCycleEmitted: 0, lastCycleDelivered: 0, lastCycleDurationMs: 0,
     lastCycleSymbols: [], lastChainConcurrency: 0, lastOptionsChainsSucceeded: 0,
     lastOptionsChainsFailed: 0, lastTickerLatencies: [], overlapPrevented: 0,
-    cycles: 0, lastError: null, lastFunnel: null,
+    cycles: 0, lastError: null, lastFunnel: null, lastSuppressedItems: [],
   };
   return g.__optiscanSupervisorTelemetry;
 }
@@ -144,6 +146,7 @@ export async function runSupervisorCycle(nowMs: number = Date.now(), env: NodeJS
     t.lastOptionsChainsFailed = res.execution.failed;
     t.lastTickerLatencies = res.execution.tickerResults;
     t.lastFunnel = res.funnel;
+    t.lastSuppressedItems = res.suppressedItems ?? [];
     t.lastError = null;
     // Persist the options funnel (bounded, non-throwing) so a "no options alerts"
     // day is diagnosable after a restart and the nightly AI can narrate it.

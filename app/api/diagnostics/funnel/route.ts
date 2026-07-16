@@ -22,11 +22,22 @@ export async function GET(req: Request) {
   const { supervisorTelemetry } = await import("@/lib/supervisor-cycle");
   const { buildConfigVisibility } = await import("@/lib/runtime-status");
   const { marketSession } = await import("@/lib/trading-session");
+  const { discordWebhookConfigured, extendedStockNotifyEnabled } = await import("@/lib/notifications");
 
   const loop: any = loopState();
   const telemetry: any = supervisorTelemetry();
   const session = marketSession();
-  const { readiness } = buildConfigVisibility(process.env, { session });
+  // Readiness must be computed from the SAME DB-backed extras that
+  // /api/runtime/status uses, or the two endpoints disagree in the same process
+  // (the funnel previously read webhooks as "missing" and extended_stock_notify as
+  // "off" because it passed no extras). Single source of truth: these three flags.
+  const safe = <T,>(fn: () => T): T | false => { try { return fn(); } catch { return false; } };
+  const { readiness } = buildConfigVisibility(process.env, {
+    session,
+    extendedStockNotify: safe(() => extendedStockNotifyEnabled()) === true,
+    stockWebhookConfigured: safe(() => discordWebhookConfigured("stocks")) === true,
+    optionsWebhookConfigured: safe(() => discordWebhookConfigured("options")) === true,
+  });
 
   const stock = buildStockFunnel(
     Array.isArray(loop.tape) ? loop.tape : [],
@@ -41,7 +52,7 @@ export async function GET(req: Request) {
     : [];
 
   const options = buildOptionsFunnel(
-    { lastCycleAtMs: telemetry.lastCycleAtMs ?? null, lastFunnel: telemetry.lastFunnel ?? null },
+    { lastCycleAtMs: telemetry.lastCycleAtMs ?? null, lastFunnel: telemetry.lastFunnel ?? null, lastSuppressedItems: telemetry.lastSuppressedItems ?? [] },
     selectedContracts,
     readiness.optionsCallouts,
   );

@@ -188,6 +188,10 @@ export interface DiscordSelection {
   eligibleKeys: Set<string>;
   ranking: { key: string; ticker: string; quality: number }[];
   suppressed: { key: string; reason: string }[];
+  /** Actionable candidates that survived the collapse-to-best-per-(ticker,direction) step. */
+  collapsedCount: number;
+  /** Actionable candidates BEFORE collapse (the raw canonical actionable set). */
+  actionableBeforeCollapse: number;
 }
 
 /**
@@ -219,20 +223,39 @@ export function selectForDiscord(callouts: Callout[], s: OwnerSettings): Discord
     if (quality < s.minSetupQuality) { suppressed.push({ key: c.key, reason: `below min setup quality (${quality} < ${s.minSetupQuality})` }); continue; }
     eligible.push({ c, quality });
   }
+  const actionableBeforeCollapse = eligible.length;
 
-  // Rank: quality desc, then core-universe priority, then ticker for determinism.
-  eligible.sort((a, b) =>
+  // COLLAPSE VARIANTS (2026-07-16): a single ticker/direction can produce several
+  // canonical variants (multiple horizons/setups), so 14 core tickers were emitting
+  // ~80 canonical rows and flooding dedup. Keep only the SINGLE best-quality callout
+  // per (ticker, direction) — the rest stay dashboard-only. This runs BEFORE the
+  // top-N cap so the strongest distinct ideas fill the Discord slots, not variants
+  // of one idea. It never fabricates or changes a contract; it only drops duplicates.
+  const bestByTd = new Map<string, { c: Callout; quality: number }>();
+  for (const e of eligible) {
+    const td = `${e.c.ticker}|${e.c.direction}`;
+    const cur = bestByTd.get(td);
+    if (!cur || e.quality > cur.quality) bestByTd.set(td, e);
+  }
+  const kept = new Set(bestByTd.values());
+  for (const e of eligible) {
+    if (!kept.has(e)) suppressed.push({ key: e.c.key, reason: `collapsed: lower-ranked variant for ${e.c.ticker} ${e.c.direction} (kept the best setup)` });
+  }
+  const collapsed = [...bestByTd.values()];
+
+  // Rank the collapsed set: quality desc, then core-universe priority, then ticker.
+  collapsed.sort((a, b) =>
     b.quality - a.quality
     || tickerPriorityRank(a.c.ticker, s) - tickerPriorityRank(b.c.ticker, s)
     || (a.c.key < b.c.key ? -1 : a.c.key > b.c.key ? 1 : 0));
 
   const eligibleKeys = new Set<string>();
-  const ranking = eligible.map((e) => ({ key: e.c.key, ticker: e.c.ticker, quality: e.quality }));
-  for (let i = 0; i < eligible.length; i++) {
-    if (i < s.maxDiscordAlerts) eligibleKeys.add(eligible[i].c.key);
-    else suppressed.push({ key: eligible[i].c.key, reason: `outside top ${s.maxDiscordAlerts} by quality` });
+  const ranking = collapsed.map((e) => ({ key: e.c.key, ticker: e.c.ticker, quality: e.quality }));
+  for (let i = 0; i < collapsed.length; i++) {
+    if (i < s.maxDiscordAlerts) eligibleKeys.add(collapsed[i].c.key);
+    else suppressed.push({ key: collapsed[i].c.key, reason: `outside top ${s.maxDiscordAlerts} by quality` });
   }
-  return { eligibleKeys, ranking, suppressed };
+  return { eligibleKeys, ranking, suppressed, collapsedCount: collapsed.length, actionableBeforeCollapse };
 }
 
 export interface PortfolioReview {
@@ -241,6 +264,10 @@ export interface PortfolioReview {
   ranking: { key: string; ticker: string; quality: number }[];
   eligibleKeys: Set<string>;
   suppressed: { key: string; reason: string }[];
+  /** Actionable candidates after collapse-to-best-per-(ticker,direction). */
+  collapsedCount: number;
+  /** Actionable candidates before collapse (raw canonical actionable count). */
+  actionableBeforeCollapse: number;
 }
 
 /**
@@ -266,5 +293,7 @@ export function reviewPortfolio(
     ranking: selection.ranking,
     eligibleKeys: selection.eligibleKeys,
     suppressed: selection.suppressed,
+    collapsedCount: selection.collapsedCount,
+    actionableBeforeCollapse: selection.actionableBeforeCollapse,
   };
 }

@@ -13,7 +13,7 @@
  */
 import { runAgentsForTicker } from "@/lib/agents/runtime";
 import { buildCallout, type Callout } from "@/lib/callouts/callout";
-import { decideEmission, type EmissionDecision } from "@/lib/callouts/dedup";
+import { decideEmission, isMeaningfulTransition, type EmissionDecision } from "@/lib/callouts/dedup";
 import { formatCalloutDiscord, type DiscordCalloutPayload } from "@/lib/callouts/discord-format";
 import { loadPriorCallouts, persistCalloutState, type CalloutStateWrite } from "@/lib/callouts/state-store";
 import { calloutWebhook, supervisorDiscordDeliveryEnabled, optionsDeliveryGateReason } from "@/lib/callouts/routing";
@@ -53,6 +53,8 @@ export interface CalloutsRunResult {
   };
   /** Deterministic options-funnel counts for persistent diagnostics. */
   funnel: CalloutFunnel;
+  /** Per-suppressed-item diagnostics (why each canonical candidate did not emit). */
+  suppressedItems?: SuppressedCalloutItem[];
 }
 
 export interface CalloutFunnel {
@@ -61,6 +63,10 @@ export interface CalloutFunnel {
   chainsFailed: number;
   tickersWithCanonical: number;
   canonical: number;
+  /** Raw ACTIONABLE_NOW candidates before collapse (multiple variants per ticker). */
+  actionable: number;
+  /** Candidates after collapse-to-best-per-(ticker,direction) — the ranked set. */
+  collapsed: number;
   portfolioSuppressed: number;
   dedupSuppressed: number;
   emitted: number;
@@ -72,6 +78,19 @@ export interface CalloutFunnel {
   /** Non-null when emitted>0 but delivery is blocked by config (the key "no alerts" cause). */
   deliveryGateReason: string | null;
   topReason: string | null;
+}
+
+/** Per-suppressed-item diagnostics — WHY each canonical candidate did not emit. */
+export interface SuppressedCalloutItem {
+  key: string;
+  ticker: string;
+  direction: string;
+  optionSymbol: string | null;
+  status: string;
+  previousStatus: string | null;
+  previousEmitMs: number | null;
+  suppressionReason: string;
+  materialChange: boolean;
 }
 
 
@@ -218,6 +237,26 @@ export async function buildCalloutsForTickers(
   const suppressed = decisions.filter((d) => !d.emit);
   const portfolioSuppressed = suppressed.filter((d) => d.reason?.startsWith("portfolio:")).length;
   const dedupSuppressed = suppressed.length - portfolioSuppressed;
+  // Per-suppressed-item diagnostics: for every canonical candidate that did NOT emit,
+  // record ticker/direction/OCC + the prior state + the exact reason + whether a
+  // material change was detected. Makes "canonical but not emitted" fully explainable.
+  const suppressedItems: SuppressedCalloutItem[] = callouts
+    .map((c, i) => ({ c, d: decisions[i] }))
+    .filter((x) => !x.d.emit)
+    .map(({ c, d }): SuppressedCalloutItem => {
+      const prior = prev.get(c.key);
+      return {
+        key: c.key,
+        ticker: c.ticker,
+        direction: c.direction,
+        optionSymbol: c.contract?.optionSymbol ?? null,
+        status: c.status,
+        previousStatus: prior?.status ?? null,
+        previousEmitMs: prior?.lastEmitMs ?? null,
+        suppressionReason: d.reason,
+        materialChange: prior ? isMeaningfulTransition(prior.status, c.status) : true,
+      };
+    });
   const notActionableNow = bundles.filter((b) => b.deliveryStatus?.startsWith("skipped: not actionable-now")).length;
   const contractIncomplete = bundles.filter((b) => b.deliveryStatus?.startsWith("skipped: CONTRACT DATA INCOMPLETE")).length;
   const contractMismatch = bundles.filter((b) => b.deliveryStatus?.startsWith("skipped: contract identity mismatch")).length;
@@ -229,6 +268,8 @@ export async function buildCalloutsForTickers(
     chainsFailed: tickerResults.filter((r) => !r.ok).length,
     tickersWithCanonical,
     canonical: callouts.length,
+    actionable: review.actionableBeforeCollapse,
+    collapsed: review.collapsedCount,
     portfolioSuppressed,
     dedupSuppressed,
     emitted: emittedCount,
@@ -258,6 +299,7 @@ export async function buildCalloutsForTickers(
       durationMs: Date.now() - runStarted,
     },
     funnel,
+    suppressedItems: suppressedItems.slice(0, 100),
     note: autoSend
       ? "Supervisor is the canonical Discord path — emitted callouts deliver through the tracked ledger."
       : "Supervisor Discord delivery OFF (set CALLOUT_CANONICAL_PATH=supervisor and AGENT_CALLOUT_DISCORD=1). Desktop is the active channel; payloads are preview-ready.",

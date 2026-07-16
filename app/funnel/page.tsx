@@ -20,12 +20,14 @@ type StockFunnel = {
   fastMoverPass: number; classifications: Record<string, number>;
   topRejections: Rejection[]; actionableReady: boolean; premarketReady: boolean; blockedBy: string[];
 };
+type SuppressedItem = { ticker: string; direction: string; optionSymbol: string | null; status: string; previousStatus: string | null; suppressionReason: string; materialChange: boolean };
 type OptionsFunnel = {
   lastCycleAtMs: number | null; underlyingsEvaluated: number; chainsOk: number; chainsFailed: number;
-  tickersWithCanonical: number; canonical: number; emitted: number; delivered: number;
+  tickersWithCanonical: number; canonical: number; actionable: number; collapsed: number;
+  dedupSuppressed: number; portfolioSuppressed: number; emitted: number; delivered: number;
   notActionableNow: number; contractIncomplete: number; contractMismatch: number;
   selectedContracts: string[]; topReason: string | null; deliveryGateReason: string | null;
-  ready: boolean; blockedBy: string[];
+  ready: boolean; blockedBy: string[]; suppressedItems: SuppressedItem[];
 };
 type FunnelData = { ok: boolean; session: string; generatedAtMs: number; stock: StockFunnel; options: OptionsFunnel };
 
@@ -95,10 +97,14 @@ export default function FunnelPage() {
       <Panel title="Options funnel" meta={`last cycle ${ts(options?.lastCycleAtMs ?? null)}`}>
         {options ? (
           <>
+            {/* Full pipeline: canonical → actionable → collapsed → suppressed → emitted → delivered. */}
             <div className="axiom-stat-row">
-              <StatTile label="Underlyings evaluated" value={options.underlyingsEvaluated} hint="core + movers" />
-              <StatTile label="Chains OK" value={options.chainsOk} hint={`${options.chainsFailed} failed`} />
-              <StatTile label="Canonical contracts" value={options.canonical} hint={`${options.tickersWithCanonical} tickers`} />
+              <StatTile label="Underlyings evaluated" value={options.underlyingsEvaluated} hint={`${options.chainsOk} chains ok · ${options.chainsFailed} failed`} />
+              <StatTile label="Canonical" value={options.canonical} hint={`${options.tickersWithCanonical} tickers`} />
+              <StatTile label="Actionable" value={options.actionable} hint="ACTIONABLE_NOW (pre-collapse)" />
+              <StatTile label="Collapsed" value={options.collapsed} hint="best per ticker/direction" />
+              <StatTile label="Dedup suppressed" value={options.dedupSuppressed} hint="unchanged / not material" />
+              <StatTile label="Portfolio suppressed" value={options.portfolioSuppressed} hint="outside top-N by quality" />
               <StatTile label="Emitted" value={options.emitted} hint={`${options.notActionableNow} not actionable`} />
               <StatTile label="Delivered" value={options.delivered} hint="to Discord" />
             </div>
@@ -111,6 +117,23 @@ export default function FunnelPage() {
             {options.topReason ? <div style={{ marginTop: 8 }} className="axiom-sub">Top gate: {options.topReason}</div> : null}
             {options.deliveryGateReason ? <div style={{ marginTop: 8 }}><span className="axiom-badge warn">Delivery gate: {options.deliveryGateReason}</span></div> : null}
             <div style={{ marginTop: 12 }}>Options Discord <GateBadge ready={options.ready} blockedBy={options.blockedBy} /></div>
+            {options.suppressedItems?.length ? (
+              <div style={{ marginTop: 12, overflowX: "auto" }}>
+                <strong className="text-xs">Why each canonical candidate did not emit</strong>
+                <table className="text-xs" style={{ marginTop: 4, width: "100%", borderCollapse: "collapse" }}>
+                  <thead><tr style={{ textAlign: "left" }}><th>Ticker</th><th>Dir</th><th>Contract</th><th>Status</th><th>Prev</th><th>Material?</th><th>Reason</th></tr></thead>
+                  <tbody>
+                    {options.suppressedItems.slice(0, 30).map((it, i) => (
+                      <tr key={`${it.ticker}-${it.direction}-${i}`}>
+                        <td>{it.ticker}</td><td>{it.direction}</td><td>{it.optionSymbol ?? "—"}</td>
+                        <td>{it.status}</td><td>{it.previousStatus ?? "—"}</td><td>{it.materialChange ? "yes" : "no"}</td>
+                        <td>{it.suppressionReason}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
           </>
         ) : <span className="axiom-sub">loading…</span>}
       </Panel>

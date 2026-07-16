@@ -54,6 +54,11 @@ export interface OptionsFunnel {
   chainsFailed: number;
   tickersWithCanonical: number;
   canonical: number;
+  // Stage counts: canonical → actionable → collapsed → (dedup / portfolio suppressed) → emitted → delivered.
+  actionable: number;
+  collapsed: number;
+  dedupSuppressed: number;
+  portfolioSuppressed: number;
   emitted: number;
   delivered: number;
   notActionableNow: number;
@@ -64,6 +69,8 @@ export interface OptionsFunnel {
   deliveryGateReason: string | null;
   ready: boolean;
   blockedBy: string[];
+  /** Why each canonical candidate did not emit (bounded). */
+  suppressedItems: Array<{ ticker: string; direction: string; optionSymbol: string | null; status: string; previousStatus: string | null; suppressionReason: string; materialChange: boolean }>;
 }
 
 /** Rank the first-failing gate across rejected tape rows (the "why nothing fired" list). */
@@ -131,6 +138,10 @@ export interface OptionsTelemetryLike {
     chainsFailed: number;
     tickersWithCanonical: number;
     canonical: number;
+    actionable?: number;
+    collapsed?: number;
+    dedupSuppressed?: number;
+    portfolioSuppressed?: number;
     emitted: number;
     delivered: number;
     notActionableNow: number;
@@ -139,6 +150,7 @@ export interface OptionsTelemetryLike {
     topReason: string | null;
     deliveryGateReason: string | null;
   } | null;
+  lastSuppressedItems?: OptionsFunnel["suppressedItems"];
 }
 
 export function buildOptionsFunnel(
@@ -154,6 +166,10 @@ export function buildOptionsFunnel(
     chainsFailed: f?.chainsFailed ?? 0,
     tickersWithCanonical: f?.tickersWithCanonical ?? 0,
     canonical: f?.canonical ?? 0,
+    actionable: f?.actionable ?? 0,
+    collapsed: f?.collapsed ?? 0,
+    dedupSuppressed: f?.dedupSuppressed ?? 0,
+    portfolioSuppressed: f?.portfolioSuppressed ?? 0,
     emitted: f?.emitted ?? 0,
     delivered: f?.delivered ?? 0,
     notActionableNow: f?.notActionableNow ?? 0,
@@ -164,5 +180,6 @@ export function buildOptionsFunnel(
     deliveryGateReason: f?.deliveryGateReason ?? null,
     ready: optionsReadiness.ready,
     blockedBy: optionsReadiness.blockedBy,
+    suppressedItems: (telemetry.lastSuppressedItems ?? []).slice(0, 30),
   };
 }
