@@ -24,6 +24,23 @@ export interface AiCallInput {
   /** Optional Anthropic tool schema. When present, the model is forced to emit this tool input. */
   toolName?: string;
   toolInputSchema?: Record<string, unknown>;
+  validatorName?: string;
+  promptVersion?: string;
+}
+
+export interface AiParserOutput {
+  type: string;
+  keys: string[];
+  preview: string;
+}
+
+export interface AiSchemaViolation {
+  stage: string;
+  validatorName: string | null;
+  failingField: string | null;
+  expectedValue: string | null;
+  receivedValue: unknown;
+  message: string;
 }
 
 export interface AiProviderDiagnostics {
@@ -33,6 +50,17 @@ export interface AiProviderDiagnostics {
   markdownFenceStripped: boolean;
   extractedJson: boolean;
   validationErrors: string[];
+  validationStage: string | null;
+  validatorName: string | null;
+  failingField: string | null;
+  expectedValue: string | null;
+  receivedValue: unknown;
+  aiResponseLength: number | null;
+  parserOutput: AiParserOutput | null;
+  schemaViolations: AiSchemaViolation[];
+  retryCount: number;
+  providerModel: string | null;
+  promptVersion: string | null;
   parseError: string | null;
   stoppedEarly: boolean;
   attempts: number;
@@ -66,9 +94,96 @@ function emptyDiagnostics(): AiProviderDiagnostics {
     markdownFenceStripped: false,
     extractedJson: false,
     validationErrors: [],
+    validationStage: null,
+    validatorName: null,
+    failingField: null,
+    expectedValue: null,
+    receivedValue: null,
+    aiResponseLength: null,
+    parserOutput: null,
+    schemaViolations: [],
+    retryCount: 0,
+    providerModel: null,
+    promptVersion: null,
     parseError: null,
     stoppedEarly: false,
     attempts: 0,
+  };
+}
+
+function safePreview(value: unknown, max = 1200): string {
+  try {
+    return JSON.stringify(value).slice(0, max);
+  } catch {
+    return String(value).slice(0, max);
+  }
+}
+
+function valueAtPath(value: unknown, field: string | null): unknown {
+  if (!field) return null;
+  if (field === "root") return summarizeReceived(value);
+  const parts = field.replace(/\[(\d+)\]/g, ".$1").split(".").filter(Boolean);
+  let cur: any = value;
+  for (const part of parts) {
+    if (cur == null) return null;
+    cur = cur[part];
+  }
+  return summarizeReceived(cur);
+}
+
+function summarizeReceived(value: unknown): unknown {
+  if (value == null) return value;
+  if (Array.isArray(value)) return { type: "array", length: value.length, preview: safePreview(value, 300) };
+  if (typeof value === "object") return { type: "object", keys: Object.keys(value as Record<string, unknown>).slice(0, 20), preview: safePreview(value, 300) };
+  if (typeof value === "string") return value.slice(0, 300);
+  return value;
+}
+
+function parserOutput(json: unknown): AiParserOutput {
+  return {
+    type: Array.isArray(json) ? "array" : json == null ? "null" : typeof json,
+    keys: json && typeof json === "object" && !Array.isArray(json) ? Object.keys(json as Record<string, unknown>).slice(0, 30) : [],
+    preview: safePreview(json),
+  };
+}
+
+function fieldFromValidationMessage(message: string): string | null {
+  const proposal = /proposal\[(\d+)\]\.field '([^']+)'/i.exec(message);
+  if (proposal) return `proposals[${proposal[1]}].${proposal[2]}`;
+  const field = /field '([^']+)'/i.exec(message);
+  if (field) return field[1];
+  const proposalObject = /proposal\[(\d+)\] must be an object/i.exec(message);
+  if (proposalObject) return `proposals[${proposalObject[1]}]`;
+  if (/weekly proposals must be an array/i.test(message)) return "root";
+  if (/narrative contains a number/i.test(message)) return "antiFabricationNumbers";
+  return null;
+}
+
+function expectedFromValidationMessage(message: string): string | null {
+  if (/must be a non-empty string/i.test(message)) return "non-empty string";
+  if (/must be an array/i.test(message)) return "array";
+  if (/must be an object/i.test(message)) return "object";
+  if (/weekly proposals must be an array/i.test(message)) return "array or object with proposals array";
+  if (/narrative contains a number/i.test(message)) return "every number must already appear in the deterministic summary";
+  return null;
+}
+
+function receivedFromValidationMessage(message: string, json: unknown, field: string | null): unknown {
+  const fabricated = /number not present in the deterministic summary: ([^ ]+)/i.exec(message);
+  if (fabricated) return fabricated[1];
+  return valueAtPath(json, field);
+}
+
+function validationViolation(input: AiCallInput, json: unknown, message: string): AiSchemaViolation {
+  const field = fieldFromValidationMessage(message);
+  const stage = /narrative contains a number/i.test(message) ? "anti_fabrication" : "schema";
+  return {
+    stage,
+    validatorName: input.validatorName ?? null,
+    failingField: field,
+    expectedValue: expectedFromValidationMessage(message),
+    receivedValue: receivedFromValidationMessage(message, json, field),
+    message: message.slice(0, 500),
   };
 }
 
@@ -212,6 +327,9 @@ export async function runStructuredAiJob<T>(
   const attempts = Math.max(1, input.maxRetries + 1);
   const validationAttempts = Math.min(attempts, 2);
   const diagnostics = emptyDiagnostics();
+  diagnostics.validatorName = input.validatorName ?? null;
+  diagnostics.providerModel = input.model;
+  diagnostics.promptVersion = input.promptVersion ?? null;
   let lastErr: string | null = null;
   let lastCategory: AiErrorCategory = "none";
   let inTok = 0;
@@ -228,17 +346,28 @@ export async function runStructuredAiJob<T>(
       inTok += inputTokens;
       outTok += outputTokens;
       lastText = text;
+      diagnostics.aiResponseLength = text.length;
 
       let data: T;
       try {
         const parsed = extractJsonWithMeta(text);
         diagnostics.markdownFenceStripped = diagnostics.markdownFenceStripped || parsed.markdownFenceStripped;
         diagnostics.extractedJson = diagnostics.extractedJson || parsed.extractedJson;
+        diagnostics.parserOutput = parserOutput(parsed.json);
         data = validate(parsed.json);
       } catch (verr: any) {
-        lastErr = `validation failed: ${verr?.message ?? verr}`;
+        const message = String(verr?.message ?? verr);
+        lastErr = `validation failed: ${message}`;
         lastCategory = "validation";
-        diagnostics.validationErrors.push(String(verr?.message ?? verr).slice(0, 300));
+        diagnostics.validationErrors.push(message.slice(0, 300));
+        let parsedJson: unknown = null;
+        try { parsedJson = extractJsonWithMeta(text).json; } catch { parsedJson = null; }
+        const violation = validationViolation(input, parsedJson, message);
+        diagnostics.validationStage = violation.stage;
+        diagnostics.failingField = violation.failingField;
+        diagnostics.expectedValue = violation.expectedValue;
+        diagnostics.receivedValue = violation.receivedValue;
+        diagnostics.schemaViolations.push(violation);
         if (attempt + 1 >= validationAttempts) {
           diagnostics.stoppedEarly = attempt + 1 < attempts;
           break;
@@ -248,7 +377,8 @@ export async function runStructuredAiJob<T>(
 
       return {
         ok: true, data, text, inputTokens, outputTokens,
-        retries: attempt, latencyMs: Date.now() - started, errorCategory: "none", error: null, diagnostics,
+        retries: attempt, latencyMs: Date.now() - started, errorCategory: "none", error: null,
+        diagnostics: { ...diagnostics, retryCount: attempt },
       };
     } catch (err: any) {
       lastErr = err?.message ?? String(err);
@@ -267,6 +397,7 @@ export async function runStructuredAiJob<T>(
     ok: false, data: null, text: lastText,
     inputTokens: inTok, outputTokens: outTok,
     retries: Math.max(0, diagnostics.attempts - 1), latencyMs: Date.now() - started,
-    errorCategory: lastCategory, error: lastErr, diagnostics,
+    errorCategory: lastCategory, error: lastErr,
+    diagnostics: { ...diagnostics, retryCount: Math.max(0, diagnostics.attempts - 1) },
   };
 }

@@ -133,6 +133,13 @@ test("manual retry uses the stored deterministic summary and records diagnostics
   assert.equal(first.narrativeStatus, "VALIDATION_FAILED");
   const rep = getReportOnDb(db, "nightly", DAY);
   assert.ok(rep.diagnostic.validationErrors.length >= 1);
+  assert.equal(rep.diagnostic.validatorName, "validateNightlyNarrative");
+  assert.equal(rep.diagnostic.promptVersion, "nightly-narration-v1");
+  assert.equal(rep.diagnostic.validationStage, "schema");
+  assert.ok(rep.diagnostic.failingField, "failed field is persisted");
+  assert.equal(typeof rep.diagnostic.aiResponseLength, "number");
+  assert.ok(rep.diagnostic.parserOutput, "parser output is persisted");
+  assert.ok(Array.isArray(rep.diagnostic.schemaViolations));
 
   const retry = await retryNightlyNarrative({ nowMs: NOW + 1000, periodKey: DAY, db, config: ENABLED, provider: okProvider() });
   assert.equal(retry.narrativeStatus, "OK");

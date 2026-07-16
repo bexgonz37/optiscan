@@ -5,6 +5,7 @@ import {
   insertReportOnDb, setReportNarrativeOnDb, getReportOnDb,
   upsertLessonOnDb, decideLessonOnDb, listLessonsOnDb,
   insertProposalOnDb, decideProposalOnDb, listProposalsOnDb, aiUsageOnDb,
+  recentJobFailuresOnDb,
 } from "../lib/ai/store.ts";
 
 let Database = null;
@@ -113,5 +114,36 @@ test("cost gate: hard limit blocks optional jobs; audit rows drive monthly spend
   const usage = aiUsageOnDb(db, monthKey(NOW));
   assert.equal(usage.totalRuns, 2);
   assert.equal(usage.byJobType.nightly_diagnosis.runs, 1);
+  db.close();
+});
+
+test("job failure diagnostics round-trip as structured dashboard data", { skip }, () => {
+  const db = freshDb();
+  recordAiJobRunOnDb(db, {
+    jobType: "nightly_diagnosis",
+    model: "claude-haiku-4-5",
+    status: "VALIDATION_FAILED",
+    errorCategory: "validation",
+    error: "validation failed: field 'whatHappened' must be a non-empty string",
+    retryCount: 1,
+    diagnostic: {
+      validationStage: "schema",
+      validatorName: "validateNightlyNarrative",
+      failingField: "whatHappened",
+      expectedValue: "non-empty string",
+      receivedValue: null,
+      aiResponseLength: 22,
+      parserOutput: { type: "object", keys: ["headline"], preview: "{\"headline\":\"bad\"}" },
+      schemaViolations: [{ stage: "schema", validatorName: "validateNightlyNarrative", failingField: "whatHappened", expectedValue: "non-empty string", receivedValue: null, message: "bad" }],
+      retryCount: 1,
+      providerModel: "claude-haiku-4-5",
+      promptVersion: "nightly-narration-v1",
+    },
+    nowMs: NOW,
+  });
+  const failures = recentJobFailuresOnDb(db, 5);
+  assert.equal(failures[0].diagnostic.validatorName, "validateNightlyNarrative");
+  assert.equal(failures[0].diagnostic.failingField, "whatHappened");
+  assert.equal(failures[0].diagnostic.parserOutput.type, "object");
   db.close();
 });

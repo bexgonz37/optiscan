@@ -70,13 +70,22 @@ test("malformed (non-JSON) response is rejected as a validation miss and retried
 
 test("validation failure is bounded by maxRetries", async () => {
   let calls = 0;
-  const res = await runStructuredAiJob({ ...BASE, maxRetries: 5 }, () => { throw new Error("always invalid"); }, {
+  const res = await runStructuredAiJob({ ...BASE, maxRetries: 5, validatorName: "validateNightlyNarrative", promptVersion: "nightly-narration-v1" }, () => { throw new Error("field 'whatHappened' must be a non-empty string"); }, {
     fetchImpl: async () => { calls++; return fakeFetch(JSON.stringify({ x: 1 }))(); }, env: KEY_ENV,
   });
   assert.equal(res.ok, false);
   assert.equal(calls, 2, "schema failures get one bounded retry, not the full transient retry budget");
   assert.equal(res.errorCategory, "validation");
   assert.equal(res.diagnostics.validationErrors.length, 2);
+  assert.equal(res.diagnostics.validatorName, "validateNightlyNarrative");
+  assert.equal(res.diagnostics.promptVersion, "nightly-narration-v1");
+  assert.equal(res.diagnostics.validationStage, "schema");
+  assert.equal(res.diagnostics.failingField, "whatHappened");
+  assert.equal(res.diagnostics.expectedValue, "non-empty string");
+  assert.equal(res.diagnostics.aiResponseLength > 0, true);
+  assert.equal(res.diagnostics.parserOutput.type, "object");
+  assert.equal(res.diagnostics.schemaViolations[0].validatorName, "validateNightlyNarrative");
+  assert.equal(res.diagnostics.retryCount, 1);
   assert.equal(res.diagnostics.stoppedEarly, true);
 });
 

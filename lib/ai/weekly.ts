@@ -13,7 +13,7 @@ import { aiConfig, type AiConfig } from "./config.ts";
 import { buildNightlySummary, type NightlySummary } from "./nightly-summary.ts";
 import { isoWeekKey } from "./schedule.ts";
 import { recentTradingDays, gatherOutcomesForDays, gatherCandidatesForDays } from "./queries.ts";
-import { weeklyProposalPrompt } from "./prompts.ts";
+import { WEEKLY_PROPOSAL_PROMPT_VERSION, weeklyProposalPrompt } from "./prompts.ts";
 import { weeklyQuantResearchContext } from "./quant-research.ts";
 import { PRIMARY_PORTFOLIO, CHALLENGE_PORTFOLIO, STOCK_DAY_TRADER_PORTFOLIO } from "../paper-challenge.ts";
 import { validateWeeklyProposals, type WeeklyProposalDraft } from "./schemas.ts";
@@ -22,7 +22,7 @@ import { runStructuredAiJob, type ProviderDeps } from "./provider.ts";
 import { estimateCostUsd } from "./pricing.ts";
 import {
   insertReportOnDb, insertProposalOnDb, listReportsOnDb, listLessonsOnDb, listProposalsOnDb,
-  recordAiJobRunOnDb, costGateOnDb, type DbLike,
+  recordAiJobRunOnDb, setReportNarrativeOnDb, costGateOnDb, type DbLike,
 } from "./store.ts";
 
 function lazyDb(): DbLike {
@@ -65,6 +65,34 @@ function currentStrategyVersion(db: DbLike): string | null {
     const r = db.prepare("SELECT name, version FROM strategy_versions ORDER BY id DESC LIMIT 1").get() as any;
     return r ? `${r.name} ${r.version}` : null;
   } catch { return null; }
+}
+
+function aiFailureDiagnostic(call: Awaited<ReturnType<typeof runStructuredAiJob<WeeklyProposalDraft[]>>>) {
+  return {
+    provider: "anthropic",
+    httpStatus: call.diagnostics.httpStatus,
+    responseType: call.diagnostics.responseType,
+    contentTypes: call.diagnostics.contentTypes,
+    markdownFenceStripped: call.diagnostics.markdownFenceStripped,
+    extractedJson: call.diagnostics.extractedJson,
+    validationErrors: call.diagnostics.validationErrors.slice(0, 5),
+    validationStage: call.diagnostics.validationStage,
+    validatorName: call.diagnostics.validatorName,
+    failingField: call.diagnostics.failingField,
+    expectedValue: call.diagnostics.expectedValue,
+    receivedValue: call.diagnostics.receivedValue,
+    aiResponseLength: call.diagnostics.aiResponseLength,
+    parserOutput: call.diagnostics.parserOutput,
+    schemaViolations: call.diagnostics.schemaViolations.slice(0, 10),
+    retryCount: call.diagnostics.retryCount,
+    providerModel: call.diagnostics.providerModel,
+    promptVersion: call.diagnostics.promptVersion,
+    parseError: call.diagnostics.parseError,
+    stoppedEarly: call.diagnostics.stoppedEarly,
+    attempts: call.diagnostics.attempts,
+    errorCategory: call.errorCategory,
+    error: call.error,
+  };
 }
 
 function weeklyQuantMetrics(input: {
@@ -180,12 +208,16 @@ export async function runWeeklyProposals(opts: WeeklyJobOptions = {}): Promise<W
   if (!created) return { ...result, narrativeStatus: report.narrativeStatus, skippedReason: "already ran for this week" };
 
   if (!cfg.weeklyProposalsEnabled) {
-    recordAiJobRunOnDb(db, { jobType: "weekly_proposals", model: cfg.weeklyModel, status: "SKIPPED_DISABLED", errorCategory: "disabled", nowMs });
+    const diagnostic = { reason: "AI weekly proposals disabled or API key missing", flags: { enabled: cfg.enabled, hasApiKey: cfg.hasApiKey, weeklyProposalsEnabled: cfg.weeklyProposalsEnabled } };
+    const jobRunId = recordAiJobRunOnDb(db, { jobType: "weekly_proposals", model: cfg.weeklyModel, status: "SKIPPED_DISABLED", errorCategory: "disabled", diagnostic, nowMs });
+    setReportNarrativeOnDb(db, report.id, { narrative: null, status: "SKIPPED", model: cfg.weeklyModel, aiJobRunId: jobRunId, diagnostic, nowMs });
     return { ...result, narrativeStatus: "SKIPPED" };
   }
   const gate = costGateOnDb(db, cfg, nowMs);
   if (!gate.allowed) {
-    recordAiJobRunOnDb(db, { jobType: "weekly_proposals", model: cfg.weeklyModel, status: "SKIPPED_HARD_LIMIT", errorCategory: "budget", error: `monthly hard limit reached ($${gate.spendUsd.toFixed(2)})`, nowMs });
+    const diagnostic = { reason: "monthly hard limit reached", spendUsd: gate.spendUsd, hardLimitUsd: gate.hardLimitUsd };
+    const jobRunId = recordAiJobRunOnDb(db, { jobType: "weekly_proposals", model: cfg.weeklyModel, status: "SKIPPED_HARD_LIMIT", errorCategory: "budget", error: `monthly hard limit reached ($${gate.spendUsd.toFixed(2)})`, diagnostic, nowMs });
+    setReportNarrativeOnDb(db, report.id, { narrative: null, status: "SKIPPED", model: cfg.weeklyModel, aiJobRunId: jobRunId, diagnostic, nowMs });
     return { ...result, narrativeStatus: "SKIPPED" };
   }
 
@@ -205,25 +237,38 @@ export async function runWeeklyProposals(opts: WeeklyJobOptions = {}): Promise<W
   });
 
   const call = await runStructuredAiJob<WeeklyProposalDraft[]>(
-    { model: cfg.weeklyModel, system, user, maxOutputTokens: cfg.maxOutputTokensPerJob, timeoutMs: cfg.jobTimeoutMs, maxRetries: cfg.maxRetries },
+    {
+      model: cfg.weeklyModel,
+      system,
+      user,
+      maxOutputTokens: cfg.maxOutputTokensPerJob,
+      timeoutMs: cfg.jobTimeoutMs,
+      maxRetries: cfg.maxRetries,
+      validatorName: "validateWeeklyProposals",
+      promptVersion: WEEKLY_PROPOSAL_PROMPT_VERSION,
+    },
     (json) => validateWeeklyProposals(json),
     opts.provider,
   );
   const costUsd = estimateCostUsd(cfg.weeklyModel, call.inputTokens, call.outputTokens);
   result.costUsd = costUsd;
-  recordAiJobRunOnDb(db, {
+  const diagnostic = call.ok ? null : aiFailureDiagnostic(call);
+  const status = call.ok ? "SUCCESS" : call.errorCategory === "timeout" ? "TIMEOUT" : call.errorCategory === "validation" ? "VALIDATION_FAILED" : "ERROR";
+  const jobRunId = recordAiJobRunOnDb(db, {
     jobType: "weekly_proposals", model: cfg.weeklyModel,
-    status: call.ok ? "SUCCESS" : call.errorCategory === "timeout" ? "TIMEOUT" : call.errorCategory === "validation" ? "VALIDATION_FAILED" : "ERROR",
+    status,
     errorCategory: call.ok ? "none" : call.errorCategory, error: call.error,
     inputTokens: call.inputTokens, outputTokens: call.outputTokens, estimatedCostUsd: costUsd,
-    latencyMs: call.latencyMs, retryCount: call.retries, nowMs,
+    latencyMs: call.latencyMs, retryCount: call.retries, diagnostic, nowMs,
   });
 
   if (!call.ok || !call.data) {
     result.narrativeStatus = call.errorCategory === "validation" ? "VALIDATION_FAILED" : "ERROR";
+    setReportNarrativeOnDb(db, report.id, { narrative: null, status: result.narrativeStatus, model: cfg.weeklyModel, aiJobRunId: jobRunId, diagnostic, nowMs });
     return result;
   }
   result.narrativeStatus = "OK";
+  setReportNarrativeOnDb(db, report.id, { narrative: { proposals: call.data.length }, status: "OK", model: cfg.weeklyModel, aiJobRunId: jobRunId, diagnostic: null, nowMs });
 
   // 3. Store each proposal — after a HARD safety screen. Nothing is applied.
   for (const draft of call.data) {

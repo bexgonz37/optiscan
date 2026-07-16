@@ -10,7 +10,7 @@ import { aiConfig, type AiConfig } from "./config.ts";
 import { buildNightlySummary, type NightlySummary } from "./nightly-summary.ts";
 import { deriveCandidateLessons } from "./lessons.ts";
 import { gatherOutcomesForDay, gatherCandidatesForDay, gatherLiveInstrumentation, gatherMomentumDigestForDay, gatherOptionsDigestForDay } from "./queries.ts";
-import { nightlyNarrationPrompt } from "./prompts.ts";
+import { NIGHTLY_NARRATION_PROMPT_VERSION, nightlyNarrationPrompt } from "./prompts.ts";
 import { NIGHTLY_NARRATIVE_TOOL_SCHEMA, validateNightlyNarrative, type NightlyNarrative } from "./schemas.ts";
 import { runStructuredAiJob, type ProviderDeps } from "./provider.ts";
 import { estimateCostUsd } from "./pricing.ts";
@@ -57,6 +57,17 @@ function aiFailureDiagnostic(call: Awaited<ReturnType<typeof runStructuredAiJob<
     markdownFenceStripped: call.diagnostics.markdownFenceStripped,
     extractedJson: call.diagnostics.extractedJson,
     validationErrors: call.diagnostics.validationErrors.slice(0, 5),
+    validationStage: call.diagnostics.validationStage,
+    validatorName: call.diagnostics.validatorName,
+    failingField: call.diagnostics.failingField,
+    expectedValue: call.diagnostics.expectedValue,
+    receivedValue: call.diagnostics.receivedValue,
+    aiResponseLength: call.diagnostics.aiResponseLength,
+    parserOutput: call.diagnostics.parserOutput,
+    schemaViolations: call.diagnostics.schemaViolations.slice(0, 10),
+    retryCount: call.diagnostics.retryCount,
+    providerModel: call.diagnostics.providerModel,
+    promptVersion: call.diagnostics.promptVersion,
     parseError: call.diagnostics.parseError,
     stoppedEarly: call.diagnostics.stoppedEarly,
     attempts: call.diagnostics.attempts,
@@ -106,6 +117,8 @@ async function narrateStoredNightlyReport(
       maxRetries: cfg.maxRetries,
       toolName: "nightly_narrative",
       toolInputSchema: NIGHTLY_NARRATIVE_TOOL_SCHEMA as unknown as Record<string, unknown>,
+      validatorName: "validateNightlyNarrative",
+      promptVersion: NIGHTLY_NARRATION_PROMPT_VERSION,
     },
     (json) => validateNightlyNarrative(json, report.summary),
     opts.provider,

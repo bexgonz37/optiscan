@@ -8,6 +8,9 @@ import type { NightlySummary } from "./nightly-summary.ts";
 
 export interface Prompt { system: string; user: string; }
 
+export const NIGHTLY_NARRATION_PROMPT_VERSION = "nightly-narration-v1";
+export const WEEKLY_PROPOSAL_PROMPT_VERSION = "weekly-proposals-v1";
+
 const SAFETY = [
   "You are an OFFLINE advisory analyst for a deterministic options scanner.",
   "You never make trade decisions and never touch the live signal path.",

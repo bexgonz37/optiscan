@@ -35,6 +35,53 @@ const fmtTime = (ms?: number | null) =>
   ms ? new Date(ms).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) + " ET" : "—";
 const fmtNum = (n?: number | null) => (typeof n === "number" ? n.toLocaleString() : "—");
 
+const fmtDiag = (v: any) => {
+  if (v == null || v === "") return "n/a";
+  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return String(v);
+  try { return JSON.stringify(v); } catch { return String(v); }
+};
+
+function ValidationDetails({ diagnostic, summary }: { diagnostic: any; summary: string }) {
+  if (!diagnostic) return null;
+  const violations = Array.isArray(diagnostic.schemaViolations) ? diagnostic.schemaViolations : [];
+  return (
+    <DetailsDisclosure summary={summary}>
+      <ResponsiveGrid min={180}>
+        <KeyValue k="Stage" v={diagnostic.validationStage ?? "n/a"} />
+        <KeyValue k="Validator" v={diagnostic.validatorName ?? "n/a"} />
+        <KeyValue k="Field" v={diagnostic.failingField ?? "n/a"} />
+        <KeyValue k="Expected" v={diagnostic.expectedValue ?? "n/a"} />
+        <KeyValue k="Received" v={fmtDiag(diagnostic.receivedValue)} />
+        <KeyValue k="Response length" v={diagnostic.aiResponseLength ?? "n/a"} />
+        <KeyValue k="Retries" v={diagnostic.retryCount ?? diagnostic.attempts ?? "n/a"} />
+        <KeyValue k="Model" v={diagnostic.providerModel ?? diagnostic.model ?? "n/a"} />
+        <KeyValue k="Prompt" v={diagnostic.promptVersion ?? "n/a"} />
+        <KeyValue k="Response type" v={diagnostic.responseType ?? "n/a"} />
+        <KeyValue k="Attempts" v={diagnostic.attempts ?? "n/a"} />
+        <KeyValue k="Stopped early" v={diagnostic.stoppedEarly ? "yes" : "no"} tone={diagnostic.stoppedEarly ? "warn" : "muted"} />
+      </ResponsiveGrid>
+      {diagnostic.parserOutput && (
+        <div style={{ marginTop: 8 }}>
+          <p style={{ fontSize: 12, opacity: 0.7, margin: "4px 0" }}>Parser output</p>
+          <pre style={{ whiteSpace: "pre-wrap", fontSize: 11, margin: 0 }}>{fmtDiag(diagnostic.parserOutput)}</pre>
+        </div>
+      )}
+      {violations.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <p style={{ fontSize: 12, opacity: 0.7, margin: "4px 0" }}>Schema violations</p>
+          {violations.map((v: any, i: number) => <pre key={i} style={{ whiteSpace: "pre-wrap", fontSize: 11, margin: "2px 0" }}>{fmtDiag(v)}</pre>)}
+        </div>
+      )}
+      {Array.isArray(diagnostic.validationErrors) && diagnostic.validationErrors.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          {diagnostic.validationErrors.map((s: string, i: number) => <p key={i} style={{ fontSize: 12, margin: "2px 0" }}>{s}</p>)}
+        </div>
+      )}
+      {diagnostic.parseError && <p style={{ fontSize: 12, margin: "6px 0 0" }}>{diagnostic.parseError}</p>}
+    </DetailsDisclosure>
+  );
+}
+
 export default function AiLabPage() {
   const [ov, setOv] = useState<Overview | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -124,6 +171,9 @@ export default function AiLabPage() {
     { key: "status", header: "Status", render: (f) => <StatusBadge tone="bear">{f.status}</StatusBadge> },
     { key: "cat", header: "Category", render: (f) => f.error_category ?? "—" },
     { key: "err", header: "Error", render: (f) => <span style={{ fontSize: 12, opacity: 0.85 }}>{f.error ?? "—"}</span> },
+    { key: "validator", header: "Validator", render: (f) => f.diagnostic?.validatorName ?? "n/a" },
+    { key: "field", header: "Field", render: (f) => f.diagnostic?.failingField ?? "n/a" },
+    { key: "details", header: "Details", render: (f) => <ValidationDetails diagnostic={f.diagnostic} summary="Validation diagnostic" /> },
     { key: "at", header: "When", render: (f) => fmtTime(f.created_at_ms) },
   ];
 
@@ -224,6 +274,7 @@ export default function AiLabPage() {
                 {diagnostic.parseError && <p style={{ fontSize: 12, margin: "6px 0 0" }}>{diagnostic.parseError}</p>}
               </DetailsDisclosure>
             )}
+            <ValidationDetails diagnostic={diagnostic} summary="Structured validation diagnostic" />
             {Array.isArray(nightly.summary?.patterns) && nightly.summary.patterns.length > 0 && (
               <DetailsDisclosure summary="Deterministic patterns">
                 {nightly.summary.patterns.map((s: string, i: number) => <p key={i} style={{ fontSize: 12, margin: "2px 0" }}>• {s}</p>)}
@@ -242,6 +293,7 @@ export default function AiLabPage() {
               <KeyValue k="Narrative" v={latestWeekly.narrativeStatus} />
               <KeyValue k="Created" v={fmtTime(latestWeekly.createdAtMs)} />
               {latestWeekly.narrative?.headline && <p style={{ fontSize: 13, marginTop: 6 }}>{latestWeekly.narrative.headline}</p>}
+              <ValidationDetails diagnostic={latestWeekly.diagnostic} summary="Weekly failure details" />
             </>
           )}
         </Card>

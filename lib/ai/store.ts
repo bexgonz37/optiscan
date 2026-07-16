@@ -11,6 +11,21 @@
 import { tradingDay } from "../trading-session.ts";
 import type { AiConfig } from "./config.ts";
 
+const DIAGNOSTIC_JSON_MAX = 20_000;
+
+function encodeDiagnostic(diagnostic: unknown): string | null {
+  if (diagnostic == null) return null;
+  try {
+    return JSON.stringify(diagnostic).slice(0, DIAGNOSTIC_JSON_MAX);
+  } catch {
+    return JSON.stringify({ serializationError: "diagnostic was not JSON serializable" });
+  }
+}
+
+function parseJson(s: any) {
+  try { return s ? JSON.parse(s) : null; } catch { return null; }
+}
+
 export type DbLike = {
   prepare: (sql: string) => {
     get: (...a: any[]) => any;
@@ -52,7 +67,7 @@ export function recordAiJobRunOnDb(db: DbLike, r: AiJobRunInput): number {
     r.jobType, r.model ?? null, r.status, r.errorCategory ?? null, (r.error ?? null) && String(r.error).slice(0, 500),
     Math.max(0, Math.floor(r.inputTokens ?? 0)), Math.max(0, Math.floor(r.outputTokens ?? 0)),
     Math.max(0, r.estimatedCostUsd ?? 0), Math.max(0, Math.floor(r.latencyMs ?? 0)),
-    Math.max(0, Math.floor(r.retryCount ?? 0)), r.diagnostic == null ? null : JSON.stringify(r.diagnostic).slice(0, 4000),
+    Math.max(0, Math.floor(r.retryCount ?? 0)), encodeDiagnostic(r.diagnostic),
     monthKey(nowMs), nowMs,
   );
   return Number(info.lastInsertRowid);
@@ -122,10 +137,11 @@ export function aiUsageOnDb(db: DbLike, mk: string = monthKey()): AiUsage {
 
 /** Recent AI job failures (for the ops surface). */
 export function recentJobFailuresOnDb(db: DbLike, limit = 20): any[] {
-  return db.prepare(
+  const rows = db.prepare(
     `SELECT id, job_type, model, status, error_category, error, diagnostic_json, retry_count, latency_ms, created_at_ms
        FROM ai_job_runs WHERE status NOT IN ('SUCCESS') ORDER BY created_at_ms DESC LIMIT ?`,
   ).all(limit) as any[];
+  return rows.map((r) => ({ ...r, diagnostic: parseJson(r.diagnostic_json) }));
 }
 
 export interface AiJobRunStats {
@@ -178,13 +194,12 @@ export interface AiReportRow {
 }
 
 function mapReport(r: any): AiReportRow {
-  const parse = (s: any) => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
   return {
     id: r.id, reportType: r.report_type, periodKey: r.period_key,
     periodStartMs: r.period_start_ms ?? null, periodEndMs: r.period_end_ms ?? null,
-    summary: parse(r.summary_json), narrative: parse(r.narrative_json),
+    summary: parseJson(r.summary_json), narrative: parseJson(r.narrative_json),
     narrativeStatus: r.narrative_status, model: r.model ?? null,
-    diagnostic: parse(r.diagnostic_json),
+    diagnostic: parseJson(r.diagnostic_json),
     aiJobRunId: r.ai_job_run_id ?? null,
     createdAtMs: r.created_at_ms, updatedAtMs: r.updated_at_ms,
   };
@@ -227,7 +242,7 @@ export function setReportNarrativeOnDb(
   ).run(
     input.narrative == null ? null : JSON.stringify(input.narrative),
     input.status, input.model ?? null, input.aiJobRunId ?? null,
-    input.diagnostic == null ? null : JSON.stringify(input.diagnostic).slice(0, 4000),
+    encodeDiagnostic(input.diagnostic),
     nowMs, reportId,
   );
 }
