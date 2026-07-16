@@ -17,7 +17,7 @@
 import { buildCalloutsForTickers, type CalloutFunnel } from "@/lib/callouts/runtime";
 import { getZeroDteUniverse } from "@/lib/universe.js";
 import { loopState } from "@/lib/scanner-loop";
-import { buildCycleUniverse, DEFAULT_SUPERVISOR_CORE_TICKERS } from "@/lib/supervisor-universe";
+import { buildCycleUniverse, DEFAULT_SUPERVISOR_CORE_TICKERS, parseTickerList } from "@/lib/supervisor-universe";
 import { recordOptionsDiagnostic } from "@/lib/options-diagnostics";
 import { marketSession } from "@/lib/trading-session";
 
@@ -98,8 +98,14 @@ function dynamicCandidates(env: NodeJS.ProcessEnv): string[] {
  * remaining slots up to SUPERVISOR_MAX_TICKERS. See `buildCycleUniverse`.
  */
 export function cycleUniverse(env: NodeJS.ProcessEnv = process.env): string[] {
-  const cap = Math.max(1, Math.min(50, Number(env.SUPERVISOR_MAX_TICKERS ?? 14) || 14));
+  const configuredCap = Math.max(1, Math.min(50, Number(env.SUPERVISOR_MAX_TICKERS ?? 14) || 14));
   const coreCsv = env.OWNER_CORE_TICKERS ?? env.SUPERVISOR_CORE_TICKERS ?? DEFAULT_SUPERVISOR_CORE_TICKERS;
+  // The core options universe must be evaluated CONTINUOUSLY and in FULL every
+  // cycle — it is independent of the broad stock-momentum scanner and must never
+  // be starved by a low SUPERVISOR_MAX_TICKERS. Raise the effective cap to fit
+  // the whole core set (still clamped to 50); dynamic movers use any slack above.
+  const coreCount = parseTickerList(coreCsv).length;
+  const cap = Math.min(50, Math.max(configuredCap, coreCount));
   return buildCycleUniverse(coreCsv, dynamicCandidates(env), cap, { rotationOffset: telemetry().cycles });
 }
 
