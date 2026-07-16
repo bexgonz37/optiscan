@@ -15,6 +15,7 @@ const num = (v: string | undefined, d: number): number => (Number.isFinite(Numbe
 
 export const CHALLENGE_PORTFOLIO = "CHALLENGE";
 export const PRIMARY_PORTFOLIO = "PRIMARY";
+export const STOCK_DAY_TRADER_PORTFOLIO = "STOCK_DAY_TRADER";
 
 export type ChallengeStatus = "ACTIVE" | "TARGET_REACHED" | "FAILED";
 

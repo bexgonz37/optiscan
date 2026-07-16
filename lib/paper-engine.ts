@@ -24,7 +24,7 @@ import { checkRisk, defaultRiskConfig, type ProposedTrade, type RiskConfig, type
 import { dollarsAtRisk } from "@/lib/paper-trading";
 import { paperExperimentalOversize, paperMinPositionDollars, paperTargetProfitDollars, unitsForDollarExposure } from "@/lib/paper-sizing";
 import { paperSizingConfig, sizePosition, type PaperSizingConfig, type SizingResult } from "@/lib/paper-position-sizer";
-import { challengeConfig, challengeAcceptsEntries, CHALLENGE_PORTFOLIO, PRIMARY_PORTFOLIO } from "@/lib/paper-challenge";
+import { challengeConfig, challengeAcceptsEntries, CHALLENGE_PORTFOLIO, PRIMARY_PORTFOLIO, STOCK_DAY_TRADER_PORTFOLIO } from "@/lib/paper-challenge";
 import { actionableFreshness } from "@/lib/data-freshness";
 import type { OptionQuote } from "@/lib/execution/broker";
 import { revalidateContract, type AlertTimeContract, type RevalidationResult } from "@/lib/paper-revalidation";
@@ -561,9 +561,9 @@ export function riskContext(portfolio: string = PRIMARY_PORTFOLIO): RiskContext 
 
 /** Starting balance for a portfolio (Challenge has its own independent stake). */
 function startingBalanceFor(portfolio: string): number {
-  return portfolio === CHALLENGE_PORTFOLIO
-    ? challengeConfig().startingBalanceUsd
-    : defaultCapitalConfig().startingBalance;
+  if (portfolio === CHALLENGE_PORTFOLIO) return challengeConfig().startingBalanceUsd;
+  if (portfolio === STOCK_DAY_TRADER_PORTFOLIO) return Number(process.env.PAPER_STOCK_DAY_STARTING_BALANCE_USD ?? 10_000);
+  return defaultCapitalConfig().startingBalance;
 }
 
 /** Capital context from open positions + realized P/L, scoped per portfolio. */
@@ -676,7 +676,12 @@ export function createPaperTrade(input: CreatePaperTradeInput): CreateResult {
   const rc = riskContext(portfolio);
   const cc = capitalContext(Date.now(), portfolio);
   const sizingCfg = portfolio === CHALLENGE_PORTFOLIO
-    ? paperSizingConfig({ ...process.env, PAPER_RISK_PROFILE: challengeConfig().riskProfile })
+    ? paperSizingConfig({
+      ...process.env,
+      PAPER_RISK_PROFILE: challengeConfig().riskProfile,
+      PAPER_MAX_POSITION_PCT: process.env.PAPER_CHALLENGE_MAX_POSITION_PCT ?? "60",
+      PAPER_MAX_TOTAL_EXPOSURE_PCT: process.env.PAPER_CHALLENGE_MAX_TOTAL_EXPOSURE_PCT ?? process.env.PAPER_MAX_TOTAL_EXPOSURE_PCT ?? "60",
+    })
     : paperSizingConfig();
   let sizingResult: SizingResult | null = null;
   let contracts = base.contracts;
@@ -1291,9 +1296,9 @@ const STOCK_STRATEGY = "momentum_stock";
 /** Terminal refusal marker keyed to the alert (blocks re-evaluation), with events. */
 function markStockRefused(a: any, side: "call" | "put", shares: number, reason: string, nowMs: number): void {
   const info = getDb().prepare(
-    `INSERT INTO paper_trades (alert_id, ticker, option_type, contracts, status, order_state, strategy, exit_reason, close_reason, created_at_ms)
-     VALUES (?,?,?,?, 'CANCELLED', 'REJECTED', ?, ?, ?, ?)`,
-  ).run(a.id, a.ticker, side, shares, STOCK_STRATEGY, reason, reason, nowMs);
+    `INSERT INTO paper_trades (alert_id, ticker, option_type, contracts, status, order_state, strategy, exit_reason, close_reason, created_at_ms, portfolio)
+     VALUES (?,?,?,?, 'CANCELLED', 'REJECTED', ?, ?, ?, ?, ?)`,
+  ).run(a.id, a.ticker, side, shares, STOCK_STRATEGY, reason, reason, nowMs, STOCK_DAY_TRADER_PORTFOLIO);
   emitEvents(Number(info.lastInsertRowid), a.id, a.ticker, ["candidate_created", "rejected"], { toState: "REJECTED", reason, nowMs });
 }
 
@@ -1351,10 +1356,12 @@ export function autoEnterStockScalps(nowMs: number = Date.now()): number {
       markStockRefused(a, side, 0, "stock scalp refused: 0 shares within risk caps", nowMs);
       continue;
     }
-    const stockSizingCfg = paperSizingConfig();
-    const stockEquity = capitalContext().equityDollars;
+    const stockSizingCfg = paperSizingConfig({ ...process.env, PAPER_STARTING_BALANCE_USD: process.env.PAPER_STOCK_DAY_STARTING_BALANCE_USD ?? "10000" });
+    const stockCapital = capitalContext(nowMs, STOCK_DAY_TRADER_PORTFOLIO);
+    const stockRisk = riskContext(STOCK_DAY_TRADER_PORTFOLIO);
+    const stockEquity = stockCapital.equityDollars;
     const proposed: ProposedTrade = { ticker: a.ticker, optionType: side, dte: null, entryLimit: refPrice, contracts: shares, stopLossPct: STOCK_SCALP_STOP_PCT, assetClass: "stock" };
-    const risk = checkRisk(proposed, riskContext(), riskConfigForProfile(proposed, stockEquity, stockSizingCfg));
+    const risk = checkRisk(proposed, stockRisk, riskConfigForProfile(proposed, stockEquity, stockSizingCfg));
     if (!risk.allowed) {
       logDecision({ alertId: a.id, ticker: a.ticker, decision: "risk_refused", allowed: false, reason: risk.failures.join("; "), risk, snapshot: proposed, nowMs });
       markStockRefused(a, side, shares, `stock scalp refused: ${risk.failures.join("; ")}`, nowMs);
@@ -1362,7 +1369,7 @@ export function autoEnterStockScalps(nowMs: number = Date.now()): number {
     }
 
     // Capital / buying-power gate (rebuild) — composed with the risk engine.
-    const capital = checkCapital({ ticker: a.ticker, optionSymbol: null, strategy: STOCK_STRATEGY, costDollars: refPrice * shares, units: shares }, capitalContext(), capitalConfigForProfile(stockEquity, stockSizingCfg));
+    const capital = checkCapital({ ticker: a.ticker, optionSymbol: null, strategy: STOCK_STRATEGY, costDollars: refPrice * shares, units: shares }, stockCapital, capitalConfigForProfile(stockEquity, stockSizingCfg));
     if (!capital.allowed) {
       logDecision({ alertId: a.id, ticker: a.ticker, decision: "capital_refused", allowed: false, reason: capital.failures.join("; "), snapshot: { costDollars: refPrice * shares }, nowMs });
       markStockRefused(a, side, shares, `stock scalp refused: ${capital.failures.join("; ")}`, nowMs);
@@ -1397,8 +1404,8 @@ export function autoEnterStockScalps(nowMs: number = Date.now()): number {
           short_rate_entry, above_vwap_entry, rel_vol_entry, last_mark, last_mark_at_ms,
           mfe_pct, mae_pct, created_at_ms,
           strategy, alert_time_contract_json, risk_amount, snapshot_version,
-          entry_slippage, entry_fees, fill_assumptions_json, underlying_at_entry, session_at_entry)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          entry_slippage, entry_fees, fill_assumptions_json, underlying_at_entry, session_at_entry, portfolio)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(
       a.id, a.ticker, null, side, shares, "ENTERED", "FILLED", "OPEN",
       a.ai_explanation ?? `Fast stock paper scalp from ${a.ticker} long alert`,
@@ -1410,7 +1417,7 @@ export function autoEnterStockScalps(nowMs: number = Date.now()): number {
       quote.mid ?? fillPrice, nowMs, 0, 0, nowMs,
       STOCK_STRATEGY, JSON.stringify(alertTimeContract), dollarsAtRisk(refPrice, shares, STOCK_SCALP_STOP_PCT, 1), 1,
       decision.slippage, decision.fees, decision.assumptions ? JSON.stringify(decision.assumptions) : null,
-      quote.mid ?? fillPrice, session,
+      quote.mid ?? fillPrice, session, STOCK_DAY_TRADER_PORTFOLIO,
     );
     const id = Number(info.lastInsertRowid);
     freezePaperFingerprintForTrade(id, nowMs); // freeze setup fingerprint at the verified stock fill

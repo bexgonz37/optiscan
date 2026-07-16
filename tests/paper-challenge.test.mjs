@@ -5,7 +5,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   challengeConfig, deriveChallengeStatus, challengeAcceptsEntries,
-  challengeReplay, challengeOutcomeRates, CHALLENGE_PORTFOLIO, PRIMARY_PORTFOLIO,
+  challengeReplay, challengeOutcomeRates, CHALLENGE_PORTFOLIO, PRIMARY_PORTFOLIO, STOCK_DAY_TRADER_PORTFOLIO,
 } from "../lib/paper-challenge.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -72,7 +72,9 @@ test("deterministic target-rate / failure-rate across replays", () => {
 test("portfolio constants are distinct", () => {
   assert.equal(PRIMARY_PORTFOLIO, "PRIMARY");
   assert.equal(CHALLENGE_PORTFOLIO, "CHALLENGE");
+  assert.equal(STOCK_DAY_TRADER_PORTFOLIO, "STOCK_DAY_TRADER");
   assert.notEqual(PRIMARY_PORTFOLIO, CHALLENGE_PORTFOLIO);
+  assert.notEqual(PRIMARY_PORTFOLIO, STOCK_DAY_TRADER_PORTFOLIO);
 });
 
 // ── wiring (createPaperTrade needs the DB alias — assert on source) ──
@@ -82,6 +84,8 @@ test("Primary options entry mirrors to CHALLENGE with the SAME contract, separat
   assert.match(src, /optionSymbol: base\.optionSymbol/, "mirror reuses the exact OCC contract");
   assert.match(src, /portfolio: CHALLENGE_PORTFOLIO/, "mirror is tagged CHALLENGE");
   assert.match(src, /PAPER_RISK_PROFILE: challengeConfig\(\)\.riskProfile/, "challenge sizes off its own profile");
+  assert.match(src, /PAPER_CHALLENGE_MAX_POSITION_PCT \?\? "60"/, "challenge can use up to 60% per simulated position by default");
+  assert.match(src, /portfolio === CHALLENGE_PORTFOLIO\s*\? paperSizingConfig/, "60% challenge sizing is scoped to CHALLENGE only");
   assert.match(src, /riskContext\(portfolio\)/, "risk context scoped per portfolio");
   assert.match(src, /capitalContext\(Date\.now\(\), portfolio\)/, "capital context scoped per portfolio");
 });
@@ -98,6 +102,15 @@ test("API and AI keep Primary and Challenge statistics separate (no contaminatio
   assert.match(api, /portfolio === "CHALLENGE"/, "challenge analytics are computed separately");
   const q = readFileSync(join(root, "lib/ai/queries.ts"), "utf8");
   assert.match(q, /COALESCE\(p\.portfolio,'PRIMARY'\) = \?/, "AI outcome gathering is portfolio-scoped");
+});
+
+test("stock day-trader paper portfolio is separate from Primary options", () => {
+  const src = readFileSync(join(root, "lib/paper-engine.ts"), "utf8");
+  assert.match(src, /PAPER_STOCK_DAY_STARTING_BALANCE_USD \?\? 10_000/, "stock day trader defaults to a $10k stake");
+  assert.match(src, /riskContext\(STOCK_DAY_TRADER_PORTFOLIO\)/, "stock risk context is scoped to the stock portfolio");
+  assert.match(src, /capitalContext\(nowMs, STOCK_DAY_TRADER_PORTFOLIO\)/, "stock capital context is scoped to the stock portfolio");
+  assert.match(src, /session_at_entry, portfolio\)/, "stock fill persists its portfolio");
+  assert.match(src, /STOCK_DAY_TRADER_PORTFOLIO/, "stock rows are tagged with the stock-day portfolio");
 });
 
 test("REGRESSION: challenge has no broker / real-money path (paper only)", () => {
