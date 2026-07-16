@@ -16,6 +16,7 @@ const PAGE_TITLES: Record<string, { title: string; sub: string }> = {
   "/swing": { title: "Swing Scanner", sub: "1–4 week candidates · research preview" },
   "/quant": { title: "Quant", sub: "Setup grades · historical edge · backtests" },
   "/funnel": { title: "Live Funnel", sub: "Stock + options alert funnel · why zero alerts" },
+  "/terminal": { title: "Trading Terminal", sub: "Dense multi-panel workstation · keyboard-first" },
 };
 
 export interface StatusItem { label: string; live?: boolean; warn?: boolean; }

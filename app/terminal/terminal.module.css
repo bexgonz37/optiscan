@@ -1,0 +1,143 @@
+/* Trading Terminal — dark, dense, keyboard-first workstation styling.
+   Scoped via CSS Modules so it never leaks into the rest of the app.
+   No external branding; original layout and color system. */
+
+.root {
+  --tt-bg: #0a0c10;
+  --tt-panel: #0f1319;
+  --tt-panel-2: #141922;
+  --tt-border: #1e2530;
+  --tt-text: #d7dde5;
+  --tt-dim: #7c8794;
+  --tt-pos: #3fb950;
+  --tt-neg: #f85149;
+  --tt-warn: #d29922;
+  --tt-info: #58a6ff;
+  --tt-sel: #1f6feb;
+  --tt-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  background: var(--tt-bg);
+  color: var(--tt-text);
+  font-size: 12px;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  box-sizing: border-box;
+}
+
+.num { font-family: var(--tt-mono); font-variant-numeric: tabular-nums; }
+.pos { color: var(--tt-pos); }
+.neg { color: var(--tt-neg); }
+.warn { color: var(--tt-warn); }
+.info { color: var(--tt-info); }
+.muted { color: var(--tt-dim); }
+
+/* Status bar */
+.statusbar {
+  display: flex; flex-wrap: wrap; gap: 2px 14px; align-items: center;
+  background: var(--tt-panel); border: 1px solid var(--tt-border);
+  padding: 5px 10px; font-family: var(--tt-mono);
+}
+.statusItem { display: inline-flex; align-items: center; gap: 5px; }
+.statusItem .k { color: var(--tt-dim); font-size: 10px; letter-spacing: .04em; }
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.sLIVE { color: var(--tt-pos); } .dLIVE { background: var(--tt-pos); }
+.sDEGRADED { color: var(--tt-warn); } .dDEGRADED { background: var(--tt-warn); }
+.sBLOCKED { color: var(--tt-neg); } .dBLOCKED { background: var(--tt-neg); }
+.sSTALE { color: var(--tt-warn); } .dSTALE { background: var(--tt-warn); }
+.sOFFLINE { color: var(--tt-dim); } .dOFFLINE { background: var(--tt-dim); }
+.sOFF { color: var(--tt-dim); } .dOFF { background: var(--tt-dim); }
+
+/* Grid: movers | center | options ; then bottom row */
+.grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 1.1fr) minmax(360px, 1.4fr) minmax(320px, 1.1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 6px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.bottom {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  height: 230px;
+}
+
+.panel {
+  background: var(--tt-panel); border: 1px solid var(--tt-border);
+  display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+}
+.panelHead {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 4px 8px; border-bottom: 1px solid var(--tt-border);
+  background: var(--tt-panel-2); font-weight: 600; letter-spacing: .03em;
+  text-transform: uppercase; font-size: 11px; color: var(--tt-text);
+}
+.panelHead .meta { color: var(--tt-dim); font-weight: 400; font-size: 10px; text-transform: none; }
+.panelBody { overflow: auto; flex: 1 1 auto; min-height: 0; }
+.focused { outline: 1px solid var(--tt-sel); outline-offset: -1px; }
+
+/* Dense tables */
+.table { width: 100%; border-collapse: collapse; font-family: var(--tt-mono); }
+.table th {
+  position: sticky; top: 0; z-index: 1; background: var(--tt-panel-2);
+  color: var(--tt-dim); text-align: right; font-weight: 500; font-size: 10px;
+  padding: 3px 6px; border-bottom: 1px solid var(--tt-border); cursor: pointer; white-space: nowrap;
+}
+.table th:first-child, .table td:first-child { text-align: left; }
+.table td { padding: 2px 6px; text-align: right; border-bottom: 1px solid #12161d; white-space: nowrap; }
+.row { cursor: pointer; }
+.row:hover { background: var(--tt-panel-2); }
+.rowSel { background: rgba(31, 111, 235, .18); }
+.rowSel td { border-bottom-color: var(--tt-sel); }
+
+.toolbar { display: flex; gap: 4px; align-items: center; padding: 4px 8px; border-bottom: 1px solid var(--tt-border); flex-wrap: wrap; }
+.input, .select {
+  background: var(--tt-bg); border: 1px solid var(--tt-border); color: var(--tt-text);
+  font-family: var(--tt-mono); font-size: 11px; padding: 2px 6px; outline: none;
+}
+.input:focus, .select:focus { border-color: var(--tt-sel); }
+.chip {
+  display: inline-block; padding: 0 5px; border: 1px solid var(--tt-border);
+  border-radius: 2px; font-size: 10px; font-family: var(--tt-mono); color: var(--tt-dim);
+}
+.chipSel { border-color: var(--tt-sel); color: var(--tt-info); }
+
+/* Detail key/value rows */
+.kv { display: grid; grid-template-columns: 1fr auto; gap: 1px 10px; padding: 6px 8px; }
+.kv .k { color: var(--tt-dim); }
+.kv .v { font-family: var(--tt-mono); text-align: right; }
+
+.gates { padding: 6px 8px; display: flex; flex-wrap: wrap; gap: 4px; }
+.gateOk { color: var(--tt-pos); border: 1px solid var(--tt-border); padding: 0 5px; font-size: 10px; }
+.gateBad { color: var(--tt-neg); border: 1px solid var(--tt-border); padding: 0 5px; font-size: 10px; }
+
+.oneline {
+  font-family: var(--tt-mono); background: var(--tt-bg); border: 1px solid var(--tt-sel);
+  color: var(--tt-info); padding: 4px 8px; margin: 6px 8px; font-size: 13px; letter-spacing: .02em;
+}
+
+.tabs { display: flex; gap: 0; border-bottom: 1px solid var(--tt-border); }
+.tab { padding: 3px 10px; cursor: pointer; color: var(--tt-dim); border-right: 1px solid var(--tt-border); font-size: 11px; }
+.tabActive { color: var(--tt-text); background: var(--tt-panel-2); }
+
+.empty { color: var(--tt-dim); padding: 10px; font-style: italic; }
+.staleNote { color: var(--tt-warn); font-size: 10px; }
+
+.hint { color: var(--tt-dim); font-size: 10px; padding: 3px 8px; border-top: 1px solid var(--tt-border); font-family: var(--tt-mono); }
+
+/* Light theme fallback: keep it dark (terminal is intentionally dark) but ensure
+   contrast if the viewer forces light. */
+@media (prefers-color-scheme: light) {
+  .root { --tt-text: #e6edf3; }
+}
+
+/* Mobile: stack panels, allow horizontal table scroll, sticky status. */
+@media (max-width: 900px) {
+  .statusbar { position: sticky; top: 0; z-index: 5; }
+  .grid { grid-template-columns: 1fr; grid-auto-rows: minmax(220px, auto); }
+  .bottom { grid-template-columns: 1fr; height: auto; grid-auto-rows: minmax(180px, auto); }
+  .panelBody { -webkit-overflow-scrolling: touch; }
+}
