@@ -891,12 +891,52 @@ interface ChallengeExecEvent {
   bindingConstraint?: string | null;
   sizing?: Record<string, unknown> | null;
 }
+/** Per-trading-day tally of Challenge execution outcomes (resets on a new day). */
+interface ChallengeDayTally {
+  day: string;
+  signals: number;        // every canonical signal the Challenge received
+  sizingAttempts: number; // reached the sizer (filled or rejected, not disabled/dup/not-active)
+  created: number;        // order/candidate created (ok)
+  fills: number;          // synonym of created at record time (sweep confirms the fill later)
+  rejections: number;
+  duplicates: number;
+  notActive: number;
+  disabled: number;
+  lastBindingConstraint: string | null;
+  lastReason: string | null;
+  lastAtMs: number | null;
+}
+function emptyChallengeDayTally(day: string): ChallengeDayTally {
+  return { day, signals: 0, sizingAttempts: 0, created: 0, fills: 0, rejections: 0, duplicates: 0, notActive: 0, disabled: 0, lastBindingConstraint: null, lastReason: null, lastAtMs: null };
+}
 function recordChallengeExec(e: Omit<ChallengeExecEvent, "atMs">): void {
-  const g = globalThis as typeof globalThis & { __optiscanChallengeExec?: ChallengeExecEvent };
-  g.__optiscanChallengeExec = { atMs: Date.now(), ...e };
+  const atMs = Date.now();
+  const g = globalThis as typeof globalThis & { __optiscanChallengeExec?: ChallengeExecEvent; __optiscanChallengeDay?: ChallengeDayTally };
+  g.__optiscanChallengeExec = { atMs, ...e };
+  // Day tally — every mirror attempt is a received signal; reset when the day rolls.
+  const day = tradingDay(atMs);
+  if (!g.__optiscanChallengeDay || g.__optiscanChallengeDay.day !== day) g.__optiscanChallengeDay = emptyChallengeDayTally(day);
+  const t = g.__optiscanChallengeDay;
+  t.signals += 1;
+  if (e.result === "filled" || e.result === "rejected") t.sizingAttempts += 1;
+  if (e.result === "filled") { t.created += 1; t.fills += 1; }
+  else if (e.result === "rejected") t.rejections += 1;
+  else if (e.result === "duplicate") t.duplicates += 1;
+  else if (e.result === "not_active") t.notActive += 1;
+  else if (e.result === "disabled") t.disabled += 1;
+  t.lastBindingConstraint = e.bindingConstraint ?? t.lastBindingConstraint;
+  t.lastReason = e.reason ?? t.lastReason;
+  t.lastAtMs = atMs;
 }
 function lastChallengeExec(): ChallengeExecEvent | null {
   return (globalThis as typeof globalThis & { __optiscanChallengeExec?: ChallengeExecEvent }).__optiscanChallengeExec ?? null;
+}
+/** Today's Challenge execution tally (empty for today if nothing has fired yet). */
+function challengeDayTally(): ChallengeDayTally {
+  const g = globalThis as typeof globalThis & { __optiscanChallengeDay?: ChallengeDayTally };
+  const day = tradingDay(Date.now());
+  if (!g.__optiscanChallengeDay || g.__optiscanChallengeDay.day !== day) return emptyChallengeDayTally(day);
+  return g.__optiscanChallengeDay;
 }
 
 function deriveChallengeStatusFor(equity: number): string {
@@ -1722,6 +1762,8 @@ export function challengeAccountState() {
     },
     // The last Challenge execution attempt (signal → sizing → result), for the panel.
     lastExecution: lastChallengeExec(),
+    // Today's execution tally (signals → sizing → created/rejected) for the Terminal audit.
+    today: challengeDayTally(),
     // Deterministic aggressive sizing examples at the current equity (no live fill).
     sizingExamples: challengeSizingExamples(equity),
   };

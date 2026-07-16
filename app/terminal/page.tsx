@@ -277,8 +277,8 @@ function TickerPanel({ row, focused, onLoadChain }: { row: any; focused: boolean
     </div>
   );
 }
-function KV({ k, v, tone }: { k: string; v: string; tone?: "pos" | "neg" | "muted" }) {
-  return <><span className="k">{k}</span><span className={`v ${tone === "pos" ? s.pos : tone === "neg" ? s.neg : ""}`}>{v}</span></>;
+function KV({ k, v, tone }: { k: string; v: string; tone?: "pos" | "neg" | "muted" | "warn" }) {
+  return <><span className="k">{k}</span><span className={`v ${tone === "pos" ? s.pos : tone === "neg" ? s.neg : tone === "warn" ? s.warn : ""}`}>{v}</span></>;
 }
 
 // ── Options ──────────────────────────────────────────────────────────────────
@@ -386,6 +386,8 @@ function AlertsPanel({ alerts, focused }: { alerts: any[]; focused: boolean }) {
 function PaperPanel({ paper, tab, setTab, focused }: any) {
   const ports = paperPortfolios(paper);
   const p = ports[tab] ?? ports[0];
+  const ch = paper?.challenge ?? null;
+  const showChallengeAudit = p.key === "CHALLENGE" && ch;
   return (
     <div className={`${s.panel} ${focused ? s.focused : ""}`}>
       <div className={s.panelHead}>Paper</div>
@@ -401,6 +403,20 @@ function PaperPanel({ paper, tab, setTab, focused }: any) {
             <KV k="Open positions" v={p.openPositions == null ? "N/A" : String(p.openPositions)} />
           </div>
         )}
+        {showChallengeAudit ? (
+          <div className={s.kv}>
+            <span className="k" style={{ gridColumn: "1 / -1", color: "var(--tt-info)", marginTop: 6 }}>CHALLENGE TODAY {ch.today?.day ?? ""}</span>
+            <KV k="signals / sizing / created" v={`${ch.today?.signals ?? 0} / ${ch.today?.sizingAttempts ?? 0} / ${ch.today?.created ?? 0}`} tone={(ch.today?.created ?? 0) > 0 ? "pos" : "muted"} />
+            <KV k="rejections / duplicates" v={`${ch.today?.rejections ?? 0} / ${ch.today?.duplicates ?? 0}`} />
+            <KV k="open / exposure" v={`${ch.openPositions ?? 0} / ${ch.exposurePctOfEquity != null ? ch.exposurePctOfEquity + "%" : "N/A"}`} />
+            <KV k="buying power" v={fmtUsd(ch.availableBuyingPowerDollars)} />
+            <KV k="last binding" v={ch.today?.lastBindingConstraint ?? ch.lastExecution?.bindingConstraint ?? "—"} tone="warn" />
+            <span className="k" style={{ gridColumn: "1 / -1", color: "var(--tt-dim)", marginTop: 4 }}>
+              effective caps · risk {ch.caps?.maxLossAtStopPct ?? "?"}% · pos {ch.caps?.maxPositionPct ?? "?"}% · exp {ch.caps?.maxTotalExposurePct ?? "?"}% · 0DTE {ch.caps?.allowZeroDte ? "on" : "off"}
+            </span>
+            {ch.today?.lastReason ? <span className="k" style={{ gridColumn: "1 / -1", color: "var(--tt-dim)" }}>last: {ch.today.lastReason}</span> : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );

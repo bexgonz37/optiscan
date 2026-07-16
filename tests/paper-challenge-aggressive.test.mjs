@@ -151,3 +151,34 @@ test("REGRESSION: no broker / real-money path in the Challenge", () => {
   const chal = readFileSync(join(root, "lib/paper-challenge.ts"), "utf8");
   assert.doesNotMatch(chal, /robinhood|realMoney|placeOrder|liveBroker|executeOrder/i);
 });
+
+// ── today execution audit (Part 10) ──────────────────────────────────────────
+
+test("challengeAccountState exposes today's execution tally, effective caps, and last binding constraint", () => {
+  const src = readFileSync(join(root, "lib/paper-engine.ts"), "utf8");
+  const fn = src.slice(src.indexOf("export function challengeAccountState"), src.indexOf("export function startPaperEngine"));
+  assert.match(fn, /today: challengeDayTally\(\)/, "today tally is surfaced");
+  assert.match(fn, /lastExecution: lastChallengeExec\(\)/, "last execution is surfaced");
+  assert.match(fn, /caps:\s*\{/, "effective aggressive caps are surfaced");
+  assert.match(fn, /sizingExamples: challengeSizingExamples\(equity\)/, "sizing examples at live equity");
+});
+
+test("the challenge day tally counts signals/sizing/created/rejections and resets on a new trading day", () => {
+  const src = readFileSync(join(root, "lib/paper-engine.ts"), "utf8");
+  const fn = src.slice(src.indexOf("function recordChallengeExec"), src.indexOf("function lastChallengeExec"));
+  assert.match(fn, /t\.signals \+= 1/, "every mirror attempt is a received signal");
+  assert.match(fn, /result === "filled" \|\| e\.result === "rejected"[^]*sizingAttempts/, "only real sizing attempts are counted");
+  assert.match(fn, /result === "filled"[^]*t\.created \+= 1/, "created/fills counted");
+  assert.match(fn, /result === "rejected"[^]*t\.rejections \+= 1/, "rejections counted");
+  assert.match(fn, /g\.__optiscanChallengeDay\.day !== day[^]*emptyChallengeDayTally\(day\)/, "resets when the trading day rolls");
+  assert.match(fn, /lastBindingConstraint = e\.bindingConstraint/, "records the last binding constraint");
+});
+
+test("the Terminal Paper panel shows the Challenge-today audit from paper.challenge.today (no new page)", () => {
+  const page = readFileSync(join(root, "app/terminal/page.tsx"), "utf8");
+  assert.match(page, /CHALLENGE TODAY/, "challenge-today section present");
+  assert.match(page, /ch\.today\?\.signals/, "reads today's signals");
+  assert.match(page, /ch\.today\?\.created/, "reads today's created count");
+  assert.match(page, /ch\.today\?\.lastBindingConstraint/, "shows the last binding constraint");
+  assert.match(page, /effective caps/, "shows the effective aggressive caps to expose stale overrides");
+});
