@@ -409,12 +409,34 @@ function PaperPanel({ paper, tab, setTab, focused }: any) {
 // ── Funnel ───────────────────────────────────────────────────────────────────
 function FunnelPanel({ funnel, focused }: any) {
   const st = funnel?.stock ?? null; const op = funnel?.options ?? null;
+  const td = funnel?.today ?? null;
+  const clock = (ms: number | null | undefined) => (typeof ms === "number" ? new Date(ms).toLocaleTimeString() : "—");
+  const lastNotif = td ? clock(td.lastNotificationMs) : "—";
+  const silentToday = td && td.hasData && td.lastNotificationMs == null;
   return (
     <div className={`${s.panel} ${focused ? s.focused : ""}`}>
-      <div className={s.panelHead}>Funnel</div>
+      <div className={s.panelHead}>
+        Funnel
+        <span className="meta">last alert {lastNotif}</span>
+      </div>
       <div className={s.panelBody}>
+        {td ? (
+          <div className={s.kv}>
+            <span className="k" style={{ gridColumn: "1 / -1", color: silentToday ? "var(--tt-neg)" : "var(--tt-warn)" }}>
+              TODAY {td.tradingDay}{silentToday ? " — 0 notifications sent" : ""}
+            </span>
+            <KV k="stock cand / actionable / sent" v={`${td.stocks?.candidates ?? "N/A"} / ${td.stocks?.actionable ?? "N/A"} / ${td.stocks?.delivered ?? "N/A"}`} tone={(td.stocks?.delivered ?? 0) > 0 ? "pos" : "muted"} />
+            <KV k="stock last sent" v={clock(td.stocks?.lastDeliveryMs)} />
+            <KV k="opt canon / emit / deliv" v={`${td.options?.canonical ?? "N/A"} / ${td.options?.emitted ?? "N/A"} / ${td.options?.delivered ?? "N/A"}`} tone={(td.options?.delivered ?? 0) > 0 ? "pos" : "muted"} />
+            <KV k="opt dedup / portfolio supp." v={`${td.options?.dedupSuppressed ?? "N/A"} / ${td.options?.portfolioSuppressed ?? "N/A"}`} />
+            <KV k="opt last sent" v={clock(td.options?.lastDeliveryMs)} />
+            {td.stocks?.topReasons?.[0] ? <KV k="stock top reason" v={`${td.stocks.topReasons[0].reason} ×${td.stocks.topReasons[0].count}`} /> : null}
+            {!td.hasData ? <span className="k" style={{ gridColumn: "1 / -1", color: "var(--tt-dim)" }}>no persisted diagnostics for today yet</span> : null}
+          </div>
+        ) : null}
+        {td?.options?.diagnosis ? <div className={s.hint} style={{ color: "var(--tt-warn)" }}>{td.options.diagnosis}</div> : null}
         <div className={s.kv}>
-          <span className="k" style={{ gridColumn: "1 / -1", color: "var(--tt-info)" }}>STOCK</span>
+          <span className="k" style={{ gridColumn: "1 / -1", color: "var(--tt-info)", marginTop: td ? 6 : 0 }}>STOCK · this cycle</span>
           <KV k="universe → broad → fast" v={`${st?.universeSize ?? "N/A"} → ${st?.broadPass ?? "N/A"} → ${st?.fastMoverPass ?? "N/A"}`} />
           <span className="k" style={{ gridColumn: "1 / -1", color: "var(--tt-info)", marginTop: 6 }}>OPTIONS</span>
           <KV k="canon → collapse → emit" v={`${op?.canonical ?? "N/A"} → ${op?.collapsed ?? "N/A"} → ${op?.emitted ?? "N/A"}`} />

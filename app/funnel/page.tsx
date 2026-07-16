@@ -29,7 +29,12 @@ type OptionsFunnel = {
   selectedContracts: string[]; topReason: string | null; deliveryGateReason: string | null;
   ready: boolean; blockedBy: string[]; suppressedItems: SuppressedItem[];
 };
-type FunnelData = { ok: boolean; session: string; generatedAtMs: number; stock: StockFunnel; options: OptionsFunnel };
+type TodayAudit = {
+  tradingDay: string; generatedAtMs: number; hasData: boolean; lastNotificationMs: number | null;
+  stocks: { candidates: number; actionable: number; delivered: number; suppressed: number; rejected: number; lastDeliveryMs: number | null; avgLatencyMs: number | null; topReasons: Rejection[] };
+  options: { canonical: number; emitted: number; delivered: number; emittedButUndelivered: number; dedupSuppressed: number; portfolioSuppressed: number; cycles: number; lastDeliveryMs: number | null; diagnosis: string | null; topReason: string | null };
+};
+type FunnelData = { ok: boolean; session: string; generatedAtMs: number; stock: StockFunnel; options: OptionsFunnel; today?: TodayAudit };
 
 const ts = (ms: number | null) => (ms ? new Date(ms).toLocaleTimeString() : "—");
 
@@ -58,11 +63,44 @@ export default function FunnelPage() {
 
   const stock = data?.stock;
   const options = data?.options;
+  const today = data?.today;
+  const silentToday = today?.hasData && today?.lastNotificationMs == null;
 
   return (
     <div className="axiom-page">
       <h1 className="axiom-h1">Live alert funnel <span className="axiom-sub">({data?.session ?? "…"})</span></h1>
       <p className="axiom-sub">Why a channel is or isn&apos;t sending — updated every 10s. {err ? <span className="axiom-badge warn">{err}</span> : null}</p>
+
+      <Panel
+        title="Today's notification audit"
+        meta={today ? `${today.tradingDay} · last notification ${ts(today.lastNotificationMs)}` : "—"}
+      >
+        {today ? (
+          <>
+            {silentToday ? (
+              <div style={{ marginBottom: 10 }}><span className="axiom-badge warn">0 notifications delivered today</span></div>
+            ) : null}
+            {!today.hasData ? <p className="axiom-sub">No persisted diagnostics recorded for today yet.</p> : null}
+            <div className="axiom-stat-row">
+              <StatTile label="Stock candidates" value={today.stocks.candidates} hint="seen today" />
+              <StatTile label="Stock actionable" value={today.stocks.actionable} hint="reached actionable" />
+              <StatTile label="Stock delivered" value={today.stocks.delivered} hint={`last ${ts(today.stocks.lastDeliveryMs)}`} />
+              <StatTile label="Stock suppressed" value={today.stocks.suppressed} hint="direction / revalidation" />
+              <StatTile label="Options canonical" value={today.options.canonical} hint={`${today.options.cycles} cycles`} />
+              <StatTile label="Options emitted" value={today.options.emitted} hint={`${today.options.emittedButUndelivered} undelivered`} />
+              <StatTile label="Options delivered" value={today.options.delivered} hint={`last ${ts(today.options.lastDeliveryMs)}`} />
+              <StatTile label="Options suppressed" value={today.options.dedupSuppressed + today.options.portfolioSuppressed} hint={`dedup ${today.options.dedupSuppressed} · portfolio ${today.options.portfolioSuppressed}`} />
+            </div>
+            {today.stocks.topReasons?.length ? (
+              <div style={{ marginTop: 12 }}>
+                <strong>Top stock suppression reasons today:</strong>
+                <ul className="axiom-list">{today.stocks.topReasons.map((r) => <li key={r.reason}>{r.reason} <span className="axiom-sub">×{r.count}</span></li>)}</ul>
+              </div>
+            ) : null}
+            {today.options.diagnosis ? <div style={{ marginTop: 8 }}><span className="axiom-badge warn">Options: {today.options.diagnosis}</span></div> : null}
+          </>
+        ) : <span className="axiom-sub">loading…</span>}
+      </Panel>
 
       <Panel title="Stock momentum funnel" meta={`last discovery ${ts(stock?.lastCycleAtMs ?? null)}`}>
         {stock ? (

@@ -183,3 +183,129 @@ export function buildOptionsFunnel(
     suppressedItems: (telemetry.lastSuppressedItems ?? []).slice(0, 30),
   };
 }
+
+// ── TODAY audit ──────────────────────────────────────────────────────────────
+// The current-session funnels above only show the LAST supervisor cycle, so a
+// quiet cycle is indistinguishable from a quiet DAY. This audit aggregates the
+// PERSISTED per-day diagnostics (momentum_diagnostics + options_diagnostics) so
+// the Terminal/Funnel can answer "did OptiScan notify me AT ALL today, and where
+// did every candidate go?" — including the last successful notification time.
+// PURE: the API route reads the day's rows and computes the summaries + last
+// delivery timestamps; this only shapes them for display and never fabricates.
+
+export interface StockDaySummaryLike {
+  total: number;
+  sent: number;
+  rescued: number;
+  nearMisses: number;
+  rejected: number;
+  extendedRejections: number;
+  staleRejected: number;
+  directionSuppressed: number;
+  deliveryRevalidationFailed: number;
+  avgLatencyMs: number | null;
+  freshAccelerationAlerts?: number;
+  slowGrinderAlerts?: number;
+}
+
+export interface OptionsDaySummaryLike {
+  cycles: number;
+  tickersConsidered: number;
+  canonical: number;
+  emitted: number;
+  delivered: number;
+  emittedButUndelivered: number;
+  gateRejections: { portfolioSuppressed: number; dedupSuppressed: number; notActionableNow: number };
+  topDeliveryGateReason: string | null;
+  diagnosis: string | null;
+}
+
+export interface TodayAudit {
+  tradingDay: string;
+  generatedAtMs: number;
+  hasData: boolean;
+  /** Max of the two channels' last-delivery timestamps, or null if nothing sent today. */
+  lastNotificationMs: number | null;
+  stocks: {
+    candidates: number;
+    actionable: number;      // reached an actionable state today (sent + near-misses)
+    delivered: number;       // actually pushed to Discord
+    suppressed: number;      // direction-invariant / delivery-revalidation holds
+    rejected: number;
+    lastDeliveryMs: number | null;
+    avgLatencyMs: number | null;
+    topReasons: Array<{ reason: string; count: number }>;
+  };
+  options: {
+    canonical: number;
+    emitted: number;
+    delivered: number;
+    emittedButUndelivered: number;
+    dedupSuppressed: number;
+    portfolioSuppressed: number;
+    cycles: number;
+    lastDeliveryMs: number | null;
+    diagnosis: string | null;
+    topReason: string | null;
+  };
+}
+
+export function buildTodayAudit(input: {
+  tradingDay: string;
+  nowMs: number;
+  stockSummary: StockDaySummaryLike | null;
+  optionsSummary: OptionsDaySummaryLike | null;
+  lastStockDeliveryMs: number | null;
+  lastOptionsDeliveryMs: number | null;
+}): TodayAudit {
+  const s = input.stockSummary;
+  const o = input.optionsSummary;
+  const stockTopReasons: Array<{ reason: string; count: number }> = s
+    ? [
+        { reason: "direction/revalidation suppressed", count: s.directionSuppressed },
+        { reason: "extended / chase", count: s.extendedRejections },
+        { reason: "stale quote", count: s.staleRejected },
+      ].filter((r) => r.count > 0).sort((a, b) => b.count - a.count)
+    : [];
+
+  const lastStock = isFiniteNum(input.lastStockDeliveryMs) ? input.lastStockDeliveryMs : null;
+  const lastOptions = isFiniteNum(input.lastOptionsDeliveryMs) ? input.lastOptionsDeliveryMs : null;
+  const lastNotificationMs = lastStock == null && lastOptions == null
+    ? null
+    : Math.max(lastStock ?? 0, lastOptions ?? 0);
+
+  const hasData = (s?.total ?? 0) > 0 || (o?.cycles ?? 0) > 0;
+
+  return {
+    tradingDay: input.tradingDay,
+    generatedAtMs: input.nowMs,
+    hasData,
+    lastNotificationMs,
+    stocks: {
+      candidates: s?.total ?? 0,
+      actionable: (s?.sent ?? 0) + (s?.nearMisses ?? 0),
+      delivered: s?.sent ?? 0,
+      suppressed: (s?.directionSuppressed ?? 0) + (s?.deliveryRevalidationFailed ?? 0),
+      rejected: s?.rejected ?? 0,
+      lastDeliveryMs: lastStock,
+      avgLatencyMs: s?.avgLatencyMs ?? null,
+      topReasons: stockTopReasons,
+    },
+    options: {
+      canonical: o?.canonical ?? 0,
+      emitted: o?.emitted ?? 0,
+      delivered: o?.delivered ?? 0,
+      emittedButUndelivered: o?.emittedButUndelivered ?? 0,
+      dedupSuppressed: o?.gateRejections?.dedupSuppressed ?? 0,
+      portfolioSuppressed: o?.gateRejections?.portfolioSuppressed ?? 0,
+      cycles: o?.cycles ?? 0,
+      lastDeliveryMs: lastOptions,
+      diagnosis: o?.diagnosis ?? null,
+      topReason: o?.topDeliveryGateReason ?? null,
+    },
+  };
+}
+
+function isFiniteNum(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v);
+}

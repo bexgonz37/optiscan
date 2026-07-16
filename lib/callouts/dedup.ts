@@ -7,6 +7,7 @@
  * idempotency key per state feeds the existing delivery ledger).
  */
 import type { Callout, CalloutStatus } from "./callout.ts";
+import { tradingDay } from "../trading-session.ts";
 
 /** Statuses worth pushing to Discord (desktop shows everything). */
 export const EMITTABLE: ReadonlySet<CalloutStatus> = new Set<CalloutStatus>([
@@ -50,9 +51,16 @@ export interface EmissionDecision {
   reason: string;
 }
 
-/** One stable key per (opportunity, status) — retries/cycles dedup; a real state change is a new key. */
-export function calloutIdempotencyKey(c: Callout): string {
-  return `callout:${c.key}:${c.status}`;
+/**
+ * One stable key per (opportunity, status, TRADING DAY) — retries/cycles within a
+ * session dedup; a real state change is a new key; and a NEW trading day is a new
+ * key so a recurring actionable setup can re-alert once per session. This mirrors
+ * the paper bridge's day-stamped `candidateIdempotencyKey`; without the day the
+ * delivery ledger would suppress today's first alert for anything that already
+ * fired on a prior day, which is a silent cross-day zero-notification failure.
+ */
+export function calloutIdempotencyKey(c: Callout, nowMs: number = Date.now()): string {
+  return `callout:${c.key}:${c.status}:${tradingDay(nowMs)}`;
 }
 
 /**
@@ -61,13 +69,20 @@ export function calloutIdempotencyKey(c: Callout): string {
  */
 export function decideEmission(c: Callout, prior: PriorCallout | undefined, opts: { nowMs: number; cooldownMs?: number }): EmissionDecision {
   const cooldownMs = opts.cooldownMs ?? 5 * 60_000;
-  const idempotencyKey = calloutIdempotencyKey(c);
+  const idempotencyKey = calloutIdempotencyKey(c, opts.nowMs);
 
   if (!EMITTABLE.has(c.status)) {
     return { emit: false, kind: "suppress", idempotencyKey, reason: `status ${c.status} is not a Discord-emittable state` };
   }
   if (!prior) {
     return { emit: true, kind: "new", idempotencyKey, reason: "first emittable observation of this opportunity" };
+  }
+  // A new trading day is a new actionable episode. Never carry a prior session's
+  // emission forward as "unchanged": if the last emission was on an earlier
+  // trading day, re-open the episode and emit once (the day-scoped idempotency
+  // key keeps the delivery ledger from double-sending within the same session).
+  if (prior.lastEmitMs > 0 && tradingDay(prior.lastEmitMs) !== tradingDay(opts.nowMs)) {
+    return { emit: true, kind: "new", idempotencyKey, reason: "new trading-day episode (prior emission was a previous session)" };
   }
   if (prior.status === c.status) {
     return { emit: false, kind: "suppress", idempotencyKey, reason: "no material state change (minor score oscillation suppressed)" };

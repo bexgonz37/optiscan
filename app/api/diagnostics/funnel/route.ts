@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { checkApiToken, unauthorized } from "@/lib/auth";
 import { ensureServerBoot } from "@/lib/server-boot";
-import { buildStockFunnel, buildOptionsFunnel } from "@/lib/live-funnel";
+import { buildStockFunnel, buildOptionsFunnel, buildTodayAudit } from "@/lib/live-funnel";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,8 +21,10 @@ export async function GET(req: Request) {
   const { loopState } = await import("@/lib/scanner-loop");
   const { supervisorTelemetry } = await import("@/lib/supervisor-cycle");
   const { buildConfigVisibility } = await import("@/lib/runtime-status");
-  const { marketSession } = await import("@/lib/trading-session");
+  const { marketSession, tradingDay } = await import("@/lib/trading-session");
   const { discordWebhookConfigured, extendedStockNotifyEnabled } = await import("@/lib/notifications");
+  const { momentumDiagnosticsForDay, summarizeMomentumDiagnostics } = await import("@/lib/momentum-diagnostics");
+  const { optionsDiagnosticsForDay, summarizeOptionsDiagnostics } = await import("@/lib/options-diagnostics");
 
   const loop: any = loopState();
   const telemetry: any = supervisorTelemetry();
@@ -57,11 +59,44 @@ export async function GET(req: Request) {
     readiness.optionsCallouts,
   );
 
+  // ── TODAY audit: aggregate the PERSISTED per-day diagnostics so the funnel can
+  // distinguish "zero this cycle" from "zero all day", and show the last time each
+  // channel actually delivered. All DB reads are wrapped so a missing table (fresh
+  // deploy / legacy DB) degrades to an empty audit rather than a 500.
+  const nowMs = Date.now();
+  const day = tradingDay(nowMs);
+  const stockRows = safe(() => momentumDiagnosticsForDay(day)) || [];
+  const optionRows = safe(() => optionsDiagnosticsForDay(day)) || [];
+  const stockSummary = Array.isArray(stockRows) && stockRows.length ? summarizeMomentumDiagnostics(stockRows) : null;
+  const optionsSummary = Array.isArray(optionRows) && optionRows.length ? summarizeOptionsDiagnostics(optionRows) : null;
+  const lastStockDeliveryMs = Array.isArray(stockRows)
+    ? stockRows.reduce((mx: number | null, r: any) => {
+        const t = typeof r?.discordDeliveredMs === "number" ? r.discordDeliveredMs : null;
+        return t != null && (mx == null || t > mx) ? t : mx;
+      }, null as number | null)
+    : null;
+  const lastOptionsDeliveryMs = Array.isArray(optionRows)
+    ? optionRows.reduce((mx: number | null, r: any) => {
+        const t = (r?.delivered ?? 0) > 0 && typeof r?.cycleAtMs === "number" ? r.cycleAtMs : null;
+        return t != null && (mx == null || t > mx) ? t : mx;
+      }, null as number | null)
+    : null;
+
+  const today = buildTodayAudit({
+    tradingDay: day,
+    nowMs,
+    stockSummary: stockSummary as any,
+    optionsSummary: optionsSummary as any,
+    lastStockDeliveryMs,
+    lastOptionsDeliveryMs,
+  });
+
   return NextResponse.json({
     ok: true,
     session,
-    generatedAtMs: Date.now(),
+    generatedAtMs: nowMs,
     stock,
     options,
+    today,
   });
 }

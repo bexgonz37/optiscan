@@ -98,11 +98,29 @@ test("non-emittable status ⇒ suppress (desktop shows it, Discord does not)", (
   assert.equal(d.emit, false);
 });
 
-test("idempotency key is stable per (opportunity, status)", () => {
+test("idempotency key is stable per (opportunity, status, trading day)", () => {
   const c = buildCallout(ar());
-  assert.equal(calloutIdempotencyKey(c), "callout:SPY|bullish|0DTE:ACTIONABLE_NOW");
+  // Day-scoped so a recurring setup can re-alert once per session (mirrors the
+  // paper bridge's day-stamped key); NOW is 2026-07-09 in ET.
+  assert.equal(calloutIdempotencyKey(c, NOW), "callout:SPY|bullish|0DTE:ACTIONABLE_NOW:2026-07-09");
   const c2 = buildCallout(ar({ candidateStatus: "EXTENDED" }));
-  assert.notEqual(calloutIdempotencyKey(c), calloutIdempotencyKey(c2));
+  assert.notEqual(calloutIdempotencyKey(c, NOW), calloutIdempotencyKey(c2, NOW));
+  // Same opportunity + status on a later trading day ⇒ a NEW key (new episode).
+  const nextDay = NOW + 24 * 60 * 60 * 1000;
+  assert.notEqual(calloutIdempotencyKey(c, NOW), calloutIdempotencyKey(c, nextDay));
+});
+
+test("a recurring actionable setup re-alerts once on a new trading day (episode-aware)", () => {
+  const c = buildCallout(ar()); // ACTIONABLE_NOW
+  // Emitted yesterday, still ACTIONABLE_NOW today — must re-open, not suppress.
+  const yesterday = NOW - 24 * 60 * 60 * 1000;
+  const sameDaySuppressed = decideEmission(c, { status: "ACTIONABLE_NOW", lastEmitMs: NOW - 60_000 }, { nowMs: NOW });
+  assert.equal(sameDaySuppressed.emit, false, "same-day repeat still suppressed (no spam)");
+  const newDay = decideEmission(c, { status: "ACTIONABLE_NOW", lastEmitMs: yesterday }, { nowMs: NOW });
+  assert.equal(newDay.emit, true, "prior session's emission does not gag today's first alert");
+  assert.equal(newDay.kind, "new");
+  // The re-alert carries today's day-scoped key so the ledger will deliver it.
+  assert.equal(newDay.idempotencyKey, "callout:SPY|bullish|0DTE:ACTIONABLE_NOW:2026-07-09");
 });
 
 test("meaningful transition table", () => {
