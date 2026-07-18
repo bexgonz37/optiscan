@@ -1,0 +1,40 @@
+/**
+ * lib/research/flags.ts — feature flags for the multi-lane research rebuild.
+ *
+ * PURE resolver over env. EVERY flag defaults OFF so production behavior is
+ * unchanged until an owner explicitly enables a lane. No flag here loosens an
+ * existing production safety gate; they only opt-in to NEW, additive capability.
+ * Existing production flags (PAPER_*, OPTIONS_*, BEARISH_ACTIONABLE,
+ * AGENT_CALLOUT_DISCORD, …) are intentionally NOT re-defined here.
+ */
+
+const on = (v: string | undefined): boolean => v === "1";
+
+export interface ResearchFlags {
+  /** Phase 1: capture normalized SetupCandidate rows (read-only shadow). */
+  setupCandidateCapture: boolean;
+  /** Phase 2: lane router active (production path unchanged when off). */
+  laneRouter: boolean;
+  /** Phase 3/5: research paper generation + experiment ledger. */
+  researchLane: boolean;
+  /** Phase 3: independent Challenge consumer (falls back to legacy mirror when off). */
+  challengeIndependent: boolean;
+  /** Phase 4: new strategy-agent framework. */
+  strategyAgentsV2: boolean;
+  /** Phase 6: AI research pipeline jobs. */
+  aiResearchPipeline: boolean;
+  /** Phase 7: historical replay jobs. */
+  historicalReplay: boolean;
+}
+
+export function researchFlags(env: NodeJS.ProcessEnv = process.env): ResearchFlags {
+  return {
+    setupCandidateCapture: on(env.SETUP_CANDIDATE_CAPTURE_ENABLED),
+    laneRouter: on(env.LANE_ROUTER_ENABLED),
+    researchLane: on(env.RESEARCH_LANE_ENABLED),
+    challengeIndependent: on(env.CHALLENGE_INDEPENDENT_ENABLED),
+    strategyAgentsV2: on(env.STRATEGY_AGENTS_V2_ENABLED),
+    aiResearchPipeline: on(env.AI_RESEARCH_PIPELINE_ENABLED),
+    historicalReplay: on(env.HISTORICAL_REPLAY_ENABLED),
+  };
+}

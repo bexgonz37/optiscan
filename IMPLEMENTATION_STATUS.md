@@ -1,6 +1,6 @@
 # OptiScan — Implementation Status
 
-_Last updated: 2026-07-15. Working repo: `~/Downloads/optiscan-main`, branch `main`._
+_Last updated: 2026-07-18. Working repo: `~/Downloads/optiscan-main`, branch `main`._
 
 ## ⚠️ CANONICAL WORKING DIRECTORY (read first, every session)
 
@@ -21,6 +21,33 @@ _Last updated: 2026-07-15. Working repo: `~/Downloads/optiscan-main`, branch `ma
 This file is the resume point. Read it + the task list before making changes.
 Do **not** repeat Phase 1, redo timestamp normalization, or add the Self-Improvement
 Lab / an embedded LLM.
+
+## 🏗️ MULTI-LANE RESEARCH REBUILD — active roadmap (resume tracker)
+
+Design contract: `docs/ARCHITECTURE_REBUILD.md`. Baseline `ac4f045`. Every new
+capability is behind a feature flag defaulting **OFF** (`lib/research/flags.ts`);
+production behavior is unchanged until a flag is enabled. Full phase list + flag map
+in the design doc §16.
+
+**Phase status**
+
+- ✅ **Phase 0 — Baseline & design contract** (commit pending). Verified clean tree /
+  `main` / `ac4f045`; green baseline (1366 tests, tsc 0, build 0). Added the design
+  contract, the normalized `SetupCandidate`/tier/gate/lane types (`lib/research/types.ts`,
+  inert), the OFF-by-default flag resolver (`lib/research/flags.ts`), and Phase-0 tests
+  (`tests/research-types.test.mjs`, 6 tests). **No existing file changed, no migrations,
+  no runtime wiring.** Gates: focused 6/6 · full 1372/1372 · tsc 0 · build 0.
+- ⏭️ **Phase 1 — SetupCandidate capture + tiering** (next). Deterministic tier classifier
+  + `AgentResult→SetupCandidate` adapter + additive migrations (`setup_candidates`,
+  `setup_gate_results`) captured only when `SETUP_CANDIDATE_CAPTURE_ENABLED=1`. No Discord
+  behavior change. Files to add: `lib/research/tiering.ts`, `lib/research/adapter.ts`,
+  `lib/research/capture.ts`; migrations in `lib/db.ts`.
+- ⬜ Phases 2–9 per design doc §16.
+
+**Safety invariants held every phase:** BEARISH_ACTIONABLE off; bearish-gate authoritative;
+puts research-only; paper-only; no fabricated data/quotes; no polyFetch bypass; AI never
+overrides deterministic gates; Discord stays selective; migrations additive+repeat-safe;
+no force-push.
 
 ## Alert diagnosability + deployed-commit visibility (2026-07-15)
 
