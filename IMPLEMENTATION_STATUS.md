@@ -37,12 +37,23 @@ in the design doc §16.
   inert), the OFF-by-default flag resolver (`lib/research/flags.ts`), and Phase-0 tests
   (`tests/research-types.test.mjs`, 6 tests). **No existing file changed, no migrations,
   no runtime wiring.** Gates: focused 6/6 · full 1372/1372 · tsc 0 · build 0.
-- ⏭️ **Phase 1 — SetupCandidate capture + tiering** (next). Deterministic tier classifier
-  + `AgentResult→SetupCandidate` adapter + additive migrations (`setup_candidates`,
-  `setup_gate_results`) captured only when `SETUP_CANDIDATE_CAPTURE_ENABLED=1`. No Discord
-  behavior change. Files to add: `lib/research/tiering.ts`, `lib/research/adapter.ts`,
-  `lib/research/capture.ts`; migrations in `lib/db.ts`.
-- ⬜ Phases 2–9 per design doc §16.
+- ✅ **Phase 1 — SetupCandidate capture + tiering** (commit pending). Deterministic tier
+  classifier (`lib/research/tiering.ts`: PRODUCTION_QUALITY / EXPERIMENTAL_VALID /
+  NEAR_MISS_VALID / REJECTED_INVALID; stale-or-uncontractable ⇒ REJECTED_INVALID, never
+  fillable), pure `AgentResult→SetupCandidate` adapter (`lib/research/adapter.ts`), and a
+  flag-gated shadow capture layer (`lib/research/capture.ts`) writing two ADDITIVE tables
+  (`setup_candidates`, `setup_gate_results`, `lib/db.ts` +63/-0, `CREATE TABLE IF NOT
+  EXISTS`). Capture is a hard no-op unless `SETUP_CANDIDATE_CAPTURE_ENABLED=1` and is **not
+  yet wired into the live cycle** (Phase 2 wires the router) — production byte-identical.
+  Gates: focused 17/17 · full 1383/1383 · tsc 0 · build 0. Tests:
+  `tests/research-tiering-capture.test.mjs` (11) incl. idempotent capture on real in-memory
+  sqlite + repeat-safe DDL + flag-off no-op.
+- ⏭️ **Phase 2 — Lane router + eligibility separation** (next). Add `lib/research/router.ts`
+  (per-lane eligibility → persisted `lane_routes`), branch RESEARCH before Discord
+  dedup/eligibility, wire flag-gated capture+routing into `lib/callouts/runtime.ts`. Production
+  Discord path unchanged when `LANE_ROUTER_ENABLED!=1`. Files: `lib/research/router.ts`,
+  `lib/research/lane-policy.ts`, migration `lane_routes`, wiring in `callouts/runtime.ts`.
+- ⬜ Phases 3–9 per design doc §16.
 
 **Safety invariants held every phase:** BEARISH_ACTIONABLE off; bearish-gate authoritative;
 puts research-only; paper-only; no fabricated data/quotes; no polyFetch bypass; AI never

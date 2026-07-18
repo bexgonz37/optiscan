@@ -927,6 +927,69 @@ CREATE TABLE IF NOT EXISTS ai_job_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_job_runs_month ON ai_job_runs(month_key, status);
 CREATE INDEX IF NOT EXISTS idx_ai_job_runs_type ON ai_job_runs(job_type, created_at_ms);
+
+-- Multi-lane research rebuild (Phase 1). Normalized SetupCandidate capture — one row
+-- per (strategy agent, ticker, contract/direction, trading day). PURELY ADDITIVE and
+-- only WRITTEN when SETUP_CANDIDATE_CAPTURE_ENABLED=1; nothing reads it in the
+-- production Discord/paper path. Complex sub-objects are stored as bounded JSON.
+CREATE TABLE IF NOT EXISTS setup_candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  setup_id TEXT NOT NULL UNIQUE,          -- deterministic identity (agent|ticker|contract|day)
+  trading_day TEXT NOT NULL,
+  strategy_agent TEXT NOT NULL,
+  strategy_family TEXT,
+  strategy_version INTEGER,
+  agent_version INTEGER,
+  ticker TEXT NOT NULL,
+  direction TEXT,                         -- bullish | bearish
+  asset_class TEXT,                       -- stock | option
+  option_symbol TEXT,
+  expiration TEXT,
+  strike REAL,
+  side TEXT,                              -- call | put | null
+  horizon TEXT,
+  session TEXT,                           -- premarket | regular | afterhours | closed
+  setup_tier TEXT NOT NULL,              -- PRODUCTION_QUALITY | EXPERIMENTAL_VALID | NEAR_MISS_VALID | REJECTED_INVALID
+  confidence REAL,
+  candidate_status TEXT,
+  actionability TEXT,                     -- ACTIONABLE | RESEARCH_ONLY | WATCH | BLOCKED
+  freshness_state TEXT,
+  liquidity REAL,
+  spread_pct REAL,
+  volume REAL,
+  open_interest REAL,
+  greeks_json TEXT,                       -- {delta,gamma,theta,vega,iv,available}; null when not provided
+  entry_thesis TEXT,
+  invalidation_thesis TEXT,
+  gate_results_json TEXT,                 -- {gate:{passed,score,reason}} snapshot for convenience
+  rejection_reasons_json TEXT,
+  feature_snapshot_json TEXT,
+  market_regime_json TEXT,
+  consumer_lanes_json TEXT,               -- ["RESEARCH", ...]
+  experiment_id TEXT,
+  model_version INTEGER,
+  outcome_json TEXT,                      -- {status,mfePct,maePct,returnPct,win,exitReason}; null until graded
+  originating_ts_ms INTEGER NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_setup_candidates_day ON setup_candidates(trading_day, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_setup_candidates_tier ON setup_candidates(setup_tier, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_setup_candidates_agent ON setup_candidates(strategy_agent, created_at_ms);
+
+-- One row per named deterministic gate per candidate — powers counterfactual
+-- gate-effectiveness analytics ("which gate rejects the most eventual winners").
+CREATE TABLE IF NOT EXISTS setup_gate_results (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  setup_id TEXT NOT NULL,
+  gate_name TEXT NOT NULL,
+  passed INTEGER NOT NULL,                -- 1 | 0
+  score REAL,
+  reason TEXT,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_setup_gate_results_setup ON setup_gate_results(setup_id);
+CREATE INDEX IF NOT EXISTS idx_setup_gate_results_gate ON setup_gate_results(gate_name, passed);
 `;
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */
