@@ -1140,6 +1140,20 @@ const PAPER_COLUMN_MIGRATIONS: Array<[string, string]> = [
   // AGGRESSIVE_CHALLENGE $10k→$100k paper-only options portfolio. Same signals +
   // exact OCC contracts, fully separate balance / positions / P&L / drawdown.
   ["portfolio", "ALTER TABLE paper_trades ADD COLUMN portfolio TEXT NOT NULL DEFAULT 'PRIMARY'"],
+  // Multi-lane research rebuild (Phase 3): setup/lane/strategy/tier attribution frozen
+  // on the paper trade so provenance persists through fill, exit, grading, and training.
+  ["setup_id", "ALTER TABLE paper_trades ADD COLUMN setup_id TEXT"],
+  ["strategy_agent", "ALTER TABLE paper_trades ADD COLUMN strategy_agent TEXT"],
+  ["setup_tier", "ALTER TABLE paper_trades ADD COLUMN setup_tier TEXT"],
+  ["lane", "ALTER TABLE paper_trades ADD COLUMN lane TEXT"],
+];
+
+/** Phase 3: captured two-sided quote on setup_candidates so an independent lane can
+ *  fill honestly off the real routed quote (additive; the table itself is Phase 1). */
+const SETUP_CANDIDATE_COLUMN_MIGRATIONS: Array<[string, string]> = [
+  ["option_bid", "ALTER TABLE setup_candidates ADD COLUMN option_bid REAL"],
+  ["option_ask", "ALTER TABLE setup_candidates ADD COLUMN option_ask REAL"],
+  ["option_mid", "ALTER TABLE setup_candidates ADD COLUMN option_mid REAL"],
 ];
 
 /** Opportunity-grade columns on the authoritative outcomes table (additive). */
@@ -1200,6 +1214,10 @@ function migrate(db: Database.Database) {
   db.exec(SCHEMA);
   const paperCols = cols("paper_trades");
   for (const [col, sql] of PAPER_COLUMN_MIGRATIONS) if (!paperCols.has(col)) db.exec(sql);
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='setup_candidates'").get()) {
+    const scCols = cols("setup_candidates");
+    for (const [col, sql] of SETUP_CANDIDATE_COLUMN_MIGRATIONS) if (!scCols.has(col)) db.exec(sql);
+  }
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_trade_outcomes'").get()) {
     const outcomeCols = cols("paper_trade_outcomes");
     for (const [col, sql] of PAPER_OUTCOME_COLUMN_MIGRATIONS) if (!outcomeCols.has(col)) db.exec(sql);

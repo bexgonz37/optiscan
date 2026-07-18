@@ -24,6 +24,7 @@ import { reviewPortfolio } from "@/lib/agents/portfolio";
 import { bridgeCalloutsToPaper, type BridgeSummary } from "@/lib/callouts/paper-bridge";
 import { envConcurrency, mapLimit } from "@/lib/bounded-concurrency";
 import { routeAgentResults, type RouterSummary } from "@/lib/research/router";
+import { consumeRoutedCandidates, type ConsumerSummary } from "@/lib/research/research-consumer";
 import type { AgentResult } from "@/lib/agents/types";
 
 export interface CalloutBundle {
@@ -47,6 +48,8 @@ export interface CalloutsRunResult {
   paperBridge?: BridgeSummary;
   /** Research lane-router summary (only when the authoritative cycle ran it; empty when flag off). */
   laneRouting?: RouterSummary;
+  /** Independent Challenge/Research consumer summary (empty when lane flags off). */
+  laneConsumption?: ConsumerSummary;
   execution: {
     requestedTickers: string[];
     concurrency: number;
@@ -164,9 +167,15 @@ export async function buildCalloutsForTickers(
   // diagnostics (setup_candidates / lane_routes) — it never sends Discord and never
   // creates a trade — so it cannot alter the production Discord/paper path.
   let laneRouting: RouterSummary | undefined;
+  let laneConsumption: ConsumerSummary | undefined;
   if (opts.deliver) {
     try { laneRouting = routeAgentResults(allResults, nowMs); }
     catch (err: any) { console.warn("[callouts] lane router failed:", err?.message); }
+    // INDEPENDENT Challenge/Research consumers act on the routes just written. HARD
+    // no-op unless RESEARCH_LANE_ENABLED / CHALLENGE_INDEPENDENT_ENABLED; never a
+    // Primary mirror; never sends Discord. Isolated so it can't break the cycle.
+    try { laneConsumption = consumeRoutedCandidates(nowMs); }
+    catch (err: any) { console.warn("[callouts] lane consumer failed:", err?.message); }
   }
 
   // SUPERVISOR→PAPER BRIDGE. Runs only in the authoritative delivery cycle (never on
@@ -311,6 +320,7 @@ export async function buildCalloutsForTickers(
     portfolioSuppressed: review.suppressed.length,
     paperBridge,
     laneRouting,
+    laneConsumption,
     execution: {
       requestedTickers,
       concurrency,

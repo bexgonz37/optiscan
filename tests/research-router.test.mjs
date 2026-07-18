@@ -88,6 +88,7 @@ function memDb() {
       ticker TEXT NOT NULL, direction TEXT, asset_class TEXT, option_symbol TEXT, expiration TEXT, strike REAL,
       side TEXT, horizon TEXT, session TEXT, setup_tier TEXT NOT NULL, confidence REAL, candidate_status TEXT,
       actionability TEXT, freshness_state TEXT, liquidity REAL, spread_pct REAL, volume REAL, open_interest REAL,
+      option_bid REAL, option_ask REAL, option_mid REAL,
       greeks_json TEXT, entry_thesis TEXT, invalidation_thesis TEXT, gate_results_json TEXT,
       rejection_reasons_json TEXT, feature_snapshot_json TEXT, market_regime_json TEXT, consumer_lanes_json TEXT,
       experiment_id TEXT, model_version INTEGER, outcome_json TEXT, originating_ts_ms INTEGER NOT NULL, created_at_ms INTEGER NOT NULL

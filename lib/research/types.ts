@@ -138,6 +138,10 @@ export interface SetupCandidate {
   spreadPct: number | null;
   volume: number | null;
   openInterest: number | null;
+  /** Captured two-sided quote — the ONLY basis for an honest lane fill (never fabricated). */
+  optionBid: number | null;
+  optionAsk: number | null;
+  optionMid: number | null;
   greeks: GreeksSnapshot | null;
 
   // Theses + context

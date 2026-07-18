@@ -19,6 +19,33 @@ const on = (v: string | undefined, d: boolean): boolean => (v == null || v === "
 export const CHALLENGE_PORTFOLIO = "CHALLENGE";
 export const PRIMARY_PORTFOLIO = "PRIMARY";
 export const STOCK_DAY_TRADER_PORTFOLIO = "STOCK_DAY_TRADER";
+/** Independent high-volume RESEARCH portfolio (Phase 3). Paper-only; its own stake,
+ *  sizing, cooldowns, positions, and analytics — never a mirror of Primary. */
+export const RESEARCH_PORTFOLIO = "RESEARCH";
+
+/**
+ * Map RESEARCH's own knobs onto the pure sizer env, mirroring challengeSizingEnv but
+ * reading PAPER_RESEARCH_* (with sensible aggressive-but-bounded defaults). Research
+ * intentionally sizes small-and-broad: a modest per-trade risk so a $10k research
+ * stake can take MANY concurrent experiments rather than a few big ones. Primary's
+ * env is never touched.
+ */
+export function researchSizingEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const num = (v: string | undefined, d: number): number => (Number.isFinite(Number(v)) ? Number(v) : d);
+  const startingBalanceUsd = num(env.PAPER_RESEARCH_STARTING_BALANCE_USD, 10_000);
+  return {
+    ...env,
+    PAPER_RISK_PROFILE: String(env.PAPER_RESEARCH_RISK_PROFILE ?? "aggressive").trim().toLowerCase(),
+    PAPER_STARTING_BALANCE_USD: String(startingBalanceUsd),
+    PAPER_RISK_PER_TRADE_PCT: String(num(env.PAPER_RESEARCH_RISK_PER_TRADE_PCT, 3)),
+    PAPER_MAX_POSITION_PCT: String(num(env.PAPER_RESEARCH_MAX_POSITION_PCT, 20)),
+    PAPER_MAX_TOTAL_EXPOSURE_PCT: String(num(env.PAPER_RESEARCH_MAX_TOTAL_EXPOSURE_PCT, 100)),
+    PAPER_MAX_DAILY_LOSS_PCT: String(num(env.PAPER_RESEARCH_MAX_DAILY_LOSS_PCT, 30)),
+    PAPER_MAX_OPEN_OPTIONS_POSITIONS: String(Math.max(1, Math.trunc(num(env.PAPER_RESEARCH_MAX_OPEN_POSITIONS, 25)))),
+    PAPER_MAX_CONTRACTS_PER_TRADE: String(Math.max(1, Math.trunc(num(env.PAPER_RESEARCH_MAX_CONTRACTS, 50)))),
+    PAPER_MIN_CONTRACTS_PER_TRADE: String(Math.max(1, Math.trunc(num(env.PAPER_RESEARCH_MIN_CONTRACTS, 1)))),
+  };
+}
 
 export type ChallengeStatus = "ACTIVE" | "TARGET_REACHED" | "FAILED";
 

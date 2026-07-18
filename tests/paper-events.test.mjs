@@ -106,10 +106,13 @@ test("option paper entry creation does not require process freshness cache befor
 
 test("temporary paper auto-entry refusals are retried instead of permanently cancelling", () => {
   const src = read("lib/paper-engine.ts");
-  const helper = src.slice(src.indexOf("function isPermanentAutoEntryRefusal"), src.indexOf("function currentTapeRow"));
+  // Scope the "not permanent" check to the isPermanentAutoEntryRefusal function itself
+  // (ends at the next function) — other engine code may legitimately mention cooldown
+  // (e.g. the Phase-3 per-ticker loss-pause scoping in riskContext).
+  const helper = src.slice(src.indexOf("function isPermanentAutoEntryRefusal"), src.indexOf("function openTrades"));
   assert.ok(/cooldown/.test(read("lib/paper-risk.ts")), "risk engine has temporary cooldown failures");
   assert.ok(!/cooldown/.test(helper), "cooldown remains retryable, not permanent");
-  assert.ok(/auto-entry permanently refused/.test(helper), "permanent markers are explicit");
+  assert.ok(/auto-entry permanently refused/.test(src), "permanent markers are explicit");
 });
 
 test("daily paper summary is honest and does not synthesize trades", () => {

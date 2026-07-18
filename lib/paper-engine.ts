@@ -24,7 +24,8 @@ import { checkRisk, defaultRiskConfig, type ProposedTrade, type RiskConfig, type
 import { dollarsAtRisk } from "@/lib/paper-trading";
 import { paperExperimentalOversize, paperMinPositionDollars, paperTargetProfitDollars, unitsForDollarExposure } from "@/lib/paper-sizing";
 import { paperSizingConfig, sizePosition, type PaperSizingConfig, type SizingResult } from "@/lib/paper-position-sizer";
-import { challengeConfig, challengeAcceptsEntries, challengeSizingEnv, challengeSizingExamples, CHALLENGE_PORTFOLIO, PRIMARY_PORTFOLIO, STOCK_DAY_TRADER_PORTFOLIO } from "@/lib/paper-challenge";
+import { challengeConfig, challengeAcceptsEntries, challengeSizingEnv, challengeSizingExamples, researchSizingEnv, CHALLENGE_PORTFOLIO, PRIMARY_PORTFOLIO, STOCK_DAY_TRADER_PORTFOLIO, RESEARCH_PORTFOLIO } from "@/lib/paper-challenge";
+import { realizedLastLossAtMs } from "@/lib/research/cooldown";
 import { actionableFreshness } from "@/lib/data-freshness";
 import type { OptionQuote } from "@/lib/execution/broker";
 import { revalidateContract, type AlertTimeContract, type RevalidationResult } from "@/lib/paper-revalidation";
@@ -524,7 +525,7 @@ function openTrades(portfolio: string = PRIMARY_PORTFOLIO): PaperTrade[] {
 
 // ── Risk context from realized history (scoped per portfolio) ────────────────
 
-export function riskContext(portfolio: string = PRIMARY_PORTFOLIO): RiskContext {
+export function riskContext(portfolio: string = PRIMARY_PORTFOLIO, cooldownTicker?: string | null): RiskContext {
   const db = getDb();
   const dayMs = Date.now() - 24 * 3600_000; // rolling 24h ≈ trading day for paper purposes
   const nowMs = Date.now();
@@ -540,21 +541,12 @@ export function riskContext(portfolio: string = PRIMARY_PORTFOLIO): RiskContext 
       return s + (r.exit_price - r.entry_price) * direction * multiplier * (r.contracts ?? 1);
     }, 0);
   };
-  const recentClosed = db.prepare(
-    `SELECT exit_at_ms, entry_price, exit_price, contracts, option_symbol, option_type FROM paper_trades
-     WHERE exit_at_ms IS NOT NULL AND entry_price IS NOT NULL AND exit_price IS NOT NULL AND COALESCE(portfolio,'PRIMARY')=?
-     ORDER BY exit_at_ms DESC LIMIT 20`,
-  ).all(portfolio) as any[];
-  const lastLoss = recentClosed.find((r) => {
-    const multiplier = r.option_symbol ? 100 : 1;
-    const direction = !r.option_symbol && r.option_type === "put" ? -1 : 1;
-    return (r.exit_price - r.entry_price) * direction * multiplier * (r.contracts ?? 1) < 0;
-  });
   return {
     openTrades: openTrades(portfolio),
     realizedTodayDollars: realized(dayMs),
     realizedWeekDollars: realized(weekMs),
-    lastLossAtMs: lastLoss?.exit_at_ms ?? null,
+    // Per-ticker for the independent lanes (cooldownTicker set); account-wide for Primary.
+    lastLossAtMs: realizedLastLossAtMs(db, portfolio, cooldownTicker ?? null),
     nowMs,
   };
 }
@@ -602,8 +594,14 @@ export interface CreatePaperTradeInput {
   stopLossPct?: number | null;
   takeProfitPct?: number | null;
   thesis?: string | null;
-  /** PRIMARY (default) or CHALLENGE — the independent aggressive portfolio. */
+  /** PRIMARY (default), CHALLENGE, or RESEARCH — independent paper portfolios. */
   portfolio?: string;
+  // Multi-lane research attribution (Phase 3) — frozen on the row so lane/strategy/
+  // tier/setup provenance persists through fill, exit, grading, and training.
+  setupId?: string | null;
+  strategyAgent?: string | null;
+  setupTier?: string | null;
+  lane?: string | null;
 }
 
 export interface CreateResult {
@@ -680,15 +678,22 @@ function createSinglePaperTrade(input: CreatePaperTradeInput): CreateResult {
   // the stop, clamped by every hard cap. The full calc is frozen for the detail page.
   // Contexts + sizing are scoped to the target portfolio (Challenge sizes off its
   // own $10k stake and its own aggressive caps — never Primary's).
-  const portfolio = base.portfolio === CHALLENGE_PORTFOLIO ? CHALLENGE_PORTFOLIO : PRIMARY_PORTFOLIO;
-  const rc = riskContext(portfolio);
+  const portfolio = base.portfolio === CHALLENGE_PORTFOLIO ? CHALLENGE_PORTFOLIO
+    : base.portfolio === RESEARCH_PORTFOLIO ? RESEARCH_PORTFOLIO
+    : PRIMARY_PORTFOLIO;
+  // Loss-pause scope (Phase 3): Primary keeps the stricter ACCOUNT-WIDE pause after a
+  // realized loss; the independent Challenge/Research lanes isolate it PER-TICKER so a
+  // loss on one symbol never freezes unrelated symbols (or the other lane).
+  const rc = riskContext(portfolio, portfolio === PRIMARY_PORTFOLIO ? undefined : base.ticker);
   const cc = capitalContext(Date.now(), portfolio);
-  // Challenge sizes off its OWN aggressive sizer (loss-at-stop budget + 60% ceiling
-  // + its own exposure/daily-loss/contract caps). Primary uses the global config
-  // untouched. challengeSizingEnv maps every PAPER_CHALLENGE_* knob onto the sizer.
+  // Each independent portfolio sizes off its OWN sizer. Challenge: aggressive
+  // loss-at-stop budget + 60% ceiling. Research: small-and-broad (many concurrent
+  // experiments). Primary: the global config, untouched.
   const sizingCfg = portfolio === CHALLENGE_PORTFOLIO
     ? paperSizingConfig(challengeSizingEnv(process.env))
-    : paperSizingConfig();
+    : portfolio === RESEARCH_PORTFOLIO
+      ? paperSizingConfig(researchSizingEnv(process.env))
+      : paperSizingConfig();
   let sizingResult: SizingResult | null = null;
   let contracts = base.contracts;
   if (contracts == null) {
@@ -758,8 +763,9 @@ function createSinglePaperTrade(input: CreatePaperTradeInput): CreateResult {
        (alert_id, ticker, option_symbol, option_type, strike, expiration, dte_at_entry, contracts,
         status, order_state, thesis, confidence, entry_limit, stop_loss_pct, take_profit_pct,
         short_rate_entry, above_vwap_entry, rel_vol_entry, created_at_ms,
-        strategy, selector_profile, alert_time_contract_json, risk_amount, snapshot_version, sizing_json, portfolio)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        strategy, selector_profile, alert_time_contract_json, risk_amount, snapshot_version, sizing_json, portfolio,
+        setup_id, strategy_agent, setup_tier, lane)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?,?,?)`,
   ).run(
     base.alertId ?? null, base.ticker, base.optionSymbol, proposed.optionType,
     base.strike ?? null, base.expiration ?? null, base.dte ?? null, proposed.contracts,
@@ -770,6 +776,7 @@ function createSinglePaperTrade(input: CreatePaperTradeInput): CreateResult {
     strategy, strategy, JSON.stringify(alertTimeContract), riskAmount, 1,
     sizingResult ? JSON.stringify({ ...sizingResult.calc, reason: sizingResult.reason, contracts: proposed.contracts }) : JSON.stringify({ manualContracts: proposed.contracts, reason: "explicit contract count (manual override)" }),
     portfolio,
+    base.setupId ?? null, base.strategyAgent ?? null, base.setupTier ?? null, base.lane ?? null,
   );
   const id = Number(info.lastInsertRowid);
   emitEvents(id, base.alertId ?? null, base.ticker, ["candidate_created", "order_submitted"], { toState: "PENDING", reason: "risk + capital passed; entry order active", nowMs });
@@ -786,6 +793,17 @@ function createSinglePaperTrade(input: CreatePaperTradeInput): CreateResult {
   });
 
   return { ok: true, id, risk, note: `entry limit order active (READY, ${portfolio})`, sizing: (sizingResult?.calc ?? null) as Record<string, unknown> | null };
+}
+
+/**
+ * Public entry for the INDEPENDENT Challenge/Research lane consumers (Phase 3).
+ * Creates a paper trade directly in the target portfolio via the self-contained
+ * single-trade path — it does NOT mirror to Primary and does NOT require a Primary
+ * trade to exist. The same risk/capital/sizing/READY machinery and the existing
+ * fill/exit/grade sweep apply. Callers pass full lane/strategy/tier/setup attribution.
+ */
+export function createLanePaperTrade(input: CreatePaperTradeInput): CreateResult {
+  return createSinglePaperTrade(input);
 }
 
 /**

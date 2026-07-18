@@ -59,12 +59,28 @@ in the design doc §16.
   trade — test-proven). Gates: focused 9/9 · full 1392/1392 · tsc 0 · build 0. Tests:
   `tests/research-router.test.mjs` (9) incl. REJECTED_INVALID never routed, Research can't enter
   Primary, no Discord lane persisted, idempotent routing, flag-off no-op.
-- ⏭️ **Phase 3 — Independent portfolios** (next). Independent Challenge + Research paper
-  consumers (not Primary mirrors), per-lane balances/sizing/cooldowns, per-symbol/per-strategy
-  research controls, Primary min-1-contract, replace global cooldown with per-ticker/per-lane.
-  Files: `lib/research/lane-portfolio.ts`, `lib/research/research-consumer.ts`, changes to
-  `paper-engine.ts`/`paper-risk.ts` behind `CHALLENGE_INDEPENDENT_ENABLED`/`RESEARCH_LANE_ENABLED`.
-- ⬜ Phases 4–9 per design doc §16.
+- ✅ **Phase 3 — Independent portfolios** (commit pending). Independent Challenge + Research
+  paper consumers that act ONLY on persisted routes (`lib/research/research-consumer.ts`) —
+  never a Primary mirror, each filling its own portfolio via the new `createLanePaperTrade`
+  entry (reuses sizing/risk/capital/READY + the existing fill/exit/grade sweep). Per-lane
+  portfolio/cooldown descriptor (`lib/research/lane-portfolio.ts`), RESEARCH sizing env
+  (`paper-challenge.ts researchSizingEnv`), and **per-ticker loss-pause** for the independent
+  lanes via a pure `lib/research/cooldown.ts` (Primary keeps the stricter account-wide pause).
+  Defect fixes: **Primary min-1 contract** (aggressive `minContractsPerTrade` 2→1) and cooldown
+  isolation (cross-lane already per-portfolio; now cross-ticker too). Attribution (setup_id,
+  strategy_agent, setup_tier, lane) frozen on every paper trade; additive `paper_trades` columns
+  + `setup_candidates` option_bid/ask/mid (guarded ALTERs). Wired into `callouts/runtime.ts`
+  after routing, authoritative cycle only, HARD no-op unless `RESEARCH_LANE_ENABLED` /
+  `CHALLENGE_INDEPENDENT_ENABLED`. Gates: full 1404/1404 · tsc 0 · build 0. Tests:
+  `tests/research-consumer.test.mjs` (12) — Challenge/Research create with no Primary, separate
+  portfolios, REJECTED never filled, no-quote never filled, attribution passes, dedup, flag-off
+  no-op, per-lane+per-ticker cooldown isolation, Primary accepts 1 contract / rejects over-cap.
+- ⏭️ **Phase 4 — Strategy-agent framework** (next). Extensible strategy-agent interface +
+  registry; adapt existing horizon+stock agents; add new stock/options/research agents; any
+  agent lacking truthful provider data ships `INACTIVE_MISSING_DATA` (interface+tests, no
+  fabrication). Behind `STRATEGY_AGENTS_V2_ENABLED`. Files: `lib/research/strategy-agent.ts`,
+  `lib/research/strategy-registry.ts`, adapters over `lib/agents/*`.
+- ⬜ Phases 5–9 per design doc §16.
 
 **Safety invariants held every phase:** BEARISH_ACTIONABLE off; bearish-gate authoritative;
 puts research-only; paper-only; no fabricated data/quotes; no polyFetch bypass; AI never

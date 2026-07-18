@@ -36,15 +36,15 @@ export function captureSetupCandidateOnDb(db: CaptureDb, c: SetupCandidate, nowM
       (setup_id, trading_day, strategy_agent, strategy_family, strategy_version, agent_version,
        ticker, direction, asset_class, option_symbol, expiration, strike, side, horizon, session,
        setup_tier, confidence, candidate_status, actionability, freshness_state, liquidity, spread_pct,
-       volume, open_interest, greeks_json, entry_thesis, invalidation_thesis, gate_results_json,
+       volume, open_interest, option_bid, option_ask, option_mid, greeks_json, entry_thesis, invalidation_thesis, gate_results_json,
        rejection_reasons_json, feature_snapshot_json, market_regime_json, consumer_lanes_json,
        experiment_id, model_version, outcome_json, originating_ts_ms, created_at_ms)
-     VALUES (?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?, ?,?,?,?,?,?, ?,?,?,?, ?,?,?,?,?)`,
+     VALUES (?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?,?)`,
   ).run(
     c.setupId, tradingDayOf(c), c.strategyAgent, c.strategyFamily ?? null, c.strategyVersion ?? null, c.agentVersion ?? null,
     c.ticker, c.direction, c.assetClass, c.optionSymbol, c.expiration, c.strike, c.side, c.horizon, c.session,
     c.setupTier, c.confidence, c.candidateStatus, c.actionability, c.freshnessState, c.liquidity, c.spreadPct,
-    c.volume, c.openInterest, j(c.greeks), c.entryThesis, c.invalidationThesis, j(c.gateResults),
+    c.volume, c.openInterest, c.optionBid, c.optionAsk, c.optionMid, j(c.greeks), c.entryThesis, c.invalidationThesis, j(c.gateResults),
     j(c.rejectionReasons), j(c.featureSnapshot), j(c.marketRegimeContext), j(c.consumerLanes),
     c.experimentId, c.modelVersion, j(c.outcome), c.originatingTsMs, nowMs,
   );

@@ -76,7 +76,7 @@ test("daily-loss cap stops new sizing", () => {
 });
 
 test("rejects when minimum contracts cannot fit inside caps", () => {
-  // aggressive min 2 contracts, but a $50 premium ($5000/contract) with $2000 position cap fits 0.
+  // aggressive min 1 contract, but a $50 premium ($5000/contract) with $2000 position cap fits 0 → still rejected.
   const r = sizePosition(baseInput({ entryPrice: 50, stopLossPct: 1 }), paperSizingConfig({ PAPER_RISK_PROFILE: "aggressive" }));
   assert.equal(r.rejected, true);
   assert.match(r.reason, /minimum/);

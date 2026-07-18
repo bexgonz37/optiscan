@@ -50,7 +50,10 @@ export function profileDefaults(profile: PaperRiskProfile): Omit<PaperSizingConf
     case "conservative":
       return { riskPerTradePct: 0.5, maxPositionPct: 5, maxTotalExposurePct: 15, maxOpenOptionsPositions: 3, maxDailyLossPct: 3, maxContractsPerTrade: 5, minContractsPerTrade: 1, zeroDteRiskMultiplier: 0.5 };
     case "aggressive":
-      return { riskPerTradePct: 2.0, maxPositionPct: 20, maxTotalExposurePct: 60, maxOpenOptionsPositions: 8, maxDailyLossPct: 8, maxContractsPerTrade: 25, minContractsPerTrade: 2, zeroDteRiskMultiplier: 0.7 };
+      // minContractsPerTrade is 1 (Phase 3 fix): a "minimum two contracts" rule is
+      // not a risk control — it only rejects honest one-contract trades that fit every
+      // hard cap. One contract is the natural floor; the caps still bound the max size.
+      return { riskPerTradePct: 2.0, maxPositionPct: 20, maxTotalExposurePct: 60, maxOpenOptionsPositions: 8, maxDailyLossPct: 8, maxContractsPerTrade: 25, minContractsPerTrade: 1, zeroDteRiskMultiplier: 0.7 };
     case "standard":
     default:
       return { riskPerTradePct: 1.0, maxPositionPct: 10, maxTotalExposurePct: 30, maxOpenOptionsPositions: 5, maxDailyLossPct: 5, maxContractsPerTrade: 10, minContractsPerTrade: 1, zeroDteRiskMultiplier: 0.6 };
