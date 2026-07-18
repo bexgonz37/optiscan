@@ -23,6 +23,8 @@ import { deliverCalloutDiscord, discordWebhookConfigured } from "@/lib/notificat
 import { reviewPortfolio } from "@/lib/agents/portfolio";
 import { bridgeCalloutsToPaper, type BridgeSummary } from "@/lib/callouts/paper-bridge";
 import { envConcurrency, mapLimit } from "@/lib/bounded-concurrency";
+import { routeAgentResults, type RouterSummary } from "@/lib/research/router";
+import type { AgentResult } from "@/lib/agents/types";
 
 export interface CalloutBundle {
   callout: Callout;
@@ -43,6 +45,8 @@ export interface CalloutsRunResult {
   portfolioSuppressed?: number;
   /** Supervisor→paper bridge summary (only when the authoritative cycle ran it). */
   paperBridge?: BridgeSummary;
+  /** Research lane-router summary (only when the authoritative cycle ran it; empty when flag off). */
+  laneRouting?: RouterSummary;
   execution: {
     requestedTickers: string[];
     concurrency: number;
@@ -125,6 +129,9 @@ export async function buildCalloutsForTickers(
         durationMs: Date.now() - started,
         canonical: run.supervised.canonical.length,
         callouts: run.supervised.canonical.map((r) => buildCallout(r)),
+        // Raw canonical agent verdicts — consumed ONLY by the flag-gated research
+        // lane router below (never by the Discord/paper production path).
+        results: run.supervised.canonical as AgentResult[],
       };
     } catch (err: any) {
       // A single ticker failure never aborts the batch.
@@ -135,11 +142,13 @@ export async function buildCalloutsForTickers(
         canonical: 0,
         error: String(err?.message ?? err).slice(0, 180),
         callouts: [] as Callout[],
+        results: [] as AgentResult[],
       };
     }
   });
   const built = runResults.flatMap((r) => r.callouts);
-  const tickerResults = runResults.map(({ callouts, ...r }) => r);
+  const allResults = runResults.flatMap((r) => r.results ?? []);
+  const tickerResults = runResults.map(({ callouts, results, ...r }) => r);
 
   // PORTFOLIO-MANAGER pass (agents/portfolio.ts): anti-chase, thesis
   // reconciliation (no contradictory bull+bear actionables per ticker), quality
@@ -148,6 +157,17 @@ export async function buildCalloutsForTickers(
   const review = reviewPortfolio(built);
   const callouts = review.callouts;
   const eligible = review.eligibleKeys;
+
+  // RESEARCH LANE ROUTER (Phase 2). Branches research from the RAW canonical agent
+  // verdicts BEFORE Discord dedup + production eligibility run below. Authoritative
+  // cycle only, and a HARD no-op unless LANE_ROUTER_ENABLED=1. It only writes
+  // diagnostics (setup_candidates / lane_routes) — it never sends Discord and never
+  // creates a trade — so it cannot alter the production Discord/paper path.
+  let laneRouting: RouterSummary | undefined;
+  if (opts.deliver) {
+    try { laneRouting = routeAgentResults(allResults, nowMs); }
+    catch (err: any) { console.warn("[callouts] lane router failed:", err?.message); }
+  }
 
   // SUPERVISOR→PAPER BRIDGE. Runs only in the authoritative delivery cycle (never on
   // read-only API fetches) so a GET never creates trades. It is independent of Discord
@@ -290,6 +310,7 @@ export async function buildCalloutsForTickers(
     portfolioEligible: eligible.size,
     portfolioSuppressed: review.suppressed.length,
     paperBridge,
+    laneRouting,
     execution: {
       requestedTickers,
       concurrency,

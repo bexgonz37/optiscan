@@ -990,6 +990,25 @@ CREATE TABLE IF NOT EXISTS setup_gate_results (
 );
 CREATE INDEX IF NOT EXISTS idx_setup_gate_results_setup ON setup_gate_results(setup_id);
 CREATE INDEX IF NOT EXISTS idx_setup_gate_results_gate ON setup_gate_results(gate_name, passed);
+
+-- Multi-lane research rebuild (Phase 2). Persisted lane-routing decisions — one row
+-- per (setup, lane) with an explicit reason code. Written only when
+-- LANE_ROUTER_ENABLED=1; the router never controls Production Discord (that stays
+-- governed by lib/callouts/eligibility.ts). PURELY ADDITIVE. UNIQUE(setup_id,lane)
+-- makes re-routing within a day idempotent.
+CREATE TABLE IF NOT EXISTS lane_routes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  setup_id TEXT NOT NULL,
+  lane TEXT NOT NULL,                     -- PRIMARY_PAPER | CHALLENGE_PAPER | RESEARCH | ...
+  routed INTEGER NOT NULL,                -- 1 | 0
+  reason_code TEXT NOT NULL,
+  reason TEXT,
+  setup_tier TEXT,
+  created_at_ms INTEGER NOT NULL,
+  UNIQUE(setup_id, lane)
+);
+CREATE INDEX IF NOT EXISTS idx_lane_routes_lane ON lane_routes(lane, routed, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_lane_routes_setup ON lane_routes(setup_id);
 `;
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */

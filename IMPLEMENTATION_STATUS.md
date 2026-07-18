@@ -48,12 +48,23 @@ in the design doc §16.
   Gates: focused 17/17 · full 1383/1383 · tsc 0 · build 0. Tests:
   `tests/research-tiering-capture.test.mjs` (11) incl. idempotent capture on real in-memory
   sqlite + repeat-safe DDL + flag-off no-op.
-- ⏭️ **Phase 2 — Lane router + eligibility separation** (next). Add `lib/research/router.ts`
-  (per-lane eligibility → persisted `lane_routes`), branch RESEARCH before Discord
-  dedup/eligibility, wire flag-gated capture+routing into `lib/callouts/runtime.ts`. Production
-  Discord path unchanged when `LANE_ROUTER_ENABLED!=1`. Files: `lib/research/router.ts`,
-  `lib/research/lane-policy.ts`, migration `lane_routes`, wiring in `callouts/runtime.ts`.
-- ⬜ Phases 3–9 per design doc §16.
+- ✅ **Phase 2 — Lane router + eligibility separation** (commit pending). Pure per-lane
+  policy (`lib/research/lane-policy.ts`: Primary=PRODUCTION_QUALITY; Challenge=PROD+EXPERIMENTAL;
+  Research=PROD+EXPERIMENTAL+NEAR_MISS with a defensible quote; REJECTED_INVALID never routes;
+  **Discord is NOT a router lane**). Flag-gated router (`lib/research/router.ts`) with a testable
+  OnDb core persists candidates + explicit per-lane routes to the additive `lane_routes` table
+  (`lib/db.ts` +19). Wired into `lib/callouts/runtime.ts` (+23/-1) BEFORE Discord dedup, in the
+  authoritative (`opts.deliver`) cycle only, self-gating on `LANE_ROUTER_ENABLED` (default OFF)
+  → production path byte-identical; router writes only diagnostics (never Discord, never a
+  trade — test-proven). Gates: focused 9/9 · full 1392/1392 · tsc 0 · build 0. Tests:
+  `tests/research-router.test.mjs` (9) incl. REJECTED_INVALID never routed, Research can't enter
+  Primary, no Discord lane persisted, idempotent routing, flag-off no-op.
+- ⏭️ **Phase 3 — Independent portfolios** (next). Independent Challenge + Research paper
+  consumers (not Primary mirrors), per-lane balances/sizing/cooldowns, per-symbol/per-strategy
+  research controls, Primary min-1-contract, replace global cooldown with per-ticker/per-lane.
+  Files: `lib/research/lane-portfolio.ts`, `lib/research/research-consumer.ts`, changes to
+  `paper-engine.ts`/`paper-risk.ts` behind `CHALLENGE_INDEPENDENT_ENABLED`/`RESEARCH_LANE_ENABLED`.
+- ⬜ Phases 4–9 per design doc §16.
 
 **Safety invariants held every phase:** BEARISH_ACTIONABLE off; bearish-gate authoritative;
 puts research-only; paper-only; no fabricated data/quotes; no polyFetch bypass; AI never
