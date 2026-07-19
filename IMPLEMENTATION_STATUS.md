@@ -125,14 +125,28 @@ in the design doc §16.
   auto-applies). Additive tables `ai_research_runs`, `ai_research_findings`, `research_proposals`,
   `ai_training_rows`. Live runner HARD no-op unless `AI_RESEARCH_PIPELINE_ENABLED`; not auto-wired.
   Gates: focused 15/15 · full 1450/1450 · tsc 0 · build 0. Tests: `tests/research-ai-pipeline.test.mjs`.
-- ⏭️ **Phase 7 — Historical replay** (next). Bounded, point-in-time replay: STOCK via `/v2/aggs`
-  real OHLCV (deterministic clock, no look-ahead, documented slippage/fees, reproducible experiment
-  ids, checkpoints, cost/rate-limit controls); OPTIONS only from genuinely-available historical
-  fields (no invented Greeks/NBBO/OI/spreads; separate contract-price observation from executable
-  simulation). If truthful options replay isn't entitled, ship infra INACTIVE + document blocker.
-  Behind `HISTORICAL_REPLAY_ENABLED`. Additive tables `replay_runs`, `replay_bars`/`replay_outcomes`.
-  Files: `lib/research/historical-replay.ts`, `lib/research/replay-provider.ts`.
-- ⬜ Phases 8–9 per design doc §16.
+- ✅ **Phase 7 — Historical replay** (commit pending). Bounded, point-in-time replay.
+  `lib/research/historical-replay.ts`: deterministic, **no-look-ahead** stock replay (signal at
+  bar i uses only bars[0..i]; next-bar-open fill; a closed trade depends only on bars[0..exit] —
+  test-proven by appending wild future bars), documented slippage/fees, reproducible experiment ids
+  (order-independent stable hash), resumable checkpoints + UNIQUE(run,symbol,entry) idempotency,
+  provider-call budget. `lib/research/replay-provider.ts`: honest capability report — STOCK
+  AVAILABLE via `/v2/aggs`; **OPTIONS `INACTIVE_MISSING_PROVIDER`** (historical Greeks/NBBO/OI/
+  spreads not entitled; each missing field listed, never fabricated; options runs record the
+  blocker and produce zero outcomes). Additive tables `replay_runs`, `replay_outcomes`. Live
+  driver HARD no-op unless `HISTORICAL_REPLAY_ENABLED`; not auto-wired. Gates: focused 9/9 · full
+  1459/1459 · tsc 0 · build 0. Tests: `tests/research-replay.test.mjs`.
+
+  **Provider limitation (documented blocker):** historical OPTIONS replay cannot be truthfully
+  activated — the current Polygon/Massive integration supplies only a present-time
+  `/v3/snapshot/options`; historical option quotes/Greeks/NBBO/OI/spreads are not integrated or
+  entitled. Options-replay infrastructure ships complete but explicitly inactive.
+- ⏭️ **Phase 8 — Diagnostics & UI** (next). Update the existing Terminal/Funnel/Paper/AI pages +
+  diagnostics to separate Production/Discord/Primary/Challenge/Research/Experiments/Counterfactuals/
+  Replay/Strategy-agents/AI/Proposals; show tier/agent/lane/enrollment/gate-effectiveness/model/
+  proposal counts + provider limitations + expected-closed vs actual-error. Read-only; no secrets.
+  Likely a new read-only diagnostics API route aggregating the research tables + capability reports.
+- ⬜ Phase 9 per design doc §16.
 
 **Safety invariants held every phase:** BEARISH_ACTIONABLE off; bearish-gate authoritative;
 puts research-only; paper-only; no fabricated data/quotes; no polyFetch bypass; AI never

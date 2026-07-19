@@ -1147,6 +1147,49 @@ CREATE TABLE IF NOT EXISTS ai_training_rows (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_training_kind ON ai_training_rows(source_kind, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_ai_training_agent ON ai_training_rows(strategy_agent, strategy_version);
+
+-- Multi-lane research rebuild (Phase 7). Bounded, point-in-time historical replay.
+-- PURELY ADDITIVE. STOCK replay uses real /v2/aggs OHLCV. OPTIONS replay ships INACTIVE
+-- (INACTIVE_MISSING_PROVIDER) — the current plan/integration does not supply historical
+-- option quotes/Greeks/NBBO/OI/spreads, and none are ever fabricated.
+CREATE TABLE IF NOT EXISTS replay_runs (
+  run_id TEXT PRIMARY KEY,
+  experiment_id TEXT NOT NULL,            -- deterministic hash of (symbols,range,strategy,config) — reproducible
+  asset_class TEXT NOT NULL,              -- stock | option
+  symbols_json TEXT NOT NULL,
+  date_from TEXT NOT NULL,
+  date_to TEXT NOT NULL,
+  timespan TEXT NOT NULL,                 -- minute | day | ...
+  strategy_version INTEGER NOT NULL,
+  config_json TEXT,
+  status TEXT NOT NULL,                   -- PENDING | RUNNING | COMPLETED | PAUSED | ERROR | INACTIVE_MISSING_PROVIDER
+  checkpoint_json TEXT,                   -- last completed symbol (resume-safe)
+  provider_calls INTEGER NOT NULL DEFAULT 0,
+  provider_call_budget INTEGER NOT NULL DEFAULT 0,
+  provider_limitations TEXT,
+  error TEXT,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+
+-- One row per replayed trade/observation. kind distinguishes an EXECUTABLE stock
+-- simulation from a mere CONTRACT-PRICE OBSERVATION (options, where only OHLCV exists).
+CREATE TABLE IF NOT EXISTS replay_outcomes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL,
+  experiment_id TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  asset_class TEXT NOT NULL,
+  strategy_version INTEGER,
+  kind TEXT NOT NULL,                     -- executable_stock | contract_price_observation
+  entry_ts_ms INTEGER, exit_ts_ms INTEGER,
+  entry_price REAL, exit_price REAL, return_pct REAL, mfe_pct REAL, mae_pct REAL,
+  bars_used INTEGER, slippage_bps REAL, fees REAL, exit_reason TEXT, note TEXT,
+  created_at_ms INTEGER NOT NULL,
+  UNIQUE(run_id, symbol, entry_ts_ms)
+);
+CREATE INDEX IF NOT EXISTS idx_replay_outcomes_run ON replay_outcomes(run_id);
+CREATE INDEX IF NOT EXISTS idx_replay_outcomes_exp ON replay_outcomes(experiment_id, symbol);
 `;
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */
