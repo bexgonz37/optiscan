@@ -25,6 +25,11 @@ import { bridgeCalloutsToPaper, type BridgeSummary } from "@/lib/callouts/paper-
 import { envConcurrency, mapLimit } from "@/lib/bounded-concurrency";
 import { routeAgentResults, type RouterSummary } from "@/lib/research/router";
 import { consumeRoutedCandidates, type ConsumerSummary } from "@/lib/research/research-consumer";
+import { captureSetupCandidates, type CaptureResult } from "@/lib/research/capture";
+import { agentResultToSetupCandidate } from "@/lib/research/adapter";
+import { researchFlags } from "@/lib/research/flags";
+import { tradingDay, marketSession } from "@/lib/trading-session";
+import type { MarketSessionName } from "@/lib/research/types";
 import type { AgentResult } from "@/lib/agents/types";
 
 export interface CalloutBundle {
@@ -46,6 +51,8 @@ export interface CalloutsRunResult {
   portfolioSuppressed?: number;
   /** Supervisor→paper bridge summary (only when the authoritative cycle ran it). */
   paperBridge?: BridgeSummary;
+  /** Stage-1 capture-only summary (only when the authoritative cycle ran it; absent when the capture flag is off). */
+  candidateCapture?: CaptureResult;
   /** Research lane-router summary (only when the authoritative cycle ran it; empty when flag off). */
   laneRouting?: RouterSummary;
   /** Independent Challenge/Research consumer summary (empty when lane flags off). */
@@ -166,9 +173,24 @@ export async function buildCalloutsForTickers(
   // cycle only, and a HARD no-op unless LANE_ROUTER_ENABLED=1. It only writes
   // diagnostics (setup_candidates / lane_routes) — it never sends Discord and never
   // creates a trade — so it cannot alter the production Discord/paper path.
+  let candidateCapture: CaptureResult | undefined;
   let laneRouting: RouterSummary | undefined;
   let laneConsumption: ConsumerSummary | undefined;
   if (opts.deliver) {
+    // STAGE-1 CAPTURE-ONLY. When SETUP_CANDIDATE_CAPTURE_ENABLED=1 this shadow-captures
+    // the canonical agent verdicts into setup_candidates / setup_gate_results WITHOUT the
+    // router (no lane_routes) and WITHOUT touching Discord or paper. Reuses the existing
+    // flag-gated captureSetupCandidates (idempotent INSERT OR IGNORE on setup_id). HARD
+    // no-op when the flag is off (guarded here so the adapter cost is only paid when on),
+    // and isolated so a capture failure can never interrupt Discord or paper execution.
+    if (researchFlags().setupCandidateCapture) {
+      try {
+        const session = marketSession(nowMs) as MarketSessionName;
+        const day = tradingDay(nowMs);
+        const candidates = allResults.map((r) => agentResultToSetupCandidate(r, { tradingDay: day, session }));
+        candidateCapture = captureSetupCandidates(candidates, nowMs);
+      } catch (err: any) { console.warn("[callouts] candidate capture failed:", err?.message); }
+    }
     try { laneRouting = routeAgentResults(allResults, nowMs); }
     catch (err: any) { console.warn("[callouts] lane router failed:", err?.message); }
     // INDEPENDENT Challenge/Research consumers act on the routes just written. HARD
@@ -319,6 +341,7 @@ export async function buildCalloutsForTickers(
     portfolioEligible: eligible.size,
     portfolioSuppressed: review.suppressed.length,
     paperBridge,
+    candidateCapture,
     laneRouting,
     laneConsumption,
     execution: {

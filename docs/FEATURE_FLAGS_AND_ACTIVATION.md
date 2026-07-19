@@ -25,9 +25,15 @@ semantics and are unchanged by the rebuild. **`BEARISH_ACTIONABLE` must remain o
 Each stage: set the flag → observe the validation window → check expected metrics → abort/rollback
 if an abort condition trips (rollback = unset the flag; all writes are additive + idempotent).
 
-**Stage 1 — Capture.** Flag: `SETUP_CANDIDATE_CAPTURE_ENABLED=1`. Metric: `setup_candidates` rows
-accrue during RTH; tier distribution looks sane. Abort: rows never appear during RTH, or tier
-skew is all REJECTED_INVALID during RTH. Rollback: unset flag (no data path depends on it).
+**Stage 1 — Capture.** Flag: `SETUP_CANDIDATE_CAPTURE_ENABLED=1`. **Wiring:** capture-only runs in
+the authoritative supervisor cycle (`callouts/runtime.ts`, inside `opts.deliver`) — it shadow-captures
+the canonical agent verdicts into `setup_candidates` / `setup_gate_results` via the existing
+`captureSetupCandidates` wrapper, **without** the router (no `lane_routes`) and without touching
+Discord or paper. **Prerequisite:** the authoritative supervisor cycle must be running in production
+(verify via `/api/runtime/status`); off-hours DATA_STALE is expected. Metric: `setup_candidates` rows
+accrue during RTH; tier distribution looks sane; Discord/Primary unchanged. Abort: rows never appear
+during RTH, tier skew is all REJECTED_INVALID during RTH, or any change to Discord/Primary. Rollback:
+unset flag — the capture path becomes an immediate no-op (no data path depends on it).
 
 **Stage 2 — Lane Router.** Flag: `LANE_ROUTER_ENABLED=1`. Metric: `lane_routes` populate;
 `RESEARCH.routed > 0`; **Discord counts unchanged**. Abort: any change to Discord considered/

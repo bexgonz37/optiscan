@@ -173,6 +173,16 @@ in the design doc §16.
 Production behavior unchanged; every new capability OFF by default and safe to activate per the
 staged plan. See `docs/RESEARCH_PLATFORM_ARCHITECTURE.md` for the authoritative map.
 
+**Operational fix (post-rebuild, Stage-1 pre-activation):** a validation pass found that
+`SETUP_CANDIDATE_CAPTURE_ENABLED` was a *dormant* flag — the only writer of `setup_candidates`
+(`captureSetupCandidateOnDb`) was reachable only via the router (`LANE_ROUTER_ENABLED`), so "capture
+only" could not run. Fixed by wiring the existing flag-gated `captureSetupCandidates` into the
+authoritative `opts.deliver` cycle in `lib/callouts/runtime.ts` — capture-only now genuinely runs
+under `SETUP_CANDIDATE_CAPTURE_ENABLED=1` **without** the router (no `lane_routes`) and without
+touching Discord/paper. Additive, default OFF, failure-isolated, idempotent. Tests:
+`tests/research-capture-wiring.test.mjs`. Full suite 1481/1481. **Stage-1 flag NOT enabled in
+Railway — awaiting owner approval to activate + validate.**
+
 **Safety invariants held every phase:** BEARISH_ACTIONABLE off; bearish-gate authoritative;
 puts research-only; paper-only; no fabricated data/quotes; no polyFetch bypass; AI never
 overrides deterministic gates; Discord stays selective; migrations additive+repeat-safe;
