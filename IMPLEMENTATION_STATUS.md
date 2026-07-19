@@ -75,12 +75,34 @@ in the design doc §16.
   `tests/research-consumer.test.mjs` (12) — Challenge/Research create with no Primary, separate
   portfolios, REJECTED never filled, no-quote never filled, attribution passes, dedup, flag-off
   no-op, per-lane+per-ticker cooldown isolation, Primary accepts 1 contract / rejects over-cap.
-- ⏭️ **Phase 4 — Strategy-agent framework** (next). Extensible strategy-agent interface +
-  registry; adapt existing horizon+stock agents; add new stock/options/research agents; any
-  agent lacking truthful provider data ships `INACTIVE_MISSING_DATA` (interface+tests, no
-  fabrication). Behind `STRATEGY_AGENTS_V2_ENABLED`. Files: `lib/research/strategy-agent.ts`,
-  `lib/research/strategy-registry.ts`, adapters over `lib/agents/*`.
-- ⬜ Phases 5–9 per design doc §16.
+- ✅ **Phase 4 — Strategy-agent framework** (commit pending). Typed `StrategyAgent` interface
+  + shared `StrategyEvaluationContext` (`lib/research/strategy-agent.ts`), versioned registry
+  with dedup / deterministic ordering / status filtering / capability report / per-agent
+  failure isolation / flag-gated `evaluateAgents` (`lib/research/strategy-registry.ts`), and 27
+  concrete agents (`lib/research/strategy-agents.ts`). 100% ADDITIVE — no existing file changed,
+  no migrations, and the framework is **not wired into the production cycle** (test-proven);
+  HARD no-op unless `STRATEGY_AGENTS_V2_ENABLED=1`. Agents emit normalized SetupCandidates only
+  — never Discord, trades, routing, or gate bypass (structurally + test enforced). Gates:
+  focused 14/14 · full 1418/1418 · tsc 0 · build 0. Tests: `tests/research-strategy-agents.test.mjs`.
+
+  **Agent registry (27):**
+  - **ACTIVE producers (10)** — options horizon adapters over the existing agents (reuse the
+    shared per-ticker AgentResults; setup_id/attribution matches): `call_{0DTE,1-5,6-10,11-35,36-90}`
+    (Calls) + `put_research_{…}` (Puts Research; research-only via bearish-gate→tiering→router).
+  - **ACTIVE context/review (5)** — `options_liquidity_contract`, `volatility_iv_context` (context),
+    `market_regime` (context), `risk_agent` (review, no trades), `data_quality` (review, cannot
+    relax freshness). Emit no candidates.
+  - **INACTIVE_MISSING_DATA (12)** — stock: `momentum_acceleration` (needs stock features in
+    context), `breakout`, `news_catalyst`, `premarket_afterhours`, `reversal`, `sector_sympathy`;
+    options: `earnings_options_research` (earnings calendar); research: `trade_review`,
+    `counterfactual_review`, `pattern_discovery`, `strategy_evaluation`, `portfolio_allocation_research`
+    (all need the Phase-5 ledger/graded outcomes). Each lists its exact missing fields; emits nothing.
+- ⏭️ **Phase 5 — Research experiment ledger + counterfactuals** (next). Experiment definitions,
+  candidate enrollment, realistic fills / non-fill tracking, MFE/MAE/outcomes, counterfactual
+  grading (rejected + near-miss, never pretending executable), gate-effectiveness + strategy/
+  regime/options analytics. Additive tables `research_experiments`, `research_fills`,
+  `counterfactual_outcomes`. Files: `lib/research/experiment-ledger.ts`, `lib/research/counterfactual.ts`.
+- ⬜ Phases 6–9 per design doc §16.
 
 **Safety invariants held every phase:** BEARISH_ACTIONABLE off; bearish-gate authoritative;
 puts research-only; paper-only; no fabricated data/quotes; no polyFetch bypass; AI never
