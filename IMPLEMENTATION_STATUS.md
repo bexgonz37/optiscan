@@ -159,14 +159,19 @@ in the design doc §16.
   module read-only guards.
   Note: shipped as a dedicated consolidated `/research` view (reachable directly). Wiring a nav
   link into the existing shell is a Phase-9 polish item.
-- ⏭️ **Phase 9 — Cleanup & final verification** (next). Legacy-path audit (legacy
-  `autoEnterFromAlerts` vs supervisor bridge; "research-tier label" vs real research lane;
-  account-wide cooldown assumptions), document ONE authoritative component per concern, add
-  `docs/RESEARCH_PLATFORM_ARCHITECTURE.md` / `FEATURE_FLAGS_AND_ACTIVATION.md` /
-  `OPERATIONS_RUNBOOK.md` / `MIGRATION_AND_ROLLBACK.md` / `NEXT_MARKET_SESSION_VALIDATION.md`,
-  staged activation sequence (capture → router → research-enroll → research-fills → challenge →
-  agents-v2 → counterfactual → AI → replay), rollback order, final verification matrix + safety
-  invariant checklist. Docs + tests only; no production activation.
+- ✅ **Phase 9 — Cleanup & final verification** (commit pending). Legacy-path audit (all legacy
+  paths gated/isolated/safe → documented, none removed: `autoEnterFromAlerts` suppressed under the
+  canonical supervisor path; `maybeMirrorToChallenge` retained for `PAPER_CHALLENGE_ENABLED`
+  back-compat alongside the independent consumer; `alert_tier='research'` label distinct from the
+  Research lane; agents have no trade/Discord path). Documented ONE authoritative owner per concern.
+  Added `docs/RESEARCH_PLATFORM_ARCHITECTURE.md`, `FEATURE_FLAGS_AND_ACTIVATION.md`,
+  `OPERATIONS_RUNBOOK.md`, `MIGRATION_AND_ROLLBACK.md`, `NEXT_MARKET_SESSION_VALIDATION.md` (staged
+  activation + rollback order + verification checklist + safety invariants). Docs-only; **no code
+  changed, no flag enabled, no migration**. Final gates: full 1474/1474 · tsc 0 · build 0.
+
+**🏁 REBUILD COMPLETE (Phases 0–9).** Baseline `ac4f045` (1366 tests) → final `main` (1474 tests).
+Production behavior unchanged; every new capability OFF by default and safe to activate per the
+staged plan. See `docs/RESEARCH_PLATFORM_ARCHITECTURE.md` for the authoritative map.
 
 **Safety invariants held every phase:** BEARISH_ACTIONABLE off; bearish-gate authoritative;
 puts research-only; paper-only; no fabricated data/quotes; no polyFetch bypass; AI never

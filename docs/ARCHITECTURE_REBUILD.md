@@ -1,6 +1,11 @@
 # OptiScan Multi-Lane Research Architecture — Design Contract
 
-**Status:** Phase 0 (design contract). Baseline commit `ac4f045`, branch `main`.
+**Status: ✅ REBUILD COMPLETE (Phases 0–9).** This is the original design contract; the final
+authoritative architecture map is `docs/RESEARCH_PLATFORM_ARCHITECTURE.md`, and activation/rollback
+live in `docs/FEATURE_FLAGS_AND_ACTIVATION.md`. All phases shipped on `main`; every new capability
+is OFF by default and production behavior is unchanged.
+
+_(Original design contract below — Phase 0.)_ Baseline commit `ac4f045`, branch `main`.
 **Owner-approved** architecture review is the source of intent; this document is the
 implementation contract every subsequent phase must honor.
 
