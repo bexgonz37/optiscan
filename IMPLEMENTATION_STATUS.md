@@ -141,12 +141,32 @@ in the design doc §16.
   activated — the current Polygon/Massive integration supplies only a present-time
   `/v3/snapshot/options`; historical option quotes/Greeks/NBBO/OI/spreads are not integrated or
   entitled. Options-replay infrastructure ships complete but explicitly inactive.
-- ⏭️ **Phase 8 — Diagnostics & UI** (next). Update the existing Terminal/Funnel/Paper/AI pages +
-  diagnostics to separate Production/Discord/Primary/Challenge/Research/Experiments/Counterfactuals/
-  Replay/Strategy-agents/AI/Proposals; show tier/agent/lane/enrollment/gate-effectiveness/model/
-  proposal counts + provider limitations + expected-closed vs actual-error. Read-only; no secrets.
-  Likely a new read-only diagnostics API route aggregating the research tables + capability reports.
-- ⬜ Phase 9 per design doc §16.
+- ✅ **Phase 8 — Diagnostics & UI** (commit pending). Read-only research operations view.
+  `lib/research/overview.ts`: pure aggregation over PERSISTED state + flag config only — 11
+  failure-isolated sections (capabilities, candidate funnel, lane routing, portfolios,
+  experiments, counterfactuals, gate-effectiveness, strategy agents, AI research, replay,
+  session/provider) + a recursive `scrubSecrets` (drops any token/key/webhook/credential/env
+  key). `app/api/research/overview/route.ts`: token-gated by the SAME shared auth (no weaker
+  path), read-only, no provider calls, no mutations, fails safely. `app/research/page.tsx`:
+  standalone read-only page — summary cards first (capabilities with honest ACTIVE/INACTIVE
+  badges, tier counts, independent portfolios) + drill-down sections; clear empty/inactive/
+  missing-provider states; **no write controls; paper-only labeling**. 100% ADDITIVE (no
+  existing file modified, no migrations). Gates: focused 15/15 · full 1474/1474 · tsc 0 · build 0.
+  Tests: `tests/research-overview.test.mjs` — sections separated, Discord not router-controlled,
+  tiers separated, portfolios independent, rejected never filled, executable vs observation
+  distinct, agents honestly inactive, AI advisory-only, options replay missing-provider,
+  MARKET_CLOSED ≠ PROVIDER_ERROR, NO secret/webhook leakage, section failure isolation, route/
+  module read-only guards.
+  Note: shipped as a dedicated consolidated `/research` view (reachable directly). Wiring a nav
+  link into the existing shell is a Phase-9 polish item.
+- ⏭️ **Phase 9 — Cleanup & final verification** (next). Legacy-path audit (legacy
+  `autoEnterFromAlerts` vs supervisor bridge; "research-tier label" vs real research lane;
+  account-wide cooldown assumptions), document ONE authoritative component per concern, add
+  `docs/RESEARCH_PLATFORM_ARCHITECTURE.md` / `FEATURE_FLAGS_AND_ACTIVATION.md` /
+  `OPERATIONS_RUNBOOK.md` / `MIGRATION_AND_ROLLBACK.md` / `NEXT_MARKET_SESSION_VALIDATION.md`,
+  staged activation sequence (capture → router → research-enroll → research-fills → challenge →
+  agents-v2 → counterfactual → AI → replay), rollback order, final verification matrix + safety
+  invariant checklist. Docs + tests only; no production activation.
 
 **Safety invariants held every phase:** BEARISH_ACTIONABLE off; bearish-gate authoritative;
 puts research-only; paper-only; no fabricated data/quotes; no polyFetch bypass; AI never
