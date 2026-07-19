@@ -97,12 +97,29 @@ in the design doc §16.
     options: `earnings_options_research` (earnings calendar); research: `trade_review`,
     `counterfactual_review`, `pattern_discovery`, `strategy_evaluation`, `portfolio_allocation_research`
     (all need the Phase-5 ledger/graded outcomes). Each lists its exact missing fields; emits nothing.
-- ⏭️ **Phase 5 — Research experiment ledger + counterfactuals** (next). Experiment definitions,
-  candidate enrollment, realistic fills / non-fill tracking, MFE/MAE/outcomes, counterfactual
-  grading (rejected + near-miss, never pretending executable), gate-effectiveness + strategy/
-  regime/options analytics. Additive tables `research_experiments`, `research_fills`,
-  `counterfactual_outcomes`. Files: `lib/research/experiment-ledger.ts`, `lib/research/counterfactual.ts`.
-- ⬜ Phases 6–9 per design doc §16.
+- ✅ **Phase 5 — Research experiment ledger + counterfactuals** (commit pending). Experiment
+  ledger (`lib/research/experiment-ledger.ts`): versioned/idempotent experiments with status
+  DRAFT/ACTIVE/PAUSED/COMPLETED/INACTIVE_MISSING_DATA, idempotent enrollment with full
+  attribution, and honest fill classification — FILLED (defensible quote → reuses Phase-3
+  `createLanePaperTrade`; ONE execution model), OBSERVED_UNFILLED (valid but no defensible
+  quote — never fabricated), NOT_FILLABLE_REJECTED (REJECTED_INVALID, never filled/no P&L).
+  Counterfactuals (`lib/research/counterfactual.ts`): two SEPARATE concepts —
+  `executable_counterfactual` (requires defensible entry; carries P&L) vs
+  `market_movement_observation` (factual reached-target; win stays null, never P&L) — plus
+  gate-effectiveness (winners-rejected vs losers-blocked, small samples flagged, never
+  auto-alters thresholds) and per-agent strategy analytics with version attribution.
+  Additive tables `research_experiments`, `research_enrollments`, `counterfactual_outcomes`
+  (fills/outcomes reuse `paper_trades`). Live enrollment wrapper HARD no-op unless
+  `RESEARCH_LANE_ENABLED`; not auto-wired into the cycle. Gates: focused 17/17 · full
+  1435/1435 · tsc 0 · build 0. Tests: `tests/research-ledger.test.mjs`.
+- ⏭️ **Phase 6 — AI research pipeline** (next). Formalize Trade Review, Counterfactual Review,
+  Pattern Discovery, Strategy Evaluation, Portfolio Allocation Research as evidence-backed
+  PROPOSAL generators over the Phase-5 ledger + graded outcomes; training rows preserve
+  portfolio/strategy/tier/data-quality/experiment attribution; research-trained models stay
+  EXPERIMENTAL until the stricter production validation tier; AI never mutates production.
+  Behind `AI_RESEARCH_PIPELINE_ENABLED`. Files: `lib/research/ai-pipeline.ts`,
+  `lib/research/proposals.ts`, additive `research_proposals` table.
+- ⬜ Phases 7–9 per design doc §16.
 
 **Safety invariants held every phase:** BEARISH_ACTIONABLE off; bearish-gate authoritative;
 puts research-only; paper-only; no fabricated data/quotes; no polyFetch bypass; AI never

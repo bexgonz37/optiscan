@@ -1009,6 +1009,64 @@ CREATE TABLE IF NOT EXISTS lane_routes (
 );
 CREATE INDEX IF NOT EXISTS idx_lane_routes_lane ON lane_routes(lane, routed, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_lane_routes_setup ON lane_routes(setup_id);
+
+-- Multi-lane research rebuild (Phase 5). Research experiment ledger + counterfactuals.
+-- PURELY ADDITIVE. Fills/outcomes reuse paper_trades (Phase 3, portfolio RESEARCH/
+-- CHALLENGE) so there is ONE execution model, never a second incompatible one.
+CREATE TABLE IF NOT EXISTS research_experiments (
+  id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  hypothesis TEXT,
+  status TEXT NOT NULL,                   -- DRAFT | ACTIVE | PAUSED | COMPLETED | INACTIVE_MISSING_DATA
+  config_json TEXT,                       -- accepted tiers/lanes/symbols/horizons/session/data-quality/entry/exit/sizing/fill/metrics
+  strategy_agents_json TEXT,
+  min_sample_target INTEGER NOT NULL DEFAULT 0,
+  missing_requirements_json TEXT,         -- non-empty ⇒ INACTIVE_MISSING_DATA
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (id, version)
+);
+
+-- One row per (experiment, version, setup). Idempotent via the UNIQUE key. fill_status
+-- distinguishes an honest fill from an observed-but-unfilled candidate and a
+-- rejected-invalid that must NEVER be filled.
+CREATE TABLE IF NOT EXISTS research_enrollments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  experiment_id TEXT NOT NULL,
+  experiment_version INTEGER NOT NULL,
+  setup_id TEXT NOT NULL,
+  lane TEXT, portfolio TEXT, strategy_agent TEXT, strategy_version INTEGER, strategy_family TEXT,
+  setup_tier TEXT, ticker TEXT, asset_class TEXT, direction TEXT, horizon TEXT,
+  option_symbol TEXT, expiration TEXT, strike REAL, call_put TEXT, market_session TEXT, regime TEXT,
+  fill_status TEXT NOT NULL,              -- FILLED | OBSERVED_UNFILLED | NOT_FILLABLE_REJECTED
+  non_fill_reason TEXT,
+  paper_trade_id INTEGER,                 -- the reused paper_trades fill (when FILLED)
+  entry_quote_source TEXT, quote_ts_ms INTEGER, data_quality TEXT,
+  gate_results_json TEXT, feature_snapshot_json TEXT, provider_limitations TEXT,
+  created_at_ms INTEGER NOT NULL,
+  UNIQUE(experiment_id, experiment_version, setup_id)
+);
+CREATE INDEX IF NOT EXISTS idx_research_enroll_exp ON research_enrollments(experiment_id, experiment_version);
+CREATE INDEX IF NOT EXISTS idx_research_enroll_setup ON research_enrollments(setup_id);
+CREATE INDEX IF NOT EXISTS idx_research_enroll_agent ON research_enrollments(strategy_agent, created_at_ms);
+
+-- Counterfactual grading. Two SEPARATE concepts, never conflated:
+--   executable_counterfactual  — only when a defensible real entry price/path existed.
+--   market_movement_observation — what the underlying/contract later did; NEVER trade P&L.
+CREATE TABLE IF NOT EXISTS counterfactual_outcomes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  setup_id TEXT NOT NULL,
+  kind TEXT NOT NULL,                     -- 'executable_counterfactual' | 'market_movement_observation'
+  setup_tier TEXT, strategy_agent TEXT, lane TEXT, ticker TEXT, horizon TEXT, session TEXT, regime TEXT,
+  entry_price REAL, exit_price REAL, return_pct REAL, win INTEGER, reached_target INTEGER,
+  underlying_move_pct REAL, contract_move_pct REAL, observation_note TEXT,
+  defensible_entry INTEGER NOT NULL,      -- 1 only for executable_counterfactual
+  gate_results_json TEXT,
+  created_at_ms INTEGER NOT NULL,
+  UNIQUE(setup_id, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_counterfactual_setup ON counterfactual_outcomes(setup_id);
+CREATE INDEX IF NOT EXISTS idx_counterfactual_kind ON counterfactual_outcomes(kind, created_at_ms);
 `;
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */
