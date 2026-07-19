@@ -1067,6 +1067,86 @@ CREATE TABLE IF NOT EXISTS counterfactual_outcomes (
 );
 CREATE INDEX IF NOT EXISTS idx_counterfactual_setup ON counterfactual_outcomes(setup_id);
 CREATE INDEX IF NOT EXISTS idx_counterfactual_kind ON counterfactual_outcomes(kind, created_at_ms);
+
+-- Multi-lane research rebuild (Phase 6). Research-only AI pipeline: runs, findings,
+-- human-review proposals, and normalized training rows. ADVISORY ONLY — nothing here
+-- changes production; an APPROVED proposal never auto-applies. PURELY ADDITIVE.
+CREATE TABLE IF NOT EXISTS ai_research_runs (
+  run_id TEXT PRIMARY KEY,
+  pipeline TEXT NOT NULL,
+  started_at_ms INTEGER NOT NULL,
+  finished_at_ms INTEGER,
+  status TEXT NOT NULL,                   -- RUNNING | COMPLETED | ERROR
+  stages_json TEXT,                       -- per-stage status + counts + errors (failure-isolated)
+  error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ai_research_findings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL,
+  stage TEXT NOT NULL,                    -- trade_review | counterfactual_review | pattern_discovery | strategy_evaluation | portfolio_allocation
+  finding_type TEXT NOT NULL,
+  subject TEXT,                           -- the thing evaluated (agent id, gate, cohort, …)
+  strategy_agent TEXT, strategy_version INTEGER, lane TEXT, tier TEXT, regime TEXT, session TEXT, horizon TEXT,
+  metrics_json TEXT,
+  sample_size INTEGER NOT NULL DEFAULT 0,
+  sufficiency TEXT NOT NULL,              -- SUFFICIENT | EXPLORATORY | INSUFFICIENT
+  confidence TEXT,                        -- uncertainty marker (never fabricated)
+  observation_only INTEGER NOT NULL DEFAULT 0,  -- 1 ⇒ based only on market-movement observations
+  evidence_refs_json TEXT,
+  created_at_ms INTEGER NOT NULL,
+  UNIQUE(run_id, stage, subject)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_findings_run ON ai_research_findings(run_id, stage);
+
+CREATE TABLE IF NOT EXISTS research_proposals (
+  proposal_id TEXT PRIMARY KEY,
+  created_at_ms INTEGER NOT NULL,
+  created_by_pipeline TEXT,
+  proposal_type TEXT NOT NULL,
+  hypothesis TEXT NOT NULL,
+  affected_strategy TEXT, affected_strategy_version INTEGER, affected_lane TEXT, affected_tier TEXT,
+  evidence_summary TEXT NOT NULL,
+  evidence_refs_json TEXT,
+  sample_size INTEGER NOT NULL,
+  wins INTEGER, losses INTEGER, expectancy REAL,
+  confidence TEXT,
+  expected_effect TEXT NOT NULL,
+  risks TEXT NOT NULL,
+  rollback_plan TEXT NOT NULL,
+  validation_plan TEXT NOT NULL,
+  minimum_validation_sample INTEGER NOT NULL,
+  model_version INTEGER,
+  observation_only INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'PENDING_REVIEW',  -- DRAFT|PENDING_REVIEW|APPROVED|REJECTED|EXPIRED|INVALIDATED (never defaults APPROVED)
+  reviewed_by TEXT, reviewed_at_ms INTEGER, review_notes TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_research_proposals_status ON research_proposals(status, created_at_ms);
+
+-- Normalized training rows. source_kind keeps executed trades, executable
+-- counterfactuals, market observations, and rejected-invalid records DISTINCT so a
+-- non-executed row can never be mislabeled as an executed-return example.
+CREATE TABLE IF NOT EXISTS ai_training_rows (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  setup_id TEXT NOT NULL,
+  source_kind TEXT NOT NULL,             -- EXECUTED_TRADE | EXECUTABLE_COUNTERFACTUAL | MARKET_OBSERVATION | REJECTED_INVALID
+  executed INTEGER NOT NULL,             -- 1 only for real fills
+  experiment_id TEXT, experiment_version INTEGER,
+  lane TEXT, portfolio TEXT, strategy_agent TEXT, strategy_version INTEGER, strategy_family TEXT,
+  setup_tier TEXT, direction TEXT, asset_class TEXT, horizon TEXT, ticker TEXT,
+  option_symbol TEXT, expiration TEXT, strike REAL, call_put TEXT,
+  feature_snapshot_json TEXT, gate_results_json TEXT, data_quality TEXT, market_session TEXT, regime TEXT,
+  fill_status TEXT,
+  label TEXT,                            -- WIN|LOSS for executed/executable; REACHED_TARGET/NOT for observation; null for rejected
+  return_pct REAL, mfe_pct REAL, mae_pct REAL,
+  entry_ts_ms INTEGER, exit_ts_ms INTEGER,
+  provider_limitations TEXT, source_table TEXT,
+  model_eligibility TEXT NOT NULL,       -- ELIGIBLE_EXECUTED | RESEARCH_ONLY | ANALYSIS_ONLY
+  created_at_ms INTEGER NOT NULL,
+  UNIQUE(setup_id, source_kind)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_training_kind ON ai_training_rows(source_kind, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_ai_training_agent ON ai_training_rows(strategy_agent, strategy_version);
 `;
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */

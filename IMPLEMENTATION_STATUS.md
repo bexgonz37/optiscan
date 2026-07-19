@@ -112,14 +112,27 @@ in the design doc §16.
   (fills/outcomes reuse `paper_trades`). Live enrollment wrapper HARD no-op unless
   `RESEARCH_LANE_ENABLED`; not auto-wired into the cycle. Gates: focused 17/17 · full
   1435/1435 · tsc 0 · build 0. Tests: `tests/research-ledger.test.mjs`.
-- ⏭️ **Phase 6 — AI research pipeline** (next). Formalize Trade Review, Counterfactual Review,
-  Pattern Discovery, Strategy Evaluation, Portfolio Allocation Research as evidence-backed
-  PROPOSAL generators over the Phase-5 ledger + graded outcomes; training rows preserve
-  portfolio/strategy/tier/data-quality/experiment attribution; research-trained models stay
-  EXPERIMENTAL until the stricter production validation tier; AI never mutates production.
-  Behind `AI_RESEARCH_PIPELINE_ENABLED`. Files: `lib/research/ai-pipeline.ts`,
-  `lib/research/proposals.ts`, additive `research_proposals` table.
-- ⬜ Phases 7–9 per design doc §16.
+- ✅ **Phase 6 — AI research pipeline** (commit pending). DETERMINISTIC/statistical, advisory-
+  only pipeline (`lib/research/ai-pipeline.ts`): 5 failure-isolated stages (trade_review,
+  counterfactual_review [observation-only], pattern_discovery [exploratory-marked],
+  strategy_evaluation [version attribution], portfolio_allocation [never concentrates weak
+  evidence]) writing findings; normalized training-row builder keeping EXECUTED_TRADE /
+  EXECUTABLE_COUNTERFACTUAL / MARKET_OBSERVATION / REJECTED_INVALID strictly distinct (observations/
+  rejected never labeled executed-return); advisory research-model states (never PRODUCTION_ELIGIBLE
+  from research alone). Human-review-only proposals (`lib/research/proposals.ts`): strict evidence
+  validation, type allow-list (no bearish/puts/gate/Discord/env-mutation types), never defaults
+  APPROVED, named human reviewer required, and `applyProposal` is a hard no-op (APPROVED never
+  auto-applies). Additive tables `ai_research_runs`, `ai_research_findings`, `research_proposals`,
+  `ai_training_rows`. Live runner HARD no-op unless `AI_RESEARCH_PIPELINE_ENABLED`; not auto-wired.
+  Gates: focused 15/15 · full 1450/1450 · tsc 0 · build 0. Tests: `tests/research-ai-pipeline.test.mjs`.
+- ⏭️ **Phase 7 — Historical replay** (next). Bounded, point-in-time replay: STOCK via `/v2/aggs`
+  real OHLCV (deterministic clock, no look-ahead, documented slippage/fees, reproducible experiment
+  ids, checkpoints, cost/rate-limit controls); OPTIONS only from genuinely-available historical
+  fields (no invented Greeks/NBBO/OI/spreads; separate contract-price observation from executable
+  simulation). If truthful options replay isn't entitled, ship infra INACTIVE + document blocker.
+  Behind `HISTORICAL_REPLAY_ENABLED`. Additive tables `replay_runs`, `replay_bars`/`replay_outcomes`.
+  Files: `lib/research/historical-replay.ts`, `lib/research/replay-provider.ts`.
+- ⬜ Phases 8–9 per design doc §16.
 
 **Safety invariants held every phase:** BEARISH_ACTIONABLE off; bearish-gate authoritative;
 puts research-only; paper-only; no fabricated data/quotes; no polyFetch bypass; AI never
