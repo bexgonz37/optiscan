@@ -39,6 +39,16 @@ export function ensureServerBoot(): void {
     console.warn("[discord] auto-send enforcement skipped:", (err as Error)?.message);
   }
   try {
+    // Reconcile stale/malformed seed runs left RUNNING by a prior process (canceled-but-stuck →
+    // CANCELED, unresumable legacy rows → FAILED). Only touches rows with no active lease. This is
+    // a boot-time WRITE (never in a GET handler), so GET status stays read-only.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const reconciled = require("@/lib/research/episode/seed-jobs").reconcileStaleSeedRuns(require("@/lib/db").getDb());
+    if (reconciled.length > 0) console.info(`[seed-worker] reconciled ${reconciled.length} stale run(s) at boot`);
+  } catch (err) {
+    console.warn("[seed-worker] boot reconciliation skipped:", (err as Error)?.message);
+  }
+  try {
     // Start the out-of-process historical-replay seed worker (no-op unless replay flags are on).
     // A fresh boot reclaims any run whose lease expired when the previous process died.
     // eslint-disable-next-line @typescript-eslint/no-require-imports

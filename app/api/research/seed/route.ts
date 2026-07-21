@@ -40,6 +40,16 @@ export async function POST(req: Request) {
   ensureServerBoot();
   let body: any = {};
   try { body = await req.json(); } catch { /* empty */ }
+
+  // Admin-safe reconciliation: finalize stale/malformed RUNNING rows (canceled-but-stuck →
+  // CANCELED, unresumable legacy → FAILED). Works even when the worker is disabled.
+  if (String(body.action ?? "").toLowerCase() === "reconcile") {
+    const { getDb } = await import("@/lib/db");
+    const { reconcileStaleSeedRuns } = await import("@/lib/research/episode/seed-jobs");
+    const reconciled = reconcileStaleSeedRuns(getDb());
+    return NextResponse.json({ ok: true, reconciled, count: reconciled.length });
+  }
+
   const { symbols, from, to } = body;
   if (!Array.isArray(symbols) || symbols.length === 0 || !from || !to) {
     return NextResponse.json({ ok: false, error: "symbols[] (array), from and to (YYYY-MM-DD) are required" }, { status: 400 });

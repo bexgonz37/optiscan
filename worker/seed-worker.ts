@@ -16,7 +16,7 @@
 import path from "node:path";
 import Database from "better-sqlite3";
 import { fetchHistoricalStockBars } from "../lib/research/replay-provider.ts";
-import { claimNextSeedRun, runSeedWorker, DEFAULT_LEASE_MS, type FetchBarsFn } from "../lib/research/episode/seed-jobs.ts";
+import { claimNextSeedRun, runSeedWorker, reconcileStaleSeedRuns, DEFAULT_LEASE_MS, type FetchBarsFn } from "../lib/research/episode/seed-jobs.ts";
 import { slog } from "../lib/research/episode/seed-log.ts";
 
 const POLL_MS = Number(process.env.SEED_WORKER_POLL_MS ?? 1000);
@@ -71,6 +71,10 @@ async function main() {
   while (!shuttingDown) {
     let runId: string | null = null;
     try {
+      // Reconcile stale/malformed RUNNING rows (canceled-but-stuck, or unresumable legacy runs)
+      // BEFORE claiming — cancellation is handled before any recovery/provider work.
+      const reconciled = reconcileStaleSeedRuns(db);
+      if (reconciled.length) slog("worker_poll", { workerId: WORKER_ID, reconciled: reconciled.length });
       runId = claimNextSeedRun(db, WORKER_ID, LEASE_MS);
     } catch (err: any) {
       // e.g. schema not migrated yet — back off and retry (the web process owns migration).

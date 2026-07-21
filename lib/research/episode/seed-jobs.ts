@@ -31,7 +31,7 @@ interface Checkpoint { doneSymbols: string[]; perSymbol: PerSymbolProgress[]; er
 interface JobDb { prepare(sql: string): { get: (...a: any[]) => any; all: (...a: any[]) => any[]; run: (...a: any[]) => { changes: number } } }
 
 /** Provider fetch (chunked) — same shape as fetchHistoricalStockBars; injectable for tests. */
-export type FetchBarsFn = (symbol: string, opts: { from: string; to: string; timespan?: string; multiplier?: number; onChunk?: (d: ChunkDetail & { index: number; total: number }) => void }, env: NodeJS.ProcessEnv) => Promise<FetchBarsResult>;
+export type FetchBarsFn = (symbol: string, opts: { from: string; to: string; timespan?: string; multiplier?: number; onChunk?: (d: ChunkDetail & { index: number; total: number }) => void; checkAbort?: () => boolean }, env: NodeJS.ProcessEnv) => Promise<FetchBarsResult>;
 export interface SeedJobDeps { fetchBars?: FetchBarsFn }
 
 export interface CreateSeedRunOpts {
@@ -105,13 +105,27 @@ function finalize(db: JobDb, runId: string, checkpoint: Checkpoint, symbolsTotal
   return { done: true, status };
 }
 
+/** True when the run has a persisted cancel request (cheap single-column read). */
+function isRunCanceled(db: JobDb, runId: string): boolean {
+  const r = db.prepare("SELECT cancel_requested FROM replay_runs WHERE run_id=?").get(runId) as any;
+  return r?.cancel_requested === 1;
+}
+
+/** Terminal CANCELED transition that ALWAYS clears lease ownership. */
+function finalizeCanceled(db: JobDb, runId: string, nowMs: number = now(), reason = "canceled by operator"): { done: true; status: JobStatus } {
+  db.prepare("UPDATE replay_runs SET status='CANCELED', error=?, current_symbol=NULL, lease_owner=NULL, lease_until_ms=NULL, updated_at_ms=? WHERE run_id=?").run(reason, nowMs, runId);
+  slog("job_done", { runId, status: "CANCELED", reason });
+  return { done: true, status: "CANCELED" };
+}
+
 /** One unit of work: process the next unprocessed symbol (all its chunks). Restart-safe. */
 export async function advanceSeedRun(db: JobDb, runId: string, env: NodeJS.ProcessEnv = process.env, deps: SeedJobDeps = {}, nowMs: number = now()): Promise<{ done: boolean; status: JobStatus }> {
   const row = db.prepare("SELECT * FROM replay_runs WHERE run_id=?").get(runId) as any;
   if (!row) return { done: true, status: "FAILED" };
   const status = row.status as JobStatus;
   if (TERMINAL.has(status) || status === "PAUSED") return { done: true, status };
-  if (row.cancel_requested === 1) { db.prepare("UPDATE replay_runs SET status='CANCELED', error='canceled by operator', current_symbol=NULL, updated_at_ms=? WHERE run_id=?").run(nowMs, runId); return { done: true, status: "CANCELED" }; }
+  // Cancellation is checked BEFORE any recovery/provider work, and finalizing clears the lease.
+  if (row.cancel_requested === 1) return finalizeCanceled(db, runId, nowMs);
   if (env.EPISODE_SEED_KILL === "1") { db.prepare("UPDATE replay_runs SET status='PAUSED', error='kill switch engaged (EPISODE_SEED_KILL=1)', updated_at_ms=? WHERE run_id=?").run(nowMs, runId); return { done: true, status: "PAUSED" }; }
   const f = researchFlags(env);
   if (!f.historicalReplay || !f.episodeCapture) { db.prepare("UPDATE replay_runs SET status='FAILED', error='flags disabled mid-run (HISTORICAL_REPLAY_ENABLED / EPISODE_CAPTURE_ENABLED)', updated_at_ms=? WHERE run_id=?").run(nowMs, runId); return { done: true, status: "FAILED" }; }
@@ -137,12 +151,20 @@ export async function advanceSeedRun(db: JobDb, runId: string, env: NodeJS.Proce
     db.prepare("UPDATE replay_runs SET chunks_completed=?, provider_calls_attempted=?, updated_at_ms=? WHERE run_id=?").run(baseChunks + d.index + 1, baseChunks + d.index + 1, now(), runId);
   };
 
+  // Re-check cancellation immediately BEFORE the provider call — the flag may have been set after
+  // we claimed/marked RUNNING. If so, no provider call is made at all.
+  if (isRunCanceled(db, runId)) return finalizeCanceled(db, runId, now());
+
   let r: FetchBarsResult;
   try {
-    r = await timed("provider_call_start", { runId, symbol: next }, () => fetchBars(next, { from: row.date_from, to: row.date_to, timespan, multiplier: 1, onChunk }, env));
+    // checkAbort lets the chunked fetch stop before the NEXT provider call once cancellation lands.
+    r = await timed("provider_call_start", { runId, symbol: next }, () => fetchBars(next, { from: row.date_from, to: row.date_to, timespan, multiplier: 1, onChunk, checkAbort: () => isRunCanceled(db, runId) }, env));
   } catch (err: any) {
-    r = { bars: [], providerCalls: 1, succeeded: false, note: `fetch threw: ${String(err?.message ?? err).slice(0, 160)}`, chunks: 1, rangeComplete: false, truncated: false, firstBarMs: null, lastBarMs: null, chunkDetail: [{ from: row.date_from, to: row.date_to, bars: 0, succeeded: false, truncated: false }] };
+    r = { bars: [], providerCalls: 1, succeeded: false, note: `fetch threw: ${String(err?.message ?? err).slice(0, 160)}`, chunks: 1, rangeComplete: false, truncated: false, firstBarMs: null, lastBarMs: null, chunkDetail: [{ from: row.date_from, to: row.date_to, bars: 0, succeeded: false, truncated: false }], aborted: false };
   }
+
+  // Cancellation observed during the fetch (chunk-boundary abort) or persisted meanwhile → stop now.
+  if (r.aborted || isRunCanceled(db, runId)) return finalizeCanceled(db, runId, now());
 
   const succeededChunks = r.chunkDetail?.filter((c) => c.succeeded).length ?? (r.succeeded ? (r.chunks ?? 1) : 0);
   let ep = 0, lab = 0, pstatus: PerSymbolStatus;
@@ -257,16 +279,55 @@ export function getSeedRunProgress(db: JobDb, runId: string, nowMs: number = now
 
 export interface ControlResult { runId: string; status: JobStatus; changed: boolean; note: string }
 
-/** Request cancellation. QUEUED (no worker yet) → CANCELED immediately; otherwise the worker
- *  stops after the current symbol (progress already persisted). Terminal runs are untouched. */
+/**
+ * Request cancellation — idempotent. Always records cancel_requested=1, then:
+ *   • if NO worker is actively leasing the run (QUEUED, or RUNNING with an expired/absent lease and
+ *     not active in THIS process) → finalize CANCELED immediately (clearing the lease), so a stale
+ *     run can never remain RUNNING with cancel_requested=1 forever;
+ *   • if a worker IS actively leasing it → leave cancel_requested=1 for the worker to observe at its
+ *     next boundary (cooperative, avoids racing a live writer).
+ */
 export function cancelSeedRun(db: JobDb, runId: string, nowMs: number = now()): ControlResult {
-  const row = db.prepare("SELECT status FROM replay_runs WHERE run_id=?").get(runId) as any;
+  const row = db.prepare("SELECT status, lease_until_ms FROM replay_runs WHERE run_id=?").get(runId) as any;
   if (!row) return { runId, status: "FAILED", changed: false, note: "run not found" };
   const status = row.status as JobStatus;
   if (TERMINAL.has(status)) return { runId, status, changed: false, note: "already terminal" };
-  if (status === "QUEUED" && !ACTIVE.has(runId)) { db.prepare("UPDATE replay_runs SET status='CANCELED', cancel_requested=1, error='canceled before start', updated_at_ms=? WHERE run_id=?").run(nowMs, runId); return { runId, status: "CANCELED", changed: true, note: "canceled" }; }
   db.prepare("UPDATE replay_runs SET cancel_requested=1, updated_at_ms=? WHERE run_id=?").run(nowMs, runId);
-  return { runId, status, changed: true, note: "cancellation requested — will stop after the current symbol" };
+  const activelyLeased = ACTIVE.has(runId) || (typeof row.lease_until_ms === "number" && row.lease_until_ms > nowMs);
+  if (!activelyLeased) { finalizeCanceled(db, runId, nowMs); return { runId, status: "CANCELED", changed: true, note: "canceled (no active worker lease)" }; }
+  return { runId, status, changed: true, note: "cancellation requested — the worker will stop at its next boundary" };
+}
+
+export interface ReconcileResult { runId: string; from: JobStatus; to: JobStatus; reason: string }
+
+/**
+ * Admin-safe sweep for stale/malformed RUNNING rows with NO active lease. NEVER touches a run a
+ * worker is actively leasing. Deterministic:
+ *   • cancel_requested=1 → CANCELED (clears the lease) — fixes the "stuck RUNNING + canceled" case;
+ *   • no resumable symbol plan (missing/empty symbols_json) → FAILED with an explicit reason —
+ *     fixes legacy/synchronous rows that can never make progress.
+ * Resumable, un-canceled rows are left for the worker's lease claim to reclaim & resume.
+ */
+export function reconcileStaleSeedRuns(db: JobDb, nowMs: number = now()): ReconcileResult[] {
+  const rows = db.prepare(
+    "SELECT run_id, status, cancel_requested, lease_until_ms, symbols_json FROM replay_runs WHERE asset_class='stock' AND status='RUNNING'",
+  ).all() as any[];
+  const out: ReconcileResult[] = [];
+  for (const row of rows) {
+    const activelyLeased = ACTIVE.has(row.run_id) || (typeof row.lease_until_ms === "number" && row.lease_until_ms > nowMs);
+    if (activelyLeased) continue;
+    const symbols = parse(row.symbols_json);
+    const unresumable = !Array.isArray(symbols) || symbols.length === 0;
+    if (row.cancel_requested === 1) {
+      const res = db.prepare("UPDATE replay_runs SET status='CANCELED', error='canceled (reconciled: no active lease)', current_symbol=NULL, lease_owner=NULL, lease_until_ms=NULL, updated_at_ms=? WHERE run_id=? AND status='RUNNING'").run(nowMs, row.run_id);
+      if (res.changes > 0) out.push({ runId: row.run_id, from: "RUNNING", to: "CANCELED", reason: "cancel_requested + no active lease" });
+    } else if (unresumable) {
+      const res = db.prepare("UPDATE replay_runs SET status='FAILED', error='unresumable run: missing symbol plan (legacy/malformed) — cannot resume', current_symbol=NULL, lease_owner=NULL, lease_until_ms=NULL, updated_at_ms=? WHERE run_id=? AND status='RUNNING'").run(nowMs, row.run_id);
+      if (res.changes > 0) out.push({ runId: row.run_id, from: "RUNNING", to: "FAILED", reason: "unresumable: missing symbol plan" });
+    }
+  }
+  if (out.length) slog("job_done", { reconciled: out.length });
+  return out;
 }
 
 /** Pause a running/queued run (resumable). The worker stops after the current symbol. */

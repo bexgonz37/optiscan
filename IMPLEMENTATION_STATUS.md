@@ -188,6 +188,24 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   RECOVERY: deploy this commit (worker off by default) → /api/health returns → then set
   `OPTISCAN_ENABLE_SEED_WORKER=1` with replay flags on for a controlled worker enable. Green: 1598 tests,
   tsc 0, build 0.
+- ✅ **Phase E.6 — stale-run cancellation reconciliation** (commit pending). A recovered/legacy run
+  (`episode_seed_1784662810251`: RUNNING, cancel_requested=true, symbols_total=0, started_at=null) stayed
+  RUNNING forever: `cancelSeedRun` only set the flag and relied on a worker to observe it, but
+  `claimNextSeedRun` EXCLUDES `cancel_requested=1` rows — so no worker ever advanced it to finalize →
+  deadlock. Fixes: `cancelSeedRun` now finalizes **CANCELED immediately when the run is not actively
+  leased** (QUEUED, or RUNNING with an expired/absent lease), clearing lease ownership; a live-leased run
+  still defers to the worker's cooperative stop. New `reconcileStaleSeedRuns` sweeps RUNNING rows with no
+  active lease: cancel_requested → CANCELED, unresumable (empty/missing symbol plan) → FAILED with an
+  explicit reason. It runs in the worker poll (before any claim), at server boot, and via an admin
+  `POST /api/research/seed {action:"reconcile"}` (works even when the worker is disabled). `advanceSeedRun`
+  now checks cancellation before recovery, before the provider call, and (via a new `checkAbort` passed to
+  the chunked fetch) at every chunk boundary — so **no provider call happens after cancel is persisted**;
+  every CANCELED transition clears the lease. GET stays a pure read. Tests
+  (`tests/analog-seed-cancel.test.mjs`): cancel before claim, during the provider call, during the
+  rate-limit gap, of an expired-lease run, of a malformed legacy row, repeated cancel, worker-restart
+  after cancel, and no-calls-after-cancel — plus reconcile leaves a live-leased run untouched. Green: 1607
+  tests, tsc 0, build 0. OPERATOR: deploy, then `POST {action:"reconcile"}` (or `cancel` each runId) to
+  finalize `episode_seed_1784662810251` and `episode_seed_1784663885317_2dtq8n`.
 - ⬜ Phases F–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: Phase F — forward paper validation** (record
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).

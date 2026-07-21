@@ -67,6 +67,7 @@ export interface FetchBarsResult {
   chunks: number; rangeComplete: boolean; truncated: boolean;
   firstBarMs: number | null; lastBarMs: number | null;
   chunkDetail: ChunkDetail[];
+  aborted: boolean; // true when checkAbort() stopped the fetch before all chunks were requested
 }
 
 /** Never echo a key: strip apiKey/Bearer tokens from provider error strings and bound length. */
@@ -118,12 +119,12 @@ export type FetchCandlesFn = (symbol: string, opts: Record<string, unknown>) => 
 
 export async function fetchHistoricalStockBars(
   symbol: string,
-  opts: { from: string; to: string; timespan?: string; multiplier?: number; chunkDays?: number; onChunk?: (d: ChunkDetail & { index: number; total: number }) => void } = { from: "", to: "" },
+  opts: { from: string; to: string; timespan?: string; multiplier?: number; chunkDays?: number; onChunk?: (d: ChunkDetail & { index: number; total: number }) => void; checkAbort?: () => boolean } = { from: "", to: "" },
   env: NodeJS.ProcessEnv = process.env,
   deps: { fetchCandles?: FetchCandlesFn } = {},
 ): Promise<FetchBarsResult> {
   if (!stockReplayAvailable(env)) {
-    return { bars: [], providerCalls: 0, succeeded: false, note: "stock replay INACTIVE — no provider key (POLYGON_API_KEY / MASSIVE_API_KEY); no request issued", chunks: 0, rangeComplete: false, truncated: false, firstBarMs: null, lastBarMs: null, chunkDetail: [] };
+    return { bars: [], providerCalls: 0, succeeded: false, note: "stock replay INACTIVE — no provider key (POLYGON_API_KEY / MASSIVE_API_KEY); no request issued", chunks: 0, rangeComplete: false, truncated: false, firstBarMs: null, lastBarMs: null, chunkDetail: [], aborted: false };
   }
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const fetchCandles: FetchCandlesFn = deps.fetchCandles ?? require("@/lib/polygon-provider").fetchCandles;
@@ -133,9 +134,12 @@ export async function fetchHistoricalStockBars(
 
   const seen = new Map<number, Bar>(); // dedup by timestamp across chunks
   const chunkDetail: ChunkDetail[] = [];
-  let providerCalls = 0, anyError = false, truncated = false;
+  let providerCalls = 0, anyError = false, truncated = false, aborted = false;
 
   for (let wi = 0; wi < windows.length; wi++) {
+    // Cancellation is observed at the CHUNK boundary — before issuing the next provider call — so
+    // no further provider calls happen once cancellation is persisted.
+    if (opts.checkAbort?.()) { aborted = true; break; }
     const w = windows[wi];
     providerCalls += 1;
     let detail: ChunkDetail;
@@ -166,13 +170,15 @@ export async function fetchHistoricalStockBars(
   const rangeComplete = succeeded && !truncated && bars.length > 0;
   const firstBarMs = bars.length ? bars[0].t : null;
   const lastBarMs = bars.length ? bars[bars.length - 1].t : null;
-  const note = !succeeded
-    ? sanitizeProviderNote(chunkDetail.find((c) => !c.succeeded)?.note ?? "one or more chunks failed")
-    : truncated
-      ? `truncated: a chunk hit the ${REPLAY_PER_CALL_LIMIT}-result cap — range NOT fully covered`
-      : bars.length
-        ? `real /v2/aggs OHLCV across ${windows.length} chunk(s)`
-        : "provider OK but returned no bars for the requested range/timespan";
+  const note = aborted
+    ? "aborted: cancellation observed at a chunk boundary — no further provider calls"
+    : !succeeded
+      ? sanitizeProviderNote(chunkDetail.find((c) => !c.succeeded)?.note ?? "one or more chunks failed")
+      : truncated
+        ? `truncated: a chunk hit the ${REPLAY_PER_CALL_LIMIT}-result cap — range NOT fully covered`
+        : bars.length
+          ? `real /v2/aggs OHLCV across ${windows.length} chunk(s)`
+          : "provider OK but returned no bars for the requested range/timespan";
 
-  return { bars, providerCalls, succeeded, note, chunks: windows.length, rangeComplete, truncated, firstBarMs, lastBarMs, chunkDetail };
+  return { bars, providerCalls, succeeded, note, chunks: windows.length, rangeComplete, truncated, firstBarMs, lastBarMs, chunkDetail, aborted };
 }
