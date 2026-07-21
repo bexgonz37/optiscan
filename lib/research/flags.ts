@@ -31,6 +31,12 @@ export interface ResearchFlags {
   forwardCapture: boolean;
   /** Phase F: two-speed EARLY_WATCH → CONFIRMED/CANCELED/TOO_LATE/EXPIRED alert pipeline. */
   twoSpeedAlerts: boolean;
+  /** Broad Discovery Bridge: shadow-mode broad candidate discovery (records only; no alerts). */
+  broadDiscoveryShadow: boolean;
+  /** Analog Shadow Bridge: shadow-mode analog lookup on live candidates (ANALOG_SHADOW_ONLY). */
+  analogLiveShadow: boolean;
+  /** Prospective market-context feature capture (regime/sector/breadth/…), no backfill. */
+  marketContextCapture: boolean;
 }
 
 export function researchFlags(env: NodeJS.ProcessEnv = process.env): ResearchFlags {
@@ -45,5 +51,8 @@ export function researchFlags(env: NodeJS.ProcessEnv = process.env): ResearchFla
     episodeCapture: on(env.EPISODE_CAPTURE_ENABLED),
     forwardCapture: on(env.FORWARD_CAPTURE_ENABLED),
     twoSpeedAlerts: on(env.TWO_SPEED_ALERTS_ENABLED),
+    broadDiscoveryShadow: on(env.BROAD_DISCOVERY_SHADOW_ENABLED),
+    analogLiveShadow: on(env.ANALOG_LIVE_SHADOW_ENABLED),
+    marketContextCapture: on(env.MARKET_CONTEXT_CAPTURE_ENABLED),
   };
 }

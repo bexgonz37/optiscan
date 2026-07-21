@@ -1338,6 +1338,35 @@ CREATE TABLE IF NOT EXISTS two_speed_alerts (
   created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_two_speed_state ON two_speed_alerts(state, created_at_ms);
+
+-- Broad Discovery + Analog Shadow Bridge. SHADOW-ONLY: records candidates / analog evidence /
+-- market context; sends NO alerts, changes NO thresholds. PURELY ADDITIVE. Flags default OFF.
+CREATE TABLE IF NOT EXISTS discovery_shadow (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol TEXT NOT NULL, sources_json TEXT, price REAL, change_pct REAL, rel_volume REAL, dollar_volume REAL,
+  eligible INTEGER NOT NULL, exclusions_json TEXT, options_checked INTEGER NOT NULL DEFAULT 0,
+  observed_at_ms INTEGER NOT NULL, created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_discovery_shadow_sym ON discovery_shadow(symbol, observed_at_ms);
+
+CREATE TABLE IF NOT EXISTS analog_shadow (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol TEXT NOT NULL, t0_ms INTEGER NOT NULL, tag TEXT NOT NULL DEFAULT 'ANALOG_SHADOW_ONLY',
+  abstain INTEGER NOT NULL, abstain_reason TEXT, comparable_count INTEGER, effective_sample INTEGER,
+  confidence REAL, win_rate REAL, dispersion REAL, contradiction REAL,
+  fwd_p10 REAL, fwd_p50 REAL, fwd_p90 REAL, nearest_distance REAL,
+  agrees_with_live INTEGER, agreement TEXT, lookup_ms INTEGER, created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_analog_shadow_sym ON analog_shadow(symbol, t0_ms);
+
+CREATE TABLE IF NOT EXISTS market_context_shadow (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol TEXT, as_of_ms INTEGER NOT NULL, regime TEXT, vol_regime TEXT,
+  spy_trend TEXT, qqq_trend TEXT, iwm_trend TEXT, sector TEXT, industry TEXT, sector_rel_strength REAL,
+  breadth REAL, catalyst_category TEXT, earnings_in_days INTEGER, session TEXT,
+  missing_json TEXT, context_json TEXT, created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_market_context_shadow ON market_context_shadow(as_of_ms);
 `;
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */

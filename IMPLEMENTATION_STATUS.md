@@ -248,7 +248,27 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   Tests: `forward-pipeline`, `forward-capture-grade`, `forward-report`. Green: 1629 tests, tsc 0, build 0.
   **NOT DONE — evidence still missing (do not advance to Phase G):** measured production EARLY_WATCH p50/p95,
   heavy-work-off-path proof in prod, forward sample size per bucket, and every commercial-readiness gap.
-- ⬜ Phases G–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: collect Phase-F live data before Phase G.**
+- 🟡 **Broad Discovery + Analog Shadow Bridge** (SHADOW-ONLY, flag-gated OFF; commit pending). Audited
+  the live discovery universe (`docs/CURRENT_LIVE_DISCOVERY_AUDIT.md`): curated ~230 (`universe.js`) +
+  bounded whole-market broad sweep ($0.50–$50 / +10% / ≥500k, `scanner-loop.ts`); news/earnings/options/
+  sympathy are NOT discovery sources; no PIT/broad historical universe. Built shadow infra (NOT wired to
+  the live loop, NO alerts, NO threshold changes): **discovery** (`discovery/eligibility.ts` strict
+  exclusions — OTC/warrant/right/unit/preferred/halted/low-price/low-$vol/stale + options gates only when
+  entitled; `discovery/discover.ts` source-attributed merge + summarize). **Analog shadow**
+  (`shadow/analog-bridge.ts`): decision-time snapshot (episode-library keys) → `AnalogScorer.explain` →
+  records comparable count/similarity/forward-return dist/confidence/dispersion/abstention/agree-vs-live/
+  lookup latency as `ANALOG_SHADOW_ONLY`; cannot block/alert/override/actionize (isolated on error).
+  **Market context** (`context/market-context.ts`): prospective regime/index-trend/vol/sector/breadth/
+  catalyst/earnings/session/liquidity/IV with a **look-ahead guard that throws** + `missing[]` (no
+  backfill). **Earliness** (`shadow/earliness.ts`): fraction-of-move-complete, breakout distance, time
+  lead, MFE/MAE, price-improvement-vs-momentum + 3-lane comparison. Additive repeat-safe tables
+  (`discovery_shadow`, `analog_shadow`, `market_context_shadow`); read-only `GET /api/research/shadow`.
+  Flags `BROAD_DISCOVERY_SHADOW_ENABLED`, `ANALOG_LIVE_SHADOW_ENABLED`, `MARKET_CONTEXT_CAPTURE_ENABLED`
+  (all OFF). Docs: CURRENT_LIVE_DISCOVERY_AUDIT, BROAD_DISCOVERY_SHADOW_PLAN, ANALOG_SHADOW_BRIDGE (incl.
+  AI safe-design), FIVE_YEAR_CORPUS_CAPACITY_PLAN (tiered cost/runtime/bias). Tests: `discovery-shadow`,
+  `analog-shadow-bridge`. Green: 1643 tests, tsc 0, build 0. **Analog remains NON-actionable; no hard
+  gate weakened; no production seed.** Safe to enable ONLY for data collection.
+- ⬜ Phases G–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: collect Phase-F + shadow live data before Phase G.**
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).
 
