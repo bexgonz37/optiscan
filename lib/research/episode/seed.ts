@@ -20,6 +20,7 @@ import { tradingDay } from "../../trading-session.ts";
 import { researchFlags } from "../flags.ts";
 import { computeUnderlyingLabel, type Bar } from "./labels.ts";
 import { persistEpisodeOnDb, persistLabelOnDb } from "./store.ts";
+import { estimateSeed, type SeedEstimate } from "./universe.ts";
 import { DAY_HORIZONS, FEATURE_SCHEMA_VERSION, HORIZONS, INTRADAY_HORIZON_MS, episodeKeyOf, type Episode, type EpisodeLabel, type ThesisSide } from "./schema.ts";
 
 export interface SeedConfig {
@@ -179,47 +180,70 @@ export function seedSymbolOnDb(db: SeedDb, symbol: string, bars: Bar[], cfg: See
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const liveDb = () => require("@/lib/db").getDb();
 
-export interface ReplaySeedResult { ran: boolean; skippedReason: string | null; symbolsDone: number; episodes: number; labels: number }
+export interface ReplaySeedResult { ran: boolean; skippedReason: string | null; symbolsDone: number; episodes: number; labels: number; estimate?: SeedEstimate; provenance?: { universeSource: string; survivorshipBias: boolean } }
+
+export interface RunReplaySeedOpts {
+  symbols: string[]; from: string; to: string; timespan?: string; config?: SeedConfig;
+  providerCallBudget?: number;
+  /** Guardrails. */
+  dryRun?: boolean;              // estimate only; no provider calls, no writes
+  maxSymbols?: number;          // cap symbols processed per invocation (default 500)
+  rateLimitMs?: number;         // delay between provider calls (default 200ms)
+  /** Provenance for the eventual verdict (survivorship-biased ⇒ EXPLORATORY only). */
+  universeSource?: string; survivorshipBias?: boolean;
+}
+
+const spanDays = (from: string, to: string): number => {
+  const a = Date.parse(from), b = Date.parse(to);
+  return Number.isFinite(a) && Number.isFinite(b) ? Math.max(0, Math.round((b - a) / 86_400_000)) : 0;
+};
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * Live replay-seeding driver. HARD no-op unless HISTORICAL_REPLAY_ENABLED=1 AND
- * EPISODE_CAPTURE_ENABLED=1. The caller MUST supply a survivorship-free symbol list.
- * Reuses replay_runs for a run row + resumable checkpoint (done symbols). Bars are
- * fetched split/dividend-ADJUSTED via the provider. Never throws into the caller.
+ * Live replay-seeding driver with guardrails. HARD no-op unless HISTORICAL_REPLAY_ENABLED=1
+ * AND EPISODE_CAPTURE_ENABLED=1. Kill switch: EPISODE_SEED_KILL=1. The caller MUST supply a
+ * survivorship-free universe. Reuses replay_runs for a run row + resumable checkpoint. Bars
+ * are fetched split/dividend-ADJUSTED. Never throws into the caller.
  */
-export async function runReplaySeed(
-  opts: { symbols: string[]; from: string; to: string; timespan?: string; providerCallBudget?: number; config?: SeedConfig },
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<ReplaySeedResult> {
+export async function runReplaySeed(opts: RunReplaySeedOpts, env: NodeJS.ProcessEnv = process.env): Promise<ReplaySeedResult> {
   const f = researchFlags(env);
-  if (!f.historicalReplay || !f.episodeCapture) {
-    return { ran: false, skippedReason: "requires HISTORICAL_REPLAY_ENABLED=1 and EPISODE_CAPTURE_ENABLED=1", symbolsDone: 0, episodes: 0, labels: 0 };
-  }
-  if (!opts.symbols?.length) return { ran: false, skippedReason: "no survivorship-free universe supplied", symbolsDone: 0, episodes: 0, labels: 0 };
+  const provenance = { universeSource: opts.universeSource ?? "unspecified", survivorshipBias: opts.survivorshipBias ?? true };
+  if (env.EPISODE_SEED_KILL === "1") return { ran: false, skippedReason: "kill switch engaged (EPISODE_SEED_KILL=1)", symbolsDone: 0, episodes: 0, labels: 0, provenance };
+  if (!f.historicalReplay || !f.episodeCapture) return { ran: false, skippedReason: "requires HISTORICAL_REPLAY_ENABLED=1 and EPISODE_CAPTURE_ENABLED=1", symbolsDone: 0, episodes: 0, labels: 0, provenance };
+  if (!opts.symbols?.length) return { ran: false, skippedReason: "no survivorship-free universe supplied", symbolsDone: 0, episodes: 0, labels: 0, provenance };
+
+  const maxSymbols = Math.max(1, opts.maxSymbols ?? 500);
+  const symbols = opts.symbols.slice(0, maxSymbols);
+  const estimate = estimateSeed(symbols.length, spanDays(opts.from, opts.to));
+  if (opts.dryRun) return { ran: false, skippedReason: "dry_run (estimate only — no provider calls, no writes)", symbolsDone: 0, episodes: 0, labels: 0, estimate, provenance };
+
   const cfg = opts.config ?? defaultSeedConfig();
   const nowMs = Date.now();
   const runId = `episode_seed_${nowMs}`;
+  const rateLimitMs = Math.max(0, opts.rateLimitMs ?? 200);
   try {
     const db = liveDb() as SeedDb;
     db.prepare(
-      `INSERT OR IGNORE INTO replay_runs (run_id, experiment_id, asset_class, symbols_json, date_from, date_to, timespan, strategy_version, config_json, status, checkpoint_json, provider_call_budget, created_at_ms, updated_at_ms)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    ).run(runId, runId, "stock", JSON.stringify(opts.symbols), opts.from, opts.to, opts.timespan ?? "minute", cfg.configVersion, JSON.stringify(cfg), "RUNNING", JSON.stringify({ done: [] }), opts.providerCallBudget ?? opts.symbols.length, nowMs, nowMs);
+      `INSERT OR IGNORE INTO replay_runs (run_id, experiment_id, asset_class, symbols_json, date_from, date_to, timespan, strategy_version, config_json, status, checkpoint_json, provider_call_budget, provider_limitations, created_at_ms, updated_at_ms)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run(runId, runId, "stock", JSON.stringify(symbols), opts.from, opts.to, opts.timespan ?? "minute", cfg.configVersion, JSON.stringify(cfg), "RUNNING", JSON.stringify({ done: [] }), opts.providerCallBudget ?? symbols.length, JSON.stringify(provenance), nowMs, nowMs);
     const { fetchHistoricalStockBars } = await import("./../replay-provider.ts");
     const done = new Set<string>();
     let episodes = 0, labels = 0, calls = 0;
-    const budget = opts.providerCallBudget ?? opts.symbols.length;
-    for (const symbol of opts.symbols) {
+    const budget = opts.providerCallBudget ?? symbols.length;
+    for (const symbol of symbols) {
+      if (env.EPISODE_SEED_KILL === "1") { db.prepare("UPDATE replay_runs SET status='PAUSED', updated_at_ms=? WHERE run_id=?").run(Date.now(), runId); break; }
       if (calls >= budget) break;
       const r = await fetchHistoricalStockBars(symbol, { from: opts.from, to: opts.to, timespan: opts.timespan ?? "minute" }, env);
       calls += r.providerCalls;
       const res = seedSymbolOnDb(db, symbol, r.bars, cfg, nowMs);
       episodes += res.episodesCaptured; labels += res.labels; done.add(symbol);
-      db.prepare("UPDATE replay_runs SET checkpoint_json=?, updated_at_ms=? WHERE run_id=?").run(JSON.stringify({ done: [...done] }), nowMs, runId);
+      db.prepare("UPDATE replay_runs SET checkpoint_json=?, updated_at_ms=? WHERE run_id=?").run(JSON.stringify({ done: [...done] }), Date.now(), runId);
+      if (rateLimitMs > 0) await sleep(rateLimitMs);
     }
-    db.prepare("UPDATE replay_runs SET status='COMPLETED', updated_at_ms=? WHERE run_id=?").run(nowMs, runId);
-    return { ran: true, skippedReason: null, symbolsDone: done.size, episodes, labels };
+    db.prepare("UPDATE replay_runs SET status=?, updated_at_ms=? WHERE run_id=?").run(env.EPISODE_SEED_KILL === "1" ? "PAUSED" : "COMPLETED", Date.now(), runId);
+    return { ran: true, skippedReason: null, symbolsDone: done.size, episodes, labels, estimate, provenance };
   } catch (err: any) {
-    return { ran: false, skippedReason: `seed error (isolated): ${err?.message ?? String(err)}`, symbolsDone: 0, episodes: 0, labels: 0 };
+    return { ran: false, skippedReason: `seed error (isolated): ${err?.message ?? String(err)}`, symbolsDone: 0, episodes: 0, labels: 0, estimate, provenance };
   }
 }

@@ -69,5 +69,46 @@ then distance; materialize a compact numeric feature vector for retrieval; ANN (
 reference *list* endpoint + entitlement) — universe is a required caller input; (b) replay
 MODELED_OPTION labels (needs historical Greeks — not entitled). Both documented; no data fabricated.
 
+## Phase D — Railway seeding runbook (operator; owner performs)
+
+All new capability is OFF by default. **You** set the env flags and run the curls; I never
+enable flags or seed. Token is sent in the `x-scan-token` header only (never a URL). Nothing
+below cancels or changes a paid service; env changes are listed for you to approve.
+
+**Env to set on Railway (only when ready to seed):**
+`HISTORICAL_REPLAY_ENABLED=1`, `EPISODE_CAPTURE_ENABLED=1`. Kill switch: `EPISODE_SEED_KILL=1`
+(pauses any run). `EPISODE_SEED_KILL` unset/`0` to allow. Leave OFF until after step A.
+
+```powershell
+$domain = "https://YOUR-RAILWAY-DOMAIN"; $token = "YOUR_SCAN_API_TOKEN"
+$H = @{ "x-scan-token" = $token }
+# A) ENTITLEMENT CHECK (no seeding; verifies point-in-time universe feasibility; no secrets printed)
+Invoke-RestMethod -Uri "$domain/api/research/entitlement" -Headers $H | ConvertTo-Json -Depth 6
+# → pointInTimeUniverseSufficient true  ⇒ use source:"provider_pit"
+#   false ⇒ supply a user-dated file (source:"user_dated_file"), or current-symbols = EXPLORATORY ONLY
+
+# B) SMOKE SEED — DRY RUN first (estimate only; no provider calls, no writes)
+$body = @{ symbols=@("AAPL","NVDA","AMD","TSLA","MSFT"); from="2024-01-01"; to="2024-02-01"; source="current"; dryRun=$true } | ConvertTo-Json
+Invoke-RestMethod -Uri "$domain/api/research/seed" -Headers $H -Method POST -ContentType "application/json" -Body $body | ConvertTo-Json -Depth 6
+#   → inspect result.estimate (provider calls, episodes, storage). Then set HISTORICAL_REPLAY_ENABLED=1 + EPISODE_CAPTURE_ENABLED=1 on Railway.
+# B') SMOKE SEED — REAL (bounded): flip dryRun=$false, add a small budget
+$body = @{ symbols=@("AAPL","NVDA","AMD","TSLA","MSFT"); from="2024-01-01"; to="2024-02-01"; source="current"; dryRun=$false; maxSymbols=5; providerCallBudget=20; rateLimitMs=250 } | ConvertTo-Json
+Invoke-RestMethod -Uri "$domain/api/research/seed" -Headers $H -Method POST -ContentType "application/json" -Body $body | ConvertTo-Json -Depth 6
+
+# C) VALIDATE rows + invariants (read-only)
+Invoke-RestMethod -Uri "$domain/api/research/seed" -Headers $H | ConvertTo-Json -Depth 6
+#   → episodes>0, labels>0, duplicateEpisodeKeys=0, modeledLabelShare=0 (replay = underlying only), sane byLiquidity/byDirection
+
+# D) PILOT universe (broader; still bounded) — repeat B' with a larger symbol list + longer range
+# E) FULL 3–5y SEED — provider_pit (or user_dated_file) universe, dryRun=$false, providerCallBudget sized from the estimate.
+#    Re-POST to resume (idempotent; checkpoint skips completed symbols). EPISODE_SEED_KILL=1 pauses.
+
+# F) PHASE-D EVALUATION — (added in a later step) runs the harness over the real library and writes analog_eval_reports.
+# G) READ THE VERDICT — GET the report; GO only if real_seeded + survivorship-free + beats every baseline OOS + calibrated.
+```
+
+Staged gate: **A→B→C** must be clean before **D**; **D→E** before **F**; **F**'s report issues the verdict.
+A survivorship-biased/undated universe returns `verdictEligibility: EXPLORATORY ONLY` and can never GO.
+
 ## Resume point
 - **Now building: Phase A.** Files: `lib/research/episode/*`, additive tables `setup_episodes` + `episode_labels`, tests `tests/analog-episode-*.test.mjs`. Default OFF / not wired into the live cycle. Gate: leakage + label-math tests green + full suite/tsc/build green.

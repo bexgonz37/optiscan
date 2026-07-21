@@ -64,15 +64,29 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   flag-off no-op). **Blocked/inactive (documented, no fabrication):** auto point-in-time universe
   reconstruction (needs reference list endpoint + entitlement); replay MODELED_OPTION labels (needs
   historical Greeks — not entitled). Provider/scale audit in `docs/ANALOG_ENGINE_BUILD.md`.
-- ⏭️ **Phase D — Tier-1 analog engine (GO/NO-GO GATE)** (next). Build `lib/research/analog/{features,
-  similarity,retrieval,distribution}.ts`: comparability pre-filter → normalized correlation-aware
-  outcome-weighted kNN over Zone-A features → analog forward-return distribution + abstention. Wire it
-  as a `Scorer` into the Phase-B harness and run `beatsAllBaselines`. **DATA DEPENDENCY:** the evidence
-  verdict requires a REAL seeded library — i.e. `runReplaySeed` must have run on Railway (provider
-  access) over a survivorship-free universe. The engine + wiring are buildable/testable on synthetic
-  episodes now; the *live go/no-go* awaits real seeded data. If it shows no OOS lift → STOP + bounded
-  remediation (leakage / episode quality / features / similarity / sampling), do NOT tune to a positive backtest.
-- ⬜ Phases E–I per `docs/ANALOG_ENGINE_BUILD.md`.
+- ✅ **Phase D — Tier-1 analog engine + live-data operator tooling** (commits `e83cbf5` + pending).
+  Engine (`lib/research/analog/{similarity,engine,report}.ts`): transparent z-score + ridge
+  correlation-aware + outcome-weighted metric; comparability pre-filter → outcome-weighted kNN →
+  forward-return distribution → sample/dispersion/contradiction penalties → abstention; wired as a
+  `Scorer` into the Phase-B harness (`beatsAllBaselines`). Durable versioned report + verdict
+  (additive `analog_eval_reports`): survivorship/synthetic ⇒ EXPLORATORY_ONLY (never GO); GO needs
+  beating EVERY baseline OOS + calibration + coverage on a real, survivorship-free library.
+  Live-data tooling: `lib/research/episode/universe.ts` (fallback hierarchy: provider-PIT →
+  user-dated file → current-symbols=EXPLORATORY; never silently uses today's list), `runReplaySeed`
+  guardrails (kill switch `EPISODE_SEED_KILL`, safe-default dry-run, `maxSymbols` cap, rate limit,
+  pre-flight estimate), token-gated admin routes `GET /api/research/entitlement` (secret-safe
+  reference-endpoint probe) + `GET|POST /api/research/seed` (bounded seed job, dry-run default),
+  and the Railway runbook (A–G) in `docs/ANALOG_ENGINE_BUILD.md`. Gates: full 1538/1538 · tsc 0 ·
+  build 0. Tests: `tests/analog-engine.test.mjs` (13), `tests/analog-universe.test.mjs` (11).
+  **NOT real-market evidence yet:** engine validated on synthetic episodes only; the *live go/no-go*
+  awaits the OWNER running the seed on Railway over a survivorship-free universe (see runbook).
+  If, on real data, it shows no OOS lift → STOP + bounded remediation; do NOT tune to a positive backtest.
+- ⏭️ **Phase E — Options mapping + recommendation card** (next). Map the underlying analog thesis to
+  the CURRENT real option chain (hard liquidity/spread gates; puts stay research-only); MODELED option
+  outcome flagged; build the recommendation card from `AnalogScorer.explain()` evidence (ticker/side/
+  contract/entry/targets/invalidation/hold/confidence/analogs/closest win+loss/modeled-vs-observed).
+  Additive `recommendations` table. Files: `lib/research/reco/{contract,card}.ts`.
+- ⬜ Phases F–I per `docs/ANALOG_ENGINE_BUILD.md`.
 
 ## 🏗️ MULTI-LANE RESEARCH REBUILD — completed (Phases 0–9, superseded scaffolding — FROZEN)
 
