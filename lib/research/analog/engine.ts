@@ -37,6 +37,9 @@ export interface AnalogExplain {
 }
 
 const isCmp = (k: string) => k.startsWith("cmp_");
+// cmp_symbol is used for DEDUP (perKeyCap), never as a comparability filter — you compare
+// across symbols, not only within one.
+const isCmpFilter = (k: string) => isCmp(k) && k !== "cmp_symbol";
 
 export class AnalogScorer implements Scorer {
   readonly name = "analog_tier1";
@@ -57,7 +60,7 @@ export class AnalogScorer implements Scorer {
     this.model = train.length >= 2 ? fitMetric(rows, wins, this.dims, this.cfg.ridge) : null;
     this.rows = train.map((t) => ({
       vec: this.dims.map((k) => t.input.features[k] ?? NaN),
-      cmp: Object.fromEntries(Object.entries(t.input.features).filter(([k]) => isCmp(k))),
+      cmp: Object.fromEntries(Object.entries(t.input.features).filter(([k]) => isCmpFilter(k))),
       win: t.win, outcome: t.outcome, id: t.input.id, symKey: String(t.input.features["cmp_symbol"] ?? t.input.id),
     }));
     this.baseRate = train.length ? wins.filter(Boolean).length / train.length : 0.5;
@@ -67,7 +70,7 @@ export class AnalogScorer implements Scorer {
     const abst = (reason: string): AnalogExplain => ({ abstain: true, reason, p: 0, nAnalogs: 0, effectiveSample: 0, winRate: 0, expectancy: 0, dispersion: 0, contradiction: 0, p10: 0, p50: 0, p90: 0, nearest: [], nearestWin: null, nearestLoss: null });
     if (!this.model) return abst("not fitted / insufficient training data");
     const qvec = this.dims.map((k) => input.features[k] ?? NaN);
-    const qcmp = Object.fromEntries(Object.entries(input.features).filter(([k]) => isCmp(k)));
+    const qcmp = Object.fromEntries(Object.entries(input.features).filter(([k]) => isCmpFilter(k)));
     const pool = this.rows.filter((r) => Object.keys(qcmp).every((k) => r.cmp[k] === qcmp[k]));
     if (pool.length < this.cfg.minEffectiveSample) return abst(`comparable pool ${pool.length} < ${this.cfg.minEffectiveSample}`);
 

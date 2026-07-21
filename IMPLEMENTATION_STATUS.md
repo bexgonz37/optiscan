@@ -81,12 +81,26 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   **NOT real-market evidence yet:** engine validated on synthetic episodes only; the *live go/no-go*
   awaits the OWNER running the seed on Railway over a survivorship-free universe (see runbook).
   If, on real data, it shows no OOS lift → STOP + bounded remediation; do NOT tune to a positive backtest.
-- ⏭️ **Phase E — Options mapping + recommendation card** (next). Map the underlying analog thesis to
-  the CURRENT real option chain (hard liquidity/spread gates; puts stay research-only); MODELED option
-  outcome flagged; build the recommendation card from `AnalogScorer.explain()` evidence (ticker/side/
-  contract/entry/targets/invalidation/hold/confidence/analogs/closest win+loss/modeled-vs-observed).
-  Additive `recommendations` table. Files: `lib/research/reco/{contract,card}.ts`.
-- ⬜ Phases F–I per `docs/ANALOG_ENGINE_BUILD.md`.
+- ✅ **Phase E — Options mapping + recommendation card + real Phase-D runner** (commit pending).
+  `lib/research/reco/contract.ts` maps the analog thesis to the CURRENT real chain with hard gates
+  (chain_unavailable / chain_stale / event_risk / no_expiration / spread / open_interest / volume /
+  no_two_sided_quote) — abstains with a reason, never fabricates a contract; puts are RESEARCH_ONLY
+  unless `bearishActionable()` (default OFF). `card.ts` builds the full card from `AnalogScorer.explain()`
+  evidence (ticker / CALL-or-PUT / exact contract / bid-ask-spread / entry range / targets / invalidation /
+  hold / confidence / analog count / effective sample / median outcome / dispersion / closest winner+loser /
+  regime relevance / abstention reason / MODELED-vs-OBSERVED disclosure). `recommend.ts` orchestrates +
+  idempotent persist. **Real Phase-D runner**: `lib/research/analog/evaluate.ts` (`runPhaseDEvalOnDb`)
+  reads seeded episodes, flattens Zone-A blocks to numeric features, runs `beatsAllBaselines` over
+  purged walk-forward splits, and writes the GO/REMEDIATE/STOP report; provenance is `real_seeded` only
+  when every replay run is survivorship-free (else EXPLORATORY_ONLY). Token-gated route
+  `app/api/research/evaluate/route.ts` (POST run / GET latest). Additive `recommendations` table.
+  Verdict logic refined: beating every baseline OOS but missing a calibration/coverage gate is
+  **REMEDIATE** (signal present, remediate), STOP is reserved for *no* OOS lift. Tests:
+  `tests/analog-reco.test.mjs`, `tests/analog-evaluate.test.mjs` (synthetic PLUMBING only — NOT presented
+  as real-market evidence). Green: 1555 tests, tsc 0, build 0.
+- ⬜ Phases F–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: Phase F — forward paper validation** (record
+  live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
+  trusting any GO).
 
 ## 🏗️ MULTI-LANE RESEARCH REBUILD — completed (Phases 0–9, superseded scaffolding — FROZEN)
 

@@ -63,9 +63,12 @@ export function buildPhaseDReport(input: PhaseDReportInput, nowMs: number = Date
   } else if (beatsAll && calibrated && covers) {
     verdict = "GO";
     verdictReason = "beat every baseline out-of-sample with acceptable calibration and coverage on a real, survivorship-free library";
-  } else if (beatsRandom && (calibrated || covers)) {
+  } else if (beatsRandom) {
+    // There IS out-of-sample lift, but some gate (all-baselines / calibration / coverage) is not
+    // yet cleared — promising, but must be remediated, not shipped and not abandoned.
     verdict = "REMEDIATE";
-    verdictReason = "shows some out-of-sample signal but did not clear every gate — run the bounded remediation cycle, do NOT tune to a positive backtest";
+    const gaps = [!beatsAll ? "not beating every baseline" : null, !calibrated ? `calibration ECE ${input.candidate.ece} > ${maxEce}` : null, !covers ? `coverage ${input.candidate.coverage} < ${minCoverage}` : null].filter(Boolean).join("; ");
+    verdictReason = `out-of-sample lift present but a gate is unmet (${gaps}) — run the bounded remediation cycle, do NOT tune to a positive backtest`;
   } else {
     verdict = "STOP";
     verdictReason = "no out-of-sample lift over baselines — diagnose leakage / episode quality / features / similarity / sampling; do not proceed";

@@ -1286,6 +1286,20 @@ CREATE TABLE IF NOT EXISTS analog_eval_reports (
   created_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_analog_reports_verdict ON analog_eval_reports(verdict, created_at_ms);
+
+-- Analog Engine — Phase E. Recommendation cards (paper research only; NO live execution).
+-- A row may be an abstention/rejection (recommend=0) with its reason. PURELY ADDITIVE.
+CREATE TABLE IF NOT EXISTS recommendations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  rec_id TEXT NOT NULL UNIQUE,
+  ticker TEXT NOT NULL, side TEXT,
+  recommend INTEGER NOT NULL, production_eligible INTEGER NOT NULL, research_only INTEGER NOT NULL,
+  option_symbol TEXT, strike REAL, expiration TEXT, dte INTEGER, bid REAL, ask REAL, spread_pct REAL,
+  confidence REAL, analog_count INTEGER, effective_sample INTEGER, median_outcome REAL, dispersion REAL, win_rate REAL,
+  abstain_reason TEXT, rejection_reason TEXT, outcome_basis TEXT,
+  card_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recommendations_ticker ON recommendations(ticker, created_at_ms);
 `;
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */
