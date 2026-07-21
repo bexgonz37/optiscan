@@ -1,7 +1,7 @@
 # OptiScan production image — single-instance VPS / Docker / Railway deploy.
 # One long-running service owns HTTP + the background runtime (scanner, Supervisor,
 # paper engine, scheduler). SQLite lives on the mounted volume at /app/data.
-FROM node:20-bookworm-slim AS base
+FROM node:22-bookworm-slim AS base
 RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
 
 FROM base AS deps

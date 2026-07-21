@@ -206,6 +206,19 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   after cancel, and no-calls-after-cancel — plus reconcile leaves a live-leased run untouched. Green: 1607
   tests, tsc 0, build 0. OPERATOR: deploy, then `POST {action:"reconcile"}` (or `cancel` each runId) to
   finalize `episode_seed_1784662810251` and `episode_seed_1784663885317_2dtq8n`.
+- ✅ **Phase E.7 — Node 22 production image (enables the worker)** (commit pending). Production is a
+  Dockerfile build (`railway.json` builder=DOCKERFILE, `CMD ["node","server.js"]` = Next standalone), and
+  it was pinned to `node:20-bookworm-slim`. Node 20 has no `--experimental-strip-types`, so the seed
+  worker could never run in prod (E.5's guard kept the web healthy but left the worker permanently
+  disabled). Fix: bumped the single base stage to `node:22-bookworm-slim`; all stages (`deps`, `builder`,
+  `runner`) derive from `base`, so the whole multi-stage build is Node 22 (verified: no `node:20` remains).
+  New guard test `tests/prod-image-node-version.test.mjs` parses the Dockerfile and FAILS the build if any
+  `FROM node:` base is < 22.6 (trip-wire against a silent regression), and cross-checks `nodeSupportsStripTypes`
+  + `package.json engines`. Confirmed: local Node 22.23 runs `--experimental-strip-types`; the standalone
+  build still contains `worker/seed-worker.ts` + the whole seed `lib` chain; the worker role guard and
+  crash-loop protections (E.5) are unchanged and green. Start command / Railway config untouched. Green:
+  1611 tests, tsc 0, build 0. NOTE: the worker still only spawns when `OPTISCAN_ENABLE_SEED_WORKER=1`
+  (+ replay flags) is set on Railway; not enabling it keeps prod exactly as-is.
 - ⬜ Phases F–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: Phase F — forward paper validation** (record
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).
