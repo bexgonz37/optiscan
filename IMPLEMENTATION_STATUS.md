@@ -126,6 +126,27 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   multi-chunk seed after one symbol). Tests: `tests/analog-replay-chunking.test.mjs` (>5,000 bars via
   chunking, window boundaries, cross-chunk dedup, missing-middle-chunk → incomplete, cap→truncated,
   budget/quota interruption → PARTIAL + idempotent resume). Green: 1573 tests, tsc 0, build 0.
+- ✅ **Phase E.3 — asynchronous seed-job model** (commit pending). `POST /api/research/seed` ran the
+  whole replay synchronously in the request, so a 10-symbol / 6-month pilot (~60 rate-limited provider
+  calls) hung past the Railway gateway timeout and never returned. New model (`lib/research/episode/
+  seed-jobs.ts`): `POST` for a real seed now `createSeedRun` (inserts a QUEUED `replay_runs` row,
+  idempotent per deterministic `experiment_id`) and fires `runSeedWorker` **un-awaited**, returning
+  `{runId, status:QUEUED, statusUrl}` immediately. The background worker processes one symbol per step,
+  persists progress after every chunk (via a `fetchHistoricalStockBars` `onChunk` callback) and every
+  symbol, and lives in the server process so a **client disconnect** never stops it. `GET
+  /api/research/seed/:runId` returns progress (symbols total/done/with-data, current symbol, chunks,
+  calls attempted/succeeded, episodes, labels, errors, per-symbol detail, elapsed + reliable ETA) and
+  **re-kicks an orphaned run after a server restart**. Statuses QUEUED/RUNNING/PAUSED/PARTIAL/FAILED/
+  COMPLETED/CANCELED; runs are resumable (symbol-level checkpoint) and idempotent (episode
+  INSERT OR IGNORE); `POST :runId {action}` supports cancel / pause / resume; `resumeInterruptedSeedRuns`
+  recovers after restart. Dry-run and the one-symbol diagnostic stay synchronous (fast). All provenance /
+  survivorship / quota (budget) / flag / kill-switch rules preserved. Additive `replay_runs` progress
+  columns (episodes_captured, labels_captured, symbols_total, symbols_done, chunks_completed,
+  current_symbol, cancel_requested, started_at_ms). Tests: `tests/analog-seed-jobs.test.mjs` (immediate
+  create, background progression, client disconnect, resume-after-interruption, duplicate submission,
+  quota→PARTIAL + continuation, partial-symbol failure, final COMPLETED, cancel, pause/resume). Railway
+  note: the hang was request-duration (synchronous replay exceeding the proxy timeout), not memory; the
+  async model removes long-lived requests entirely. Green: 1584 tests, tsc 0, build 0.
 - ⬜ Phases F–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: Phase F — forward paper validation** (record
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).

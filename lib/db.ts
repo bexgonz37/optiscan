@@ -1467,6 +1467,16 @@ const REPLAY_RUNS_COLUMN_MIGRATIONS: Array<[string, string]> = [
   ["provider_calls_attempted", "ALTER TABLE replay_runs ADD COLUMN provider_calls_attempted INTEGER NOT NULL DEFAULT 0"],
   ["symbols_with_data", "ALTER TABLE replay_runs ADD COLUMN symbols_with_data INTEGER NOT NULL DEFAULT 0"],
   ["per_symbol_json", "ALTER TABLE replay_runs ADD COLUMN per_symbol_json TEXT"],
+  // Async job model (Phase E.3): progress fields so a background worker can persist after every
+  // chunk and GET can report progress without loading the whole run.
+  ["episodes_captured", "ALTER TABLE replay_runs ADD COLUMN episodes_captured INTEGER NOT NULL DEFAULT 0"],
+  ["labels_captured", "ALTER TABLE replay_runs ADD COLUMN labels_captured INTEGER NOT NULL DEFAULT 0"],
+  ["symbols_total", "ALTER TABLE replay_runs ADD COLUMN symbols_total INTEGER NOT NULL DEFAULT 0"],
+  ["symbols_done", "ALTER TABLE replay_runs ADD COLUMN symbols_done INTEGER NOT NULL DEFAULT 0"],
+  ["chunks_completed", "ALTER TABLE replay_runs ADD COLUMN chunks_completed INTEGER NOT NULL DEFAULT 0"],
+  ["current_symbol", "ALTER TABLE replay_runs ADD COLUMN current_symbol TEXT"],
+  ["cancel_requested", "ALTER TABLE replay_runs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0"],
+  ["started_at_ms", "ALTER TABLE replay_runs ADD COLUMN started_at_ms INTEGER"],
 ];
 const MOMENTUM_DIAGNOSTIC_COLUMN_MIGRATIONS: Array<[string, string]> = [
   ["classification", "ALTER TABLE momentum_diagnostics ADD COLUMN classification TEXT"],

@@ -49,15 +49,41 @@ export async function POST(req: Request) {
   const cls = classifyUniverse(source, symbols, { providerPitAvailable: body.providerPitAvailable === true, dated: body.dated !== false });
   const dryRun = body.dryRun !== false; // SAFE DEFAULT: dry-run unless explicitly dryRun:false
   const diagnostic = body.diagnostic === true; // bounded one-symbol probe (no writes)
-  const { runReplaySeed } = await import("@/lib/research/episode/seed");
-  const result = await runReplaySeed({
-    symbols, from, to, timespan: body.timespan, dryRun, diagnostic,
-    maxSymbols: body.maxSymbols, providerCallBudget: body.providerCallBudget, rateLimitMs: body.rateLimitMs,
+  const eligibility = cls.validForVerdict ? "survivorship-free — eligible for a GO verdict" : "EXPLORATORY ONLY — a survivorship-biased/undated universe can NEVER issue GO";
+
+  // Dry-run and the one-symbol diagnostic are fast and stay synchronous.
+  if (dryRun || diagnostic) {
+    const { runReplaySeed } = await import("@/lib/research/episode/seed");
+    const result = await runReplaySeed({
+      symbols, from, to, timespan: body.timespan, dryRun, diagnostic,
+      maxSymbols: body.maxSymbols, providerCallBudget: body.providerCallBudget, rateLimitMs: body.rateLimitMs,
+      universeSource: cls.source, survivorshipBias: cls.survivorshipBias,
+    }, process.env);
+    return NextResponse.json({
+      ok: true, universe: cls, dryRun, diagnostic,
+      runStatus: result.status, runOk: result.ok, providerCallsAttempted: result.providerCallsAttempted, providerCallsSucceeded: result.providerCallsSucceeded, result,
+      verdictEligibility: eligibility,
+    });
+  }
+
+  // A real seed is a BACKGROUND JOB: create the run, kick the worker un-awaited, return at once.
+  // The worker lives in the server process, so it survives a client disconnect; a restart is
+  // recovered by resumeInterruptedSeedRuns on the next status poll.
+  const { getDb } = await import("@/lib/db");
+  const { createSeedRun, runSeedWorker } = await import("@/lib/research/episode/seed-jobs");
+  const created = createSeedRun(getDb(), {
+    symbols, from, to, timespan: body.timespan, maxSymbols: body.maxSymbols,
+    providerCallBudget: body.providerCallBudget, rateLimitMs: body.rateLimitMs,
     universeSource: cls.source, survivorshipBias: cls.survivorshipBias,
   }, process.env);
+  if (created.status === "SKIPPED" || !created.runId) {
+    return NextResponse.json({ ok: false, universe: cls, error: created.reason ?? "seed not started", verdictEligibility: eligibility }, { status: 400 });
+  }
+  if (!created.existing) void runSeedWorker(getDb(), created.runId, process.env).catch(() => { /* isolated background worker */ });
   return NextResponse.json({
-    ok: true, universe: cls, dryRun, diagnostic,
-    runStatus: result.status, runOk: result.ok, providerCallsAttempted: result.providerCallsAttempted, providerCallsSucceeded: result.providerCallsSucceeded, result,
-    verdictEligibility: cls.validForVerdict ? "survivorship-free — eligible for a GO verdict" : "EXPLORATORY ONLY — a survivorship-biased/undated universe can NEVER issue GO",
+    ok: true, universe: cls, runId: created.runId, status: created.existing ? created.status : "QUEUED",
+    existing: created.existing, statusUrl: `/api/research/seed/${created.runId}`,
+    message: created.existing ? "an identical run is already in progress — returning it" : "seed queued; poll statusUrl for progress",
+    verdictEligibility: eligibility,
   });
 }

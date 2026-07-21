@@ -118,7 +118,7 @@ export type FetchCandlesFn = (symbol: string, opts: Record<string, unknown>) => 
 
 export async function fetchHistoricalStockBars(
   symbol: string,
-  opts: { from: string; to: string; timespan?: string; multiplier?: number; chunkDays?: number } = { from: "", to: "" },
+  opts: { from: string; to: string; timespan?: string; multiplier?: number; chunkDays?: number; onChunk?: (d: ChunkDetail & { index: number; total: number }) => void } = { from: "", to: "" },
   env: NodeJS.ProcessEnv = process.env,
   deps: { fetchCandles?: FetchCandlesFn } = {},
 ): Promise<FetchBarsResult> {
@@ -135,26 +135,30 @@ export async function fetchHistoricalStockBars(
   const chunkDetail: ChunkDetail[] = [];
   let providerCalls = 0, anyError = false, truncated = false;
 
-  for (const w of windows) {
+  for (let wi = 0; wi < windows.length; wi++) {
+    const w = windows[wi];
     providerCalls += 1;
+    let detail: ChunkDetail;
     try {
       const res = await fetchCandles(symbol, { from: w.from, to: w.to, timespan, resolution, limit: REPLAY_PER_CALL_LIMIT });
       const available = res?.available !== false;
       if (!available) {
         anyError = true;
-        chunkDetail.push({ from: w.from, to: w.to, bars: 0, succeeded: false, truncated: false, note: sanitizeProviderNote(res?.note ?? "provider reported available:false") });
-        continue;
+        detail = { from: w.from, to: w.to, bars: 0, succeeded: false, truncated: false, note: sanitizeProviderNote(res?.note ?? "provider reported available:false") };
+      } else {
+        const raw = Array.isArray(res) ? res : (res?.candles ?? res?.bars ?? []);
+        const bars = mapBars(raw);
+        for (const b of bars) if (!seen.has(b.t)) seen.set(b.t, b);
+        const capHit = res?.resultCap === true || bars.length >= REPLAY_PER_CALL_LIMIT;
+        if (capHit) truncated = true;
+        detail = { from: w.from, to: w.to, bars: bars.length, succeeded: true, truncated: capHit };
       }
-      const raw = Array.isArray(res) ? res : (res?.candles ?? res?.bars ?? []);
-      const bars = mapBars(raw);
-      for (const b of bars) if (!seen.has(b.t)) seen.set(b.t, b);
-      const capHit = res?.resultCap === true || bars.length >= REPLAY_PER_CALL_LIMIT;
-      if (capHit) truncated = true;
-      chunkDetail.push({ from: w.from, to: w.to, bars: bars.length, succeeded: true, truncated: capHit });
     } catch (err: any) {
       anyError = true;
-      chunkDetail.push({ from: w.from, to: w.to, bars: 0, succeeded: false, truncated: false, note: sanitizeProviderNote(`provider error: ${err?.message ?? String(err)}`) });
+      detail = { from: w.from, to: w.to, bars: 0, succeeded: false, truncated: false, note: sanitizeProviderNote(`provider error: ${err?.message ?? String(err)}`) };
     }
+    chunkDetail.push(detail);
+    try { opts.onChunk?.({ ...detail, index: wi, total: windows.length }); } catch { /* progress callback must never break the fetch */ }
   }
 
   const bars = [...seen.values()].sort((a, b) => a.t - b.t);
