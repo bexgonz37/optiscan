@@ -40,12 +40,25 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   `EPISODE_CAPTURE_ENABLED` (OFF); live wrapper is a hard no-op and is NOT wired (Phase C replay
   is the primary writer). Gates: focused 15/15 · full 1496/1496 · tsc 0 · build 0. Tests:
   `tests/analog-episode.test.mjs`, `tests/analog-episode-store.test.mjs`.
-- ⏭️ **Phase B — Evaluation harness + baselines** (next). Walk-forward + purged/embargoed CV +
-  calibration (reliability/Brier/ECE) + the baseline suite (random, momentum-scanner, velocity,
-  always-trade, rule, logistic, broker-visible). **Built before the recommender.** Gate: reports
-  lift on synthetic-edge data and ZERO lift on synthetic-random data. Additive tables `eval_runs`,
-  `eval_results`. Files: `lib/research/eval/{harness,baselines,metrics}.ts`.
-- ⬜ Phases C–I per `docs/ANALOG_ENGINE_BUILD.md`.
+- ✅ **Phase B — Evaluation harness + baselines** (commit pending). The scientific spine, built
+  BEFORE the recommender. `lib/research/eval/{types,metrics,baselines,harness}.ts` (pure) +
+  additive `eval_runs`/`eval_results`. Metrics: expectancy, hit-rate, profit-factor, Brier, ECE,
+  reliability curve, paired bootstrap lift-CI. Baselines: random, always-trade, velocity, simple
+  rule, trainable logistic, broker-visible. Harness: expanding walk-forward splits, purge+embargo
+  (removes training labels overlapping the test period), strict OOS evaluate, compareToBaseline,
+  beatsAllBaselines (the Phase-D predicate). **Acceptance PROVEN:** finds a true signal over random
+  (lift CI &gt; 0), reports NO significant lift on a no-signal dataset, and finds no spurious lift
+  of a linear signal over a logistic baseline. Gates: focused 10/10 · full 1506/1506 · tsc 0 ·
+  build 0. Tests: `tests/analog-eval.test.mjs`.
+- ⏭️ **Phase C — Historical replay + memory seeding** (next). Redesign `historical-replay.ts` to
+  emit Setup Episodes + Phase-A labels (not one momentum P&L): point-in-time survivorship-free
+  universe, liquidity floor, event-driven candidate moments (same intake logic on historical bars),
+  dedup/refractory, corporate actions, missing-data handling, extended-hours episodes; reuse
+  `replay_runs` checkpoint/idempotency. **Prereqs to verify:** point-in-time reference feed +
+  corporate-actions (Polygon `/v3/reference/*`); earnings calendar is a known gap (defer). Runs on
+  Railway (provider access); build env has none, so the seeder is written pure/OnDb + tested on
+  synthetic bars, with the live driver flag-gated (`EPISODE_CAPTURE_ENABLED`/replay flag).
+- ⬜ Phases D–I per `docs/ANALOG_ENGINE_BUILD.md`. **Phase D is the go/no-go evidence gate.**
 
 ## 🏗️ MULTI-LANE RESEARCH REBUILD — completed (Phases 0–9, superseded scaffolding — FROZEN)
 

@@ -1245,6 +1245,32 @@ CREATE TABLE IF NOT EXISTS episode_labels (
 );
 CREATE INDEX IF NOT EXISTS idx_episode_labels_ep ON episode_labels(episode_key);
 CREATE INDEX IF NOT EXISTS idx_episode_labels_h ON episode_labels(horizon, target_kind);
+
+-- Analog Engine — Phase B. The evaluation harness ledger. Records strictly out-of-sample,
+-- walk-forward / purged-CV results per scorer, plus lift-over-baseline with confidence
+-- intervals. PURELY ADDITIVE. This ledger is the arbiter of Phase D's go/no-go gate.
+CREATE TABLE IF NOT EXISTS eval_runs (
+  run_id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,                     -- walk_forward | purged_cv
+  dataset TEXT NOT NULL,
+  scorer TEXT NOT NULL,
+  baseline TEXT,                          -- baseline compared against (e.g. random)
+  splits INTEGER NOT NULL,
+  n_oos INTEGER NOT NULL,
+  oos_expectancy REAL, oos_hit_rate REAL, oos_brier REAL, oos_ece REAL,
+  lift_vs_baseline REAL, lift_ci_low REAL, lift_ci_high REAL, significant INTEGER,
+  config_json TEXT, created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_eval_runs_scorer ON eval_runs(scorer, created_at_ms);
+
+CREATE TABLE IF NOT EXISTS eval_results (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL, scorer TEXT NOT NULL, split_idx INTEGER NOT NULL,
+  n INTEGER NOT NULL, expectancy REAL, hit_rate REAL, brier REAL, ece REAL, coverage REAL,
+  created_at_ms INTEGER NOT NULL,
+  UNIQUE(run_id, scorer, split_idx)
+);
+CREATE INDEX IF NOT EXISTS idx_eval_results_run ON eval_results(run_id);
 `;
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */
