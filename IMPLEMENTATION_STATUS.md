@@ -98,6 +98,21 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   **REMEDIATE** (signal present, remediate), STOP is reserved for *no* OOS lift. Tests:
   `tests/analog-reco.test.mjs`, `tests/analog-evaluate.test.mjs` (synthetic PLUMBING only — NOT presented
   as real-market evidence). Green: 1555 tests, tsc 0, build 0.
+- ✅ **Phase E.1 — seed-run observability hardening** (commit pending). Root-caused a misleading
+  success: a Railway smoke seed reported `ran:true / symbolsDone:3 / COMPLETED` with **zero** provider
+  calls and zero episodes. Two defects: (1) `runReplaySeed` never wrote `provider_calls` back to the run
+  row, incremented `symbolsDone` unconditionally, and hard-coded status `COMPLETED`; (2) provider errors
+  were swallowed (`fetchHistoricalStockBars`/`fetchCandles` catch → empty bars + discarded note), and the
+  adapter passed `multiplier` while `fetchCandles` reads `resolution` (silently fetching 5-min, never
+  1-min). Fixes: attempted-vs-succeeded call counts tracked + persisted; per-symbol status
+  (OK/NO_DATA/PROVIDER_ERROR/NO_PROVIDER) + secret-safe note; run status now
+  COMPLETED/COMPLETED_NO_DATA/PARTIAL/FAILED/PAUSED (zero attempted calls on a non-dry run ⇒ FAILED, never
+  a bare COMPLETED); `symbolsDone` counts only symbols that returned data; provider notes sanitized
+  (apiKey/Bearer stripped); bounded one-symbol `diagnostic` mode (real fetch, writes nothing); `resolution`
+  bug fixed so 1-minute bars are actually fetched. `runReplaySeed` now takes injectable `{db, fetchBars}`
+  deps for testing. Additive `replay_runs` columns (`provider_calls_attempted`, `symbols_with_data`,
+  `per_symbol_json`); seed status route exposes them. Test `tests/analog-seed-observability.test.mjs`
+  reproduces the exact zero-call condition. Green: 1564 tests, tsc 0, build 0.
 - ⬜ Phases F–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: Phase F — forward paper validation** (record
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).

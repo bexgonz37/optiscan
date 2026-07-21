@@ -180,70 +180,188 @@ export function seedSymbolOnDb(db: SeedDb, symbol: string, bars: Bar[], cfg: See
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const liveDb = () => require("@/lib/db").getDb();
 
-export interface ReplaySeedResult { ran: boolean; skippedReason: string | null; symbolsDone: number; episodes: number; labels: number; estimate?: SeedEstimate; provenance?: { universeSource: string; survivorshipBias: boolean } }
+/** Run-level outcome. A run that fetched no data is NEVER reported as a plain COMPLETED. */
+export type SeedRunStatus =
+  | "COMPLETED"          // every processed symbol returned data
+  | "PARTIAL"            // some symbols returned data, some did not
+  | "COMPLETED_NO_DATA"  // provider was called but returned zero bars for every symbol
+  | "FAILED"             // an exception aborted the run, OR zero provider calls were attempted
+  | "PAUSED"             // kill switch engaged mid-run
+  | "DIAGNOSTIC"         // one-symbol probe (no writes)
+  | "SKIPPED"            // guard tripped before the loop (flags off / no universe / kill)
+  | "DRY_RUN";           // estimate only
+
+export type PerSymbolStatus = "OK" | "NO_DATA" | "PROVIDER_ERROR" | "NO_PROVIDER";
+export interface PerSymbolSeedResult { symbol: string; status: PerSymbolStatus; attempted: boolean; succeeded: boolean; bars: number; episodes: number; labels: number; note: string }
+
+export interface SeedDiagnostic { symbol: string; attempted: boolean; succeeded: boolean; barCount: number; firstBarMs: number | null; lastBarMs: number | null; from: string; to: string; timespan: string; multiplier: number; note: string }
+
+export interface ReplaySeedResult {
+  ran: boolean;
+  ok: boolean;                       // true only when real data was captured (COMPLETED | PARTIAL | successful DIAGNOSTIC)
+  status: SeedRunStatus;
+  skippedReason: string | null;
+  symbolsProcessed: number;          // symbols the loop actually iterated
+  symbolsWithData: number;           // symbols the provider returned bars for
+  symbolsDone: number;               // ALIAS of symbolsWithData — never counts a symbol with no fetched data
+  providerCallsAttempted: number;
+  providerCallsSucceeded: number;
+  episodes: number; labels: number;
+  estimate?: SeedEstimate;
+  provenance?: { universeSource: string; survivorshipBias: boolean };
+  perSymbol?: PerSymbolSeedResult[];
+  diagnostic?: SeedDiagnostic;
+  error?: string | null;             // secret-safe diagnostic summary
+}
 
 export interface RunReplaySeedOpts {
   symbols: string[]; from: string; to: string; timespan?: string; config?: SeedConfig;
   providerCallBudget?: number;
   /** Guardrails. */
   dryRun?: boolean;              // estimate only; no provider calls, no writes
+  diagnostic?: boolean;         // bounded one-symbol probe: real fetch, NO writes, rich fetch report
   maxSymbols?: number;          // cap symbols processed per invocation (default 500)
   rateLimitMs?: number;         // delay between provider calls (default 200ms)
   /** Provenance for the eventual verdict (survivorship-biased ⇒ EXPLORATORY only). */
   universeSource?: string; survivorshipBias?: boolean;
 }
 
+/** Injectable dependencies (tests supply an in-memory db + a fake provider). */
+export type FetchBarsFn = (symbol: string, opts: { from: string; to: string; timespan?: string; multiplier?: number }, env: NodeJS.ProcessEnv) => Promise<{ bars: Bar[]; providerCalls: number; succeeded: boolean; note: string }>;
+export interface RunReplaySeedDeps { db?: SeedDb; fetchBars?: FetchBarsFn }
+
 const spanDays = (from: string, to: string): number => {
   const a = Date.parse(from), b = Date.parse(to);
   return Number.isFinite(a) && Number.isFinite(b) ? Math.max(0, Math.round((b - a) / 86_400_000)) : 0;
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const sanitizeErr = (s: unknown): string => String(s ?? "").replace(/apiKey=[^&\s]+/gi, "apiKey=***").replace(/Bearer\s+[^\s]+/gi, "Bearer ***").slice(0, 300);
+
+function skipResult(status: SeedRunStatus, reason: string, provenance: { universeSource: string; survivorshipBias: boolean }, estimate?: SeedEstimate): ReplaySeedResult {
+  return { ran: false, ok: false, status, skippedReason: reason, symbolsProcessed: 0, symbolsWithData: 0, symbolsDone: 0, providerCallsAttempted: 0, providerCallsSucceeded: 0, episodes: 0, labels: 0, estimate, provenance, error: null };
+}
 
 /**
  * Live replay-seeding driver with guardrails. HARD no-op unless HISTORICAL_REPLAY_ENABLED=1
  * AND EPISODE_CAPTURE_ENABLED=1. Kill switch: EPISODE_SEED_KILL=1. The caller MUST supply a
  * survivorship-free universe. Reuses replay_runs for a run row + resumable checkpoint. Bars
  * are fetched split/dividend-ADJUSTED. Never throws into the caller.
+ *
+ * Observability contract: attempted vs succeeded provider calls are tracked separately and
+ * persisted; every symbol gets a status + reason; a run that attempts ZERO provider calls (or
+ * fetches zero bars) is reported as FAILED / COMPLETED_NO_DATA — never a bare COMPLETED — and
+ * `symbolsDone` counts only symbols that actually returned data.
  */
-export async function runReplaySeed(opts: RunReplaySeedOpts, env: NodeJS.ProcessEnv = process.env): Promise<ReplaySeedResult> {
+export async function runReplaySeed(opts: RunReplaySeedOpts, env: NodeJS.ProcessEnv = process.env, deps: RunReplaySeedDeps = {}): Promise<ReplaySeedResult> {
   const f = researchFlags(env);
   const provenance = { universeSource: opts.universeSource ?? "unspecified", survivorshipBias: opts.survivorshipBias ?? true };
-  if (env.EPISODE_SEED_KILL === "1") return { ran: false, skippedReason: "kill switch engaged (EPISODE_SEED_KILL=1)", symbolsDone: 0, episodes: 0, labels: 0, provenance };
-  if (!f.historicalReplay || !f.episodeCapture) return { ran: false, skippedReason: "requires HISTORICAL_REPLAY_ENABLED=1 and EPISODE_CAPTURE_ENABLED=1", symbolsDone: 0, episodes: 0, labels: 0, provenance };
-  if (!opts.symbols?.length) return { ran: false, skippedReason: "no survivorship-free universe supplied", symbolsDone: 0, episodes: 0, labels: 0, provenance };
+  if (env.EPISODE_SEED_KILL === "1") return skipResult("SKIPPED", "kill switch engaged (EPISODE_SEED_KILL=1)", provenance);
+  if (!f.historicalReplay || !f.episodeCapture) return skipResult("SKIPPED", "requires HISTORICAL_REPLAY_ENABLED=1 and EPISODE_CAPTURE_ENABLED=1", provenance);
+  if (!opts.symbols?.length) return skipResult("SKIPPED", "no survivorship-free universe supplied", provenance);
 
   const maxSymbols = Math.max(1, opts.maxSymbols ?? 500);
   const symbols = opts.symbols.slice(0, maxSymbols);
+  const timespan = opts.timespan ?? "minute";
   const estimate = estimateSeed(symbols.length, spanDays(opts.from, opts.to));
-  if (opts.dryRun) return { ran: false, skippedReason: "dry_run (estimate only — no provider calls, no writes)", symbolsDone: 0, episodes: 0, labels: 0, estimate, provenance };
+  if (opts.dryRun) return { ...skipResult("DRY_RUN", "dry_run (estimate only — no provider calls, no writes)", provenance, estimate) };
+
+  const fetchBars: FetchBarsFn = deps.fetchBars ?? (async (sym, o, e) => {
+    const { fetchHistoricalStockBars } = await import("./../replay-provider.ts");
+    return fetchHistoricalStockBars(sym, o, e);
+  });
+
+  // Bounded one-symbol diagnostic: a real provider fetch that writes NOTHING, so it proves the
+  // fetch path executes without polluting the library or provenance. Preserves flags + kill.
+  if (opts.diagnostic) {
+    const sym = symbols[0];
+    const r = await fetchBars(sym, { from: opts.from, to: opts.to, timespan, multiplier: 1 }, env);
+    const times = r.bars.map((b) => b.t);
+    const diagnostic: SeedDiagnostic = {
+      symbol: sym, attempted: r.providerCalls > 0, succeeded: r.succeeded, barCount: r.bars.length,
+      firstBarMs: times.length ? Math.min(...times) : null, lastBarMs: times.length ? Math.max(...times) : null,
+      from: opts.from, to: opts.to, timespan, multiplier: 1, note: r.note,
+    };
+    const hasData = r.succeeded && r.bars.length > 0;
+    return {
+      ran: true, ok: hasData, status: "DIAGNOSTIC", skippedReason: null,
+      symbolsProcessed: 1, symbolsWithData: hasData ? 1 : 0, symbolsDone: hasData ? 1 : 0,
+      providerCallsAttempted: r.providerCalls, providerCallsSucceeded: r.succeeded ? 1 : 0,
+      episodes: 0, labels: 0, provenance, diagnostic, error: hasData ? null : r.note,
+    };
+  }
 
   const cfg = opts.config ?? defaultSeedConfig();
   const nowMs = Date.now();
   const runId = `episode_seed_${nowMs}`;
   const rateLimitMs = Math.max(0, opts.rateLimitMs ?? 200);
+  const budget = opts.providerCallBudget ?? symbols.length;
+
+  const perSymbol: PerSymbolSeedResult[] = [];
+  const processed = new Set<string>();
+  let episodes = 0, labels = 0, attempted = 0, succeeded = 0, symbolsWithData = 0;
+  let killed = false, fatalError: string | null = null;
+  let db: SeedDb | null = null;
+
   try {
-    const db = liveDb() as SeedDb;
+    db = deps.db ?? (liveDb() as SeedDb);
     db.prepare(
       `INSERT OR IGNORE INTO replay_runs (run_id, experiment_id, asset_class, symbols_json, date_from, date_to, timespan, strategy_version, config_json, status, checkpoint_json, provider_call_budget, provider_limitations, created_at_ms, updated_at_ms)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    ).run(runId, runId, "stock", JSON.stringify(symbols), opts.from, opts.to, opts.timespan ?? "minute", cfg.configVersion, JSON.stringify(cfg), "RUNNING", JSON.stringify({ done: [] }), opts.providerCallBudget ?? symbols.length, JSON.stringify(provenance), nowMs, nowMs);
-    const { fetchHistoricalStockBars } = await import("./../replay-provider.ts");
-    const done = new Set<string>();
-    let episodes = 0, labels = 0, calls = 0;
-    const budget = opts.providerCallBudget ?? symbols.length;
+    ).run(runId, runId, "stock", JSON.stringify(symbols), opts.from, opts.to, timespan, cfg.configVersion, JSON.stringify(cfg), "RUNNING", JSON.stringify({ done: [] }), budget, JSON.stringify(provenance), nowMs, nowMs);
+
     for (const symbol of symbols) {
-      if (env.EPISODE_SEED_KILL === "1") { db.prepare("UPDATE replay_runs SET status='PAUSED', updated_at_ms=? WHERE run_id=?").run(Date.now(), runId); break; }
-      if (calls >= budget) break;
-      const r = await fetchHistoricalStockBars(symbol, { from: opts.from, to: opts.to, timespan: opts.timespan ?? "minute" }, env);
-      calls += r.providerCalls;
-      const res = seedSymbolOnDb(db, symbol, r.bars, cfg, nowMs);
-      episodes += res.episodesCaptured; labels += res.labels; done.add(symbol);
-      db.prepare("UPDATE replay_runs SET checkpoint_json=?, updated_at_ms=? WHERE run_id=?").run(JSON.stringify({ done: [...done] }), Date.now(), runId);
+      if (env.EPISODE_SEED_KILL === "1") { killed = true; break; }
+      if (attempted >= budget) break;
+      const r = await fetchBars(symbol, { from: opts.from, to: opts.to, timespan, multiplier: 1 }, env);
+      attempted += r.providerCalls;
+      if (r.succeeded) succeeded += 1;
+
+      let epThis = 0, labThis = 0, status: PerSymbolStatus;
+      if (r.providerCalls === 0) status = "NO_PROVIDER";
+      else if (!r.succeeded) status = "PROVIDER_ERROR";
+      else if (r.bars.length === 0) status = "NO_DATA";
+      else {
+        const res = seedSymbolOnDb(db, symbol, r.bars, cfg, nowMs);
+        epThis = res.episodesCaptured; labThis = res.labels;
+        episodes += epThis; labels += labThis; symbolsWithData += 1; status = "OK";
+      }
+      perSymbol.push({ symbol, status, attempted: r.providerCalls > 0, succeeded: r.succeeded, bars: r.bars.length, episodes: epThis, labels: labThis, note: r.note });
+      processed.add(symbol);
+      db.prepare("UPDATE replay_runs SET checkpoint_json=?, provider_calls=?, provider_calls_attempted=?, symbols_with_data=?, per_symbol_json=?, updated_at_ms=? WHERE run_id=?")
+        .run(JSON.stringify({ done: [...processed] }), succeeded, attempted, symbolsWithData, JSON.stringify(perSymbol), Date.now(), runId);
       if (rateLimitMs > 0) await sleep(rateLimitMs);
     }
-    db.prepare("UPDATE replay_runs SET status=?, updated_at_ms=? WHERE run_id=?").run(env.EPISODE_SEED_KILL === "1" ? "PAUSED" : "COMPLETED", Date.now(), runId);
-    return { ran: true, skippedReason: null, symbolsDone: done.size, episodes, labels, estimate, provenance };
   } catch (err: any) {
-    return { ran: false, skippedReason: `seed error (isolated): ${err?.message ?? String(err)}`, symbolsDone: 0, episodes: 0, labels: 0, estimate, provenance };
+    fatalError = sanitizeErr(`seed error (isolated): ${err?.message ?? String(err)}`);
   }
+
+  // Honest run-level status — a run that fetched nothing is NEVER a bare COMPLETED.
+  let status: SeedRunStatus;
+  if (fatalError) status = "FAILED";
+  else if (killed) status = "PAUSED";
+  else if (attempted === 0) status = "FAILED";                       // non-dry run that never called the provider
+  else if (symbolsWithData === 0) status = "COMPLETED_NO_DATA";
+  else if (symbolsWithData < processed.size) status = "PARTIAL";
+  else status = "COMPLETED";
+
+  const error =
+    fatalError ??
+    (status === "FAILED" ? "no provider calls were attempted — stock replay INACTIVE or provider unavailable (verify POLYGON_API_KEY / entitlement)"
+      : status === "COMPLETED_NO_DATA" ? "provider was called but returned no bars for the requested range/timespan (check the date range, timespan, and plan entitlement)"
+      : null);
+
+  if (db) {
+    try {
+      db.prepare("UPDATE replay_runs SET status=?, error=?, provider_calls=?, provider_calls_attempted=?, symbols_with_data=?, per_symbol_json=?, updated_at_ms=? WHERE run_id=?")
+        .run(status, error, succeeded, attempted, symbolsWithData, JSON.stringify(perSymbol), Date.now(), runId);
+    } catch { /* best-effort persist of the final status */ }
+  }
+
+  const ok = status === "COMPLETED" || status === "PARTIAL";
+  return {
+    ran: true, ok, status, skippedReason: null,
+    symbolsProcessed: processed.size, symbolsWithData, symbolsDone: symbolsWithData,
+    providerCallsAttempted: attempted, providerCallsSucceeded: succeeded,
+    episodes, labels, estimate, provenance, perSymbol, error,
+  };
 }

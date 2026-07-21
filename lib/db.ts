@@ -1463,6 +1463,11 @@ const AI_JOB_RUN_COLUMN_MIGRATIONS: Array<[string, string]> = [
   ["diagnostic_json", "ALTER TABLE ai_job_runs ADD COLUMN diagnostic_json TEXT"],
 ];
 
+const REPLAY_RUNS_COLUMN_MIGRATIONS: Array<[string, string]> = [
+  ["provider_calls_attempted", "ALTER TABLE replay_runs ADD COLUMN provider_calls_attempted INTEGER NOT NULL DEFAULT 0"],
+  ["symbols_with_data", "ALTER TABLE replay_runs ADD COLUMN symbols_with_data INTEGER NOT NULL DEFAULT 0"],
+  ["per_symbol_json", "ALTER TABLE replay_runs ADD COLUMN per_symbol_json TEXT"],
+];
 const MOMENTUM_DIAGNOSTIC_COLUMN_MIGRATIONS: Array<[string, string]> = [
   ["classification", "ALTER TABLE momentum_diagnostics ADD COLUMN classification TEXT"],
   ["dominant_reason", "ALTER TABLE momentum_diagnostics ADD COLUMN dominant_reason TEXT"],
@@ -1524,6 +1529,11 @@ function migrate(db: Database.Database) {
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='momentum_diagnostics'").get()) {
     const momentumDiagCols = cols("momentum_diagnostics");
     for (const [col, sql] of MOMENTUM_DIAGNOSTIC_COLUMN_MIGRATIONS) if (!momentumDiagCols.has(col)) db.exec(sql);
+  }
+  // Analog Engine (additive): replay-seed observability — attempted-vs-succeeded calls + per-symbol status.
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='replay_runs'").get()) {
+    const replayCols = cols("replay_runs");
+    for (const [col, sql] of REPLAY_RUNS_COLUMN_MIGRATIONS) if (!replayCols.has(col)) db.exec(sql);
   }
   // Phase 7 (additive): drift-health flag on an existing model_registry table.
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_registry'").get()) {

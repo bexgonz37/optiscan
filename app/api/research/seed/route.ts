@@ -30,7 +30,7 @@ export async function GET(req: Request) {
     modeledLabelShare: has("episode_labels") ? n("SELECT COUNT(*) n FROM episode_labels WHERE outcome_kind='MODELED_OPTION'") : 0,
     byLiquidity: has("setup_episodes") ? grp("SELECT liquidity_tier k, COUNT(*) c FROM setup_episodes GROUP BY liquidity_tier") : {},
     byDirection: has("setup_episodes") ? grp("SELECT direction k, COUNT(*) c FROM setup_episodes GROUP BY direction") : {},
-    recentRuns: has("replay_runs") ? db.prepare("SELECT run_id, status, provider_calls, provider_limitations, updated_at_ms FROM replay_runs WHERE asset_class='stock' ORDER BY created_at_ms DESC LIMIT 5").all() : [],
+    recentRuns: has("replay_runs") ? db.prepare("SELECT run_id, status, provider_calls AS provider_calls_succeeded, provider_calls_attempted, symbols_with_data, error, provider_limitations, per_symbol_json, updated_at_ms FROM replay_runs WHERE asset_class='stock' ORDER BY created_at_ms DESC LIMIT 5").all() : [],
   };
   return NextResponse.json({ ok: true, seed });
 }
@@ -48,14 +48,16 @@ export async function POST(req: Request) {
   const { classifyUniverse } = await import("@/lib/research/episode/universe");
   const cls = classifyUniverse(source, symbols, { providerPitAvailable: body.providerPitAvailable === true, dated: body.dated !== false });
   const dryRun = body.dryRun !== false; // SAFE DEFAULT: dry-run unless explicitly dryRun:false
+  const diagnostic = body.diagnostic === true; // bounded one-symbol probe (no writes)
   const { runReplaySeed } = await import("@/lib/research/episode/seed");
   const result = await runReplaySeed({
-    symbols, from, to, timespan: body.timespan, dryRun,
+    symbols, from, to, timespan: body.timespan, dryRun, diagnostic,
     maxSymbols: body.maxSymbols, providerCallBudget: body.providerCallBudget, rateLimitMs: body.rateLimitMs,
     universeSource: cls.source, survivorshipBias: cls.survivorshipBias,
   }, process.env);
   return NextResponse.json({
-    ok: true, universe: cls, dryRun, result,
+    ok: true, universe: cls, dryRun, diagnostic,
+    runStatus: result.status, runOk: result.ok, providerCallsAttempted: result.providerCallsAttempted, providerCallsSucceeded: result.providerCallsSucceeded, result,
     verdictEligibility: cls.validForVerdict ? "survivorship-free — eligible for a GO verdict" : "EXPLORATORY ONLY — a survivorship-biased/undated universe can NEVER issue GO",
   });
 }

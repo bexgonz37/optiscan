@@ -54,30 +54,52 @@ export function optionsReplayBlocker(): string {
   return replayCapabilities().find((c) => c.assetClass === "option")!.reason;
 }
 
-export interface FetchBarsResult { bars: Bar[]; providerCalls: number; note: string }
+/**
+ * `providerCalls` = provider requests ATTEMPTED (0 only when no request was issued — e.g. no
+ * key). `succeeded` = the request returned without error and the provider did not report
+ * `available:false`. `bars` may still be empty on a successful call (no data for the range) —
+ * that is a distinct condition from an error and from "not attempted".
+ */
+export interface FetchBarsResult { bars: Bar[]; providerCalls: number; succeeded: boolean; note: string }
+
+/** Never echo a key: strip apiKey/Bearer tokens from provider error strings and bound length. */
+export function sanitizeProviderNote(s: unknown): string {
+  return String(s ?? "")
+    .replace(/apiKey=[^&\s]+/gi, "apiKey=***")
+    .replace(/Bearer\s+[^\s]+/gi, "Bearer ***")
+    .slice(0, 200);
+}
 
 /**
  * Fetch real historical stock bars via the existing provider (/v2/aggs). Lazy-requires
  * the provider so the pure replay core stays importable under `node --test`. Never
- * fabricates data — an unavailable provider returns an empty bar set with a note.
+ * fabricates data — an unavailable provider returns an empty bar set with a note. Reports
+ * attempted-vs-succeeded honestly so a caller can never mistake "no request issued" or
+ * "provider error" for "no data".
  */
 export async function fetchHistoricalStockBars(
   symbol: string,
   opts: { from: string; to: string; timespan?: string; multiplier?: number } = { from: "", to: "" },
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<FetchBarsResult> {
-  if (!stockReplayAvailable(env)) return { bars: [], providerCalls: 0, note: "provider unavailable — no bars fetched (never fabricated)" };
+  if (!stockReplayAvailable(env)) {
+    return { bars: [], providerCalls: 0, succeeded: false, note: "stock replay INACTIVE — no provider key (POLYGON_API_KEY / MASSIVE_API_KEY); no request issued" };
+  }
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { fetchCandles } = require("@/lib/polygon-provider");
-    const res = await fetchCandles(symbol, { from: opts.from, to: opts.to, timespan: opts.timespan ?? "minute", multiplier: opts.multiplier ?? 1 });
+    // fetchCandles reads the aggregate multiplier from `resolution` (not `multiplier`) — pass it
+    // correctly so replay actually fetches the intended 1-minute bars, not the 5-minute default.
+    const res = await fetchCandles(symbol, { from: opts.from, to: opts.to, timespan: opts.timespan ?? "minute", resolution: String(opts.multiplier ?? 1) });
+    const available = res?.available !== false; // fetchCandles returns available:false on its own caught error
     const raw = Array.isArray(res) ? res : (res?.candles ?? res?.bars ?? []);
     const bars: Bar[] = raw
       .map((b: any) => ({ t: Number(b.t ?? b.timestamp ?? b.time), o: Number(b.o ?? b.open), h: Number(b.h ?? b.high), l: Number(b.l ?? b.low), c: Number(b.c ?? b.close), v: Number(b.v ?? b.volume ?? 0) }))
       .filter((b: Bar) => Number.isFinite(b.t) && Number.isFinite(b.c))
       .sort((a: Bar, b: Bar) => a.t - b.t);
-    return { bars, providerCalls: 1, note: bars.length ? "real /v2/aggs OHLCV" : "provider returned no bars for range" };
+    if (!available) return { bars: [], providerCalls: 1, succeeded: false, note: sanitizeProviderNote(res?.note ?? "provider reported available:false") };
+    return { bars, providerCalls: 1, succeeded: true, note: bars.length ? "real /v2/aggs OHLCV" : "provider OK but returned no bars for the requested range/timespan" };
   } catch (err: any) {
-    return { bars: [], providerCalls: 1, note: `provider error (no fabrication): ${err?.message ?? String(err)}` };
+    return { bars: [], providerCalls: 1, succeeded: false, note: sanitizeProviderNote(`provider error (no fabrication): ${err?.message ?? String(err)}`) };
   }
 }
