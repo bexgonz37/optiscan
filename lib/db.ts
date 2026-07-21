@@ -1477,6 +1477,11 @@ const REPLAY_RUNS_COLUMN_MIGRATIONS: Array<[string, string]> = [
   ["current_symbol", "ALTER TABLE replay_runs ADD COLUMN current_symbol TEXT"],
   ["cancel_requested", "ALTER TABLE replay_runs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0"],
   ["started_at_ms", "ALTER TABLE replay_runs ADD COLUMN started_at_ms INTEGER"],
+  // Out-of-process worker lease (Phase E.4): a background worker process claims a run and renews
+  // a lease heartbeat; an expired lease (crashed/restarted worker) is reclaimable by the next poll.
+  ["lease_owner", "ALTER TABLE replay_runs ADD COLUMN lease_owner TEXT"],
+  ["lease_until_ms", "ALTER TABLE replay_runs ADD COLUMN lease_until_ms INTEGER"],
+  ["heartbeat_ms", "ALTER TABLE replay_runs ADD COLUMN heartbeat_ms INTEGER"],
 ];
 const MOMENTUM_DIAGNOSTIC_COLUMN_MIGRATIONS: Array<[string, string]> = [
   ["classification", "ALTER TABLE momentum_diagnostics ADD COLUMN classification TEXT"],

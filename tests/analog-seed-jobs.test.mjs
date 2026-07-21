@@ -29,7 +29,8 @@ function db() {
       provider_calls_attempted INTEGER NOT NULL DEFAULT 0, symbols_with_data INTEGER NOT NULL DEFAULT 0, per_symbol_json TEXT,
       episodes_captured INTEGER NOT NULL DEFAULT 0, labels_captured INTEGER NOT NULL DEFAULT 0, symbols_total INTEGER NOT NULL DEFAULT 0,
       symbols_done INTEGER NOT NULL DEFAULT 0, chunks_completed INTEGER NOT NULL DEFAULT 0, current_symbol TEXT,
-      cancel_requested INTEGER NOT NULL DEFAULT 0, started_at_ms INTEGER);`;
+      cancel_requested INTEGER NOT NULL DEFAULT 0, started_at_ms INTEGER,
+      lease_owner TEXT, lease_until_ms INTEGER, heartbeat_ms INTEGER);`;
   d.exec(ddl); d.exec(ddl);
   return d;
 }

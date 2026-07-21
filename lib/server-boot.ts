@@ -38,6 +38,14 @@ export function ensureServerBoot(): void {
   } catch (err) {
     console.warn("[discord] auto-send enforcement skipped:", (err as Error)?.message);
   }
+  try {
+    // Start the out-of-process historical-replay seed worker (no-op unless replay flags are on).
+    // A fresh boot reclaims any run whose lease expired when the previous process died.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    require("@/lib/research/episode/seed-worker-manager").ensureSeedWorker(process.env);
+  } catch (err) {
+    console.warn("[seed-worker] not started:", (err as Error)?.message);
+  }
   // (removed) A boot-time block used to force-lower scanner gates to
   // 0.12%/min / 1.25x on every start — it silently undid any tightening the
   // user saved in Settings and was a root cause of the noisy-callout audit

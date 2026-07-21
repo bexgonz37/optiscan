@@ -19,6 +19,7 @@
 import { researchFlags } from "../flags.ts";
 import { seedSymbolOnDb, defaultSeedConfig, type SeedConfig } from "./seed.ts";
 import { fetchHistoricalStockBars, replayDateWindows, type FetchBarsResult, type ChunkDetail } from "./../replay-provider.ts";
+import { slog, timed } from "./seed-log.ts";
 
 export type JobStatus = "QUEUED" | "RUNNING" | "PAUSED" | "PARTIAL" | "FAILED" | "COMPLETED" | "CANCELED";
 const TERMINAL = new Set<JobStatus>(["PARTIAL", "FAILED", "COMPLETED", "CANCELED"]);
@@ -99,7 +100,8 @@ function computeFinal(checkpoint: Checkpoint, symbolsTotal: number): { status: J
 
 function finalize(db: JobDb, runId: string, checkpoint: Checkpoint, symbolsTotal: number): { done: true; status: JobStatus } {
   const { status, error } = computeFinal(checkpoint, symbolsTotal);
-  db.prepare("UPDATE replay_runs SET status=?, error=?, current_symbol=NULL, updated_at_ms=? WHERE run_id=?").run(status, error, now(), runId);
+  db.prepare("UPDATE replay_runs SET status=?, error=?, current_symbol=NULL, lease_owner=NULL, lease_until_ms=NULL, updated_at_ms=? WHERE run_id=?").run(status, error, now(), runId);
+  slog("job_done", { runId, status });
   return { done: true, status };
 }
 
@@ -137,7 +139,7 @@ export async function advanceSeedRun(db: JobDb, runId: string, env: NodeJS.Proce
 
   let r: FetchBarsResult;
   try {
-    r = await fetchBars(next, { from: row.date_from, to: row.date_to, timespan, multiplier: 1, onChunk }, env);
+    r = await timed("provider_call_start", { runId, symbol: next }, () => fetchBars(next, { from: row.date_from, to: row.date_to, timespan, multiplier: 1, onChunk }, env));
   } catch (err: any) {
     r = { bars: [], providerCalls: 1, succeeded: false, note: `fetch threw: ${String(err?.message ?? err).slice(0, 160)}`, chunks: 1, rangeComplete: false, truncated: false, firstBarMs: null, lastBarMs: null, chunkDetail: [{ from: row.date_from, to: row.date_to, bars: 0, succeeded: false, truncated: false }] };
   }
@@ -162,29 +164,62 @@ export async function advanceSeedRun(db: JobDb, runId: string, env: NodeJS.Proce
   db.prepare(
     `UPDATE replay_runs SET checkpoint_json=?, per_symbol_json=?, provider_calls=?, provider_calls_attempted=?, chunks_completed=?, symbols_with_data=?, symbols_done=?, episodes_captured=?, labels_captured=?, current_symbol=NULL, updated_at_ms=? WHERE run_id=?`,
   ).run(JSON.stringify(checkpoint), JSON.stringify(per), succCalls, totalChunks, totalChunks, withData, checkpoint.doneSymbols.length, episodes, labels, now(), runId);
+  slog("checkpoint_write", { runId, symbol: next, status: pstatus, symbolsDone: checkpoint.doneSymbols.length, episodes });
 
   // If that was the last symbol, finalize now so the run reaches a terminal state promptly.
   if (checkpoint.doneSymbols.length >= symbols.length) return finalize(db, runId, checkpoint, row.symbols_total ?? symbols.length);
   return { done: false, status: "RUNNING" };
 }
 
-export interface RunSeedWorkerOpts { rateLimitMs?: number; maxSteps?: number }
+export const DEFAULT_LEASE_MS = 60_000;
 
-/** Background loop: advance until the run reaches a terminal/paused state. Never throws. */
+/**
+ * Atomically claim the next runnable job for a worker: a QUEUED run, or a RUNNING run whose lease
+ * has EXPIRED (its worker crashed/restarted). The conditional UPDATE makes the claim safe even if
+ * more than one worker ever polls. Returns the claimed runId, or null when nothing is runnable.
+ */
+export function claimNextSeedRun(db: JobDb, workerId: string, leaseMs: number = DEFAULT_LEASE_MS, nowMs: number = now()): string | null {
+  const cand = db.prepare(
+    `SELECT run_id FROM replay_runs
+     WHERE asset_class='stock' AND cancel_requested=0
+       AND (status='QUEUED' OR (status='RUNNING' AND (lease_until_ms IS NULL OR lease_until_ms < ?)))
+     ORDER BY created_at_ms ASC LIMIT 1`,
+  ).get(nowMs) as any;
+  if (!cand) return null;
+  const res = db.prepare(
+    `UPDATE replay_runs SET status='RUNNING', lease_owner=?, lease_until_ms=?, heartbeat_ms=?, started_at_ms=COALESCE(started_at_ms, ?), updated_at_ms=?
+     WHERE run_id=? AND cancel_requested=0 AND (status='QUEUED' OR (status='RUNNING' AND (lease_until_ms IS NULL OR lease_until_ms < ?)))`,
+  ).run(workerId, nowMs + leaseMs, nowMs, nowMs, nowMs, cand.run_id, nowMs);
+  if (res.changes === 0) return null; // lost the race
+  slog("job_claim", { runId: cand.run_id, workerId });
+  return cand.run_id;
+}
+
+function renewLease(db: JobDb, runId: string, workerId: string, leaseMs: number, nowMs: number): void {
+  db.prepare("UPDATE replay_runs SET lease_until_ms=?, heartbeat_ms=? WHERE run_id=? AND lease_owner=?").run(nowMs + leaseMs, nowMs, runId, workerId);
+  slog("lease_renew", { runId, workerId });
+}
+
+export interface RunSeedWorkerOpts { rateLimitMs?: number; maxSteps?: number; workerId?: string; leaseMs?: number }
+
+/** Background loop: advance a single run until it reaches a terminal/paused state. Never throws.
+ *  When workerId+leaseMs are supplied the lease is renewed after every symbol (heartbeat). */
 export async function runSeedWorker(db: JobDb, runId: string, env: NodeJS.ProcessEnv = process.env, deps: SeedJobDeps = {}, opts: RunSeedWorkerOpts = {}): Promise<SeedRunProgress> {
   if (ACTIVE.has(runId)) return getSeedRunProgress(db, runId);
   ACTIVE.add(runId);
+  slog("job_start", { runId, workerId: opts.workerId });
   try {
     const row = db.prepare("SELECT provider_limitations FROM replay_runs WHERE run_id=?").get(runId) as any;
     const rate = opts.rateLimitMs ?? Math.max(0, parse(row?.provider_limitations)?.rateLimitMs ?? 200);
     const maxSteps = opts.maxSteps ?? 100_000;
     for (let step = 0; step < maxSteps; step++) {
       const { done } = await advanceSeedRun(db, runId, env, deps);
+      if (opts.workerId && opts.leaseMs) renewLease(db, runId, opts.workerId, opts.leaseMs, now());
       if (done) break;
-      if (rate > 0) await sleep(rate);
+      if (rate > 0) { slog("rate_sleep", { runId, ms: rate }); await sleep(rate); }
     }
-  } catch { /* worker isolation — status stays as last persisted */ }
-  finally { ACTIVE.delete(runId); }
+  } catch (err: any) { slog("error", { runId, where: "runSeedWorker", err: String(err?.message ?? err).slice(0, 120) }); }
+  finally { ACTIVE.delete(runId); slog("job_done", { runId, status: getSeedRunProgress(db, runId).status }); }
   return getSeedRunProgress(db, runId);
 }
 

@@ -66,11 +66,12 @@ export async function POST(req: Request) {
     });
   }
 
-  // A real seed is a BACKGROUND JOB: create the run, kick the worker un-awaited, return at once.
-  // The worker lives in the server process, so it survives a client disconnect; a restart is
-  // recovered by resumeInterruptedSeedRuns on the next status poll.
+  // A real seed is a BACKGROUND JOB. The web process ONLY inserts a QUEUED row and ensures the
+  // out-of-process worker is alive — it performs NO replay work, so this returns immediately and
+  // the API event loop is never blocked by seeding. The worker (separate process) picks the job up.
   const { getDb } = await import("@/lib/db");
-  const { createSeedRun, runSeedWorker } = await import("@/lib/research/episode/seed-jobs");
+  const { createSeedRun } = await import("@/lib/research/episode/seed-jobs");
+  const { ensureSeedWorker } = await import("@/lib/research/episode/seed-worker-manager");
   const created = createSeedRun(getDb(), {
     symbols, from, to, timespan: body.timespan, maxSymbols: body.maxSymbols,
     providerCallBudget: body.providerCallBudget, rateLimitMs: body.rateLimitMs,
@@ -79,11 +80,11 @@ export async function POST(req: Request) {
   if (created.status === "SKIPPED" || !created.runId) {
     return NextResponse.json({ ok: false, universe: cls, error: created.reason ?? "seed not started", verdictEligibility: eligibility }, { status: 400 });
   }
-  if (!created.existing) void runSeedWorker(getDb(), created.runId, process.env).catch(() => { /* isolated background worker */ });
+  ensureSeedWorker(process.env); // start the worker process if not already running (no inline work)
   return NextResponse.json({
     ok: true, universe: cls, runId: created.runId, status: created.existing ? created.status : "QUEUED",
     existing: created.existing, statusUrl: `/api/research/seed/${created.runId}`,
-    message: created.existing ? "an identical run is already in progress — returning it" : "seed queued; poll statusUrl for progress",
+    message: created.existing ? "an identical run is already in progress — returning it" : "seed queued; a background worker will process it. Poll statusUrl for progress",
     verdictEligibility: eligibility,
   });
 }

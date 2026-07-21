@@ -147,6 +147,28 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   quota→PARTIAL + continuation, partial-symbol failure, final COMPLETED, cancel, pause/resume). Railway
   note: the hang was request-duration (synchronous replay exceeding the proxy timeout), not memory; the
   async model removes long-lived requests entirely. Green: 1584 tests, tsc 0, build 0.
+- ✅ **Phase E.4 — out-of-process seed worker (API stays responsive)** (commit pending). The E.3
+  "async" worker was still fire-and-forget INSIDE the Next web process: better-sqlite3 is synchronous
+  and `seedSymbolOnDb` (candidate detection + hundreds of inserts over tens of thousands of bars) is
+  CPU-bound, so it monopolized the single main-thread event loop — `GET /api/research/seed/:runId` and
+  `/api/health` timed out (curl: 0 bytes in 20s) while a seed ran. Also GET re-kicked the worker inline.
+  Fix: replay now runs in a **separate Node worker process** (`worker/seed-worker.ts`, run via
+  `node --experimental-strip-types`), spawned + supervised from the web process by
+  `lib/research/episode/seed-worker-manager.ts` (idempotent per process; respawn on exit; only when
+  replay flags are on). The web process ONLY inserts a QUEUED row (POST), reads persisted state (GET —
+  pure read, no inline work, no resume), and writes control flags (cancel/pause/resume). The worker
+  claims jobs via a **lease** (`claimNextSeedRun`); an expired lease (crashed/restarted worker) is
+  reclaimed on the next poll and the run resumes from its checkpoint. WAL (already on) lets the web
+  process read while the worker writes. DB writes are single short statements — no transaction/lock
+  spans a symbol, chunk, network call, or sleep. Structured JSON logs (`seed-log.ts`, `SEED_LOG=1`)
+  around claim/start/done, provider call start/end, rate sleep, checkpoint write, API request start/end,
+  and event-loop lag (sampled on the web thread). Additive `replay_runs` lease columns (lease_owner,
+  lease_until_ms, heartbeat_ms); `engines.node >= 22.6.0`; `npm run worker` script. Tests
+  (`tests/analog-seed-worker.test.mjs`) spawn the REAL worker process and prove: event-loop lag stays
+  <250ms and status-read p95 <50ms while the worker burns CPU; lease claim + stale-lease reclaim/resume;
+  client disconnect; cross-process cancel. **Railway proof is the operator's to run** (I cannot deploy):
+  local integration tests prove the mechanism; deploy + the p50/p95 latency script (in the chat) prove
+  it on Railway. Green: 1590 tests, tsc 0, build 0.
 - ⬜ Phases F–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: Phase F — forward paper validation** (record
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).
