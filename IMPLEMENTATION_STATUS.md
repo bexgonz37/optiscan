@@ -169,6 +169,25 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   client disconnect; cross-process cancel. **Railway proof is the operator's to run** (I cannot deploy):
   local integration tests prove the mechanism; deploy + the p50/p95 latency script (in the chat) prove
   it on Railway. Green: 1590 tests, tsc 0, build 0.
+- ✅ **Phase E.5 — crash-safe worker spawn (fix the total Railway outage)** (commit pending). E.4's
+  worker spawn wedged the WHOLE web process on Railway (every route, incl. /api/health, returned 0 bytes).
+  Root cause: (1) `next.config` `output:"standalone"` prunes `worker/seed-worker.ts` (never imported, only
+  referenced by path) from the image, so `spawn(... worker/seed-worker.ts)` failed with ENOENT; (2) the
+  child had no `'error'` handler, so the ENOENT surfaced as an **uncaught exception that crashed the web
+  process** → re-spawn on the next request → web-level crash loop → total outage. Fixes: worker spawn is
+  now **opt-in** (`OPTISCAN_ENABLE_SEED_WORKER=1`, default OFF → default deploy is always healthy),
+  **non-fatal** (`child.on('error')` + try/catch everywhere; a spawn failure never reaches the request
+  loop), **self-disabling** (crash-loop ceiling of 5 with exponential backoff), **non-recursive** (child
+  runs with `OPTISCAN_PROCESS_ROLE=seed-worker` and never spawns another), and **pre-flight checked**
+  (worker file must exist + Node must support `--experimental-strip-types`). Spawn is deferred off the
+  request path (`setImmediate`). GET status is now a **pure read** (no worker-ensure, no resume).
+  `outputFileTracingIncludes` ships `worker/**` + the seed `lib/**` into the standalone build (verified:
+  the whole chain lands in `.next/standalone`). Worker logs role/pid/ppid/node/journal_mode/busy_timeout
+  at startup. Pure decision `seedWorkerSpawnDecision` + `nodeSupportsStripTypes` are unit-tested
+  (`tests/analog-seed-worker-manager.test.mjs`); `ensureSeedWorker` is a proven safe no-op when disabled.
+  RECOVERY: deploy this commit (worker off by default) → /api/health returns → then set
+  `OPTISCAN_ENABLE_SEED_WORKER=1` with replay flags on for a controlled worker enable. Green: 1598 tests,
+  tsc 0, build 0.
 - ⬜ Phases F–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: Phase F — forward paper validation** (record
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).

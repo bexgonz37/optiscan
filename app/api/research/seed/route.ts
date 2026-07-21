@@ -80,11 +80,16 @@ export async function POST(req: Request) {
   if (created.status === "SKIPPED" || !created.runId) {
     return NextResponse.json({ ok: false, universe: cls, error: created.reason ?? "seed not started", verdictEligibility: eligibility }, { status: 400 });
   }
-  ensureSeedWorker(process.env); // start the worker process if not already running (no inline work)
+  const worker = ensureSeedWorker(process.env); // safe no-op unless OPTISCAN_ENABLE_SEED_WORKER=1
   return NextResponse.json({
     ok: true, universe: cls, runId: created.runId, status: created.existing ? created.status : "QUEUED",
     existing: created.existing, statusUrl: `/api/research/seed/${created.runId}`,
-    message: created.existing ? "an identical run is already in progress — returning it" : "seed queued; a background worker will process it. Poll statusUrl for progress",
+    worker: { active: worker.spawned, reason: worker.reason },
+    message: created.existing
+      ? "an identical run is already in progress — returning it"
+      : worker.spawned
+        ? "seed queued; a background worker will process it. Poll statusUrl for progress"
+        : `seed queued but the background worker is NOT enabled (${worker.reason}). Set OPTISCAN_ENABLE_SEED_WORKER=1 (with replay flags on) to process it, or run 'npm run worker'.`,
     verdictEligibility: eligibility,
   });
 }

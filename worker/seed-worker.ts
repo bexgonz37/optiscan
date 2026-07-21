@@ -54,8 +54,14 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
   const db = openDb();
+  const journalMode = String((db.pragma("journal_mode", { simple: true })) ?? "");
+  const busyTimeout = Number(db.pragma("busy_timeout", { simple: true }) ?? 0);
   const fetchBars = await resolveFetchBars();
-  slog("worker_start", { workerId: WORKER_ID, pollMs: POLL_MS, leaseMs: LEASE_MS, dbFile: dbFile() });
+  slog("worker_start", {
+    workerId: WORKER_ID, role: process.env.OPTISCAN_PROCESS_ROLE ?? "seed-worker",
+    pid: process.pid, ppid: process.ppid, node: process.versions.node,
+    pollMs: POLL_MS, leaseMs: LEASE_MS, dbFile: dbFile(), journalMode, busyTimeout,
+  });
 
   const stop = () => { shuttingDown = true; };
   process.on("SIGTERM", stop);

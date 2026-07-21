@@ -4,6 +4,15 @@ const nextConfig = {
   output: "standalone",
   serverExternalPackages: ["better-sqlite3"],
   outputFileTracingRoot: process.cwd(),
+  // The seed worker runs as a SEPARATE process (`node --experimental-strip-types
+  // worker/seed-worker.ts`) that Next never imports, so tracing would prune it from the
+  // standalone build. Force-include the worker entry + the TS it needs so the file exists in the
+  // deployed image when the worker is enabled. (If it is ever still missing, the worker manager's
+  // existence check keeps the web process healthy instead of crashing.)
+  outputFileTracingIncludes: {
+    "/api/research/seed": ["./worker/**/*.ts", "./lib/research/**/*.ts", "./lib/polygon-provider.js", "./lib/data-freshness.ts", "./lib/timestamps.ts", "./lib/trading-session.ts"],
+    "/api/research/seed/[runId]": ["./worker/**/*.ts", "./lib/research/**/*.ts", "./lib/polygon-provider.js", "./lib/data-freshness.ts", "./lib/timestamps.ts", "./lib/trading-session.ts"],
+  },
   async redirects() {
     return [
       { source: "/scanner", destination: "/?tab=research", permanent: true },

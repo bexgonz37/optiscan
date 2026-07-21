@@ -19,11 +19,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ runId: s
   const t0 = Date.now();
   const { getDb } = await import("@/lib/db");
   const { getSeedRunProgress } = await import("@/lib/research/episode/seed-jobs");
-  const { ensureSeedWorker } = await import("@/lib/research/episode/seed-worker-manager");
   const { slog } = await import("@/lib/research/episode/seed-log");
   slog("api_request_start", { route: "seed/:runId", method: "GET", runId });
-  ensureSeedWorker(process.env); // make sure a worker exists (spawns a process; does NOT run work here)
-  const progress = getSeedRunProgress(getDb(), runId); // pure read of persisted state
+  // PURE READ ONLY. No worker spawn, no resume, no replay work — this handler must stay fast.
+  const progress = getSeedRunProgress(getDb(), runId);
   slog("api_request_end", { route: "seed/:runId", method: "GET", runId, ms: Date.now() - t0 });
   if (!progress.found) return NextResponse.json({ ok: false, error: "run not found" }, { status: 404 });
   return NextResponse.json({ ok: true, progress });
