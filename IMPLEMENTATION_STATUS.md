@@ -228,7 +228,27 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   startedAtMs` (true duration, frozen); while RUNNING it stays live (`nowMs - startedAtMs`). ETA unchanged
   (RUNNING-only). Tests reproduce the exact production timestamps and assert elapsed no longer grows on
   later polls. The successful seed result stands. Green: 1613 tests, tsc 0, build 0.
-- ⬜ Phases F–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: Phase F — forward paper validation** (record
+- 🟡 **Phase F — forward paper validation + two-speed alerts** (COLLECTING_DATA; infrastructure shipped,
+  commit pending). Complete, flag-gated-OFF infrastructure under `lib/research/forward/`; produces no
+  evidence yet and never claims live edge/latency from synthetic data. Pieces: **capture** (immutable
+  `forward_recommendations`, idempotent, decision-time only) + **grade** (`forward_outcomes`, side-aware,
+  forward-only, look-ahead-refused) with strategy buckets (bullish/bearish × call/put/stock ×
+  0DTE/short/longer) and Phase-D backtest comparison. **Two-speed pipeline** (`twospeed.ts`):
+  `evaluateEarlyWatch` takes ONLY fast deterministic inputs (its type can't reference
+  analog/model/news) → EARLY_WATCH; `resolveConfirmation` → CONFIRMED/CANCELED/TOO_LATE/EXPIRED; bearish
+  routed through `bearish-gate.ts`, puts research-only. **Latency** (`latency.ts`, one-clock stamps):
+  event→trigger, trigger→early-watch, event→Discord, event→confirmation at p50/p90/p95/max +
+  failure/retry/too-late/canceled/late-entry rates + a `heavyWorkOnCriticalPath` counter (must be 0).
+  **Freshness** (`freshness.ts`): recheck price/zone/chase/age before delivery → TOO_LATE instead of a
+  stale entry. **Report** (`report.ts` + read-only `GET /api/research/forward`): sample size, win/exp by
+  strategy, drawdown, calibration, backtest-vs-forward, latency dist, stale/late/canceled, outages,
+  Discord reliability, and an explicit `missingEvidence[]`; status COLLECTING_DATA until real samples
+  accrue. Flags `FORWARD_CAPTURE_ENABLED`, `TWO_SPEED_ALERTS_ENABLED` (both OFF). Additive tables
+  (repeat-safe, verified). Doc `docs/PHASE_F_FORWARD_VALIDATION.md` incl. the commercial-readiness gaps.
+  Tests: `forward-pipeline`, `forward-capture-grade`, `forward-report`. Green: 1629 tests, tsc 0, build 0.
+  **NOT DONE — evidence still missing (do not advance to Phase G):** measured production EARLY_WATCH p50/p95,
+  heavy-work-off-path proof in prod, forward sample size per bucket, and every commercial-readiness gap.
+- ⬜ Phases G–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: collect Phase-F live data before Phase G.**
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).
 

@@ -27,6 +27,10 @@ export interface ResearchFlags {
   historicalReplay: boolean;
   /** Analog Engine Phase A: capture Setup Episodes into the memory (read-only shadow). */
   episodeCapture: boolean;
+  /** Phase F: prospective (forward) recommendation capture for live validation. */
+  forwardCapture: boolean;
+  /** Phase F: two-speed EARLY_WATCH → CONFIRMED/CANCELED/TOO_LATE/EXPIRED alert pipeline. */
+  twoSpeedAlerts: boolean;
 }
 
 export function researchFlags(env: NodeJS.ProcessEnv = process.env): ResearchFlags {
@@ -39,5 +43,7 @@ export function researchFlags(env: NodeJS.ProcessEnv = process.env): ResearchFla
     aiResearchPipeline: on(env.AI_RESEARCH_PIPELINE_ENABLED),
     historicalReplay: on(env.HISTORICAL_REPLAY_ENABLED),
     episodeCapture: on(env.EPISODE_CAPTURE_ENABLED),
+    forwardCapture: on(env.FORWARD_CAPTURE_ENABLED),
+    twoSpeedAlerts: on(env.TWO_SPEED_ALERTS_ENABLED),
   };
 }

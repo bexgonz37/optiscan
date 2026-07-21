@@ -1300,6 +1300,44 @@ CREATE TABLE IF NOT EXISTS recommendations (
   card_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_recommendations_ticker ON recommendations(ticker, created_at_ms);
+
+-- Analog Engine — Phase F. Forward paper validation + two-speed alerts. PURELY ADDITIVE.
+-- forward_recommendations is IMMUTABLE (captured before the outcome; never updated); outcomes and
+-- alert lifecycle live in separate tables. NO real-money execution; puts stay RESEARCH_ONLY.
+CREATE TABLE IF NOT EXISTS forward_recommendations (
+  rec_id TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL,
+  captured_at_ms INTEGER NOT NULL, trading_day TEXT NOT NULL, symbol TEXT NOT NULL,
+  strategy_key TEXT NOT NULL, direction TEXT NOT NULL, side TEXT NOT NULL,
+  production_eligible INTEGER NOT NULL, research_only INTEGER NOT NULL,
+  underlying_price REAL NOT NULL, observed_at_ms INTEGER NOT NULL,
+  contract_json TEXT, entry_zone_json TEXT, max_chase_pct REAL,
+  confidence REAL, analog_count INTEGER, effective_sample INTEGER,
+  catalyst TEXT, technical_state_json TEXT, gates_passed_json TEXT,
+  rejection_reason TEXT, abstain_reason TEXT, outcome_basis TEXT, provenance_json TEXT,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_forward_recs_day ON forward_recommendations(trading_day, strategy_key);
+
+CREATE TABLE IF NOT EXISTS forward_outcomes (
+  rec_id TEXT NOT NULL, horizon TEXT NOT NULL,
+  label_as_of_ms INTEGER NOT NULL, return_pct REAL, win INTEGER, mfe_pct REAL, mae_pct REAL,
+  outcome_kind TEXT NOT NULL, created_at_ms INTEGER NOT NULL,
+  UNIQUE(rec_id, horizon)
+);
+
+CREATE TABLE IF NOT EXISTS two_speed_alerts (
+  alert_id TEXT PRIMARY KEY,
+  rec_id TEXT, symbol TEXT NOT NULL, direction TEXT, side TEXT,
+  state TEXT NOT NULL,                 -- EARLY_WATCH | CONFIRMED | CANCELED | TOO_LATE | EXPIRED
+  production_eligible INTEGER NOT NULL DEFAULT 0, research_only INTEGER NOT NULL DEFAULT 1,
+  market_event_ms INTEGER NOT NULL,
+  latency_json TEXT,                  -- LatencyRecord: one-clock stage stamps
+  discord_message_id TEXT, discord_failures INTEGER NOT NULL DEFAULT 0, discord_retries INTEGER NOT NULL DEFAULT 0,
+  late_entry INTEGER NOT NULL DEFAULT 0, reason TEXT,
+  created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_two_speed_state ON two_speed_alerts(state, created_at_ms);
 `;
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */
