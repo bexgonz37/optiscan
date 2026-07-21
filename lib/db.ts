@@ -1395,6 +1395,27 @@ CREATE TABLE IF NOT EXISTS ai_shadow (
   output_json TEXT, created_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ai_shadow_sym ON ai_shadow(symbol, created_at_ms);
+
+-- Independent Options Opportunity Scanner (separate from the Stock Momentum Radar). SHADOW/PAPER-ONLY;
+-- no real-money execution, nothing auto-actionable. PURELY ADDITIVE. Flags default OFF.
+CREATE TABLE IF NOT EXISTS options_candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, tier INTEGER, session TEXT,
+  selected_strategy TEXT, direction TEXT, side TEXT, research_only INTEGER NOT NULL DEFAULT 0, score REAL,
+  considered_json TEXT, state TEXT NOT NULL, why TEXT, option_symbol TEXT,
+  chain_fetch_ms INTEGER, freshness_state TEXT, callout_message TEXT, latency_json TEXT,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_options_candidates ON options_candidates(symbol, created_at_ms);
+
+CREATE TABLE IF NOT EXISTS options_paper_trades (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, option_symbol TEXT NOT NULL, side TEXT, strike REAL, expiration TEXT, dte INTEGER,
+  result_class TEXT NOT NULL, bid REAL, ask REAL, mid REAL, spread_pct REAL, entry_fill REAL,
+  volume REAL, open_interest REAL, iv REAL, delta REAL, underlying_price REAL,
+  strategy TEXT, target REAL, invalidation REAL, provenance TEXT, status TEXT NOT NULL,
+  exit_fill REAL, pnl REAL, return_pct REAL, exit_reason TEXT, entered_at_ms INTEGER, exit_at_ms INTEGER,
+  created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_options_paper_strategy ON options_paper_trades(strategy, side, dte);
 `;
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */

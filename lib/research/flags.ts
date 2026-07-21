@@ -49,6 +49,10 @@ export interface ResearchFlags {
   realOptionPaper: boolean;
   /** Strategy Improvement Lab: AI proposals gated through backtest/walk-forward/shadow/forward. */
   strategyImprovementLab: boolean;
+  /** Independent Options discovery loop (does NOT depend on the stock-radar shouldTrigger). */
+  independentOptionsDiscovery: boolean;
+  /** Early options single-callout pipeline (message built; public delivery still gated + manual). */
+  earlyOptionsCallouts: boolean;
 }
 
 export function researchFlags(env: NodeJS.ProcessEnv = process.env): ResearchFlags {
@@ -72,5 +76,7 @@ export function researchFlags(env: NodeJS.ProcessEnv = process.env): ResearchFla
     earlyOptionsDetection: on(env.EARLY_OPTIONS_DETECTION_ENABLED),
     realOptionPaper: on(env.REAL_OPTION_PAPER_ENABLED),
     strategyImprovementLab: on(env.STRATEGY_IMPROVEMENT_LAB_ENABLED),
+    independentOptionsDiscovery: on(env.INDEPENDENT_OPTIONS_DISCOVERY_ENABLED),
+    earlyOptionsCallouts: on(env.EARLY_OPTIONS_CALLOUTS_ENABLED),
   };
 }

@@ -317,7 +317,29 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   `options-catalog-paper`. Green: 1671 tests, tsc 0, build 0. **Stock +10% rule untouched; nothing
   actionable; puts RESEARCH_ONLY; no real-money execution; no new Discord behavior; no production seed;
   no improvement claimed.**
-- ⬜ Phases G–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: collect Phase-F + shadow live data before Phase G.**
+- 🟡 **Independent Options discovery + single callout + real-option paper** (research/paper-only, flags
+  OFF; commit pending). The Options scanner no longer needs the stock-radar `shouldTrigger()` or a +10%
+  move. New `lib/research/options/`: **discovery.ts** (Tier-1 core list SPY/QQQ/IWM/NVDA/TSLA/AMD/AMZN/
+  META/AAPL/MSFT/GOOGL/AVGO/NFLX/HOOD + Tier-2 broad-optionable gate so IREN/ASTS/RKLB/etc. enter without
+  the core list; `activeSignals` early triggers that fire on forming setups, not completed moves;
+  `selectOptionsStrategy` scores all 18 catalog strategies, records rejections, picks the strongest +
+  direction + DTE; puts RESEARCH_ONLY unless BEARISH_ACTIONABLE). **callout.ts** (ONE message per play;
+  FORMING/READY/SENT/REJECTED/TOO_LATE/EXPIRED; `formatCallout` = the exact public format; freshness/
+  chase recheck → TOO_LATE, no message; underlying chase gate separated from the option premium band).
+  **paper.ts** (real-option paper: conservative executable fill — 60% toward ask, never naive mid —
+  option-price P&L ×100, classified REAL_OPTION_PAPER via `paper-class`; exit toward bid; separate
+  `options_paper_trades` table). **loop.ts** (fire-and-forget orchestrator: deterministic path FIRST,
+  AI/analog shadow AFTERWARD off the critical path; never calls the stock radar or sends Discord;
+  isolated). **report.ts** + read-only `GET /api/research/options` (DISTINCT from the stock radar; split
+  by strategy/side/DTE/core-vs-broad; real-option vs modeled never combined). Flags:
+  `INDEPENDENT_OPTIONS_DISCOVERY_ENABLED`, `EARLY_OPTIONS_CALLOUTS_ENABLED`, `REAL_OPTION_PAPER_ENABLED`
+  (all OFF). Additive repeat-safe tables (`options_candidates`, `options_paper_trades`). Docs:
+  INDEPENDENT_OPTIONS_DISCOVERY, OPTIONS_CALLOUT_RUNTIME_FLOW, REAL_OPTIONS_PAPER_EXECUTION,
+  OPTIONS_LATENCY_AND_FRESHNESS, OPTIONS_FLAG_ROLLOUT. Tests: `options-discovery-loop`. Green: 1682
+  tests, tsc 0, build 0. **Stock radar untouched; nothing actionable; puts RESEARCH_ONLY; no public
+  Discord wired/auto-enabled; no real-money execution; no improvement claimed.** Public callout DELIVERY
+  is intentionally NOT wired (formatter only) — a gated, approved delivery layer is a later step.
+- ⬜ Phases G–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: collect Phase-F + options/shadow live data before Phase G.**
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).
 
