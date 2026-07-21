@@ -293,6 +293,30 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   `AI_SHADOW_ENABLED` (all OFF). Tests: `shadow-runtime-wiring`, `discovery-sources`, `ai-shadow` (12+
   required cases). Green: 1664 tests, tsc 0, build 0. **No hard gate weakened, no alert made actionable,
   Analog + AI NOT actionable, puts RESEARCH_ONLY, no production seed, no discovery source auto-enabled.**
+- 🟡 **Options product distinction + provider/AI/analog audits** (bounded step; commit pending). Audited
+  the options pipeline (`docs/OPTIONS_PIPELINE_AUDIT.md`): options fire from the SAME `shouldTrigger()`
+  momentum on `ZERO_DTE_UNIVERSE` + promoted names, fetch 0–1→0–5 DTE chains, rank calls+puts via
+  `rankZeroDteContracts`; earnings/options-activity do NOT independently introduce candidates; paper
+  trades already carry a real OCC `option_symbol` + bid/ask. Shipped (research-only, flags OFF):
+  **options strategy catalog** (`lib/research/options/strategy-catalog.ts` — 18 strategies each with own
+  trigger/liquidity/DTE/delta/spread/freshness/chase/stop/targets/holding/session/grading, **none
+  requires +10%**; tenor buckets kept separate). **Paper-result classification**
+  (`options/paper-class.ts` — EQUITY_PAPER / REAL_OPTION_PAPER / MODELED_OPTION_RESEARCH /
+  UNDERLYING_PROXY_INVALID, never combined; `realOptionEntryEligible` gate). **Analog scorer loader**
+  (`analog/load.ts` — fits from the stored corpus, cached, abstains WITH the exact reason when unfit;
+  wired into the shadow cycle so analog shadow is never inert-silent). **AI model adapter**
+  (`lib/ai/shadow-model.ts` — authoritative-only prompt + injected Anthropic caller; zero spend by
+  default). Added 5 flags (`EARNINGS_DISCOVERY_ENABLED`, `OPTIONS_ACTIVITY_DISCOVERY_ENABLED`,
+  `EARLY_OPTIONS_DETECTION_ENABLED`, `REAL_OPTION_PAPER_ENABLED`, `STRATEGY_IMPROVEMENT_LAB_ENABLED`) —
+  all OFF. **Audits (docs):** OPTIONS_PIPELINE_AUDIT, STOCK_VS_OPTIONS_ARCHITECTURE, OPTIONS_STRATEGY_CATALOG,
+  TODAY_OPTIONS_LATENCY_AUDIT (SQL method — can't read prod logs), MISSED_OPTIONS_OPPORTUNITIES,
+  REAL_OPTIONS_PAPER_AUDIT, EARNINGS_PROVIDER_AUDIT (**no server-side earnings feed — BLOCKED until a
+  paid calendar is wired**), OPTIONS_ACTIVITY_PROVIDER_AUDIT (snapshot supports vol/OI + skew, NEVER
+  flow), FIVE_YEAR_ENTITLEMENT_AND_CORPUS_PLAN (historical options NOT entitled → option outcomes stay
+  MODELED), AI_OPTIONS_SHADOW_DESIGN, CONTROLLED_OPTIONS_ROLLOUT (flag classification). Tests:
+  `options-catalog-paper`. Green: 1671 tests, tsc 0, build 0. **Stock +10% rule untouched; nothing
+  actionable; puts RESEARCH_ONLY; no real-money execution; no new Discord behavior; no production seed;
+  no improvement claimed.**
 - ⬜ Phases G–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: collect Phase-F + shadow live data before Phase G.**
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).

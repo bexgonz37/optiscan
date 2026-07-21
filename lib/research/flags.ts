@@ -39,6 +39,16 @@ export interface ResearchFlags {
   marketContextCapture: boolean;
   /** AI_SHADOW_ONLY enrichment (advisory classification for shadow comparison only). */
   aiShadow: boolean;
+  /** Earnings discovery source (shadow): needs a real earnings-calendar provider entitlement. */
+  earningsDiscovery: boolean;
+  /** Abnormal options-activity discovery source (shadow): uses the present-time chain. */
+  optionsActivityDiscovery: boolean;
+  /** Early options detection: strategy-appropriate early signals (does NOT require the +10% rule). */
+  earlyOptionsDetection: boolean;
+  /** Real-option paper trades (OCC contract + real bid/ask), graded separately from equity paper. */
+  realOptionPaper: boolean;
+  /** Strategy Improvement Lab: AI proposals gated through backtest/walk-forward/shadow/forward. */
+  strategyImprovementLab: boolean;
 }
 
 export function researchFlags(env: NodeJS.ProcessEnv = process.env): ResearchFlags {
@@ -57,5 +67,10 @@ export function researchFlags(env: NodeJS.ProcessEnv = process.env): ResearchFla
     analogLiveShadow: on(env.ANALOG_LIVE_SHADOW_ENABLED),
     marketContextCapture: on(env.MARKET_CONTEXT_CAPTURE_ENABLED),
     aiShadow: on(env.AI_SHADOW_ENABLED),
+    earningsDiscovery: on(env.EARNINGS_DISCOVERY_ENABLED),
+    optionsActivityDiscovery: on(env.OPTIONS_ACTIVITY_DISCOVERY_ENABLED),
+    earlyOptionsDetection: on(env.EARLY_OPTIONS_DETECTION_ENABLED),
+    realOptionPaper: on(env.REAL_OPTION_PAPER_ENABLED),
+    strategyImprovementLab: on(env.STRATEGY_IMPROVEMENT_LAB_ENABLED),
   };
 }

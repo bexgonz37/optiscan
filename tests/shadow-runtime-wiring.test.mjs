@@ -66,7 +66,7 @@ test("analog shadow records an honest ABSTAIN when no fitted corpus is available
   await shadowQueue().drain();
   const row = d.prepare("SELECT abstain, abstain_reason FROM analog_shadow").get();
   assert.equal(row.abstain, 1);
-  assert.match(row.abstain_reason, /no fitted analog corpus/);
+  assert.match(row.abstain_reason, /corpus too small|no decision-time features/);
 });
 
 test("9. duplicate candidate events in the same time bucket do not create duplicate records", async () => {

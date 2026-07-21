@@ -15,6 +15,7 @@ import { mergeAndGate, type SourcedCandidate } from "../discovery/discover.ts";
 import { persistDiscoveryShadowOnDb, persistAnalogShadowOnDb, persistMarketContextShadowOnDb } from "./store.ts";
 import { queryAnalogShadow, type ShadowScorer, type LiveDecisionFeatures } from "./analog-bridge.ts";
 import { buildMarketContext, type MarketContextInput } from "../context/market-context.ts";
+import { loadCachedAnalogScorer } from "../analog/load.ts";
 
 export interface ShadowCycleInput {
   nowMs: number;
@@ -58,12 +59,15 @@ export function enqueueShadowCycle(input: ShadowCycleInput, deps: ShadowCycleDep
       q.submit(shadowKey(symbol, "analog", "shadow", input.nowMs), async () => {
         const feats = deps.featuresFor?.(symbol);
         const live = deps.liveDecisionFor?.(symbol) ?? { actionable: true, direction: "bullish" as const };
-        if (!feats || !deps.scorer) {
-          // honest record: no fitted corpus / no features ⇒ abstain (still a record so the flag "works")
-          persistAnalogShadowOnDb(getDb(), { tag: "ANALOG_SHADOW_ONLY", symbol, t0Ms: input.nowMs, abstain: true, abstainReason: !deps.scorer ? "no fitted analog corpus" : "no decision-time features", comparableCount: 0, effectiveSample: 0, confidence: 0, winRate: 0, dispersion: 0, contradiction: 0, forwardReturn: { p10: 0, p50: 0, p90: 0 }, nearestDistance: null, agreesWithLive: null, agreement: "abstain", lookupMs: 0 }, input.nowMs);
+        // Load a fitted scorer from the stored corpus (cached, research-only). Never inert-silent:
+        // when the corpus is too small OR features are missing, record the EXACT abstain reason.
+        const loaded = deps.scorer ? { scorer: deps.scorer as ShadowScorer | null, reason: "injected scorer" } : loadCachedAnalogScorer(getDb);
+        const scorer = loaded.scorer;
+        if (!scorer || !feats) {
+          persistAnalogShadowOnDb(getDb(), { tag: "ANALOG_SHADOW_ONLY", symbol, t0Ms: input.nowMs, abstain: true, abstainReason: !scorer ? loaded.reason : "no decision-time features", comparableCount: 0, effectiveSample: 0, confidence: 0, winRate: 0, dispersion: 0, contradiction: 0, forwardReturn: { p10: 0, p50: 0, p90: 0 }, nearestDistance: null, agreesWithLive: null, agreement: "abstain", lookupMs: 0 }, input.nowMs);
           return;
         }
-        const r = queryAnalogShadow(deps.scorer, feats, input.nowMs, live);
+        const r = queryAnalogShadow(scorer, feats, input.nowMs, live);
         persistAnalogShadowOnDb(getDb(), r, input.nowMs);
       });
     }
