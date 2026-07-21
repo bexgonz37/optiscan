@@ -25,6 +25,8 @@ export interface ResearchFlags {
   aiResearchPipeline: boolean;
   /** Phase 7: historical replay jobs. */
   historicalReplay: boolean;
+  /** Analog Engine Phase A: capture Setup Episodes into the memory (read-only shadow). */
+  episodeCapture: boolean;
 }
 
 export function researchFlags(env: NodeJS.ProcessEnv = process.env): ResearchFlags {
@@ -36,5 +38,6 @@ export function researchFlags(env: NodeJS.ProcessEnv = process.env): ResearchFla
     strategyAgentsV2: on(env.STRATEGY_AGENTS_V2_ENABLED),
     aiResearchPipeline: on(env.AI_RESEARCH_PIPELINE_ENABLED),
     historicalReplay: on(env.HISTORICAL_REPLAY_ENABLED),
+    episodeCapture: on(env.EPISODE_CAPTURE_ENABLED),
   };
 }

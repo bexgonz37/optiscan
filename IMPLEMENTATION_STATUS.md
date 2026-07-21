@@ -22,7 +22,32 @@ This file is the resume point. Read it + the task list before making changes.
 Do **not** repeat Phase 1, redo timestamp normalization, or add the Self-Improvement
 Lab / an embedded LLM.
 
-## 🏗️ MULTI-LANE RESEARCH REBUILD — active roadmap (resume tracker)
+## 🧠 ANALOG ENGINE REBUILD — active roadmap (resume tracker)
+
+Authoritative design: artifact **"The Analog Engine — Quantitative Blueprint."** Build map,
+cost review, and blocker register: `docs/ANALOG_ENGINE_BUILD.md`. Baseline `40e68b7`.
+Build order A→I; **Phase D is a mandatory evidence gate** (beat all baselines out-of-sample
+or stop + bounded remediation). Every new capability OFF by default; production unchanged.
+
+- ✅ **Phase A — Episode schema + forward labels** (commit pending). The unit of historical
+  memory + the structural anti-look-ahead guard. Additive tables `setup_episodes` (Zone-A
+  decision-time context; `max_feature_as_of_ms` must be ≤ t0) and `episode_labels` (Zone-B
+  forward outcomes; `label_as_of_ms` must be > t0). Pure modules `lib/research/episode/{schema,
+  leakage,labels,store}.ts`: deterministic episode key; leakage validators (reject any Zone-A
+  block with asOf > t0, reject any label using data ≤ t0); side-aware underlying labels + an
+  honestly-flagged `MODELED_OPTION` Greeks/Taylor reprice (never a real fill); OnDb store that
+  REFUSES leaky episodes/non-forward labels and is idempotent (UNIQUE keys). Flag
+  `EPISODE_CAPTURE_ENABLED` (OFF); live wrapper is a hard no-op and is NOT wired (Phase C replay
+  is the primary writer). Gates: focused 15/15 · full 1496/1496 · tsc 0 · build 0. Tests:
+  `tests/analog-episode.test.mjs`, `tests/analog-episode-store.test.mjs`.
+- ⏭️ **Phase B — Evaluation harness + baselines** (next). Walk-forward + purged/embargoed CV +
+  calibration (reliability/Brier/ECE) + the baseline suite (random, momentum-scanner, velocity,
+  always-trade, rule, logistic, broker-visible). **Built before the recommender.** Gate: reports
+  lift on synthetic-edge data and ZERO lift on synthetic-random data. Additive tables `eval_runs`,
+  `eval_results`. Files: `lib/research/eval/{harness,baselines,metrics}.ts`.
+- ⬜ Phases C–I per `docs/ANALOG_ENGINE_BUILD.md`.
+
+## 🏗️ MULTI-LANE RESEARCH REBUILD — completed (Phases 0–9, superseded scaffolding — FROZEN)
 
 Design contract: `docs/ARCHITECTURE_REBUILD.md`. Baseline `ac4f045`. Every new
 capability is behind a feature flag defaulting **OFF** (`lib/research/flags.ts`);

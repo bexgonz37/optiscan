@@ -1190,6 +1190,61 @@ CREATE TABLE IF NOT EXISTS replay_outcomes (
 );
 CREATE INDEX IF NOT EXISTS idx_replay_outcomes_run ON replay_outcomes(run_id);
 CREATE INDEX IF NOT EXISTS idx_replay_outcomes_exp ON replay_outcomes(experiment_id, symbol);
+
+-- Analog Engine — Phase A. The Setup Episode: the unit of historical memory.
+-- ZONE A (decision-time context) ONLY lives here — every feature block is computed
+-- at/<= t0_ms, and max_feature_as_of_ms MUST be <= t0_ms (the leakage guard). Forward
+-- outcomes live in episode_labels (Zone B); executions reuse paper_trades (Zone C);
+-- counterfactual/observation reuse counterfactual_outcomes (Zone D). PURELY ADDITIVE.
+CREATE TABLE IF NOT EXISTS setup_episodes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  episode_key TEXT NOT NULL UNIQUE,       -- deterministic: source|symbol|t0_ms|schema_version
+  source TEXT NOT NULL,                    -- replay | live_scanner | live_supervisor
+  symbol TEXT NOT NULL,
+  t0_ms INTEGER NOT NULL,                  -- decision time (the ONLY time Zone-A may reference)
+  trading_day TEXT NOT NULL,
+  session TEXT NOT NULL,                   -- premarket | regular | afterhours | closed
+  tod_bucket TEXT,
+  asset_class TEXT NOT NULL DEFAULT 'stock',
+  direction TEXT,                          -- thesis side bullish | bearish | null
+  regime_label TEXT, regime_model_version INTEGER,
+  liquidity_tier TEXT,
+  validity_tier TEXT,                      -- deterministic comparability/validity tier
+  -- Zone-A feature blocks (each JSON block carries its own asOfMs, all <= t0_ms):
+  price_structure_json TEXT, momentum_json TEXT, volume_json TEXT, volatility_json TEXT,
+  regime_json TEXT, sector_json TEXT, breadth_json TEXT, options_context_json TEXT,
+  catalyst_json TEXT, liquidity_json TEXT, data_quality_json TEXT, missing_json TEXT,
+  gate_results_json TEXT,
+  feature_schema_version INTEGER NOT NULL,
+  max_feature_as_of_ms INTEGER NOT NULL,   -- leakage guard: must be <= t0_ms
+  provenance_json TEXT,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_setup_episodes_sym ON setup_episodes(symbol, t0_ms);
+CREATE INDEX IF NOT EXISTS idx_setup_episodes_day ON setup_episodes(trading_day);
+CREATE INDEX IF NOT EXISTS idx_setup_episodes_src ON setup_episodes(source, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_setup_episodes_regime ON setup_episodes(regime_label);
+
+-- Forward outcome labels (Zone B). Computed strictly from data timestamped AFTER t0
+-- (label_as_of_ms MUST be > t0_ms). One row per (episode, horizon, target construct).
+-- Option outcomes are MODELED (outcome_kind=MODELED_OPTION) and never a real fill.
+CREATE TABLE IF NOT EXISTS episode_labels (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  episode_key TEXT NOT NULL,
+  horizon TEXT NOT NULL,                   -- 15m | 30m | 1h | EOD | 1d | 3d | 5d | 10d
+  target_kind TEXT NOT NULL,               -- UNDERLYING | OPTION_ATM_CALL | OPTION_OTM_CALL | OPTION_ATM_PUT | OPTION_OTM_PUT
+  outcome_kind TEXT NOT NULL,              -- REAL_UNDERLYING | MODELED_OPTION
+  return_pct REAL, mfe_pct REAL, mae_pct REAL,
+  target_before_stop TEXT,                 -- TARGET | STOP | NEITHER | null
+  time_to_target_ms INTEGER, time_to_invalidation_ms INTEGER,
+  realized_vol REAL, gap_pct REAL, gap_filled INTEGER,
+  model_assumptions_json TEXT,             -- only for MODELED_OPTION
+  label_as_of_ms INTEGER NOT NULL,         -- last bar used; MUST be > t0_ms
+  computed_at_ms INTEGER NOT NULL,
+  UNIQUE(episode_key, horizon, target_kind)
+);
+CREATE INDEX IF NOT EXISTS idx_episode_labels_ep ON episode_labels(episode_key);
+CREATE INDEX IF NOT EXISTS idx_episode_labels_h ON episode_labels(horizon, target_kind);
 `;
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */
