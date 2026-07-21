@@ -262,7 +262,13 @@ export function getSeedRunProgress(db: JobDb, runId: string, nowMs: number = now
   const symbolsDone = row.symbols_done ?? 0;
   const symbolsTotal = row.symbols_total ?? 0;
   const startedAtMs = row.started_at_ms ?? null;
-  const elapsedMs = startedAtMs ? nowMs - startedAtMs : null;
+  const updatedAtMs = row.updated_at_ms ?? null;
+  // elapsedMs is measured to the LAST UPDATE once the run is settled (its true duration) and to NOW
+  // only while it is still active. Using nowMs for a finished run made elapsed grow on every poll
+  // (e.g. a 29s run read as 108s hours later). All timestamps are Date.now() on one host.
+  const settled = TERMINAL.has(status) || status === "PAUSED";
+  const endMs = settled ? (updatedAtMs ?? nowMs) : nowMs;
+  const elapsedMs = startedAtMs != null ? Math.max(0, endMs - startedAtMs) : null;
   // ETA only when reliable: actively RUNNING, at least one symbol timed, and work remaining.
   const etaMs = status === "RUNNING" && startedAtMs && symbolsDone >= 1 && symbolsTotal > symbolsDone && elapsedMs != null
     ? Math.round((elapsedMs / symbolsDone) * (symbolsTotal - symbolsDone)) : null;
@@ -271,7 +277,7 @@ export function getSeedRunProgress(db: JobDb, runId: string, nowMs: number = now
     currentSymbol: row.current_symbol ?? null, chunksCompleted: row.chunks_completed ?? 0,
     providerCallsAttempted: row.provider_calls_attempted ?? 0, providerCallsSucceeded: row.provider_calls ?? 0,
     episodes: row.episodes_captured ?? 0, labels: row.labels_captured ?? 0, errors: checkpoint.errors ?? [], perSymbol: checkpoint.perSymbol ?? [],
-    startedAtMs, updatedAtMs: row.updated_at_ms ?? null, elapsedMs, etaMs,
+    startedAtMs, updatedAtMs, elapsedMs, etaMs,
     error: row.error ?? null, provenance: prov ? { universeSource: prov.universeSource, survivorshipBias: prov.survivorshipBias } : null,
     cancelRequested: row.cancel_requested === 1,
   };

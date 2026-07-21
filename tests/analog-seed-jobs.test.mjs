@@ -208,6 +208,29 @@ test("pause then resume continues from the checkpoint", async () => {
   assert.equal(final.symbolsDone, 3);
 });
 
+// ── elapsedMs: frozen at completion for settled runs, live while running ──
+test("elapsedMs is the run duration for a settled run (does not grow on later polls)", () => {
+  const d = db();
+  const { runId } = createSeedRun(d, OPTS, ENABLED);
+  // reproduce the reported production row exactly
+  d.prepare("UPDATE replay_runs SET status='COMPLETED', started_at_ms=?, updated_at_ms=? WHERE run_id=?")
+    .run(1784669432384, 1784669461722, runId);
+  // polled long after completion — elapsed must stay the true duration, not (now - started)
+  const p = getSeedRunProgress(d, runId, 1784669540451); // ~108s after start, ~79s after completion
+  assert.equal(p.elapsedMs, 1784669461722 - 1784669432384, "elapsed = updated - started (29338ms)");
+  assert.equal(p.etaMs, null, "no ETA for a completed run");
+  // polling even later does not change it
+  assert.equal(getSeedRunProgress(d, runId, 1784669999999).elapsedMs, 1784669461722 - 1784669432384);
+});
+
+test("elapsedMs is live (now - started) while a run is RUNNING", () => {
+  const d = db();
+  const { runId } = createSeedRun(d, OPTS, ENABLED);
+  d.prepare("UPDATE replay_runs SET status='RUNNING', started_at_ms=?, updated_at_ms=? WHERE run_id=?")
+    .run(1000, 2000, runId);
+  assert.equal(getSeedRunProgress(d, runId, 5000).elapsedMs, 4000, "running: measured to now");
+});
+
 // ── safety: flags off / kill switch refuse to create ──
 test("safety: flags off and kill switch refuse to create a run", () => {
   assert.equal(createSeedRun(db(), OPTS, {}).status, "SKIPPED");

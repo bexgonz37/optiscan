@@ -219,6 +219,15 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   crash-loop protections (E.5) are unchanged and green. Start command / Railway config untouched. Green:
   1611 tests, tsc 0, build 0. NOTE: the worker still only spawns when `OPTISCAN_ENABLE_SEED_WORKER=1`
   (+ replay flags) is set on Railway; not enabling it keeps prod exactly as-is.
+- ✅ **Phase E.8 — elapsedMs freeze (progress metrics fix)** (commit pending). First successful Railway
+  production seed (`episode_seed_1784669431399_ep7dcl`: COMPLETED, 3/3 symbols, 6/6 calls, 113 episodes,
+  761 labels, API stayed responsive). Display bug: `getSeedRunProgress` computed `elapsedMs = nowMs -
+  startedAtMs`, so for a settled run it grew on every poll (a 29s run read as 108s when polled ~79s after
+  completion). No mixed clocks / stale-lease — both timestamps are `Date.now()` on one host; the bug was
+  using poll-time instead of completion-time. Fix: for terminal/PAUSED runs `elapsedMs = updatedAtMs -
+  startedAtMs` (true duration, frozen); while RUNNING it stays live (`nowMs - startedAtMs`). ETA unchanged
+  (RUNNING-only). Tests reproduce the exact production timestamps and assert elapsed no longer grows on
+  later polls. The successful seed result stands. Green: 1613 tests, tsc 0, build 0.
 - ⬜ Phases F–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: Phase F — forward paper validation** (record
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).
