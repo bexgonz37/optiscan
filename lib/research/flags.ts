@@ -37,6 +37,8 @@ export interface ResearchFlags {
   analogLiveShadow: boolean;
   /** Prospective market-context feature capture (regime/sector/breadth/…), no backfill. */
   marketContextCapture: boolean;
+  /** AI_SHADOW_ONLY enrichment (advisory classification for shadow comparison only). */
+  aiShadow: boolean;
 }
 
 export function researchFlags(env: NodeJS.ProcessEnv = process.env): ResearchFlags {
@@ -54,5 +56,6 @@ export function researchFlags(env: NodeJS.ProcessEnv = process.env): ResearchFla
     broadDiscoveryShadow: on(env.BROAD_DISCOVERY_SHADOW_ENABLED),
     analogLiveShadow: on(env.ANALOG_LIVE_SHADOW_ENABLED),
     marketContextCapture: on(env.MARKET_CONTEXT_CAPTURE_ENABLED),
+    aiShadow: on(env.AI_SHADOW_ENABLED),
   };
 }

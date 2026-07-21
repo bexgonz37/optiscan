@@ -1367,6 +1367,34 @@ CREATE TABLE IF NOT EXISTS market_context_shadow (
   missing_json TEXT, context_json TEXT, created_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_market_context_shadow ON market_context_shadow(as_of_ms);
+
+-- Earnings + options-activity discovery sources (shadow) and the AI_SHADOW_ONLY enrichment.
+-- PURELY ADDITIVE; SHADOW-ONLY (no alerts, not actionable). Flags default OFF.
+CREATE TABLE IF NOT EXISTS earnings_shadow (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, categories_json TEXT,
+  expected_at_ms INTEGER, session TEXT, timing_confirmed INTEGER, provenance TEXT, hours_until REAL,
+  gap_pct REAL, rel_volume REAL, options_available INTEGER, eligible INTEGER NOT NULL,
+  exclusions_json TEXT, rejection_reason TEXT, observed_at_ms INTEGER NOT NULL, created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_earnings_shadow_sym ON earnings_shadow(symbol, observed_at_ms);
+
+CREATE TABLE IF NOT EXISTS options_activity_shadow (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, abstain INTEGER NOT NULL, reasons_json TEXT,
+  flow_classification TEXT NOT NULL, call_put_vol_ratio REAL, directional_imbalance REAL, direction TEXT,
+  total_option_volume REAL, vol_vs_baseline REAL, liquid_unusual_contracts INTEGER,
+  strikes_involved INTEGER, expirations_involved INTEGER, max_contract_vol_oi REAL,
+  observed_at_ms INTEGER NOT NULL, created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_options_activity_shadow_sym ON options_activity_shadow(symbol, observed_at_ms);
+
+CREATE TABLE IF NOT EXISTS ai_shadow (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, tag TEXT NOT NULL DEFAULT 'AI_SHADOW_ONLY',
+  classification TEXT, catalyst_class TEXT, agrees_with_scanner INTEGER, agrees_with_analog INTEGER,
+  abstained INTEGER NOT NULL DEFAULT 0, schema_ok INTEGER NOT NULL DEFAULT 0, hallucination INTEGER NOT NULL DEFAULT 0,
+  latency_ms INTEGER, input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL, error TEXT,
+  output_json TEXT, created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_shadow_sym ON ai_shadow(symbol, created_at_ms);
 `;
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */

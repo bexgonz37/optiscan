@@ -316,6 +316,15 @@ async function refreshDiscovery(nowMs: number) {
       seedRingFromCandles(ticker, nowMs).catch(() => { /* seeding is best-effort */ });
     }
   }
+
+  // SHADOW ONLY (flag-gated OFF; all no-op unless BROAD_DISCOVERY/ANALOG_LIVE/MARKET_CONTEXT shadow
+  // flags are set). Fire-and-forget onto a bounded queue: this NEVER awaits, blocks, alerts, or
+  // changes any actionable decision — a throw here cannot escape the try/catch and cannot affect the
+  // scanner or Discord path. It records the decision-time discovery set for offline comparison.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    require("@/lib/research/shadow/cycle").enqueueShadowCycle({ nowMs, quotes });
+  } catch { /* shadow enqueue is fully isolated from the live path */ }
 }
 
 /** Backfill a symbol's ring with synthetic 5s ticks from recent 1-min bars. */

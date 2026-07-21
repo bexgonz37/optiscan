@@ -268,6 +268,31 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   AI safe-design), FIVE_YEAR_CORPUS_CAPACITY_PLAN (tiered cost/runtime/bias). Tests: `discovery-shadow`,
   `analog-shadow-bridge`. Green: 1643 tests, tsc 0, build 0. **Analog remains NON-actionable; no hard
   gate weakened; no production seed.** Safe to enable ONLY for data collection.
+- 🟡 **Shadow runtime wiring + earnings/options-activity sources + AI shadow** (SHADOW-ONLY, flags OFF;
+  commit pending). Resolved the wiring gap: the shadow `record*` hooks previously had NO live caller
+  (only the read-only route), so enabling flags recorded nothing. Now `scanner-loop.ts refreshDiscovery`
+  ends with a **guarded fire-and-forget** `enqueueShadowCycle({nowMs, quotes})` (try/catch, never awaited)
+  onto a **bounded queue** (`shadow/queue.ts`: concurrency + max-depth backpressure + dedup by
+  symbol|source|event|10s-bucket + per-task timeout + full error isolation + depth/dropped/latency
+  metrics; a task never runs during `submit`). It cannot block/alert/delay/suppress or change any
+  actionable decision. New discovery sources (real-data, abstain-safe): **earnings**
+  (`discovery/earnings.ts` — today/BMO/AMC/upcoming/post-earnings/gap/abnormal-premarket-vol, confirmed-
+  vs-estimated, **stale-date rejection**; NOTE the earnings *feed* is not wired server-side yet, so the
+  classifier is inert until a calendar provider supplies rows) and **options-activity**
+  (`discovery/options-activity.ts` — vol/OI, vol-vs-baseline, call/put skew, per-contract liquidity/
+  spread/zero-bid/DTE, multi-strike; abstains on stale-chain/spread/zero-bid/insufficient/no-provenance;
+  `flowClassification` is ALWAYS `unclassified_no_trade_data` — never "institutional/sweep"). Per scope:
+  **news/sector-sympathy/per-user-watchlists are NOT discovery sources** (news stays enrichment-only).
+  **AI shadow** (`lib/ai/shadow.ts`, `AI_SHADOW_ENABLED` OFF): AI_SHADOW_ONLY advisory classification for
+  comparison only — schema-validated + deterministically post-validated (rejects foreign tickers +
+  institutional-flow claims w/o provenance = hallucination), bounded queue, timeout, injected model call
+  (HARD no-op without a caller → no accidental spend), latency/token/cost/abstain/hallucination metrics.
+  Additive repeat-safe tables (`earnings_shadow`, `options_activity_shadow`, `ai_shadow`); dashboard
+  `GET /api/research/shadow` now returns queue + earnings/options/AI metrics + flag state. Flags:
+  `BROAD_DISCOVERY_SHADOW_ENABLED`, `ANALOG_LIVE_SHADOW_ENABLED`, `MARKET_CONTEXT_CAPTURE_ENABLED`,
+  `AI_SHADOW_ENABLED` (all OFF). Tests: `shadow-runtime-wiring`, `discovery-sources`, `ai-shadow` (12+
+  required cases). Green: 1664 tests, tsc 0, build 0. **No hard gate weakened, no alert made actionable,
+  Analog + AI NOT actionable, puts RESEARCH_ONLY, no production seed, no discovery source auto-enabled.**
 - ⬜ Phases G–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: collect Phase-F + shadow live data before Phase G.**
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).

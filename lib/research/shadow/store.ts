@@ -27,6 +27,20 @@ export function persistAnalogShadowOnDb(db: ShadowDb, r: AnalogShadowResult, now
   ).run(r.symbol, r.t0Ms, r.tag, r.abstain ? 1 : 0, r.abstainReason, r.comparableCount, r.effectiveSample, r.confidence, r.winRate, r.dispersion, r.contradiction, r.forwardReturn.p10, r.forwardReturn.p50, r.forwardReturn.p90, r.nearestDistance, r.agreesWithLive == null ? null : r.agreesWithLive ? 1 : 0, r.agreement, r.lookupMs, nowMs);
 }
 
+export function persistEarningsShadowOnDb(db: ShadowDb, c: { symbol: string; categories: string[]; expectedAtMs: number | null; session: string; timingConfirmed: boolean; provenance: string; hoursUntil: number | null; gapPct: number | null; relVolume: number | null; optionsAvailable: boolean; eligible: boolean; exclusions: string[]; rejectionReason: string | null }, nowMs: number = Date.now()): void {
+  db.prepare(
+    `INSERT INTO earnings_shadow (symbol, categories_json, expected_at_ms, session, timing_confirmed, provenance, hours_until, gap_pct, rel_volume, options_available, eligible, exclusions_json, rejection_reason, observed_at_ms, created_at_ms)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(c.symbol.toUpperCase(), JSON.stringify(c.categories), c.expectedAtMs, c.session, c.timingConfirmed ? 1 : 0, c.provenance, c.hoursUntil, c.gapPct, c.relVolume, c.optionsAvailable ? 1 : 0, c.eligible ? 1 : 0, JSON.stringify(c.exclusions), c.rejectionReason, nowMs, nowMs);
+}
+
+export function persistOptionsActivityShadowOnDb(db: ShadowDb, r: { symbol: string; abstain: boolean; reasons: string[]; flowClassification: string; callPutVolRatio: number | null; directionalImbalance: number | null; direction: string | null; totalOptionVolume: number; volVsBaselineRatio: number | null; liquidUnusualContracts: number; strikesInvolved: number; expirationsInvolved: number; maxContractVolOI: number | null }, nowMs: number = Date.now()): void {
+  db.prepare(
+    `INSERT INTO options_activity_shadow (symbol, abstain, reasons_json, flow_classification, call_put_vol_ratio, directional_imbalance, direction, total_option_volume, vol_vs_baseline, liquid_unusual_contracts, strikes_involved, expirations_involved, max_contract_vol_oi, observed_at_ms, created_at_ms)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(r.symbol.toUpperCase(), r.abstain ? 1 : 0, JSON.stringify(r.reasons), r.flowClassification, r.callPutVolRatio, r.directionalImbalance, r.direction, r.totalOptionVolume, r.volVsBaselineRatio, r.liquidUnusualContracts, r.strikesInvolved, r.expirationsInvolved, r.maxContractVolOI, nowMs, nowMs);
+}
+
 export function persistMarketContextShadowOnDb(db: ShadowDb, symbol: string | null, c: MarketContext, nowMs: number = Date.now()): void {
   db.prepare(
     `INSERT INTO market_context_shadow (symbol, as_of_ms, regime, vol_regime, spy_trend, qqq_trend, iwm_trend, sector, industry, sector_rel_strength, breadth, catalyst_category, earnings_in_days, session, missing_json, context_json, created_at_ms)
@@ -58,6 +72,10 @@ export interface ShadowReport {
   discovery: { total: number; eligible: number; rejected: number; topExclusions: { reason: string; n: number }[] };
   analog: { total: number; agree: number; disagree: number; abstain: number; avgLookupMs: number | null };
   marketContext: { total: number; byRegime: Record<string, number> };
+  earnings: { total: number; eligible: number; rejected: number };
+  optionsActivity: { total: number; abnormal: number };
+  ai: { total: number; abstained: number; hallucinations: number };
+  queue: unknown;
   note: string;
 }
 
@@ -74,11 +92,17 @@ export function readShadowReportOnDb(db: ShadowDb): ShadowReport {
   const byRegime: Record<string, number> = {};
   if (has(db, "market_context_shadow")) for (const r of db.prepare("SELECT regime, COUNT(*) c FROM market_context_shadow GROUP BY regime").all() as any[]) byRegime[r.regime ?? "null"] = r.c;
   const mcTotal = has(db, "market_context_shadow") ? n("SELECT COUNT(*) n FROM market_context_shadow") : 0;
+  const earnings = { total: has(db, "earnings_shadow") ? n("SELECT COUNT(*) n FROM earnings_shadow") : 0, eligible: has(db, "earnings_shadow") ? n("SELECT COUNT(*) n FROM earnings_shadow WHERE eligible=1") : 0, rejected: has(db, "earnings_shadow") ? n("SELECT COUNT(*) n FROM earnings_shadow WHERE rejection_reason IS NOT NULL") : 0 };
+  const optionsActivity = { total: has(db, "options_activity_shadow") ? n("SELECT COUNT(*) n FROM options_activity_shadow") : 0, abnormal: has(db, "options_activity_shadow") ? n("SELECT COUNT(*) n FROM options_activity_shadow WHERE abstain=0") : 0 };
+  const ai = { total: has(db, "ai_shadow") ? n("SELECT COUNT(*) n FROM ai_shadow") : 0, abstained: has(db, "ai_shadow") ? n("SELECT COUNT(*) n FROM ai_shadow WHERE abstained=1") : 0, hallucinations: has(db, "ai_shadow") ? n("SELECT COUNT(*) n FROM ai_shadow WHERE hallucination=1") : 0 };
+  let queue: any = null;
+  try { queue = require("./queue.ts").shadowQueue().metrics(); } catch { /* metrics optional */ } // eslint-disable-line @typescript-eslint/no-require-imports
   return {
-    status: discovery.total + analog.total + mcTotal > 0 ? "HAS_SAMPLE" : "COLLECTING_DATA",
+    status: discovery.total + analog.total + mcTotal + earnings.total + optionsActivity.total + ai.total > 0 ? "HAS_SAMPLE" : "COLLECTING_DATA",
     discovery: { total: discovery.total, eligible: discovery.eligible, rejected: discovery.rejected, topExclusions },
     analog: { total: analog.total, agree: analog.agree, disagree: analog.disagree, abstain: analog.abstain, avgLookupMs: analog.avgLookupMs == null ? null : +Number(analog.avgLookupMs).toFixed(2) },
     marketContext: { total: mcTotal, byRegime },
-    note: "SHADOW-ONLY. Records candidates / analog evidence / market context. No alerts, no threshold changes, analog NOT actionable.",
+    earnings, optionsActivity, ai, queue,
+    note: "SHADOW-ONLY. Records candidates / analog / context / earnings / options-activity / AI evidence. No alerts, no threshold changes, analog + AI NOT actionable; options flow NEVER labeled institutional without trade-level provenance.",
   };
 }

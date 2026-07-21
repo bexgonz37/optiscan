@@ -17,10 +17,12 @@ export async function GET(req: Request) {
   const { getDb } = await import("@/lib/db");
   const { readShadowReportOnDb } = await import("@/lib/research/shadow/store");
   const { researchFlags } = await import("@/lib/research/flags");
+  const { aiShadowMetrics } = await import("@/lib/ai/shadow");
   const f = researchFlags(process.env);
   return NextResponse.json({
     ok: true,
-    flags: { broadDiscoveryShadow: f.broadDiscoveryShadow, analogLiveShadow: f.analogLiveShadow, marketContextCapture: f.marketContextCapture },
+    flags: { broadDiscoveryShadow: f.broadDiscoveryShadow, analogLiveShadow: f.analogLiveShadow, marketContextCapture: f.marketContextCapture, aiShadow: f.aiShadow },
     report: readShadowReportOnDb(getDb()),
+    aiShadowMetrics: aiShadowMetrics(),
   });
 }
