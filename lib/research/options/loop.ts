@@ -8,7 +8,7 @@ import { researchFlags } from "../flags.ts";
 import { selectOptionsStrategy, type OptionsCandidateInput, type StrategySelection } from "./discovery.ts";
 import { getStrategy } from "./strategy-catalog.ts";
 import { evaluateCallout, type CalloutContract, type CalloutResult } from "./callout.ts";
-import { buildRealOptionEntry, persistRealOptionPaperOnDb, type OptionQuote, type RealOptionEntry } from "./paper.ts";
+import { buildRealOptionEntry, persistRealOptionPaperOnDb, canOpenRealOptionPaper, type OptionQuote, type RealOptionEntry } from "./paper.ts";
 
 export interface ChainContract { optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number; bid: number | null; ask: number | null; spreadPct: number | null; volume: number | null; openInterest: number | null; iv: number | null; delta: number | null; providerTimestamp: number | null }
 
@@ -73,8 +73,12 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(input.symbol, input.tier, input.session, res.selection.selected?.key ?? null, res.selection.direction, res.selection.selected?.side ?? null, res.selection.selected?.researchOnly ? 1 : 0, res.selection.selected?.score ?? null, JSON.stringify(res.selection.considered.slice(0, 8)), res.state, res.callout?.reason ?? res.selection.reason, res.contract?.optionSymbol ?? null, res.callout?.freshness ?? null, res.callout?.message ?? null, input.nowMs);
     // Real-option paper (separate flag). Public callout DELIVERY is NOT wired here (manual/gated).
-    if (res.state === "READY" && res.paperEntry?.ok && researchFlags(env).realOptionPaper) {
-      persistRealOptionPaperOnDb(db, res.paperEntry, input.nowMs);
+    // Options-market-hours only (never open from a stale prior-session quote), and gated on
+    // dedup / max-concurrent / per-symbol exposure. A fresh executable quote is enforced by the
+    // entry gate (quoteAgeMs) inside buildRealOptionEntry.
+    if (res.state === "READY" && res.paperEntry?.ok && researchFlags(env).realOptionPaper && input.session === "regular") {
+      const gate = canOpenRealOptionPaper(db, { optionSymbol: res.paperEntry.optionSymbol, strategy: res.paperEntry.strategy, nowMs: input.nowMs });
+      if (gate.ok) persistRealOptionPaperOnDb(db, res.paperEntry, input.nowMs);
     }
   } catch { /* isolated: options discovery never affects the live path */ }
   return res;

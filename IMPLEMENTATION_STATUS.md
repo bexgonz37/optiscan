@@ -339,7 +339,32 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   tests, tsc 0, build 0. **Stock radar untouched; nothing actionable; puts RESEARCH_ONLY; no public
   Discord wired/auto-enabled; no real-money execution; no improvement claimed.** Public callout DELIVERY
   is intentionally NOT wired (formatter only) — a gated, approved delivery layer is a later step.
-- ⬜ Phases G–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: collect Phase-F + options/shadow live data before Phase G.**
+- 🟡 **Independent options monitoring tick wired to live data (paper/shadow only)** (commit pending).
+  `loop.ts` is now driven by a dedicated in-process loop `lib/research/options/monitor.ts` (started from
+  `ensureServerBoot` via `live-deps.ts`), SEPARATE from the stock radar — no `shouldTrigger()`, no +10%,
+  no Discord. **Boundary decision:** in-process interval loop (not a child process) — the tick is light
+  periodic provider+DB work, so a worker would only re-add seed-worker fragility. **Staged funnel:** ONE
+  cheap underlying batch snapshot/cycle (Stage 1 rejects most) → option chain fetched only for justified
+  symbols (Stage 2) → `runOptionsCandidate` records candidate + gated real-option paper; AI/analog
+  shadow run AFTERWARD off the critical path. Guards: bounded concurrency (`OPTIONS_MAX_CONCURRENCY`),
+  provider budget/min + throttle counters, per-symbol + per-strategy cooldowns, circuit breaker on
+  provider failure, dedup, no-overlap, fixed-width workers (no unbounded promises). Session-aware
+  cadences; premarket/AH create FORMING candidates but **real-option paper opens only in the regular
+  session with a fresh quote** (never a stale prior-session quote), gated by dedup + max-concurrent +
+  per-symbol exposure (`canOpenRealOptionPaper`). Health that never fails web health when disabled.
+  `GET /api/research/options` extended with monitor metrics/health + active paper positions.
+  **What's active:** nothing by default (all flags OFF). **Active when enabled:**
+  `INDEPENDENT_OPTIONS_DISCOVERY_ENABLED` → observe + record candidates; `REAL_OPTION_PAPER_ENABLED` →
+  real-option paper (regular hours). `EARLY_OPTIONS_CALLOUTS_ENABLED` unused/unwired (no Discord).
+  Feature-limited live Stage-1 (snapshot + day-change acceleration) → intentionally sparse until per-
+  symbol rvol/VWAP/level/options-activity enrichment (next step). Docs: OPTIONS_MONITORING_RUNTIME,
+  OPTIONS_PROVIDER_BUDGET, OPTIONS_SESSION_BEHAVIOR, OPTIONS_PAPER_COLLECTION_RUNBOOK,
+  OPTIONS_RUNTIME_ROLLOUT. Tests: `options-monitor` (15 requirements). Green: 1694 tests, tsc 0, build 0.
+  **Railway flags OFF; safest order INDEPENDENT→REAL_OPTION_PAPER→(later, approved) callouts; rollback =
+  unset flag; stock radar untouched; puts RESEARCH_ONLY; no real-money; no public Discord; no improvement
+  claimed. Evidence still required before public delivery: forward REAL_OPTION_PAPER sample + measured
+  production latency + a gated approved delivery layer.**
+- ⬜ Phases G–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: collect options/Phase-F/shadow live data before Phase G.**
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).
 

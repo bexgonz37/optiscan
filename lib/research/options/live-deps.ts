@@ -1,0 +1,81 @@
+/**
+ * lib/research/options/live-deps.ts — real provider adapter for the independent options monitor.
+ * Builds OptionsMonitorDeps from the existing Polygon provider. Stage-1 underlying comes from ONE
+ * whole-market snapshot per short window (cheap); Stage-2 chains come from fetchOptionChain only for
+ * justified symbols. Feature-limited for now (price/dollar-vol/day-change + a cheap day-change
+ * ACCELERATION from consecutive snapshots) — richer per-symbol features (rvol/VWAP/levels/options-
+ * activity) are a documented next enrichment; until then the monitor is intentionally sparse.
+ */
+import type { OptionsMonitorDeps, UnderlyingSnapshot } from "./monitor.ts";
+import type { ChainContract } from "./loop.ts";
+import { tier2Eligible, type Session } from "./discovery.ts";
+
+type PrevChange = { change: number; atMs: number };
+type G = typeof globalThis & { __optiscanOptSnap?: { at: number; quotes: any[] }; __optiscanOptPrev?: Map<string, PrevChange> };
+
+async function marketSnapshot(nowMs: number): Promise<any[]> {
+  const g = globalThis as G;
+  if (g.__optiscanOptSnap && nowMs - g.__optiscanOptSnap.at < 5000) return g.__optiscanOptSnap.quotes;
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { fetchMarketSnapshot } = require("@/lib/polygon-provider");
+  const res = await fetchMarketSnapshot();
+  const quotes = res?.available && Array.isArray(res.quotes) ? res.quotes : [];
+  g.__optiscanOptSnap = { at: nowMs, quotes };
+  return quotes;
+}
+
+function toSnapshot(q: any, prev: Map<string, PrevChange>, nowMs: number): UnderlyingSnapshot {
+  const change = Number(q.changePercent);
+  const p = prev.get(q.symbol);
+  let accelPct: number | null = null;
+  if (p && Number.isFinite(change)) { const dtMin = (nowMs - p.atMs) / 60_000; if (dtMin > 0 && dtMin <= 5) accelPct = +(((change - p.change) / dtMin)).toFixed(3); }
+  if (Number.isFinite(change)) prev.set(q.symbol, { change, atMs: nowMs });
+  const price = Number(q.price);
+  return {
+    price: Number.isFinite(price) ? price : null,
+    dayDollarVolume: Number.isFinite(price) && q.volume ? price * Number(q.volume) : null,
+    relVolume: null, velPct: Number.isFinite(change) ? change : null, accelPct, gapPct: null,
+    aboveVwap: null, hodBreak: null, nearResistancePct: null, compressionPct: null,
+    realizedVolExpanding: null, openingRange: null, premarketLevelTest: null,
+  };
+}
+
+function mapOptionContracts(raw: any[], nowMs: number): ChainContract[] {
+  return (raw ?? []).map((c: any): ChainContract => ({
+    optionSymbol: c.optionSymbol ?? c.symbol ?? c.ticker ?? "", side: String(c.side ?? c.contract_type ?? "").toLowerCase() === "put" ? "put" : "call",
+    strike: Number(c.strike ?? c.strike_price), expiration: c.expiration ?? c.expiration_date ?? "", dte: Number(c.dte ?? 0),
+    bid: c.bid ?? null, ask: c.ask ?? null, spreadPct: c.spreadPct ?? null, volume: c.volume ?? null, openInterest: c.openInterest ?? c.open_interest ?? null,
+    iv: c.iv ?? c.implied_volatility ?? null, delta: c.delta ?? null, providerTimestamp: c.providerTimestamp ?? nowMs,
+  })).filter((c: ChainContract) => c.optionSymbol && Number.isFinite(c.strike));
+}
+
+export function buildLiveOptionsDeps(): OptionsMonitorDeps {
+  const g = globalThis as G;
+  const prev = (g.__optiscanOptPrev ??= new Map());
+  return {
+    now: Date.now,
+    session: (): Session => { try { const { marketSession } = require("@/lib/trading-session"); return marketSession(Date.now()) as Session; } catch { return "regular"; } }, // eslint-disable-line @typescript-eslint/no-require-imports
+    getDb: () => require("@/lib/db").getDb(), // eslint-disable-line @typescript-eslint/no-require-imports
+    getUnderlyingBatch: async (symbols: string[]) => {
+      const nowMs = Date.now();
+      const quotes = await marketSnapshot(nowMs);
+      const bySym = new Map(quotes.map((q: any) => [String(q.symbol).toUpperCase(), q]));
+      const out = new Map<string, UnderlyingSnapshot>();
+      for (const sym of symbols) { const q = bySym.get(sym.toUpperCase()); if (q) out.set(sym.toUpperCase(), toSnapshot(q, prev, nowMs)); }
+      return out;
+    },
+    getChain: async (symbol: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { fetchOptionChain } = require("@/lib/polygon-provider");
+      const res = await fetchOptionChain(symbol, { dteMin: 0, dteMax: 14, maxPages: 2 });
+      return res?.available ? mapOptionContracts(res.contracts, Date.now()) : [];
+    },
+    tier2Universe: async () => {
+      const nowMs = Date.now();
+      const quotes = await marketSnapshot(nowMs);
+      return quotes
+        .filter((q: any) => tier2Eligible({ symbol: q.symbol, price: q.price, dayDollarVolume: (q.price ?? 0) * (q.volume ?? 0) }).eligible)
+        .map((q: any) => String(q.symbol).toUpperCase());
+    },
+  };
+}

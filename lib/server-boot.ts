@@ -56,6 +56,17 @@ export function ensureServerBoot(): void {
   } catch (err) {
     console.warn("[seed-worker] not started:", (err as Error)?.message);
   }
+  try {
+    // Independent OPTIONS monitoring loop (in-process, bounded, SEPARATE from the stock radar).
+    // HARD no-op unless INDEPENDENT_OPTIONS_DISCOVERY_ENABLED=1. Never sends Discord; paper/shadow only.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { startOptionsMonitor } = require("@/lib/research/options/monitor");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const started = startOptionsMonitor(require("@/lib/research/options/live-deps").buildLiveOptionsDeps(), process.env);
+    if (started.started) console.info("[options-monitor] started");
+  } catch (err) {
+    console.warn("[options-monitor] not started:", (err as Error)?.message);
+  }
   // (removed) A boot-time block used to force-lower scanner gates to
   // 0.12%/min / 1.25x on every start — it silently undid any tightening the
   // user saved in Settings and was a root cause of the noisy-callout audit

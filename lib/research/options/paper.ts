@@ -64,6 +64,28 @@ export function persistRealOptionPaperOnDb(db: PaperDb, e: RealOptionEntry, nowM
   ).run(e.optionSymbol, e.side, e.strike, e.expiration, e.dte, e.class, e.bid, e.ask, e.mid, e.spreadPct, e.entryFill, e.volume, e.openInterest, e.iv, e.delta, e.underlyingPrice, e.strategy, e.target, e.invalidation, e.provenance, "ENTERED", nowMs, nowMs);
 }
 
+interface GateDb { prepare(sql: string): { get: (...a: any[]) => any } }
+export interface OpenPaperGateCfg { bucketMs: number; maxConcurrent: number; maxPerSymbol: number }
+export function defaultOpenPaperGate(env: NodeJS.ProcessEnv = process.env): OpenPaperGateCfg {
+  const n = (v: string | undefined, d: number) => { const x = Number(v); return Number.isFinite(x) ? x : d; };
+  return { bucketMs: n(env.OPTIONS_PAPER_DEDUP_BUCKET_MS, 60_000), maxConcurrent: n(env.OPTIONS_PAPER_MAX_CONCURRENT, 20), maxPerSymbol: n(env.OPTIONS_PAPER_MAX_PER_SYMBOL, 2) };
+}
+const occSym = (occ: string) => occ.match(/^O:([A-Z]+)/)?.[1] ?? "";
+
+/** Guard a real-option paper entry: dedup (symbol+strategy+contract+time-bucket), max concurrent open
+ *  positions, and per-symbol exposure. Pure over the DB (read-only). */
+export function canOpenRealOptionPaper(db: GateDb, i: { optionSymbol: string; strategy: string; nowMs: number }, cfg: OpenPaperGateCfg = defaultOpenPaperGate()): { ok: boolean; reason: string | null } {
+  const bucketStart = i.nowMs - (i.nowMs % cfg.bucketMs);
+  const dup = db.prepare("SELECT 1 FROM options_paper_trades WHERE option_symbol=? AND strategy=? AND created_at_ms >= ? LIMIT 1").get(i.optionSymbol, i.strategy, bucketStart);
+  if (dup) return { ok: false, reason: "duplicate_in_time_bucket" };
+  const openN = Number((db.prepare("SELECT COUNT(*) n FROM options_paper_trades WHERE status='ENTERED'").get() as any)?.n ?? 0);
+  if (openN >= cfg.maxConcurrent) return { ok: false, reason: "max_concurrent_positions" };
+  const sym = occSym(i.optionSymbol);
+  const symN = Number((db.prepare("SELECT COUNT(*) n FROM options_paper_trades WHERE status='ENTERED' AND option_symbol LIKE ?").get(`O:${sym}%`) as any)?.n ?? 0);
+  if (symN >= cfg.maxPerSymbol) return { ok: false, reason: "per_symbol_exposure" };
+  return { ok: true, reason: null };
+}
+
 /** Live hook: build + persist a real-option paper entry. HARD no-op unless REAL_OPTION_PAPER_ENABLED=1. */
 export function recordRealOptionPaper(input: BuildEntryInput, nowMs: number = Date.now(), env: NodeJS.ProcessEnv = process.env): { recorded: boolean; reason: string | null; entry: RealOptionEntry | null } {
   if (!researchFlags(env).realOptionPaper) return { recorded: false, reason: "REAL_OPTION_PAPER_ENABLED!=1", entry: null };

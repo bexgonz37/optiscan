@@ -16,10 +16,15 @@ export async function GET(req: Request) {
   const { getDb } = await import("@/lib/db");
   const { readOptionsReportOnDb } = await import("@/lib/research/options/report");
   const { researchFlags } = await import("@/lib/research/flags");
+  const { optionsMonitorMetrics, optionsMonitorHealth } = await import("@/lib/research/options/monitor");
   const f = researchFlags(process.env);
+  const db = getDb();
+  const activePaperPositions = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_paper_trades'").get()
+    ? Number((db.prepare("SELECT COUNT(*) n FROM options_paper_trades WHERE status='ENTERED'").get() as any)?.n ?? 0) : 0;
   return NextResponse.json({
     ok: true,
     flags: { independentOptionsDiscovery: f.independentOptionsDiscovery, earlyOptionsCallouts: f.earlyOptionsCallouts, realOptionPaper: f.realOptionPaper },
-    report: readOptionsReportOnDb(getDb()),
+    monitor: { ...optionsMonitorMetrics(), health: optionsMonitorHealth(process.env), activePaperPositions },
+    report: readOptionsReportOnDb(db),
   });
 }
