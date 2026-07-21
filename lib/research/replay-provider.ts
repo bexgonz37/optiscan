@@ -55,12 +55,19 @@ export function optionsReplayBlocker(): string {
 }
 
 /**
- * `providerCalls` = provider requests ATTEMPTED (0 only when no request was issued — e.g. no
- * key). `succeeded` = the request returned without error and the provider did not report
- * `available:false`. `bars` may still be empty on a successful call (no data for the range) —
- * that is a distinct condition from an error and from "not attempted".
+ * `providerCalls` = provider requests ATTEMPTED across all chunks (0 only when no request was
+ * issued — e.g. no key). `succeeded` = EVERY chunk returned without error and the provider did
+ * not report `available:false`. `bars` may still be empty on a successful call (no data for the
+ * range). `rangeComplete` = every chunk succeeded AND none hit the per-call result cap (so no
+ * silent truncation). `truncated` = at least one chunk returned exactly the requested limit.
  */
-export interface FetchBarsResult { bars: Bar[]; providerCalls: number; succeeded: boolean; note: string }
+export interface ChunkDetail { from: string; to: string; bars: number; succeeded: boolean; truncated: boolean; note?: string }
+export interface FetchBarsResult {
+  bars: Bar[]; providerCalls: number; succeeded: boolean; note: string;
+  chunks: number; rangeComplete: boolean; truncated: boolean;
+  firstBarMs: number | null; lastBarMs: number | null;
+  chunkDetail: ChunkDetail[];
+}
 
 /** Never echo a key: strip apiKey/Bearer tokens from provider error strings and bound length. */
 export function sanitizeProviderNote(s: unknown): string {
@@ -70,36 +77,98 @@ export function sanitizeProviderNote(s: unknown): string {
     .slice(0, 200);
 }
 
+// One /v2/aggs call caps at Polygon's per-page maximum and the adapter does NOT follow next_url,
+// so we split the requested range into deterministic calendar-day windows small enough that a
+// single call comfortably covers each — no reliance on next_url pagination semantics.
+export const REPLAY_CHUNK_DAYS = 30;      // ~21 trading days ≈ ≤ ~20k 1-min bars, well under the cap
+export const REPLAY_PER_CALL_LIMIT = 50_000; // Polygon /v2/aggs max results per call
+
+const DAY_MS = 86_400_000;
+const isoDay = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+
+/** Split [from,to] (inclusive, YYYY-MM-DD) into non-overlapping windows of `chunkDays` days. */
+export function replayDateWindows(from: string, to: string, chunkDays: number = REPLAY_CHUNK_DAYS): Array<{ from: string; to: string }> {
+  const s0 = Date.parse(`${from}T00:00:00Z`);
+  const e0 = Date.parse(`${to}T00:00:00Z`);
+  if (!Number.isFinite(s0) || !Number.isFinite(e0) || s0 > e0) return [{ from, to }];
+  const span = Math.max(1, Math.floor(chunkDays));
+  const out: Array<{ from: string; to: string }> = [];
+  for (let s = s0; s <= e0; s = s + span * DAY_MS) {
+    const e = Math.min(s + (span - 1) * DAY_MS, e0);
+    out.push({ from: isoDay(s), to: isoDay(e) });
+  }
+  return out;
+}
+
+function mapBars(raw: any[]): Bar[] {
+  return raw
+    .map((b: any) => ({ t: Number(b.t ?? b.timestamp ?? b.time), o: Number(b.o ?? b.open), h: Number(b.h ?? b.high), l: Number(b.l ?? b.low), c: Number(b.c ?? b.close), v: Number(b.v ?? b.volume ?? 0) }))
+    .filter((b: Bar) => Number.isFinite(b.t) && Number.isFinite(b.c));
+}
+
 /**
- * Fetch real historical stock bars via the existing provider (/v2/aggs). Lazy-requires
- * the provider so the pure replay core stays importable under `node --test`. Never
- * fabricates data — an unavailable provider returns an empty bar set with a note. Reports
- * attempted-vs-succeeded honestly so a caller can never mistake "no request issued" or
- * "provider error" for "no data".
+ * Fetch real historical stock bars via the existing provider (/v2/aggs), chunking the requested
+ * range into date windows so the full interval is covered instead of being truncated at the
+ * per-call result cap. Bars are deduplicated by timestamp across chunks and sorted ascending.
+ * Lazy-requires the provider so the pure replay core stays importable under `node --test`. Never
+ * fabricates data. Reports attempted-vs-succeeded, per-chunk detail, and whether the range is
+ * complete so a caller can never mistake truncated/partial coverage for a full fetch.
  */
+export type FetchCandlesFn = (symbol: string, opts: Record<string, unknown>) => Promise<any>;
+
 export async function fetchHistoricalStockBars(
   symbol: string,
-  opts: { from: string; to: string; timespan?: string; multiplier?: number } = { from: "", to: "" },
+  opts: { from: string; to: string; timespan?: string; multiplier?: number; chunkDays?: number } = { from: "", to: "" },
   env: NodeJS.ProcessEnv = process.env,
+  deps: { fetchCandles?: FetchCandlesFn } = {},
 ): Promise<FetchBarsResult> {
   if (!stockReplayAvailable(env)) {
-    return { bars: [], providerCalls: 0, succeeded: false, note: "stock replay INACTIVE — no provider key (POLYGON_API_KEY / MASSIVE_API_KEY); no request issued" };
+    return { bars: [], providerCalls: 0, succeeded: false, note: "stock replay INACTIVE — no provider key (POLYGON_API_KEY / MASSIVE_API_KEY); no request issued", chunks: 0, rangeComplete: false, truncated: false, firstBarMs: null, lastBarMs: null, chunkDetail: [] };
   }
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { fetchCandles } = require("@/lib/polygon-provider");
-    // fetchCandles reads the aggregate multiplier from `resolution` (not `multiplier`) — pass it
-    // correctly so replay actually fetches the intended 1-minute bars, not the 5-minute default.
-    const res = await fetchCandles(symbol, { from: opts.from, to: opts.to, timespan: opts.timespan ?? "minute", resolution: String(opts.multiplier ?? 1) });
-    const available = res?.available !== false; // fetchCandles returns available:false on its own caught error
-    const raw = Array.isArray(res) ? res : (res?.candles ?? res?.bars ?? []);
-    const bars: Bar[] = raw
-      .map((b: any) => ({ t: Number(b.t ?? b.timestamp ?? b.time), o: Number(b.o ?? b.open), h: Number(b.h ?? b.high), l: Number(b.l ?? b.low), c: Number(b.c ?? b.close), v: Number(b.v ?? b.volume ?? 0) }))
-      .filter((b: Bar) => Number.isFinite(b.t) && Number.isFinite(b.c))
-      .sort((a: Bar, b: Bar) => a.t - b.t);
-    if (!available) return { bars: [], providerCalls: 1, succeeded: false, note: sanitizeProviderNote(res?.note ?? "provider reported available:false") };
-    return { bars, providerCalls: 1, succeeded: true, note: bars.length ? "real /v2/aggs OHLCV" : "provider OK but returned no bars for the requested range/timespan" };
-  } catch (err: any) {
-    return { bars: [], providerCalls: 1, succeeded: false, note: sanitizeProviderNote(`provider error (no fabrication): ${err?.message ?? String(err)}`) };
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const fetchCandles: FetchCandlesFn = deps.fetchCandles ?? require("@/lib/polygon-provider").fetchCandles;
+  const timespan = opts.timespan ?? "minute";
+  const resolution = String(opts.multiplier ?? 1); // fetchCandles reads the multiplier from `resolution`
+  const windows = replayDateWindows(opts.from, opts.to, opts.chunkDays ?? REPLAY_CHUNK_DAYS);
+
+  const seen = new Map<number, Bar>(); // dedup by timestamp across chunks
+  const chunkDetail: ChunkDetail[] = [];
+  let providerCalls = 0, anyError = false, truncated = false;
+
+  for (const w of windows) {
+    providerCalls += 1;
+    try {
+      const res = await fetchCandles(symbol, { from: w.from, to: w.to, timespan, resolution, limit: REPLAY_PER_CALL_LIMIT });
+      const available = res?.available !== false;
+      if (!available) {
+        anyError = true;
+        chunkDetail.push({ from: w.from, to: w.to, bars: 0, succeeded: false, truncated: false, note: sanitizeProviderNote(res?.note ?? "provider reported available:false") });
+        continue;
+      }
+      const raw = Array.isArray(res) ? res : (res?.candles ?? res?.bars ?? []);
+      const bars = mapBars(raw);
+      for (const b of bars) if (!seen.has(b.t)) seen.set(b.t, b);
+      const capHit = res?.resultCap === true || bars.length >= REPLAY_PER_CALL_LIMIT;
+      if (capHit) truncated = true;
+      chunkDetail.push({ from: w.from, to: w.to, bars: bars.length, succeeded: true, truncated: capHit });
+    } catch (err: any) {
+      anyError = true;
+      chunkDetail.push({ from: w.from, to: w.to, bars: 0, succeeded: false, truncated: false, note: sanitizeProviderNote(`provider error: ${err?.message ?? String(err)}`) });
+    }
   }
+
+  const bars = [...seen.values()].sort((a, b) => a.t - b.t);
+  const succeeded = chunkDetail.length > 0 && chunkDetail.every((c) => c.succeeded);
+  const rangeComplete = succeeded && !truncated && bars.length > 0;
+  const firstBarMs = bars.length ? bars[0].t : null;
+  const lastBarMs = bars.length ? bars[bars.length - 1].t : null;
+  const note = !succeeded
+    ? sanitizeProviderNote(chunkDetail.find((c) => !c.succeeded)?.note ?? "one or more chunks failed")
+    : truncated
+      ? `truncated: a chunk hit the ${REPLAY_PER_CALL_LIMIT}-result cap — range NOT fully covered`
+      : bars.length
+        ? `real /v2/aggs OHLCV across ${windows.length} chunk(s)`
+        : "provider OK but returned no bars for the requested range/timespan";
+
+  return { bars, providerCalls, succeeded, note, chunks: windows.length, rangeComplete, truncated, firstBarMs, lastBarMs, chunkDetail };
 }

@@ -21,6 +21,7 @@ import { researchFlags } from "../flags.ts";
 import { computeUnderlyingLabel, type Bar } from "./labels.ts";
 import { persistEpisodeOnDb, persistLabelOnDb } from "./store.ts";
 import { estimateSeed, type SeedEstimate } from "./universe.ts";
+import { replayDateWindows } from "./../replay-provider.ts";
 import { DAY_HORIZONS, FEATURE_SCHEMA_VERSION, HORIZONS, INTRADAY_HORIZON_MS, episodeKeyOf, type Episode, type EpisodeLabel, type ThesisSide } from "./schema.ts";
 
 export interface SeedConfig {
@@ -191,10 +192,10 @@ export type SeedRunStatus =
   | "SKIPPED"            // guard tripped before the loop (flags off / no universe / kill)
   | "DRY_RUN";           // estimate only
 
-export type PerSymbolStatus = "OK" | "NO_DATA" | "PROVIDER_ERROR" | "NO_PROVIDER";
-export interface PerSymbolSeedResult { symbol: string; status: PerSymbolStatus; attempted: boolean; succeeded: boolean; bars: number; episodes: number; labels: number; note: string }
+export type PerSymbolStatus = "OK" | "INCOMPLETE" | "NO_DATA" | "PROVIDER_ERROR" | "NO_PROVIDER";
+export interface PerSymbolSeedResult { symbol: string; status: PerSymbolStatus; attempted: boolean; succeeded: boolean; bars: number; episodes: number; labels: number; chunks: number; rangeComplete: boolean; truncated: boolean; firstBarMs: number | null; lastBarMs: number | null; note: string }
 
-export interface SeedDiagnostic { symbol: string; attempted: boolean; succeeded: boolean; barCount: number; firstBarMs: number | null; lastBarMs: number | null; from: string; to: string; timespan: string; multiplier: number; note: string }
+export interface SeedDiagnostic { symbol: string; attempted: boolean; succeeded: boolean; barCount: number; firstBarMs: number | null; lastBarMs: number | null; from: string; to: string; timespan: string; multiplier: number; chunks: number; rangeComplete: boolean; truncated: boolean; note: string }
 
 export interface ReplaySeedResult {
   ran: boolean;
@@ -227,7 +228,8 @@ export interface RunReplaySeedOpts {
 }
 
 /** Injectable dependencies (tests supply an in-memory db + a fake provider). */
-export type FetchBarsFn = (symbol: string, opts: { from: string; to: string; timespan?: string; multiplier?: number }, env: NodeJS.ProcessEnv) => Promise<{ bars: Bar[]; providerCalls: number; succeeded: boolean; note: string }>;
+export interface FetchBarsReturn { bars: Bar[]; providerCalls: number; succeeded: boolean; note: string; chunks?: number; rangeComplete?: boolean; truncated?: boolean; firstBarMs?: number | null; lastBarMs?: number | null }
+export type FetchBarsFn = (symbol: string, opts: { from: string; to: string; timespan?: string; multiplier?: number }, env: NodeJS.ProcessEnv) => Promise<FetchBarsReturn>;
 export interface RunReplaySeedDeps { db?: SeedDb; fetchBars?: FetchBarsFn }
 
 const spanDays = (from: string, to: string): number => {
@@ -278,8 +280,9 @@ export async function runReplaySeed(opts: RunReplaySeedOpts, env: NodeJS.Process
     const times = r.bars.map((b) => b.t);
     const diagnostic: SeedDiagnostic = {
       symbol: sym, attempted: r.providerCalls > 0, succeeded: r.succeeded, barCount: r.bars.length,
-      firstBarMs: times.length ? Math.min(...times) : null, lastBarMs: times.length ? Math.max(...times) : null,
-      from: opts.from, to: opts.to, timespan, multiplier: 1, note: r.note,
+      firstBarMs: r.firstBarMs ?? (times.length ? Math.min(...times) : null), lastBarMs: r.lastBarMs ?? (times.length ? Math.max(...times) : null),
+      from: opts.from, to: opts.to, timespan, multiplier: 1,
+      chunks: r.chunks ?? 1, rangeComplete: r.rangeComplete ?? (r.bars.length > 0), truncated: r.truncated ?? false, note: r.note,
     };
     const hasData = r.succeeded && r.bars.length > 0;
     return {
@@ -294,7 +297,11 @@ export async function runReplaySeed(opts: RunReplaySeedOpts, env: NodeJS.Process
   const nowMs = Date.now();
   const runId = `episode_seed_${nowMs}`;
   const rateLimitMs = Math.max(0, opts.rateLimitMs ?? 200);
-  const budget = opts.providerCallBudget ?? symbols.length;
+  // Each symbol now costs one provider call PER date-window chunk, not one call total — so the
+  // default budget must scale with the chunk count or a multi-chunk seed would stop after the
+  // first symbol. An explicit providerCallBudget still overrides.
+  const chunksPerSymbol = Math.max(1, replayDateWindows(opts.from, opts.to).length);
+  const budget = opts.providerCallBudget ?? symbols.length * chunksPerSymbol;
 
   const perSymbol: PerSymbolSeedResult[] = [];
   const processed = new Set<string>();
@@ -316,16 +323,24 @@ export async function runReplaySeed(opts: RunReplaySeedOpts, env: NodeJS.Process
       attempted += r.providerCalls;
       if (r.succeeded) succeeded += 1;
 
+      const times = r.bars.map((b) => b.t);
+      const rangeComplete = r.rangeComplete ?? true;
+      const truncated = r.truncated ?? false;
+      const firstBarMs = r.firstBarMs ?? (times.length ? Math.min(...times) : null);
+      const lastBarMs = r.lastBarMs ?? (times.length ? Math.max(...times) : null);
+
       let epThis = 0, labThis = 0, status: PerSymbolStatus;
       if (r.providerCalls === 0) status = "NO_PROVIDER";
-      else if (!r.succeeded) status = "PROVIDER_ERROR";
-      else if (r.bars.length === 0) status = "NO_DATA";
+      else if (r.bars.length === 0) status = r.succeeded ? "NO_DATA" : "PROVIDER_ERROR";
       else {
+        // Seed whatever real bars arrived, but flag INCOMPLETE coverage so the run cannot read
+        // as a clean COMPLETED when the date range was truncated or a chunk failed.
         const res = seedSymbolOnDb(db, symbol, r.bars, cfg, nowMs);
         epThis = res.episodesCaptured; labThis = res.labels;
-        episodes += epThis; labels += labThis; symbolsWithData += 1; status = "OK";
+        episodes += epThis; labels += labThis; symbolsWithData += 1;
+        status = rangeComplete ? "OK" : "INCOMPLETE";
       }
-      perSymbol.push({ symbol, status, attempted: r.providerCalls > 0, succeeded: r.succeeded, bars: r.bars.length, episodes: epThis, labels: labThis, note: r.note });
+      perSymbol.push({ symbol, status, attempted: r.providerCalls > 0, succeeded: r.succeeded, bars: r.bars.length, episodes: epThis, labels: labThis, chunks: r.chunks ?? 1, rangeComplete, truncated, firstBarMs, lastBarMs, note: r.note });
       processed.add(symbol);
       db.prepare("UPDATE replay_runs SET checkpoint_json=?, provider_calls=?, provider_calls_attempted=?, symbols_with_data=?, per_symbol_json=?, updated_at_ms=? WHERE run_id=?")
         .run(JSON.stringify({ done: [...processed] }), succeeded, attempted, symbolsWithData, JSON.stringify(perSymbol), Date.now(), runId);
@@ -335,19 +350,23 @@ export async function runReplaySeed(opts: RunReplaySeedOpts, env: NodeJS.Process
     fatalError = sanitizeErr(`seed error (isolated): ${err?.message ?? String(err)}`);
   }
 
-  // Honest run-level status — a run that fetched nothing is NEVER a bare COMPLETED.
+  // Honest run-level status — a run that fetched nothing, or covered only part of the requested
+  // range, is NEVER a bare COMPLETED.
+  const anyIncomplete = perSymbol.some((s) => s.status === "INCOMPLETE");
+  const cutShort = processed.size < symbols.length; // budget/kill stopped before all requested symbols
   let status: SeedRunStatus;
   if (fatalError) status = "FAILED";
   else if (killed) status = "PAUSED";
   else if (attempted === 0) status = "FAILED";                       // non-dry run that never called the provider
   else if (symbolsWithData === 0) status = "COMPLETED_NO_DATA";
-  else if (symbolsWithData < processed.size) status = "PARTIAL";
+  else if (symbolsWithData < processed.size || anyIncomplete || cutShort) status = "PARTIAL";
   else status = "COMPLETED";
 
   const error =
     fatalError ??
     (status === "FAILED" ? "no provider calls were attempted — stock replay INACTIVE or provider unavailable (verify POLYGON_API_KEY / entitlement)"
       : status === "COMPLETED_NO_DATA" ? "provider was called but returned no bars for the requested range/timespan (check the date range, timespan, and plan entitlement)"
+      : status === "PARTIAL" ? `partial coverage — ${anyIncomplete ? "one or more symbols had an incomplete/truncated date range; " : ""}${cutShort ? `${symbols.length - processed.size} requested symbol(s) not processed (budget/limit); ` : ""}${symbolsWithData < processed.size ? "some processed symbols returned no data; " : ""}re-run to complete (idempotent)`.trim()
       : null);
 
   if (db) {

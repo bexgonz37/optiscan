@@ -113,6 +113,19 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   deps for testing. Additive `replay_runs` columns (`provider_calls_attempted`, `symbols_with_data`,
   `per_symbol_json`); seed status route exposes them. Test `tests/analog-seed-observability.test.mjs`
   reproduces the exact zero-call condition. Green: 1564 tests, tsc 0, build 0.
+- ✅ **Phase E.2 — full date-range coverage (5,000-bar cap fix)** (commit pending). A live 3-symbol
+  smoke seed returned exactly 5,000 bars per symbol — Polygon `/v2/aggs` truncates at its per-page cap and
+  the adapter never followed `next_url` (Jan 2–31 2024 = 21 trading days ≈ 8,190 regular-session 1-min
+  bars, ~20k with extended hours). Fix: `fetchHistoricalStockBars` now splits the requested range into
+  deterministic 30-day windows (`replayDateWindows`), fetches each with Polygon's 50k per-call limit
+  (additive `limit` passthrough on `fetchCandles`, default unchanged), deduplicates bars by timestamp
+  across chunks, and sorts ascending. It reports `chunks`, `rangeComplete`, `truncated`, `firstBarMs`,
+  `lastBarMs`, and per-chunk detail. Incomplete/truncated coverage (a failed chunk or a cap-hit) is a new
+  per-symbol `INCOMPLETE` status that makes the run **PARTIAL**, never a bare COMPLETED. Default
+  `providerCallBudget` now scales with chunk count (was `symbols.length`, which would have stopped a
+  multi-chunk seed after one symbol). Tests: `tests/analog-replay-chunking.test.mjs` (>5,000 bars via
+  chunking, window boundaries, cross-chunk dedup, missing-middle-chunk → incomplete, cap→truncated,
+  budget/quota interruption → PARTIAL + idempotent resume). Green: 1573 tests, tsc 0, build 0.
 - ⬜ Phases F–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: Phase F — forward paper validation** (record
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).
