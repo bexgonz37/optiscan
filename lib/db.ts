@@ -1271,6 +1271,21 @@ CREATE TABLE IF NOT EXISTS eval_results (
   UNIQUE(run_id, scorer, split_idx)
 );
 CREATE INDEX IF NOT EXISTS idx_eval_results_run ON eval_results(run_id);
+
+-- Analog Engine — Phase D. Durable, versioned go/no-go reports. A survivorship-biased or
+-- synthetic dataset can never carry a GO verdict (enforced in report.ts). PURELY ADDITIVE.
+CREATE TABLE IF NOT EXISTS analog_eval_reports (
+  report_id TEXT PRIMARY KEY,
+  report_version INTEGER NOT NULL,
+  dataset_kind TEXT NOT NULL,             -- real_seeded | survivorship_fallback | synthetic
+  verdict TEXT NOT NULL,                   -- GO | REMEDIATE | STOP | EXPLORATORY_ONLY
+  verdict_reason TEXT,
+  universe_source TEXT, survivorship_bias INTEGER NOT NULL DEFAULT 1,
+  date_from TEXT, date_to TEXT, episode_count INTEGER,
+  report_json TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_analog_reports_verdict ON analog_eval_reports(verdict, created_at_ms);
 `;
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */
