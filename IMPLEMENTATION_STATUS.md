@@ -50,15 +50,29 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   (lift CI &gt; 0), reports NO significant lift on a no-signal dataset, and finds no spurious lift
   of a linear signal over a logistic baseline. Gates: focused 10/10 · full 1506/1506 · tsc 0 ·
   build 0. Tests: `tests/analog-eval.test.mjs`.
-- ⏭️ **Phase C — Historical replay + memory seeding** (next). Redesign `historical-replay.ts` to
-  emit Setup Episodes + Phase-A labels (not one momentum P&L): point-in-time survivorship-free
-  universe, liquidity floor, event-driven candidate moments (same intake logic on historical bars),
-  dedup/refractory, corporate actions, missing-data handling, extended-hours episodes; reuse
-  `replay_runs` checkpoint/idempotency. **Prereqs to verify:** point-in-time reference feed +
-  corporate-actions (Polygon `/v3/reference/*`); earnings calendar is a known gap (defer). Runs on
-  Railway (provider access); build env has none, so the seeder is written pure/OnDb + tested on
-  synthetic bars, with the live driver flag-gated (`EPISODE_CAPTURE_ENABLED`/replay flag).
-- ⬜ Phases D–I per `docs/ANALOG_ENGINE_BUILD.md`. **Phase D is the go/no-go evidence gate.**
+- ✅ **Phase C — Historical replay → episode seeding** (commit pending). `lib/research/episode/seed.ts`:
+  pure core turns historical bars → leakage-proof Episodes + Phase-A UNDERLYING labels — event-driven
+  candidate moments (same intake shape on history, bars[0..i] only, no hindsight), per-symbol
+  refractory dedup, ATR/range/rvol/velocity feature blocks (asOf = t0), honest missing markers for
+  data unavailable in replay (regime/sector/breadth/options/catalyst → null + `missing`, never
+  fabricated), horizon labels only when forward bars actually REACH the horizon end. Flag-gated live
+  driver `runReplaySeed` (HISTORICAL_REPLAY_ENABLED + EPISODE_CAPTURE_ENABLED; **caller supplies a
+  survivorship-free universe** — never fabricated) reuses `replay_runs` checkpoint + adjusted `/v2/aggs`;
+  persists via the Phase-A store (idempotent, refuses leaky rows). **No schema change** (reuses Phase-A
+  + replay tables). Gates: focused 9/9 · full 1515/1515 · tsc 0 · build 0. Tests: `tests/analog-seed.test.mjs`
+  (determinism, leakage, candidate/dedup, restart-idempotency, no fabricated MODELED_OPTION labels,
+  flag-off no-op). **Blocked/inactive (documented, no fabrication):** auto point-in-time universe
+  reconstruction (needs reference list endpoint + entitlement); replay MODELED_OPTION labels (needs
+  historical Greeks — not entitled). Provider/scale audit in `docs/ANALOG_ENGINE_BUILD.md`.
+- ⏭️ **Phase D — Tier-1 analog engine (GO/NO-GO GATE)** (next). Build `lib/research/analog/{features,
+  similarity,retrieval,distribution}.ts`: comparability pre-filter → normalized correlation-aware
+  outcome-weighted kNN over Zone-A features → analog forward-return distribution + abstention. Wire it
+  as a `Scorer` into the Phase-B harness and run `beatsAllBaselines`. **DATA DEPENDENCY:** the evidence
+  verdict requires a REAL seeded library — i.e. `runReplaySeed` must have run on Railway (provider
+  access) over a survivorship-free universe. The engine + wiring are buildable/testable on synthetic
+  episodes now; the *live go/no-go* awaits real seeded data. If it shows no OOS lift → STOP + bounded
+  remediation (leakage / episode quality / features / similarity / sampling), do NOT tune to a positive backtest.
+- ⬜ Phases E–I per `docs/ANALOG_ENGINE_BUILD.md`.
 
 ## 🏗️ MULTI-LANE RESEARCH REBUILD — completed (Phases 0–9, superseded scaffolding — FROZEN)
 

@@ -43,5 +43,31 @@ Baseline for the build: `main` @ `40e68b7` (10-phase research rebuild complete).
 4. **Schema relationship (not a conflict):** `setup_candidates` (live-capture shadow) and `setup_episodes` (rich memory unit) are distinct + additive. A Phase-C adapter derives episodes from candidates and from replay. Both retained.
 5. **Modeled ≠ real:** every modeled option label carries `outcome_kind=MODELED_OPTION`; never merged with `EXECUTED_TRADE`/real fills; always disclosed on the card.
 
+## Phase C pre-flight — provider/data audit & scale (verified from integrated code)
+
+Integrated Polygon endpoints (from `lib/polygon-provider.js`): `/v2/aggs/ticker/*` (history),
+`/v3/snapshot/options/*` (present-time), `/v2/reference/news`, `/v3/reference/tickers/{sym}`
+(single-ticker), stock snapshots. **Entitlement of any endpoint is UNVERIFIED from the build
+environment (no live keys) — stated, not guessed.**
+
+| Dataset | Endpoint | Integrated | Phase-C disposition |
+|---|---|---|---|
+| Historical OHLCV (adjusted) | `/v2/aggs` (+`adjusted=true`) | yes | **available** — episode seed + underlying labels + split/div-adjusted features |
+| Point-in-time universe / active-as-of / delisted | `/v3/reference/tickers?date=` (list) | **no** | caller supplies a survivorship-free symbol list; auto-reconstruction **deferred, flagged** |
+| Splits / dividends | `/v3/reference/splits`,`/dividends` | **no** | corporate actions via `adjusted` aggs; symbol-change/delist mapping **deferred** |
+| Historical option chains / Greeks / IV history | — | **not entitled** | replay MODELED_OPTION labels **BLOCKED/inactive** — no fabricated Greeks; UNDERLYING labels only |
+| Earnings/event history | — | **gap** | event-context null + recorded in `missing`; never fabricated |
+| News history | `/v2/reference/news` | present-only | not used in replay |
+| Sector / breadth / regime | — | derivable | computed from aggs/index when supplied; else null + `missing` |
+
+**Scale:** ~10⁵–4×10⁵ episodes @3y, 2×10⁵–7×10⁵ @5y, 4×10⁵–1.4×10⁶ @10y; ~3–5 KB/episode →
+~1–2 GB @5y, ~3–5 GB @10y (SQLite fine). **No Phase-C schema blocker.** Phase-D retrieval strategy:
+pre-filter by indexed comparability columns (`symbol`, `regime_label`, `liquidity_tier`, `session`)
+then distance; materialize a compact numeric feature vector for retrieval; ANN (HNSW/IVF) is Phase D/H.
+
+**Blocked & shipped inactive in Phase C:** (a) auto point-in-time universe reconstruction (needs the
+reference *list* endpoint + entitlement) — universe is a required caller input; (b) replay
+MODELED_OPTION labels (needs historical Greeks — not entitled). Both documented; no data fabricated.
+
 ## Resume point
 - **Now building: Phase A.** Files: `lib/research/episode/*`, additive tables `setup_episodes` + `episode_labels`, tests `tests/analog-episode-*.test.mjs`. Default OFF / not wired into the live cycle. Gate: leakage + label-math tests green + full suite/tsc/build green.
