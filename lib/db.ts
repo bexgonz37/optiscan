@@ -1447,6 +1447,19 @@ CREATE INDEX IF NOT EXISTS idx_options_alerts_state ON options_alerts(state, cre
 CREATE TABLE IF NOT EXISTS options_runtime (
   key TEXT PRIMARY KEY, value TEXT, updated_at_ms INTEGER NOT NULL
 );
+
+-- Autonomous AI Research Queue: high-value COMPLETED work only (closed trades, TOO_LATE alerts),
+-- harvested from the DB after the fact — the AI is never on the live alert path. Priority 1=highest.
+-- Budget-aware processing pauses at the monthly hard limit; tasks stay QUEUED. PURELY ADDITIVE.
+CREATE TABLE IF NOT EXISTS ai_research_queue (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL, priority INTEGER NOT NULL, ref_id TEXT NOT NULL,
+  payload_json TEXT, status TEXT NOT NULL DEFAULT 'QUEUED', attempts INTEGER NOT NULL DEFAULT 0,
+  result_json TEXT, error TEXT, lease_until_ms INTEGER,
+  created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
+  UNIQUE(kind, ref_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_research_queue_claim ON ai_research_queue(status, priority, created_at_ms);
 `;
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */

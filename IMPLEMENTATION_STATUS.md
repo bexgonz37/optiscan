@@ -535,6 +535,30 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   Tier 0 exemption; setup dedup vs new strategy; frozen midpoint flows to the mirror; wide-spread
   midpoint reject; ranking order. Green: **1760 tests, tsc 0, build 0.** No profitability claim; radar
   untouched; Phase G not started.
+- 🟡 **Autonomous AI Research Queue (deterministic engine stays the live path)** (commit pending).
+  Architecture: Market → deterministic scanner → contract → Discord → mirror paper → **AI Research
+  Queue**. Audit found the budget/provider substrate already existed (`lib/ai` `aiConfig` monthly
+  soft/hard limits, `costGateOnDb`, `recordAiJobRunOnDb`, `runStructuredAiJob`) — reused, not rebuilt.
+  New `ai_research_queue` table (repeat-safe; UNIQUE(kind, ref_id)) + `research-queue.ts`:
+  **harvest-based feeding** — the worker reads COMPLETED truth from the DB (closed
+  DELIVERED_ALERT_PAPER → P1; closed research trades with a comparable mirror → P2, else P5; TOO_LATE
+  alerts → P3; one P4 recommendation task per N completed P1/P2 analyses) so the live alert path has
+  **zero queue hooks** (proven structurally by test: monitor/loop/delivery/callout/paper/grade never
+  import the queue). Never every scanned symbol — only completed high-value events. Priority claim
+  (P1→P5, then oldest), RUNNING lease (crashed-worker reclaim), bounded retries → FAILED closed,
+  idempotent enqueue. Worker (`startAiResearchWorker`, gated `AI_RESEARCH_QUEUE_ENABLED=1`, tick
+  `AI_RESEARCH_TICK_MS` 60s, `AI_RESEARCH_TASKS_PER_TICK` 2): each tick harvests (free), consults the
+  existing monthly cost gate and **PAUSES at the hard limit** (tasks stay QUEUED; scanner/Discord/
+  paper/grading unaffected), then processes by priority. `lib/ai/research-analyzer.ts` does the actual
+  model call (lower-cost model, strict-JSON validated {qualityScore, strongestFactors, biggestRisk,
+  likelyFailureMode, earliness, recommendation}, cost recorded to `ai_job_runs` so the monthly limits
+  stay authoritative; ai-disabled → skipped, never fabricated). Observability in GET
+  `/api/research/options` → `aiResearchQueue` (byStatus/byKind, paused+reason, monthly spend, ticks,
+  processed/failures/harvested). Tests (`options-research-queue`, 10): priority order, idempotent
+  harvest, P1–P5 classification, P4 cadence, bounded retries, budget pause (0 analyze calls),
+  analyzer-crash isolation, hard no-op when off, no-live-path-imports proof, disabled-AI honesty.
+  Green: **1770 tests, tsc 0, build 0.** AI is never a required dependency for alerts; Phase G not
+  started; no real-money.
 - ⬜ Phases G–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: collect options/Phase-F/shadow live data before Phase G.**
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).

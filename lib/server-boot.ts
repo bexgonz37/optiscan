@@ -100,6 +100,18 @@ export function ensureServerBoot(): void {
   } catch (err) {
     console.warn("[options-grader] not started:", (err as Error)?.message);
   }
+  try {
+    // Autonomous AI Research Queue worker: harvests COMPLETED work (closed trades, TOO_LATE alerts)
+    // and analyzes it asynchronously under the monthly AI budget. NEVER on the live alert path — the
+    // scanner/delivery/paper/grading run identically whether this starts or not.
+    // HARD no-op unless AI_RESEARCH_QUEUE_ENABLED=1.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { startAiResearchWorker } = require("@/lib/research/options/research-queue");
+    const started = startAiResearchWorker({ getDb: () => require("@/lib/db").getDb() }, process.env); // eslint-disable-line @typescript-eslint/no-require-imports
+    if (started.started) console.info("[ai-research-queue] started");
+  } catch (err) {
+    console.warn("[ai-research-queue] not started:", (err as Error)?.message);
+  }
   // (removed) A boot-time block used to force-lower scanner gates to
   // 0.12%/min / 1.25x on every start — it silently undid any tightening the
   // user saved in Settings and was a root cause of the noisy-callout audit

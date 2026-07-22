@@ -30,6 +30,7 @@ export async function GET(req: Request) {
     monitor: { ...optionsMonitorMetrics(), health: optionsMonitorHealth(process.env), activePaperPositions },
     grading: { ...readGradingBacklogOnDb(db), grader: optionsGraderState() },
     runtime: readRuntimeStatusOnDb(db, process.env),
+    aiResearchQueue: (await import("@/lib/research/options/research-queue")).researchQueueMetricsOnDb(db, process.env),
     delivery: { enabled: f.independentOptionsDiscovery && f.earlyOptionsCallouts, webhookConfigured: Boolean(String(process.env.DISCORD_WEBHOOK_OPTIONS ?? "").trim()), ...readDeliveryMetricsOnDb(db) },
     report: readOptionsReportOnDb(db),
   });
