@@ -61,24 +61,28 @@ export function evaluateOptionsCandidate(input: OptionsCandidateInput, chain: Ch
 interface LoopDb { prepare(sql: string): { run: (...a: any[]) => { changes: number } } }
 const liveDb = () => require("@/lib/db").getDb(); // eslint-disable-line @typescript-eslint/no-require-imports
 
-/** Fire-and-forget: run the candidate, persist it, and enqueue AI/analog shadow AFTERWARD. HARD
- *  no-op unless INDEPENDENT_OPTIONS_DISCOVERY_ENABLED=1. Never throws into the caller. */
-export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainContract[], deps: { getDb?: () => LoopDb } = {}, env: NodeJS.ProcessEnv = process.env): OptionsEvalResult | null {
+export interface OptionsCandidateExtra { featureSnapshot?: unknown; earlinessPhase?: string | null; escalatedBy?: string | null; coreBroad?: string | null }
+
+/** Fire-and-forget: run the candidate, persist it (with the enriched decision-time snapshot the AI/
+ *  analog shadow consume), and enqueue AI/analog shadow AFTERWARD. HARD no-op unless
+ *  INDEPENDENT_OPTIONS_DISCOVERY_ENABLED=1. Never throws into the caller. */
+export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainContract[], deps: { getDb?: () => LoopDb } = {}, env: NodeJS.ProcessEnv = process.env, extra: OptionsCandidateExtra = {}): OptionsEvalResult | null {
   if (!researchFlags(env).independentOptionsDiscovery) return null;
   const res = evaluateOptionsCandidate(input, chain, { bearishActionable: env.BEARISH_ACTIONABLE === "1" });
+  const snapJson = extra.featureSnapshot !== undefined ? JSON.stringify(extra.featureSnapshot) : null;
   try {
     const db = (deps.getDb ?? liveDb)();
     db.prepare(
-      `INSERT INTO options_candidates (symbol, tier, session, selected_strategy, direction, side, research_only, score, considered_json, state, why, option_symbol, freshness_state, callout_message, created_at_ms)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    ).run(input.symbol, input.tier, input.session, res.selection.selected?.key ?? null, res.selection.direction, res.selection.selected?.side ?? null, res.selection.selected?.researchOnly ? 1 : 0, res.selection.selected?.score ?? null, JSON.stringify(res.selection.considered.slice(0, 8)), res.state, res.callout?.reason ?? res.selection.reason, res.contract?.optionSymbol ?? null, res.callout?.freshness ?? null, res.callout?.message ?? null, input.nowMs);
+      `INSERT INTO options_candidates (symbol, tier, session, selected_strategy, direction, side, research_only, score, considered_json, state, why, option_symbol, freshness_state, callout_message, earliness_phase, escalated_by, feature_snapshot_json, created_at_ms)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run(input.symbol, input.tier, input.session, res.selection.selected?.key ?? null, res.selection.direction, res.selection.selected?.side ?? null, res.selection.selected?.researchOnly ? 1 : 0, res.selection.selected?.score ?? null, JSON.stringify(res.selection.considered.slice(0, 8)), res.state, res.callout?.reason ?? res.selection.reason, res.contract?.optionSymbol ?? null, res.callout?.freshness ?? null, res.callout?.message ?? null, extra.earlinessPhase ?? null, extra.escalatedBy ?? null, snapJson, input.nowMs);
     // Real-option paper (separate flag). Public callout DELIVERY is NOT wired here (manual/gated).
     // Options-market-hours only (never open from a stale prior-session quote), and gated on
     // dedup / max-concurrent / per-symbol exposure. A fresh executable quote is enforced by the
     // entry gate (quoteAgeMs) inside buildRealOptionEntry.
     if (res.state === "READY" && res.paperEntry?.ok && researchFlags(env).realOptionPaper && input.session === "regular") {
       const gate = canOpenRealOptionPaper(db, { optionSymbol: res.paperEntry.optionSymbol, strategy: res.paperEntry.strategy, nowMs: input.nowMs });
-      if (gate.ok) persistRealOptionPaperOnDb(db, res.paperEntry, input.nowMs);
+      if (gate.ok) persistRealOptionPaperOnDb(db, res.paperEntry, input.nowMs, { session: input.session, coreBroad: extra.coreBroad ?? (input.tier === 1 ? "core" : "broad"), featureSnapshotJson: snapJson ?? undefined });
     }
   } catch { /* isolated: options discovery never affects the live path */ }
   return res;

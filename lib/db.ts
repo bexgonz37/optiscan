@@ -1403,6 +1403,7 @@ CREATE TABLE IF NOT EXISTS options_candidates (
   selected_strategy TEXT, direction TEXT, side TEXT, research_only INTEGER NOT NULL DEFAULT 0, score REAL,
   considered_json TEXT, state TEXT NOT NULL, why TEXT, option_symbol TEXT,
   chain_fetch_ms INTEGER, freshness_state TEXT, callout_message TEXT, latency_json TEXT,
+  earliness_phase TEXT, escalated_by TEXT, feature_snapshot_json TEXT,
   created_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_options_candidates ON options_candidates(symbol, created_at_ms);
@@ -1413,6 +1414,7 @@ CREATE TABLE IF NOT EXISTS options_paper_trades (
   volume REAL, open_interest REAL, iv REAL, delta REAL, underlying_price REAL,
   strategy TEXT, target REAL, invalidation REAL, provenance TEXT, status TEXT NOT NULL,
   exit_fill REAL, pnl REAL, return_pct REAL, exit_reason TEXT, entered_at_ms INTEGER, exit_at_ms INTEGER,
+  session TEXT, core_broad TEXT, feature_snapshot_json TEXT,
   created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_options_paper_strategy ON options_paper_trades(strategy, side, dte);
@@ -1665,6 +1667,23 @@ function migrate(db: Database.Database) {
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='replay_runs'").get()) {
     const replayCols = cols("replay_runs");
     for (const [col, sql] of REPLAY_RUNS_COLUMN_MIGRATIONS) if (!replayCols.has(col)) db.exec(sql);
+  }
+  // Options enrichment (additive): earliness + decision-time feature snapshot (detail in the JSON).
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_candidates'").get()) {
+    const oc = cols("options_candidates");
+    for (const [col, sql] of [
+      ["earliness_phase", "ALTER TABLE options_candidates ADD COLUMN earliness_phase TEXT"],
+      ["escalated_by", "ALTER TABLE options_candidates ADD COLUMN escalated_by TEXT"],
+      ["feature_snapshot_json", "ALTER TABLE options_candidates ADD COLUMN feature_snapshot_json TEXT"],
+    ] as [string, string][]) if (!oc.has(col)) db.exec(sql);
+  }
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_paper_trades'").get()) {
+    const op = cols("options_paper_trades");
+    for (const [col, sql] of [
+      ["session", "ALTER TABLE options_paper_trades ADD COLUMN session TEXT"],
+      ["core_broad", "ALTER TABLE options_paper_trades ADD COLUMN core_broad TEXT"],
+      ["feature_snapshot_json", "ALTER TABLE options_paper_trades ADD COLUMN feature_snapshot_json TEXT"],
+    ] as [string, string][]) if (!op.has(col)) db.exec(sql);
   }
   // Phase 7 (additive): drift-health flag on an existing model_registry table.
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_registry'").get()) {

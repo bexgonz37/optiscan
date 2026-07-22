@@ -56,12 +56,12 @@ export function realOptionExit(entryFill: number, exitBid: number, exitAsk: numb
 function spreadPct(bid: number | null, ask: number | null): number | null { if (bid == null || ask == null) return null; const mid = (bid + ask) / 2; return mid > 0 ? ((ask - bid) / mid) * 100 : null; }
 
 interface PaperDb { prepare(sql: string): { run: (...a: any[]) => { changes: number } } }
-/** Persist a real-option paper entry (idempotent per option_symbol+entry time). Flag-gated OnDb. */
-export function persistRealOptionPaperOnDb(db: PaperDb, e: RealOptionEntry, nowMs: number = Date.now()): void {
+/** Persist a real-option paper entry with the decision-time context. Flag-gated OnDb. */
+export function persistRealOptionPaperOnDb(db: PaperDb, e: RealOptionEntry, nowMs: number = Date.now(), extra: { session?: string; coreBroad?: string; featureSnapshotJson?: string } = {}): void {
   db.prepare(
-    `INSERT INTO options_paper_trades (option_symbol, side, strike, expiration, dte, result_class, bid, ask, mid, spread_pct, entry_fill, volume, open_interest, iv, delta, underlying_price, strategy, target, invalidation, provenance, status, created_at_ms, updated_at_ms)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-  ).run(e.optionSymbol, e.side, e.strike, e.expiration, e.dte, e.class, e.bid, e.ask, e.mid, e.spreadPct, e.entryFill, e.volume, e.openInterest, e.iv, e.delta, e.underlyingPrice, e.strategy, e.target, e.invalidation, e.provenance, "ENTERED", nowMs, nowMs);
+    `INSERT INTO options_paper_trades (option_symbol, side, strike, expiration, dte, result_class, bid, ask, mid, spread_pct, entry_fill, volume, open_interest, iv, delta, underlying_price, strategy, target, invalidation, provenance, status, session, core_broad, feature_snapshot_json, entered_at_ms, created_at_ms, updated_at_ms)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(e.optionSymbol, e.side, e.strike, e.expiration, e.dte, e.class, e.bid, e.ask, e.mid, e.spreadPct, e.entryFill, e.volume, e.openInterest, e.iv, e.delta, e.underlyingPrice, e.strategy, e.target, e.invalidation, e.provenance, "ENTERED", extra.session ?? null, extra.coreBroad ?? null, extra.featureSnapshotJson ?? null, nowMs, nowMs, nowMs);
 }
 
 interface GateDb { prepare(sql: string): { get: (...a: any[]) => any } }

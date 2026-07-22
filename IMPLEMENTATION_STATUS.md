@@ -364,6 +364,29 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   unset flag; stock radar untouched; puts RESEARCH_ONLY; no real-money; no public Discord; no improvement
   claimed. Evidence still required before public delivery: forward REAL_OPTION_PAPER sample + measured
   production latency + a gated approved delivery layer.**
+- 🟡 **Options monitor feature enrichment (Stage 1.5 + chain features + earliness)** (commit pending).
+  The independent options monitor now enriches candidates with decision-time features instead of
+  snapshot-only. `lib/research/options/features.ts` (PURE, no look-ahead): from compact 1-min bars —
+  rvol (+ volume-surge proxy when no baseline), VWAP + distance, HOD/LOD + proximity, nearest
+  resistance/support, trend slope, momentum, velocity + acceleration, realized-vol + expansion, ATR%,
+  compression/expansion, gap + continuation-vs-fade, staleness. `chain-features.ts`: call/put vol,
+  vol/OI, cross-strike/expiration, NTM concentration, IV, spread dist, zero-bid rate, best-by-DTE +
+  abstain-safe abnormal flag (NEVER institutional/sweep). **Staged funnel** in `monitor.ts`: Stage 1
+  (cheap batch snapshot, 1 call) → Stage 1.5 (bars→features for survivors; stale bars reject) → Stage 2
+  (chain only when a strategy is plausible OR options-activity independently escalates) → Stage 3
+  (detailed quote for the shortlisted contract). Provider cost tracked by stage; earliness phase
+  (early/during/late) + fraction-of-move recorded; the full enriched decision-time snapshot stored in
+  `feature_snapshot_json` (exactly what AI/analog shadow consume — no future data). `GET
+  /api/research/options` extended with stage counts, provider-by-stage, rvol/VWAP/compression
+  distributions, earliness, escalations. Additive repeat-safe columns (guarded ALTER + base SCHEMA).
+  Docs: OPTIONS_FEATURE_ENRICHMENT, OPTIONS_STAGE_FUNNEL, OPTIONS_STRATEGY_FEATURE_MAP,
+  OPTIONS_EARLINESS_METRICS, OPTIONS_PROVIDER_COST_MODEL, ENRICHED_OPTIONS_ROLLOUT. Tests:
+  `options-enrichment` (+ existing options tests updated). Green: 1703 tests, tsc 0, build 0. **Active:
+  nothing by default (all flags OFF). Paper/shadow only; stock radar untouched; puts RESEARCH_ONLY; no
+  real money; no public Discord; no earliness/edge claimed. Safest order: INDEPENDENT →
+  OPTIONS_ACTIVITY → REAL_OPTION_PAPER → (later) analog/AI shadow. Blockers before public Discord: forward
+  REAL_OPTION_PAPER sample + measured latency + earnings feed + richer level/context feeds + a gated
+  approved delivery layer.**
 - ⬜ Phases G–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: collect options/Phase-F/shadow live data before Phase G.**
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).

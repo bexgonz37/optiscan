@@ -64,6 +64,14 @@ export function buildLiveOptionsDeps(): OptionsMonitorDeps {
       for (const sym of symbols) { const q = bySym.get(sym.toUpperCase()); if (q) out.set(sym.toUpperCase(), toSnapshot(q, prev, nowMs)); }
       return out;
     },
+    getBars: async (symbol: string) => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { fetchCandles } = require("@/lib/polygon-provider");
+      const res = await fetchCandles(symbol, { days: 1, resolution: "1", timespan: "minute" });
+      const raw = res?.available ? (res.bars ?? []) : [];
+      return raw.map((b: any) => ({ t: Number(b.t ?? b.timestamp), o: Number(b.o ?? b.open), h: Number(b.h ?? b.high), l: Number(b.l ?? b.low), c: Number(b.c ?? b.close), v: Number(b.v ?? b.volume ?? 0) })).filter((b: any) => Number.isFinite(b.t) && Number.isFinite(b.c));
+    },
+    levelContext: () => null, // prev-day/premarket/OR levels not wired yet (features degrade gracefully)
     getChain: async (symbol: string) => {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { fetchOptionChain } = require("@/lib/polygon-provider");

@@ -11,6 +11,8 @@
 import { researchFlags } from "../flags.ts";
 import { scoreStrategies, optionsTier1, type OptionsCandidateInput, type Session } from "./discovery.ts";
 import { runOptionsCandidate, type ChainContract } from "./loop.ts";
+import { computeOptionsFeatures, featuresToUnderlying, type Bar, type FeatureContext } from "./features.ts";
+import { summarizeChainFeatures, chainFeaturesToActivity, type OptionContract } from "./chain-features.ts";
 
 export interface UnderlyingSnapshot {
   price: number | null; dayDollarVolume: number | null; relVolume: number | null;
@@ -21,6 +23,10 @@ export interface UnderlyingSnapshot {
 export interface OptionsMonitorDeps {
   getUnderlyingBatch: (symbols: string[]) => Promise<Map<string, UnderlyingSnapshot>>;
   getChain: (symbol: string) => Promise<ChainContract[]>;
+  /** Stage 1.5: compact recent 1-minute bars for enriched decision-time features. Optional — without
+   *  it the monitor falls back to snapshot-only features (sparser). */
+  getBars?: (symbol: string) => Promise<Bar[]>;
+  levelContext?: (symbol: string) => Partial<FeatureContext> | null;
   tier2Universe?: () => Promise<string[]> | string[];
   getDb?: () => any;
   now?: () => number;
@@ -62,9 +68,11 @@ interface MonitorState {
   budget: { windowStart: number; used: number };
   metrics: {
     symbolsScanned: number; candidatesCreated: number; candidatesRejected: number; chainsFetched: number;
-    providerUnderlying: number; providerChain: number; providerDetailed: number; providerFailures: number; throttles: number; cooldownSkips: number;
+    providerUnderlying: number; providerBars: number; providerChain: number; providerDetailed: number; providerFailures: number; throttles: number; cooldownSkips: number;
+    stage1Pass: number; stage15Enrich: number; stage2Chain: number; optionsActivityEscalations: number;
+    phaseEarly: number; phaseDuring: number; phaseLate: number;
     lastTier1CycleMs: number | null; lastTier2CycleMs: number | null; latestCandidateMs: number | null;
-    cycleDurations: number[]; detectionToDecision: number[];
+    cycleDurations: number[]; detectionToDecision: number[]; rvolSamples: number[]; vwapDistSamples: number[]; compressionSamples: number[]; fractionMoveSamples: number[];
   };
 }
 type G = typeof globalThis & { __optiscanOptionsMonitor?: MonitorState };
@@ -73,7 +81,7 @@ function state(): MonitorState {
   return (g.__optiscanOptionsMonitor ??= {
     running: false, timers: [], cooldownSymbol: new Map(), cooldownStrategy: new Map(), inFlight: new Set(),
     breaker: { state: "closed", failures: 0, openUntil: 0 }, budget: { windowStart: 0, used: 0 },
-    metrics: { symbolsScanned: 0, candidatesCreated: 0, candidatesRejected: 0, chainsFetched: 0, providerUnderlying: 0, providerChain: 0, providerDetailed: 0, providerFailures: 0, throttles: 0, cooldownSkips: 0, lastTier1CycleMs: null, lastTier2CycleMs: null, latestCandidateMs: null, cycleDurations: [], detectionToDecision: [] },
+    metrics: { symbolsScanned: 0, candidatesCreated: 0, candidatesRejected: 0, chainsFetched: 0, providerUnderlying: 0, providerBars: 0, providerChain: 0, providerDetailed: 0, providerFailures: 0, throttles: 0, cooldownSkips: 0, stage1Pass: 0, stage15Enrich: 0, stage2Chain: 0, optionsActivityEscalations: 0, phaseEarly: 0, phaseDuring: 0, phaseLate: 0, lastTier1CycleMs: null, lastTier2CycleMs: null, latestCandidateMs: null, cycleDurations: [], detectionToDecision: [], rvolSamples: [], vwapDistSamples: [], compressionSamples: [], fractionMoveSamples: [] },
   });
 }
 
@@ -125,19 +133,56 @@ export async function runOptionsMonitorCycle(tier: 1 | 2, symbols: string[], dep
     if ((s.cooldownSymbol.get(symbol) ?? 0) > n0) { s.metrics.cooldownSkips += 1; return; }
     if (s.inFlight.has(symbol)) return; // no overlapping scan of the same symbol
     s.inFlight.add(symbol);
+    const flags = researchFlags(env);
     try {
       scanned += 1; s.metrics.symbolsScanned += 1;
       const snap = snaps.get(symbol);
-      if (!snap || snap.price == null) { s.cooldownSymbol.set(symbol, n0 + cfg.symbolCooldownMs); return; }
-      const input = toCandidate(symbol, tier, session, snap, n0);
-      // Stage 1 gate — only fetch a chain when a strategy is applicable.
-      if (!scoreStrategies(input).some((x) => x.applicable)) { rejected += 1; s.metrics.candidatesRejected += 1; s.cooldownSymbol.set(symbol, n0 + cfg.symbolCooldownMs); return; }
+      // STAGE 1 — cheap liquidity/price/fresh reject (no bars, no chain).
+      if (!snap || snap.price == null || (snap.dayDollarVolume ?? 0) < 5_000_000) { s.cooldownSymbol.set(symbol, n0 + cfg.symbolCooldownMs); return; }
+      s.metrics.stage1Pass += 1;
+
+      // STAGE 1.5 — enrich with compact recent bars → decision-time features (when getBars is wired).
+      let input = toCandidate(symbol, tier, session, snap, n0);
+      let featureSnapshot: any = { source: "snapshot_only" };
+      let fractionMove: number | null = null;
+      if (deps.getBars) {
+        if (breakerOpen(s, now())) { s.metrics.throttles += 1; return; }
+        if (!tryConsume(s, cfg, now())) { s.metrics.throttles += 1; return; }
+        const bars = await deps.getBars(symbol); s.metrics.providerBars += 1; breakerSuccess(s);
+        const ctx: FeatureContext = { nowMs: n0, session, ...(deps.levelContext?.(symbol) ?? {}) };
+        const f = computeOptionsFeatures(bars, ctx);
+        s.metrics.stage15Enrich += 1;
+        if (f.stale) { rejected += 1; s.metrics.candidatesRejected += 1; s.cooldownSymbol.set(symbol, n0 + cfg.symbolCooldownMs); return; } // stale bars reject safely
+        input = { ...input, underlying: featuresToUnderlying(f) };
+        featureSnapshot = { source: "enriched", underlying: f };
+        if (f.relVolume != null) record(s.metrics.rvolSamples, f.relVolume);
+        if (f.vwapDistPct != null) record(s.metrics.vwapDistSamples, f.vwapDistPct);
+        if (f.compressionScore != null) record(s.metrics.compressionSamples, f.compressionScore);
+        if (f.hod != null && f.lod != null && f.hod > f.lod && f.price != null) { fractionMove = +(((f.price - f.lod) / (f.hod - f.lod))).toFixed(3); record(s.metrics.fractionMoveSamples, fractionMove); }
+      }
+
+      // STAGE 1.5 gate — a chain is fetched only when a strategy is plausible OR (options-activity
+      // discovery on) to let abnormal chain activity INDEPENDENTLY escalate the symbol.
+      let escalatedBy: string | null = null;
+      const plausible = scoreStrategies(input).some((x) => x.applicable);
+      if (!plausible && !flags.optionsActivityDiscovery) { rejected += 1; s.metrics.candidatesRejected += 1; s.cooldownSymbol.set(symbol, n0 + cfg.symbolCooldownMs); return; }
+      if (!plausible) escalatedBy = "options_activity_probe";
+
       if (breakerOpen(s, now())) { s.metrics.throttles += 1; return; }
       if (!tryConsume(s, cfg, now())) { s.metrics.throttles += 1; return; }
-      // STAGE 2 — fetch the chain now that it is justified.
+      // STAGE 2 — fetch the chain + compute chain features.
       const chain = await deps.getChain(symbol);
-      s.metrics.providerChain += 1; s.metrics.chainsFetched += 1; chains += 1; breakerSuccess(s);
-      const res = runOptionsCandidate({ ...input }, chain, getDb ? { getDb } : {}, env);
+      s.metrics.providerChain += 1; s.metrics.stage2Chain += 1; s.metrics.chainsFetched += 1; chains += 1; breakerSuccess(s);
+      const chainF = summarizeChainFeatures({ symbol, underlyingPrice: input.underlying.price, underlyingDollarVolume: input.underlying.dayDollarVolume, contracts: chain as unknown as OptionContract[], chainAvailable: chain.length > 0, nowMs: now() });
+      input = { ...input, optionsActivity: chainFeaturesToActivity(chainF) };
+      featureSnapshot = { ...featureSnapshot, chain: chainF };
+      // If we only reached here via escalation, require the chain to actually be abnormal.
+      if (escalatedBy) { if (!chainF.abnormal || chainF.direction === "ambiguous") { rejected += 1; s.metrics.candidatesRejected += 1; s.cooldownSymbol.set(symbol, n0 + cfg.symbolCooldownMs); return; } s.metrics.optionsActivityEscalations += 1; }
+
+      const earlinessPhase = fractionMove == null ? null : fractionMove >= 0.75 ? "late" : fractionMove <= 0.4 ? "early" : "during";
+      if (earlinessPhase === "early") s.metrics.phaseEarly += 1; else if (earlinessPhase === "during") s.metrics.phaseDuring += 1; else if (earlinessPhase === "late") s.metrics.phaseLate += 1;
+
+      const res = runOptionsCandidate({ ...input }, chain, getDb ? { getDb } : {}, env, { featureSnapshot: { ...featureSnapshot, fractionMove, earlinessPhase }, earlinessPhase, escalatedBy, coreBroad: tier === 1 ? "core" : "broad" });
       if (res?.selection.selected) { created += 1; s.metrics.candidatesCreated += 1; s.metrics.latestCandidateMs = now(); s.cooldownStrategy.set(`${symbol}:${res.selection.selected.key}`, now() + cfg.strategyCooldownMs); }
       else { rejected += 1; s.metrics.candidatesRejected += 1; }
       s.cooldownSymbol.set(symbol, now() + cfg.symbolCooldownMs);
@@ -167,14 +212,21 @@ export function optionsMonitorHealth(env: NodeJS.ProcessEnv = process.env, now: 
 export function optionsMonitorMetrics(): Record<string, unknown> {
   const s = state();
   const m = s.metrics;
+  const dist = (arr: number[]) => ({ p50: pct(arr, 0.5), p95: pct(arr, 0.95), n: arr.length });
+  const totalCalls = m.providerUnderlying + m.providerBars + m.providerChain + m.providerDetailed;
   return {
     running: s.running, breaker: s.breaker.state, budgetUsed: s.budget.used, queueInFlight: s.inFlight.size,
     symbolsScanned: m.symbolsScanned, candidatesCreated: m.candidatesCreated, candidatesRejected: m.candidatesRejected, chainsFetched: m.chainsFetched,
-    providerCalls: { underlying: m.providerUnderlying, chain: m.providerChain, detailed: m.providerDetailed }, providerFailures: m.providerFailures, throttles: m.throttles, cooldownSkips: m.cooldownSkips,
+    stages: { stage1Pass: m.stage1Pass, stage15Enrich: m.stage15Enrich, stage2Chain: m.stage2Chain, stage3Detailed: m.providerDetailed, optionsActivityEscalations: m.optionsActivityEscalations },
+    stage1PassRate: m.symbolsScanned > 0 ? +((m.stage1Pass / m.symbolsScanned) * 100).toFixed(2) : null,
+    providerCalls: { underlying: m.providerUnderlying, bars: m.providerBars, chain: m.providerChain, detailed: m.providerDetailed, total: totalCalls },
+    providerFailures: m.providerFailures, throttles: m.throttles, cooldownSkips: m.cooldownSkips,
+    earliness: { early: m.phaseEarly, during: m.phaseDuring, late: m.phaseLate }, fractionMoveComplete: dist(m.fractionMoveSamples),
+    distributions: { rvol: dist(m.rvolSamples), vwapDistPct: dist(m.vwapDistSamples), compression: dist(m.compressionSamples) },
     lastTier1CycleMs: m.lastTier1CycleMs, lastTier2CycleMs: m.lastTier2CycleMs, latestCandidateMs: m.latestCandidateMs,
     cycleMs: { p50: pct(m.cycleDurations, 0.5), p95: pct(m.cycleDurations, 0.95) },
     detectionToDecisionMs: { p50: pct(m.detectionToDecision, 0.5), p95: pct(m.detectionToDecision, 0.95) },
-    candidatesPer100Calls: (m.providerUnderlying + m.providerChain) > 0 ? +((m.candidatesCreated / (m.providerUnderlying + m.providerChain)) * 100).toFixed(2) : null,
+    candidatesPer100Calls: totalCalls > 0 ? +((m.candidatesCreated / totalCalls) * 100).toFixed(2) : null,
   };
 }
 
