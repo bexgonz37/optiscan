@@ -469,6 +469,24 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   still forming; the old 60s cooldown would have skipped the same symbol at +15s (late); and stale /
   untradable symbols are still frozen 60s (executable quality unchanged). Green: **1738 tests, tsc 0,
   build 0.** Stock Momentum Radar untouched; no real-money execution; Phase G not started.
+- 🟡 **Options early-detection unlock — wire decision-time levels** (commit pending). Engineering audit
+  found the single biggest blocker to "find setups BEFORE they become obvious": `live-deps.ts` had
+  `levelContext: () => null`, so prev-day H/L/close, premarket H/L, and opening-range H/L were never
+  supplied. Every level-based EARLY strategy (breakout_proximity, compression_near_level,
+  premarket_level_testing, sr_reclaim, gap behavior) was therefore structurally **dark** — only the
+  momentum/acceleration strategies (which key on a move already in progress) could fire, so detection
+  was during/after expansion, not before. **Fix:** new pure `levels.ts` `deriveDecisionLevels(bars,
+  nowMs)` (ET/DST-aware, no look-ahead, null-safe) derives those levels from the SAME 1-minute bars the
+  monitor already fetches — bumped `getBars` from 1→2 days (incl. extended hours) so prev-day/premarket
+  are present, with **no extra provider call and no added alert latency** (levels come from a per-symbol
+  bar cache the monitor populates via getBars in the same tick). No AI added (audit: AI is wired nowhere
+  in the options path and has no forward evidence — leaving it async/absent is the honest state). No
+  executable-contract gate changed. Tests (`options-levels`, 4) prove: levels derive correctly from a
+  two-day bar window; missing prev-day/premarket yields nulls (no fabrication); and a stock grinding to
+  fresh intraday highs just below yesterday's high fires `breakout_proximity` **only** with wired levels
+  (invisible before) — i.e. genuine pre-breakout detection is unlocked. Green: **1742 tests, tsc 0,
+  build 0.** Stock Momentum Radar untouched; no real-money execution; no profitability claim; Phase G
+  not started.
 - ⬜ Phases G–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: collect options/Phase-F/shadow live data before Phase G.**
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).

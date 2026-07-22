@@ -9,9 +9,12 @@
 import type { OptionsMonitorDeps, UnderlyingSnapshot } from "./monitor.ts";
 import type { ChainContract } from "./loop.ts";
 import { tier2Eligible, type Session } from "./discovery.ts";
+import { deriveDecisionLevels } from "./levels.ts";
+import type { Bar } from "./features.ts";
 
 type PrevChange = { change: number; atMs: number };
-type G = typeof globalThis & { __optiscanOptSnap?: { at: number; quotes: any[] }; __optiscanOptPrev?: Map<string, PrevChange> };
+type BarsCache = Map<string, { at: number; bars: Bar[] }>;
+type G = typeof globalThis & { __optiscanOptSnap?: { at: number; quotes: any[] }; __optiscanOptPrev?: Map<string, PrevChange>; __optiscanOptBars?: BarsCache };
 
 async function marketSnapshot(nowMs: number): Promise<any[]> {
   const g = globalThis as G;
@@ -52,6 +55,7 @@ function mapOptionContracts(raw: any[], nowMs: number): ChainContract[] {
 export function buildLiveOptionsDeps(): OptionsMonitorDeps {
   const g = globalThis as G;
   const prev = (g.__optiscanOptPrev ??= new Map());
+  const barsCache = (g.__optiscanOptBars ??= new Map());
   return {
     now: Date.now,
     session: (): Session => { try { const { marketSession } = require("@/lib/trading-session"); return marketSession(Date.now()) as Session; } catch { return "regular"; } }, // eslint-disable-line @typescript-eslint/no-require-imports
@@ -67,11 +71,22 @@ export function buildLiveOptionsDeps(): OptionsMonitorDeps {
     getBars: async (symbol: string) => {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { fetchCandles } = require("@/lib/polygon-provider");
-      const res = await fetchCandles(symbol, { days: 1, resolution: "1", timespan: "minute" });
+      // 2 days incl. extended hours so decision-time levels (prev-day H/L/close, premarket H/L) are
+      // derivable from THIS same fetch — no extra provider call, no added alert latency.
+      const res = await fetchCandles(symbol, { days: 2, resolution: "1", timespan: "minute" });
       const raw = res?.available ? (res.bars ?? []) : [];
-      return raw.map((b: any) => ({ t: Number(b.t ?? b.timestamp), o: Number(b.o ?? b.open), h: Number(b.h ?? b.high), l: Number(b.l ?? b.low), c: Number(b.c ?? b.close), v: Number(b.v ?? b.volume ?? 0) })).filter((b: any) => Number.isFinite(b.t) && Number.isFinite(b.c));
+      const bars: Bar[] = raw.map((b: any) => ({ t: Number(b.t ?? b.timestamp), o: Number(b.o ?? b.open), h: Number(b.h ?? b.high), l: Number(b.l ?? b.low), c: Number(b.c ?? b.close), v: Number(b.v ?? b.volume ?? 0) })).filter((b: any) => Number.isFinite(b.t) && Number.isFinite(b.c));
+      barsCache.set(symbol.toUpperCase(), { at: Date.now(), bars });
+      return bars;
     },
-    levelContext: () => null, // prev-day/premarket/OR levels not wired yet (features degrade gracefully)
+    // Levels derived from the SAME bars getBars just fetched (the monitor calls getBars then
+    // levelContext in the same tick). This unlocks the early, pre-breakout strategies without any
+    // extra network call. Absent bars → null levels (the feature engine degrades gracefully).
+    levelContext: (symbol: string) => {
+      const cached = barsCache.get(symbol.toUpperCase());
+      if (!cached || Date.now() - cached.at > 60_000 || cached.bars.length === 0) return null;
+      return deriveDecisionLevels(cached.bars, Date.now());
+    },
     getChain: async (symbol: string) => {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { fetchOptionChain } = require("@/lib/polygon-provider");
