@@ -597,6 +597,33 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   rationale persistence; metrics; monitor end-to-end single-batch flush; flag-OFF passthrough; puts;
   config clamps. Green: **1785 tests, tsc 0, build 0.** No AI in the live path; no real-money; Phase G
   not started.
+- 🟡 **Options Historical Replay Lab — Phase 1 (deterministic, code-only)** (commit pending). AUDIT
+  first (evidence-based): historical STOCK bars are fully reachable (`fetchCandles` arbitrary from/to,
+  50k bars/call) and the Analog Engine has real leak-guarded stock replay — but the OPTIONS product
+  replayed NOTHING (no backtest module existed), and historical option quotes/Greeks/NBBO are NOT
+  entitled (`replay-provider.ts` already reports options replay INACTIVE_MISSING_PROVIDER honestly).
+  AI usage audit: bounded ≤6KB payloads, lower-cost model, $20 hard cap, no raw data to the model, no
+  paid usage wasted on computable work. **Phase 1 implemented** (`replay.ts`, flag-gated
+  `OPTIONS_REPLAY_ENABLED` default OFF): deterministic replay of the ACTUAL production detection
+  (deriveDecisionLevels → computeOptionsFeatures → scoreStrategies/selectOptionsStrategy →
+  computeSubscriberQuality) over historical 1-min stock bars at 5-min decision steps (regular session
+  only), feature window STRICTLY bars ≤ t (truncation-invariance test proves no leakage). Outcomes =
+  direction-adjusted UNDERLYING forward returns at 30m/60m/EOD (the catalog's documented
+  underlying_forward_return grading) — gradingBasis stamped; NO option contracts/premiums/Greeks
+  simulated (not entitled → never fabricated; Phase 3 behind an entitlement probe). Aggregates:
+  win-rate/avg-return/profit-factor by strategy/hour/side, cumulative max drawdown, and **threshold
+  sensitivity** (outcomes by quality band + above/below the 0.62 deliver bar) — the direct evidence for
+  tuning the subscriber threshold. Stored in new repeat-safe `options_replay_runs` /
+  `options_replay_candidates`; ONE bounded (<6KB) summary enqueued per run to the AI Research Queue
+  (waits harmlessly when AI is off/exhausted — deterministic compute always completes). Token-gated
+  `POST /api/research/options/replay {symbols?,from,to}` (range capped `OPTIONS_REPLAY_MAX_DAYS` 45/run;
+  long-range scheduling = Phase 2) + read-only GET of recent run summaries. Tests (`options-replay`, 6):
+  production-path detection (burst-window strategy fires; flat tape yields no momentum/breakout and
+  lower max quality); truncation invariance; direction-adjusted labels with honest nulls; threshold
+  sensitivity + bounded payload; gating/cap/persistence/single-AI-task with AI fully disabled;
+  per-symbol provider-failure isolation. Est. full 5y Tier-1 backfill ≈ 400 provider calls (Phase 2
+  paces it). Green: **1791 tests, tsc 0, build 0.** No real-money; no AI in the live path; $20 cap
+  untouched; Phase G not started.
 - ⬜ Phases G–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: collect options/Phase-F/shadow live data before Phase G.**
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).

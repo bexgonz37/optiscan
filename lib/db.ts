@@ -1473,6 +1473,23 @@ CREATE TABLE IF NOT EXISTS options_delivery_decisions (
   created_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_options_delivery_decisions ON options_delivery_decisions(outcome, created_at_ms);
+
+-- Options Historical Replay Lab (Phase 1): deterministic replay of the PRODUCTION detection over
+-- historical stock bars. Outcomes are UNDERLYING forward returns (grading_basis stamped) — no option
+-- premiums/contracts are simulated (historical option quotes not entitled). PURELY ADDITIVE.
+CREATE TABLE IF NOT EXISTS options_replay_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, symbols TEXT NOT NULL, from_day TEXT NOT NULL, to_day TEXT NOT NULL,
+  status TEXT NOT NULL, candidates INTEGER, summary_json TEXT,
+  created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS options_replay_candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL, t_ms INTEGER NOT NULL,
+  symbol TEXT NOT NULL, strategy TEXT, side TEXT, research_only INTEGER NOT NULL DEFAULT 0,
+  quality REAL, strategy_score REAL, matched_signals INTEGER, required_signals INTEGER,
+  fraction_move REAL, hour_et INTEGER, fwd30_pct REAL, fwd60_pct REAL, fwd_eod_pct REAL,
+  grading_basis TEXT NOT NULL, created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_options_replay_candidates ON options_replay_candidates(run_id, quality);
 `;
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */
