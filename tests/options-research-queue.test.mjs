@@ -104,6 +104,25 @@ test("budget exhausted → worker PAUSES; tasks remain QUEUED; zero analyze call
   assert.equal(m.pausedReason, "monthly_hard_limit");
 });
 
+test("APPROACHING the budget (soft limit): only P1/P2 process; P3/P5 wait; hard limit still pauses all", async () => {
+  __resetAiResearchWorkerForTest();
+  const d = db();
+  enqueueResearchTaskOnDb(d, "delivered_trade_analysis", "paper:1", {}, NOW);   // P1
+  enqueueResearchTaskOnDb(d, "missed_opportunity", "alert:x", {}, NOW);         // P3
+  enqueueResearchTaskOnDb(d, "research_experiment", "paper:9", {}, NOW);        // P5
+  const analyzed = [];
+  const r = await runResearchWorkerTick({
+    getDb: () => d, now: () => NOW,
+    analyze: async (t) => { analyzed.push(t.kind); return { ok: true, result: {} }; },
+    budget: () => ({ allowed: true, atSoftLimit: true, spendUsd: 6, reason: null }),
+  }, { AI_RESEARCH_QUEUE_ENABLED: "1", AI_RESEARCH_TASKS_PER_TICK: "10" });
+  assert.equal(r.paused, false);
+  assert.deepEqual(analyzed, ["delivered_trade_analysis"], "only high-value P1/P2 spend budget near the limit");
+  assert.equal(d.prepare("SELECT COUNT(*) n FROM ai_research_queue WHERE status='QUEUED'").get().n, 2, "P3/P5 wait, not lost");
+  const m = researchQueueMetricsOnDb(d, { AI_RESEARCH_QUEUE_ENABLED: "1" });
+  assert.equal(m.softLimited, true);
+});
+
 test("a healthy tick processes highest-priority tasks and records results", async () => {
   __resetAiResearchWorkerForTest();
   const d = db();

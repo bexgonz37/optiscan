@@ -39,12 +39,13 @@ export function enqueueResearchTaskOnDb(db: QDb, kind: ResearchTaskKind, refId: 
 }
 
 /** Claim the single best task: lowest priority number first, then oldest. Sets RUNNING with a lease so
- *  a crashed worker's task is reclaimable after the lease expires. */
-export function claimNextTaskOnDb(db: QDb, nowMs: number, leaseMs = 120_000): ResearchTask | null {
+ *  a crashed worker's task is reclaimable after the lease expires. `maxPriority` restricts claims to
+ *  high-value work (soft-limit throttling: only P≤2 when the monthly spend is approaching the budget). */
+export function claimNextTaskOnDb(db: QDb, nowMs: number, leaseMs = 120_000, maxPriority = 5): ResearchTask | null {
   if (!hasQueue(db)) return null;
   const row = db.prepare(
-    "SELECT id, kind, priority, ref_id, payload_json, attempts FROM ai_research_queue WHERE status='QUEUED' OR (status='RUNNING' AND lease_until_ms IS NOT NULL AND lease_until_ms < ?) ORDER BY priority ASC, created_at_ms ASC LIMIT 1",
-  ).get(nowMs) as any;
+    "SELECT id, kind, priority, ref_id, payload_json, attempts FROM ai_research_queue WHERE priority <= ? AND (status='QUEUED' OR (status='RUNNING' AND lease_until_ms IS NOT NULL AND lease_until_ms < ?)) ORDER BY priority ASC, created_at_ms ASC LIMIT 1",
+  ).get(maxPriority, nowMs) as any;
   if (!row) return null;
   const r = db.prepare("UPDATE ai_research_queue SET status='RUNNING', lease_until_ms=?, updated_at_ms=? WHERE id=? AND (status='QUEUED' OR (status='RUNNING' AND lease_until_ms < ?))").run(nowMs + leaseMs, nowMs, row.id, nowMs);
   if ((r.changes ?? 0) === 0) return null; // lost a race — next tick retries
@@ -108,7 +109,7 @@ export function harvestResearchTasksOnDb(db: QDb, nowMs: number, opts: { maxPerP
 
 export interface QueueMetrics {
   enabled: boolean; byStatus: Record<string, number>; byKind: Record<string, number>;
-  paused: boolean; pausedReason: string | null; monthlySpendUsd: number | null;
+  paused: boolean; pausedReason: string | null; softLimited: boolean; monthlySpendUsd: number | null;
   lastTickMs: number | null; processed: number; failures: number; harvested: number;
 }
 export function researchQueueMetricsOnDb(db: QDb, env: NodeJS.ProcessEnv = process.env): QueueMetrics {
@@ -120,7 +121,7 @@ export function researchQueueMetricsOnDb(db: QDb, env: NodeJS.ProcessEnv = proce
   }
   return {
     enabled: env.AI_RESEARCH_QUEUE_ENABLED === "1", byStatus, byKind,
-    paused: w.paused, pausedReason: w.pausedReason, monthlySpendUsd: w.lastSpendUsd,
+    paused: w.paused, pausedReason: w.pausedReason, softLimited: w.softLimited, monthlySpendUsd: w.lastSpendUsd,
     lastTickMs: w.lastTickMs, processed: w.processed, failures: w.failures, harvested: w.harvested,
   };
 }
@@ -132,14 +133,15 @@ export interface ResearchWorkerDeps {
   /** The AI analysis step (injected for tests; default = the lib/ai analyzer). MUST never be awaited by
    *  any live-alert code — it runs only here, after the fact. */
   analyze?: (task: ResearchTask, db: any) => Promise<AnalyzeResult>;
-  /** Budget gate (injected for tests; default = lib/ai aiConfig + costGateOnDb). */
-  budget?: (db: any, nowMs: number) => { allowed: boolean; spendUsd: number; reason: string | null };
+  /** Budget gate (injected for tests; default = lib/ai aiConfig + costGateOnDb). `atSoftLimit` means
+   *  the spend is APPROACHING the monthly budget → throttle to high-value (P1/P2) work only. */
+  budget?: (db: any, nowMs: number) => { allowed: boolean; atSoftLimit?: boolean; spendUsd: number; reason: string | null };
 }
-interface WState { running: boolean; timer: any; paused: boolean; pausedReason: string | null; lastSpendUsd: number | null; lastTickMs: number | null; processed: number; failures: number; harvested: number }
+interface WState { running: boolean; timer: any; paused: boolean; pausedReason: string | null; softLimited: boolean; lastSpendUsd: number | null; lastTickMs: number | null; processed: number; failures: number; harvested: number }
 type G = typeof globalThis & { __optiscanAiResearchWorker?: WState };
-function wstate(): WState { const g = globalThis as G; return (g.__optiscanAiResearchWorker ??= { running: false, timer: null, paused: false, pausedReason: null, lastSpendUsd: null, lastTickMs: null, processed: 0, failures: 0, harvested: 0 }); }
+function wstate(): WState { const g = globalThis as G; return (g.__optiscanAiResearchWorker ??= { running: false, timer: null, paused: false, pausedReason: null, softLimited: false, lastSpendUsd: null, lastTickMs: null, processed: 0, failures: 0, harvested: 0 }); }
 
-function defaultBudget(db: any, nowMs: number): { allowed: boolean; spendUsd: number; reason: string | null } {
+function defaultBudget(db: any, nowMs: number): { allowed: boolean; atSoftLimit?: boolean; spendUsd: number; reason: string | null } {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { aiConfig } = require("../../ai/config.ts");
@@ -148,7 +150,7 @@ function defaultBudget(db: any, nowMs: number): { allowed: boolean; spendUsd: nu
     const cfg = aiConfig(process.env);
     if (!cfg.enabled) return { allowed: false, spendUsd: 0, reason: "ai_disabled" };
     const gate = costGateOnDb(db, cfg, nowMs);
-    return { allowed: gate.allowed, spendUsd: gate.spendUsd, reason: gate.allowed ? null : "monthly_hard_limit" };
+    return { allowed: gate.allowed, atSoftLimit: gate.atSoftLimit, spendUsd: gate.spendUsd, reason: gate.allowed ? null : "monthly_hard_limit" };
   } catch (e: any) { return { allowed: false, spendUsd: 0, reason: `budget_check_failed: ${String(e?.message ?? e).slice(0, 80)}` }; }
 }
 function defaultAnalyze(task: ResearchTask, db: any): Promise<AnalyzeResult> {
@@ -178,10 +180,14 @@ export async function runResearchWorkerTick(deps: ResearchWorkerDeps, env: NodeJ
     w.lastSpendUsd = budget.spendUsd;
     if (!budget.allowed) { w.paused = true; w.pausedReason = budget.reason; w.lastTickMs = nowMs; return { harvested, processed: 0, paused: true }; }
     w.paused = false; w.pausedReason = null;
+    // APPROACHING the budget (soft limit): keep learning from the highest-value evidence only (P1/P2);
+    // low-priority experiments wait until the month resets. Full pause happens at the hard limit above.
+    w.softLimited = Boolean(budget.atSoftLimit);
+    const maxPriority = budget.atSoftLimit ? 2 : 5;
 
     const analyze = deps.analyze ?? defaultAnalyze;
     for (let i = 0; i < cfg.tasksPerTick; i++) {
-      const task = claimNextTaskOnDb(db, now());
+      const task = claimNextTaskOnDb(db, now(), 120_000, maxPriority);
       if (!task) break;
       try {
         const res = await analyze(task, db);

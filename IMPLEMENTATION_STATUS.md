@@ -559,6 +559,15 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   analyzer-crash isolation, hard no-op when off, no-live-path-imports proof, disabled-AI honesty.
   Green: **1770 tests, tsc 0, build 0.** AI is never a required dependency for alerts; Phase G not
   started; no real-money.
+- 🟡 **AI Research Queue — soft-limit throttling (gap-close audit)** (commit pending). Re-audit of the
+  Research Queue requirements against `9605fbd` found ONE gap: "automatic pausing when APPROACHING the
+  configured budget" — the worker paused only AT the hard limit and ignored the existing soft limit.
+  Fix: `costGateOnDb.atSoftLimit` now flows into the worker tick; at the soft limit
+  (`AI_MONTHLY_SOFT_LIMIT_USD`, default $5) the queue processes ONLY high-value P1/P2 tasks (P3–P5 stay
+  QUEUED, not lost), and the hard limit still pauses everything. `claimNextTaskOnDb` gains a
+  `maxPriority` filter; metrics expose `softLimited`. Test proves P1 processes while P3/P5 wait at the
+  soft limit. Everything else on the requirement list was verified already present and reused. Green:
+  **1771 tests, tsc 0, build 0.**
 - ⬜ Phases G–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: collect options/Phase-F/shadow live data before Phase G.**
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).
