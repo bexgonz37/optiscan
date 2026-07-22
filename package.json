@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "next dev --turbo -p 8780",
     "build": "next build",
-    "start": "next start -p 8780",
+    "start": "node scripts/start-next.mjs",
     "test": "node --experimental-strip-types --test \"tests/*.test.mjs\"",
     "worker": "node --experimental-strip-types worker/seed-worker.ts"
   },
