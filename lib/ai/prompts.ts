@@ -65,6 +65,7 @@ export function weeklyProposalPrompt(ctx: WeeklyPromptContext): Prompt {
   const system = [
     SAFETY.replace("Respond with STRICT JSON only", "Respond with STRICT JSON only (an object { proposals: [...] })"),
     "Task: propose at most 3 concrete, testable strategy-improvement proposals from the weekly evidence.",
+    "Use Evidence Learning only as long-term aggregate evidence. Do not analyze one-off trades individually.",
     "Each proposal is ADVISORY and PENDING human approval. You must NOT: apply changes, merge, deploy, enable real-money trading,",
     "enable bearish actionable alerts, bypass eligibility/evidence gates, or change Discord actionable criteria.",
     "Each proposal object must have keys: title, problem, evidence, sampleSize (number), affectedStrategy, affectedSession,",
@@ -81,7 +82,7 @@ export function weeklyProposalPrompt(ctx: WeeklyPromptContext): Prompt {
     "Rejected lessons (do not re-propose):", JSON.stringify(ctx.rejectedLessons),
     "Prior proposals (avoid duplicates):", JSON.stringify(ctx.priorProposals),
     "Current relevant configuration:", JSON.stringify(ctx.currentConfig),
-    "Weekly AI quant research context (calculation inventory, gate trace requirements, and experiment rules):", JSON.stringify(ctx.quantResearch ?? null),
+    "Weekly AI quant research context (calculation inventory, Evidence Learning aggregates, gate trace requirements, and experiment rules):", JSON.stringify(ctx.quantResearch ?? null),
     "Relevant files you may reference (curated; the ONLY files you may name):", JSON.stringify(ctx.relevantFiles),
   ].join("\n");
   return { system, user };

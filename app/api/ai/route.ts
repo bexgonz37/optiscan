@@ -15,6 +15,7 @@ export const dynamic = "force-dynamic";
  *   { action: "decide_lesson", id, status, decisionState, notes? }
  *   { action: "run_nightly" | "run_weekly" }
  *   { action: "retry_nightly_narrative", periodKey? | reportId? }
+ *   { action: "refresh_evidence_learning" }
  * The AI never self-approves; accept/reject is always a human action here.
  */
 export async function GET(req: Request) {
@@ -72,6 +73,13 @@ export async function POST(req: Request) {
       const { runWeeklyProposals } = await import("@/lib/ai/weekly");
       const res = await runWeeklyProposals({});
       return NextResponse.json({ ok: true, result: res });
+    }
+    if (action === "refresh_evidence_learning") {
+      const { getDb } = await import("@/lib/db");
+      const { refreshEvidenceLearningOnDb, evidenceLearningSnapshotOnDb } = await import("@/lib/ai/evidence-learning");
+      const db = getDb();
+      const result = refreshEvidenceLearningOnDb(db);
+      return NextResponse.json({ ok: true, result, evidenceLearning: evidenceLearningSnapshotOnDb(db) });
     }
     return NextResponse.json({ ok: false, error: `unknown action '${action}'` }, { status: 400 });
   } catch (err: any) {

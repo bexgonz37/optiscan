@@ -14,6 +14,7 @@ export interface WeeklyQuantResearchContext {
   cadence: "weekly";
   aiRole: "offline_research_only";
   livePathAuthority: "deterministic_only";
+  evidenceLearning: unknown;
   calculationInventory: QuantCalculationInventoryItem[];
   gateAttribution: string[];
   outcomeComparisons: Record<string, unknown>;
@@ -28,6 +29,7 @@ const num = (v: string | undefined, d: number): number => (Number.isFinite(Numbe
 export interface WeeklyQuantResearchOptions {
   env?: NodeJS.ProcessEnv;
   metrics?: Record<string, unknown>;
+  evidenceLearning?: unknown;
 }
 
 function currentThresholds(env: NodeJS.ProcessEnv) {
@@ -71,6 +73,7 @@ export function weeklyQuantResearchContext(opts: WeeklyQuantResearchOptions = {}
     cadence: "weekly",
     aiRole: "offline_research_only",
     livePathAuthority: "deterministic_only",
+    evidenceLearning: opts.evidenceLearning ?? null,
     calculationInventory: [
       {
         scanner: "stock", name: "broadStockEligibility", unit: "dollars, shares, percent", ownerFile: "lib/stock-momentum-policy.ts",

@@ -28,6 +28,7 @@ type Overview = {
   proposals?: { pending: any[]; accepted: any[]; rejected: any[] };
   jobFailures?: any[];
   quantDashboard?: any;
+  evidenceLearning?: any;
 };
 
 const RETRYABLE_NIGHTLY_STATUSES = new Set(["VALIDATION_FAILED", "ERROR", "SKIPPED"]);
@@ -228,6 +229,7 @@ export default function AiLabPage() {
   const weeklyHistory = ov?.weeklyHistory ?? [];
   const latestWeekly = weeklyHistory[0] ?? null;
   const quant = ov?.quantDashboard;
+  const evidenceLearning = ov?.evidenceLearning;
   const disabled = !flags.enabled;
 
   const proposalCols: Column<any>[] = [
@@ -341,6 +343,16 @@ export default function AiLabPage() {
     { key: "risk", header: "Risk", render: (e) => e.risk ?? "n/a" },
     { key: "status", header: "Status", render: (e) => <StatusBadge tone={e.status === "Accepted" ? "bull" : e.status === "Rejected" ? "bear" : "warn"}>{e.status}</StatusBadge> },
   ];
+  const evidenceCols: Column<any>[] = [
+    { key: "label", header: "Evidence cut", render: (e) => e.label },
+    { key: "n", header: "Sample", render: (e) => fmtNum(e.sample_size) },
+    { key: "wr", header: "Win rate", render: (e) => e.win_rate == null ? "n/a" : `${(Number(e.win_rate) * 100).toFixed(1)}%` },
+    { key: "avg", header: "Avg return", render: (e) => fmtMetric(e.avg_return_pct, "%") },
+    { key: "lift", header: "Delivered lift", render: (e) => e.delivered_vs_research_lift == null ? "n/a" : `${(Number(e.delivered_vs_research_lift) * 100).toFixed(1)} pts` },
+    { key: "confidence", header: "Confidence", render: (e) => <StatusBadge tone={e.confidence === "HIGH" ? "bull" : e.confidence === "MEDIUM" ? "warn" : "muted"}>{e.confidence}</StatusBadge> },
+    { key: "risk", header: "Overfit risk", render: (e) => <StatusBadge tone={e.overfitting_risk === "LOW" ? "bull" : e.overfitting_risk === "MEDIUM" ? "warn" : "bear"}>{e.overfitting_risk}</StatusBadge> },
+    { key: "rec", header: "Recommendation", render: (e) => <span style={{ fontSize: 12 }}>{e.recommendation}</span> },
+  ];
   const portfolioCols: Column<any>[] = [
     { key: "portfolio", header: "Portfolio", render: (p) => p.portfolio },
     { key: "curve", header: "Equity curve", render: (p) => p.equityCurve },
@@ -394,6 +406,29 @@ export default function AiLabPage() {
           <KeyValue k="Budget" v={cost?.atHardLimit ? "hard limit - optional AI skipped" : cost?.atSoftLimit ? "soft limit reached" : "within budget"} tone={cost?.atHardLimit ? "bear" : cost?.atSoftLimit ? "warn" : "bull"} />
         </Card>
       </ResponsiveGrid>
+
+      <Card title="Evidence Learning Engine" meta="Aggregate evidence only">
+        <ResponsiveGrid min={180}>
+          <KeyValue k="Available" v={evidenceLearning?.available ? "yes" : "no"} tone={evidenceLearning?.available ? "bull" : "muted"} />
+          <KeyValue k="Production authority" v={evidenceLearning?.productionAuthority ?? "none"} tone="muted" />
+          <KeyValue k="Completed examples" v={fmtNum(evidenceLearning?.examples?.total)} />
+          <KeyValue k="Delivered mirrors" v={fmtNum(evidenceLearning?.examples?.delivered)} />
+          <KeyValue k="Research-only mirrors" v={fmtNum(evidenceLearning?.examples?.researchOnly)} />
+          <KeyValue k="Replay labels" v={fmtNum(evidenceLearning?.examples?.replayUnderlyingForward)} />
+          <KeyValue k="Patterns" v={fmtNum(evidenceLearning?.patterns?.total)} />
+          <KeyValue k="Ranked recommendations" v={fmtNum(evidenceLearning?.patterns?.actionableRecommendations)} />
+        </ResponsiveGrid>
+        <p style={{ fontSize: 12, opacity: 0.78, margin: "10px 0" }}>
+          {evidenceLearning?.disclaimer ?? "Evidence Learning is advisory-only and never changes production logic automatically."}
+        </p>
+        <SimpleTable
+          columns={evidenceCols}
+          rows={evidenceLearning?.patterns?.top ?? []}
+          rowKey={(e, i) => `${e.pattern_key ?? e.label}-${i}`}
+          emptyTitle="No aggregate evidence yet"
+          emptyReason="Completed delivered/research mirrors and replay labels will be materialized into long-term evidence during weekly runs or manual refresh."
+        />
+      </Card>
 
       {quant && (
         <>

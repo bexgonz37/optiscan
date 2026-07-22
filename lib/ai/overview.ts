@@ -13,6 +13,7 @@ import {
 import { nightlyRunKey, weeklyRunKey, nextNightlyEligibleMs, nextWeeklyEligibleMs } from "./schedule.ts";
 import { buildQuantDashboard, type QuantDashboard } from "./quant-dashboard.ts";
 import { momentumDiagnosticsForDay } from "../momentum-diagnostics.ts";
+import { evidenceLearningSnapshotOnDb, type EvidenceLearningSnapshot } from "./evidence-learning.ts";
 
 function lazyDb(): DbLike {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -64,6 +65,7 @@ export interface AiOverview {
   };
   jobFailures: any[];
   quantDashboard: QuantDashboard;
+  evidenceLearning: EvidenceLearningSnapshot;
 }
 
 export function aiOverviewOnDb(db: DbLike, env: NodeJS.ProcessEnv = process.env, nowMs: number = Date.now()): AiOverview {
@@ -124,6 +126,7 @@ export function aiOverviewOnDb(db: DbLike, env: NodeJS.ProcessEnv = process.env,
       rejected: proposals.filter((p) => p.status === "REJECTED"),
     },
     jobFailures,
+    evidenceLearning: evidenceLearningSnapshotOnDb(db),
     quantDashboard: buildQuantDashboard({
       nightlyReports: nightly,
       weeklyReports: weekly,

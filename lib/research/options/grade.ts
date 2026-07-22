@@ -89,6 +89,32 @@ export interface GradeDeps {
 export interface GradePassResult { examined: number; graded: number; held: number; errors: number; byReason: Record<string, number> }
 
 const occUnderlying = (occ: string) => occ.match(/^O:([A-Z]+)/)?.[1] ?? "";
+function hasTable(db: GradeDb, table: string): boolean {
+  try { return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)); } catch { return false; }
+}
+function hasCol(db: GradeDb, table: string, col: string): boolean {
+  try { return Boolean(db.prepare(`SELECT 1 FROM pragma_table_info('${table}') WHERE name=?`).get(col)); } catch { return false; }
+}
+function recordObservedMark(db: GradeDb, pos: OpenPosition, quote: RefreshedQuote | null, nowMs: number, cfg: GradeConfig): void {
+  const fresh = quote != null && quote.bid != null && quote.bid > 0 && quote.ask != null && quote.ask > 0
+    && (quote.quoteAgeMs == null || quote.quoteAgeMs <= cfg.maxQuoteAgeMs);
+  if (!fresh) return;
+  const mark = realOptionExit(pos.entry_fill, quote!.bid as number, quote!.ask as number);
+  try {
+    if (hasTable(db, "options_paper_marks")) {
+      db.prepare(
+        `INSERT OR IGNORE INTO options_paper_marks
+          (trade_id, option_symbol, mark_at_ms, bid, ask, exit_fill, return_pct, quote_age_ms, created_at_ms)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
+      ).run(pos.id, pos.option_symbol, nowMs, quote!.bid, quote!.ask, mark.exitFill, mark.returnPct, quote!.quoteAgeMs ?? null, nowMs);
+    }
+    if (hasCol(db, "options_paper_trades", "mfe_pct") && hasTable(db, "options_paper_marks")) {
+      const mm = db.prepare("SELECT MAX(return_pct) mfe, MIN(return_pct) mae FROM options_paper_marks WHERE trade_id=?").get(pos.id) as any;
+      db.prepare("UPDATE options_paper_trades SET last_mark_return_pct=?, mfe_pct=?, mae_pct=?, updated_at_ms=? WHERE id=?")
+        .run(mark.returnPct, mm?.mfe ?? mark.returnPct, mm?.mae ?? mark.returnPct, nowMs, pos.id);
+    }
+  } catch { /* mark storage is observability-only; never affect grading */ }
+}
 
 /** Grade all OPEN real-option paper positions once. Isolated per-row: a single failing quote never
  *  aborts the pass. Idempotent — only status='ENTERED' rows are examined, and an EXIT flips the status. */
@@ -103,6 +129,7 @@ export async function gradeOpenOptionPositionsOnDb(db: GradeDb, deps: GradeDeps,
     let quote: RefreshedQuote | null = null;
     try { quote = await deps.getQuote(pos.option_symbol, occUnderlying(pos.option_symbol)); }
     catch { out.errors += 1; quote = null; } // provider hiccup on one contract must not stop the pass
+    recordObservedMark(db, pos, quote, nowMs, cfg);
     const d = decideOptionExit(pos, quote, nowMs, cfg);
     if (d.action !== "exit") { out.held += 1; continue; }
     try {

@@ -1413,7 +1413,8 @@ CREATE TABLE IF NOT EXISTS options_paper_trades (
   result_class TEXT NOT NULL, bid REAL, ask REAL, mid REAL, spread_pct REAL, entry_fill REAL,
   volume REAL, open_interest REAL, iv REAL, delta REAL, underlying_price REAL,
   strategy TEXT, target REAL, invalidation REAL, provenance TEXT, status TEXT NOT NULL,
-  exit_fill REAL, pnl REAL, return_pct REAL, exit_reason TEXT, entered_at_ms INTEGER, exit_at_ms INTEGER,
+  exit_fill REAL, pnl REAL, return_pct REAL, mfe_pct REAL, mae_pct REAL, last_mark_return_pct REAL,
+  exit_reason TEXT, entered_at_ms INTEGER, exit_at_ms INTEGER,
   session TEXT, core_broad TEXT, feature_snapshot_json TEXT,
   -- AI Research Lab data foundation: paper_kind is the STRUCTURAL audience separator. DELIVERED_ALERT_PAPER
   -- = the exact mirror of a Discord alert that was actually delivered (linked by alert_id); RESEARCH_ONLY_PAPER
@@ -1423,6 +1424,22 @@ CREATE TABLE IF NOT EXISTS options_paper_trades (
   created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_options_paper_strategy ON options_paper_trades(strategy, side, dte);
+
+CREATE TABLE IF NOT EXISTS options_paper_marks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  trade_id INTEGER NOT NULL,
+  option_symbol TEXT NOT NULL,
+  mark_at_ms INTEGER NOT NULL,
+  bid REAL,
+  ask REAL,
+  exit_fill REAL,
+  return_pct REAL,
+  quote_age_ms INTEGER,
+  created_at_ms INTEGER NOT NULL,
+  UNIQUE(trade_id, mark_at_ms)
+);
+CREATE INDEX IF NOT EXISTS idx_options_paper_marks_trade ON options_paper_marks(trade_id, mark_at_ms);
+
 -- NOTE: idx_options_paper_kind (references paper_kind) is created in the migration block AFTER the
 -- guarded ALTER adds paper_kind — never here, or it would fail on an existing pre-foundation DB.
 
@@ -1478,6 +1495,91 @@ CREATE TABLE IF NOT EXISTS options_delivery_decisions (
 );
 CREATE INDEX IF NOT EXISTS idx_options_delivery_decisions ON options_delivery_decisions(outcome, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_options_delivery_final_outcome ON options_delivery_decisions(final_delivery_outcome, created_at_ms);
+
+-- Evidence Learning Engine: durable completed-candidate evidence + deterministic aggregate patterns.
+-- This is ADVISORY ONLY. It is never read by live gates, thresholds, strategy selection, or Discord
+-- delivery. AI may summarize these rows into PENDING human-review recommendations, but nothing here
+-- can automatically change production trading behavior.
+CREATE TABLE IF NOT EXISTS evidence_learning_examples (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_kind TEXT NOT NULL,
+  source_table TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  source_ref TEXT,
+  audience TEXT NOT NULL,
+  symbol TEXT,
+  sector TEXT,
+  strategy TEXT,
+  side TEXT,
+  time_bucket TEXT,
+  market_regime TEXT,
+  spy_direction TEXT,
+  qqq_direction TEXT,
+  relative_volume REAL,
+  vwap_distance_pct REAL,
+  level_interactions_json TEXT,
+  quality_score REAL,
+  quality_band TEXT,
+  trigger_reason TEXT,
+  trigger_components_json TEXT,
+  feature_json TEXT,
+  option_spread_pct REAL,
+  liquidity REAL,
+  contract_symbol TEXT,
+  entry_price REAL,
+  target_price REAL,
+  stop_price REAL,
+  mfe_pct REAL,
+  mae_pct REAL,
+  final_return_pct REAL,
+  final_outcome TEXT,
+  time_to_outcome_ms INTEGER,
+  grading_basis TEXT NOT NULL,
+  missing_fields_json TEXT,
+  completed_at_ms INTEGER,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  UNIQUE(source_kind, source_id)
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_learning_examples_strategy ON evidence_learning_examples(strategy, completed_at_ms);
+CREATE INDEX IF NOT EXISTS idx_evidence_learning_examples_audience ON evidence_learning_examples(audience, completed_at_ms);
+
+CREATE TABLE IF NOT EXISTS evidence_learning_patterns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  pattern_key TEXT NOT NULL UNIQUE,
+  pattern_kind TEXT NOT NULL,
+  label TEXT NOT NULL,
+  sample_size INTEGER NOT NULL DEFAULT 0,
+  delivered_sample_size INTEGER NOT NULL DEFAULT 0,
+  research_sample_size INTEGER NOT NULL DEFAULT 0,
+  wins INTEGER NOT NULL DEFAULT 0,
+  losses INTEGER NOT NULL DEFAULT 0,
+  win_rate REAL,
+  avg_return_pct REAL,
+  expectancy_pct REAL,
+  delivered_win_rate REAL,
+  research_win_rate REAL,
+  delivered_vs_research_lift REAL,
+  confidence TEXT NOT NULL DEFAULT 'LOW',
+  statistical_support_json TEXT,
+  overfitting_risk TEXT NOT NULL DEFAULT 'HIGH',
+  recommendation TEXT,
+  recommendation_type TEXT NOT NULL DEFAULT 'OBSERVE',
+  evidence_refs_json TEXT,
+  source_watermark INTEGER NOT NULL DEFAULT 0,
+  updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_learning_patterns_kind ON evidence_learning_patterns(pattern_kind, sample_size);
+
+CREATE TABLE IF NOT EXISTS evidence_learning_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  status TEXT NOT NULL,
+  examples_materialized INTEGER NOT NULL DEFAULT 0,
+  patterns_materialized INTEGER NOT NULL DEFAULT 0,
+  skipped_reason TEXT,
+  source_watermark INTEGER NOT NULL DEFAULT 0,
+  created_at_ms INTEGER NOT NULL
+);
 
 -- Options Historical Replay Lab (Phase 1): deterministic replay of the PRODUCTION detection over
 -- historical stock bars. Outcomes are UNDERLYING forward returns (grading_basis stamped) — no option
@@ -1766,6 +1868,9 @@ function migrate(db: Database.Database) {
       ["entry_source", "ALTER TABLE options_paper_trades ADD COLUMN entry_source TEXT"],
       ["experiment_id", "ALTER TABLE options_paper_trades ADD COLUMN experiment_id TEXT"],
       ["experiment_variant", "ALTER TABLE options_paper_trades ADD COLUMN experiment_variant TEXT"],
+      ["mfe_pct", "ALTER TABLE options_paper_trades ADD COLUMN mfe_pct REAL"],
+      ["mae_pct", "ALTER TABLE options_paper_trades ADD COLUMN mae_pct REAL"],
+      ["last_mark_return_pct", "ALTER TABLE options_paper_trades ADD COLUMN last_mark_return_pct REAL"],
     ] as [string, string][]) if (!op.has(col)) db.exec(sql);
     // Backfill legacy rows to a QUARANTINE kind: pre-foundation trades cannot be proven as delivered
     // mirrors, so they must never count as subscriber performance — and they aren't Lab experiments

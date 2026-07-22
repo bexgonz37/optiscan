@@ -15,6 +15,7 @@ import { isoWeekKey } from "./schedule.ts";
 import { recentTradingDays, gatherOutcomesForDays, gatherCandidatesForDays } from "./queries.ts";
 import { WEEKLY_PROPOSAL_PROMPT_VERSION, weeklyProposalPrompt } from "./prompts.ts";
 import { weeklyQuantResearchContext } from "./quant-research.ts";
+import { refreshEvidenceLearningOnDb, evidenceLearningSnapshotOnDb } from "./evidence-learning.ts";
 import { PRIMARY_PORTFOLIO, CHALLENGE_PORTFOLIO, STOCK_DAY_TRADER_PORTFOLIO } from "../paper-challenge.ts";
 import { validateWeeklyProposals, type WeeklyProposalDraft } from "./schemas.ts";
 import { screenProposalSafety } from "./safety.ts";
@@ -188,11 +189,13 @@ export async function runWeeklyProposals(opts: WeeklyJobOptions = {}): Promise<W
     const primary = buildNightlySummary({ tradingDay: weekKey, periodStartMs: nowMs - 7 * 24 * 3600_000, periodEndMs: nowMs, outcomes, candidates, live: null });
     const challenge = buildNightlySummary({ tradingDay: weekKey, periodStartMs: nowMs - 7 * 24 * 3600_000, periodEndMs: nowMs, outcomes: challengeOutcomes, candidates: [], live: null });
     const stockDayTrader = buildNightlySummary({ tradingDay: weekKey, periodStartMs: nowMs - 7 * 24 * 3600_000, periodEndMs: nowMs, outcomes: stockDayOutcomes, candidates: [], live: null });
+    try { refreshEvidenceLearningOnDb(db, { nowMs }); } catch { /* evidence learning is advisory-only */ }
     summary = {
       ...primary,
       quantResearch: weeklyQuantResearchContext({
         env: opts.env,
         metrics: weeklyQuantMetrics({ primary, challenge, stockDayTrader }),
+        evidenceLearning: evidenceLearningSnapshotOnDb(db),
       }),
     };
   } catch (err: any) {
