@@ -508,6 +508,33 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   rate/expectancy, the two views are disjoint with legacy quarantined, persist is fail-safe, puts never
   become a mirror. Migration proven repeat-safe on an existing pre-foundation DB. No Research Lab, no AI,
   no real-money, no profitability claim. Green: **1748 tests, tsc 0, build 0.**
+- 🟡 **Options fast-alert overhaul — Tier 0 lane + exact midpoint + T1/T2/Stop + compact format +
+  session-aware anti-spam** (commit pending). Why SPY/QQQ were missing: they shared one Tier-1 cycle and
+  provider budget with everything else, so broad work could consume the budget before the index names
+  evaluated. Why entries/targets were wrong: the old format printed `Entry: $bid–$ask` (a range) and
+  `Targets: n/a` (loop passed null). Fixes: **Tier 0 fast lane** (`OPTIONS_TIER0` SPY/QQQ/IWM, DIA
+  opt-in) on its own timer (`OPTIONS_TIER0_INTERVAL_MS`, default 5s, every session) with a **RESERVED
+  provider budget bucket** (`OPTIONS_TIER0_PROVIDER_BUDGET_PER_MINUTE`, 60/min) so broad scans can never
+  starve it; Tier 1/2 exclude the Tier-0 names. **Frozen entry** (`format.ts`): `entry_mid =
+  round((bid+ask)/2, 2)`, shown as ONE exact price; spread too wide for a credible midpoint → REJECT.
+  **Deterministic targets** (`targets.ts`): per-strategy stop % of mid, T1=+1R, T2=+2R, methodology
+  string persisted; alerts can never show "n/a". **Compact 4-line Discord format** (bold header
+  `SYM CALL — MM/DD $StrikeC`, Entry, T1|T2|Stop, one setup sentence; single disclaimer appended by
+  delivery). **Session states** (`session-state.ts`): OPENING_DISCOVERY (first 30min) / REGULAR_SESSION /
+  POWER_HOUR etc.; opening anti-spam is a **rolling** 2-per-10-min window (env-tunable) — releases
+  naturally, no fixed cooldown; **Tier 0 exempt** so SPY beats broad opening noise; per
+  symbol+side+strategy setup dedup (new strike/expiration ≠ new setup; new strategy = new setup).
+  **Deterministic ranking** (`ranking.ts`): tier → forming → move-completed → spread → liquidity →
+  level proximity → extension → quality (AI never awaited). Persistence: `options_alerts` gains
+  session_state, entry_mid, delivered_spread_pct, quote_ts_ms, target_t1/t2/stop, target_method
+  (repeat-safe guarded ALTERs); the delivered mirror's entry_fill = the EXACT displayed midpoint
+  (never improved). Observability: tier0 scans/candidates/budget-skips/lastCycle, sessionState,
+  sentBySessionState, entryMid stats, alertsMissingTargets (must stay 0), openingRateLimited,
+  duplicateSetupsSuppressed. Tests (`options-fast-alerts`, 12 + format spec update): reserved budget
+  survives broad exhaustion; 20 opening candidates ≠ 20 messages; rolling window releases later setups;
+  Tier 0 exemption; setup dedup vs new strategy; frozen midpoint flows to the mirror; wide-spread
+  midpoint reject; ranking order. Green: **1760 tests, tsc 0, build 0.** No profitability claim; radar
+  untouched; Phase G not started.
 - ⬜ Phases G–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: collect options/Phase-F/shadow live data before Phase G.**
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).

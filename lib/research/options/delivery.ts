@@ -7,6 +7,9 @@
  */
 import { researchFlags } from "../flags.ts";
 import { buildRealOptionEntry, persistDeliveredMirrorOnDb, type OptionQuote } from "./paper.ts";
+import { sessionState, openingWindowAllows, defaultOpeningLimit } from "./session-state.ts";
+import type { FrozenEntry } from "./callout.ts";
+import { OPTIONS_TIER0 } from "./discovery.ts";
 
 export type DeliveryState = "READY" | "SEND_ATTEMPTED" | "SENT" | "SEND_FAILED" | "TOO_LATE" | "REJECTED" | "EXPIRED";
 
@@ -31,6 +34,8 @@ export interface DeliveryInput {
   underlyingPrice: number;         // delivered underlying snapshot
   decisionMs?: number;             // the setup decision timestamp — the mirror's entry time (no later/improved entry)
   session?: string | null;
+  entry?: FrozenEntry | null;      // the frozen midpoint + deterministic targets shown to the subscriber
+  tier?: 0 | 1 | 2;
   paperOptionSymbol?: string | null; // when real-option paper linked — MUST match contract.optionSymbol
   maxSpreadPct?: number; maxQuoteAgeMs?: number;
 }
@@ -70,23 +75,30 @@ function createDeliveredMirror(db: DDb, i: DeliveryInput, alertId: string, env: 
     const c = i.contract;
     const decisionMs = i.decisionMs ?? Date.now();
     const q: OptionQuote = { optionSymbol: c.optionSymbol, side: c.side, strike: c.strike, expiration: c.expiration, dte: c.dte ?? 0, bid: c.bid, ask: c.ask, volume: c.volume ?? null, openInterest: c.openInterest ?? null, iv: c.iv ?? null, delta: c.delta ?? null, quoteAgeMs: c.quoteAgeMs, providerTimestamp: c.providerTimestamp ?? null };
-    const entry = buildRealOptionEntry({ quote: q, underlyingPrice: i.underlyingPrice, strategy: i.strategy }, env);
-    const r = persistDeliveredMirrorOnDb(db, entry, decisionMs, alertId, { session: i.session ?? null });
+    const built = buildRealOptionEntry({ quote: q, underlyingPrice: i.underlyingPrice, strategy: i.strategy }, env);
+    // The mirror uses the EXACT frozen midpoint + deterministic targets the subscriber saw — never a
+    // later/improved entry. entryFill = the displayed midpoint; target = T1; invalidation = Stop.
+    const entry = i.entry ? { ...built, entryFill: i.entry.mid, target: i.entry.t1, invalidation: i.entry.stop } : built;
+    const r = persistDeliveredMirrorOnDb(db, entry, decisionMs, alertId, { session: i.session ?? null, featureSnapshotJson: i.entry ? JSON.stringify({ targetMethodology: i.entry.methodology, frozen: i.entry }) : undefined });
     return r.inserted || r.existed;
   } catch { return false; }
 }
 
 function persist(db: DDb, alertId: string, i: DeliveryInput, state: DeliveryState, extra: Record<string, unknown>, nowMs: number): void {
+  const e = i.entry ?? null;
   db.prepare(
-    `INSERT INTO options_alerts (alert_id, candidate_symbol, strategy, option_symbol, side, research_only, state, message_hash, message, delivered_bid, delivered_ask, delivered_underlying, paper_linked, discord_status, latency_ms, retry_count, failure_reason, attempted_at_ms, sent_at_ms, created_at_ms, updated_at_ms)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-     ON CONFLICT(alert_id) DO UPDATE SET state=excluded.state, discord_status=excluded.discord_status, latency_ms=excluded.latency_ms, retry_count=excluded.retry_count, failure_reason=excluded.failure_reason, attempted_at_ms=COALESCE(options_alerts.attempted_at_ms, excluded.attempted_at_ms), sent_at_ms=COALESCE(excluded.sent_at_ms, options_alerts.sent_at_ms), paper_linked=excluded.paper_linked, updated_at_ms=excluded.updated_at_ms`,
+    `INSERT INTO options_alerts (alert_id, candidate_symbol, strategy, option_symbol, side, research_only, state, message_hash, message, delivered_bid, delivered_ask, delivered_underlying, paper_linked, discord_status, latency_ms, retry_count, failure_reason, attempted_at_ms, sent_at_ms, session_state, entry_mid, delivered_spread_pct, quote_ts_ms, target_t1, target_t2, target_stop, target_method, created_at_ms, updated_at_ms)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(alert_id) DO UPDATE SET state=excluded.state, discord_status=excluded.discord_status, latency_ms=excluded.latency_ms, retry_count=excluded.retry_count, failure_reason=excluded.failure_reason, attempted_at_ms=COALESCE(options_alerts.attempted_at_ms, excluded.attempted_at_ms), sent_at_ms=COALESCE(excluded.sent_at_ms, options_alerts.sent_at_ms), paper_linked=excluded.paper_linked, session_state=COALESCE(excluded.session_state, options_alerts.session_state), entry_mid=COALESCE(excluded.entry_mid, options_alerts.entry_mid), delivered_spread_pct=COALESCE(excluded.delivered_spread_pct, options_alerts.delivered_spread_pct), quote_ts_ms=COALESCE(excluded.quote_ts_ms, options_alerts.quote_ts_ms), target_t1=COALESCE(excluded.target_t1, options_alerts.target_t1), target_t2=COALESCE(excluded.target_t2, options_alerts.target_t2), target_stop=COALESCE(excluded.target_stop, options_alerts.target_stop), target_method=COALESCE(excluded.target_method, options_alerts.target_method), updated_at_ms=excluded.updated_at_ms`,
   ).run(
     alertId, i.candidateSymbol, i.strategy, i.contract.optionSymbol, i.contract.side, i.researchOnly ? 1 : 0, state,
     djb2(i.message), i.message, i.contract.bid, i.contract.ask, i.underlyingPrice,
     extra.paperLinked != null ? (extra.paperLinked ? 1 : 0) : ((i.paperOptionSymbol && i.paperOptionSymbol === i.contract.optionSymbol) ? 1 : 0),
     extra.status ?? null, extra.latencyMs ?? null, extra.retryCount ?? 0, extra.failureReason ?? null,
-    extra.attemptedAtMs ?? null, extra.sentAtMs ?? null, nowMs, nowMs,
+    extra.attemptedAtMs ?? null, extra.sentAtMs ?? null,
+    extra.sessionState ?? null, e?.mid ?? null, e?.spreadPct ?? null, i.contract.providerTimestamp ?? null,
+    e?.t1 ?? null, e?.t2 ?? null, e?.stop ?? null, e?.methodology ?? null,
+    nowMs, nowMs,
   );
 }
 
@@ -118,6 +130,27 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
   if (favMovePct > input.chaseLimitPct) return finalize(deps, input, alertId, "TOO_LATE", "chase_exceeded", nowMs);
 
   const db = (deps.getDb ?? liveDb)();
+  const state = sessionState(nowMs, env);
+
+  // SETUP dedup (rolling, per symbol+side+strategy — NOT a global cooldown): a new expiration/strike or
+  // minor score change on the SAME setup is not a new alert. A genuinely different strategy is a new key.
+  const setupDedupMs = Number(env.OPTIONS_SETUP_DEDUP_MS);
+  const dedupWindow = Number.isFinite(setupDedupMs) && setupDedupMs > 0 ? setupDedupMs : 20 * 60_000;
+  try {
+    // exclude THIS alert_id: the identical event falls through to the precise alertId dedup below.
+    const dup = db.prepare("SELECT 1 FROM options_alerts WHERE candidate_symbol=? AND side=? AND strategy=? AND state='SENT' AND sent_at_ms >= ? AND alert_id != ? LIMIT 1").get(input.candidateSymbol, input.contract.side, input.strategy, nowMs - dedupWindow, alertId);
+    if (dup) return finalize(deps, input, alertId, "REJECTED", "duplicate_setup", nowMs, state);
+  } catch { /* table lazily created */ }
+
+  // OPENING-BELL anti-spam: a ROLLING-window limit (releases naturally, never a fixed cooldown). Tier 0
+  // is exempt from the cap so a stronger SPY/QQQ/IWM setup is never crowded out by broad opening noise.
+  const isTier0 = OPTIONS_TIER0.includes(input.candidateSymbol.toUpperCase() as any) || input.tier === 0;
+  if (state === "OPENING_DISCOVERY" && !isTier0) {
+    try {
+      const recent = (db.prepare("SELECT sent_at_ms FROM options_alerts WHERE state='SENT' AND sent_at_ms IS NOT NULL").all() as any[]).map((r) => Number(r.sent_at_ms));
+      if (!openingWindowAllows(recent, nowMs, defaultOpeningLimit(env))) return finalize(deps, input, alertId, "REJECTED", "opening_window_rate_limited", nowMs, state);
+    } catch { /* isolated */ }
+  }
   // Dedup / no-duplicate-after-ambiguous-timeout: an existing SENT or SEND_ATTEMPTED row wins.
   let existing: any = null;
   try { existing = db.prepare("SELECT state, retry_count FROM options_alerts WHERE alert_id=?").get(alertId); } catch { /* table may be created lazily by caller */ }
@@ -127,7 +160,7 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
   if (existing && existing.state === "SEND_FAILED" && priorRetries >= maxRetries) return base("SEND_FAILED", false, "retry_ceiling_reached");
 
   // Claim the slot as SEND_ATTEMPTED BEFORE sending, so a concurrent/duplicate call dedups.
-  try { persist(db, alertId, input, "SEND_ATTEMPTED", { attemptedAtMs: nowMs, retryCount: priorRetries }, nowMs); } catch { /* isolated */ }
+  try { persist(db, alertId, input, "SEND_ATTEMPTED", { attemptedAtMs: nowMs, retryCount: priorRetries, sessionState: state }, nowMs); } catch { /* isolated */ }
 
   const payload = { content: `${input.message}\n\n${BETA_LABEL}` };
   const send = deps.send ?? defaultSend;
@@ -143,18 +176,18 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
     // quote/underlying/strategy/decision-timestamp/alert_id). Never blocks or alters the SENT outcome;
     // a mirror failure just leaves paper_linked=0 (surfaced) and can be retried idempotently later.
     const linked = createDeliveredMirror(db, input, alertId, env);
-    try { persist(db, alertId, input, "SENT", { status: res.status, latencyMs: res.latencyMs, retryCount: attempt, sentAtMs: now(), attemptedAtMs: nowMs, paperLinked: linked }, now()); } catch { /* isolated */ }
+    try { persist(db, alertId, input, "SENT", { status: res.status, latencyMs: res.latencyMs, retryCount: attempt, sentAtMs: now(), attemptedAtMs: nowMs, paperLinked: linked, sessionState: state }, now()); } catch { /* isolated */ }
     return base("SENT", true, "delivered", linked);
   }
   const paperLinked = Boolean(input.paperOptionSymbol && input.paperOptionSymbol === input.contract.optionSymbol);
   // An AMBIGUOUS timeout may have been delivered — exhaust retries so NO later call can resend it.
   const finalRetryCount = res.ambiguous ? maxRetries : attempt;
-  try { persist(db, alertId, input, "SEND_FAILED", { status: res.status, latencyMs: res.latencyMs, retryCount: finalRetryCount, failureReason: res.ambiguous ? `ambiguous_timeout: ${res.error}` : res.error }, now()); } catch { /* isolated */ }
+  try { persist(db, alertId, input, "SEND_FAILED", { status: res.status, latencyMs: res.latencyMs, retryCount: finalRetryCount, failureReason: res.ambiguous ? `ambiguous_timeout: ${res.error}` : res.error, sessionState: state }, now()); } catch { /* isolated */ }
   return base("SEND_FAILED", false, res.ambiguous ? "ambiguous_timeout_no_retry" : "send_failed", paperLinked);
 }
 
-function finalize(deps: DeliveryDeps, input: DeliveryInput, alertId: string, state: DeliveryState, reason: string, nowMs: number): DeliveryOutcome {
-  try { persist((deps.getDb ?? liveDb)(), alertId, input, state, { failureReason: reason }, nowMs); } catch { /* isolated */ }
+function finalize(deps: DeliveryDeps, input: DeliveryInput, alertId: string, state: DeliveryState, reason: string, nowMs: number, sessionSt?: string): DeliveryOutcome {
+  try { persist((deps.getDb ?? liveDb)(), alertId, input, state, { failureReason: reason, sessionState: sessionSt }, nowMs); } catch { /* isolated */ }
   return { state, alertId, sent: false, reason, paperLinked: false };
 }
 
@@ -190,5 +223,21 @@ export function readDeliveryMetricsOnDb(db: DDb): Record<string, unknown> {
     latencyMs: { p50: p(0.5), p95: p(0.95) },
     latestSentAtMs: (db.prepare("SELECT MAX(sent_at_ms) m FROM options_alerts WHERE state='SENT'").get() as any)?.m ?? null,
     latestFailureReason: (db.prepare("SELECT failure_reason FROM options_alerts WHERE state='SEND_FAILED' ORDER BY updated_at_ms DESC LIMIT 1").get() as any)?.failure_reason ?? null,
+    // Compact-alert observability. alertsMissingTargets MUST stay 0 — every SENT alert carries T1/T2/Stop.
+    ...(() => {
+      try {
+        const bySession: Record<string, number> = {};
+        for (const r of db.prepare("SELECT session_state ss, COUNT(*) c FROM options_alerts WHERE state='SENT' AND session_state IS NOT NULL GROUP BY session_state").all() as any[]) bySession[r.ss] = r.c;
+        const mids = (db.prepare("SELECT entry_mid FROM options_alerts WHERE state='SENT' AND entry_mid IS NOT NULL ORDER BY entry_mid").all() as any[]).map((r) => r.entry_mid);
+        const q = (f: number) => (mids.length ? mids[Math.min(mids.length - 1, Math.ceil(f * mids.length) - 1)] : null);
+        return {
+          sentBySessionState: bySession,
+          entryMid: { n: mids.length, p50: q(0.5), min: mids[0] ?? null, max: mids[mids.length - 1] ?? null },
+          alertsMissingTargets: n("SELECT COUNT(*) n FROM options_alerts WHERE state='SENT' AND (target_t1 IS NULL OR target_t2 IS NULL OR target_stop IS NULL)"),
+          openingRateLimited: n("SELECT COUNT(*) n FROM options_alerts WHERE failure_reason='opening_window_rate_limited'"),
+          duplicateSetupsSuppressed: n("SELECT COUNT(*) n FROM options_alerts WHERE failure_reason='duplicate_setup'"),
+        };
+      } catch { return { sentBySessionState: {}, entryMid: { n: 0, p50: null, min: null, max: null }, alertsMissingTargets: 0, openingRateLimited: 0, duplicateSetupsSuppressed: 0 }; }
+    })(),
   };
 }

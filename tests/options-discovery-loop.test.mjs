@@ -58,10 +58,14 @@ test("Tier-2 broad eligibility lets unexpected liquid names in, rejects junk", (
 const contract = (over = {}) => ({ optionSymbol: "O:HOOD260320C00042000", side: "call", strike: 42, expiration: "2026-03-20", dte: 12, bid: 1.2, ask: 1.3, spreadPct: 8, quoteAgeMs: 1000, openInterest: 1200, volume: 400, ...over });
 const calloutIn = (over = {}) => ({ symbol: "HOOD", strategyKey: "breakout_forming", researchOnly: false, contract: contract(), observedUnderlyingPrice: 40, observedAtMs: NOW, currentUnderlyingPrice: 40.1, currentAtMs: NOW + 1000, entryZone: [1.2, 1.3], targets: [1.8, 2.4], why: "breakout forming with accelerating volume and liquid call activity", ...over });
 
-test("evaluateCallout emits ONE READY message; the format matches spec", () => {
+test("evaluateCallout emits ONE READY compact message: exact frozen midpoint + T1/T2/Stop, no range, no n/a", () => {
   const r = evaluateCallout(calloutIn());
   assert.equal(r.state, "READY");
-  assert.match(r.message, /^HOOD CALL\n\$42 — 03\/20\nEntry: \$1\.20–\$1\.30\nTargets: \$1\.80 \/ \$2\.40\nWhy: /);
+  // frozen midpoint = round((1.20+1.30)/2, 2) = 1.25; deterministic targets from the strategy risk model
+  assert.match(r.message, /^\*\*HOOD CALL — 03\/20 \$42C\*\*\nEntry: \*\*\$1\.25\*\*\nT1: \*\*\$\d+\.\d{2}\*\* \| T2: \*\*\$\d+\.\d{2}\*\* \| Stop: \*\*\$\d+\.\d{2}\*\*\n/);
+  assert.doesNotMatch(r.message, /–|n\/a|Why:/, "no entry range, no n/a targets, no Why: label");
+  assert.equal(r.entry.mid, 1.25);
+  assert.ok(r.entry.t1 > r.entry.mid && r.entry.t2 > r.entry.t1 && r.entry.stop < r.entry.mid, "ordered T1/T2/Stop always present");
 });
 
 test("callout is TOO_LATE past the chase limit and REJECTED on a bad contract", () => {

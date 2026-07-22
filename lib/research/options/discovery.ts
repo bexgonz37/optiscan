@@ -9,7 +9,18 @@
  */
 import { OPTIONS_STRATEGIES, tenorBand, type StrategyDef, type TenorBand } from "./strategy-catalog.ts";
 
-/** Tier-1 continuously-monitored core (high-liquidity options names). */
+/** Tier-0 CORE INDEX fast lane — highest priority, scanned more often, with reserved provider budget so
+ *  broad-universe work can never starve it. DIA is opt-in (OPTIONS_TIER0_DIA=1). */
+export const OPTIONS_TIER0 = ["SPY", "QQQ", "IWM"] as const;
+export function optionsTier0(env: NodeJS.ProcessEnv = process.env): string[] {
+  const base: string[] = [...OPTIONS_TIER0];
+  if (env.OPTIONS_TIER0_DIA === "1") base.push("DIA");
+  return Array.from(new Set(base));
+}
+
+/** Tier-1 continuously-monitored core (high-liquidity options names). Includes the Tier-0 index names
+ *  for universe CLASSIFICATION (core vs broad); the live monitor scans Tier-0 on its own fast lane and
+ *  excludes them from the Tier-1 cycle to avoid redundant provider calls. */
 export const OPTIONS_TIER1 = [
   "SPY", "QQQ", "IWM", "NVDA", "TSLA", "AMD", "AMZN", "META", "AAPL", "MSFT", "GOOGL", "AVGO", "NFLX", "HOOD",
 ] as const;

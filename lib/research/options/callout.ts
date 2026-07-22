@@ -7,6 +7,8 @@
 import { checkEntryFreshness } from "../forward/freshness.ts";
 import { realOptionEntryEligible, defaultRealOptionEntryGate, type RealOptionEntryGateCfg } from "./paper-class.ts";
 import { getStrategy } from "./strategy-catalog.ts";
+import { entryMidpoint, formatCompactAlert } from "./format.ts";
+import { computeOptionTargets } from "./targets.ts";
 
 export type CalloutState = "FORMING" | "READY" | "SENT" | "REJECTED" | "TOO_LATE" | "EXPIRED";
 
@@ -25,41 +27,49 @@ export interface CalloutInput {
   why: string;
   ttlMs?: number; ageMs?: number;
   gateCfg?: RealOptionEntryGateCfg;
+  maxMidpointSpreadPct?: number;   // reject rather than publish an incredible midpoint on a too-wide spread
 }
 
-export interface CalloutResult { state: CalloutState; message: string | null; reason: string; freshness: string | null }
+/** The FROZEN decision-time entry — one exact midpoint + deterministic targets. Persisted verbatim and
+ *  reused by the linked paper mirror (never replaced later with a better entry). */
+export interface FrozenEntry { bid: number; ask: number; mid: number; spreadPct: number; quoteAgeMs: number | null; t1: number; t2: number; stop: number; methodology: string }
+export interface CalloutResult { state: CalloutState; message: string | null; reason: string; freshness: string | null; entry: FrozenEntry | null }
 
 /** Decide the single callout. READY (with message) only when everything passes and it is still early. */
 export function evaluateCallout(input: CalloutInput): CalloutResult {
+  const rej = (state: CalloutState, reason: string, freshness: string | null = null): CalloutResult => ({ state, message: null, reason, freshness, entry: null });
   const strat = getStrategy(input.strategyKey);
-  if (!strat) return { state: "REJECTED", message: null, reason: `unknown strategy ${input.strategyKey}`, freshness: null };
-  if (!input.contract) return { state: "REJECTED", message: null, reason: "no real contract selected", freshness: null };
-  if (input.ttlMs != null && input.ageMs != null && input.ageMs > input.ttlMs) return { state: "EXPIRED", message: null, reason: "aged out before READY", freshness: null };
+  if (!strat) return rej("REJECTED", `unknown strategy ${input.strategyKey}`);
+  if (!input.contract) return rej("REJECTED", "no real contract selected");
+  if (input.ttlMs != null && input.ageMs != null && input.ageMs > input.ttlMs) return rej("EXPIRED", "aged out before READY");
 
-  // liquidity/quote gate (real contract, non-zero-bid, spread, freshness, OI/volume)
-  const gate = realOptionEntryEligible({ optionSymbol: input.contract.optionSymbol, bid: input.contract.bid, ask: input.contract.ask, spreadPct: input.contract.spreadPct, quoteAgeMs: input.contract.quoteAgeMs, openInterest: input.contract.openInterest, volume: input.contract.volume }, input.gateCfg ?? defaultRealOptionEntryGate());
-  if (!gate.ok) return { state: "REJECTED", message: null, reason: `contract gate: ${gate.rejections.join(",")}`, freshness: null };
+  const c = input.contract;
+  // HARD execution gate: real OCC, non-zero usable bid/ask, executable spread, fresh option quote, liquidity.
+  const gate = realOptionEntryEligible({ optionSymbol: c.optionSymbol, bid: c.bid, ask: c.ask, spreadPct: c.spreadPct, quoteAgeMs: c.quoteAgeMs, openInterest: c.openInterest, volume: c.volume }, input.gateCfg ?? defaultRealOptionEntryGate());
+  if (!gate.ok) return rej("REJECTED", `contract gate: ${gate.rejections.join(",")}`);
 
-  // freshness / chase — on the UNDERLYING (chase + age). input.entryZone is the OPTION premium band
-  // (display only); it is NOT an underlying price zone, so it must not gate the underlying freshness.
-  const fresh = checkEntryFreshness({ side: input.contract.side, observedPrice: input.observedUnderlyingPrice, observedAtMs: input.observedAtMs, currentPrice: input.currentUnderlyingPrice, currentAtMs: input.currentAtMs, entryZone: null, maxChasePct: strat.chaseLimitPct, maxAgeMs: strat.freshnessMaxMs });
-  if (fresh.state === "TOO_LATE") return { state: "TOO_LATE", message: null, reason: `too late: ${fresh.reason}`, freshness: fresh.reason };
+  // freshness / chase — on the UNDERLYING (genuine chase/extension rejection). Never gate on a premium band.
+  const fresh = checkEntryFreshness({ side: c.side, observedPrice: input.observedUnderlyingPrice, observedAtMs: input.observedAtMs, currentPrice: input.currentUnderlyingPrice, currentAtMs: input.currentAtMs, entryZone: null, maxChasePct: strat.chaseLimitPct, maxAgeMs: strat.freshnessMaxMs });
+  if (fresh.state === "TOO_LATE") return rej("TOO_LATE", `too late: ${fresh.reason}`, fresh.reason);
 
-  return { state: "READY", message: formatCallout(input), reason: "ready — deterministic strategy valid, real liquid contract, still early", freshness: "fresh" };
+  // FREEZE the option quote and compute the ONE exact entry midpoint + deterministic targets.
+  const bid = c.bid as number, ask = c.ask as number;   // gate guaranteed both > 0
+  const mid = entryMidpoint(bid, ask);
+  const spreadPct = c.spreadPct != null ? c.spreadPct : (mid > 0 ? +(((ask - bid) / mid) * 100).toFixed(3) : 999);
+  const maxMidSpread = input.maxMidpointSpreadPct ?? (input.gateCfg ?? defaultRealOptionEntryGate()).maxSpreadPct;
+  // If the spread is too wide for the midpoint to be credible, reject rather than publish a misleading entry.
+  if (spreadPct > maxMidSpread) return rej("REJECTED", `spread_too_wide_for_credible_midpoint (${spreadPct.toFixed(1)}% > ${maxMidSpread}%)`);
+  const tg = computeOptionTargets(mid, input.strategyKey);
+  const entry: FrozenEntry = { bid, ask, mid, spreadPct: +Number(spreadPct).toFixed(3), quoteAgeMs: c.quoteAgeMs, t1: tg.t1, t2: tg.t2, stop: tg.stop, methodology: tg.methodology };
+  const message = formatCompactAlert({ symbol: input.symbol, side: c.side, strike: c.strike, expiration: c.expiration, entryMid: mid, t1: tg.t1, t2: tg.t2, stop: tg.stop, strategyKey: input.strategyKey });
+  return { state: "READY", message, reason: "ready — deterministic strategy valid, real liquid contract, still early", freshness: "fresh", entry };
 }
 
-/** The exact public format. Puts are RESEARCH_ONLY: the message is still built but a delivery layer
- *  must not send a research-only put as a public actionable alert (enforced downstream). */
+/** Backward-compatible compact formatter (frozen midpoint + deterministic targets, one setup line). */
 export function formatCallout(input: CalloutInput): string {
   const c = input.contract!;
-  const side = c.side.toUpperCase();
-  const exp = mmdd(c.expiration);
-  const entry = input.entryZone ? `$${fix(input.entryZone[0])}–$${fix(input.entryZone[1])}` : (c.bid != null && c.ask != null ? `$${fix(c.bid)}–$${fix(c.ask)}` : "n/a");
-  const targets = input.targets ? `$${fix(input.targets[0])} / $${fix(input.targets[1])}` : "n/a";
-  const tag = input.researchOnly ? " (RESEARCH_ONLY)" : "";
-  return `${input.symbol.toUpperCase()} ${side}${tag}\n$${fixStrike(c.strike)} — ${exp}\nEntry: ${entry}\nTargets: ${targets}\nWhy: ${input.why}`;
+  const bid = c.bid ?? 0, ask = c.ask ?? 0;
+  const mid = entryMidpoint(bid, ask);
+  const tg = computeOptionTargets(mid, input.strategyKey);
+  return formatCompactAlert({ symbol: input.symbol, side: c.side, strike: c.strike, expiration: c.expiration, entryMid: mid, t1: tg.t1, t2: tg.t2, stop: tg.stop, strategyKey: input.strategyKey });
 }
-
-const fix = (n: number) => (Math.abs(n) >= 100 ? n.toFixed(0) : n.toFixed(2));
-const fixStrike = (n: number) => (n % 1 === 0 ? n.toFixed(0) : n.toFixed(2));
-function mmdd(iso: string): string { const m = iso.match(/(\d{4})-(\d{2})-(\d{2})/); return m ? `${m[2]}/${m[3]}` : iso; }

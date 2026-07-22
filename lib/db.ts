@@ -1433,7 +1433,12 @@ CREATE TABLE IF NOT EXISTS options_alerts (
   research_only INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, message_hash TEXT, message TEXT,
   delivered_bid REAL, delivered_ask REAL, delivered_underlying REAL, paper_linked INTEGER NOT NULL DEFAULT 0,
   discord_status INTEGER, latency_ms INTEGER, retry_count INTEGER NOT NULL DEFAULT 0, failure_reason TEXT,
-  attempted_at_ms INTEGER, sent_at_ms INTEGER, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
+  attempted_at_ms INTEGER, sent_at_ms INTEGER,
+  -- frozen decision-time entry + deterministic targets shown to the subscriber (persisted verbatim), plus
+  -- the session state the alert fired in. Grading uses these exact values.
+  session_state TEXT, entry_mid REAL, delivered_spread_pct REAL, quote_ts_ms INTEGER,
+  target_t1 REAL, target_t2 REAL, target_stop REAL, target_method TEXT,
+  created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_options_alerts_state ON options_alerts(state, created_at_ms);
 
@@ -1724,6 +1729,21 @@ function migrate(db: Database.Database) {
     // Created here (after the ALTER) so paper_kind is guaranteed to exist. Repeat-safe.
     db.exec("CREATE VIEW IF NOT EXISTS options_paper_delivered AS SELECT * FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER'");
     db.exec("CREATE VIEW IF NOT EXISTS options_paper_research AS SELECT * FROM options_paper_trades WHERE paper_kind='RESEARCH_ONLY_PAPER'");
+  }
+  // Compact-alert foundation (additive, repeat-safe): frozen entry midpoint + deterministic targets +
+  // session state persisted on each alert.
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_alerts'").get()) {
+    const oa = cols("options_alerts");
+    for (const [col, sql] of [
+      ["session_state", "ALTER TABLE options_alerts ADD COLUMN session_state TEXT"],
+      ["entry_mid", "ALTER TABLE options_alerts ADD COLUMN entry_mid REAL"],
+      ["delivered_spread_pct", "ALTER TABLE options_alerts ADD COLUMN delivered_spread_pct REAL"],
+      ["quote_ts_ms", "ALTER TABLE options_alerts ADD COLUMN quote_ts_ms INTEGER"],
+      ["target_t1", "ALTER TABLE options_alerts ADD COLUMN target_t1 REAL"],
+      ["target_t2", "ALTER TABLE options_alerts ADD COLUMN target_t2 REAL"],
+      ["target_stop", "ALTER TABLE options_alerts ADD COLUMN target_stop REAL"],
+      ["target_method", "ALTER TABLE options_alerts ADD COLUMN target_method TEXT"],
+    ] as [string, string][]) if (!oa.has(col)) db.exec(sql);
   }
   // Phase 7 (additive): drift-health flag on an existing model_registry table.
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_registry'").get()) {

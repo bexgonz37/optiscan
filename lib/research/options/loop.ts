@@ -39,7 +39,7 @@ export function evaluateOptionsCandidate(input: OptionsCandidateInput, chain: Ch
   if (!selection.selected) return { selection, contract: null, callout: null, paperEntry: null, state: "REJECTED" };
   const side = selection.selected.side;
   const contract = selectContractFromChain(chain, side, selection.selected.key, input.nowMs);
-  if (!contract) return { selection, contract: null, callout: { state: "REJECTED", message: null, reason: "no eligible contract in the preferred delta/DTE band", freshness: null }, paperEntry: null, state: "REJECTED" };
+  if (!contract) return { selection, contract: null, callout: { state: "REJECTED", message: null, reason: "no eligible contract in the preferred delta/DTE band", freshness: null, entry: null }, paperEntry: null, state: "REJECTED" };
 
   const cc: CalloutContract = { optionSymbol: contract.optionSymbol, side: contract.side, strike: contract.strike, expiration: contract.expiration, dte: contract.dte, bid: contract.bid, ask: contract.ask, spreadPct: contract.spreadPct, quoteAgeMs: contract.providerTimestamp != null ? input.nowMs - contract.providerTimestamp : null, openInterest: contract.openInterest, volume: contract.volume };
   const strat = getStrategy(selection.selected.key)!;
@@ -98,7 +98,7 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
       void deliverOptionsCallout({
         candidateSymbol: input.symbol, strategy: res.selection.selected!.key, researchOnly: res.selection.selected!.researchOnly,
         contract: { optionSymbol: res.contract.optionSymbol, side: res.contract.side, strike: res.contract.strike, expiration: res.contract.expiration, bid: res.contract.bid, ask: res.contract.ask, spreadPct: res.contract.spreadPct, quoteAgeMs: res.contract.providerTimestamp != null ? input.nowMs - res.contract.providerTimestamp : null, dte: res.contract.dte, volume: res.contract.volume, openInterest: res.contract.openInterest, iv: res.contract.iv, delta: res.contract.delta, providerTimestamp: res.contract.providerTimestamp },
-        message: res.callout.message, observedUnderlyingPrice: px, currentUnderlyingPrice: px, chaseLimitPct: strat?.chaseLimitPct ?? 0.6, underlyingPrice: px, decisionMs: input.nowMs, session: input.session, paperOptionSymbol,
+        message: res.callout.message, observedUnderlyingPrice: px, currentUnderlyingPrice: px, chaseLimitPct: strat?.chaseLimitPct ?? 0.6, underlyingPrice: px, decisionMs: input.nowMs, session: input.session, entry: res.callout.entry, tier: input.tier, paperOptionSymbol,
       }, { getDb: deps.getDb }, env).catch(() => { /* delivery failure never blocks the monitor */ });
     }
   } catch { /* isolated: options discovery never affects the live path */ }
