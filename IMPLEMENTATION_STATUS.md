@@ -452,6 +452,23 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   Discord failures isolated/recover, disabled flags = clean no-op, read helpers are inspection-only.
   Green: **1735 tests, tsc 0, build 0.** No strategy entry gate loosened; no real-money execution;
   Phase G not started.
+- 🟡 **Options earliness — forming-setup re-check (single-bottleneck fix)** (commit pending). Goal:
+  alert while a setup is still forming, not after expansion. **Audit of the live monitor path found the
+  single biggest reason alerts are late:** `monitor.ts` froze a symbol with the full `symbolCooldownMs`
+  (default **60s**) on the "passed liquidity + freshness but NO plausible strategy yet" branch — i.e. a
+  still-FORMING setup, the exact pre-expansion window. With a 15s Tier-1 cadence, that capped
+  re-evaluation of a forming setup at once/60s, so the callout fired up to ~45–60s AFTER the setup
+  validated. That cooldown does NOT provide dup protection (actual callouts are deduped by the
+  per-`symbol:strategy` cooldown set only on success + the delivery `alertId` 5-min bucket), so it was
+  pure accidental lateness. **Fix (one path only):** new config `symbolFormingRecheckMs`
+  (`OPTIONS_SYMBOL_FORMING_RECHECK_MS`, default **0** = re-check next cadence) used ONLY on the
+  forming-reject branch; all other cooldowns (Stage-1 hard reject, stale, escalation-reject, success)
+  keep the full 60s. Added a `stage15Forming` observability counter (surfaced in `GET`). No executable
+  gate loosened; no threshold changed; no extra alerts (only earlier re-evaluation). Tests
+  (`options-earliness`, 3) prove: a forming symbol is re-evaluated at +15s and reaches Stage 2 while
+  still forming; the old 60s cooldown would have skipped the same symbol at +15s (late); and stale /
+  untradable symbols are still frozen 60s (executable quality unchanged). Green: **1738 tests, tsc 0,
+  build 0.** Stock Momentum Radar untouched; no real-money execution; Phase G not started.
 - ⬜ Phases G–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: collect options/Phase-F/shadow live data before Phase G.**
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).

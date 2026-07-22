@@ -37,7 +37,7 @@ export interface OptionsMonitorConfig {
   tier1IntervalMs: number; tier2IntervalMs: number;
   tier1PremarketMs: number; tier1AfterHoursMs: number; tier2PremarketMs: number; tier2AfterHoursMs: number;
   maxConcurrency: number; maxSymbolsPerTier2Cycle: number;
-  symbolCooldownMs: number; strategyCooldownMs: number;
+  symbolCooldownMs: number; symbolFormingRecheckMs: number; strategyCooldownMs: number;
   providerBudgetPerMinute: number; breakerFailureThreshold: number; breakerCooldownMs: number;
 }
 export function defaultMonitorConfig(env: NodeJS.ProcessEnv = process.env): OptionsMonitorConfig {
@@ -52,6 +52,11 @@ export function defaultMonitorConfig(env: NodeJS.ProcessEnv = process.env): Opti
     maxConcurrency: n(env.OPTIONS_MAX_CONCURRENCY, 3, 1),
     maxSymbolsPerTier2Cycle: n(env.OPTIONS_MAX_SYMBOLS_PER_TIER2_CYCLE, 25, 1),
     symbolCooldownMs: n(env.OPTIONS_SYMBOL_COOLDOWN_MS, 60_000, 0),
+    // Earliness: a symbol that passed liquidity + freshness but has NO plausible strategy yet is still
+    // FORMING — the exact pre-expansion window. Re-check it at the scan cadence (default 0 = next tick)
+    // instead of the full 60s cooldown, so the callout can fire while the move is still forming. Dup
+    // protection is unaffected (per-strategy cooldown + delivery alertId dedup guard actual callouts).
+    symbolFormingRecheckMs: n(env.OPTIONS_SYMBOL_FORMING_RECHECK_MS, 0, 0),
     strategyCooldownMs: n(env.OPTIONS_STRATEGY_COOLDOWN_MS, 120_000, 0),
     providerBudgetPerMinute: n(env.OPTIONS_PROVIDER_BUDGET_PER_MINUTE, 200, 1),
     breakerFailureThreshold: n(env.OPTIONS_BREAKER_FAILS, 5, 1),
@@ -69,7 +74,7 @@ interface MonitorState {
   metrics: {
     symbolsScanned: number; candidatesCreated: number; candidatesRejected: number; chainsFetched: number;
     providerUnderlying: number; providerBars: number; providerChain: number; providerDetailed: number; providerFailures: number; throttles: number; cooldownSkips: number;
-    stage1Pass: number; stage15Enrich: number; stage15Stale: number; stage2Chain: number; optionsActivityEscalations: number;
+    stage1Pass: number; stage15Enrich: number; stage15Stale: number; stage15Forming: number; stage2Chain: number; optionsActivityEscalations: number;
     phaseEarly: number; phaseDuring: number; phaseLate: number;
     lastTier1CycleMs: number | null; lastTier2CycleMs: number | null; latestCandidateMs: number | null;
     cycleDurations: number[]; detectionToDecision: number[]; rvolSamples: number[]; vwapDistSamples: number[]; compressionSamples: number[]; fractionMoveSamples: number[];
@@ -81,7 +86,7 @@ function state(): MonitorState {
   return (g.__optiscanOptionsMonitor ??= {
     running: false, timers: [], cooldownSymbol: new Map(), cooldownStrategy: new Map(), inFlight: new Set(),
     breaker: { state: "closed", failures: 0, openUntil: 0 }, budget: { windowStart: 0, used: 0 },
-    metrics: { symbolsScanned: 0, candidatesCreated: 0, candidatesRejected: 0, chainsFetched: 0, providerUnderlying: 0, providerBars: 0, providerChain: 0, providerDetailed: 0, providerFailures: 0, throttles: 0, cooldownSkips: 0, stage1Pass: 0, stage15Enrich: 0, stage15Stale: 0, stage2Chain: 0, optionsActivityEscalations: 0, phaseEarly: 0, phaseDuring: 0, phaseLate: 0, lastTier1CycleMs: null, lastTier2CycleMs: null, latestCandidateMs: null, cycleDurations: [], detectionToDecision: [], rvolSamples: [], vwapDistSamples: [], compressionSamples: [], fractionMoveSamples: [] },
+    metrics: { symbolsScanned: 0, candidatesCreated: 0, candidatesRejected: 0, chainsFetched: 0, providerUnderlying: 0, providerBars: 0, providerChain: 0, providerDetailed: 0, providerFailures: 0, throttles: 0, cooldownSkips: 0, stage1Pass: 0, stage15Enrich: 0, stage15Stale: 0, stage15Forming: 0, stage2Chain: 0, optionsActivityEscalations: 0, phaseEarly: 0, phaseDuring: 0, phaseLate: 0, lastTier1CycleMs: null, lastTier2CycleMs: null, latestCandidateMs: null, cycleDurations: [], detectionToDecision: [], rvolSamples: [], vwapDistSamples: [], compressionSamples: [], fractionMoveSamples: [] },
   });
 }
 
@@ -168,7 +173,11 @@ export async function runOptionsMonitorCycle(tier: 1 | 2, symbols: string[], dep
       // discovery on) to let abnormal chain activity INDEPENDENTLY escalate the symbol.
       let escalatedBy: string | null = null;
       const plausible = scoreStrategies(input).some((x) => x.applicable);
-      if (!plausible && !flags.optionsActivityDiscovery) { rejected += 1; s.metrics.candidatesRejected += 1; s.cooldownSymbol.set(symbol, n0 + cfg.symbolCooldownMs); return; }
+      // FORMING, not yet plausible: re-check at the scan cadence (symbolFormingRecheckMs, default 0)
+      // instead of freezing 60s, so the callout can fire as soon as the setup validates — while it is
+      // still forming, not after the expansion. NOT a quality change: no gate loosened, no extra alert
+      // (actual callouts are still deduped by the per-strategy cooldown + delivery alertId bucket).
+      if (!plausible && !flags.optionsActivityDiscovery) { rejected += 1; s.metrics.candidatesRejected += 1; s.metrics.stage15Forming += 1; s.cooldownSymbol.set(symbol, n0 + cfg.symbolFormingRecheckMs); return; }
       if (!plausible) escalatedBy = "options_activity_probe";
 
       if (breakerOpen(s, now())) { s.metrics.throttles += 1; return; }
@@ -235,7 +244,7 @@ export function optionsMonitorMetrics(): Record<string, unknown> {
   return {
     running: s.running, breaker: s.breaker.state, budgetUsed: s.budget.used, queueInFlight: s.inFlight.size,
     symbolsScanned: m.symbolsScanned, candidatesCreated: m.candidatesCreated, candidatesRejected: m.candidatesRejected, chainsFetched: m.chainsFetched,
-    stages: { stage1Pass: m.stage1Pass, stage15Enrich: m.stage15Enrich, stage15Stale: m.stage15Stale, stage2Chain: m.stage2Chain, stage3Detailed: m.providerDetailed, optionsActivityEscalations: m.optionsActivityEscalations },
+    stages: { stage1Pass: m.stage1Pass, stage15Enrich: m.stage15Enrich, stage15Stale: m.stage15Stale, stage15Forming: m.stage15Forming, stage2Chain: m.stage2Chain, stage3Detailed: m.providerDetailed, optionsActivityEscalations: m.optionsActivityEscalations },
     stage1PassRate: m.symbolsScanned > 0 ? +((m.stage1Pass / m.symbolsScanned) * 100).toFixed(2) : null,
     providerCalls: { underlying: m.providerUnderlying, bars: m.providerBars, chain: m.providerChain, detailed: m.providerDetailed, total: totalCalls },
     providerFailures: m.providerFailures, throttles: m.throttles, cooldownSkips: m.cooldownSkips,
