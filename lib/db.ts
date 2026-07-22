@@ -1418,6 +1418,17 @@ CREATE TABLE IF NOT EXISTS options_paper_trades (
   created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_options_paper_strategy ON options_paper_trades(strategy, side, dte);
+
+-- Gated private-beta options Discord delivery. Honest send states; SENT only after a successful
+-- webhook response. PURELY ADDITIVE; no webhook secret is ever stored here. Flag default OFF.
+CREATE TABLE IF NOT EXISTS options_alerts (
+  alert_id TEXT PRIMARY KEY, candidate_symbol TEXT NOT NULL, strategy TEXT, option_symbol TEXT, side TEXT,
+  research_only INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, message_hash TEXT, message TEXT,
+  delivered_bid REAL, delivered_ask REAL, delivered_underlying REAL, paper_linked INTEGER NOT NULL DEFAULT 0,
+  discord_status INTEGER, latency_ms INTEGER, retry_count INTEGER NOT NULL DEFAULT 0, failure_reason TEXT,
+  attempted_at_ms INTEGER, sent_at_ms INTEGER, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_options_alerts_state ON options_alerts(state, created_at_ms);
 `;
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */

@@ -9,6 +9,7 @@ import { selectOptionsStrategy, type OptionsCandidateInput, type StrategySelecti
 import { getStrategy } from "./strategy-catalog.ts";
 import { evaluateCallout, type CalloutContract, type CalloutResult } from "./callout.ts";
 import { buildRealOptionEntry, persistRealOptionPaperOnDb, canOpenRealOptionPaper, type OptionQuote, type RealOptionEntry } from "./paper.ts";
+import { deliverOptionsCallout } from "./delivery.ts";
 
 export interface ChainContract { optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number; bid: number | null; ask: number | null; spreadPct: number | null; volume: number | null; openInterest: number | null; iv: number | null; delta: number | null; providerTimestamp: number | null }
 
@@ -80,9 +81,22 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
     // Options-market-hours only (never open from a stale prior-session quote), and gated on
     // dedup / max-concurrent / per-symbol exposure. A fresh executable quote is enforced by the
     // entry gate (quoteAgeMs) inside buildRealOptionEntry.
+    let paperOptionSymbol: string | null = null;
     if (res.state === "READY" && res.paperEntry?.ok && researchFlags(env).realOptionPaper && input.session === "regular") {
       const gate = canOpenRealOptionPaper(db, { optionSymbol: res.paperEntry.optionSymbol, strategy: res.paperEntry.strategy, nowMs: input.nowMs });
-      if (gate.ok) persistRealOptionPaperOnDb(db, res.paperEntry, input.nowMs, { session: input.session, coreBroad: extra.coreBroad ?? (input.tier === 1 ? "core" : "broad"), featureSnapshotJson: snapJson ?? undefined });
+      if (gate.ok) { persistRealOptionPaperOnDb(db, res.paperEntry, input.nowMs, { session: input.session, coreBroad: extra.coreBroad ?? (input.tier === 1 ? "core" : "broad"), featureSnapshotJson: snapJson ?? undefined }); paperOptionSymbol = res.paperEntry.optionSymbol; }
+    }
+    // GATED private-beta Discord delivery — fire-and-forget, fully isolated. HARD no-op unless
+    // EARLY_OPTIONS_CALLOUTS_ENABLED=1 (delivery re-checks the flag + freshness/chase). The linked
+    // paper trade (if any) uses the EXACT same OCC contract as the callout.
+    if (res.state === "READY" && res.contract && res.callout?.message && researchFlags(env).earlyOptionsCallouts) {
+      const strat = getStrategy(res.selection.selected!.key);
+      const px = input.underlying.price ?? 0;
+      void deliverOptionsCallout({
+        candidateSymbol: input.symbol, strategy: res.selection.selected!.key, researchOnly: res.selection.selected!.researchOnly,
+        contract: { optionSymbol: res.contract.optionSymbol, side: res.contract.side, strike: res.contract.strike, expiration: res.contract.expiration, bid: res.contract.bid, ask: res.contract.ask, spreadPct: res.contract.spreadPct, quoteAgeMs: res.contract.providerTimestamp != null ? input.nowMs - res.contract.providerTimestamp : null },
+        message: res.callout.message, observedUnderlyingPrice: px, currentUnderlyingPrice: px, chaseLimitPct: strat?.chaseLimitPct ?? 0.6, underlyingPrice: px, paperOptionSymbol,
+      }, { getDb: deps.getDb }, env).catch(() => { /* delivery failure never blocks the monitor */ });
     }
   } catch { /* isolated: options discovery never affects the live path */ }
   return res;

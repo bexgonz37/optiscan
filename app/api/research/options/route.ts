@@ -21,10 +21,27 @@ export async function GET(req: Request) {
   const db = getDb();
   const activePaperPositions = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_paper_trades'").get()
     ? Number((db.prepare("SELECT COUNT(*) n FROM options_paper_trades WHERE status='ENTERED'").get() as any)?.n ?? 0) : 0;
+  const { readDeliveryMetricsOnDb } = await import("@/lib/research/options/delivery");
   return NextResponse.json({
     ok: true,
     flags: { independentOptionsDiscovery: f.independentOptionsDiscovery, earlyOptionsCallouts: f.earlyOptionsCallouts, realOptionPaper: f.realOptionPaper },
     monitor: { ...optionsMonitorMetrics(), health: optionsMonitorHealth(process.env), activePaperPositions },
+    delivery: { enabled: f.independentOptionsDiscovery && f.earlyOptionsCallouts, webhookConfigured: Boolean(String(process.env.DISCORD_WEBHOOK_OPTIONS ?? "").trim()), ...readDeliveryMetricsOnDb(db) },
     report: readOptionsReportOnDb(db),
   });
+}
+
+/** Operator transport test (token-gated): sends ONE synthetic connectivity message to the options
+ *  webhook. No ticker/contract/entry; creates no paper trade or performance record. */
+export async function POST(req: Request) {
+  if (!checkApiToken(req)) return unauthorized();
+  ensureServerBoot();
+  let body: any = {};
+  try { body = await req.json(); } catch { /* empty */ }
+  if (String(body.action ?? "").toLowerCase() !== "transport_test") {
+    return NextResponse.json({ ok: false, error: "action must be 'transport_test'" }, { status: 400 });
+  }
+  const { optionsWebhookTransportTest } = await import("@/lib/research/options/delivery");
+  const result = await optionsWebhookTransportTest();
+  return NextResponse.json({ ok: result.ok, result });
 }

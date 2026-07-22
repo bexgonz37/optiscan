@@ -387,6 +387,26 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   OPTIONS_ACTIVITY → REAL_OPTION_PAPER → (later) analog/AI shadow. Blockers before public Discord: forward
   REAL_OPTION_PAPER sample + measured latency + earnings feed + richer level/context feeds + a gated
   approved delivery layer.**
+- 🟡 **Gated private-beta options Discord delivery** (commit pending). `lib/research/options/delivery.ts`
+  sends exactly ONE message to `DISCORD_WEBHOOK_OPTIONS` (reusing the approved `postToDiscord`) when BOTH
+  `INDEPENDENT_OPTIONS_DISCOVERY_ENABLED=1` AND `EARLY_OPTIONS_CALLOUTS_ENABLED=1`, a candidate is READY
+  with a real OCC contract, and freshness/spread/chase/dedup all pass. Honest states (READY /
+  SEND_ATTEMPTED / SENT / SEND_FAILED / TOO_LATE / REJECTED / EXPIRED) — **SENT only after a successful
+  Discord response**; row claimed as SEND_ATTEMPTED before the request; idempotent `alertId`
+  (symbol|strategy|contract|5-min bucket); no duplicate after an ambiguous timeout (retries exhausted);
+  bounded retry+backoff (never on timeout/HTTP); kill switch `OPTIONS_CALLOUTS_KILL`; message carries
+  `PAPER/BETA TEST — NOT FINANCIAL ADVICE`. **Puts stay RESEARCH_ONLY** → suppressed from Discord and
+  counted (bearish-gate authority preserved, not weakened). Linked to the exact same OCC real-option
+  paper entry. Wired fire-and-forget from `runOptionsCandidate` (isolated; a Discord failure never blocks
+  the monitor). Additive repeat-safe `options_alerts` table (webhook secret NEVER stored/logged/exposed).
+  `GET /api/research/options` extended with delivery metrics; token-gated `POST {action:"transport_test"}`
+  sends a synthetic connectivity message (no ticker/contract, no paper/perf record). Docs:
+  OPTIONS_DISCORD_PRIVATE_BETA, OPTIONS_DELIVERY_STATE_MACHINE, OPTIONS_DISCORD_ROLLOUT,
+  OPTIONS_PRIVATE_BETA_RUNBOOK. Tests: `options-delivery` (14 cases). Green: 1716 tests, tsc 0, build 0.
+  **All flags OFF in code; NOT auto-enabled; stock radar untouched; no real money; no real callout sent
+  during implementation.** Railway activation: set `DISCORD_WEBHOOK_OPTIONS`, transport-test, then
+  `INDEPENDENT_OPTIONS_DISCOVERY_ENABLED=1` + `REAL_OPTION_PAPER_ENABLED=1`, then
+  `EARLY_OPTIONS_CALLOUTS_ENABLED=1`. Rollback = unset the flag / `OPTIONS_CALLOUTS_KILL=1`.
 - ⬜ Phases G–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: collect options/Phase-F/shadow live data before Phase G.**
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).
