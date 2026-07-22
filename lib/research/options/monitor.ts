@@ -69,7 +69,7 @@ interface MonitorState {
   metrics: {
     symbolsScanned: number; candidatesCreated: number; candidatesRejected: number; chainsFetched: number;
     providerUnderlying: number; providerBars: number; providerChain: number; providerDetailed: number; providerFailures: number; throttles: number; cooldownSkips: number;
-    stage1Pass: number; stage15Enrich: number; stage2Chain: number; optionsActivityEscalations: number;
+    stage1Pass: number; stage15Enrich: number; stage15Stale: number; stage2Chain: number; optionsActivityEscalations: number;
     phaseEarly: number; phaseDuring: number; phaseLate: number;
     lastTier1CycleMs: number | null; lastTier2CycleMs: number | null; latestCandidateMs: number | null;
     cycleDurations: number[]; detectionToDecision: number[]; rvolSamples: number[]; vwapDistSamples: number[]; compressionSamples: number[]; fractionMoveSamples: number[];
@@ -81,7 +81,7 @@ function state(): MonitorState {
   return (g.__optiscanOptionsMonitor ??= {
     running: false, timers: [], cooldownSymbol: new Map(), cooldownStrategy: new Map(), inFlight: new Set(),
     breaker: { state: "closed", failures: 0, openUntil: 0 }, budget: { windowStart: 0, used: 0 },
-    metrics: { symbolsScanned: 0, candidatesCreated: 0, candidatesRejected: 0, chainsFetched: 0, providerUnderlying: 0, providerBars: 0, providerChain: 0, providerDetailed: 0, providerFailures: 0, throttles: 0, cooldownSkips: 0, stage1Pass: 0, stage15Enrich: 0, stage2Chain: 0, optionsActivityEscalations: 0, phaseEarly: 0, phaseDuring: 0, phaseLate: 0, lastTier1CycleMs: null, lastTier2CycleMs: null, latestCandidateMs: null, cycleDurations: [], detectionToDecision: [], rvolSamples: [], vwapDistSamples: [], compressionSamples: [], fractionMoveSamples: [] },
+    metrics: { symbolsScanned: 0, candidatesCreated: 0, candidatesRejected: 0, chainsFetched: 0, providerUnderlying: 0, providerBars: 0, providerChain: 0, providerDetailed: 0, providerFailures: 0, throttles: 0, cooldownSkips: 0, stage1Pass: 0, stage15Enrich: 0, stage15Stale: 0, stage2Chain: 0, optionsActivityEscalations: 0, phaseEarly: 0, phaseDuring: 0, phaseLate: 0, lastTier1CycleMs: null, lastTier2CycleMs: null, latestCandidateMs: null, cycleDurations: [], detectionToDecision: [], rvolSamples: [], vwapDistSamples: [], compressionSamples: [], fractionMoveSamples: [] },
   });
 }
 
@@ -152,10 +152,13 @@ export async function runOptionsMonitorCycle(tier: 1 | 2, symbols: string[], dep
         const ctx: FeatureContext = { nowMs: n0, session, ...(deps.levelContext?.(symbol) ?? {}) };
         const f = computeOptionsFeatures(bars, ctx);
         s.metrics.stage15Enrich += 1;
-        if (f.stale) { rejected += 1; s.metrics.candidatesRejected += 1; s.cooldownSymbol.set(symbol, n0 + cfg.symbolCooldownMs); return; } // stale bars reject safely
-        input = { ...input, underlying: featuresToUnderlying(f) };
+        if (f.stale) { s.metrics.stage15Stale += 1; rejected += 1; s.metrics.candidatesRejected += 1; s.cooldownSymbol.set(symbol, n0 + cfg.symbolCooldownMs); return; } // stale bars reject safely
+        const u = featuresToUnderlying(f);
+        input = { ...input, underlying: u };
         featureSnapshot = { source: "enriched", underlying: f };
-        if (f.relVolume != null) record(s.metrics.rvolSamples, f.relVolume);
+        // record the EFFECTIVE relVolume (the proxy when no baseline exists), so the distribution is
+        // observable during hours; distributions summarize all NON-STALE enriched symbols.
+        if (u.relVolume != null) record(s.metrics.rvolSamples, u.relVolume);
         if (f.vwapDistPct != null) record(s.metrics.vwapDistSamples, f.vwapDistPct);
         if (f.compressionScore != null) record(s.metrics.compressionSamples, f.compressionScore);
         if (f.hod != null && f.lod != null && f.hod > f.lod && f.price != null) { fractionMove = +(((f.price - f.lod) / (f.hod - f.lod))).toFixed(3); record(s.metrics.fractionMoveSamples, fractionMove); }
@@ -217,12 +220,14 @@ export function optionsMonitorMetrics(): Record<string, unknown> {
   return {
     running: s.running, breaker: s.breaker.state, budgetUsed: s.budget.used, queueInFlight: s.inFlight.size,
     symbolsScanned: m.symbolsScanned, candidatesCreated: m.candidatesCreated, candidatesRejected: m.candidatesRejected, chainsFetched: m.chainsFetched,
-    stages: { stage1Pass: m.stage1Pass, stage15Enrich: m.stage15Enrich, stage2Chain: m.stage2Chain, stage3Detailed: m.providerDetailed, optionsActivityEscalations: m.optionsActivityEscalations },
+    stages: { stage1Pass: m.stage1Pass, stage15Enrich: m.stage15Enrich, stage15Stale: m.stage15Stale, stage2Chain: m.stage2Chain, stage3Detailed: m.providerDetailed, optionsActivityEscalations: m.optionsActivityEscalations },
     stage1PassRate: m.symbolsScanned > 0 ? +((m.stage1Pass / m.symbolsScanned) * 100).toFixed(2) : null,
     providerCalls: { underlying: m.providerUnderlying, bars: m.providerBars, chain: m.providerChain, detailed: m.providerDetailed, total: totalCalls },
     providerFailures: m.providerFailures, throttles: m.throttles, cooldownSkips: m.cooldownSkips,
     earliness: { early: m.phaseEarly, during: m.phaseDuring, late: m.phaseLate }, fractionMoveComplete: dist(m.fractionMoveSamples),
-    distributions: { rvol: dist(m.rvolSamples), vwapDistPct: dist(m.vwapDistSamples), compression: dist(m.compressionSamples) },
+    // distributions summarize ALL NON-STALE Stage-1.5 enriched symbols (not just created candidates).
+    // When stage15Stale ≈ stage15Enrich, n=0 means every enriched symbol had stale/empty bars (e.g. market closed).
+    distributionsScope: "all_non_stale_enriched", distributions: { rvol: dist(m.rvolSamples), vwapDistPct: dist(m.vwapDistSamples), compression: dist(m.compressionSamples) },
     lastTier1CycleMs: m.lastTier1CycleMs, lastTier2CycleMs: m.lastTier2CycleMs, latestCandidateMs: m.latestCandidateMs,
     cycleMs: { p50: pct(m.cycleDurations, 0.5), p95: pct(m.cycleDurations, 0.95) },
     detectionToDecisionMs: { p50: pct(m.detectionToDecision, 0.5), p95: pct(m.detectionToDecision, 0.95) },
@@ -259,5 +264,7 @@ export function startOptionsMonitor(deps: OptionsMonitorDeps, env: NodeJS.Proces
   return { started: true, reason: "started" };
 }
 export function stopOptionsMonitor(): void { const s = state(); for (const t of s.timers) clearInterval(t); s.timers = []; s.running = false; }
+/** Inspect the live per-symbol cooldown (for the diagnostic — does not mutate state). */
+export function optionsCooldownRemainingMs(symbol: string, nowMs: number = Date.now()): number { return Math.max(0, (state().cooldownSymbol.get(symbol.toUpperCase()) ?? 0) - nowMs); }
 /** Test-only: reset the singleton state (cooldowns/metrics/breaker) for order-independent tests. */
 export function __resetOptionsMonitorForTest(): void { stopOptionsMonitor(); delete (globalThis as G).__optiscanOptionsMonitor; }

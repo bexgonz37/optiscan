@@ -407,6 +407,26 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   during implementation.** Railway activation: set `DISCORD_WEBHOOK_OPTIONS`, transport-test, then
   `INDEPENDENT_OPTIONS_DISCOVERY_ENABLED=1` + `REAL_OPTION_PAPER_ENABLED=1`, then
   `EARLY_OPTIONS_CALLOUTS_ENABLED=1`. Rollback = unset the flag / `OPTIONS_CALLOUTS_KILL=1`.
+- 🟡 **Options Tier-1 rejection diagnostic (evidence-only) + zero-Stage-2 root cause** (commit pending).
+  Investigated the production report (14 scanned / 14 Stage-1 pass / 14 enriched / 0 candidates / 0
+  Stage-2 / all distributions n=0). **Root cause (proven, not a threshold problem):** in `monitor.ts`,
+  `stage15Enrich` increments before the stale check and distributions are recorded ONLY for NON-STALE
+  symbols — so `stage15Enrich=14` + distributions `n=0` + `stage2=0` + `rejected=14` means **every symbol
+  had `f.stale===true`** (stale/empty bars, consistent with a closed/after-hours market). Field names
+  between `features.ts` and strategy scoring MATCH; no strategy needs levels/context for EVERY option;
+  no field mismatch. Fixes (no thresholds loosened): added a `stage15Stale` counter; the rvol
+  distribution now records the EFFECTIVE (proxy) relVolume so it isn't perpetually null once bars are
+  fresh; metrics now state `distributionsScope: "all_non_stale_enriched"` (they summarize all non-stale
+  Stage-1.5 enriched symbols, NOT just created candidates). New **evidence-only** diagnostic
+  (`lib/research/options/diagnostic.ts`, token-gated `GET /api/research/options/diagnostic`): per Tier-1
+  symbol it runs the exact enrichment path and reports snapshot, bar count + time range + freshness,
+  every feature value or exact null-reason, missing features, every strategy scored (matched / required /
+  missing / disqualifier / near-miss), chosen side, `wouldReachStage2`, cooldown remaining, and the exact
+  final rejection — creating NO candidate/paper/Discord. It states explicitly whether the market is open
+  for options and that a closed session rejecting everything is EXPECTED (re-run in regular hours to
+  differ). Tests (`options-diagnostic`) reproduce the exact production state (14/14/0/0, all stale) AND
+  prove fresh bars produce distribution samples. Green: 1721 tests, tsc 0, build 0. Public callouts +
+  all freshness/liquidity/chase/dedup gates preserved; no thresholds changed; no fake candidates.
 - ⬜ Phases G–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: collect options/Phase-F/shadow live data before Phase G.**
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).
