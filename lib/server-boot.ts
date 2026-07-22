@@ -67,6 +67,39 @@ export function ensureServerBoot(): void {
   } catch (err) {
     console.warn("[options-monitor] not started:", (err as Error)?.message);
   }
+  try {
+    // Boot self-check: verify options deps WITHOUT exposing secrets; persist blockers; fail closed.
+    // Never blocks the web app — a missing required dep just marks the feature inactive.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { runOptionsSelfCheck } = require("@/lib/research/options/runtime");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const sc = runOptionsSelfCheck(process.env, require("@/lib/db").getDb());
+    if (!sc.healthy) console.warn("[options-selfcheck] blockers:", sc.blockers.join(", "));
+  } catch (err) {
+    console.warn("[options-selfcheck] skipped:", (err as Error)?.message);
+  }
+  try {
+    // AUTOMATIC outcome grader (in-process, gated). Restart-safe: open ENTERED positions persist in the
+    // DB so grading resumes after a deploy. Each tick also runs the once-per-day private summary.
+    // HARD no-op unless INDEPENDENT_OPTIONS_DISCOVERY_ENABLED=1 AND REAL_OPTION_PAPER_ENABLED=1.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { startOptionsGrader } = require("@/lib/research/options/grade");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const gradeDeps = require("@/lib/research/options/live-deps").buildLiveGradeDeps();
+    const started = startOptionsGrader({
+      ...gradeDeps,
+      onCycle: () => {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { maybeSendDailySummary } = require("@/lib/research/options/daily-summary");
+          void maybeSendDailySummary({ getDb: gradeDeps.getDb }).catch(() => {});
+        } catch { /* isolated */ }
+      },
+    }, process.env);
+    if (started.started) console.info("[options-grader] started");
+  } catch (err) {
+    console.warn("[options-grader] not started:", (err as Error)?.message);
+  }
   // (removed) A boot-time block used to force-lower scanner gates to
   // 0.12%/min / 1.25x on every start — it silently undid any tightening the
   // user saved in Settings and was a root cause of the noisy-callout audit

@@ -198,6 +198,21 @@ export async function runOptionsMonitorCycle(tier: 1 | 2, symbols: string[], dep
   const durationMs = now() - t0;
   record(s.metrics.cycleDurations, durationMs);
   if (tier === 1) s.metrics.lastTier1CycleMs = now(); else s.metrics.lastTier2CycleMs = now();
+
+  // Persist a heartbeat so autonomous runtime status survives restart/deploy (no manual endpoint call).
+  if (getDb) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { persistHeartbeatOnDb } = require("./runtime.ts");
+      const m = s.metrics;
+      persistHeartbeatOnDb(getDb(), {
+        session, running: s.running, breaker: s.breaker.state,
+        lastTier1CycleMs: m.lastTier1CycleMs, lastTier2CycleMs: m.lastTier2CycleMs,
+        symbolsScanned: m.symbolsScanned, stage15Stale: m.stage15Stale, candidatesCreated: m.candidatesCreated,
+        stage2Chain: m.stage2Chain, providerFailures: m.providerFailures, latestCandidateMs: m.latestCandidateMs,
+      }, now());
+    } catch { /* heartbeat is best-effort; never fail a cycle */ }
+  }
   return { tier, scanned, created, rejected, chains, durationMs };
 }
 

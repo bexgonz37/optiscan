@@ -87,3 +87,23 @@ export function buildLiveOptionsDeps(): OptionsMonitorDeps {
     },
   };
 }
+
+/** Live deps for the AUTOMATIC grader: refresh one open contract's quote by fetching its underlying's
+ *  chain and matching the OCC symbol. Returns null when unavailable (position stays open, not fabricated). */
+export function buildLiveGradeDeps(): { getDb: () => any; now: () => number; getQuote: (optionSymbol: string, underlyingSymbol: string) => Promise<{ bid: number | null; ask: number | null; quoteAgeMs: number | null } | null> } {
+  return {
+    now: Date.now,
+    getDb: () => require("@/lib/db").getDb(), // eslint-disable-line @typescript-eslint/no-require-imports
+    getQuote: async (optionSymbol: string, underlyingSymbol: string) => {
+      if (!underlyingSymbol) return null;
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { fetchOptionChain } = require("@/lib/polygon-provider");
+      const res = await fetchOptionChain(underlyingSymbol, { dteMin: 0, dteMax: 60, maxPages: 3 });
+      if (!res?.available) return null;
+      const nowMs = Date.now();
+      const c = mapOptionContracts(res.contracts, nowMs).find((x) => x.optionSymbol === optionSymbol);
+      if (!c) return null;
+      return { bid: c.bid, ask: c.ask, quoteAgeMs: c.providerTimestamp != null ? nowMs - c.providerTimestamp : null };
+    },
+  };
+}

@@ -427,6 +427,31 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   differ). Tests (`options-diagnostic`) reproduce the exact production state (14/14/0/0, all stale) AND
   prove fresh bars produce distribution samples. Green: 1721 tests, tsc 0, build 0. Public callouts +
   all freshness/liquidity/chase/dedup gates preserved; no thresholds changed; no fake candidates.
+- 🟡 **Options autonomous runtime — grading + heartbeat + self-check + daily summary** (commit pending).
+  Audited and closed the autonomy gaps so the scanner runs fully on Railway with **no daily manual
+  PowerShell**; the diagnostic/`GET` endpoints are operator inspection tools only. Biggest gap fixed:
+  the monitor **opened** real-option paper (`loop.ts`) but nothing **graded/closed** it — new
+  `grade.ts` adds a PURE `decideOptionExit` (target `+OPTIONS_PAPER_TAKE_PROFIT_PCT` 60% / stop
+  `-STOP_LOSS_PCT` 40% / expiration / time-stop `MAX_HOLD_MS` 2d), an isolated `gradeOpenOptionPositionsOnDb`
+  (P&L from the OPTION price ×100; expired-without-quote closes UNPRICED `pnl=null`, never fabricated),
+  and an in-process singleton `startOptionsGrader` (gated on `INDEPENDENT_OPTIONS_DISCOVERY_ENABLED=1` +
+  `REAL_OPTION_PAPER_ENABLED=1`, restart-safe from `status='ENTERED'` rows, never stops on error). New
+  `runtime.ts`: `persistHeartbeatOnDb` (monitor upserts `options_runtime.heartbeat` each cycle → status
+  survives restart), `runOptionsSelfCheck` (boot dep verification, fail-closed, **secrets never exposed**),
+  `readRuntimeStatusOnDb`. New `daily-summary.ts`: `buildDailySummaryOnDb` (from DB; returns `null` when
+  disabled+idle) + `maybeSendDailySummary` (once/day via `DISCORD_WEBHOOK_RECAP` fallback options,
+  idempotent via `last_summary_day`, after `OPTIONS_SUMMARY_HOUR_ET`). Wired into `server-boot.ts`
+  (self-check + grader, grader tick runs the summary); new repeat-safe `options_runtime` table;
+  `GET /api/research/options` now also returns read-only `grading` backlog + `runtime` status (triggers no
+  work). Session automation already present (`marketSession` handles weekend/holiday + premarket/AH
+  cadences; real-option paper only opens in `regular`). Docs: `OPTIONS_AUTONOMOUS_RUNTIME.md`,
+  `OPTIONS_SESSION_AUTOMATION.md`, `OPTIONS_RECOVERY_RUNBOOK.md`, `OPTIONS_DAILY_SUMMARY.md`. Tests
+  (`options-autonomous`, 14) prove all 9 automation items: boot starts the monitor, in-process
+  scan+grade with no endpoint call, stale→fresh open transition, weekend/holiday safe no-op, restart
+  preserves dedup (1 webhook call across a restart), grading resumes from DB after restart, provider +
+  Discord failures isolated/recover, disabled flags = clean no-op, read helpers are inspection-only.
+  Green: **1735 tests, tsc 0, build 0.** No strategy entry gate loosened; no real-money execution;
+  Phase G not started.
 - ⬜ Phases G–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: collect options/Phase-F/shadow live data before Phase G.**
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).

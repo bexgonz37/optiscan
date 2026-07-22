@@ -1429,6 +1429,12 @@ CREATE TABLE IF NOT EXISTS options_alerts (
   attempted_at_ms INTEGER, sent_at_ms INTEGER, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_options_alerts_state ON options_alerts(state, created_at_ms);
+
+-- Autonomous-runtime state for the options scanner (persistent heartbeat, boot self-check, daily-summary
+-- dedup). Small key/value store; survives restart/deploy so runtime status needs no manual endpoint call.
+CREATE TABLE IF NOT EXISTS options_runtime (
+  key TEXT PRIMARY KEY, value TEXT, updated_at_ms INTEGER NOT NULL
+);
 `;
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */

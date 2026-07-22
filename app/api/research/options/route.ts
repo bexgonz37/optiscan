@@ -22,10 +22,14 @@ export async function GET(req: Request) {
   const activePaperPositions = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_paper_trades'").get()
     ? Number((db.prepare("SELECT COUNT(*) n FROM options_paper_trades WHERE status='ENTERED'").get() as any)?.n ?? 0) : 0;
   const { readDeliveryMetricsOnDb } = await import("@/lib/research/options/delivery");
+  const { readRuntimeStatusOnDb } = await import("@/lib/research/options/runtime");
+  const { readGradingBacklogOnDb, optionsGraderState } = await import("@/lib/research/options/grade");
   return NextResponse.json({
     ok: true,
     flags: { independentOptionsDiscovery: f.independentOptionsDiscovery, earlyOptionsCallouts: f.earlyOptionsCallouts, realOptionPaper: f.realOptionPaper },
     monitor: { ...optionsMonitorMetrics(), health: optionsMonitorHealth(process.env), activePaperPositions },
+    grading: { ...readGradingBacklogOnDb(db), grader: optionsGraderState() },
+    runtime: readRuntimeStatusOnDb(db, process.env),
     delivery: { enabled: f.independentOptionsDiscovery && f.earlyOptionsCallouts, webhookConfigured: Boolean(String(process.env.DISCORD_WEBHOOK_OPTIONS ?? "").trim()), ...readDeliveryMetricsOnDb(db) },
     report: readOptionsReportOnDb(db),
   });
