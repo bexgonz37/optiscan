@@ -1470,9 +1470,14 @@ CREATE TABLE IF NOT EXISTS options_delivery_decisions (
   outcome TEXT NOT NULL, reason TEXT, quality REAL, rank INTEGER, batch_size INTEGER,
   components_json TEXT, cluster_key TEXT, threshold REAL, session_state TEXT,
   alert_id TEXT, would_deliver_solo INTEGER, competing_json TEXT,
+  delivery_attempted INTEGER NOT NULL DEFAULT 0, delivery_sent INTEGER NOT NULL DEFAULT 0,
+  delivery_state TEXT, final_delivery_outcome TEXT NOT NULL DEFAULT 'SKIPPED',
+  delivery_failure_category TEXT, final_delivery_reason TEXT,
+  delivery_attempted_at_ms INTEGER, delivery_completed_at_ms INTEGER,
   created_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_options_delivery_decisions ON options_delivery_decisions(outcome, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_options_delivery_final_outcome ON options_delivery_decisions(final_delivery_outcome, created_at_ms);
 
 -- Options Historical Replay Lab (Phase 1): deterministic replay of the PRODUCTION detection over
 -- historical stock bars. Outcomes are UNDERLYING forward returns (grading_basis stamped) — no option
@@ -1787,6 +1792,21 @@ function migrate(db: Database.Database) {
       ["target_stop", "ALTER TABLE options_alerts ADD COLUMN target_stop REAL"],
       ["target_method", "ALTER TABLE options_alerts ADD COLUMN target_method TEXT"],
     ] as [string, string][]) if (!oa.has(col)) db.exec(sql);
+  }
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_delivery_decisions'").get()) {
+    const odd = cols("options_delivery_decisions");
+    for (const [col, sql] of [
+      ["delivery_attempted", "ALTER TABLE options_delivery_decisions ADD COLUMN delivery_attempted INTEGER NOT NULL DEFAULT 0"],
+      ["delivery_sent", "ALTER TABLE options_delivery_decisions ADD COLUMN delivery_sent INTEGER NOT NULL DEFAULT 0"],
+      ["delivery_state", "ALTER TABLE options_delivery_decisions ADD COLUMN delivery_state TEXT"],
+      ["final_delivery_outcome", "ALTER TABLE options_delivery_decisions ADD COLUMN final_delivery_outcome TEXT NOT NULL DEFAULT 'SKIPPED'"],
+      ["delivery_failure_category", "ALTER TABLE options_delivery_decisions ADD COLUMN delivery_failure_category TEXT"],
+      ["final_delivery_reason", "ALTER TABLE options_delivery_decisions ADD COLUMN final_delivery_reason TEXT"],
+      ["delivery_attempted_at_ms", "ALTER TABLE options_delivery_decisions ADD COLUMN delivery_attempted_at_ms INTEGER"],
+      ["delivery_completed_at_ms", "ALTER TABLE options_delivery_decisions ADD COLUMN delivery_completed_at_ms INTEGER"],
+    ] as [string, string][]) if (!odd.has(col)) db.exec(sql);
+    db.exec("UPDATE options_delivery_decisions SET final_delivery_outcome=CASE WHEN outcome='REJECT' THEN 'REJECTED' ELSE 'SKIPPED' END WHERE final_delivery_outcome IS NULL OR final_delivery_outcome=''");
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_options_delivery_final_outcome ON options_delivery_decisions(final_delivery_outcome, created_at_ms)").run();
   }
   // Phase 7 (additive): drift-health flag on an existing model_registry table.
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_registry'").get()) {

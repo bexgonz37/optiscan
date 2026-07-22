@@ -161,7 +161,10 @@ async function beat(): Promise<void> {
       s.note = `standby — scheduler lease held by pid ${res.holder?.pid}`;
     }
   } catch (err: any) {
-    // DB unavailable ⇒ fail OPEN so a single-node install still runs jobs.
+    // DB unavailable => fail-open so a single-node install still runs jobs.
+    // Intentional degraded mode: the DB lease is the only deterministic cross-process coordinator.
+    // A local pid/file lock would split-brain across containers, while fail-closed can miss bounded,
+    // idempotent maintenance and AI/reporting jobs until DB ownership is restored.
     owner = true;
     s.lastError = `lease unavailable: ${err?.message}`;
   }

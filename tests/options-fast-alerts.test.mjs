@@ -21,7 +21,7 @@ function db() {
 }
 const snap = (syms) => new Map(syms.map((s) => [s, { price: 500, dayDollarVolume: 900_000_000, relVolume: 3, velPct: 1, accelPct: 1, gapPct: null, aboveVwap: true, hodBreak: null, nearResistancePct: null, compressionPct: null, realizedVolExpanding: null, openingRange: null, premarketLevelTest: null }]));
 const monDeps = (d) => ({ now: () => NOW, session: () => "regular", getDb: () => d, getUnderlyingBatch: async (s) => snap(s), getChain: async () => [] });
-const ENV = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", EARLY_OPTIONS_CALLOUTS_ENABLED: "1" };
+const ENV = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1", EARLY_OPTIONS_CALLOUTS_ENABLED: "1" };
 // A weekday timestamp helper at a given ET hour:minute (July = EDT = UTC-4). 2026-07-22 is a Wednesday.
 const ET = (h, m) => Date.UTC(2026, 6, 22, h + 4, m, 0);
 

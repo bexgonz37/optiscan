@@ -43,6 +43,13 @@ test("scheduler is single-owner (worker lease) and started from server boot", ()
   assert.ok(/startScheduler\(\)/.test(boot), "started from server boot");
 });
 
+test("scheduler lease failure mode is explicitly documented as bounded degraded fail-open", () => {
+  const sch = read("lib/scheduler.ts");
+  assert.ok(/fail-open/i.test(sch), "lease failure mode is named explicitly");
+  assert.ok(/DB lease is the only deterministic cross-process coordinator/.test(sch), "documents why local fallback would be unsafe");
+  assert.ok(/bounded,[\s\S]*idempotent/.test(sch), "documents why degraded scheduler jobs can safely proceed");
+});
+
 test("scheduler guards against overlapping runs of the same job", () => {
   const sch = read("lib/scheduler.ts");
   assert.ok(/if \(b\.has\(name\)\) return;/.test(sch), "in-process overlap guard");

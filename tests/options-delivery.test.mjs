@@ -12,7 +12,7 @@ function db() {
   return d;
 }
 const NOW = 5_000_000;
-const ON = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", EARLY_OPTIONS_CALLOUTS_ENABLED: "1", DISCORD_WEBHOOK_OPTIONS: "https://discord.com/api/webhooks/SECRET" };
+const ON = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1", EARLY_OPTIONS_CALLOUTS_ENABLED: "1", DISCORD_WEBHOOK_OPTIONS: "https://discord.com/api/webhooks/SECRET" };
 const input = (over = {}) => ({
   candidateSymbol: "HOOD", strategy: "breakout_forming", researchOnly: false,
   contract: { optionSymbol: "O:HOOD260320C00101000", side: "call", strike: 101, expiration: "2026-03-20", bid: 1.2, ask: 1.3, spreadPct: 8, quoteAgeMs: 1000 },
@@ -125,4 +125,13 @@ test("13. delivery metrics never expose the webhook secret", async () => {
 test("alertId is deterministic per symbol/strategy/contract/time-bucket", () => {
   assert.equal(optionsAlertId("HOOD", "breakout_forming", "O:X", NOW), optionsAlertId("hood", "breakout_forming", "O:X", NOW + 1000));
   assert.notEqual(optionsAlertId("HOOD", "breakout_forming", "O:X", NOW), optionsAlertId("HOOD", "breakout_forming", "O:X", NOW + 400_000));
+});
+
+test("independent options fail closed without mandatory portfolio delivery", async () => {
+  const { spy, send } = okSend();
+  const r = await deliverOptionsCallout(input(), { getDb: () => db(), send, now: () => NOW }, { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", EARLY_OPTIONS_CALLOUTS_ENABLED: "1" });
+  assert.equal(r.state, "REJECTED");
+  assert.equal(r.sent, false);
+  assert.equal(r.reason, "portfolio_delivery_required");
+  assert.equal(spy.calls.length, 0);
 });

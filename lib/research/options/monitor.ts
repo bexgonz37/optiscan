@@ -16,6 +16,13 @@ import { runOptionsCandidate, type ChainContract } from "./loop.ts";
 import { computeOptionsFeatures, featuresToUnderlying, type Bar, type FeatureContext } from "./features.ts";
 import { summarizeChainFeatures, chainFeaturesToActivity, type OptionContract } from "./chain-features.ts";
 
+export function portfolioDeliveryStatus(env: NodeJS.ProcessEnv = process.env): { required: boolean; enabled: boolean; healthy: boolean; reason: string | null } {
+  const required = researchFlags(env).independentOptionsDiscovery;
+  const enabled = env.OPTIONS_PORTFOLIO_DELIVERY_ENABLED === "1";
+  const healthy = !required || enabled;
+  return { required, enabled, healthy, reason: healthy ? null : "OPTIONS_PORTFOLIO_DELIVERY_ENABLED!=1 while INDEPENDENT_OPTIONS_DISCOVERY_ENABLED=1" };
+}
+
 export interface UnderlyingSnapshot {
   price: number | null; dayDollarVolume: number | null; relVolume: number | null;
   velPct: number | null; accelPct: number | null; gapPct: number | null;
@@ -142,7 +149,12 @@ export async function runOptionsMonitorCycle(tier: 0 | 1 | 2, symbols: string[],
   // PORTFOLIO DELIVERY (flag-gated): collect every READY candidate this cycle so they compete in ONE
   // ranked delivery decision instead of racing first-come to Discord. Sensitivity unchanged — research
   // shadow paper still opens per candidate; only the DELIVERY decision becomes portfolio-level.
-  const portfolioMode = env.OPTIONS_PORTFOLIO_DELIVERY_ENABLED === "1";
+  const portfolio = portfolioDeliveryStatus(env);
+  if (!portfolio.healthy) {
+    console.error(`[options-monitor] unhealthy: ${portfolio.reason}; subscriber delivery is fail-closed`);
+    s.metrics.throttles += 1;
+    return { tier, scanned: 0, created: 0, rejected: 0, chains: 0, durationMs: now() - t0 };
+  }
   const deliveryBatch: DeliverySubmission[] = [];
 
   // STAGE 1 — ONE cheap underlying batch snapshot for the whole set (rejects most symbols before any
@@ -216,7 +228,7 @@ export async function runOptionsMonitorCycle(tier: 0 | 1 | 2, symbols: string[],
       const res = runOptionsCandidate({ ...input }, chain, getDb ? { getDb } : {}, env, {
         featureSnapshot: { ...featureSnapshot, fractionMove, earlinessPhase }, earlinessPhase, escalatedBy, coreBroad: tier === 2 ? "broad" : "core",
         rankTier: tier, fractionMove,
-        ...(portfolioMode ? { collectDelivery: (sub) => deliveryBatch.push(sub) } : {}),
+        ...(portfolio.enabled ? { collectDelivery: (sub) => deliveryBatch.push(sub) } : {}),
       });
       if (res?.selection.selected) { created += 1; s.metrics.candidatesCreated += 1; if (tier === 0) s.metrics.tier0Candidates += 1; s.metrics.latestCandidateMs = now(); s.cooldownStrategy.set(`${symbol}:${res.selection.selected.key}`, now() + cfg.strategyCooldownMs); }
       else { rejected += 1; s.metrics.candidatesRejected += 1; }
@@ -229,7 +241,7 @@ export async function runOptionsMonitorCycle(tier: 0 | 1 | 2, symbols: string[],
 
   // FLUSH the portfolio delivery decision: rank the whole batch, deliver only the subscriber-worthy
   // winners, route the rest to research, persist every rationale. Isolated — never fails the cycle.
-  if (portfolioMode && deliveryBatch.length > 0) {
+  if (portfolio.enabled && deliveryBatch.length > 0) {
     try { await decideDeliveryBatch(deliveryBatch, { getDb, now }, env); }
     catch { /* decision-layer failure never blocks scanning */ }
   }
@@ -258,13 +270,19 @@ export async function runOptionsMonitorCycle(tier: 0 | 1 | 2, symbols: string[],
 function record(arr: number[], v: number) { arr.push(v); if (arr.length > 500) arr.shift(); }
 const pct = (arr: number[], q: number): number | null => { if (!arr.length) return null; const s = [...arr].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.ceil(q * s.length) - 1)]; };
 
-export interface MonitorHealth { enabled: boolean; running: boolean; breakerState: string; lastTier1CycleMs: number | null; lastTier2CycleMs: number | null; alive: boolean }
+export interface MonitorHealth {
+  enabled: boolean; running: boolean; breakerState: string;
+  lastTier0CycleMs: number | null; lastTier1CycleMs: number | null; lastTier2CycleMs: number | null;
+  alive: boolean; portfolioDelivery: ReturnType<typeof portfolioDeliveryStatus>; unhealthyReason: string | null;
+}
 /** Health that NEVER fails the web endpoint: reports the loop state; "alive" is true when enabled and
  *  a recent cycle ran, but a disabled loop is simply {enabled:false} — not an error. */
 export function optionsMonitorHealth(env: NodeJS.ProcessEnv = process.env, now: number = Date.now()): MonitorHealth {
   const s = state(); const enabled = researchFlags(env).independentOptionsDiscovery;
-  const last = Math.max(s.metrics.lastTier1CycleMs ?? 0, s.metrics.lastTier2CycleMs ?? 0);
-  return { enabled, running: s.running, breakerState: s.breaker.state, lastTier1CycleMs: s.metrics.lastTier1CycleMs, lastTier2CycleMs: s.metrics.lastTier2CycleMs, alive: enabled ? (last > 0 && now - last < 120_000) : true };
+  const portfolio = portfolioDeliveryStatus(env);
+  const last = Math.max(s.metrics.lastTier0CycleMs ?? 0, s.metrics.lastTier1CycleMs ?? 0, s.metrics.lastTier2CycleMs ?? 0);
+  const alive = enabled ? (portfolio.healthy && last > 0 && now - last < 120_000) : true;
+  return { enabled, running: s.running, breakerState: s.breaker.state, lastTier0CycleMs: s.metrics.lastTier0CycleMs, lastTier1CycleMs: s.metrics.lastTier1CycleMs, lastTier2CycleMs: s.metrics.lastTier2CycleMs, alive, portfolioDelivery: portfolio, unhealthyReason: portfolio.reason };
 }
 export function optionsMonitorMetrics(): Record<string, unknown> {
   const s = state();
@@ -302,6 +320,11 @@ export function startOptionsMonitor(deps: OptionsMonitorDeps, env: NodeJS.Proces
   const s = state();
   if (s.running) return { started: true, reason: "already running" };
   if (!researchFlags(env).independentOptionsDiscovery) return { started: false, reason: "INDEPENDENT_OPTIONS_DISCOVERY_ENABLED!=1" };
+  const portfolio = portfolioDeliveryStatus(env);
+  if (!portfolio.healthy) {
+    console.error(`[options-monitor] startup error: ${portfolio.reason}; refusing to start independent options delivery without portfolio ranking`);
+    return { started: false, reason: portfolio.reason ?? "portfolio delivery unhealthy" };
+  }
   const cfg = defaultMonitorConfig(env);
   const sessionOf = deps.session ?? (() => "regular" as Session);
   const tier0 = optionsTier0(env);

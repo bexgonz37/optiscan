@@ -33,6 +33,7 @@ test("runtime status exposes non-secret alert and paper config visibility", () =
   const src = read("lib/runtime-status.ts");
   for (const key of [
     "SUPERVISOR_RUNTIME", "CALLOUT_CANONICAL_PATH", "AGENT_CALLOUT_DISCORD",
+    "INDEPENDENT_OPTIONS_DISCOVERY_ENABLED", "OPTIONS_PORTFOLIO_DELIVERY_ENABLED",
     "STOCK_CALLOUTS", "PAPER_TRADING_ENABLED", "PAPER_AUTO_ENTRY",
     "PAPER_ALLOW_ZERO_DTE", "PAPER_KILL_SWITCH", "EARLY_ALERTS_ENABLED",
     "BEARISH_ACTIONABLE", "OPTIONS_PUTS_ENABLED", "STOCK_MOMENTUM_MIN_PRICE",
@@ -45,6 +46,7 @@ test("runtime status exposes non-secret alert and paper config visibility", () =
   }
   for (const phrase of [
     "Options Discord is enabled",
+    "Independent options subscriber delivery is blocked because OPTIONS_PORTFOLIO_DELIVERY_ENABLED is not 1.",
     "Momentum stock Discord is disabled because STOCK_CALLOUTS is off",
     "Paper auto-entry is enabled",
     "0DTE paper trading is disabled",
@@ -64,6 +66,7 @@ test("runtime status documents what each config gate can block", () => {
   assert.ok(src.includes("options_alerts"));
   assert.ok(src.includes("stock_alerts"));
   assert.ok(src.includes("paper_trading"));
+  assert.ok(src.includes("OPTIONS_PORTFOLIO_DELIVERY_ENABLED != 1 while INDEPENDENT_OPTIONS_DISCOVERY_ENABLED=1"));
 });
 
 test("runtime status is read-only (no writes)", () => {

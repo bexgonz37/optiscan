@@ -5,6 +5,8 @@
  * the existing 18-strategy scoring gets richer, earlier evidence. Never fabricates: missing inputs
  * yield null features (recorded), not guesses.
  */
+import { sessionState } from "./session-state.ts";
+
 export interface Bar { t: number; o: number; h: number; l: number; c: number; v: number }
 export type Session = "premarket" | "regular" | "afterhours" | "closed";
 
@@ -40,13 +42,14 @@ function slope(ys: number[]): number { const n = ys.length; if (n < 2) return 0;
 /** Compute the decision-time feature block from compact recent bars (chronological, t ≤ nowMs). */
 export function computeOptionsFeatures(barsIn: Bar[], ctx: FeatureContext): OptionsFeatures {
   const missing: string[] = [];
+  const openingRangeActive = ctx.session === "regular" && sessionState(ctx.nowMs) === "OPENING_DISCOVERY";
   const bars = [...barsIn].filter((b) => b.t <= ctx.nowMs).sort((a, b) => a.t - b.t);
   const base: OptionsFeatures = {
     price: null, lastBarAgeMs: null, stale: true, relVolume: null, volumeAccel: null, dollarVolume: null, dollarVolumeAccel: null,
     vwap: null, vwapDistPct: null, aboveVwap: null, hod: null, lod: null, hodProxPct: null, lodProxPct: null, hodBreak: null,
     nearestResistance: null, nearestResistanceDistPct: null, nearestSupport: null, nearestSupportDistPct: null,
     trendSlopePctPerBar: null, shortMomentumPct: null, velPct: null, accelPct: null, realizedVol: null, realizedVolExpanding: null, atrPct: null,
-    compressionScore: null, expansionScore: null, gapPct: null, gapBehavior: null, openingRange: ctx.session === "regular" ? true : null, premarketLevelTest: null, missing,
+    compressionScore: null, expansionScore: null, gapPct: null, gapBehavior: null, openingRange: openingRangeActive ? true : null, premarketLevelTest: null, missing,
   };
   if (bars.length === 0) { missing.push("bars"); return base; }
   const last = bars[bars.length - 1];
@@ -118,7 +121,7 @@ export function computeOptionsFeatures(barsIn: Bar[], ctx: FeatureContext): Opti
     vwap, vwapDistPct, aboveVwap, hod, lod, hodProxPct, lodProxPct, hodBreak,
     nearestResistance, nearestResistanceDistPct, nearestSupport, nearestSupportDistPct,
     trendSlopePctPerBar, shortMomentumPct, velPct, accelPct, realizedVol, realizedVolExpanding, atrPct,
-    compressionScore, expansionScore, gapPct, gapBehavior, openingRange: ctx.session === "regular" ? true : null, premarketLevelTest, missing,
+    compressionScore, expansionScore, gapPct, gapBehavior, openingRange: openingRangeActive ? true : null, premarketLevelTest, missing,
   };
 }
 

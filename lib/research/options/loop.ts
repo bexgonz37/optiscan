@@ -9,7 +9,6 @@ import { selectOptionsStrategy, type OptionsCandidateInput, type StrategySelecti
 import { getStrategy } from "./strategy-catalog.ts";
 import { evaluateCallout, type CalloutContract, type CalloutResult } from "./callout.ts";
 import { buildRealOptionEntry, persistRealOptionPaperOnDb, canOpenRealOptionPaper, type OptionQuote, type RealOptionEntry } from "./paper.ts";
-import { deliverOptionsCallout } from "./delivery.ts";
 
 export interface ChainContract { optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number; bid: number | null; ask: number | null; spreadPct: number | null; volume: number | null; openInterest: number | null; iv: number | null; delta: number | null; providerTimestamp: number | null }
 
@@ -122,7 +121,7 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
           });
         } catch { /* isolated */ }
       } else {
-        void deliverOptionsCallout(deliveryInput, { getDb: deps.getDb }, env).catch(() => { /* delivery failure never blocks the monitor */ });
+        console.error("[options-delivery] refusing immediate subscriber delivery: portfolio delivery collector is required");
       }
     }
   } catch { /* isolated: options discovery never affects the live path */ }

@@ -47,7 +47,7 @@ export function capabilityStatus(env: NodeJS.ProcessEnv = process.env) {
     cap("Counterfactual Analytics", null, true, { wired: false, canDiscord: false, canTrade: false, deps: ["counterfactual_outcomes", "setup_gate_results"], runtime: "ACTIVE_READ_ONLY", reason: "read-only analytics over persisted evidence" }),
     cap("AI Research Pipeline", "AI_RESEARCH_PIPELINE_ENABLED", f.aiResearchPipeline, { wired: false, canDiscord: false, canTrade: false, deps: ["ledger", "counterfactuals", "outcomes"] }),
     cap("Historical Stock Replay", "HISTORICAL_REPLAY_ENABLED", f.historicalReplay, { wired: false, canDiscord: false, canTrade: false, deps: ["/v2/aggs OHLCV"] }),
-    cap("Historical Options Replay", "HISTORICAL_REPLAY_ENABLED", f.historicalReplay, { wired: false, canDiscord: false, canTrade: false, deps: ["historical option quotes/Greeks/NBBO/OI/spreads"], runtime: "INACTIVE_MISSING_PROVIDER", reason: replayCapabilities(env).find((c) => c.assetClass === "option")!.reason }),
+    cap("Historical Options Replay", "OPTIONS_REPLAY_ENABLED", on(env.OPTIONS_REPLAY_ENABLED), { wired: true, canDiscord: false, canTrade: false, deps: ["/v2/aggs OHLCV", "production options detection logic"], runtime: on(env.OPTIONS_REPLAY_ENABLED) ? "ACTIVE_UNDERLYING_FORWARD" : "INACTIVE_DISABLED", reason: on(env.OPTIONS_REPLAY_ENABLED) ? "replay lab uses underlying-forward labels only; it does not prove option profitability" : "OPTIONS_REPLAY_ENABLED is not set to 1" }),
     cap("Production Discord", "AGENT_CALLOUT_DISCORD", on(env.AGENT_CALLOUT_DISCORD), { wired: true, canDiscord: true, canTrade: false, deps: ["callouts/eligibility.ts (authoritative)"], reason: "governed by existing production eligibility — NOT by the research router" }),
     cap("Primary Paper", "PAPER_AUTO_ENTRY", on(env.PAPER_AUTO_ENTRY), { wired: true, canDiscord: false, canTrade: true, deps: ["supervisor→paper bridge"] }),
   ];
@@ -194,11 +194,30 @@ function replay(db: ODb, env: NodeJS.ProcessEnv) {
   const runsByAsset = (asset: string) => tableExists(db, "replay_runs")
     ? { runs: safeAll(db, "SELECT COUNT(*) n FROM replay_runs WHERE asset_class=?", asset)[0]?.n ?? 0, byStatus: Object.fromEntries(safeAll(db, "SELECT status k, COUNT(*) n FROM replay_runs WHERE asset_class=? GROUP BY status", asset).map((r) => [r.k, r.n])) }
     : { runs: 0, byStatus: {} };
+  const optionReplayRuns = tableExists(db, "options_replay_runs")
+    ? {
+        runs: safeAll(db, "SELECT COUNT(*) n FROM options_replay_runs")[0]?.n ?? 0,
+        byStatus: Object.fromEntries(safeAll(db, "SELECT status k, COUNT(*) n FROM options_replay_runs GROUP BY status").map((r) => [r.k, r.n])),
+        candidates: tableExists(db, "options_replay_candidates") ? safeAll(db, "SELECT COUNT(*) n FROM options_replay_candidates")[0]?.n ?? 0 : 0,
+      }
+    : { runs: 0, byStatus: {}, candidates: 0 };
   const stockOutcomes = tableExists(db, "replay_outcomes") ? safeAll(db, "SELECT COUNT(*) n FROM replay_outcomes WHERE asset_class='stock'")[0]?.n ?? 0 : 0;
   const opt = caps.find((c) => c.assetClass === "option")!;
+  const optionReplayEnabled = on(env.OPTIONS_REPLAY_ENABLED);
   return {
     stock: { flagEnabled: researchFlags(env).historicalReplay, capability: caps.find((c) => c.assetClass === "stock")!.status, ...runsByAsset("stock"), executableOutcomes: stockOutcomes, disclosures: ["deterministic clock", "no look-ahead (signal uses only past/current bars)", "documented slippage/fees"] },
-    options: { status: "INACTIVE_MISSING_PROVIDER", blocker: opt.reason, missingEntitlements: opt.missingFields, executableOutcomes: 0, ...runsByAsset("option"), note: "contract-price observations are recorded separately and are never executable simulations" },
+    options: {
+      status: optionReplayEnabled ? "ACTIVE_UNDERLYING_FORWARD" : "INACTIVE_DISABLED",
+      flagEnabled: optionReplayEnabled,
+      replayExists: true,
+      gradingBasis: "UNDERLYING_FORWARD",
+      provesOptionProfitability: false,
+      executableOutcomes: 0,
+      ...optionReplayRuns,
+      blockerForExecutableOptionReplay: opt.reason,
+      missingEntitlementsForExecutableOptionReplay: opt.missingFields,
+      note: "options replay uses production detection over stock bars and underlying-forward labels only; it does NOT simulate premiums, spreads, greeks, fills, or option profitability",
+    },
   };
 }
 

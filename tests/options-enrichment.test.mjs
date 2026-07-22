@@ -16,6 +16,13 @@ function bars(n = 40) {
   return out;
 }
 const NOW = T0 + 40 * 60_000;
+function barsEnding(nowMs, n = 40) {
+  const start = nowMs - (n - 1) * 60_000;
+  return Array.from({ length: n }, (_, i) => {
+    const base = 100 + i * 0.02;
+    return { t: start + i * 60_000, o: base, h: base + 0.05, l: base - 0.05, c: base, v: 1000 + i * 10 };
+  });
+}
 
 test("2. features are computed only from decision-time bars (no look-ahead)", () => {
   const withFuture = [...bars(40), { t: NOW + 60_000, o: 200, h: 210, l: 199, c: 205, v: 99999 }];
@@ -69,7 +76,7 @@ const chain = [{ optionSymbol: "O:HOOD260320C00101000", side: "call", strike: 10
 function deps(d, over = {}) {
   return { now: () => NOW, session: () => "regular", getDb: () => d, getUnderlyingBatch: async (syms) => new Map(syms.map((s) => [s, snap()])), getBars: async () => bars(40), getChain: async (sym) => chain.map((c) => ({ ...c, optionSymbol: `O:${sym}260320C00101000` })), ...over };
 }
-const ON = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1" };
+const ON = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1" };
 
 test("3/10. Stage 1.5 enriches from bars and stores the decision-time snapshot; chain only after plausible", async () => {
   __resetOptionsMonitorForTest();
@@ -114,4 +121,13 @@ test("14/15. flags OFF ⇒ no enrichment work + no candidate; provider calls sta
   const m = optionsMonitorMetrics();
   assert.equal(m.providerCalls.underlying, 1, "one batch underlying call");
   assert.ok(m.providerCalls.bars <= 2 && m.providerCalls.chain <= 2, "bounded per-symbol calls");
+});
+
+test("openingRange is active only during the opening window, never midday or power hour", () => {
+  const opening = Date.UTC(2026, 6, 21, 13, 40, 0);
+  const midday = Date.UTC(2026, 6, 21, 16, 30, 0);
+  const powerHour = Date.UTC(2026, 6, 21, 19, 15, 0);
+  assert.equal(computeOptionsFeatures(barsEnding(opening), { nowMs: opening, session: "regular" }).openingRange, true);
+  assert.equal(computeOptionsFeatures(barsEnding(midday), { nowMs: midday, session: "regular" }).openingRange, null);
+  assert.equal(computeOptionsFeatures(barsEnding(powerHour), { nowMs: powerHour, session: "regular" }).openingRange, null);
 });

@@ -25,7 +25,7 @@ function deps(d, { getChainSpy, getUnderlyingSpy, slowChainMs = 0 } = {}) {
     tier2Universe: () => ["IREN", "ASTS"],
   };
 }
-const ON = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1" };
+const ON = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1" };
 
 test("1/3. the monitor cycle runs independently of shouldTrigger and never consults a +10% rule", async () => {
   __resetOptionsMonitorForTest();
@@ -148,4 +148,24 @@ test("15. start/stop is a clean singleton; health never fails the web endpoint w
   assert.equal(startOptionsMonitor(deps(db()), ON).reason, "already running");
   stopOptionsMonitor();
   assert.ok(defaultMonitorConfig({}).maxConcurrency >= 1);
+});
+
+test("portfolio delivery missing makes independent options monitor unhealthy and fail-closed", () => {
+  __resetOptionsMonitorForTest();
+  const h = optionsMonitorHealth({ INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1" }, NOW);
+  assert.equal(h.enabled, true);
+  assert.equal(h.alive, false);
+  assert.equal(h.portfolioDelivery.healthy, false);
+  const s = startOptionsMonitor(deps(db()), { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1" });
+  assert.equal(s.started, false);
+  assert.match(s.reason, /OPTIONS_PORTFOLIO_DELIVERY_ENABLED/);
+});
+
+test("Tier 0-only cycle counts toward monitor liveness", async () => {
+  __resetOptionsMonitorForTest();
+  await runOptionsMonitorCycle(0, ["SPY"], deps(db()), ON);
+  const h = optionsMonitorHealth(ON, NOW);
+  assert.equal(h.enabled, true);
+  assert.equal(h.alive, true);
+  assert.ok(h.lastTier0CycleMs != null);
 });

@@ -116,6 +116,7 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
 
   // FLAGS + kill switch — ZERO webhook sends unless both flags on and not killed.
   if (!f.independentOptionsDiscovery || !f.earlyOptionsCallouts) return base("READY", false, "callouts_disabled");
+  if (env.OPTIONS_PORTFOLIO_DELIVERY_ENABLED !== "1") return base("REJECTED", false, "portfolio_delivery_required");
   if (env.OPTIONS_CALLOUTS_KILL === "1") return base("REJECTED", false, "kill_switch_engaged");
   // Puts are RESEARCH_ONLY → never sent as actionable callouts (suppressed, reported).
   if (input.researchOnly || input.contract.side === "put") { try { persist((deps.getDb ?? liveDb)(), alertId, input, "REJECTED", { failureReason: "research_only_put_suppressed" }, nowMs); } catch { /* isolated */ } return base("REJECTED", false, "research_only_put_suppressed"); }

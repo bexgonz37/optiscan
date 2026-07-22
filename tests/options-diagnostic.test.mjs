@@ -22,7 +22,7 @@ function db() {
   return d;
 }
 const T1 = optionsTier1({});
-const ON = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1" };
+const ON = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1" };
 const snapMap = (syms) => new Map(syms.map((s) => [s, { price: 100, dayDollarVolume: 60_000_000 }]));
 const monDeps = (d, getBars) => ({ now: () => NOW, session: () => "regular", getDb: () => d, getUnderlyingBatch: async (syms) => new Map(syms.map((s) => [s, { price: 100, dayDollarVolume: 60_000_000, relVolume: null, velPct: null, accelPct: null, gapPct: null, aboveVwap: null, hodBreak: null, nearResistancePct: null, compressionPct: null, realizedVolExpanding: null, openingRange: null, premarketLevelTest: null }])), getBars, getChain: async () => [] });
 

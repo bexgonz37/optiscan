@@ -19,7 +19,7 @@ function db() {
           CREATE TABLE options_alerts (alert_id TEXT PRIMARY KEY, candidate_symbol TEXT NOT NULL, strategy TEXT, option_symbol TEXT, side TEXT, research_only INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, message_hash TEXT, message TEXT, delivered_bid REAL, delivered_ask REAL, delivered_underlying REAL, paper_linked INTEGER NOT NULL DEFAULT 0, discord_status INTEGER, latency_ms INTEGER, retry_count INTEGER NOT NULL DEFAULT 0, failure_reason TEXT, attempted_at_ms INTEGER, sent_at_ms INTEGER, session_state TEXT, entry_mid REAL, delivered_spread_pct REAL, quote_ts_ms INTEGER, target_t1 REAL, target_t2 REAL, target_stop REAL, target_method TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);`);
   return d;
 }
-const ENV = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", EARLY_OPTIONS_CALLOUTS_ENABLED: "1", REAL_OPTION_PAPER_ENABLED: "1" };
+const ENV = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1", EARLY_OPTIONS_CALLOUTS_ENABLED: "1", REAL_OPTION_PAPER_ENABLED: "1" };
 const contract = (over = {}) => ({ optionSymbol: OCC, side: "call", strike: 100, expiration: "2026-01-17", bid: 1.0, ask: 1.1, spreadPct: 5, quoteAgeMs: 1000, dte: 5, volume: 500, openInterest: 2000, iv: 0.5, delta: 0.5, providerTimestamp: NOW - 1000, ...over });
 const input = (over = {}) => ({ candidateSymbol: "NVDA", strategy: "momentum_acceleration", researchOnly: false, contract: contract(), message: "buy", observedUnderlyingPrice: 100, currentUnderlyingPrice: 100, chaseLimitPct: 5, underlyingPrice: 100, decisionMs: NOW, session: "regular", ...over });
 const okSend = async () => ({ ok: true, status: 204, messageId: "m1", latencyMs: 5, ambiguous: false, error: null });

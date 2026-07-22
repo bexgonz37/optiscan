@@ -9,7 +9,7 @@ import { runOptionsMonitorCycle, __resetOptionsMonitorForTest } from "../lib/res
 const NOW = Date.UTC(2026, 6, 21, 15, 0, 0);
 function db() {
   const d = new Database(":memory:");
-  d.exec(`CREATE TABLE options_delivery_decisions (id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id TEXT NOT NULL, symbol TEXT NOT NULL, strategy TEXT, side TEXT, tier INTEGER, outcome TEXT NOT NULL, reason TEXT, quality REAL, rank INTEGER, batch_size INTEGER, components_json TEXT, cluster_key TEXT, threshold REAL, session_state TEXT, alert_id TEXT, would_deliver_solo INTEGER, competing_json TEXT, created_at_ms INTEGER NOT NULL);
+  d.exec(`CREATE TABLE options_delivery_decisions (id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id TEXT NOT NULL, symbol TEXT NOT NULL, strategy TEXT, side TEXT, tier INTEGER, outcome TEXT NOT NULL, reason TEXT, quality REAL, rank INTEGER, batch_size INTEGER, components_json TEXT, cluster_key TEXT, threshold REAL, session_state TEXT, alert_id TEXT, would_deliver_solo INTEGER, competing_json TEXT, delivery_attempted INTEGER NOT NULL DEFAULT 0, delivery_sent INTEGER NOT NULL DEFAULT 0, delivery_state TEXT, final_delivery_outcome TEXT NOT NULL DEFAULT 'SKIPPED', delivery_failure_category TEXT, final_delivery_reason TEXT, delivery_attempted_at_ms INTEGER, delivery_completed_at_ms INTEGER, created_at_ms INTEGER NOT NULL);
           CREATE TABLE options_alerts (alert_id TEXT PRIMARY KEY, candidate_symbol TEXT NOT NULL, strategy TEXT, option_symbol TEXT, side TEXT, research_only INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, message_hash TEXT, message TEXT, delivered_bid REAL, delivered_ask REAL, delivered_underlying REAL, paper_linked INTEGER NOT NULL DEFAULT 0, discord_status INTEGER, latency_ms INTEGER, retry_count INTEGER NOT NULL DEFAULT 0, failure_reason TEXT, attempted_at_ms INTEGER, sent_at_ms INTEGER, session_state TEXT, entry_mid REAL, delivered_spread_pct REAL, quote_ts_ms INTEGER, target_t1 REAL, target_t2 REAL, target_stop REAL, target_method TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
           CREATE TABLE options_paper_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, option_symbol TEXT NOT NULL, side TEXT, strike REAL, expiration TEXT, dte INTEGER, result_class TEXT NOT NULL, bid REAL, ask REAL, mid REAL, spread_pct REAL, entry_fill REAL, volume REAL, open_interest REAL, iv REAL, delta REAL, underlying_price REAL, strategy TEXT, target REAL, invalidation REAL, provenance TEXT, status TEXT NOT NULL, exit_fill REAL, pnl REAL, return_pct REAL, exit_reason TEXT, entered_at_ms INTEGER, exit_at_ms INTEGER, session TEXT, core_broad TEXT, feature_snapshot_json TEXT, paper_kind TEXT, alert_id TEXT, entry_source TEXT, experiment_id TEXT, experiment_variant TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
           CREATE VIEW options_paper_delivered AS SELECT * FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER';
@@ -46,10 +46,47 @@ test("batch competition: best delivered; good-but-not-great withheld_by ranking 
   const out = await decideDeliveryBatch([MEDIOCRE("AAA"), STRONG("NVDA"), WEAK("ZZZ")], { getDb: () => d, now: () => NOW, deliver }, ENV);
   const bySym = Object.fromEntries(out.map((o) => [o.symbol, o]));
   assert.equal(bySym.NVDA.outcome, "DELIVER_TO_DISCORD");
+  assert.equal(bySym.NVDA.deliveryAttempted, true);
+  assert.equal(bySym.NVDA.deliverySent, true);
+  assert.equal(bySym.NVDA.finalDeliveryOutcome, "DELIVERED");
   assert.match(bySym.NVDA.reason, /subscriber_worthy/);
   assert.equal(bySym.AAA.outcome, "RESEARCH_ONLY");
+  assert.equal(bySym.AAA.finalDeliveryOutcome, "SKIPPED");
   assert.equal(bySym.ZZZ.outcome, "REJECT");
+  assert.equal(bySym.ZZZ.finalDeliveryOutcome, "REJECTED");
   assert.deepEqual(sent, ["NVDA"], "only the worthy candidate interrupted subscribers");
+});
+
+test("delivery accounting distinguishes selected intent from kill-switch blocked final outcome", async () => {
+  const d = db();
+  const out = await decideDeliveryBatch([STRONG("NVDA")], {
+    getDb: () => d,
+    now: () => NOW,
+    deliver: async (input) => ({ state: "REJECTED", alertId: `oa_${input.candidateSymbol}`, sent: false, reason: "kill_switch_engaged" }),
+  }, ENV);
+  assert.equal(out[0].outcome, "DELIVER_TO_DISCORD");
+  assert.equal(out[0].deliveryAttempted, true);
+  assert.equal(out[0].deliverySent, false);
+  assert.equal(out[0].finalDeliveryOutcome, "BLOCKED_KILL_SWITCH");
+  const m = deliveryDecisionMetricsOnDb(d);
+  assert.equal(m.selectedForDelivery, 1);
+  assert.equal(m.delivered, 0);
+  assert.equal(m.deliveryBlockedKillSwitch, 1);
+});
+
+test("delivery accounting records downstream exceptions separately from delivery intent", async () => {
+  const d = db();
+  const out = await decideDeliveryBatch([STRONG("NVDA")], {
+    getDb: () => d,
+    now: () => NOW,
+    deliver: async () => { throw new Error("discord transport exploded"); },
+  }, ENV);
+  assert.equal(out[0].outcome, "DELIVER_TO_DISCORD");
+  assert.equal(out[0].finalDeliveryOutcome, "DOWNSTREAM_ERROR");
+  assert.match(out[0].finalDeliveryReason, /discord transport exploded/);
+  const m = deliveryDecisionMetricsOnDb(d);
+  assert.equal(m.delivered, 0);
+  assert.equal(m.deliveryDownstreamErrors, 1);
 });
 
 test("correlation: SPY+QQQ same side = ONE index thesis → strongest delivers, other RESEARCH_ONLY", async () => {
@@ -79,6 +116,12 @@ test("Tier 0 priority = ranked first, NOT auto-delivered: mediocre SPY stays RES
   // but when both clear the bar, Tier 0 outranks a broad name
   const out2 = await decideDeliveryBatch([STRONG("HOOD", 2), STRONG("SPY", 0)], { getDb: () => db(), now: () => NOW, deliver: okDeliver().deliver }, ENV);
   assert.equal(out2.find((o) => o.symbol === "SPY").rank, 1, "Tier 0 ranked first among equals");
+});
+
+test("materially stronger subscriber quality beats Tier 0 rank precedence", async () => {
+  const out = await decideDeliveryBatch([STRONG("SPY", 0), EXCELLENT("HOOD", 2)], { getDb: () => db(), now: () => NOW, deliver: okDeliver().deliver }, ENV);
+  assert.equal(out.find((o) => o.symbol === "HOOD").rank, 1, "material quality edge wins over Tier 0");
+  assert.equal(out.find((o) => o.symbol === "SPY").rank, 2);
 });
 
 test("correlation window vs RECENTLY DELIVERED alerts: same thesis within 15min is withheld unless excellent", async () => {
@@ -148,14 +191,16 @@ test("END-TO-END: monitor cycle in portfolio mode collects READY candidates and 
   assert.ok(d.prepare("SELECT COUNT(*) n FROM options_candidates").get().n >= 2);
 });
 
-test("flag OFF → zero decision rows and legacy immediate-delivery path (unchanged behavior)", async () => {
+test("missing portfolio delivery config fails closed with zero decision rows", async () => {
   __resetOptionsMonitorForTest();
   const d = db();
   const env = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", EARLY_OPTIONS_CALLOUTS_ENABLED: "1", OPTIONS_CALLOUTS_KILL: "1" };
   const snap = (syms) => new Map(syms.map((s) => [s, { price: 500, dayDollarVolume: 900_000_000, relVolume: 3, velPct: 1, accelPct: 1, gapPct: null, aboveVwap: true, hodBreak: null, nearResistancePct: null, compressionPct: null, realizedVolExpanding: null, openingRange: null, premarketLevelTest: null }]));
   const chain = (sym) => [{ optionSymbol: `O:${sym}260724C00500000`, side: "call", strike: 500, expiration: "2026-07-24", dte: 2, bid: 1.2, ask: 1.3, spreadPct: 8, volume: 400, openInterest: 1200, iv: 0.5, delta: 0.5, providerTimestamp: NOW - 1000 }];
-  await runOptionsMonitorCycle(1, ["NVDA"], { now: () => NOW, session: () => "regular", getDb: () => d, getUnderlyingBatch: async (s) => snap(s), getChain: async (sym) => chain(sym) }, env);
-  assert.equal(d.prepare("SELECT COUNT(*) n FROM options_delivery_decisions").get().n, 0, "portfolio layer is a hard no-op when the flag is off");
+  const res = await runOptionsMonitorCycle(1, ["NVDA"], { now: () => NOW, session: () => "regular", getDb: () => d, getUnderlyingBatch: async (s) => snap(s), getChain: async (sym) => chain(sym) }, env);
+  assert.equal(res.scanned, 0, "cycle fails closed before producing subscriber candidates");
+  assert.equal(d.prepare("SELECT COUNT(*) n FROM options_delivery_decisions").get().n, 0);
+  assert.equal(d.prepare("SELECT COUNT(*) n FROM options_alerts").get().n, 0, "no legacy immediate options alert is created");
 });
 
 test("puts stay research-only in the decision layer too (bearish safeguards untouched)", async () => {

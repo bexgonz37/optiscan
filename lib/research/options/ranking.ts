@@ -18,10 +18,13 @@ export interface RankableCandidate {
 }
 
 const num = (v: number, d = 0) => (Number.isFinite(v) ? v : d);
+const MATERIAL_QUALITY_EDGE = 0.08;
 
 /** Total order (best first). Stable, deterministic — no randomness, no AI. */
 export function compareCandidates(a: RankableCandidate, b: RankableCandidate): number {
-  if (a.tier !== b.tier) return a.tier - b.tier;                                   // 0 beats 1 beats 2
+  const qEdge = num(b.quality) - num(a.quality);
+  if (Math.abs(qEdge) >= MATERIAL_QUALITY_EDGE) return qEdge;                      // materially higher quality wins
+  if (a.tier !== b.tier) return a.tier - b.tier;                                   // comparable quality: 0 beats 1 beats 2
   if (a.forming !== b.forming) return a.forming ? -1 : 1;                          // forming first
   const by = (x: number, y: number) => x - y;                                      // ascending = better
   return (

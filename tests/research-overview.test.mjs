@@ -51,13 +51,17 @@ test("overview returns all sections, separated", () => {
   assert.equal(o.readOnly, true);
 });
 
-test("capabilities: Production Discord is authoritative (not router-controlled); options replay missing-provider", () => {
+test("capabilities: Production Discord is authoritative (not router-controlled); options replay is honest", () => {
   const caps = capabilityStatus({});
   const discord = caps.find((c) => c.capability === "Production Discord");
   assert.equal(discord.canAffectDiscord, true);
   assert.match(discord.reason, /NOT by the research router/);
   const optRep = caps.find((c) => c.capability === "Historical Options Replay");
-  assert.equal(optRep.runtimeState, "INACTIVE_MISSING_PROVIDER");
+  assert.equal(optRep.runtimeState, "INACTIVE_DISABLED");
+  assert.match(optRep.reason, /OPTIONS_REPLAY_ENABLED/);
+  const activeOptRep = capabilityStatus({ OPTIONS_REPLAY_ENABLED: "1" }).find((c) => c.capability === "Historical Options Replay");
+  assert.equal(activeOptRep.runtimeState, "ACTIVE_UNDERLYING_FORWARD");
+  assert.match(activeOptRep.reason, /does not prove option profitability/);
   // Research/Challenge can create paper trades but never Discord.
   for (const n of ["Independent Challenge", "Independent Research"]) {
     const c = caps.find((x) => x.capability === n);
@@ -118,12 +122,16 @@ test("agent diagnostics report inactive agents honestly (not active)", () => {
 
 test("AI research is advisory-only with a human-review boundary; replay stock/options separate", () => {
   const d = db(); seed(d);
-  const o = buildResearchOverviewOnDb(d, {}, 1);
+  const o = buildResearchOverviewOnDb(d, { OPTIONS_REPLAY_ENABLED: "1" }, 1);
   assert.equal(o.aiResearch.advisoryOnly, true);
   assert.match(o.aiResearch.humanReviewBoundary, /never auto-apply/);
-  assert.equal(o.replay.options.status, "INACTIVE_MISSING_PROVIDER");
+  assert.equal(o.replay.options.status, "ACTIVE_UNDERLYING_FORWARD");
+  assert.equal(o.replay.options.replayExists, true);
+  assert.equal(o.replay.options.gradingBasis, "UNDERLYING_FORWARD");
+  assert.equal(o.replay.options.provesOptionProfitability, false);
   assert.equal(o.replay.options.executableOutcomes, 0);
-  assert.ok(o.replay.options.missingEntitlements.includes("historical_delta"));
+  assert.ok(o.replay.options.missingEntitlementsForExecutableOptionReplay.includes("historical_delta"));
+  assert.match(o.replay.options.note, /does NOT simulate.*option profitability/);
 });
 
 test("session/provider: MARKET_CLOSED is distinct from PROVIDER_ERROR", () => {

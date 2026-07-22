@@ -32,7 +32,7 @@ test("EARLINESS: a forming symbol is re-checked at the next cadence (default rec
   const d = db();
   const nowRef = { v: NOW };
   const snapRef = { fn: FORMING };
-  const env = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1" }; // OPTIONS_SYMBOL_FORMING_RECHECK_MS unset → default 0
+  const env = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1" }; // OPTIONS_SYMBOL_FORMING_RECHECK_MS unset -> default 0
 
   // t0: forming (no signals) → passed Stage 1, no plausible strategy → released for a fast re-check.
   await runOptionsMonitorCycle(1, ["NVDA"], deps(d, nowRef, snapRef), env);
@@ -57,7 +57,7 @@ test("CONTRAST: the OLD 60s forming cooldown would have skipped the same symbol 
   const d = db();
   const nowRef = { v: NOW };
   const snapRef = { fn: FORMING };
-  const env = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", OPTIONS_SYMBOL_FORMING_RECHECK_MS: "60000" }; // pre-fix behavior
+  const env = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1", OPTIONS_SYMBOL_FORMING_RECHECK_MS: "60000" }; // pre-fix behavior
 
   await runOptionsMonitorCycle(1, ["NVDA"], deps(d, nowRef, snapRef), env); // forming, frozen 60s
   nowRef.v = NOW + 15_000;
@@ -72,7 +72,7 @@ test("EXECUTABLE QUALITY UNCHANGED: success/stale/hard-reject paths still use th
   __resetOptionsMonitorForTest();
   const d = db();
   const nowRef = { v: NOW };
-  const env = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1" };
+  const env = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1" };
   // stale bars (last bar 30min old) → hard reject with the full 60s cooldown (not the forming re-check).
   const stale = { now: () => nowRef.v, session: () => "regular", getDb: () => d, getUnderlyingBatch: async (s) => FORMING(s), getBars: async () => { const n = 40, out = []; for (let i = 0; i < n; i++) out.push({ t: NOW - 30 * 60_000 - (n - 1 - i) * 60_000, o: 100, h: 100.1, l: 99.9, c: 100, v: 1000 }); return out; }, getChain: async () => [] };
   await runOptionsMonitorCycle(1, ["NVDA"], stale, env);

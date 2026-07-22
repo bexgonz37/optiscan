@@ -105,6 +105,8 @@ export function buildConfigVisibility(env: NodeJS.ProcessEnv = process.env, extr
   const supervisorDiscordOn = canonicalPath === "supervisor" && on(env.AGENT_CALLOUT_DISCORD);
   const stockOn = on(env.STOCK_CALLOUTS);
   const stockExtendedHoursOn = on(env.STOCK_EXTENDED_HOURS) || on(env.PAPER_STOCK_EXTENDED_HOURS);
+  const independentOptionsOn = on(env.INDEPENDENT_OPTIONS_DISCOVERY_ENABLED);
+  const portfolioDeliveryOn = on(env.OPTIONS_PORTFOLIO_DELIVERY_ENABLED);
   const extendedStockNotifyOn = extras.extendedStockNotify === true;
   const stockWebhookOn = extras.stockWebhookConfigured === true;
   const optionsWebhookOn = extras.optionsWebhookConfigured === true;
@@ -135,6 +137,8 @@ export function buildConfigVisibility(env: NodeJS.ProcessEnv = process.env, extr
     configItem("CALLOUT_CANONICAL_PATH", canonicalPath, canonicalPath === "supervisor" ? "Supervisor is the canonical options sender." : "Legacy options path remains canonical.", canonicalPath === "supervisor" ? [] : ["options_alerts"]),
     configItem("AGENT_CALLOUT_DISCORD", on(env.AGENT_CALLOUT_DISCORD) ? "enabled" : "disabled", on(env.AGENT_CALLOUT_DISCORD) ? "Supervisor Discord master switch is on." : "Supervisor Discord master switch is off — options Discord will NOT send under the supervisor path until this is 1.", supervisorDiscordOn ? [] : ["options_alerts"]),
     configItem("DISCORD_WEBHOOK_OPTIONS", optionsWebhookOn ? "configured" : "missing", optionsWebhookOn ? "Options webhook is configured." : "No options webhook configured — options callouts cannot be delivered even when emittable.", optionsWebhookOn ? [] : ["options_alerts"]),
+    configItem("INDEPENDENT_OPTIONS_DISCOVERY_ENABLED", independentOptionsOn ? "enabled" : "disabled", independentOptionsOn ? "Independent options discovery is enabled." : "Independent options discovery is disabled.", []),
+    configItem("OPTIONS_PORTFOLIO_DELIVERY_ENABLED", portfolioDeliveryOn ? "enabled" : "disabled", portfolioDeliveryOn ? "Portfolio delivery ranking is mandatory and enabled for independent options." : "Portfolio delivery ranking is disabled. If independent options discovery is enabled, subscriber delivery is fail-closed.", independentOptionsOn && !portfolioDeliveryOn ? ["options_alerts"] : []),
     configItem("STOCK_CALLOUTS", stockOn ? "enabled" : "disabled", stockOn ? "Momentum stock callouts may route to the stock webhook." : "Momentum stock Discord is disabled because STOCK_CALLOUTS is off.", stockOn ? [] : ["stock_alerts"]),
     configItem("STOCK_EXTENDED_HOURS", stockExtendedHoursOn ? "enabled" : "disabled", stockExtendedHoursOn ? "Premarket/after-hours stock setups may pass the extended-hours gate (also honors PAPER_STOCK_EXTENDED_HOURS)." : "Premarket/after-hours stock Discord is blocked — set STOCK_EXTENDED_HOURS=1 (or PAPER_STOCK_EXTENDED_HOURS=1) to allow extended sessions. Regular-hours stock is unaffected.", stockOn && !stockExtendedHoursOn ? ["stock_alerts"] : []),
     configItem("extended_stock_notify", extendedStockNotifyOn ? "enabled" : "disabled", extendedStockNotifyOn ? "The extended_stock_notify setting permits premarket/after-hours stock Discord." : "DB setting extended_stock_notify is off — premarket/after-hours stock alerts stay dashboard-only. Enable it in Settings.", stockOn && stockExtendedHoursOn && !extendedStockNotifyOn ? ["stock_alerts"] : []),
@@ -155,6 +159,7 @@ export function buildConfigVisibility(env: NodeJS.ProcessEnv = process.env, extr
 
   const summary = [
     supervisorDiscordOn ? "Options Discord is enabled." : "Options Discord is disabled by Supervisor routing/config (need CALLOUT_CANONICAL_PATH=supervisor AND AGENT_CALLOUT_DISCORD=1).",
+    independentOptionsOn && !portfolioDeliveryOn ? "Independent options subscriber delivery is blocked because OPTIONS_PORTFOLIO_DELIVERY_ENABLED is not 1." : "Independent options portfolio-delivery requirement is satisfied or discovery is disabled.",
     stockOn ? "Regular-hours stock Discord is enabled when DISCORD_WEBHOOK_STOCKS is configured and a fresh actionable setup exists." : "Momentum stock Discord is disabled because STOCK_CALLOUTS is off.",
     extendedStockReady
       ? "Premarket/after-hours stock Discord is enabled."
@@ -179,6 +184,7 @@ export function buildConfigVisibility(env: NodeJS.ProcessEnv = process.env, extr
   if (canonicalPath !== "supervisor") optionsBlockers.push("CALLOUT_CANONICAL_PATH != supervisor");
   if (!on(env.AGENT_CALLOUT_DISCORD)) optionsBlockers.push("AGENT_CALLOUT_DISCORD != 1");
   if (!optionsWebhookOn) optionsBlockers.push("DISCORD_WEBHOOK_OPTIONS missing");
+  if (independentOptionsOn && !portfolioDeliveryOn) optionsBlockers.push("OPTIONS_PORTFOLIO_DELIVERY_ENABLED != 1 while INDEPENDENT_OPTIONS_DISCOVERY_ENABLED=1");
 
   const stockBlockers: string[] = [];
   if (!stockOn) stockBlockers.push("STOCK_CALLOUTS != 1");
