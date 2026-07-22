@@ -62,7 +62,14 @@ export function evaluateOptionsCandidate(input: OptionsCandidateInput, chain: Ch
 interface LoopDb { prepare(sql: string): { run: (...a: any[]) => { changes: number } } }
 const liveDb = () => require("@/lib/db").getDb(); // eslint-disable-line @typescript-eslint/no-require-imports
 
-export interface OptionsCandidateExtra { featureSnapshot?: unknown; earlinessPhase?: string | null; escalatedBy?: string | null; coreBroad?: string | null }
+export interface OptionsCandidateExtra {
+  featureSnapshot?: unknown; earlinessPhase?: string | null; escalatedBy?: string | null; coreBroad?: string | null;
+  /** Portfolio delivery mode: instead of firing Discord immediately, hand the ready-to-send payload +
+   *  quality inputs to the cycle's collector so ALL READY candidates compete before delivery. */
+  collectDelivery?: (submission: import("./delivery-decision.ts").DeliverySubmission) => void;
+  rankTier?: 0 | 1 | 2;
+  fractionMove?: number | null;
+}
 
 /** Fire-and-forget: run the candidate, persist it (with the enriched decision-time snapshot the AI/
  *  analog shadow consume), and enqueue AI/analog shadow AFTERWARD. HARD no-op unless
@@ -95,11 +102,28 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
     if (res.state === "READY" && res.contract && res.callout?.message && researchFlags(env).earlyOptionsCallouts) {
       const strat = getStrategy(res.selection.selected!.key);
       const px = input.underlying.price ?? 0;
-      void deliverOptionsCallout({
+      const deliveryInput = {
         candidateSymbol: input.symbol, strategy: res.selection.selected!.key, researchOnly: res.selection.selected!.researchOnly,
         contract: { optionSymbol: res.contract.optionSymbol, side: res.contract.side, strike: res.contract.strike, expiration: res.contract.expiration, bid: res.contract.bid, ask: res.contract.ask, spreadPct: res.contract.spreadPct, quoteAgeMs: res.contract.providerTimestamp != null ? input.nowMs - res.contract.providerTimestamp : null, dte: res.contract.dte, volume: res.contract.volume, openInterest: res.contract.openInterest, iv: res.contract.iv, delta: res.contract.delta, providerTimestamp: res.contract.providerTimestamp },
         message: res.callout.message, observedUnderlyingPrice: px, currentUnderlyingPrice: px, chaseLimitPct: strat?.chaseLimitPct ?? 0.6, underlyingPrice: px, decisionMs: input.nowMs, session: input.session, entry: res.callout.entry, tier: input.tier, paperOptionSymbol,
-      }, { getDb: deps.getDb }, env).catch(() => { /* delivery failure never blocks the monitor */ });
+      };
+      if (extra.collectDelivery) {
+        // Portfolio delivery: submit into the cycle batch so every READY candidate competes before Discord.
+        const sel = res.selection.selected!;
+        const considered = res.selection.considered.find((c) => c.key === sel.key);
+        try {
+          extra.collectDelivery({
+            deliveryInput, symbol: input.symbol, side: sel.side, strategy: sel.key, researchOnly: sel.researchOnly,
+            tier: extra.rankTier ?? input.tier,
+            matchedSignals: considered?.matched.length ?? 0, requiredSignals: strat?.earlySignals.length ?? 0, strategyScore: sel.score,
+            spreadPct: res.callout.entry?.spreadPct ?? res.contract.spreadPct, openInterest: res.contract.openInterest, volume: res.contract.volume,
+            fractionMove: extra.fractionMove ?? null, levelProximityPct: input.underlying.nearResistancePct,
+            nowMs: input.nowMs,
+          });
+        } catch { /* isolated */ }
+      } else {
+        void deliverOptionsCallout(deliveryInput, { getDb: deps.getDb }, env).catch(() => { /* delivery failure never blocks the monitor */ });
+      }
     }
   } catch { /* isolated: options discovery never affects the live path */ }
   return res;

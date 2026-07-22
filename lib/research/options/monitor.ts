@@ -11,6 +11,7 @@
 import { researchFlags } from "../flags.ts";
 import { scoreStrategies, optionsTier1, optionsTier0, type OptionsCandidateInput, type Session } from "./discovery.ts";
 import { sessionState } from "./session-state.ts";
+import { decideDeliveryBatch, type DeliverySubmission } from "./delivery-decision.ts";
 import { runOptionsCandidate, type ChainContract } from "./loop.ts";
 import { computeOptionsFeatures, featuresToUnderlying, type Bar, type FeatureContext } from "./features.ts";
 import { summarizeChainFeatures, chainFeaturesToActivity, type OptionContract } from "./chain-features.ts";
@@ -138,6 +139,12 @@ export async function runOptionsMonitorCycle(tier: 0 | 1 | 2, symbols: string[],
 
   if (breakerOpen(s, t0)) { s.metrics.throttles += 1; return { tier, scanned: 0, created: 0, rejected: 0, chains: 0, durationMs: now() - t0 }; }
 
+  // PORTFOLIO DELIVERY (flag-gated): collect every READY candidate this cycle so they compete in ONE
+  // ranked delivery decision instead of racing first-come to Discord. Sensitivity unchanged — research
+  // shadow paper still opens per candidate; only the DELIVERY decision becomes portfolio-level.
+  const portfolioMode = env.OPTIONS_PORTFOLIO_DELIVERY_ENABLED === "1";
+  const deliveryBatch: DeliverySubmission[] = [];
+
   // STAGE 1 — ONE cheap underlying batch snapshot for the whole set (rejects most symbols before any
   // chain is ever fetched). One provider call for the batch (from the tier's own budget bucket).
   let snaps: Map<string, UnderlyingSnapshot>;
@@ -206,7 +213,11 @@ export async function runOptionsMonitorCycle(tier: 0 | 1 | 2, symbols: string[],
       const earlinessPhase = fractionMove == null ? null : fractionMove >= 0.75 ? "late" : fractionMove <= 0.4 ? "early" : "during";
       if (earlinessPhase === "early") s.metrics.phaseEarly += 1; else if (earlinessPhase === "during") s.metrics.phaseDuring += 1; else if (earlinessPhase === "late") s.metrics.phaseLate += 1;
 
-      const res = runOptionsCandidate({ ...input }, chain, getDb ? { getDb } : {}, env, { featureSnapshot: { ...featureSnapshot, fractionMove, earlinessPhase }, earlinessPhase, escalatedBy, coreBroad: tier === 2 ? "broad" : "core" });
+      const res = runOptionsCandidate({ ...input }, chain, getDb ? { getDb } : {}, env, {
+        featureSnapshot: { ...featureSnapshot, fractionMove, earlinessPhase }, earlinessPhase, escalatedBy, coreBroad: tier === 2 ? "broad" : "core",
+        rankTier: tier, fractionMove,
+        ...(portfolioMode ? { collectDelivery: (sub) => deliveryBatch.push(sub) } : {}),
+      });
       if (res?.selection.selected) { created += 1; s.metrics.candidatesCreated += 1; if (tier === 0) s.metrics.tier0Candidates += 1; s.metrics.latestCandidateMs = now(); s.cooldownStrategy.set(`${symbol}:${res.selection.selected.key}`, now() + cfg.strategyCooldownMs); }
       else { rejected += 1; s.metrics.candidatesRejected += 1; }
       s.cooldownSymbol.set(symbol, now() + cfg.symbolCooldownMs);
@@ -215,6 +226,13 @@ export async function runOptionsMonitorCycle(tier: 0 | 1 | 2, symbols: string[],
       s.metrics.providerFailures += 1; breakerFail(s, cfg, now());
     } finally { s.inFlight.delete(symbol); }
   });
+
+  // FLUSH the portfolio delivery decision: rank the whole batch, deliver only the subscriber-worthy
+  // winners, route the rest to research, persist every rationale. Isolated — never fails the cycle.
+  if (portfolioMode && deliveryBatch.length > 0) {
+    try { await decideDeliveryBatch(deliveryBatch, { getDb, now }, env); }
+    catch { /* decision-layer failure never blocks scanning */ }
+  }
 
   const durationMs = now() - t0;
   record(s.metrics.cycleDurations, durationMs);

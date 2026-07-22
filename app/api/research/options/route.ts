@@ -31,6 +31,7 @@ export async function GET(req: Request) {
     grading: { ...readGradingBacklogOnDb(db), grader: optionsGraderState() },
     runtime: readRuntimeStatusOnDb(db, process.env),
     aiResearchQueue: (await import("@/lib/research/options/research-queue")).researchQueueMetricsOnDb(db, process.env),
+    deliveryDecisions: { enabled: process.env.OPTIONS_PORTFOLIO_DELIVERY_ENABLED === "1", ...(await import("@/lib/research/options/delivery-decision")).deliveryDecisionMetricsOnDb(db) },
     delivery: { enabled: f.independentOptionsDiscovery && f.earlyOptionsCallouts, webhookConfigured: Boolean(String(process.env.DISCORD_WEBHOOK_OPTIONS ?? "").trim()), ...readDeliveryMetricsOnDb(db) },
     report: readOptionsReportOnDb(db),
   });

@@ -568,6 +568,35 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   `maxPriority` filter; metrics expose `softLimited`. Test proves P1 processes while P3/P5 wait at the
   soft limit. Everything else on the requirement list was verified already present and reused. Green:
   **1771 tests, tsc 0, build 0.**
+- 🟡 **Portfolio-level delivery decision layer — technically-valid ≠ subscriber-worthy** (commit
+  pending). The final pre-subscriber architectural piece from the engineering review. Philosophy:
+  scanner stays SENSITIVE, Discord becomes SELECTIVE. New `delivery-decision.ts`, flag-gated
+  `OPTIONS_PORTFOLIO_DELIVERY_ENABLED` (default OFF → behavior unchanged): each monitor cycle COLLECTS
+  every READY candidate (loop.ts `collectDelivery` hook instead of immediate fire-and-forget), then ONE
+  ranked flush decides `DELIVER_TO_DISCORD | RESEARCH_ONLY | REJECT`. Single calibrated quality score
+  (0..1) built ONLY from already-computed signals — evidence-weighted signal completeness (fixes the
+  2-of-2 vs 3-of-4 cross-strategy bias), earliness (move-completed), spread, liquidity, level
+  proximity, strategy confidence, and historical delivered-mirror win rate when n≥5 (neutral until
+  forward evidence exists). Ordering REUSES `rankCandidates` (tier precedence → forming →
+  move-completed → spread → liquidity → proximity → quality). Absolute subscriber bar
+  (`OPTIONS_QUALITY_DELIVER_BAR` 0.62; +`OPENING_BUMP` 0.06 in OPENING_DISCOVERY — stronger
+  cross-signal quality at the open), EXCELLENT bar (0.75) that alone may exceed the flush cap and
+  cluster rules, research floor (0.35). Correlation clustering: SPY/QQQ/IWM/DIA = ONE index thesis per
+  direction (checked within the batch AND against alerts SENT in the last 15min); only the strongest
+  expression delivers unless others are independently excellent. Tier 0 = scanned first + ranked first,
+  NEVER auto-delivered. Winners still flow through the unchanged hard-gated `deliverOptionsCallout`
+  (freshness/spread/chase/dedup/kill switch); mirror-paper architecture untouched; puts stay
+  research-only; sensitivity preserved (candidate rows + research shadow paper open for every READY
+  candidate regardless of delivery outcome). EVERY decision persists to new repeat-safe
+  `options_delivery_decisions` (batch, rank, quality, components, cluster, threshold, session,
+  competing candidates + why withheld, would_deliver_solo, alert_id). Observability in GET →
+  `deliveryDecisions` (counts by outcome, withheld by ranking/correlation/threshold, avg vs delivered
+  quality, delivered by session). Tests (`options-delivery-decision`, 14): calibration fix; hard gates
+  alone never reach Discord; batch competition; index-cluster correlation; independently-excellent
+  multi-delivery; Tier 0 no-auto-delivery; recent-alert correlation window; opening bar raise;
+  rationale persistence; metrics; monitor end-to-end single-batch flush; flag-OFF passthrough; puts;
+  config clamps. Green: **1785 tests, tsc 0, build 0.** No AI in the live path; no real-money; Phase G
+  not started.
 - ⬜ Phases G–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: collect options/Phase-F/shadow live data before Phase G.**
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).

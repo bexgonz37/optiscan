@@ -1460,6 +1460,19 @@ CREATE TABLE IF NOT EXISTS ai_research_queue (
   UNIQUE(kind, ref_id)
 );
 CREATE INDEX IF NOT EXISTS idx_ai_research_queue_claim ON ai_research_queue(status, priority, created_at_ms);
+
+-- Portfolio-level delivery decisions: every READY candidate's ranked outcome (DELIVER_TO_DISCORD /
+-- RESEARCH_ONLY / REJECT) with quality, rank, cluster, threshold, and competing candidates — the full
+-- "why did this deserve interrupting a subscriber" audit trail. PURELY ADDITIVE.
+CREATE TABLE IF NOT EXISTS options_delivery_decisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_id TEXT NOT NULL, symbol TEXT NOT NULL, strategy TEXT, side TEXT, tier INTEGER,
+  outcome TEXT NOT NULL, reason TEXT, quality REAL, rank INTEGER, batch_size INTEGER,
+  components_json TEXT, cluster_key TEXT, threshold REAL, session_state TEXT,
+  alert_id TEXT, would_deliver_solo INTEGER, competing_json TEXT,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_options_delivery_decisions ON options_delivery_decisions(outcome, created_at_ms);
 `;
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */
