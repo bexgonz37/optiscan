@@ -6,6 +6,7 @@
  * callouts. Nothing here executes real money; the message carries a PAPER/BETA label.
  */
 import { researchFlags } from "../flags.ts";
+import { buildRealOptionEntry, persistDeliveredMirrorOnDb, type OptionQuote } from "./paper.ts";
 
 export type DeliveryState = "READY" | "SEND_ATTEMPTED" | "SENT" | "SEND_FAILED" | "TOO_LATE" | "REJECTED" | "EXPIRED";
 
@@ -17,13 +18,19 @@ export function optionsAlertId(symbol: string, strategy: string, optionSymbol: s
   return `oa_${djb2([symbol.toUpperCase(), strategy, optionSymbol, Math.floor(nowMs / bucketMs)].join("|"))}`;
 }
 
-export interface DeliveryContract { optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; bid: number | null; ask: number | null; spreadPct: number | null; quoteAgeMs: number | null }
+export interface DeliveryContract {
+  optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; bid: number | null; ask: number | null; spreadPct: number | null; quoteAgeMs: number | null;
+  // carried so the DELIVERED_ALERT_PAPER mirror is built from the EXACT delivered quote (no hindsight).
+  dte?: number | null; volume?: number | null; openInterest?: number | null; iv?: number | null; delta?: number | null; providerTimestamp?: number | null;
+}
 export interface DeliveryInput {
   candidateSymbol: string; strategy: string; researchOnly: boolean;
   contract: DeliveryContract;
   message: string;                 // the pre-formatted single callout (from callout.ts)
   observedUnderlyingPrice: number; currentUnderlyingPrice: number; chaseLimitPct: number;
   underlyingPrice: number;         // delivered underlying snapshot
+  decisionMs?: number;             // the setup decision timestamp — the mirror's entry time (no later/improved entry)
+  session?: string | null;
   paperOptionSymbol?: string | null; // when real-option paper linked — MUST match contract.optionSymbol
   maxSpreadPct?: number; maxQuoteAgeMs?: number;
 }
@@ -50,6 +57,25 @@ async function defaultSend(payload: Record<string, unknown>): Promise<SendResult
   }
 }
 
+/**
+ * Create the ONE DELIVERED_ALERT_PAPER mirror for an alert that actually SENT — the exact contract,
+ * quote, underlying, strategy, decision timestamp, and alert_id the subscriber received. Idempotent
+ * (persistDeliveredMirrorOnDb dedups by alert_id). Gated on REAL_OPTION_PAPER_ENABLED. Isolated: a
+ * mirror failure does NOT change the honest SENT state — it only leaves paper_linked=0 (surfaced),
+ * and the idempotent writer allows a later retry. Returns whether the mirror now exists (linked).
+ */
+function createDeliveredMirror(db: DDb, i: DeliveryInput, alertId: string, env: NodeJS.ProcessEnv): boolean {
+  try {
+    if (!researchFlags(env).realOptionPaper) return false;
+    const c = i.contract;
+    const decisionMs = i.decisionMs ?? Date.now();
+    const q: OptionQuote = { optionSymbol: c.optionSymbol, side: c.side, strike: c.strike, expiration: c.expiration, dte: c.dte ?? 0, bid: c.bid, ask: c.ask, volume: c.volume ?? null, openInterest: c.openInterest ?? null, iv: c.iv ?? null, delta: c.delta ?? null, quoteAgeMs: c.quoteAgeMs, providerTimestamp: c.providerTimestamp ?? null };
+    const entry = buildRealOptionEntry({ quote: q, underlyingPrice: i.underlyingPrice, strategy: i.strategy }, env);
+    const r = persistDeliveredMirrorOnDb(db, entry, decisionMs, alertId, { session: i.session ?? null });
+    return r.inserted || r.existed;
+  } catch { return false; }
+}
+
 function persist(db: DDb, alertId: string, i: DeliveryInput, state: DeliveryState, extra: Record<string, unknown>, nowMs: number): void {
   db.prepare(
     `INSERT INTO options_alerts (alert_id, candidate_symbol, strategy, option_symbol, side, research_only, state, message_hash, message, delivered_bid, delivered_ask, delivered_underlying, paper_linked, discord_status, latency_ms, retry_count, failure_reason, attempted_at_ms, sent_at_ms, created_at_ms, updated_at_ms)
@@ -58,7 +84,7 @@ function persist(db: DDb, alertId: string, i: DeliveryInput, state: DeliveryStat
   ).run(
     alertId, i.candidateSymbol, i.strategy, i.contract.optionSymbol, i.contract.side, i.researchOnly ? 1 : 0, state,
     djb2(i.message), i.message, i.contract.bid, i.contract.ask, i.underlyingPrice,
-    (i.paperOptionSymbol && i.paperOptionSymbol === i.contract.optionSymbol) ? 1 : 0,
+    extra.paperLinked != null ? (extra.paperLinked ? 1 : 0) : ((i.paperOptionSymbol && i.paperOptionSymbol === i.contract.optionSymbol) ? 1 : 0),
     extra.status ?? null, extra.latencyMs ?? null, extra.retryCount ?? 0, extra.failureReason ?? null,
     extra.attemptedAtMs ?? null, extra.sentAtMs ?? null, nowMs, nowMs,
   );
@@ -112,8 +138,15 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
     attempt += 1;
     await new Promise((r) => setTimeout(r, Math.min(15_000, 1000 * 2 ** attempt))); // bounded backoff
   }
+  if (res.ok) {
+    // Alert delivered → create the ONE linked DELIVERED_ALERT_PAPER mirror (idempotent, same contract/
+    // quote/underlying/strategy/decision-timestamp/alert_id). Never blocks or alters the SENT outcome;
+    // a mirror failure just leaves paper_linked=0 (surfaced) and can be retried idempotently later.
+    const linked = createDeliveredMirror(db, input, alertId, env);
+    try { persist(db, alertId, input, "SENT", { status: res.status, latencyMs: res.latencyMs, retryCount: attempt, sentAtMs: now(), attemptedAtMs: nowMs, paperLinked: linked }, now()); } catch { /* isolated */ }
+    return base("SENT", true, "delivered", linked);
+  }
   const paperLinked = Boolean(input.paperOptionSymbol && input.paperOptionSymbol === input.contract.optionSymbol);
-  if (res.ok) { try { persist(db, alertId, input, "SENT", { status: res.status, latencyMs: res.latencyMs, retryCount: attempt, sentAtMs: now(), attemptedAtMs: nowMs }, now()); } catch { /* isolated */ } return base("SENT", true, "delivered", paperLinked); }
   // An AMBIGUOUS timeout may have been delivered — exhaust retries so NO later call can resend it.
   const finalRetryCount = res.ambiguous ? maxRetries : attempt;
   try { persist(db, alertId, input, "SEND_FAILED", { status: res.status, latencyMs: res.latencyMs, retryCount: finalRetryCount, failureReason: res.ambiguous ? `ambiguous_timeout: ${res.error}` : res.error }, now()); } catch { /* isolated */ }

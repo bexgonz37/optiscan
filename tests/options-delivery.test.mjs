@@ -5,7 +5,10 @@ import { deliverOptionsCallout, optionsWebhookTransportTest, readDeliveryMetrics
 
 function db() {
   const d = new Database(":memory:");
-  d.exec(`CREATE TABLE options_alerts (alert_id TEXT PRIMARY KEY, candidate_symbol TEXT NOT NULL, strategy TEXT, option_symbol TEXT, side TEXT, research_only INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, message_hash TEXT, message TEXT, delivered_bid REAL, delivered_ask REAL, delivered_underlying REAL, paper_linked INTEGER NOT NULL DEFAULT 0, discord_status INTEGER, latency_ms INTEGER, retry_count INTEGER NOT NULL DEFAULT 0, failure_reason TEXT, attempted_at_ms INTEGER, sent_at_ms INTEGER, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);`);
+  d.exec(`CREATE TABLE options_alerts (alert_id TEXT PRIMARY KEY, candidate_symbol TEXT NOT NULL, strategy TEXT, option_symbol TEXT, side TEXT, research_only INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, message_hash TEXT, message TEXT, delivered_bid REAL, delivered_ask REAL, delivered_underlying REAL, paper_linked INTEGER NOT NULL DEFAULT 0, discord_status INTEGER, latency_ms INTEGER, retry_count INTEGER NOT NULL DEFAULT 0, failure_reason TEXT, attempted_at_ms INTEGER, sent_at_ms INTEGER, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+          CREATE TABLE options_paper_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, option_symbol TEXT NOT NULL, side TEXT, strike REAL, expiration TEXT, dte INTEGER, result_class TEXT NOT NULL, bid REAL, ask REAL, mid REAL, spread_pct REAL, entry_fill REAL, volume REAL, open_interest REAL, iv REAL, delta REAL, underlying_price REAL, strategy TEXT, target REAL, invalidation REAL, provenance TEXT, status TEXT NOT NULL, exit_fill REAL, pnl REAL, return_pct REAL, exit_reason TEXT, entered_at_ms INTEGER, exit_at_ms INTEGER, session TEXT, core_broad TEXT, feature_snapshot_json TEXT, paper_kind TEXT, alert_id TEXT, entry_source TEXT, experiment_id TEXT, experiment_variant TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+          CREATE VIEW options_paper_delivered AS SELECT * FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER';
+          CREATE VIEW options_paper_research AS SELECT * FROM options_paper_trades WHERE paper_kind='RESEARCH_ONLY_PAPER';`);
   return d;
 }
 const NOW = 5_000_000;
@@ -79,13 +82,17 @@ test("8b. an ambiguous timeout is NOT retried and cannot be resent by a later ca
   assert.equal(r2.reason, "retry_ceiling_reached");
 });
 
-test("10. linked paper uses the EXACT same OCC contract", async () => {
+test("10. a delivered alert (paper enabled) creates ONE linked DELIVERED_ALERT_PAPER with the same OCC contract", async () => {
   const d = db(); const { send } = okSend();
-  await deliverOptionsCallout(input(), { getDb: () => d, send, now: () => NOW }, ON);
+  await deliverOptionsCallout(input(), { getDb: () => d, send, now: () => NOW }, { ...ON, REAL_OPTION_PAPER_ENABLED: "1" });
   assert.equal(d.prepare("SELECT paper_linked FROM options_alerts").get().paper_linked, 1);
+  assert.equal(d.prepare("SELECT COUNT(*) n FROM options_paper_delivered").get().n, 1);
+  assert.equal(d.prepare("SELECT option_symbol FROM options_paper_delivered").get().option_symbol, "O:HOOD260320C00101000");
+  // paper subsystem OFF → no mirror is created, and the alert is honestly reported as unlinked.
   const d2 = db();
-  await deliverOptionsCallout(input({ paperOptionSymbol: "O:HOOD_DIFFERENT" }), { getDb: () => d2, send, now: () => NOW }, ON);
+  await deliverOptionsCallout(input(), { getDb: () => d2, send, now: () => NOW }, ON);
   assert.equal(d2.prepare("SELECT paper_linked FROM options_alerts").get().paper_linked, 0);
+  assert.equal(d2.prepare("SELECT COUNT(*) n FROM options_paper_delivered").get().n, 0);
 });
 
 test("11. research-only puts are NOT sent as actionable callouts (suppressed)", async () => {

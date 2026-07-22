@@ -1415,9 +1415,16 @@ CREATE TABLE IF NOT EXISTS options_paper_trades (
   strategy TEXT, target REAL, invalidation REAL, provenance TEXT, status TEXT NOT NULL,
   exit_fill REAL, pnl REAL, return_pct REAL, exit_reason TEXT, entered_at_ms INTEGER, exit_at_ms INTEGER,
   session TEXT, core_broad TEXT, feature_snapshot_json TEXT,
+  -- AI Research Lab data foundation: paper_kind is the STRUCTURAL audience separator. DELIVERED_ALERT_PAPER
+  -- = the exact mirror of a Discord alert that was actually delivered (linked by alert_id); RESEARCH_ONLY_PAPER
+  -- = shadow/experimental trades subscribers never see; LEGACY_UNCLASSIFIED = pre-foundation rows (quarantined
+  -- from BOTH subscriber stats and research learning). Subscriber performance reads ONLY the delivered view.
+  paper_kind TEXT, alert_id TEXT, entry_source TEXT, experiment_id TEXT, experiment_variant TEXT,
   created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_options_paper_strategy ON options_paper_trades(strategy, side, dte);
+-- NOTE: idx_options_paper_kind (references paper_kind) is created in the migration block AFTER the
+-- guarded ALTER adds paper_kind — never here, or it would fail on an existing pre-foundation DB.
 
 -- Gated private-beta options Discord delivery. Honest send states; SENT only after a successful
 -- webhook response. PURELY ADDITIVE; no webhook secret is ever stored here. Flag default OFF.
@@ -1700,7 +1707,23 @@ function migrate(db: Database.Database) {
       ["session", "ALTER TABLE options_paper_trades ADD COLUMN session TEXT"],
       ["core_broad", "ALTER TABLE options_paper_trades ADD COLUMN core_broad TEXT"],
       ["feature_snapshot_json", "ALTER TABLE options_paper_trades ADD COLUMN feature_snapshot_json TEXT"],
+      // AI Research Lab data foundation (additive, repeat-safe).
+      ["paper_kind", "ALTER TABLE options_paper_trades ADD COLUMN paper_kind TEXT"],
+      ["alert_id", "ALTER TABLE options_paper_trades ADD COLUMN alert_id TEXT"],
+      ["entry_source", "ALTER TABLE options_paper_trades ADD COLUMN entry_source TEXT"],
+      ["experiment_id", "ALTER TABLE options_paper_trades ADD COLUMN experiment_id TEXT"],
+      ["experiment_variant", "ALTER TABLE options_paper_trades ADD COLUMN experiment_variant TEXT"],
     ] as [string, string][]) if (!op.has(col)) db.exec(sql);
+    // Backfill legacy rows to a QUARANTINE kind: pre-foundation trades cannot be proven as delivered
+    // mirrors, so they must never count as subscriber performance — and they aren't Lab experiments
+    // either, so they stay out of research learning too. Idempotent (only touches NULL rows).
+    db.exec("UPDATE options_paper_trades SET paper_kind='LEGACY_UNCLASSIFIED', entry_source=COALESCE(entry_source,'pre_foundation') WHERE paper_kind IS NULL");
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_options_paper_kind ON options_paper_trades(paper_kind, alert_id)").run();
+    // STRUCTURAL separation: subscriber stats read ONLY the delivered view; the (future) Research Lab
+    // reads ONLY the research view. A view physically cannot return the other kind — mixing is impossible.
+    // Created here (after the ALTER) so paper_kind is guaranteed to exist. Repeat-safe.
+    db.exec("CREATE VIEW IF NOT EXISTS options_paper_delivered AS SELECT * FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER'");
+    db.exec("CREATE VIEW IF NOT EXISTS options_paper_research AS SELECT * FROM options_paper_trades WHERE paper_kind='RESEARCH_ONLY_PAPER'");
   }
   // Phase 7 (additive): drift-health flag on an existing model_registry table.
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_registry'").get()) {

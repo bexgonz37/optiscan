@@ -84,7 +84,10 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
     let paperOptionSymbol: string | null = null;
     if (res.state === "READY" && res.paperEntry?.ok && researchFlags(env).realOptionPaper && input.session === "regular") {
       const gate = canOpenRealOptionPaper(db, { optionSymbol: res.paperEntry.optionSymbol, strategy: res.paperEntry.strategy, nowMs: input.nowMs });
-      if (gate.ok) { persistRealOptionPaperOnDb(db, res.paperEntry, input.nowMs, { session: input.session, coreBroad: extra.coreBroad ?? (input.tier === 1 ? "core" : "broad"), featureSnapshotJson: snapJson ?? undefined }); paperOptionSymbol = res.paperEntry.optionSymbol; }
+      // The monitor's auto-open is a RESEARCH_ONLY_PAPER shadow (subscribers never see it). The
+      // subscriber MIRROR (DELIVERED_ALERT_PAPER) is created ONLY on a real Discord SEND, inside
+      // deliverOptionsCallout — so it exists iff an alert was actually delivered.
+      if (gate.ok) { persistRealOptionPaperOnDb(db, res.paperEntry, input.nowMs, { session: input.session, coreBroad: extra.coreBroad ?? (input.tier === 1 ? "core" : "broad"), featureSnapshotJson: snapJson ?? undefined, paperKind: "RESEARCH_ONLY_PAPER", entrySource: "monitor_shadow" }); paperOptionSymbol = res.paperEntry.optionSymbol; }
     }
     // GATED private-beta Discord delivery — fire-and-forget, fully isolated. HARD no-op unless
     // EARLY_OPTIONS_CALLOUTS_ENABLED=1 (delivery re-checks the flag + freshness/chase). The linked
@@ -94,8 +97,8 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
       const px = input.underlying.price ?? 0;
       void deliverOptionsCallout({
         candidateSymbol: input.symbol, strategy: res.selection.selected!.key, researchOnly: res.selection.selected!.researchOnly,
-        contract: { optionSymbol: res.contract.optionSymbol, side: res.contract.side, strike: res.contract.strike, expiration: res.contract.expiration, bid: res.contract.bid, ask: res.contract.ask, spreadPct: res.contract.spreadPct, quoteAgeMs: res.contract.providerTimestamp != null ? input.nowMs - res.contract.providerTimestamp : null },
-        message: res.callout.message, observedUnderlyingPrice: px, currentUnderlyingPrice: px, chaseLimitPct: strat?.chaseLimitPct ?? 0.6, underlyingPrice: px, paperOptionSymbol,
+        contract: { optionSymbol: res.contract.optionSymbol, side: res.contract.side, strike: res.contract.strike, expiration: res.contract.expiration, bid: res.contract.bid, ask: res.contract.ask, spreadPct: res.contract.spreadPct, quoteAgeMs: res.contract.providerTimestamp != null ? input.nowMs - res.contract.providerTimestamp : null, dte: res.contract.dte, volume: res.contract.volume, openInterest: res.contract.openInterest, iv: res.contract.iv, delta: res.contract.delta, providerTimestamp: res.contract.providerTimestamp },
+        message: res.callout.message, observedUnderlyingPrice: px, currentUnderlyingPrice: px, chaseLimitPct: strat?.chaseLimitPct ?? 0.6, underlyingPrice: px, decisionMs: input.nowMs, session: input.session, paperOptionSymbol,
       }, { getDb: deps.getDb }, env).catch(() => { /* delivery failure never blocks the monitor */ });
     }
   } catch { /* isolated: options discovery never affects the live path */ }

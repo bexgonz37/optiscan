@@ -60,11 +60,13 @@ export function buildDailySummaryOnDb(db: SumDb, nowMs: number, env: NodeJS.Proc
   const tooLate = alertTable ? n("SELECT COUNT(*) n FROM options_alerts WHERE created_at_ms>=? AND created_at_ms<? AND state='TOO_LATE'", start, end) : 0;
   const rejected = alertTable ? n("SELECT COUNT(*) n FROM options_alerts WHERE created_at_ms>=? AND created_at_ms<? AND state='REJECTED'", start, end) : 0;
 
-  const paperOpened = paperTable ? n("SELECT COUNT(*) n FROM options_paper_trades WHERE entered_at_ms>=? AND entered_at_ms<?", start, end) : 0;
-  const paperClosed = paperTable ? n("SELECT COUNT(*) n FROM options_paper_trades WHERE exit_at_ms>=? AND exit_at_ms<? AND status='EXITED'", start, end) : 0;
-  const wins = paperTable ? n("SELECT COUNT(*) n FROM options_paper_trades WHERE exit_at_ms>=? AND exit_at_ms<? AND status='EXITED' AND return_pct>0", start, end) : 0;
-  const losses = paperTable ? n("SELECT COUNT(*) n FROM options_paper_trades WHERE exit_at_ms>=? AND exit_at_ms<? AND status='EXITED' AND return_pct<=0", start, end) : 0;
-  const openPositions = paperTable ? n("SELECT COUNT(*) n FROM options_paper_trades WHERE status='ENTERED'") : 0;
+  // SUBSCRIBER-facing paper stats use ONLY DELIVERED_ALERT_PAPER — research trades never blend in.
+  const D = "paper_kind='DELIVERED_ALERT_PAPER'";
+  const paperOpened = paperTable ? n(`SELECT COUNT(*) n FROM options_paper_trades WHERE ${D} AND entered_at_ms>=? AND entered_at_ms<?`, start, end) : 0;
+  const paperClosed = paperTable ? n(`SELECT COUNT(*) n FROM options_paper_trades WHERE ${D} AND exit_at_ms>=? AND exit_at_ms<? AND status='EXITED'`, start, end) : 0;
+  const wins = paperTable ? n(`SELECT COUNT(*) n FROM options_paper_trades WHERE ${D} AND exit_at_ms>=? AND exit_at_ms<? AND status='EXITED' AND return_pct>0`, start, end) : 0;
+  const losses = paperTable ? n(`SELECT COUNT(*) n FROM options_paper_trades WHERE ${D} AND exit_at_ms>=? AND exit_at_ms<? AND status='EXITED' AND return_pct<=0`, start, end) : 0;
+  const openPositions = paperTable ? n(`SELECT COUNT(*) n FROM options_paper_trades WHERE ${D} AND status='ENTERED'`) : 0;
 
   const earliness = { early: 0, during: 0, late: 0 };
   if (candTable) for (const r of db.prepare("SELECT earliness_phase p, COUNT(*) c FROM options_candidates WHERE created_at_ms>=? AND created_at_ms<? AND earliness_phase IS NOT NULL GROUP BY earliness_phase").all(start, end) as any[]) { if (r.p === "early" || r.p === "during" || r.p === "late") (earliness as any)[r.p] = r.c; }

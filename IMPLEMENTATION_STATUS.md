@@ -487,6 +487,27 @@ or stop + bounded remediation). Every new capability OFF by default; production 
   (invisible before) — i.e. genuine pre-breakout detection is unlocked. Green: **1742 tests, tsc 0,
   build 0.** Stock Momentum Radar untouched; no real-money execution; no profitability claim; Phase G
   not started.
+- 🟡 **AI Research Lab DATA FOUNDATION — delivered vs research paper separation** (commit pending). Builds
+  the honest data substrate the future Research Lab depends on (the Lab itself is NOT built). Structural
+  rule: **DELIVERED_ALERT_PAPER** (the exact mirror of an alert that actually delivered) and
+  **RESEARCH_ONLY_PAPER** (shadow/experiment) can never mix. Schema (repeat-safe guarded ALTERs on
+  `options_paper_trades`): `paper_kind`, `alert_id`, `entry_source`, `experiment_id`, `experiment_variant`;
+  legacy rows backfilled to `LEGACY_UNCLASSIFIED` (quarantined from BOTH lanes); two enforcement VIEWS
+  `options_paper_delivered` / `options_paper_research` created after the ALTER (a view physically cannot
+  return the other kind). Write paths: `deliverOptionsCallout` creates the ONE delivered mirror **only on a
+  real SENT**, idempotent by `alert_id`, from the exact contract/quote/underlying/strategy/decision-timestamp
+  the subscriber received (no hindsight, no improved entry); the monitor's auto-open is relabeled
+  RESEARCH_ONLY_PAPER (`monitor_shadow`); `persistRealOptionPaperOnDb` **fail-safe defaults to
+  RESEARCH_ONLY** so an unlabeled trade can never become a subscriber mirror. Read paths: subscriber
+  performance (`report.ts` `subscriberPerformance`: winRate/avgReturn/expectancy/maxDrawdown/open/closed)
+  reads the delivered view ONLY; research is reported separately and never blended; the daily summary's
+  paper stats are delivered-scoped. Audited every write/read path (delivered writers idempotent; every
+  subscriber-stat reader delivered-scoped; grading/exposure counts are kind-agnostic ops, not perf).
+  Tests (`options-paper-foundation`, 6): exactly one linked mirror per delivered alert (idempotent across
+  a restart), a FAILED send creates no mirror, a +500% research trade cannot move subscriber win
+  rate/expectancy, the two views are disjoint with legacy quarantined, persist is fail-safe, puts never
+  become a mirror. Migration proven repeat-safe on an existing pre-foundation DB. No Research Lab, no AI,
+  no real-money, no profitability claim. Green: **1748 tests, tsc 0, build 0.**
 - ⬜ Phases G–I per `docs/ANALOG_ENGINE_BUILD.md`. **Next: collect options/Phase-F/shadow live data before Phase G.**
   live recommendation cards forward, grade against real outcomes, compare to the Phase-D backtest before
   trusting any GO).

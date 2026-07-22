@@ -55,13 +55,47 @@ export function realOptionExit(entryFill: number, exitBid: number, exitAsk: numb
 
 function spreadPct(bid: number | null, ask: number | null): number | null { if (bid == null || ask == null) return null; const mid = (bid + ask) / 2; return mid > 0 ? ((ask - bid) / mid) * 100 : null; }
 
-interface PaperDb { prepare(sql: string): { run: (...a: any[]) => { changes: number } } }
-/** Persist a real-option paper entry with the decision-time context. Flag-gated OnDb. */
-export function persistRealOptionPaperOnDb(db: PaperDb, e: RealOptionEntry, nowMs: number = Date.now(), extra: { session?: string; coreBroad?: string; featureSnapshotJson?: string } = {}): void {
-  db.prepare(
-    `INSERT INTO options_paper_trades (option_symbol, side, strike, expiration, dte, result_class, bid, ask, mid, spread_pct, entry_fill, volume, open_interest, iv, delta, underlying_price, strategy, target, invalidation, provenance, status, session, core_broad, feature_snapshot_json, entered_at_ms, created_at_ms, updated_at_ms)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-  ).run(e.optionSymbol, e.side, e.strike, e.expiration, e.dte, e.class, e.bid, e.ask, e.mid, e.spreadPct, e.entryFill, e.volume, e.openInterest, e.iv, e.delta, e.underlyingPrice, e.strategy, e.target, e.invalidation, e.provenance, "ENTERED", extra.session ?? null, extra.coreBroad ?? null, extra.featureSnapshotJson ?? null, nowMs, nowMs, nowMs);
+interface PaperDb { prepare(sql: string): { get?: (...a: any[]) => any; run: (...a: any[]) => { changes: number } } }
+
+/** Audience classification — the STRUCTURAL separator for the AI Research Lab data foundation.
+ *  DELIVERED_ALERT_PAPER is the exact mirror of a delivered Discord alert; RESEARCH_ONLY_PAPER is a
+ *  shadow/experiment subscribers never see. They are never combined in any statistic. */
+export type PaperKind = "DELIVERED_ALERT_PAPER" | "RESEARCH_ONLY_PAPER";
+export interface PaperPersistExtra {
+  session?: string | null; coreBroad?: string | null; featureSnapshotJson?: string;
+  paperKind?: PaperKind; alertId?: string | null; entrySource?: string; experimentId?: string | null; experimentVariant?: string | null;
+}
+
+const PAPER_COLS = "option_symbol, side, strike, expiration, dte, result_class, bid, ask, mid, spread_pct, entry_fill, volume, open_interest, iv, delta, underlying_price, strategy, target, invalidation, provenance, status, session, core_broad, feature_snapshot_json, paper_kind, alert_id, entry_source, experiment_id, experiment_variant, entered_at_ms, created_at_ms, updated_at_ms";
+const PAPER_PLACEHOLDERS = PAPER_COLS.split(",").map(() => "?").join(","); // exactly one ? per column
+const paperVals = (e: RealOptionEntry, extra: PaperPersistExtra, kind: PaperKind, entrySource: string, nowMs: number): any[] => [
+  e.optionSymbol, e.side, e.strike, e.expiration, e.dte, e.class, e.bid, e.ask, e.mid, e.spreadPct, e.entryFill, e.volume, e.openInterest, e.iv, e.delta, e.underlyingPrice, e.strategy, e.target, e.invalidation, e.provenance, "ENTERED", extra.session ?? null, extra.coreBroad ?? null, extra.featureSnapshotJson ?? null, kind, extra.alertId ?? null, entrySource, extra.experimentId ?? null, extra.experimentVariant ?? null, nowMs, nowMs, nowMs,
+];
+
+/** Persist a real-option paper entry with the decision-time context. FAIL-SAFE: defaults to
+ *  RESEARCH_ONLY_PAPER — a trade is NEVER counted as a delivered subscriber mirror unless a caller
+ *  explicitly says so (see persistDeliveredMirrorOnDb). Flag-gated OnDb. */
+export function persistRealOptionPaperOnDb(db: PaperDb, e: RealOptionEntry, nowMs: number = Date.now(), extra: PaperPersistExtra = {}): void {
+  const kind: PaperKind = extra.paperKind ?? "RESEARCH_ONLY_PAPER";
+  const entrySource = extra.entrySource ?? (kind === "DELIVERED_ALERT_PAPER" ? "discord_delivery" : "monitor_shadow");
+  db.prepare(`INSERT INTO options_paper_trades (${PAPER_COLS}) VALUES (${PAPER_PLACEHOLDERS})`).run(...paperVals(e, extra, kind, entrySource, nowMs));
+}
+
+/**
+ * Create the ONE mirror of a delivered Discord alert. IDEMPOTENT by alert_id: calling it again for the
+ * same alert never creates a second DELIVERED_ALERT_PAPER row — so every delivered alert has exactly
+ * one linked mirror. Uses the SAME decision timestamp + quote as the alert (no hindsight, no improved
+ * entry). Returns whether a mirror now exists (inserted or already existed).
+ */
+export function persistDeliveredMirrorOnDb(db: PaperDb, e: RealOptionEntry, decisionMs: number, alertId: string, extra: PaperPersistExtra = {}): { inserted: boolean; existed: boolean } {
+  const existed = Boolean(db.prepare?.("SELECT 1 FROM options_paper_trades WHERE alert_id=? AND paper_kind='DELIVERED_ALERT_PAPER' LIMIT 1").get?.(alertId));
+  if (existed) return { inserted: false, existed: true };
+  const vals = paperVals(e, { ...extra, alertId }, "DELIVERED_ALERT_PAPER", "discord_delivery", decisionMs);
+  // INSERT ... WHERE NOT EXISTS guards a concurrent double-create even past the read check above.
+  const r = db.prepare(
+    `INSERT INTO options_paper_trades (${PAPER_COLS}) SELECT ${PAPER_PLACEHOLDERS} WHERE NOT EXISTS (SELECT 1 FROM options_paper_trades WHERE alert_id=? AND paper_kind='DELIVERED_ALERT_PAPER')`,
+  ).run(...vals, alertId);
+  return { inserted: (r.changes ?? 0) > 0, existed: false };
 }
 
 interface GateDb { prepare(sql: string): { get: (...a: any[]) => any } }
