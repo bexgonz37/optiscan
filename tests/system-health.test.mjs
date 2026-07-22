@@ -104,6 +104,8 @@ test("system overview route keeps provider health separate and reports DB health
 
 test("Discord panel shows recap NOT CONFIGURED without treating it as a delivery failure, and leaks no secrets", () => {
   const panel = read("components/DiscordDeliveryPanel.tsx");
+  assert.ok(/Paid beta readiness/.test(panel), "Discord-only paid beta readiness is visible to the operator");
+  assert.ok(/Subscriber surface/.test(panel) && /Discord only/.test(panel), "panel names Discord as the subscriber surface");
   assert.ok(/NOT CONFIGURED/.test(panel), "recap not-configured must be surfaced");
   assert.ok(/does not affect options or stock alert delivery/i.test(panel), "recap absence is not a failure");
   assert.ok(!/DISCORD_WEBHOOK|https:\/\/discord/.test(panel), "no webhook URLs/secrets in the frontend");
@@ -116,5 +118,7 @@ test("Discord deliveries API joins alerts for ticker + setup but returns no payl
   assert.ok(/LEFT JOIN alerts/.test(store), "ledger enriched with ticker/setup via join");
   const health = read("app/api/discord/health/route.ts");
   assert.ok(/recap:/.test(health), "recap webhook status exposed as boolean only");
+  assert.ok(/subscriberSurface/.test(health) && /discord_only/.test(health), "health route declares Discord-only subscriber surface");
+  assert.ok(/buildSubscriberDiscordReadiness/.test(health), "health route exposes paid-beta readiness derived from delivery health");
   assert.ok(!/DISCORD_WEBHOOK_/.test(health), "health route never echoes webhook env values");
 });

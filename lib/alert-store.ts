@@ -1114,6 +1114,40 @@ export function discordDeliverySummary() {
   ).all() as any[];
 }
 
+export function discordDeliveryWindowMetrics(hours = 24) {
+  const capped = Math.max(1, Math.min(168, Math.floor(Number(hours) || 24)));
+  const sinceMod = `-${capped} hours`;
+  const rows = getDb().prepare(
+    `SELECT status, COUNT(*) AS count
+       FROM discord_deliveries
+      WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now', ?)
+      GROUP BY status`,
+  ).all(sinceMod) as { status: string; count: number }[];
+  const byStatus = Object.fromEntries(rows.map((r) => [String(r.status), Number(r.count ?? 0)]));
+  const scalar = (sql: string) => (getDb().prepare(sql).get() as any)?.v ?? null;
+  const stuck = Number((getDb().prepare(
+    `SELECT COUNT(*) AS v FROM discord_deliveries
+      WHERE status IN ('PENDING','SENDING')
+        AND created_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now','-5 minutes')`,
+  ).get() as any)?.v ?? 0);
+  return {
+    hours: capped,
+    byStatus,
+    total24h: rows.reduce((n, r) => n + Number(r.count ?? 0), 0),
+    sent24h: byStatus.SENT ?? 0,
+    failed24h: byStatus.FAILED ?? 0,
+    retrying24h: byStatus.RETRYING ?? 0,
+    suppressed24h: byStatus.SUPPRESSED ?? 0,
+    notConfigured24h: byStatus.NOT_CONFIGURED ?? 0,
+    pending24h: byStatus.PENDING ?? 0,
+    sending24h: byStatus.SENDING ?? 0,
+    stuckInFlight: stuck,
+    lastDeliveryAt: scalar("SELECT MAX(created_at) AS v FROM discord_deliveries"),
+    lastSentAt: scalar("SELECT MAX(sent_at) AS v FROM discord_deliveries WHERE sent_at IS NOT NULL"),
+    lastFailureAt: scalar("SELECT MAX(created_at) AS v FROM discord_deliveries WHERE status IN ('FAILED','RETRYING','SUPPRESSED','NOT_CONFIGURED')"),
+  };
+}
+
 export function retryableDiscordDeliveries(limit = 25) {
   return getDb().prepare(
     `SELECT * FROM discord_deliveries

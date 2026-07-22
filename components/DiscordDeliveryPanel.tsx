@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Card, StatusBadge, EmptyState, LoadingState, ErrorState, type BadgeTone } from "@/components/ui/Shell";
+import { Card, StatusBadge, EmptyState, LoadingState, ErrorState, KeyValue, ResponsiveGrid, type BadgeTone } from "@/components/ui/Shell";
 import { SimpleTable, type Column } from "@/components/ui/Table";
 
 /**
@@ -34,6 +34,28 @@ type Delivery = {
 type Health = {
   webhooks?: Record<string, boolean>;
   summary?: { status: string; count: number }[];
+  metrics?: {
+    total24h?: number;
+    sent24h?: number;
+    failed24h?: number;
+    retrying24h?: number;
+    suppressed24h?: number;
+    notConfigured24h?: number;
+    stuckInFlight?: number;
+    lastSentAt?: string | null;
+    lastFailureAt?: string | null;
+  };
+  readiness?: {
+    status: "READY" | "NEEDS_REVIEW" | "BLOCKED";
+    betaVerdict: string;
+    blockers: string[];
+    reviewItems: string[];
+    channels: {
+      options: { configured: boolean; required: boolean; ready: boolean; blockedBy: string[] };
+      stocks: { configured: boolean; required: boolean; ready: boolean; blockedBy: string[] };
+      recap: { configured: boolean; subscriberDelivery: false; note: string };
+    };
+  };
 };
 
 const STATUS_TONE: Record<string, BadgeTone> = {
@@ -48,6 +70,13 @@ const STATUS_TONE: Record<string, BadgeTone> = {
 
 function tone(status: string): BadgeTone {
   return STATUS_TONE[status] ?? "muted";
+}
+
+function readinessTone(status?: string): BadgeTone {
+  if (status === "READY") return "live";
+  if (status === "NEEDS_REVIEW") return "warn";
+  if (status === "BLOCKED") return "bad";
+  return "muted";
 }
 
 function timeShort(iso: string | null): string {
@@ -167,10 +196,39 @@ export function DiscordDeliveryPanel() {
   const recent = deliveries ?? [];
   const successes = recent.filter((d) => d.status === "SENT");
   const failures = recent.filter((d) => ["FAILED", "RETRYING", "SUPPRESSED"].includes(d.status));
+  const readiness = health?.readiness;
+  const metrics = health?.metrics;
+  const review24h = (metrics?.failed24h ?? 0) + (metrics?.retrying24h ?? 0) + (metrics?.suppressed24h ?? 0) + (metrics?.notConfigured24h ?? 0);
 
   return (
     <Card title="Discord delivery" meta="Delivery ledger · retries · test messages" actions={actions}>
       {/* webhook configuration — recap NOT CONFIGURED is informational, not a failure */}
+      <div style={{ border: "1px solid var(--line)", borderRadius: 8, padding: 10, marginBottom: 10 }}>
+        <div className="ui-section-head" style={{ marginTop: 0 }}>
+          <span className="ui-section-title" style={{ fontSize: "0.82rem" }}>Paid beta readiness</span>
+          <StatusBadge tone={readinessTone(readiness?.status)}>{readiness?.status?.replace("_", " ") ?? "CHECKING"}</StatusBadge>
+        </div>
+        <ResponsiveGrid min={150}>
+          <KeyValue k="Subscriber surface" v="Discord only" />
+          <KeyValue k="Verdict" v={readiness?.betaVerdict ?? "Reading Discord health..."} tone={readiness?.status === "BLOCKED" ? "bear" : readiness?.status === "NEEDS_REVIEW" ? "warn" : undefined} />
+          <KeyValue k="Sent 24h" v={metrics?.sent24h ?? 0} />
+          <KeyValue k="Needs review 24h" v={review24h} tone={review24h > 0 ? "warn" : undefined} />
+          <KeyValue k="Stuck sends" v={metrics?.stuckInFlight ?? 0} tone={(metrics?.stuckInFlight ?? 0) > 0 ? "bear" : undefined} />
+          <KeyValue k="Last sent" v={timeShort(metrics?.lastSentAt ?? null)} />
+        </ResponsiveGrid>
+        {readiness?.blockers?.length ? (
+          <div className="ui-section-hint" style={{ color: "var(--bear)" }}>
+            Blockers: {readiness.blockers.join("; ")}
+          </div>
+        ) : readiness?.reviewItems?.length ? (
+          <div className="ui-section-hint" style={{ color: "var(--warn)" }}>
+            Review: {readiness.reviewItems.join("; ")}
+          </div>
+        ) : (
+          <div className="ui-section-hint">Discord is the subscriber product surface. Webhook presence and delivery health are shown without exposing raw URLs or tokens.</div>
+        )}
+      </div>
+
       <div className="ui-statusbar" style={{ marginBottom: 4 }}>
         {(["options", "stocks", "recap"] as const).map((kind) => {
           const on = health?.webhooks?.[kind] ?? false;
