@@ -13,7 +13,7 @@ const OCC = "O:NVDA260117C00100000";
 function db() {
   const d = new Database(":memory:");
   d.exec(`CREATE TABLE options_candidates (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, tier INTEGER, session TEXT, selected_strategy TEXT, direction TEXT, side TEXT, research_only INTEGER NOT NULL DEFAULT 0, score REAL, considered_json TEXT, state TEXT NOT NULL, why TEXT, option_symbol TEXT, chain_fetch_ms INTEGER, freshness_state TEXT, callout_message TEXT, latency_json TEXT, earliness_phase TEXT, escalated_by TEXT, feature_snapshot_json TEXT, created_at_ms INTEGER NOT NULL);
-          CREATE TABLE options_paper_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, option_symbol TEXT NOT NULL, side TEXT, strike REAL, expiration TEXT, dte INTEGER, result_class TEXT NOT NULL, bid REAL, ask REAL, mid REAL, spread_pct REAL, entry_fill REAL, volume REAL, open_interest REAL, iv REAL, delta REAL, underlying_price REAL, strategy TEXT, target REAL, invalidation REAL, provenance TEXT, status TEXT NOT NULL, exit_fill REAL, pnl REAL, return_pct REAL, exit_reason TEXT, entered_at_ms INTEGER, exit_at_ms INTEGER, session TEXT, core_broad TEXT, feature_snapshot_json TEXT, paper_kind TEXT, alert_id TEXT, entry_source TEXT, experiment_id TEXT, experiment_variant TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+          CREATE TABLE options_paper_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, option_symbol TEXT NOT NULL, side TEXT, strike REAL, expiration TEXT, dte INTEGER, result_class TEXT NOT NULL, bid REAL, ask REAL, mid REAL, spread_pct REAL, entry_fill REAL, volume REAL, open_interest REAL, iv REAL, delta REAL, underlying_price REAL, strategy TEXT, target REAL, invalidation REAL, provenance TEXT, status TEXT NOT NULL, exit_fill REAL, pnl REAL, return_pct REAL, exit_reason TEXT, entered_at_ms INTEGER, exit_at_ms INTEGER, session TEXT, core_broad TEXT, feature_snapshot_json TEXT, paper_kind TEXT, alert_id TEXT, entry_source TEXT, experiment_id TEXT, experiment_variant TEXT, mfe_pct REAL, mae_pct REAL, last_mark_return_pct REAL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
           CREATE VIEW options_paper_delivered AS SELECT * FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER';
           CREATE VIEW options_paper_research AS SELECT * FROM options_paper_trades WHERE paper_kind='RESEARCH_ONLY_PAPER';
           CREATE TABLE options_alerts (alert_id TEXT PRIMARY KEY, candidate_symbol TEXT NOT NULL, strategy TEXT, option_symbol TEXT, side TEXT, research_only INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, message_hash TEXT, message TEXT, delivered_bid REAL, delivered_ask REAL, delivered_underlying REAL, paper_linked INTEGER NOT NULL DEFAULT 0, discord_status INTEGER, latency_ms INTEGER, retry_count INTEGER NOT NULL DEFAULT 0, failure_reason TEXT, attempted_at_ms INTEGER, sent_at_ms INTEGER, session_state TEXT, entry_mid REAL, delivered_spread_pct REAL, quote_ts_ms INTEGER, target_t1 REAL, target_t2 REAL, target_stop REAL, target_method TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);`);
@@ -71,6 +71,25 @@ test("a research/experiment trade can NEVER enter subscriber statistics", () => 
   assert.equal(rep.subscriberPerformance.expectancyPct, -20, "subscriber expectancy reflects ONLY delivered trades");
   assert.equal(rep.researchPaper.total, 1);
   assert.equal(rep.researchPaper.closed, 1);
+});
+
+test("real-trader profit tracking: report surfaces avg MFE (peak) / MAE (drawdown) / reached-target rate — delivered only", () => {
+  const d = db();
+  const entry = buildRealOptionEntry({ quote: { optionSymbol: OCC, side: "call", strike: 100, expiration: "2026-01-17", dte: 5, bid: 2.0, ask: 2.1, volume: 500, openInterest: 2000, iv: 0.5, delta: 0.5, quoteAgeMs: 1000, providerTimestamp: NOW }, underlyingPrice: 100, strategy: "momentum_acceleration" }, ENV);
+  // two delivered calls: one hit target (peak +80%, dip -10%), one stopped (peak +12%, drawdown -45%)
+  persistDeliveredMirrorOnDb(d, entry, NOW, "oa_win");
+  persistDeliveredMirrorOnDb(d, entry, NOW + 1, "oa_loss");
+  d.prepare("UPDATE options_paper_trades SET status='EXITED', return_pct=60, mfe_pct=80, mae_pct=-10, exit_reason='target_hit' WHERE alert_id='oa_win'").run();
+  d.prepare("UPDATE options_paper_trades SET status='EXITED', return_pct=-40, mfe_pct=12, mae_pct=-45, exit_reason='stop_hit' WHERE alert_id='oa_loss'").run();
+  // a research trade with a huge MFE must NOT leak into the subscriber excursion numbers
+  persistRealOptionPaperOnDb(d, entry, NOW, { paperKind: "RESEARCH_ONLY_PAPER" });
+  d.prepare("UPDATE options_paper_trades SET status='EXITED', return_pct=900, mfe_pct=999, mae_pct=0 WHERE paper_kind='RESEARCH_ONLY_PAPER'").run();
+
+  const p = readOptionsReportOnDb(d).subscriberPerformance;
+  assert.equal(p.closed, 2);
+  assert.equal(p.avgMfePct, 46, "avg peak profit = (80+12)/2, research +999% excluded");
+  assert.equal(p.avgMaePct, -27.5, "avg worst drawdown = (-10 + -45)/2");
+  assert.equal(p.reachedTargetRate, 0.5, "1 of 2 delivered calls hit its target");
 });
 
 test("the two views are disjoint and legacy rows are quarantined from BOTH", () => {
