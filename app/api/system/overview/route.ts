@@ -104,18 +104,23 @@ export async function GET() {
   // independent — a single stale symbol does not mark the provider down).
   const blocked = safe("blocked", () => (dataHealth?.blocking_symbols ?? dataHealth?.stale_symbols ?? []).map((sym: string) => describeSymbolActionability(sym)), [] as any);
 
-  const discord = safe("discord", () => ({
-    webhooks: {
-      options: discordWebhookConfigured("options"),
-      stocks: discordWebhookConfigured("stocks"),
-      recap: discordWebhookConfigured("recap"),
-      default: discordWebhookConfigured("default"),
-    },
+  // Webhook configuration is an ENV-ONLY read — it must NEVER depend on the DB.
+  // (Bundling it with the DB-backed ledger below made a DB fault masquerade as
+  // "webhook not configured" on the dashboard.) Computed on its own so the config
+  // signal stays truthful even when the SQLite volume is down.
+  const webhooks = safe("discord_webhooks", () => ({
+    options: discordWebhookConfigured("options"),
+    stocks: discordWebhookConfigured("stocks"),
+    recap: discordWebhookConfigured("recap"),
+    default: discordWebhookConfigured("default"),
+  }), { options: false, stocks: false, recap: false, default: false });
+  const discordLedger = safe("discord_ledger", () => ({
     summary: discordDeliverySummary(),
     recentFailures: listDiscordDeliveries(10).filter((d: any) =>
       ["FAILED", "RETRYING", "SUPPRESSED", "NOT_CONFIGURED"].includes(d.status),
     ),
-  }), { webhooks: { options: false, stocks: false, recap: false, default: false }, summary: [] as { status: string; count: number }[], recentFailures: [] as any[] });
+  }), { summary: [] as { status: string; count: number }[], recentFailures: [] as any[] });
+  const discord = { webhooks, ...discordLedger };
 
   const provider: any = dataHealth?.provider ?? { rate_limit_status: "UNKNOWN" };
 
