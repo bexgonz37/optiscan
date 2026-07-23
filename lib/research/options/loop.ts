@@ -42,11 +42,17 @@ export function evaluateOptionsCandidate(input: OptionsCandidateInput, chain: Ch
 
   const cc: CalloutContract = { optionSymbol: contract.optionSymbol, side: contract.side, strike: contract.strike, expiration: contract.expiration, dte: contract.dte, bid: contract.bid, ask: contract.ask, spreadPct: contract.spreadPct, quoteAgeMs: contract.providerTimestamp != null ? input.nowMs - contract.providerTimestamp : null, openInterest: contract.openInterest, volume: contract.volume };
   const strat = getStrategy(selection.selected.key)!;
+  // The chart level the setup is playing, as an ABSOLUTE underlying price (for the educational message
+  // only — never a stop). nearResistancePct is the % distance to the nearest level above price; convert
+  // it back to a price. Null when levels aren't wired → the message simply omits the "watching" line.
+  const uPrice = input.underlying.price ?? 0;
+  const nearPct = input.underlying.nearResistancePct;
+  const keyLevel = uPrice > 0 && nearPct != null && Number.isFinite(nearPct) ? +(uPrice * (1 + nearPct / 100)).toFixed(2) : null;
   const callout = evaluateCallout({
     symbol: input.symbol, strategyKey: selection.selected.key, researchOnly: selection.selected.researchOnly, contract: cc,
     observedUnderlyingPrice: input.underlying.price ?? 0, observedAtMs: input.nowMs,
     currentUnderlyingPrice: opts.currentUnderlyingPrice ?? input.underlying.price ?? 0, currentAtMs: opts.currentAtMs ?? input.nowMs,
-    entryZone: opts.entryZone ?? null, targets: opts.targets ?? null,
+    entryZone: opts.entryZone ?? null, targets: opts.targets ?? null, keyLevel,
     why: `${strat.label.toLowerCase()} with ${selection.selected.side} setup`, ttlMs: strat.freshnessMaxMs * 4, ageMs: 0,
   });
 
