@@ -13,7 +13,7 @@ import { gatherOutcomesForDay, gatherCandidatesForDay, gatherLiveInstrumentation
 import { NIGHTLY_NARRATION_PROMPT_VERSION, nightlyNarrationPrompt } from "./prompts.ts";
 import { NIGHTLY_NARRATIVE_TOOL_SCHEMA, validateNightlyNarrative, type NightlyNarrative } from "./schemas.ts";
 import { runStructuredAiJob, type ProviderDeps } from "./provider.ts";
-import { estimateCostUsd } from "./pricing.ts";
+import { estimateCostUsd, maxJobCostUsd } from "./pricing.ts";
 import {
   insertReportOnDb, setReportNarrativeOnDb, upsertLessonOnDb, recordAiJobRunOnDb,
   costGateOnDb, getReportOnDb, type AiReportRow, type DbLike,
@@ -94,7 +94,9 @@ async function narrateStoredNightlyReport(
     return { status: "SKIPPED", costUsd: 0, diagnostic, jobRunId };
   }
 
-  const gate = costGateOnDb(db, cfg, opts.nowMs);
+  // PRE-FLIGHT hard block: reserve this call's max possible cost so it can never exceed the hard limit.
+  const nightlyReserveUsd = maxJobCostUsd(cfg.nightlyModel, cfg.maxInputTokensPerJob, cfg.maxOutputTokensPerJob);
+  const gate = costGateOnDb(db, cfg, opts.nowMs, nightlyReserveUsd);
   if (!gate.allowed) {
     const diagnostic = { reason: "monthly hard limit reached", spendUsd: gate.spendUsd, hardLimitUsd: gate.hardLimitUsd };
     const jobRunId = recordAiJobRunOnDb(db, {

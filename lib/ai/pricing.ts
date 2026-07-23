@@ -36,3 +36,13 @@ export function estimateCostUsd(model: string, inputTokens: number, outputTokens
   const usd = (inTok / 1_000_000) * p.inputPerMTok + (outTok / 1_000_000) * p.outputPerMTok;
   return Math.round(usd * 1_000_000) / 1_000_000;
 }
+
+/**
+ * The MAXIMUM USD a single job could cost, given its token ceilings. Used to RESERVE headroom in the
+ * monthly cost gate so a call is blocked BEFORE it could push spend over the hard limit (a true
+ * pre-flight block, not a post-hoc "already over" check). Uses the model's price (unknown → Opus-tier
+ * fallback), so the reservation is always conservative — it can only under-spend, never over-spend.
+ */
+export function maxJobCostUsd(model: string, maxInputTokens: number, maxOutputTokens: number): number {
+  return estimateCostUsd(model, maxInputTokens, maxOutputTokens);
+}

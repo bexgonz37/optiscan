@@ -20,7 +20,7 @@ import { PRIMARY_PORTFOLIO, CHALLENGE_PORTFOLIO, STOCK_DAY_TRADER_PORTFOLIO } fr
 import { validateWeeklyProposals, type WeeklyProposalDraft } from "./schemas.ts";
 import { screenProposalSafety } from "./safety.ts";
 import { runStructuredAiJob, type ProviderDeps } from "./provider.ts";
-import { estimateCostUsd } from "./pricing.ts";
+import { estimateCostUsd, maxJobCostUsd } from "./pricing.ts";
 import {
   insertReportOnDb, insertProposalOnDb, listReportsOnDb, listLessonsOnDb, listProposalsOnDb,
   recordAiJobRunOnDb, setReportNarrativeOnDb, costGateOnDb, type DbLike,
@@ -216,7 +216,9 @@ export async function runWeeklyProposals(opts: WeeklyJobOptions = {}): Promise<W
     setReportNarrativeOnDb(db, report.id, { narrative: null, status: "SKIPPED", model: cfg.weeklyModel, aiJobRunId: jobRunId, diagnostic, nowMs });
     return { ...result, narrativeStatus: "SKIPPED" };
   }
-  const gate = costGateOnDb(db, cfg, nowMs);
+  // PRE-FLIGHT hard block: reserve this call's max possible cost so it can never exceed the hard limit.
+  const weeklyReserveUsd = maxJobCostUsd(cfg.weeklyModel, cfg.maxInputTokensPerJob, cfg.maxOutputTokensPerJob);
+  const gate = costGateOnDb(db, cfg, nowMs, weeklyReserveUsd);
   if (!gate.allowed) {
     const diagnostic = { reason: "monthly hard limit reached", spendUsd: gate.spendUsd, hardLimitUsd: gate.hardLimitUsd };
     const jobRunId = recordAiJobRunOnDb(db, { jobType: "weekly_proposals", model: cfg.weeklyModel, status: "SKIPPED_HARD_LIMIT", errorCategory: "budget", error: `monthly hard limit reached ($${gate.spendUsd.toFixed(2)})`, diagnostic, nowMs });

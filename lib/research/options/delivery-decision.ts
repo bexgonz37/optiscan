@@ -71,8 +71,12 @@ export function clusterKey(symbol: string, side: string): string {
 }
 
 export interface StrategyEvidence { n: number; winRate: number }
+/** Detail passed alongside the blended evidence scalar so the persisted rationale shows exactly which
+ *  evidence moved the score and how much of it was leak-free HISTORICAL (underlying-forward) vs FORWARD
+ *  live-mirror. HISTORICAL is underlying-forward movement, NOT an option win rate — labeled as such. */
+export interface EvidenceDetail { value: number; forwardN: number; historicalN: number; source: "none" | "forward" | "historical" | "blended" }
 
-export function computeSubscriberQuality(s: DeliverySubmission, evidence: StrategyEvidence | null): { quality: number; components: Record<string, number> } {
+export function computeSubscriberQuality(s: DeliverySubmission, evidence: StrategyEvidence | null, detail?: EvidenceDetail): { quality: number; components: Record<string, number> } {
   const completeness = s.requiredSignals > 0 ? (s.matchedSignals / s.requiredSignals) * Math.min(1, s.matchedSignals / 3) : 0;
   const earliness = s.fractionMove == null ? 0.5 : clamp01(1 - s.fractionMove);
   const spread = s.spreadPct == null ? 0.3 : clamp01(1 - s.spreadPct / 10);
@@ -80,8 +84,12 @@ export function computeSubscriberQuality(s: DeliverySubmission, evidence: Strate
   const liquidity = clamp01(Math.log10(1 + Math.max(0, oi)) / 4);
   const levelProximity = s.levelProximityPct == null ? 0.4 : clamp01(1 - s.levelProximityPct / 2);
   const strategyConfidence = clamp01(s.strategyScore);
-  const evid = evidence && evidence.n >= 5 ? clamp01(evidence.winRate) : 0.5;
-  const components = {
+  // Evidence: prefer the pre-blended scalar from `detail` (forward mirror + leak-free historical replay,
+  // sample-gated); else the legacy forward-only path. Neutral 0.5 when there is no qualifying evidence.
+  // Evidence is only 10% of the score, so it can NUDGE ranking but can NEVER carry delivery on its own —
+  // the deterministic setup components (90%) decide whether a setup clears the subscriber bar.
+  const evid = detail ? clamp01(detail.value) : (evidence && evidence.n >= 5 ? clamp01(evidence.winRate) : 0.5);
+  const components: Record<string, number> = {
     signalCompleteness: +completeness.toFixed(4),
     earliness: +earliness.toFixed(4),
     spread: +spread.toFixed(4),
@@ -90,6 +98,7 @@ export function computeSubscriberQuality(s: DeliverySubmission, evidence: Strate
     strategyConfidence: +strategyConfidence.toFixed(4),
     evidence: +evid.toFixed(4),
   };
+  if (detail) { components.evidenceForwardN = detail.forwardN; components.evidenceHistoricalN = detail.historicalN; }
   const quality = 0.22 * completeness + 0.18 * earliness + 0.15 * spread + 0.12 * liquidity + 0.11 * levelProximity + 0.12 * strategyConfidence + 0.10 * evid;
   return { quality: +quality.toFixed(4), components };
 }
@@ -99,12 +108,46 @@ const hasTable = (db: DDb, t: string) => {
   try { return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name=?").get(t)); } catch { return false; }
 };
 
+/** FORWARD live-mirror evidence — real delivered-alert outcomes (option return_pct sign). */
 function strategyEvidenceOnDb(db: DDb | null, strategy: string): StrategyEvidence | null {
   if (!db || !hasTable(db, "options_paper_delivered")) return null;
   try {
     const r = db.prepare("SELECT COUNT(*) n, AVG(CASE WHEN return_pct > 0 THEN 1.0 ELSE 0.0 END) wr FROM options_paper_delivered WHERE strategy=? AND status='EXITED' AND return_pct IS NOT NULL").get(strategy) as any;
     return r && Number(r.n) > 0 ? { n: Number(r.n), winRate: Number(r.wr ?? 0) } : null;
   } catch { return null; }
+}
+
+/** HISTORICAL replay evidence — leak-free UNDERLYING-forward win rate from the 5-year replay lab
+ *  (options_replay_candidates.fwd60_pct). This is underlying movement, NOT option P&L — used only as a
+ *  modest, sample-gated prior on setup quality, never presented as option profitability. */
+function historicalStrategyEvidenceOnDb(db: DDb | null, strategy: string): StrategyEvidence | null {
+  if (!db || !hasTable(db, "options_replay_candidates")) return null;
+  try {
+    const r = db.prepare("SELECT COUNT(*) n, AVG(CASE WHEN fwd60_pct > 0 THEN 1.0 ELSE 0.0 END) wr FROM options_replay_candidates WHERE strategy=? AND fwd60_pct IS NOT NULL").get(strategy) as any;
+    return r && Number(r.n) > 0 ? { n: Number(r.n), winRate: Number(r.wr ?? 0) } : null;
+  } catch { return null; }
+}
+
+/**
+ * Blend FORWARD (real delivered outcomes) and HISTORICAL (leak-free replay, underlying-forward) into one
+ * evidence scalar with an honest hierarchy: forward is trusted more per-sample; historical is a
+ * supplementary prior that only counts above a higher sample floor. When they conflict, forward
+ * dominates (its per-sample weight is higher). No qualifying evidence → neutral 0.5 (source "none").
+ */
+export function blendEvidence(forward: StrategyEvidence | null, historical: StrategyEvidence | null, env: NodeJS.ProcessEnv = process.env): EvidenceDetail {
+  const minFwd = Math.max(1, Number(env.OPTIONS_EVIDENCE_MIN_FORWARD ?? 5) || 5);
+  const minHist = Math.max(1, Number(env.OPTIONS_EVIDENCE_MIN_HISTORICAL ?? 40) || 40);
+  const useHist = env.OPTIONS_HISTORICAL_EVIDENCE_ENABLED !== "0"; // default ON; historical is self-gating (needs replay data)
+  const parts: { w: number; v: number }[] = [];
+  const fN = forward && forward.n >= minFwd ? forward.n : 0;
+  const hN = useHist && historical && historical.n >= minHist ? historical.n : 0;
+  if (fN > 0) parts.push({ w: Math.min(1, fN / 20) * 1.0, v: clamp01(forward!.winRate) });      // forward: full trust, saturates at n=20
+  if (hN > 0) parts.push({ w: Math.min(1, hN / 200) * 0.6, v: clamp01(historical!.winRate) });   // historical: 0.6 trust, saturates at n=200
+  if (parts.length === 0) return { value: 0.5, forwardN: forward?.n ?? 0, historicalN: historical?.n ?? 0, source: "none" };
+  const wsum = parts.reduce((a, p) => a + p.w, 0);
+  const value = wsum > 0 ? parts.reduce((a, p) => a + p.w * p.v, 0) / wsum : 0.5;
+  const source: EvidenceDetail["source"] = fN > 0 && hN > 0 ? "blended" : fN > 0 ? "forward" : "historical";
+  return { value: +value.toFixed(4), forwardN: forward?.n ?? 0, historicalN: historical?.n ?? 0, source };
 }
 
 function recentDeliveredClusters(db: DDb | null, nowMs: number, windowMs: number): Set<string> {
@@ -152,10 +195,16 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
   let db: DDb | null = null;
   try { db = deps.getDb ? deps.getDb() : null; } catch { db = null; }
 
-  const evidenceCache = new Map<string, StrategyEvidence | null>();
+  // Evidence hierarchy per strategy (cached): FORWARD live-mirror outcomes + leak-free HISTORICAL replay
+  // (underlying-forward), blended and sample-gated. This is how the 5-year replay data + accruing live
+  // results make callouts better over time — a modest 10% nudge that can never carry delivery alone.
+  const evidenceCache = new Map<string, EvidenceDetail>();
   const scored = batch.map((s) => {
-    if (!evidenceCache.has(s.strategy)) evidenceCache.set(s.strategy, strategyEvidenceOnDb(db, s.strategy));
-    const q = computeSubscriberQuality(s, evidenceCache.get(s.strategy) ?? null);
+    if (!evidenceCache.has(s.strategy)) {
+      const blended = blendEvidence(strategyEvidenceOnDb(db, s.strategy), historicalStrategyEvidenceOnDb(db, s.strategy), env);
+      evidenceCache.set(s.strategy, blended);
+    }
+    const q = computeSubscriberQuality(s, null, evidenceCache.get(s.strategy));
     return { s, ...q };
   });
 

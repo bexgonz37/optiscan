@@ -89,13 +89,19 @@ export interface CostGate {
 }
 
 /**
- * The monthly cost gate. Optional AI jobs are skipped once spend ≥ hard limit; a
- * soft-limit crossing only warns. Deterministic OptiScan behavior is unaffected
- * either way. A hard limit of 0 means "no AI spend allowed" (fully off).
+ * The monthly cost gate. Optional AI jobs are skipped once spend (+ an optional pre-flight reservation
+ * for the call about to run) reaches the hard limit; a soft-limit crossing only warns. Deterministic
+ * OptiScan behavior is unaffected either way. A hard limit of 0 means "no AI spend allowed" (fully off).
+ *
+ * `reserveUsd` is the MAXIMUM the next call could cost (from maxJobCostUsd). Passing it makes this a
+ * TRUE PRE-FLIGHT block — the call is denied BEFORE it can push the month over the hard limit — so
+ * monthly spend can never exceed AI_MONTHLY_HARD_LIMIT_USD, not even by one final call. reserveUsd=0
+ * (the default) preserves the legacy post-hoc semantics for read-only status surfaces.
  */
-export function costGateOnDb(db: DbLike, cfg: AiConfig, nowMs: number = Date.now()): CostGate {
+export function costGateOnDb(db: DbLike, cfg: AiConfig, nowMs: number = Date.now(), reserveUsd: number = 0): CostGate {
   const spendUsd = monthlySpendUsdOnDb(db, monthKey(nowMs));
-  const atHardLimit = spendUsd >= cfg.monthlyHardLimitUsd;
+  const projectedUsd = spendUsd + Math.max(0, reserveUsd);
+  const atHardLimit = projectedUsd >= cfg.monthlyHardLimitUsd;
   const atSoftLimit = spendUsd >= cfg.monthlySoftLimitUsd;
   return {
     allowed: !atHardLimit,

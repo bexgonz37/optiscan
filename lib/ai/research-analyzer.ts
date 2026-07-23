@@ -8,7 +8,7 @@
 import { aiConfig } from "./config.ts";
 import { runStructuredAiJob } from "./provider.ts";
 import { costGateOnDb, recordAiJobRunOnDb, type DbLike } from "./store.ts";
-import { estimateCostUsd } from "./pricing.ts";
+import { estimateCostUsd, maxJobCostUsd } from "./pricing.ts";
 
 export interface ResearchTaskLike { id: number; kind: string; refId: string; payloadJson: string | null; attempts: number }
 export interface ResearchAnalysis {
@@ -45,7 +45,10 @@ export async function analyzeResearchTask(db: DbLike, task: ResearchTaskLike, en
   try {
     const cfg = aiConfig(env);
     if (!cfg.enabled) return { ok: false, skipped: true, error: "ai_disabled" };
-    const gate = costGateOnDb(db, cfg);
+    // PRE-FLIGHT hard block: reserve this call's maximum possible cost so it can never push the month
+    // over AI_MONTHLY_HARD_LIMIT_USD. Output is capped at 700 here, so the reservation is exact.
+    const reserveUsd = maxJobCostUsd(cfg.nightlyModel, cfg.maxInputTokensPerJob, Math.min(cfg.maxOutputTokensPerJob, 700));
+    const gate = costGateOnDb(db, cfg, Date.now(), reserveUsd);
     if (!gate.allowed) return { ok: false, skipped: true, error: "monthly_hard_limit" };
 
     const payload = task.payloadJson ? task.payloadJson.slice(0, 6_000) : "{}";

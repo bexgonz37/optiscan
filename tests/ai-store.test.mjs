@@ -117,6 +117,27 @@ test("cost gate: hard limit blocks optional jobs; audit rows drive monthly spend
   db.close();
 });
 
+test("PRE-FLIGHT hard block: a reservation denies the call BEFORE spend can exceed $20", { skip }, () => {
+  const db = freshDb();
+  // spent $19.90 so far; one more call could cost up to $0.40 → reserving it must block now.
+  recordAiJobRunOnDb(db, { jobType: "nightly_diagnosis", model: "claude-haiku-4-5", status: "SUCCESS", estimatedCostUsd: 19.9, nowMs: NOW });
+  // legacy post-hoc gate (reserve=0) still ALLOWS — this is the overshoot window the pre-flight closes.
+  assert.equal(costGateOnDb(db, CFG, NOW, 0).allowed, true, "post-hoc gate would allow one more (overshoot risk)");
+  // pre-flight gate with a $0.40 reservation DENIES, because 19.90 + 0.40 >= 20.
+  assert.equal(costGateOnDb(db, CFG, NOW, 0.4).allowed, false, "reservation blocks before the hard limit can be exceeded");
+  // and a tiny reservation that still fits is allowed (19.90 + 0.05 < 20).
+  assert.equal(costGateOnDb(db, CFG, NOW, 0.05).allowed, true);
+  db.close();
+});
+
+test("maxJobCostUsd is a conservative per-call ceiling (unknown model = Opus-tier)", async () => {
+  const { maxJobCostUsd } = await import("../lib/ai/pricing.ts");
+  const haiku = maxJobCostUsd("claude-haiku-4-5", 60_000, 4_000);   // 60k*1/M + 4k*5/M = 0.06 + 0.02 = 0.08
+  assert.ok(Math.abs(haiku - 0.08) < 1e-6, `haiku ceiling ${haiku}`);
+  const unknown = maxJobCostUsd("mystery-model", 60_000, 4_000);    // Opus fallback 5/25
+  assert.ok(unknown > haiku, "unknown model priced at the conservative Opus tier");
+});
+
 test("job failure diagnostics round-trip as structured dashboard data", { skip }, () => {
   const db = freshDb();
   recordAiJobRunOnDb(db, {
