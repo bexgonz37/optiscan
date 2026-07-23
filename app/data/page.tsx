@@ -25,6 +25,7 @@ import { DiscordDeliveryPanel } from "@/components/DiscordDeliveryPanel";
 
 type Overview = {
   ok?: boolean;
+  faults?: string[];
   application_time?: string;
   exchange_time?: string;
   trading_day?: string;
@@ -63,7 +64,13 @@ export default function SystemHealthPage() {
   const load = useCallback(async () => {
     try {
       const res = await fetch("/api/system/overview", { cache: "no-store" });
-      const body = (await res.json()) as Overview;
+      const text = await res.text();
+      let body: Overview | null = null;
+      try { body = text ? (JSON.parse(text) as Overview) : null; } catch { /* non-JSON error page */ }
+      if (!body) {
+        setError(`System overview returned ${res.status} with an unreadable body.`);
+        return;
+      }
       setData(body);
       setError(null);
     } catch (err: any) {
@@ -113,8 +120,19 @@ export default function SystemHealthPage() {
 
   const blocked = (data.blocked ?? []).filter((b) => b.reasons.length);
 
+  const faults = data.faults ?? [];
+
   return (
     <PageContainer>
+      {faults.length ? (
+        <Card title="Subsystem faults" tone="warn" meta="These sections failed to load; the rest of the page is still live">
+          {faults.map((f, i) => (
+            <pre key={i} style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: "0.74rem", color: "var(--bear)", fontFamily: "inherit" }}>{f}</pre>
+          ))}
+          <div className="ui-section-hint">A faulted subsystem no longer white-screens the page. If the database is faulted here, that is also why alerts and delivery are stalled.</div>
+        </Card>
+      ) : null}
+
       {/* Status bar */}
       <div className="ui-statusbar">
         {statusCells.map((c) => (
