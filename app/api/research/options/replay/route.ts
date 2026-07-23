@@ -32,16 +32,27 @@ export async function POST(req: Request) {
   }
   const { optionsTier1 } = await import("@/lib/research/options/discovery");
   const symbols: string[] = Array.isArray(body.symbols) && body.symbols.length ? body.symbols.map((s: string) => String(s).toUpperCase()) : optionsTier1(process.env);
-  const { runOptionsReplay } = await import("@/lib/research/options/replay");
+  const { runOptionsReplay, runOptionsReplayRange, replayWindows } = await import("@/lib/research/options/replay");
   const { getDb } = await import("@/lib/db");
-  const result = await runOptionsReplay({ symbols: symbols.slice(0, 20), from, to }, {
-    getDb,
-    getBars: async (symbol, fromIso, toIso) => {
-      const { fetchCandles } = await import("@/lib/polygon-provider");
-      const res: any = await fetchCandles(symbol, { from: fromIso, to: toIso, resolution: "1", timespan: "minute", limit: 50_000 });
-      const raw = res?.available ? (res.bars ?? []) : [];
-      return raw.map((b: any) => ({ t: Number(b.t ?? b.timestamp), o: Number(b.o ?? b.open), h: Number(b.h ?? b.high), l: Number(b.l ?? b.low), c: Number(b.c ?? b.close), v: Number(b.v ?? b.volume ?? 0) })).filter((b: any) => Number.isFinite(b.t) && Number.isFinite(b.c));
-    },
-  }, process.env);
+  const getBars = async (symbol: string, fromIso: string, toIso: string) => {
+    const { fetchCandles } = await import("@/lib/polygon-provider");
+    const res: any = await fetchCandles(symbol, { from: fromIso, to: toIso, resolution: "1", timespan: "minute", limit: 50_000 });
+    const raw = res?.available ? (res.bars ?? []) : [];
+    return raw.map((b: any) => ({ t: Number(b.t ?? b.timestamp), o: Number(b.o ?? b.open), h: Number(b.h ?? b.high), l: Number(b.l ?? b.low), c: Number(b.c ?? b.close), v: Number(b.v ?? b.volume ?? 0) })).filter((b: any) => Number.isFinite(b.t) && Number.isFinite(b.c));
+  };
+  const syms = symbols.slice(0, 20);
+
+  // Long ranges (e.g. 5 years) chunk into windows and can take minutes → run in the BACKGROUND so the
+  // request returns immediately; poll GET for progress (status shows "RUNNING (n/total windows)").
+  const spanDays = (Date.parse(to) - Date.parse(from)) / 86_400_000;
+  const windowDays = Number(process.env.OPTIONS_REPLAY_MAX_DAYS ?? 45);
+  if (spanDays > windowDays) {
+    const windows = replayWindows(from, to, windowDays).length;
+    // fire-and-forget on the persistent container; progress + results are read via GET.
+    void runOptionsReplayRange({ symbols: syms, from, to }, { getDb, getBars }, process.env).catch(() => { /* isolated; run row records status */ });
+    return NextResponse.json({ ok: true, mode: "range_background", from, to, symbols: syms, windows, note: "Multi-window replay started in the background — poll GET /api/research/options/replay for progress and the aggregate summary." });
+  }
+
+  const result = await runOptionsReplay({ symbols: syms, from, to }, { getDb, getBars }, process.env);
   return NextResponse.json(result);
 }

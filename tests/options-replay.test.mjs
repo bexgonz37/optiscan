@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { replaySymbolBars, summarizeReplay, runOptionsReplay } from "../lib/research/options/replay.ts";
+import { replaySymbolBars, summarizeReplay, runOptionsReplay, replayWindows, runOptionsReplayRange } from "../lib/research/options/replay.ts";
 
 // Phase-1 Options Historical Replay Lab: runs the ACTUAL production detection over historical bars
 // with no look-ahead; outcomes are UNDERLYING forward returns (never fabricated option premiums).
@@ -101,4 +101,67 @@ test("provider failure on one symbol is isolated; the run still completes with t
   assert.equal(res.ok, true);
   assert.match(res.reason, /1 symbol error/);
   assert.ok(res.candidates >= 1, "healthy symbols still replayed");
+});
+
+// ── Phase 2: chunked long-range (5-year) replay ──
+test("replayWindows splits a long range into consecutive ≤windowDays windows (covers 5 years)", () => {
+  const w = replayWindows("2021-01-01", "2026-01-01", 45);
+  assert.ok(w.length >= 40 && w.length <= 42, `~41 windows for 5 years at 45d, got ${w.length}`);
+  assert.equal(w[0].from, "2021-01-01");
+  assert.equal(w[w.length - 1].to, "2026-01-01", "final window ends exactly at the range end");
+  // windows are consecutive and non-overlapping
+  for (let i = 1; i < w.length; i++) assert.equal(w[i].from, w[i - 1].to);
+  assert.equal(replayWindows("2026-01-01", "2020-01-01", 45).length, 0, "reversed range → no windows");
+});
+
+function rangeDb() {
+  const d = new Database(":memory:");
+  d.exec(`CREATE TABLE options_replay_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, symbols TEXT NOT NULL, from_day TEXT NOT NULL, to_day TEXT NOT NULL, status TEXT NOT NULL, candidates INTEGER, summary_json TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+          CREATE TABLE options_replay_candidates (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL, t_ms INTEGER NOT NULL, symbol TEXT NOT NULL, strategy TEXT, side TEXT, research_only INTEGER NOT NULL DEFAULT 0, quality REAL, strategy_score REAL, matched_signals INTEGER, required_signals INTEGER, fraction_move REAL, hour_et INTEGER, fwd30_pct REAL, fwd60_pct REAL, fwd_eod_pct REAL, grading_basis TEXT NOT NULL, created_at_ms INTEGER NOT NULL);
+          CREATE TABLE ai_research_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, priority INTEGER NOT NULL, ref_id TEXT NOT NULL, payload_json TEXT, status TEXT NOT NULL DEFAULT 'QUEUED', attempts INTEGER NOT NULL DEFAULT 0, result_json TEXT, error TEXT, lease_until_ms INTEGER, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL, UNIQUE(kind, ref_id));`);
+  return d;
+}
+// bars for an arbitrary window: one synthetic burst day anchored at the window's start (deterministic)
+const barsForWindow = (fromIso) => { const open = Date.parse(`${fromIso}T13:30:00Z`); const out = []; for (let i = 0; i < 390; i++) { const t = open + i * 60_000; let c = 100, v = 1000; if (i >= 90) { const k = Math.min(i - 90, 60); c = 100 + k * 0.15; v = i < 96 ? 9000 : 3000; } out.push({ t, o: c - 0.03, h: c + 0.05, l: c - 0.06, c, v }); } return out; };
+
+test("runOptionsReplayRange: chunks a multi-window range, one run row, aggregate summary, ONE AI task", async () => {
+  const d = rangeDb();
+  let calls = 0;
+  const res = await runOptionsReplayRange({ symbols: ["NVDA", "SPY"], from: "2026-05-01", to: "2026-07-01" }, {
+    getDb: () => d, getBars: async (_s, fromIso) => { calls += 1; return barsForWindow(fromIso); },
+  }, { OPTIONS_REPLAY_ENABLED: "1", OPTIONS_REPLAY_MAX_DAYS: "45" });
+  assert.equal(res.ok, true);
+  // ~61 days / 45 = 2 windows × 2 symbols = 4 provider calls
+  assert.equal(res.providerCalls, 4);
+  assert.equal(res.windowsRun, 2);
+  assert.ok(res.candidates >= 2, "candidates accumulated across windows");
+  const run = d.prepare("SELECT status, candidates, summary_json FROM options_replay_runs WHERE id=?").get(res.runId);
+  assert.equal(run.status, "DONE");
+  const summary = JSON.parse(run.summary_json);
+  assert.equal(summary.windowsRun, 2);
+  assert.equal(summary.windowsTotal, 2);
+  assert.equal(summary.providerCalls, 4);
+  assert.ok(summary.thresholdSensitivity, "aggregate threshold-sensitivity across the whole range");
+  assert.equal(d.prepare("SELECT COUNT(*) n FROM options_replay_candidates WHERE run_id=?").get(res.runId).n, res.candidates);
+  assert.equal(d.prepare("SELECT DISTINCT grading_basis FROM options_replay_candidates").get().grading_basis, "UNDERLYING_FORWARD", "no fabricated option data across the range");
+  const q = d.prepare("SELECT COUNT(*) n, MAX(LENGTH(payload_json)) len FROM ai_research_queue").get();
+  assert.equal(q.n, 1, "exactly ONE bounded evidence task for the whole range");
+  assert.ok(q.len < 6000, "AI receives only the compact summary");
+});
+
+test("runOptionsReplayRange: gated OFF by default; window cap rejects an oversized backfill", async () => {
+  assert.equal((await runOptionsReplayRange({ symbols: ["NVDA"], from: "2021-01-01", to: "2026-01-01" }, { getBars: async () => [] }, {})).ok, false, "hard no-op without the flag");
+  const capped = await runOptionsReplayRange({ symbols: ["NVDA"], from: "2010-01-01", to: "2026-01-01" }, { getBars: async () => [] }, { OPTIONS_REPLAY_ENABLED: "1", OPTIONS_REPLAY_MAX_WINDOWS: "10" });
+  assert.equal(capped.ok, false);
+  assert.match(capped.reason, /windows > cap/);
+});
+
+test("runOptionsReplayRange: provider-call cap bounds a runaway backfill; run still finalizes", async () => {
+  const d = rangeDb();
+  const res = await runOptionsReplayRange({ symbols: ["A", "B", "C"], from: "2026-01-01", to: "2026-07-01" }, {
+    getDb: () => d, getBars: async (_s, fromIso) => barsForWindow(fromIso),
+  }, { OPTIONS_REPLAY_ENABLED: "1", OPTIONS_REPLAY_MAX_PROVIDER_CALLS: "5" });
+  assert.equal(res.ok, true);
+  assert.ok(res.providerCalls <= 6, "stopped near the provider-call cap");
+  assert.equal(d.prepare("SELECT status FROM options_replay_runs WHERE id=?").get(res.runId).status, "DONE", "run finalized even when capped");
 });

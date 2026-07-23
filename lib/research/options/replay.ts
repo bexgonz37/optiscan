@@ -173,3 +173,70 @@ export async function runOptionsReplay(params: { symbols: string[]; from: string
   }
   return { ok: true, runId, reason: errors.length ? `completed with ${errors.length} symbol error(s)` : "completed", candidates: all.length, summary };
 }
+
+// ── Phase 2: chunked long-range (e.g. 5-year) replay ─────────────────────────────────────────────
+/** Split [from, to] into consecutive ≤windowDays windows (each fits one provider call at 1-min bars, so
+ *  no silent truncation). PURE. Inclusive of the final partial window. */
+export function replayWindows(from: string, to: string, windowDays: number): { from: string; to: string }[] {
+  const start = Date.parse(from), end = Date.parse(to);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return [];
+  const stepMs = Math.max(1, windowDays) * 86_400_000;
+  const iso = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+  const out: { from: string; to: string }[] = [];
+  for (let s = start; s < end; s += stepMs) out.push({ from: iso(s), to: iso(Math.min(s + stepMs, end)) });
+  return out;
+}
+
+function persistCandidates(db: RDb, runId: number, rows: ReplayCandidate[], nowMs: number): void {
+  const stmt = db.prepare("INSERT INTO options_replay_candidates (run_id, t_ms, symbol, strategy, side, research_only, quality, strategy_score, matched_signals, required_signals, fraction_move, hour_et, fwd30_pct, fwd60_pct, fwd_eod_pct, grading_basis, created_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+  for (const r of rows) { try { stmt.run(runId, r.tMs, r.symbol, r.strategy, r.side, r.researchOnly ? 1 : 0, r.quality, r.strategyScore, r.matchedSignals, r.requiredSignals, r.fractionMove, r.hourEt, r.fwd30Pct, r.fwd60Pct, r.fwdEodPct, r.gradingBasis, nowMs); } catch { /* isolated */ } }
+}
+
+/**
+ * Replay a LONG range (up to ~5 years) by chunking into ≤windowDays windows and streaming each window ×
+ * symbol through the SAME production detection as the live scanner. One run row for the whole range;
+ * candidates persisted per window (bars never stored); status updated as windows complete (so GET shows
+ * live progress); ONE bounded evidence summary enqueued at the end. Bounded by maxWindows and
+ * maxProviderCalls so a 5-year backfill can't run unbounded. Every outcome stays UNDERLYING_FORWARD —
+ * no option premiums are simulated. HARD no-op unless OPTIONS_REPLAY_ENABLED=1.
+ */
+export async function runOptionsReplayRange(params: { symbols: string[]; from: string; to: string; windowDays?: number; maxWindows?: number }, deps: ReplayDeps, env: NodeJS.ProcessEnv = process.env): Promise<{ ok: boolean; runId: number | null; reason: string; candidates: number; windowsRun: number; providerCalls: number; summary: Record<string, unknown> | null }> {
+  if (env.OPTIONS_REPLAY_ENABLED !== "1") return { ok: false, runId: null, reason: "OPTIONS_REPLAY_ENABLED!=1", candidates: 0, windowsRun: 0, providerCalls: 0, summary: null };
+  const windowDays = Math.max(1, Math.min(45, params.windowDays ?? Number(env.OPTIONS_REPLAY_MAX_DAYS ?? 45)));
+  const maxWindows = Math.max(1, params.maxWindows ?? Number(env.OPTIONS_REPLAY_MAX_WINDOWS ?? 60));  // ~7yr at 45d
+  const maxProviderCalls = Math.max(1, Number(env.OPTIONS_REPLAY_MAX_PROVIDER_CALLS ?? 5_000));
+  const windows = replayWindows(params.from, params.to, windowDays);
+  if (windows.length === 0) return { ok: false, runId: null, reason: "invalid date range", candidates: 0, windowsRun: 0, providerCalls: 0, summary: null };
+  if (windows.length > maxWindows) return { ok: false, runId: null, reason: `range needs ${windows.length} windows > cap ${maxWindows} (raise OPTIONS_REPLAY_MAX_WINDOWS or narrow the range)`, candidates: 0, windowsRun: 0, providerCalls: 0, summary: null };
+
+  const now = deps.now ?? Date.now;
+  let db: RDb | null = null;
+  try { db = deps.getDb ? deps.getDb() : null; } catch { db = null; }
+  let runId: number | null = null;
+  if (db) { try { const r = db.prepare("INSERT INTO options_replay_runs (symbols, from_day, to_day, status, created_at_ms, updated_at_ms) VALUES (?,?,?,?,?,?)").run(params.symbols.join(","), params.from, params.to, "RUNNING", now(), now()); runId = Number(r.lastInsertRowid); } catch { runId = null; } }
+
+  const all: ReplayCandidate[] = [];
+  const errors: string[] = [];
+  let providerCalls = 0, windowsRun = 0;
+  outer: for (const w of windows) {
+    for (const symbol of params.symbols) {
+      if (providerCalls >= maxProviderCalls) { errors.push(`provider-call cap ${maxProviderCalls} reached`); break outer; }
+      try {
+        const bars = await deps.getBars(symbol.toUpperCase(), w.from, w.to); providerCalls += 1;
+        const rows = replaySymbolBars(symbol.toUpperCase(), bars);
+        all.push(...rows);
+        if (db && runId != null) persistCandidates(db, runId, rows, now());
+      } catch (e: any) { providerCalls += 1; if (errors.length < 20) errors.push(`${symbol} ${w.from}: ${String(e?.message ?? e).slice(0, 60)}`); }
+    }
+    windowsRun += 1;
+    // progress heartbeat so GET shows the run advancing through a multi-year backfill
+    if (db && runId != null) { try { db.prepare("UPDATE options_replay_runs SET candidates=?, status=?, updated_at_ms=? WHERE id=?").run(all.length, `RUNNING (${windowsRun}/${windows.length} windows)`, now(), runId); } catch { /* isolated */ } }
+  }
+
+  const summary = { ...summarizeReplay(all), from: params.from, to: params.to, symbols: params.symbols, windowDays, windowsRun, windowsTotal: windows.length, providerCalls, errors: errors.slice(0, 8) };
+  if (db && runId != null) {
+    try { db.prepare("UPDATE options_replay_runs SET status='DONE', candidates=?, summary_json=?, updated_at_ms=? WHERE id=?").run(all.length, JSON.stringify(summary), now(), runId); } catch { /* isolated */ }
+    try { enqueueResearchTaskOnDb(db as any, "strategy_recommendation", `replay:${runId}`, summary, now()); } catch { /* isolated */ }
+  }
+  return { ok: true, runId, reason: errors.length ? `completed with ${errors.length} issue(s)` : "completed", candidates: all.length, windowsRun, providerCalls, summary };
+}
