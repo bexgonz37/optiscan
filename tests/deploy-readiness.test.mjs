@@ -96,13 +96,16 @@ test("Dockerfile guarantees /app/public exists before the runner copies it", () 
 });
 
 // 5–7. Healthcheck never exposes secrets and never fails for market/model state.
-test("healthz exposes no secrets and 503s only on a DB failure", () => {
+test("healthz is a liveness probe: always 200 when the server responds, no secrets, DB status in body", () => {
   const raw = read("app/api/healthz/route.ts");
   // Strip block + line comments so we check the CODE, not the doc prose.
   const code = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
   assert.ok(!/WEBHOOK|SCAN_API_TOKEN|API_KEY|process\.env\.[A-Z]/i.test(code), "no secret/env values in output");
-  // 503 is tied to dbOk only — not to session/model/discord.
-  assert.ok(/status: dbOk \? 200 : 503/.test(code));
+  // ALWAYS 200 for liveness — a data-volume hiccup must not fail the deploy healthcheck (restart loop).
+  assert.ok(/status: 200/.test(code), "liveness returns 200");
+  assert.ok(!/: 503/.test(code), "no 503 gate — DB readiness is reported in the body, not a deploy gate");
+  // DB status is still surfaced honestly.
+  assert.ok(/db: dbOk/.test(code) && /dbError/.test(code), "db status reported in the body");
   assert.ok(!/session|closed|loopState|marketSession|modelStatus|discordConfigured/.test(code), "no market/model/discord gating");
 });
 

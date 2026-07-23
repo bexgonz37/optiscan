@@ -5,44 +5,48 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * GET /api/healthz — lightweight deployment liveness/readiness probe (Railway).
+ * GET /api/healthz — deployment LIVENESS probe (Railway).
  *
- * Returns 200 when the web server is up and the SQLite database can be opened.
- * The probe response NEVER waits on background boot and does NOT fail when the
- * market is closed, no graded outcomes exist, the model is inactive, Discord is
- * not configured, Polygon is rate-limited, or nothing is currently actionable —
- * those are normal operating states, reported in detail by /api/runtime/status.
+ * Returns 200 whenever the web server process is up and serving HTTP. This is what a platform deploy
+ * healthcheck actually needs to confirm — that the container is alive — NOT whether a data volume has
+ * finished mounting. Gating the deploy on DB-openability caused restart loops when Railway's persistent
+ * volume at /app/data mounted a moment after the server started or was momentarily not writable; the
+ * process was healthy, but a 503 made the platform kill and retry it forever.
  *
- * It returns 503 ONLY when the database cannot be opened (a genuine failure).
- * It never exposes secrets, webhook URLs, tokens, or database contents.
+ * DB readiness is reported HONESTLY in the body (`db: true|false`, with `dbError` when it can't open)
+ * and in full detail at /api/runtime/status — it just no longer fails the liveness probe. The only way
+ * this returns non-200 is if the route handler itself cannot run (the process is genuinely down).
  *
- * Autonomous-boot note: the standalone build cannot import the .ts boot module from
- * instrumentation, so the background runtime (scanner/scheduler/paper/options
- * monitor/grader/AI worker) is started here — but DEFERRED via setImmediate so it
- * runs AFTER this response is sent and can never slow or fail the probe. Idempotent
- * (a `started` guard) and fully isolated, so repeated Railway probes cost nothing.
+ * It never waits on background boot, never exposes secrets, and never fails for normal states (market
+ * closed, model inactive, Discord not configured, Polygon rate-limited, nothing actionable).
+ *
+ * Autonomous-boot note: the standalone build cannot import the .ts boot module from instrumentation, so
+ * the background runtime (scanner/scheduler/paper/options monitor/grader/AI worker) is started here —
+ * DEFERRED via setImmediate so it runs AFTER this response is sent and can never slow or fail the probe.
+ * Idempotent (server-boot's own `started` guard) and isolated, so repeated Railway probes cost nothing.
  */
 export async function GET() {
   let dbOk = false;
+  let dbError: string | null = null;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { getDb } = require("@/lib/db");
     dbOk = getDb().prepare("SELECT 1 AS one").get()?.one === 1;
-  } catch {
+  } catch (e: any) {
     dbOk = false;
+    dbError = String(e?.message ?? e).slice(0, 200); // safe: sqlite error text, never a secret
   }
 
   // Kickstart the autonomous runtime off the probe path (deferred; never blocks the response).
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { ensureServerBoot } = require("@/lib/server-boot");
-    setImmediate(() => { try { ensureServerBoot(); } catch { /* boot is best-effort; DB openability is the real gate */ } });
-  } catch { /* server-boot unavailable — the probe still reports DB health honestly */ }
+    setImmediate(() => { try { ensureServerBoot(); } catch { /* boot is best-effort */ } });
+  } catch { /* server-boot unavailable — liveness still reports 200 */ }
 
-  // Deployed commit (Railway injects the SHA at runtime) — the only reliable way to
-  // confirm which commit is live vs origin/main. Read via the build-info helper so this
-  // route reads no env directly. Not a secret; safe to expose.
   const { commit, commitShort, branch } = deployInfo();
-  const body = { ok: dbOk, db: dbOk, service: "optiscan", commit, commitShort, branch, nowMs: Date.now() };
-  return NextResponse.json(body, { status: dbOk ? 200 : 503 });
+  // ALWAYS 200 for liveness: reaching this line means the server is up and serving. DB status is
+  // informational in the body, not a deploy gate.
+  const body = { ok: true, db: dbOk, dbError, service: "optiscan", commit, commitShort, branch, nowMs: Date.now() };
+  return NextResponse.json(body, { status: 200 });
 }
