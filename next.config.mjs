@@ -17,7 +17,8 @@ const nextConfig = {
     "/api/opportunity-cases": ["./lib/opportunity-case/**/*.ts", "./lib/strategy/**/*.ts"],
     "/api/opportunity-cases/[id]": ["./lib/opportunity-case/**/*.ts", "./lib/strategy/**/*.ts"],
     "/api/research/options/pipeline-health": ["./lib/research/options/**/*.ts", "./lib/opportunity-case/**/*.ts"],
-    "/api/ai": ["./lib/ai/**/*.ts", "./lib/momentum-diagnostics.ts"],
+    "/api/ai": ["./lib/ai/**/*.ts", "./lib/momentum-diagnostics.ts", "./lib/metrics/**/*.ts"],
+    "/api/ai/funnel-explorer": ["./lib/metrics/**/*.ts", "./lib/momentum-diagnostics.ts", "./lib/ai/**/*.ts"],
   },
   async redirects() {
     return [

@@ -78,6 +78,23 @@ Three subscriber-facing pages failed after the Phases 0–21 deploy (`f488459` /
 
 **Verification (post-fix):** 1867/1867 tests · tsc clean · build OK · commit `270b059` pushed to `origin/main`.
 
+## OBSERVABILITY SPRINT — Phases 1–3 (2026-07-24)
+
+Measurement/funnel/persistOk diagnostics only. **No live gate, threshold, or delivery changes. No AI on production path.**
+
+| Deliverable | Location |
+|---|---|
+| Metric dictionary | `docs/METRIC_DICTIONARY.md`, `lib/metrics/dictionary.ts` |
+| Trustworthy Scanner Health | `lib/ai/quant-dashboard.ts` (pipeline labels; no mixed fallbacks) |
+| Canonical funnel | `lib/metrics/funnel-attribution.ts` |
+| persistOk sub-reasons | `lib/metrics/persist-ok-diagnostics.ts` + `gate_diagnostics_json` |
+| Gate latency | `lib/metrics/gate-latency.ts` |
+| Funnel Explorer | `GET /api/ai/funnel-explorer`, AI Lab developer card |
+| Sprint report | `docs/OBSERVABILITY_SPRINT_PHASES_1_3.md` |
+
+Phases 4–8 **not** started.
+
+
 
 ```powershell
 $BASE="https://YOUR-APP.up.railway.app"; $H=@{ "x-scan-token"=$env:SCAN_API_TOKEN }

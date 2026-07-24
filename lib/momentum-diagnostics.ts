@@ -6,6 +6,7 @@
 
 import { tradingDay } from "./trading-session.ts";
 import { summarizeEarliness, type EarlinessInput } from "./alert-earliness.ts";
+import { summarizePersistOkFailures } from "./metrics/persist-ok-diagnostics.ts";
 
 // Lazy DB resolution (not a static `@/lib/db` import) so this module — and anything
 // that imports it, including the DB-free AI layer — loads under the bare test runner
@@ -69,6 +70,8 @@ export interface MomentumDiagnosticInput {
    * intended direction, delivery direction status + quote age, final channel/result,
    * suppression reason). §Part 6 — deterministic, hindsight-free. */
   directionJson?: string | null;
+  /** Gate-level observability JSON (persistOk sub-reasons, firstFailedGate, etc.). Never affects live gates. */
+  gateDiagnosticsJson?: string | null;
 }
 
 export interface MomentumDiagnosticRow extends MomentumDiagnosticInput {
@@ -91,8 +94,9 @@ export function recordMomentumDiagnostic(input: MomentumDiagnosticInput): void {
         ret_10s_pct, ret_30s_pct, ret_60s_pct, volume_rate, volume_acceleration,
         rank_delta, score, confidence, entry_state, actionable,
         decision, reason, latch_state, first_detected_ms, first_actionable_ms,
-        discord_delivered_ms, trigger_to_discord_ms, strategy_version, direction_json, created_at_ms)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        discord_delivered_ms, trigger_to_discord_ms, strategy_version, direction_json,
+        gate_diagnostics_json, created_at_ms)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(
       input.ticker,
       input.evalAtMs,
@@ -138,6 +142,7 @@ export function recordMomentumDiagnostic(input: MomentumDiagnosticInput): void {
       nullableNum(input.triggerToDiscordMs),
       input.strategyVersion ?? null,
       input.directionJson ?? null,
+      input.gateDiagnosticsJson ?? null,
       createdAtMs,
     );
     const retentionDays = Number(process.env.MOMENTUM_DIAGNOSTIC_RETENTION_DAYS ?? 14);
@@ -198,6 +203,7 @@ export function listMomentumDiagnostics(limit = 500): MomentumDiagnosticRow[] {
     triggerToDiscordMs: r.trigger_to_discord_ms,
     strategyVersion: r.strategy_version,
     directionJson: r.direction_json ?? null,
+    gateDiagnosticsJson: r.gate_diagnostics_json ?? null,
     createdAtMs: r.created_at_ms,
   }));
 }
@@ -226,7 +232,8 @@ export function momentumDiagnosticsForDay(day: string, db: DbLike = lazyDb(), li
       entryState: r.entry_state, actionable: Boolean(r.actionable), decision: r.decision, reason: r.reason,
       latchState: r.latch_state, firstDetectedMs: r.first_detected_ms, firstActionableMs: r.first_actionable_ms,
       discordDeliveredMs: r.discord_delivered_ms, triggerToDiscordMs: r.trigger_to_discord_ms,
-      strategyVersion: r.strategy_version, directionJson: r.direction_json ?? null, createdAtMs: r.created_at_ms,
+      strategyVersion: r.strategy_version, directionJson: r.direction_json ?? null,
+      gateDiagnosticsJson: r.gate_diagnostics_json ?? null, createdAtMs: r.created_at_ms,
     }));
   } catch {
     return [];
@@ -257,6 +264,28 @@ export function summarizeMomentumDiagnostics(rows: MomentumDiagnosticRow[]) {
     (r.firstPromotedMovePct != null && Math.abs(r.firstPromotedMovePct) >= 6)
     || (r.firstRankedMovePct != null && Math.abs(r.firstRankedMovePct) >= 6)
   ).length;
+
+  // persistOk deep diagnostics (observability) — parse gate_diagnostics_json when present.
+  let persistOkSummary: { total: number; buckets: Array<{ subReason: string; count: number; pct: number | null }>; bySubReason: Record<string, number> } | null = null;
+  const persistRows = rows
+    .filter((r) => r.decision === "NEAR_MISS" && /blocked:\s*persistOk/i.test(String(r.reason ?? "")))
+    .map((r) => {
+      let gateDiagnostics: unknown = null;
+      if (r.gateDiagnosticsJson) {
+        try {
+          gateDiagnostics = JSON.parse(r.gateDiagnosticsJson);
+        } catch {
+          gateDiagnostics = null;
+        }
+      }
+      return {
+        reason: r.reason,
+        gateDiagnostics,
+        firstFailedGate: (gateDiagnostics as any)?.firstFailedGate ?? null,
+      };
+    });
+  if (persistRows.length) persistOkSummary = summarizePersistOkFailures(persistRows);
+
   // Post-trade alert-earliness grading (§Part 6) over the alerts that actually
   // sent — deterministic, hindsight-free, feeds the nightly AI so it can explain
   // whether we alerted fresh or after the move had run.
@@ -277,6 +306,7 @@ export function summarizeMomentumDiagnostics(rows: MomentumDiagnosticRow[]) {
   return {
     total: rows.length, sent, rescued, nearMisses, rejected, extendedRejections, staleRejected, avgLatencyMs,
     earliness, deliveryRevalidationFailed, directionSuppressed,
+    persistOkSummary,
     medianDiscoveryLatencyMs: median(rows.map((r) => r.firstRankedMs != null && r.firstSeenMs != null ? r.firstRankedMs - r.firstSeenMs : null)),
     medianPromotionLatencyMs: median(rows.map((r) => r.firstPromotedMs != null && r.firstRankedMs != null ? r.firstPromotedMs - r.firstRankedMs : null)),
     medianActionableLatencyMs: median(rows.map((r) => r.firstActionableMs != null && r.firstSeenMs != null ? r.firstActionableMs - r.firstSeenMs : null)),

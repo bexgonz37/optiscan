@@ -40,6 +40,7 @@ import {
   firstFailedGate, recordNearMiss, shouldRecordNearMiss, nearMinuteBudget,
   type NearMissEntry,
 } from "@/lib/near-miss";
+import { explainSpeedPersistence } from "@/lib/metrics/persist-ok-diagnostics";
 import { detectMajorMove } from "@/lib/major-move";
 import { maybeEmitPositionCallout } from "@/lib/position-callout";
 import { getSystemDataHealth } from "@/lib/data-freshness";
@@ -979,6 +980,17 @@ async function tick() {
       ? st.optionsCooldownUntil
       : st.stockCooldownUntil;
 
+    // OBSERVABILITY ONLY — explain persistOk without changing the live boolean.
+    const persistExplain = explainSpeedPersistence({
+      ring: st.ring.map((t: any) => ({ t: Number(t.t), p: Number(t.p) })).filter((t: any) => Number.isFinite(t.t) && Number.isFinite(t.p)),
+      minRate: triggerMinRate * 0.9,
+      direction: dirBear ? "bearish" : "bullish",
+      minHits: levelBreak ? 1 : 2,
+      subWindowMs: core ? 3500 : 4000,
+      nowMs,
+      cooldownBlocked: nowMs < routeCooldownUntil,
+    });
+
     // Gate evaluation is UNCHANGED (audit hard constraint) — shouldTrigger is
     // called with the exact same inputs; its result is captured so a blocked
     // near-trigger symbol leaves a "why not" trace (audit P1-5/T8).
@@ -1043,6 +1055,13 @@ async function tick() {
         cooldownBlocked: nowMs < routeCooldownUntil,
       };
       const failedGate = firstFailedGate(gates) ?? "unknown";
+      // Attach firstFailedGate + cooldown to the already-computed persistExplain (observability).
+      const persistDiag = {
+        ...persistExplain,
+        firstFailedGate: failedGate,
+        anotherGateFirst: failedGate !== "persistOk" && failedGate !== "unknown",
+        cooldownActive: Boolean(gates.cooldownBlocked),
+      };
       recordNearMiss(s.nearMisses, {
         t: nowMs, symbol: q.symbol, session,
         failedGate,
@@ -1094,6 +1113,20 @@ async function tick() {
           latchState: st.momentumLatch.developingSinceMs != null ? "developing" : "idle",
           firstDetectedMs: st.momentumFirstDetectedAt || null,
           strategyVersion: MOMENTUM_STRATEGY_VERSION,
+          gateDiagnosticsJson: JSON.stringify({
+            firstFailedGate: failedGate,
+            gates,
+            persistOk: persistDiag,
+            thresholds: {
+              minRate: triggerMinRate,
+              persistMinRate: triggerMinRate * 0.9,
+              minHits: levelBreak ? 1 : 2,
+              subWindowMs: core ? 3500 : 4000,
+            },
+            evalAtMs: nowMs,
+            firstSeenMs: st.firstSeenAt || null,
+            cumulativeLatencyMs: st.firstSeenAt ? Math.max(0, nowMs - st.firstSeenAt) : null,
+          }),
         });
       }
     }

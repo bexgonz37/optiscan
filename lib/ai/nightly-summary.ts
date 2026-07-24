@@ -76,6 +76,12 @@ export interface MomentumMissDigest {
     slowGrinderAlerts: number;
     fastRunnerAlerts: number;
   };
+  /** persistOk deep diagnostics (Phases 1–3 observability). */
+  persistOkSummary?: {
+    total: number;
+    buckets: Array<{ subReason: string; count: number; pct: number | null }>;
+    bySubReason: Record<string, number>;
+  } | null;
 }
 
 /** Pre-computed options-funnel digest (from the persisted options_diagnostics table). */

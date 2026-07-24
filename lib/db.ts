@@ -1826,6 +1826,8 @@ const MOMENTUM_DIAGNOSTIC_COLUMN_MIGRATIONS: Array<[string, string]> = [
   // quote age, final channel/result, suppression reason — one JSON blob so the
   // diagnostics UI and nightly AI can see WHY a bullish alert did or didn't fire.
   ["direction_json", "ALTER TABLE momentum_diagnostics ADD COLUMN direction_json TEXT"],
+  // Observability sprint Phases 1–3: persistOk sub-reasons + firstFailedGate (never affects live gates).
+  ["gate_diagnostics_json", "ALTER TABLE momentum_diagnostics ADD COLUMN gate_diagnostics_json TEXT"],
 ];
 
 function migrate(db: Database.Database) {

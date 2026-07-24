@@ -165,6 +165,10 @@ export default function AiLabPage() {
   const [retryingKey, setRetryingKey] = useState<string | null>(null);
   const [retryMessage, setRetryMessage] = useState<{ key: string; text: string; ok: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [obs, setObs] = useState<any>(null);
+  const [obsError, setObsError] = useState<string | null>(null);
+  const [trace, setTrace] = useState<any>(null);
+  const [selectedId, setSelectedId] = useState<string>("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -178,6 +182,32 @@ export default function AiLabPage() {
       setError(null);
     }
     setLoading(false);
+  }, []);
+
+  const loadObs = useCallback(async () => {
+    const result = await apiFetchJson<{ report?: any }>("/api/ai/funnel-explorer");
+    if (!result.ok) {
+      const { title, detail } = describeApiLoadFailure(result);
+      setObsError(`${title}: ${detail}`);
+      setObs(null);
+      return;
+    }
+    setObs(result.data?.report ?? null);
+    setObsError(null);
+  }, []);
+
+  const loadTrace = useCallback(async (id: string) => {
+    if (!id) {
+      setTrace(null);
+      return;
+    }
+    setSelectedId(id);
+    const result = await apiFetchJson<{ trace?: any }>(`/api/ai/funnel-explorer?id=${encodeURIComponent(id)}`);
+    if (!result.ok) {
+      setTrace({ error: describeApiLoadFailure(result).detail });
+      return;
+    }
+    setTrace(result.data?.trace ?? null);
   }, []);
 
   const decide = useCallback(async (action: string, id: number, status: string) => {
@@ -209,7 +239,12 @@ export default function AiLabPage() {
     } finally { setRetryingKey(null); }
   }, [load]);
 
-  useEffect(() => { load(); const id = setInterval(load, 60000); return () => clearInterval(id); }, [load]);
+  useEffect(() => {
+    load();
+    loadObs();
+    const id = setInterval(() => { load(); loadObs(); }, 60000);
+    return () => clearInterval(id);
+  }, [load, loadObs]);
 
   if (error && !ov) return <PageContainer><ErrorState title="AI Lab unavailable" detail={error} onRetry={load} /></PageContainer>;
   if (loading && !ov) return <PageContainer><Card title="Loading AI Lab"><LoadingState rows={5} /></Card></PageContainer>;
@@ -446,6 +481,113 @@ export default function AiLabPage() {
 
           <Card title="Today's Scanner Report Card" meta="Stored deterministic fields">
             <MetricTiles items={quant.reportCard ?? []} />
+          </Card>
+
+          <Card title="Funnel Explorer (developer)" meta="Observability only — candidate → Discord lifecycle">
+            {obsError && <p style={{ fontSize: 12, color: "var(--bear, #f87171)" }}>{obsError}</p>}
+            {!obs && !obsError && <LoadingState rows={3} />}
+            {obs && (
+              <>
+                <ResponsiveGrid min={160}>
+                  <KeyValue k="Independent capture" v={obs.independentCapture?.available ? `${obs.independentCapture.ratePct}%` : "n/a"} tone={obs.independentCapture?.available ? "bull" : "muted"} />
+                  <KeyValue k="READY → SENT" v={`${obs.independentCapture?.sent ?? 0} / ${obs.independentCapture?.ready ?? 0}`} />
+                  <KeyValue k="persistOk failures" v={fmtNum(obs.persistOk?.total)} tone={obs.persistOk?.total > 0 ? "warn" : "muted"} />
+                  <KeyValue k="Funnel traces" v={fmtNum(obs.funnel?.opportunityCount)} />
+                </ResponsiveGrid>
+                <p style={{ fontSize: 12, opacity: 0.75, margin: "8px 0" }}>
+                  Pipeline: {obs.funnel?.pipeline}. Metrics are never mixed across supervisor / independent / stock paths.
+                </p>
+                <ResponsiveGrid min={320}>
+                  <div>
+                    <p style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Canonical funnel (24h)</p>
+                    <SimpleTable
+                      columns={[
+                        { key: "stage", header: "Stage", render: (r: any) => r.stage },
+                        { key: "count", header: "Count", render: (r: any) => r.count },
+                        { key: "drop", header: "Dropped", render: (r: any) => r.droppedFromPrev },
+                        { key: "lat", header: "Avg lat", render: (r: any) => fmtMs(r.avgLatencyFromPrevMs) },
+                        { key: "p95", header: "P95", render: (r: any) => fmtMs(r.p95LatencyFromPrevMs) },
+                      ]}
+                      rows={obs.funnel?.stages ?? []}
+                      rowKey={(r: any) => r.stage}
+                      emptyTitle="No funnel stages"
+                      emptyReason="No independent options candidates in the last 24h."
+                    />
+                  </div>
+                  <div>
+                    <p style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>persistOk sub-reasons (today)</p>
+                    <SimpleTable
+                      columns={[
+                        { key: "sub", header: "Sub-reason", render: (r: any) => r.subReason },
+                        { key: "n", header: "Count", render: (r: any) => r.count },
+                        { key: "pct", header: "%", render: (r: any) => r.pct == null ? "n/a" : `${r.pct}%` },
+                      ]}
+                      rows={obs.persistOk?.buckets ?? []}
+                      rowKey={(r: any) => r.subReason}
+                      emptyTitle="No persistOk failures"
+                      emptyReason="No blocked:persistOk NEAR_MISS rows with diagnostics yet today."
+                    />
+                  </div>
+                </ResponsiveGrid>
+                <ResponsiveGrid min={320}>
+                  <div>
+                    <p style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Gate / stage latency</p>
+                    <SimpleTable
+                      columns={[
+                        { key: "gate", header: "Gate", render: (r: any) => r.gate },
+                        { key: "pipe", header: "Pipeline", render: (r: any) => r.pipeline },
+                        { key: "avg", header: "Avg", render: (r: any) => r.available ? fmtMs(r.stats?.avgMs) : "n/a" },
+                        { key: "p95", header: "P95", render: (r: any) => r.available ? fmtMs(r.stats?.p95Ms) : "n/a" },
+                        { key: "p99", header: "P99", render: (r: any) => r.available ? fmtMs(r.stats?.p99Ms) : "n/a" },
+                        { key: "q", header: "Queue", render: (r: any) => r.available ? fmtMs(r.stats?.avgQueueDelayMs) : "n/a" },
+                      ]}
+                      rows={obs.gateLatency ?? []}
+                      rowKey={(r: any) => r.gate}
+                      emptyTitle="No latency rows"
+                      emptyReason="Latency aggregates appear after diagnostics are recorded."
+                    />
+                  </div>
+                  <div>
+                    <p style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Select opportunity</p>
+                    <select
+                      value={selectedId}
+                      onChange={(e) => loadTrace(e.target.value)}
+                      style={{ width: "100%", fontSize: 12, padding: 6, marginBottom: 8 }}
+                    >
+                      <option value="">— choose candidate —</option>
+                      {(obs.explorer?.ids ?? []).map((x: any) => (
+                        <option key={x.id} value={x.id}>{`${x.id} · ${x.symbol} · ${x.state}`}</option>
+                      ))}
+                    </select>
+                    {trace?.error && <p style={{ fontSize: 12, color: "var(--bear, #f87171)" }}>{trace.error}</p>}
+                    {trace && !trace.error && (
+                      <SimpleTable
+                        columns={[
+                          { key: "stage", header: "Stage", render: (s: any) => s.stage },
+                          { key: "ok", header: "OK", render: (s: any) => (s.ok ? "yes" : "no") },
+                          { key: "t", header: "Time", render: (s: any) => fmtTime(s.atMs) },
+                          { key: "lat", header: "Δ prev", render: (s: any) => fmtMs(s.latencyFromPrevMs) },
+                          { key: "cum", header: "Cumulative", render: (s: any) => fmtMs(s.latencyFromOriginMs) },
+                          { key: "gate", header: "Gate", render: (s: any) => s.gate ?? dash },
+                          { key: "why", header: "Rejection", render: (s: any) => s.rejectionReason ?? dash },
+                        ]}
+                        rows={trace.stages ?? []}
+                        rowKey={(s: any, i: number) => `${s.stage}-${i}`}
+                        emptyTitle="No stages"
+                        emptyReason="Trace has no stage events."
+                      />
+                    )}
+                  </div>
+                </ResponsiveGrid>
+                {Array.isArray(obs.corrections) && obs.corrections.length > 0 && (
+                  <DetailsDisclosure summary="Metric corrections applied this sprint">
+                    {obs.corrections.map((c: string, i: number) => (
+                      <p key={i} style={{ fontSize: 12, margin: "2px 0" }}>{c}</p>
+                    ))}
+                  </DetailsDisclosure>
+                )}
+              </>
+            )}
           </Card>
 
           <ResponsiveGrid min={360}>

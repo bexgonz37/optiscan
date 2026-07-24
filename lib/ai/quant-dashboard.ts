@@ -19,6 +19,10 @@ export interface QuantMetric {
   score: number | null;
   source: string;
   available: boolean;
+  /** Explicit pipeline label — never mix pipelines silently. */
+  pipeline?: string;
+  metricId?: string;
+  limitations?: string[];
 }
 
 export interface QuantTrend {
@@ -230,26 +234,122 @@ function healthScoreForSummary(summary: any): number | null {
 }
 
 function healthComponents(summary: any): QuantMetric[] {
+  // STOCK_MOMENTUM — persisted diagnostics only (never fall back to in-memory near-miss ring).
   const totalMomentum = summary?.momentum?.total ?? null;
-  const sentMomentum = summary?.momentum?.sent ?? null;
-  const nearMisses = summary?.momentum?.nearMisses ?? summary?.counts?.nearMisses ?? null;
+  const nearMisses = summary?.momentum?.nearMisses ?? null;
+  const missedRunnerRate = pct(nearMisses, totalMomentum);
+  const early = summary?.momentum?.earliness?.pctEarly ?? null;
+  const alertDelayMs = summary?.momentum?.avgLatencyMs ?? null;
+
+  // PAPER_OUTCOMES — graded paper only.
   const losses = summary?.overall?.losses ?? null;
   const graded = summary?.counts?.outcomesGraded ?? summary?.overall?.n ?? null;
-  const missedRunnerRate = pct(nearMisses, isNum(totalMomentum) ? totalMomentum : (isNum(sentMomentum) || isNum(nearMisses)) ? Number(sentMomentum ?? 0) + Number(nearMisses ?? 0) : null);
   const falsePositiveRate = pct(losses, graded);
-  const alertDelayMs = summary?.timing?.avgTriggerToDiscordMs ?? summary?.momentum?.avgLatencyMs ?? null;
-  const opportunityCaptureRate = pct(summary?.options?.delivered ?? summary?.counts?.created ?? null, summary?.options?.canonical ?? summary?.counts?.candidates ?? null);
-  const early = summary?.momentum?.earliness?.pctEarly ?? null;
+
+  // SUPERVISOR_OPTIONS — never fall back to paper candidates / created counts.
+  const supervisorCapture = pct(summary?.options?.delivered ?? null, summary?.options?.canonical ?? null);
+  const supervisorAvailable =
+    summary?.options != null &&
+    isNum(summary?.options?.canonical) &&
+    Number(summary.options.canonical) > 0;
+
   return [
-    { label: "Early Alert Rate", value: early, unit: "%", score: isNum(early) ? clamp(early) : null, source: "summary.momentum.earliness.pctEarly", available: isNum(early) },
-    { label: "Missed Runner Rate", value: missedRunnerRate, unit: "%", score: isNum(missedRunnerRate) ? clamp(100 - missedRunnerRate) : null, source: "summary.momentum.nearMisses / summary.momentum.total", available: isNum(missedRunnerRate) },
-    { label: "False Positive Rate", value: falsePositiveRate, unit: "%", score: isNum(falsePositiveRate) ? clamp(100 - falsePositiveRate) : null, source: "summary.overall.losses / summary.counts.outcomesGraded", available: isNum(falsePositiveRate) },
-    { label: "Signal Quality", value: summary?.overall?.opportunityHitRate ?? null, unit: "%", score: summary?.overall?.opportunityHitRate ?? null, source: "summary.overall.opportunityHitRate", available: isNum(summary?.overall?.opportunityHitRate) },
-    { label: "Win Rate", value: summary?.overall?.winRate ?? null, unit: "%", score: summary?.overall?.winRate ?? null, source: "summary.overall.winRate", available: isNum(summary?.overall?.winRate) },
-    { label: "Profit Factor", value: null, score: null, source: "not stored in nightly summary", available: false },
-    { label: "Average Alert Delay", value: alertDelayMs, unit: "ms", score: isNum(alertDelayMs) ? clamp(100 - alertDelayMs / 600) : null, source: "summary.timing.avgTriggerToDiscordMs or summary.momentum.avgLatencyMs", available: isNum(alertDelayMs) },
-    { label: "Opportunity Capture Rate", value: opportunityCaptureRate, unit: "%", score: opportunityCaptureRate, source: "summary.options.delivered / summary.options.canonical", available: isNum(opportunityCaptureRate) },
-    { label: "Opportunity Grade Success", value: summary?.overall?.opportunityHitRate ?? null, unit: "%", score: summary?.overall?.opportunityHitRate ?? null, source: "summary.overall.opportunityHitRate", available: isNum(summary?.overall?.opportunityHitRate) },
+    {
+      label: "Early Alert Rate",
+      value: early,
+      unit: "%",
+      score: isNum(early) ? clamp(early) : null,
+      source: "summary.momentum.earliness.pctEarly",
+      available: isNum(early),
+      pipeline: "STOCK_MOMENTUM",
+      metricId: "stock_early_alert_rate",
+    },
+    {
+      label: "Missed Runner Rate",
+      value: missedRunnerRate,
+      unit: "%",
+      score: isNum(missedRunnerRate) ? clamp(100 - missedRunnerRate) : null,
+      source: "summary.momentum.nearMisses / summary.momentum.total (persisted; not opportunity-deduped)",
+      available: isNum(missedRunnerRate),
+      pipeline: "STOCK_MOMENTUM",
+      metricId: "stock_missed_runner_rate",
+      limitations: ["Raw NEAR_MISS rows — Phase 4 will deduplicate"],
+    },
+    {
+      label: "False Positive Rate",
+      value: falsePositiveRate,
+      unit: "%",
+      score: isNum(falsePositiveRate) ? clamp(100 - falsePositiveRate) : null,
+      source: "summary.overall.losses / summary.counts.outcomesGraded",
+      available: isNum(falsePositiveRate),
+      pipeline: "PAPER_OUTCOMES",
+      metricId: "paper_false_positive_rate",
+    },
+    {
+      label: "Signal Quality",
+      value: summary?.overall?.opportunityHitRate ?? null,
+      unit: "%",
+      score: summary?.overall?.opportunityHitRate ?? null,
+      source: "summary.overall.opportunityHitRate",
+      available: isNum(summary?.overall?.opportunityHitRate),
+      pipeline: "PAPER_OUTCOMES",
+      metricId: "paper_signal_quality",
+    },
+    {
+      label: "Win Rate",
+      value: summary?.overall?.winRate ?? null,
+      unit: "%",
+      score: summary?.overall?.winRate ?? null,
+      source: "summary.overall.winRate",
+      available: isNum(summary?.overall?.winRate),
+      pipeline: "PAPER_OUTCOMES",
+      metricId: "paper_win_rate",
+    },
+    {
+      label: "Profit Factor",
+      value: null,
+      score: null,
+      source: "not stored in nightly summary",
+      available: false,
+      pipeline: "PAPER_OUTCOMES",
+      metricId: "profit_factor",
+      limitations: ["Never invent — show n/a"],
+    },
+    {
+      label: "Average Alert Delay",
+      value: alertDelayMs,
+      unit: "ms",
+      score: isNum(alertDelayMs) ? clamp(100 - alertDelayMs / 600) : null,
+      source: "summary.momentum.avgLatencyMs (STOCK_MOMENTUM only)",
+      available: isNum(alertDelayMs),
+      pipeline: "STOCK_MOMENTUM",
+      metricId: "stock_avg_alert_delay_ms",
+    },
+    {
+      label: "Opportunity Capture (Supervisor Options)",
+      value: supervisorAvailable ? supervisorCapture : null,
+      unit: "%",
+      score: supervisorAvailable && isNum(supervisorCapture) ? supervisorCapture : null,
+      source: "summary.options.delivered / summary.options.canonical",
+      available: supervisorAvailable && isNum(supervisorCapture),
+      pipeline: "SUPERVISOR_OPTIONS",
+      metricId: "supervisor_options_capture_rate",
+      limitations: [
+        "Does NOT measure independent options monitor",
+        "0% with canonical=0 means supervisor idle — not a stock-scanner failure",
+        "When options.cycles missing or canonical=0, value is n/a (not 0%)",
+      ],
+    },
+    {
+      label: "Opportunity Grade Success",
+      value: summary?.overall?.opportunityHitRate ?? null,
+      unit: "%",
+      score: summary?.overall?.opportunityHitRate ?? null,
+      source: "summary.overall.opportunityHitRate",
+      available: isNum(summary?.overall?.opportunityHitRate),
+      pipeline: "PAPER_OUTCOMES",
+      metricId: "paper_signal_quality",
+    },
   ];
 }
 
@@ -274,7 +374,7 @@ function toneForBadCount(n: unknown): Tone {
 function reportCard(summary: any, jobFailures: any[]): ReportCardMetric[] {
   const e = summary?.momentum?.earliness ?? null;
   return [
-    { label: "Missed Fast Movers", value: summary?.momentum?.nearMisses ?? summary?.counts?.nearMisses ?? null, source: "summary.momentum.nearMisses", tone: toneForBadCount(summary?.momentum?.nearMisses ?? summary?.counts?.nearMisses) },
+    { label: "Missed Fast Movers", value: summary?.momentum?.nearMisses ?? null, source: "summary.momentum.nearMisses (STOCK_MOMENTUM persisted; not in-memory ring)", tone: toneForBadCount(summary?.momentum?.nearMisses) },
     { label: "Late Alerts", value: summary?.counts?.lateCallouts ?? e?.counts?.LATE ?? null, source: "summary.counts.lateCallouts or summary.momentum.earliness.counts.LATE", tone: toneForBadCount(summary?.counts?.lateCallouts ?? e?.counts?.LATE) },
     { label: "False Positives", value: summary?.overall?.losses ?? null, source: "summary.overall.losses", tone: toneForBadCount(summary?.overall?.losses) },
     { label: "Rejected Good Setups", value: summary?.signalCorrectExitFailed ?? null, source: "summary.signalCorrectExitFailed", tone: toneForBadCount(summary?.signalCorrectExitFailed) },
@@ -330,15 +430,40 @@ function gateBreakdown(reports: AiReportRow[], latestMomentum: MomentumDiagnosti
     const cur = counts.get(key) ?? { count: 0, samples: [], source };
     cur.count += count;
     if (sample && cur.samples.length < 3) cur.samples.push(sample);
+    // Prefer the primary aggregate source label when already set from summary.
+    if (!cur.source) cur.source = source;
     counts.set(key, cur);
   };
-  for (const [reason, count] of Object.entries(latest.rejectionReasons ?? {})) add(reason, Number(count), reason, "summary.rejectionReasons");
-  for (const [reason, count] of Object.entries(latest.waitWatchReasons ?? {})) add(reason, Number(count), reason, "summary.waitWatchReasons");
-  if (latest.options?.configBlockedCycles) add(latest.options.topDeliveryGateReason ?? "Options delivery", latest.options.configBlockedCycles, latest.options.diagnosis ?? "options delivery gate", "summary.options");
-  if (latest.momentum?.extendedRejections) add("VWAP Extension", latest.momentum.extendedRejections, "extended momentum rejection", "summary.momentum.extendedRejections");
-  if (latest.momentum?.staleRejected) add("Quote Freshness", latest.momentum.staleRejected, "stale quote rejection", "summary.momentum.staleRejected");
+  // PAPER / callout rejection reasons (not stock momentum).
+  for (const [reason, count] of Object.entries(latest.rejectionReasons ?? {})) {
+    add(reason, Number(count), reason, "PAPER_OUTCOMES:summary.rejectionReasons");
+  }
+  for (const [reason, count] of Object.entries(latest.waitWatchReasons ?? {})) {
+    add(reason, Number(count), reason, "PAPER_OUTCOMES:summary.waitWatchReasons");
+  }
+  // SUPERVISOR_OPTIONS config blocks — labeled, not mixed into stock VWAP.
+  if (latest.options?.configBlockedCycles) {
+    add(
+      `Supervisor: ${latest.options.topDeliveryGateReason ?? "Options delivery"}`,
+      latest.options.configBlockedCycles,
+      latest.options.diagnosis ?? "options delivery gate",
+      "SUPERVISOR_OPTIONS:summary.options",
+    );
+  }
+  // STOCK_MOMENTUM aggregates from nightly digest only (no double-count with raw rows).
+  if (latest.momentum?.extendedRejections) {
+    add("VWAP Extension", latest.momentum.extendedRejections, "extended momentum rejection", "STOCK_MOMENTUM:summary.momentum.extendedRejections");
+  }
+  if (latest.momentum?.staleRejected) {
+    add("Quote Freshness", latest.momentum.staleRejected, "stale quote rejection", "STOCK_MOMENTUM:summary.momentum.staleRejected");
+  }
+  // Examples only from latestMomentum — do NOT increment counts (avoids double-count M5).
   for (const row of latestMomentum.filter((r) => r.decision === "NEAR_MISS" || r.decision === "REJECTED").slice(0, 50)) {
-    add(row.reason ?? row.dominantReason ?? row.classification ?? "Momentum gate", 1, `${row.ticker}: ${row.reason ?? row.classification ?? "blocked"}`, "momentum_diagnostics");
+    const key = normalizeGate(row.reason ?? row.dominantReason ?? row.classification ?? "Momentum gate");
+    const cur = counts.get(key);
+    if (cur && cur.samples.length < 3) {
+      cur.samples.push(`${row.ticker}: ${row.reason ?? row.classification ?? "blocked"}`);
+    }
   }
   const total = [...counts.values()].reduce((a, c) => a + c.count, 0);
   return [...counts.entries()]
@@ -350,7 +475,7 @@ function gateBreakdown(reports: AiReportRow[], latestMomentum: MomentumDiagnosti
         pct: pct(row.count, total),
         trend: trend(row.count, prevCount),
         sampleExamples: row.samples,
-        aiExplanation: `${row.count} deterministic rejection/event(s) map to ${gate}. Evidence source: ${row.source}.`,
+        aiExplanation: `${row.count} deterministic rejection/event(s) map to ${gate}. Evidence source: ${row.source}. Raw momentum rows are examples only (not added to counts).`,
         source: row.source,
       };
     })
@@ -539,7 +664,7 @@ function dailySummary(health: ScannerHealth, summary: any, strategies: StrategyS
   return {
     scannerGrade: health.grade,
     scannerHealth: health.score,
-    missedFastMovers: summary?.momentum?.nearMisses ?? summary?.counts?.nearMisses ?? null,
+    missedFastMovers: summary?.momentum?.nearMisses ?? null,
     lateAlerts: summary?.counts?.lateCallouts ?? summary?.momentum?.earliness?.counts?.LATE ?? null,
     falsePositives: summary?.overall?.losses ?? null,
     bestStrategy: ranked[0]?.strategy ?? null,
@@ -579,7 +704,7 @@ export function buildQuantDashboard(input: QuantDashboardInput): QuantDashboard 
     dailyAiSummary: dailySummary(health, latest, strategies, gates, input.proposals ?? []),
     charts: {
       scannerHealth: chart(nightly, healthScoreForSummary),
-      missedRunnerTrend: chart(nightly, (s) => s?.momentum?.nearMisses ?? s?.counts?.nearMisses ?? null),
+      missedRunnerTrend: chart(nightly, (s) => s?.momentum?.nearMisses ?? null),
       falsePositiveTrend: chart(nightly, (s) => pct(s?.overall?.losses ?? null, s?.counts?.outcomesGraded ?? s?.overall?.n ?? null)),
       lateAlertTrend: chart(nightly, (s) => s?.counts?.lateCallouts ?? s?.momentum?.earliness?.counts?.LATE ?? null),
       averageDelay: chart(nightly, (s) => s?.timing?.avgTriggerToDiscordMs ?? s?.momentum?.avgLatencyMs ?? null),
@@ -593,6 +718,10 @@ export function buildQuantDashboard(input: QuantDashboardInput): QuantDashboard 
       "AI never changes gates, thresholds, scanner logic, or deterministic safety.",
       "AI proposals remain pending until human approval.",
       "Every metric is read from stored deterministic reports, diagnostics, lessons, or proposals.",
+      "Metrics are pipeline-labeled (STOCK_MOMENTUM | SUPERVISOR_OPTIONS | PAPER_OUTCOMES | INDEPENDENT_OPTIONS).",
+      "Opportunity Capture no longer falls back to paper candidates/created (that mixed pipelines).",
+      "Missed Fast Movers uses persisted momentum_diagnostics only (not the in-memory near-miss ring).",
+      "Gate breakdown no longer double-counts raw momentum rows on top of nightly aggregates.",
     ],
     dataGaps,
   };
