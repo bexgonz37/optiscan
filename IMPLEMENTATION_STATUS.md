@@ -50,9 +50,10 @@ Three subscriber-facing pages failed after the Phases 0–21 deploy (`f488459` /
 
 **Deploy version check:** `GET /api/healthz` returns `{ commit, commitShort, branch, db }` (no secrets). Compare `commitShort` to deployed fix hash after push.
 
-**Production migration status:** `opportunity_cases` + evidence-learning tables are created idempotently in `lib/db.ts` SCHEMA on `getDb()` — no separate migration runner required; missing table → `503 SCHEMA_MISMATCH` (not fake empty list).
+**Production migration status:** Enterprise tables (`opportunity_cases`, evidence-learning) are created by `migrate()` via monolithic SCHEMA **and** an explicit `ensureEnterpriseSchemaOnDb()` repair pass in `lib/db-schema-readiness.ts`. Schema readiness is exposed on `/api/healthz` (`schemaOk`, `schemaMissing`, `dbDirectory`) and `/api/runtime/schema` (auth-gated repair + report).
 
-**External verification (authenticated):**
+**Schema repair deploy (pending):** commit _TBD_ — after deploy, `/api/healthz` must show `schemaOk:true`, `schemaMissing:[]`, and authenticated `/api/opportunity-cases` must not return `SCHEMA_MISMATCH`.
+
 
 ```powershell
 $BASE="https://YOUR-APP.up.railway.app"; $H=@{ "x-scan-token"=$env:SCAN_API_TOKEN }

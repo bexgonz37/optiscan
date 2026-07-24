@@ -15,6 +15,7 @@
 import Database from "better-sqlite3";
 import path from "node:path";
 import fs from "node:fs";
+import { ensureEnterpriseSchemaOnDb, inspectSchemaReadiness } from "@/lib/db-schema-readiness";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS alerts (
@@ -2019,6 +2020,17 @@ CREATE INDEX IF NOT EXISTS idx_journal_dedup ON trade_journal(dedup_key);
        ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
     ).run();
   }
+
+  // Enterprise tail tables: explicit repair pass for long-lived production DBs where the
+  // monolithic SCHEMA exec may not have created Phase-2+ tables on an earlier deploy.
+  const repaired = ensureEnterpriseSchemaOnDb(db);
+  if (repaired.length > 0) {
+    console.info(`[db] enterprise schema repair applied: ${repaired.join(", ")}`);
+  }
+  const readiness = inspectSchemaReadiness(db);
+  if (!readiness.ok) {
+    throw new Error(`enterprise schema incomplete after migrate: ${readiness.missing.join(", ")}`);
+  }
 }
 
 type G = typeof globalThis & { __optiscanDb?: Database.Database };
@@ -2028,7 +2040,8 @@ export function getDb(): Database.Database {
   if (g.__optiscanDb) return g.__optiscanDb;
   const dir = process.env.ALERT_DB_DIR || path.join(process.cwd(), "data");
   fs.mkdirSync(dir, { recursive: true });
-  const db = new Database(path.join(dir, "optiscan.db"));
+  const dbPath = path.join(dir, "optiscan.db");
+  const db = new Database(dbPath);
   // Concurrency hardening (audit P1-2). The 1s loop, the tracker sweep, and
   // API reads all share this file from one process:
   //  - WAL: readers never block the writer.
@@ -2046,5 +2059,7 @@ export function getDb(): Database.Database {
   g.__optiscanDb = db;
   return db;
 }
+
+export { inspectSchemaReadiness, repairAndInspectSchemaReadiness, resolveDbLocation } from "@/lib/db-schema-readiness";
 
 export { tradingDay, etCloseMs, minutesToClose } from "@/lib/trading-session";

@@ -10,6 +10,8 @@ const nextConfig = {
   // deployed image when the worker is enabled. (If it is ever still missing, the worker manager's
   // existence check keeps the web process healthy instead of crashing.)
   outputFileTracingIncludes: {
+    "/api/healthz": ["./lib/db-schema-readiness.ts", "./lib/db.ts"],
+    "/api/runtime/schema": ["./lib/db-schema-readiness.ts", "./lib/db.ts"],
     "/api/research/seed": ["./worker/**/*.ts", "./lib/research/**/*.ts", "./lib/polygon-provider.js", "./lib/data-freshness.ts", "./lib/timestamps.ts", "./lib/trading-session.ts"],
     "/api/research/seed/[runId]": ["./worker/**/*.ts", "./lib/research/**/*.ts", "./lib/polygon-provider.js", "./lib/data-freshness.ts", "./lib/timestamps.ts", "./lib/trading-session.ts"],
     "/api/opportunity-cases": ["./lib/opportunity-case/**/*.ts", "./lib/strategy/**/*.ts"],

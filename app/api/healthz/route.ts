@@ -28,13 +28,25 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   let dbOk = false;
   let dbError: string | null = null;
+  let schemaOk = false;
+  let schemaMissing: string[] = [];
+  let dbDirectory: string | null = null;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { getDb } = require("@/lib/db");
-    dbOk = getDb().prepare("SELECT 1 AS one").get()?.one === 1;
+    const { getDb, inspectSchemaReadiness, resolveDbLocation } = require("@/lib/db");
+    dbDirectory = resolveDbLocation(process.env).directory;
+    const db = getDb();
+    dbOk = db.prepare("SELECT 1 AS one").get()?.one === 1;
+    const schema = inspectSchemaReadiness(db, process.env);
+    schemaOk = schema.ok;
+    schemaMissing = schema.missing;
   } catch (e: any) {
     dbOk = false;
     dbError = String(e?.message ?? e).slice(0, 200); // safe: sqlite error text, never a secret
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      dbDirectory = require("@/lib/db-schema-readiness").resolveDbLocation(process.env).directory;
+    } catch { /* ignore */ }
   }
 
   // Kickstart the autonomous runtime off the probe path (deferred; never blocks the response).
@@ -47,6 +59,18 @@ export async function GET() {
   const { commit, commitShort, branch } = deployInfo();
   // ALWAYS 200 for liveness: reaching this line means the server is up and serving. DB status is
   // informational in the body, not a deploy gate.
-  const body = { ok: true, db: dbOk, dbError, service: "optiscan", commit, commitShort, branch, nowMs: Date.now() };
+  const body = {
+    ok: true,
+    db: dbOk,
+    dbError,
+    dbDirectory,
+    schemaOk,
+    schemaMissing,
+    service: "optiscan",
+    commit,
+    commitShort,
+    branch,
+    nowMs: Date.now(),
+  };
   return NextResponse.json(body, { status: 200 });
 }

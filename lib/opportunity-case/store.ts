@@ -2,6 +2,7 @@
  * Opportunity Case persistence — append-friendly, idempotent by opportunity_id.
  */
 import { parseCase, serializeCase, type OpportunityCase } from "./schema.ts";
+import { hasSqliteTable } from "../db-schema-readiness.ts";
 
 interface CaseDb {
   prepare(sql: string): {
@@ -12,11 +13,7 @@ interface CaseDb {
 }
 
 function hasTable(db: CaseDb, name: string): boolean {
-  try {
-    return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name=?").get(name));
-  } catch {
-    return false;
-  }
+  return hasSqliteTable(db, name);
 }
 
 export function opportunityCasesTableReady(db: CaseDb): boolean {

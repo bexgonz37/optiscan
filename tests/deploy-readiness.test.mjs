@@ -106,6 +106,7 @@ test("healthz is a liveness probe: always 200 when the server responds, no secre
   assert.ok(!/: 503/.test(code), "no 503 gate — DB readiness is reported in the body, not a deploy gate");
   // DB status is still surfaced honestly.
   assert.ok(/db: dbOk/.test(code) && /dbError/.test(code), "db status reported in the body");
+  assert.ok(/schemaOk/.test(code) && /schemaMissing/.test(code), "schema readiness reported in the body");
   assert.ok(!/session|closed|loopState|marketSession|modelStatus|discordConfigured/.test(code), "no market/model/discord gating");
 });
 
@@ -153,6 +154,15 @@ test("SCHEMA is repeat-safe (applied twice, no error)", { skip: !Database }, () 
   db.exec(schema); // must not throw
   const t = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('callout_state','worker_leases')").all();
   assert.equal(t.length, 2);
+});
+
+test("enterprise schema repair creates opportunity_cases on legacy production-like DB", { skip: !Database }, async () => {
+  const { ensureEnterpriseSchemaOnDb } = await import("../lib/db-schema-readiness.ts");
+  const db = new Database(":memory:");
+  db.exec("CREATE TABLE alerts (id INTEGER PRIMARY KEY, ticker TEXT NOT NULL, source TEXT NOT NULL, alert_time TEXT NOT NULL, trading_day TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'tracking', created_at TEXT NOT NULL DEFAULT (datetime('now')));");
+  ensureEnterpriseSchemaOnDb(db);
+  const row = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='opportunity_cases'").get();
+  assert.ok(row, "opportunity_cases must exist after repair");
 });
 
 // 14. .env.railway.example contains no real credentials.
