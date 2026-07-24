@@ -11,6 +11,16 @@ export { resolvePaperReadSource, rollbackV2ReadsToLegacy } from "./routing.ts";
 export type { PaperReadSource, PaperReadRoute } from "./routing.ts";
 export { evaluateBrokerV2Readiness, defaultReadinessThresholds } from "./readiness.ts";
 export type { ReadinessStatus, ReadinessReport, ReadinessRequirement, ReadinessMetrics } from "./readiness.ts";
+export {
+  generateDailyReadinessReportIfDue,
+  buildDailyReadinessSummary,
+  buildSoakPeriodSummary,
+  listDailyReadinessReports,
+  getDailyReadinessReport,
+  runBrokerReadinessSoakJob,
+  SOAK_REPORT_VERSION,
+} from "./soak-report.ts";
+export type { DailyReadinessSummary, SoakPeriodSummary } from "./soak-report.ts";
 export { runHistoricalReconcileDryRun } from "./reconcile-audit.ts";
 export type { ReconcileDryRunReport, ReconcileDryRunFinding } from "./reconcile-audit.ts";
 export {

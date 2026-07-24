@@ -7,6 +7,10 @@ Label: **Brokerage V2 Migration Readiness — No Production Cutover**
 B6 builds controls and evidence to decide whether V2 is **later** safe to replace
 legacy paper-accounting reads. B6 does **not** make V2 authoritative.
 
+After B6 ships, production enters an **Operational Validation (Soak)** phase —
+see `docs/BROKER_V2_SOAK.md`. Daily readiness reports are auto-generated; cutover
+still requires explicit human approval.
+
 ## Feature flags (all default OFF)
 
 | Flag | Role |

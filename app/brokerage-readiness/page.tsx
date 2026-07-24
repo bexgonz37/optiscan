@@ -40,8 +40,54 @@ type Report = {
   dryRun: { findings: Array<{ code: string; severity: string; message: string }>; dryRun: boolean };
 };
 
+type DailySummary = {
+  reportDay: string;
+  status: string;
+  mirroredTrades: number;
+  completedRoundTrips: number;
+  distinctTradingDays: number;
+  tradeParitySuccessRatePct: number | null;
+  equityReconciliationRatePct: number | null;
+  unresolvedCriticalFailures: number;
+  unresolvedParityFailures: number;
+  orphanCount: number;
+  duplicateCount: number;
+  missingMarkCount: number;
+  staleMarkCount: number;
+  incompleteEquitySnapshotCount: number;
+  shadowReadEvents: number;
+  shadowReadMismatches: number;
+  warnings: string[];
+  regressions: string[];
+  recommendedNextAction: string;
+  reachedControlledCutoverGate: boolean;
+};
+
+type SoakPayload = {
+  period: {
+    reportCount: number;
+    firstReportDay: string | null;
+    latestReportDay: string | null;
+    soakCalendarDays: number | null;
+    latestStatus: string | null;
+    everReachedControlledCutoverGate: boolean;
+    regressionDays: string[];
+    statusHistory: Array<{ day: string; status: string }>;
+  };
+  today: {
+    created: boolean;
+    reportDay: string;
+    summary: DailySummary | null;
+    readyForControlledCutoverEvidence: boolean;
+  };
+  recentDaily: DailySummary[];
+  cutoverPerformed: boolean;
+  note: string;
+};
+
 export default function BrokerageReadinessPage() {
   const [report, setReport] = useState<Report | null>(null);
+  const [soak, setSoak] = useState<SoakPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadState, setLoadState] = useState<"ok" | "empty" | "error">("ok");
   const [errorTitle, setErrorTitle] = useState<string | null>(null);
@@ -51,18 +97,23 @@ export default function BrokerageReadinessPage() {
     setLoading(true);
     setErrorTitle(null);
     setErrorDetail(null);
-    const result = await apiFetchJson<{ report?: Report }>("/api/research/brokerage-readiness");
+    const result = await apiFetchJson<{ report?: Report; soak?: SoakPayload }>(
+      "/api/research/brokerage-readiness",
+    );
     if (!result.ok) {
       const { title, detail } = describeApiLoadFailure(result);
       setReport(null);
+      setSoak(null);
       setLoadState("error");
       setErrorTitle(title);
       setErrorDetail(detail);
     } else if (!result.data?.report) {
       setReport(null);
+      setSoak(null);
       setLoadState("empty");
     } else {
       setReport(result.data.report);
+      setSoak(result.data.soak ?? null);
       setLoadState("ok");
     }
     setLoading(false);
@@ -81,14 +132,16 @@ export default function BrokerageReadinessPage() {
           ? "warn"
           : "bear";
 
+  const today = soak?.today?.summary;
+
   return (
     <PageContainer>
       <PageHeader title="Brokerage Readiness" subtitle={LABEL} />
       <Card title="Surface status">
         <StatusBadge tone="warn">{LABEL}</StatusBadge>
         <p style={{ marginTop: 8, fontSize: 13 }}>
-          B6 builds evidence for a future cutover decision. Production V2 reads stay disabled. Legacy remains
-          authoritative.
+          Operational Validation (Soak) Phase. Production V2 reads stay disabled. Legacy remains
+          authoritative. No cutover without explicit approval.
         </p>
       </Card>
 
@@ -108,13 +161,81 @@ export default function BrokerageReadinessPage() {
             <p style={{ fontSize: 13 }}>
               Flags — dual-write: {report.flags.dualWrite ? "ON" : "OFF"} · shadow-read:{" "}
               {report.flags.shadowRead ? "ON" : "OFF"} · V2 reads: {report.flags.v2Reads ? "ON" : "OFF"} (must stay
-              OFF in B6 prod)
+              OFF until cutover approval)
             </p>
             <p style={{ fontSize: 13 }}>
               Routing: {report.routing.responseSource} — {report.routing.note}
             </p>
             <p style={{ fontSize: 12 }}>Policy v{report.policyVersion}</p>
           </Card>
+
+          {soak && (
+            <Card title="Soak period">
+              <p style={{ fontSize: 13 }}>{soak.note}</p>
+              <p>
+                Reports: {soak.period.reportCount}
+                {soak.period.firstReportDay
+                  ? ` · ${soak.period.firstReportDay} → ${soak.period.latestReportDay}`
+                  : ""}
+                {soak.period.soakCalendarDays != null
+                  ? ` · ${soak.period.soakCalendarDays} calendar day(s)`
+                  : ""}
+              </p>
+              <p>Latest stored status: {soak.period.latestStatus ?? "n/a"}</p>
+              <p>
+                Controlled-cutover gate ever met:{" "}
+                {soak.period.everReachedControlledCutoverGate ? "YES (awaiting human approval)" : "no"}
+              </p>
+              <p>Cutover performed: {soak.cutoverPerformed ? "YES" : "no"}</p>
+              {soak.period.regressionDays.length > 0 && (
+                <p style={{ fontSize: 13 }}>
+                  Regression days: {soak.period.regressionDays.join(", ")}
+                </p>
+              )}
+            </Card>
+          )}
+
+          {today && (
+            <Card title={`Today's daily report (${today.reportDay})`}>
+              <p>
+                Status: <strong>{today.status}</strong>
+                {soak?.today.created ? " · newly generated" : " · already stored (idempotent)"}
+              </p>
+              <p>Mirrored trades: {today.mirroredTrades}</p>
+              <p>Completed round-trips: {today.completedRoundTrips}</p>
+              <p>Trading days: {today.distinctTradingDays}</p>
+              <p>Trade parity: {today.tradeParitySuccessRatePct ?? "n/a"}%</p>
+              <p>Equity reconcile: {today.equityReconciliationRatePct ?? "n/a"}%</p>
+              <p>
+                Unresolved — critical {today.unresolvedCriticalFailures} · parity{" "}
+                {today.unresolvedParityFailures}
+              </p>
+              <p>
+                Orphans {today.orphanCount} · duplicates {today.duplicateCount}
+              </p>
+              <p>
+                Marks — missing {today.missingMarkCount} · stale {today.staleMarkCount} · incomplete
+                snapshots {today.incompleteEquitySnapshotCount}
+              </p>
+              <p>
+                Shadow-read — events {today.shadowReadEvents} · mismatches {today.shadowReadMismatches}
+              </p>
+              {today.regressions.length > 0 && (
+                <ul>
+                  {today.regressions.map((r) => (
+                    <li key={r}>regression: {r}</li>
+                  ))}
+                </ul>
+              )}
+              {today.warnings.length > 0 && (
+                <ul>
+                  {today.warnings.map((w) => (
+                    <li key={w}>{w}</li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+          )}
 
           <Card title="Observation & sample">
             <p>Mirrored trades: {String(report.metrics.mirroredTrades)}</p>
@@ -155,7 +276,6 @@ export default function BrokerageReadinessPage() {
                   style={{
                     borderTop: "1px solid var(--border,#334)",
                     padding: "8px 0",
-                    opacity: r.passed ? 1 : 1,
                   }}
                 >
                   <StatusBadge tone={r.passed ? "bull" : r.blocking ? "bear" : "warn"}>
@@ -172,7 +292,7 @@ export default function BrokerageReadinessPage() {
 
           <Card title="Missing for next status">
             {report.missingForNextStatus.length === 0 ? (
-              <p>None — at top readiness tier for B6 (still no auto cutover).</p>
+              <p>None — at top readiness tier (still no auto cutover).</p>
             ) : (
               <ul>
                 {report.missingForNextStatus.map((m) => (
@@ -190,7 +310,7 @@ export default function BrokerageReadinessPage() {
           </Card>
 
           <Card title="Dry-run reconciliation findings">
-            <p style={{ fontSize: 12 }}>Append-only audit · no financial rewrites in B6.</p>
+            <p style={{ fontSize: 12 }}>Append-only audit · no financial rewrites during soak.</p>
             {report.dryRun.findings.length === 0 ? (
               <p>No findings.</p>
             ) : (
@@ -215,6 +335,20 @@ export default function BrokerageReadinessPage() {
               </ul>
             )}
           </Card>
+
+          {soak && soak.recentDaily.length > 0 && (
+            <Card title="Recent daily summaries">
+              <ul style={{ listStyle: "none", padding: 0, margin: 0, fontSize: 12, maxHeight: 320, overflow: "auto" }}>
+                {soak.recentDaily.map((d) => (
+                  <li key={d.reportDay} style={{ borderTop: "1px solid var(--border,#334)", padding: "6px 0" }}>
+                    <strong>{d.reportDay}</strong> {d.status} · trades {d.mirroredTrades} · parity{" "}
+                    {d.tradeParitySuccessRatePct ?? "n/a"}% · crit {d.unresolvedCriticalFailures}
+                    {d.regressions.length ? ` · regressions: ${d.regressions.join(", ")}` : ""}
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          )}
         </>
       )}
     </PageContainer>

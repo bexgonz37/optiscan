@@ -20,7 +20,7 @@ import { schedulerIntervals, jobDue } from "@/lib/scheduler-policy";
 const LEASE_NAME = "scheduler";
 const BASE_TICK_MS = 15_000;
 
-type JobName = "maintenance" | "learning" | "supervisor" | "improvement" | "aiJobs";
+type JobName = "maintenance" | "learning" | "supervisor" | "improvement" | "aiJobs" | "brokerReadiness";
 
 export interface SchedulerState {
   started: boolean;
@@ -43,8 +43,8 @@ function state(): SchedulerState {
   const g = globalThis as G;
   g.__optiscanScheduler ??= {
     started: false, isOwner: false, ownerPid: null, lastBeatAtMs: null,
-    lastRun: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null },
-    runs: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0 },
+    lastRun: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null, brokerReadiness: null },
+    runs: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0 },
     note: "not started", lastError: null,
   };
   return g.__optiscanScheduler;
@@ -142,6 +142,13 @@ function launchAiJobs(nowMs: number): void {
   })();
 }
 
+async function brokerReadinessJob(nowMs: number): Promise<void> {
+  // Observational soak only — never enables flags or cutover.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { runBrokerReadinessSoakJob } = require("@/lib/broker/soak-report");
+  runBrokerReadinessSoakJob(process.env, nowMs);
+}
+
 async function beat(): Promise<void> {
   const s = state();
   const nowMs = Date.now();
@@ -183,6 +190,9 @@ async function beat(): Promise<void> {
   if (jobDue(s.lastRun.aiJobs, iv.aiCheckMs, nowMs)) {
     s.lastRun.aiJobs = nowMs;
     launchAiJobs(nowMs);
+  }
+  if (jobDue(s.lastRun.brokerReadiness, iv.brokerReadinessMs, nowMs)) {
+    await runJob("brokerReadiness", () => brokerReadinessJob(nowMs), nowMs);
   }
 }
 

@@ -16,6 +16,7 @@ export const BROKER_REQUIRED_TABLES = [
   "broker_audit_events",
   "broker_legacy_links",
   "broker_parity_events",
+  "broker_readiness_daily_reports",
 ] as const;
 
 export type BrokerRequiredTable = (typeof BROKER_REQUIRED_TABLES)[number];
@@ -271,4 +272,16 @@ CREATE TABLE IF NOT EXISTS broker_parity_events (
 );
 CREATE INDEX IF NOT EXISTS idx_broker_parity_legacy ON broker_parity_events(legacy_table, legacy_id, created_at_ms DESC);
 CREATE INDEX IF NOT EXISTS idx_broker_parity_mismatch ON broker_parity_events(matched, created_at_ms DESC);
+
+-- B6 soak: one readiness snapshot per America/New_York calendar day (append-only / idempotent).
+CREATE TABLE IF NOT EXISTS broker_readiness_daily_reports (
+  id TEXT PRIMARY KEY,
+  report_day TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL,
+  summary_json TEXT NOT NULL,
+  report_json TEXT NOT NULL,
+  record_schema_version INTEGER NOT NULL DEFAULT 3,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_broker_readiness_daily_day ON broker_readiness_daily_reports(report_day DESC);
 `;

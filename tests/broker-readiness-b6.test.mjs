@@ -272,8 +272,10 @@ test("B6: no scanner/delivery/gate/AI imports read-routing layer", () => {
 test("B6: readiness API + dashboard labeled", () => {
   assert.match(read("app/api/research/brokerage-readiness/route.ts"), /evaluateBrokerV2Readiness/);
   assert.match(read("app/api/research/brokerage-readiness/route.ts"), /checkApiToken/);
+  assert.match(read("app/api/research/brokerage-readiness/route.ts"), /soakPhase/);
   const page = read("app/brokerage-readiness/page.tsx");
   assert.match(page, /No Production Cutover/);
   assert.match(page, /\/api\/research\/brokerage-readiness/);
+  assert.match(page, /Operational Validation \(Soak\)/);
   assert.match(read("components/AxiomShell.tsx"), /\/brokerage-readiness/);
 });

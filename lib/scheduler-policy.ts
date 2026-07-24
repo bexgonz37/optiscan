@@ -15,6 +15,8 @@ export interface SchedulerIntervals {
   supervisorMs: number;    // supervisor callout cycle
   improvementMs: number;   // low-frequency improvement audit
   aiCheckMs: number;       // how often to CHECK whether an offline AI job is due
+  /** How often to CHECK whether today's Brokerage V2 soak readiness report is due. */
+  brokerReadinessMs: number;
 }
 
 function clampInt(v: string | undefined, def: number, min: number, max: number): number {
@@ -40,6 +42,8 @@ export function schedulerIntervals(env: NodeJS.ProcessEnv = process.env): Schedu
     // 5 min default AI-due CHECK (not the job itself); the job is idempotent and
     // detached. Never faster than 1 min, never slower than 1h.
     aiCheckMs: clampInt(env.SCHED_AI_CHECK_MS, 5 * 60_000, 60_000, 60 * 60_000),
+    // 60 min default soak readiness check; idempotent per ET day. Never faster than 15m.
+    brokerReadinessMs: clampInt(env.SCHED_BROKER_READINESS_MS, 60 * 60_000, 15 * 60_000, 24 * 60 * 60_000),
   };
 }
 

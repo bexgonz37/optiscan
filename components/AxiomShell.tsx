@@ -47,7 +47,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   "/research-learning": { title: "Research & Learning", sub: "Model readiness, drift, and bounded continuous learning" },
   "/brokerage-parity": { title: "Brokerage Parity", sub: "Legacy vs V2 dual-write agreement · developer/research only" },
   "/brokerage-v2": { title: "Brokerage V2", sub: "Research / Brokerage V2 — Not Yet Authoritative" },
-  "/brokerage-readiness": { title: "Brokerage Readiness", sub: "Brokerage V2 Migration Readiness — No Production Cutover" },
+  "/brokerage-readiness": { title: "Brokerage Readiness", sub: "Operational Validation (Soak) — No Production Cutover" },
   "/improvement": { title: "Improvement Agent", sub: "Controlled, propose-only code-improvement agent (never edits code autonomously)" },
   "/swing": { title: "Swing Research", sub: "Moved into Callouts → Swing Research tab" },
   "/settings": { title: "Settings", sub: "Alerts, Discord, safety" },

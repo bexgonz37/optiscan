@@ -16,6 +16,7 @@ test("scheduler intervals have safe defaults", () => {
   assert.equal(iv.learningMs, 60 * 60_000);
   assert.equal(iv.supervisorMs, 30_000);
   assert.equal(iv.improvementMs, 6 * 60 * 60_000);
+  assert.equal(iv.brokerReadinessMs, 60 * 60_000);
 });
 
 test("scheduler intervals are clamped against misconfiguration", () => {
@@ -82,4 +83,15 @@ test("improvement audit is low-frequency, gated (default off), and proposal-only
   assert.ok(/jobDue\(s\.lastRun\.improvement, iv\.improvementMs/.test(sch));
   // Never merges / edits code from the scheduler.
   assert.ok(!/auto[-_]?merge|writeFile|applyProposal/i.test(sch), "no auto-merge/apply from scheduler");
+});
+
+test("broker readiness soak job is wired and never auto-cutovers", () => {
+  const sch = read("lib/scheduler.ts");
+  assert.ok(/runBrokerReadinessSoakJob/.test(sch), "runs soak readiness job");
+  assert.ok(/jobDue\(s\.lastRun\.brokerReadiness, iv\.brokerReadinessMs/.test(sch));
+  assert.ok(/Observational soak only/.test(sch));
+  assert.doesNotMatch(sch, /PAPER_BROKER_V2_READS_ENABLED\s*=\s*["']1["']/);
+  const soak = read("lib/broker/soak-report.ts");
+  assert.match(soak, /cutoverPerformed:\s*false/);
+  assert.match(soak, /READINESS_CUTOVER_GATE_MET/);
 });
