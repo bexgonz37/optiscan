@@ -38,10 +38,27 @@ export {
 } from "./dual-write.ts";
 export { recordParityEvent, verifyNumericParity, valuesMatch } from "./parity.ts";
 export { buildParityDashboardReport } from "./parity-report.ts";
-export type { ParityDashboardReport, WindowStats, ParityFailureDetail } from "./parity-report.ts";
+export type { ParityDashboardReport, WindowStats, ParityFailureDetail, EquityMarkObservability } from "./parity-report.ts";
 export {
   sizeFromBuyingPower,
   defaultBuyingPowerConfig,
   readBuyingPowerSnapshot,
 } from "./buying-power.ts";
 export type { BuyingPowerConfig, SizeFromBuyingPowerResult } from "./buying-power.ts";
+export {
+  computeAccountEquity,
+  snapshotAccountEquity,
+  readEquityCurve,
+  computeDollarPositions,
+  computeRealizedPnlDollars,
+} from "./equity.ts";
+export type { AccountEquity, DollarPosition, SnapshotCompleteness } from "./equity.ts";
+export {
+  decideMark,
+  defaultMarkPolicyConfig,
+  MARK_POLICY_VERSION,
+  conservativeLongMark,
+  contractMultiplier,
+} from "./mark-policy.ts";
+export { reconcileAccountEquity, reconcileAccountOnDb, reconcileCloseTransfer } from "./reconcile.ts";
+export type { ReconciliationCheck, ReconciliationReport } from "./reconcile.ts";

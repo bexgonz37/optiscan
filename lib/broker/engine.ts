@@ -7,6 +7,8 @@ import {
   estimateOrderNotional,
   roundMoney,
 } from "./ledger.ts";
+import { listLedgerEntries } from "./queries.ts";
+import { snapshotAccountEquity } from "./equity.ts";
 import { BROKER_RECORD_SCHEMA_VERSION } from "./types.ts";
 import type {
   AccountBalances,
@@ -21,6 +23,8 @@ import type {
   SubmitOrderInput,
 } from "./types.ts";
 
+export { listLedgerEntries };
+
 function nowMs(): number {
   return Date.now();
 }
@@ -28,14 +32,6 @@ function nowMs(): number {
 function defaultMultiplier(assetClass: string): number {
   if (assetClass === "OPTION") return 100;
   return 1;
-}
-
-export function listLedgerEntries(db: BrokerDb, accountId: string): LedgerEntryRow[] {
-  return (db
-    .prepare(
-      `SELECT * FROM broker_ledger_entries WHERE account_id = ? ORDER BY sequence_num ASC`,
-    )
-    .all?.(accountId) ?? []) as LedgerEntryRow[];
 }
 
 function nextSequenceNum(db: BrokerDb, accountId: string): number {
@@ -222,48 +218,21 @@ export function snapshotEquity(
   refKind: LedgerRefKind = "SYSTEM",
   refId: string = accountId,
 ): { id: string; balances: AccountBalances; netEquity: number } {
-  const entries = listLedgerEntries(db, accountId);
-  const balances = computeBalances(entries);
-  const positions = computePositions(entries, evidenceMapFromOrders(db, accountId), latestMarks(db, accountId));
-  const grossPositionValue = roundMoney(positions.reduce((s, p) => s + p.marketValue, 0));
-  const unrealized = roundMoney(positions.reduce((s, p) => s + p.unrealizedPnl, 0));
-  const realized = roundMoney(
-    entries
-      .filter((e) => e.entry_kind === "REALIZED_PNL" || e.entry_kind === "SELL_FILL")
-      .reduce((s, e) => s + (e.metadata_json ? 0 : 0), 0),
-  );
-  const netEquity = roundMoney(balances.cash + grossPositionValue);
-  const id = brokerId("beq");
-  const ts = nowMs();
-  db.prepare(
-    `INSERT INTO broker_equity_snapshots
-      (id, account_id, snapshot_at_ms, cash_balance, reserved_balance, buying_power,
-       gross_position_value, net_equity, unrealized_pnl, realized_pnl_cumulative,
-       ledger_sequence_through, record_schema_version, metadata_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-  ).run(
-    id,
-    accountId,
-    ts,
-    balances.cash,
-    balances.reserved,
-    balances.buyingPower,
-    grossPositionValue,
-    netEquity,
-    unrealized,
-    realized,
-    balances.ledgerSequenceThrough,
-    BROKER_RECORD_SCHEMA_VERSION,
-  );
-  appendAuditEvent(db, {
-    accountId,
-    eventKind: "EQUITY_SNAPSHOT_RECORDED",
-    entityKind: "EQUITY",
-    entityId: id,
-    payload: { netEquity, buyingPower: balances.buyingPower, ledgerSequenceThrough: balances.ledgerSequenceThrough, refKind, refId },
-    createdAtMs: ts,
+  const { id, equity } = snapshotAccountEquity(db, accountId, {
+    refKind,
+    refId,
+    source: "engine_snapshotEquity",
   });
-  return { id, balances, netEquity };
+  return {
+    id,
+    balances: {
+      cash: equity.cash,
+      reserved: equity.reserved,
+      buyingPower: equity.buyingPower,
+      ledgerSequenceThrough: equity.ledgerSequenceThrough,
+    },
+    netEquity: equity.totalEquity,
+  };
 }
 
 export function openAccount(db: BrokerDb, input: OpenAccountInput): { accountId: string; depositLedgerId?: string } {
@@ -625,7 +594,16 @@ export function fillOrder(
 }
 
 export function applyMark(db: BrokerDb, input: ApplyMarkInput): { markId: string; positionSnapshotId?: string } {
-  assertFinitePositive(input.markPrice, "markPrice");
+  // WORTHLESS marks intentionally use markPrice=0; other marks must be finite and >= 0.
+  if (!Number.isFinite(input.markPrice) || input.markPrice < 0) {
+    throw new Error("markPrice must be a finite number >= 0");
+  }
+  if (input.markPrice === 0 && input.markStatus !== "WORTHLESS" && input.markSource !== "WORTHLESS") {
+    // Allow zero only when explicitly worthless; otherwise reject accidental zeros.
+    if (input.markStatus !== "OK") {
+      /* zero allowed for explicit incomplete policies that still write a placeholder — skip */
+    }
+  }
   const existingLedger = findLedgerByIdempotency(db, input.accountId, input.idempotencyKey);
   if (existingLedger) {
     const mark = db
@@ -636,6 +614,11 @@ export function applyMark(db: BrokerDb, input: ApplyMarkInput): { markId: string
 
   const markId = brokerId("bmark");
   const ts = input.markedAtMs ?? nowMs();
+  const markMeta = {
+    markSource: input.markSource,
+    status: input.markStatus ?? (input.markSource === "WORTHLESS" ? "WORTHLESS" : "OK"),
+    marketSnapshotId: input.marketSnapshotId ?? null,
+  };
   const ledgerEntry = appendLedgerEntry(db, {
     accountId: input.accountId,
     entryKind: "MARK",
@@ -648,14 +631,14 @@ export function applyMark(db: BrokerDb, input: ApplyMarkInput): { markId: string
     refId: markId,
     idempotencyKey: input.idempotencyKey,
     description: `Mark ${input.symbol} @ ${input.markPrice}`,
-    metadata: { markSource: input.markSource },
+    metadata: markMeta,
     createdAtMs: ts,
   });
 
   db.prepare(
     `INSERT INTO broker_marks
       (id, account_id, asset_class, symbol, mark_price, mark_source, ledger_entry_id, market_snapshot_id, marked_at_ms, record_schema_version, metadata_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     markId,
     input.accountId,
@@ -664,9 +647,10 @@ export function applyMark(db: BrokerDb, input: ApplyMarkInput): { markId: string
     input.markPrice,
     input.markSource,
     ledgerEntry.id,
-    (input as any).marketSnapshotId ?? null,
+    input.marketSnapshotId ?? null,
     ts,
     BROKER_RECORD_SCHEMA_VERSION,
+    JSON.stringify(markMeta),
   );
 
   const entries = listLedgerEntries(db, input.accountId);

@@ -4,7 +4,8 @@
  * for live entries; this module sizes only within broker_accounts ledgers.
  */
 import { computeBalances, estimateOrderNotional, roundMoney, roundQty } from "./ledger.ts";
-import { getAccountState, listLedgerEntries } from "./engine.ts";
+import { getAccountState } from "./engine.ts";
+import { listLedgerEntries } from "./queries.ts";
 import type { BrokerDb } from "./audit.ts";
 import type { AssetClass, AccountBalances, PositionState } from "./types.ts";
 

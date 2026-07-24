@@ -17,6 +17,11 @@ type WindowStats = {
   lifecycleMismatches: number;
   missingAuditChain: number;
   avgReconciliationLatencyMs: number | null;
+  equityDiffs: number;
+  unrealizedPnlDiffs: number;
+  missingMarkCounts: number;
+  staleMarkCounts: number;
+  incompleteSnapshotCounts: number;
 };
 
 type Failure = {
@@ -37,6 +42,20 @@ type Report = {
   summary: string;
   windows: { h24: WindowStats; d7: WindowStats; lifetime: WindowStats };
   recentFailures: Failure[];
+  equityMarks: {
+    incompleteSnapshots: number;
+    partialSnapshots: number;
+    completeSnapshots: number;
+    missingMarkEvents: number;
+    staleMarkEvents: number;
+    latestEquityByAccount: Array<{
+      accountKey: string | null;
+      totalEquity: number;
+      realizedPnl: number;
+      unrealizedPnl: number;
+      completeness: string | null;
+    }>;
+  };
 };
 
 function WindowCard({ title, w }: { title: string; w: WindowStats }) {
@@ -48,10 +67,15 @@ function WindowCard({ title, w }: { title: string; w: WindowStats }) {
         {w.successRatePct != null ? ` (${w.successRatePct}%)` : ""} · failures: {w.parityFailures}
       </p>
       <p>
-        Fill Δ: {w.fillPriceDiffs} · P&amp;L Δ: {w.realizedPnlDiffs} · Return% Δ: {w.returnPctDiffs}
+        Fill Δ: {w.fillPriceDiffs} · P&amp;L Δ: {w.realizedPnlDiffs} · Return% Δ: {w.returnPctDiffs} · Equity Δ:{" "}
+        {w.equityDiffs} · Unrealized Δ: {w.unrealizedPnlDiffs}
       </p>
       <p>
         Lifecycle mismatches: {w.lifecycleMismatches} · Missing audit chain: {w.missingAuditChain}
+      </p>
+      <p>
+        Missing marks: {w.missingMarkCounts} · Stale marks: {w.staleMarkCounts} · Incomplete snapshots:{" "}
+        {w.incompleteSnapshotCounts}
       </p>
       <p>
         Avg reconciliation latency:{" "}
@@ -117,6 +141,29 @@ export default function BrokerageParityPage() {
           <WindowCard title="Rolling 24 hours" w={report.windows.h24} />
           <WindowCard title="Rolling 7 days" w={report.windows.d7} />
           <WindowCard title="Lifetime" w={report.windows.lifetime} />
+          <Card title="Equity & marks (V2 research)">
+            <p>
+              Snapshots — complete: {report.equityMarks.completeSnapshots} · partial:{" "}
+              {report.equityMarks.partialSnapshots} · incomplete: {report.equityMarks.incompleteSnapshots}
+            </p>
+            <p>
+              Mark events — missing: {report.equityMarks.missingMarkEvents} · stale/wide:{" "}
+              {report.equityMarks.staleMarkEvents}
+            </p>
+            {report.equityMarks.latestEquityByAccount.length === 0 ? (
+              <p>No V2 equity snapshots yet.</p>
+            ) : (
+              <ul style={{ listStyle: "none", padding: 0 }}>
+                {report.equityMarks.latestEquityByAccount.map((a) => (
+                  <li key={a.accountKey ?? a.totalEquity}>
+                    {a.accountKey ?? "account"} · equity ${a.totalEquity.toFixed(2)} · realized $
+                    {a.realizedPnl.toFixed(2)} · unrealized ${a.unrealizedPnl.toFixed(2)} ·{" "}
+                    {a.completeness ?? "n/a"}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
           <Card title="Recent parity failures">
             {report.recentFailures.length === 0 ? (
               <p>No failures recorded. Mismatches are never silently ignored when they occur.</p>

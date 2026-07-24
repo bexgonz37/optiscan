@@ -22,6 +22,29 @@ export interface WindowStats {
   lifecycleMismatches: number;
   missingAuditChain: number;
   avgReconciliationLatencyMs: number | null;
+  /** B3 — equity / mark observability */
+  equityDiffs: number;
+  unrealizedPnlDiffs: number;
+  missingMarkCounts: number;
+  staleMarkCounts: number;
+  incompleteSnapshotCounts: number;
+}
+
+export interface EquityMarkObservability {
+  incompleteSnapshots: number;
+  partialSnapshots: number;
+  completeSnapshots: number;
+  missingMarkEvents: number;
+  staleMarkEvents: number;
+  latestEquityByAccount: Array<{
+    accountId: string;
+    accountKey: string | null;
+    totalEquity: number;
+    realizedPnl: number;
+    unrealizedPnl: number;
+    completeness: string | null;
+    atMs: number;
+  }>;
 }
 
 export interface ParityFailureDetail {
@@ -46,6 +69,7 @@ export interface ParityDashboardReport {
   dualWriteEnabled: boolean;
   windows: Record<WindowKey, WindowStats>;
   recentFailures: ParityFailureDetail[];
+  equityMarks: EquityMarkObservability;
   summary: string;
 }
 
@@ -94,6 +118,11 @@ function buildWindowStats(db: BrokerDb, key: WindowKey, nowMs: number): WindowSt
       lifecycleMismatches: 0,
       missingAuditChain: 0,
       avgReconciliationLatencyMs: null,
+      equityDiffs: 0,
+      unrealizedPnlDiffs: 0,
+      missingMarkCounts: 0,
+      staleMarkCounts: 0,
+      incompleteSnapshotCounts: 0,
     };
   }
 
@@ -132,6 +161,39 @@ function buildWindowStats(db: BrokerDb, key: WindowKey, nowMs: number): WindowSt
     `SELECT COUNT(*) AS n FROM broker_parity_events WHERE matched=0 AND check_kind='audit_chain'${timeClause}`,
     timeArgs,
   );
+  const equityDiffs = n(
+    `SELECT COUNT(*) AS n FROM broker_parity_events WHERE matched=0 AND check_kind='account_equity'${timeClause}`,
+    timeArgs,
+  );
+  const unrealizedPnlDiffs = n(
+    `SELECT COUNT(*) AS n FROM broker_parity_events WHERE matched=0 AND check_kind='unrealized_pnl'${timeClause}`,
+    timeArgs,
+  );
+
+  let incompleteSnapshotCounts = 0;
+  let missingMarkCounts = 0;
+  let staleMarkCounts = 0;
+  const hasEquity = Boolean(
+    db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='broker_equity_snapshots'").get(),
+  );
+  if (hasEquity) {
+    const snapTime = fromMs == null ? "" : " AND snapshot_at_ms >= ?";
+    incompleteSnapshotCounts = n(
+      `SELECT COUNT(*) AS n FROM broker_equity_snapshots
+       WHERE completeness_status IN ('INCOMPLETE','PARTIAL')${snapTime}`,
+      timeArgs,
+    );
+    const metaRows = (db
+      .prepare(
+        `SELECT metadata_json FROM broker_equity_snapshots WHERE metadata_json IS NOT NULL${snapTime}`,
+      )
+      .all?.(...timeArgs) ?? []) as Array<{ metadata_json: string }>;
+    for (const row of metaRows) {
+      const m = parseJson(row.metadata_json) as Record<string, unknown> | null;
+      if (typeof m?.missingMarkCount === "number") missingMarkCounts += m.missingMarkCount;
+      if (typeof m?.staleMarkCount === "number") staleMarkCounts += m.staleMarkCount;
+    }
+  }
 
   let mirroredTrades = 0;
   if (hasLinks) {
@@ -174,6 +236,11 @@ function buildWindowStats(db: BrokerDb, key: WindowKey, nowMs: number): WindowSt
     lifecycleMismatches,
     missingAuditChain,
     avgReconciliationLatencyMs,
+    equityDiffs,
+    unrealizedPnlDiffs,
+    missingMarkCounts,
+    staleMarkCounts,
+    incompleteSnapshotCounts,
   };
 }
 
@@ -267,6 +334,7 @@ export function buildParityDashboardReport(
     lifetime: buildWindowStats(db, "lifetime", nowMs),
   };
   const recentFailures = listRecentFailures(db, 50);
+  const equityMarks = buildEquityMarkObservability(db);
   const enabled = paperBrokerV2Enabled(env);
   const life = windows.lifetime;
   let summary: string;
@@ -276,9 +344,9 @@ export function buildParityDashboardReport(
   } else if (life.parityChecks === 0) {
     summary = "Dual-write enabled but no parity checks recorded yet.";
   } else if (life.parityFailures === 0) {
-    summary = `Parity healthy: ${life.paritySuccesses}/${life.parityChecks} checks matched (100%).`;
+    summary = `Parity healthy: ${life.paritySuccesses}/${life.parityChecks} checks matched (100%). Incomplete snapshots: ${life.incompleteSnapshotCounts}.`;
   } else {
-    summary = `Parity attention: ${life.parityFailures} failure(s) of ${life.parityChecks} checks (${life.successRatePct ?? 0}% success).`;
+    summary = `Parity attention: ${life.parityFailures} failure(s) of ${life.parityChecks} checks (${life.successRatePct ?? 0}% success). Equity diffs: ${life.equityDiffs}.`;
   }
 
   return {
@@ -286,6 +354,83 @@ export function buildParityDashboardReport(
     dualWriteEnabled: enabled,
     windows,
     recentFailures,
+    equityMarks,
     summary,
+  };
+}
+
+function buildEquityMarkObservability(db: BrokerDb): EquityMarkObservability {
+  const empty: EquityMarkObservability = {
+    incompleteSnapshots: 0,
+    partialSnapshots: 0,
+    completeSnapshots: 0,
+    missingMarkEvents: 0,
+    staleMarkEvents: 0,
+    latestEquityByAccount: [],
+  };
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='broker_equity_snapshots'").get()) {
+    return empty;
+  }
+  const n = (sql: string) => Number((db.prepare(sql).get() as { n?: number } | undefined)?.n ?? 0);
+  const incompleteSnapshots = n(
+    `SELECT COUNT(*) AS n FROM broker_equity_snapshots WHERE completeness_status='INCOMPLETE'`,
+  );
+  const partialSnapshots = n(
+    `SELECT COUNT(*) AS n FROM broker_equity_snapshots WHERE completeness_status='PARTIAL'`,
+  );
+  const completeSnapshots = n(
+    `SELECT COUNT(*) AS n FROM broker_equity_snapshots WHERE completeness_status='COMPLETE' OR completeness_status IS NULL`,
+  );
+
+  let missingMarkEvents = 0;
+  let staleMarkEvents = 0;
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='broker_marks'").get()) {
+    const marks = (db.prepare(`SELECT metadata_json, mark_source FROM broker_marks`).all?.() ?? []) as Array<{
+      metadata_json: string | null;
+      mark_source: string;
+    }>;
+    for (const m of marks) {
+      let status = m.mark_source === "WORTHLESS" ? "WORTHLESS" : "OK";
+      if (m.metadata_json) {
+        try {
+          status = (JSON.parse(m.metadata_json) as { status?: string }).status ?? status;
+        } catch {
+          /* ignore */
+        }
+      }
+      if (status === "MISSING" || status === "ONE_SIDED") missingMarkEvents += 1;
+      if (status === "STALE" || status === "WIDE_SPREAD") staleMarkEvents += 1;
+    }
+  }
+
+  const latest = (db
+    .prepare(
+      `SELECT e.account_id, a.account_key, e.net_equity, e.realized_pnl_cumulative, e.unrealized_pnl,
+              e.completeness_status, e.snapshot_at_ms
+       FROM broker_equity_snapshots e
+       LEFT JOIN broker_accounts a ON a.id = e.account_id
+       WHERE e.snapshot_at_ms = (
+         SELECT MAX(e2.snapshot_at_ms) FROM broker_equity_snapshots e2 WHERE e2.account_id = e.account_id
+       )
+       ORDER BY e.snapshot_at_ms DESC
+       LIMIT 20`,
+    )
+    .all?.() ?? []) as Array<Record<string, any>>;
+
+  return {
+    incompleteSnapshots,
+    partialSnapshots,
+    completeSnapshots,
+    missingMarkEvents,
+    staleMarkEvents,
+    latestEquityByAccount: latest.map((r) => ({
+      accountId: r.account_id,
+      accountKey: r.account_key ?? null,
+      totalEquity: r.net_equity,
+      realizedPnl: r.realized_pnl_cumulative,
+      unrealizedPnl: r.unrealized_pnl,
+      completeness: r.completeness_status ?? null,
+      atMs: r.snapshot_at_ms,
+    })),
   };
 }

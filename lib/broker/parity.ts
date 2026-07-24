@@ -9,7 +9,9 @@ export type ParityCheckKind =
   | "return_pct"
   | "position_lifecycle"
   | "audit_chain"
-  | "buying_power";
+  | "buying_power"
+  | "account_equity"
+  | "unrealized_pnl";
 
 export interface ParityCheckInput {
   accountId?: string | null;

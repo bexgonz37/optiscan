@@ -3,10 +3,10 @@
  * Asset-class execution is intentionally generic; no options/stock fill logic here.
  */
 
-export const BROKER_SCHEMA_VERSION = 2;
+export const BROKER_SCHEMA_VERSION = 3;
 
 /** Version stamped on immutable brokerage records for forward-compatible evolution. */
-export const BROKER_RECORD_SCHEMA_VERSION = 2;
+export const BROKER_RECORD_SCHEMA_VERSION = 3;
 
 export type AccountType =
   | "SUBSCRIBER_PAPER"
@@ -197,4 +197,7 @@ export interface ApplyMarkInput {
   markSource: string;
   idempotencyKey: string;
   markedAtMs?: number;
+  /** Mark policy status (OK / STALE / WORTHLESS / …). Stored in metadata. */
+  markStatus?: string;
+  marketSnapshotId?: string;
 }

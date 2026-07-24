@@ -28,10 +28,15 @@ export const BROKER_COLUMN_MIGRATIONS: Array<[string, string, string]> = [
   ["broker_ledger_entries", "record_schema_version", "ALTER TABLE broker_ledger_entries ADD COLUMN record_schema_version INTEGER NOT NULL DEFAULT 2"],
   ["broker_position_snapshots", "record_schema_version", "ALTER TABLE broker_position_snapshots ADD COLUMN record_schema_version INTEGER NOT NULL DEFAULT 2"],
   ["broker_position_snapshots", "market_snapshot_id", "ALTER TABLE broker_position_snapshots ADD COLUMN market_snapshot_id TEXT REFERENCES broker_market_snapshots(id)"],
-  ["broker_equity_snapshots", "record_schema_version", "ALTER TABLE broker_equity_snapshots ADD COLUMN record_schema_version INTEGER NOT NULL DEFAULT 2"],
-  ["broker_marks", "record_schema_version", "ALTER TABLE broker_marks ADD COLUMN record_schema_version INTEGER NOT NULL DEFAULT 2"],
+  ["broker_equity_snapshots", "record_schema_version", "ALTER TABLE broker_equity_snapshots ADD COLUMN record_schema_version INTEGER NOT NULL DEFAULT 3"],
+  ["broker_equity_snapshots", "high_water_mark", "ALTER TABLE broker_equity_snapshots ADD COLUMN high_water_mark REAL"],
+  ["broker_equity_snapshots", "drawdown_dollars", "ALTER TABLE broker_equity_snapshots ADD COLUMN drawdown_dollars REAL"],
+  ["broker_equity_snapshots", "drawdown_pct", "ALTER TABLE broker_equity_snapshots ADD COLUMN drawdown_pct REAL"],
+  ["broker_equity_snapshots", "completeness_status", "ALTER TABLE broker_equity_snapshots ADD COLUMN completeness_status TEXT"],
+  ["broker_equity_snapshots", "mark_policy_version", "ALTER TABLE broker_equity_snapshots ADD COLUMN mark_policy_version INTEGER"],
+  ["broker_marks", "record_schema_version", "ALTER TABLE broker_marks ADD COLUMN record_schema_version INTEGER NOT NULL DEFAULT 3"],
   ["broker_marks", "market_snapshot_id", "ALTER TABLE broker_marks ADD COLUMN market_snapshot_id TEXT REFERENCES broker_market_snapshots(id)"],
-  ["broker_audit_events", "record_schema_version", "ALTER TABLE broker_audit_events ADD COLUMN record_schema_version INTEGER NOT NULL DEFAULT 2"],
+  ["broker_audit_events", "record_schema_version", "ALTER TABLE broker_audit_events ADD COLUMN record_schema_version INTEGER NOT NULL DEFAULT 3"],
 ];
 
 export const BROKER_SCHEMA_DDL = `
@@ -75,7 +80,7 @@ CREATE TABLE IF NOT EXISTS broker_market_snapshots (
   quote_json TEXT NOT NULL,
   chain_json TEXT,
   source TEXT NOT NULL,
-  record_schema_version INTEGER NOT NULL DEFAULT 2,
+  record_schema_version INTEGER NOT NULL DEFAULT 3,
   metadata_json TEXT,
   created_at_ms INTEGER NOT NULL
 );
@@ -100,7 +105,7 @@ CREATE TABLE IF NOT EXISTS broker_orders (
   reserved_amount REAL NOT NULL DEFAULT 0,
   submitted_at_ms INTEGER,
   closed_at_ms INTEGER,
-  record_schema_version INTEGER NOT NULL DEFAULT 2,
+  record_schema_version INTEGER NOT NULL DEFAULT 3,
   metadata_json TEXT,
   created_at_ms INTEGER NOT NULL,
   UNIQUE(account_id, client_order_key)
@@ -124,7 +129,7 @@ CREATE TABLE IF NOT EXISTS broker_fills (
   contract_multiplier REAL NOT NULL DEFAULT 1,
   market_snapshot_id TEXT REFERENCES broker_market_snapshots(id),
   filled_at_ms INTEGER NOT NULL,
-  record_schema_version INTEGER NOT NULL DEFAULT 2,
+  record_schema_version INTEGER NOT NULL DEFAULT 3,
   metadata_json TEXT,
   created_at_ms INTEGER NOT NULL,
   UNIQUE(account_id, fill_key)
@@ -147,7 +152,7 @@ CREATE TABLE IF NOT EXISTS broker_ledger_entries (
   ref_id TEXT NOT NULL,
   idempotency_key TEXT NOT NULL,
   description TEXT,
-  record_schema_version INTEGER NOT NULL DEFAULT 2,
+  record_schema_version INTEGER NOT NULL DEFAULT 3,
   metadata_json TEXT,
   created_at_ms INTEGER NOT NULL,
   UNIQUE(account_id, idempotency_key),
@@ -173,7 +178,7 @@ CREATE TABLE IF NOT EXISTS broker_position_snapshots (
   ledger_sequence_through INTEGER NOT NULL,
   ref_kind TEXT NOT NULL,
   ref_id TEXT NOT NULL,
-  record_schema_version INTEGER NOT NULL DEFAULT 2,
+  record_schema_version INTEGER NOT NULL DEFAULT 3,
   snapshot_at_ms INTEGER NOT NULL,
   metadata_json TEXT
 );
@@ -190,8 +195,13 @@ CREATE TABLE IF NOT EXISTS broker_equity_snapshots (
   net_equity REAL NOT NULL,
   unrealized_pnl REAL NOT NULL,
   realized_pnl_cumulative REAL NOT NULL,
+  high_water_mark REAL,
+  drawdown_dollars REAL,
+  drawdown_pct REAL,
+  completeness_status TEXT,
+  mark_policy_version INTEGER,
   ledger_sequence_through INTEGER NOT NULL,
-  record_schema_version INTEGER NOT NULL DEFAULT 2,
+  record_schema_version INTEGER NOT NULL DEFAULT 3,
   metadata_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_broker_equity_account ON broker_equity_snapshots(account_id, snapshot_at_ms DESC);
@@ -207,7 +217,7 @@ CREATE TABLE IF NOT EXISTS broker_marks (
   ledger_entry_id TEXT REFERENCES broker_ledger_entries(id),
   market_snapshot_id TEXT REFERENCES broker_market_snapshots(id),
   marked_at_ms INTEGER NOT NULL,
-  record_schema_version INTEGER NOT NULL DEFAULT 2,
+  record_schema_version INTEGER NOT NULL DEFAULT 3,
   metadata_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_broker_marks_account ON broker_marks(account_id, asset_class, symbol, marked_at_ms DESC);
@@ -220,7 +230,7 @@ CREATE TABLE IF NOT EXISTS broker_audit_events (
   entity_id TEXT NOT NULL,
   actor TEXT NOT NULL DEFAULT 'SYSTEM',
   payload_json TEXT NOT NULL,
-  record_schema_version INTEGER NOT NULL DEFAULT 2,
+  record_schema_version INTEGER NOT NULL DEFAULT 3,
   created_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_broker_audit_account ON broker_audit_events(account_id, created_at_ms DESC);
@@ -236,7 +246,7 @@ CREATE TABLE IF NOT EXISTS broker_legacy_links (
   entry_fill_id TEXT REFERENCES broker_fills(id),
   exit_order_id TEXT REFERENCES broker_orders(id),
   exit_fill_id TEXT REFERENCES broker_fills(id),
-  record_schema_version INTEGER NOT NULL DEFAULT 2,
+  record_schema_version INTEGER NOT NULL DEFAULT 3,
   metadata_json TEXT,
   created_at_ms INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL,
@@ -256,7 +266,7 @@ CREATE TABLE IF NOT EXISTS broker_parity_events (
   actual_value TEXT,
   matched INTEGER NOT NULL DEFAULT 0,
   detail_json TEXT,
-  record_schema_version INTEGER NOT NULL DEFAULT 2,
+  record_schema_version INTEGER NOT NULL DEFAULT 3,
   created_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_broker_parity_legacy ON broker_parity_events(legacy_table, legacy_id, created_at_ms DESC);

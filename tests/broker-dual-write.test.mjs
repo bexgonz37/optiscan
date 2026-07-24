@@ -84,7 +84,7 @@ test("architectural: immutable records carry record_schema_version", () => {
   ]) {
     assert.match(ddl, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}[\\s\\S]*record_schema_version`));
   }
-  assert.equal(BROKER_RECORD_SCHEMA_VERSION, 2);
+  assert.equal(BROKER_RECORD_SCHEMA_VERSION, 3);
 });
 
 test("architectural: market snapshots table and fill linkage exist", () => {
