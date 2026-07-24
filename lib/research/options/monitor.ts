@@ -107,6 +107,22 @@ function state(): MonitorState {
 }
 
 function tryConsume(s: MonitorState, cfg: OptionsMonitorConfig, now: number, tier: 0 | 1 | 2 = 1): boolean {
+  // Soft global budget: Tier 1/2 yield when the shared Polygon minute meter is hot.
+  // Tier 0 stays privileged (fast index path) unless the hard provider cap refuses.
+  if (tier !== 0) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { nearMinuteBudget } = require("@/lib/near-miss");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { getCallStats } = require("@/lib/polygon-provider");
+      if (nearMinuteBudget(getCallStats(now))) {
+        s.metrics.throttles += 1;
+        return false;
+      }
+    } catch {
+      /* budget helpers unavailable — fall through to local bucket */
+    }
+  }
   const bucket = tier === 0 ? s.budgetTier0 : s.budget;
   const limit = tier === 0 ? cfg.providerBudgetTier0PerMinute : cfg.providerBudgetPerMinute;
   if (now - bucket.windowStart >= 60_000) { bucket.windowStart = now; bucket.used = 0; }

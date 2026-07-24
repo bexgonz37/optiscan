@@ -759,7 +759,8 @@ async function tick() {
     return;
   }
   s.note = null;
-  s.intervalMs = Math.max(s.targetMs, Math.round(s.intervalMs * 0.8)); // decay back after backoff
+  // Faster recovery after 429: decay 50% toward target each healthy tick (was 20%).
+  s.intervalMs = Math.max(s.targetMs, Math.round(s.intervalMs * 0.5));
 
   const movers: any[] = [];
   const tape: any[] = [];

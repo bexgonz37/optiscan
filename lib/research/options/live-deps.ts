@@ -17,14 +17,11 @@ type BarsCache = Map<string, { at: number; bars: Bar[] }>;
 type G = typeof globalThis & { __optiscanOptSnap?: { at: number; quotes: any[] }; __optiscanOptPrev?: Map<string, PrevChange>; __optiscanOptBars?: BarsCache };
 
 async function marketSnapshot(nowMs: number): Promise<any[]> {
-  const g = globalThis as G;
-  if (g.__optiscanOptSnap && nowMs - g.__optiscanOptSnap.at < 5000) return g.__optiscanOptSnap.quotes;
+  // Shared TTL/inflight lives in fetchMarketSnapshot (scanner + options).
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { fetchMarketSnapshot } = require("@/lib/polygon-provider");
   const res = await fetchMarketSnapshot();
-  const quotes = res?.available && Array.isArray(res.quotes) ? res.quotes : [];
-  g.__optiscanOptSnap = { at: nowMs, quotes };
-  return quotes;
+  return res?.available && Array.isArray(res.quotes) ? res.quotes : [];
 }
 
 function toSnapshot(q: any, prev: Map<string, PrevChange>, nowMs: number): UnderlyingSnapshot {

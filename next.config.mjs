@@ -21,6 +21,8 @@ const nextConfig = {
     "/api/ai/funnel-explorer": ["./lib/metrics/**/*.ts", "./lib/momentum-diagnostics.ts", "./lib/ai/**/*.ts"],
     "/api/research/brokerage-parity": ["./lib/broker/**/*.ts"],
     "/api/research/brokerage-readiness": ["./lib/broker/**/*.ts"],
+    "/api/paper/lifecycle": ["./lib/paper-lifecycle.ts", "./lib/broker/**/*.ts"],
+    "/api/research/discord-quality": ["./lib/research/options/delivery-quality-report.ts"],
   },
   async redirects() {
     return [

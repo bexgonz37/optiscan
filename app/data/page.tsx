@@ -128,11 +128,55 @@ export default function SystemHealthPage() {
   const blocked = (data.blocked ?? []).filter((b) => b.reasons.length);
   const blockedAggregates = data.blocked_aggregates ?? [];
   const totalBlocked = blockedAggregates.reduce((n, a) => n + a.count, 0) || blocked.length;
+  const rateAgg = blockedAggregates.find((a) => a.class === "rate_limited");
+  const heroTone = !dbOk || !providerConfigured
+    ? "warn"
+    : data.rate_limit?.quota_exceeded || (rateAgg?.count ?? 0) > 20
+      ? "warn"
+      : undefined;
+  const heroLine = !providerConfigured
+    ? "Provider key missing — scanner cannot fetch data."
+    : !dbOk
+      ? "Database fault — paper and delivery may be stalled."
+      : data.rate_limit?.quota_exceeded
+        ? "Polygon minute/daily quota pressure — non-critical work should defer."
+        : totalBlocked
+          ? `${totalBlocked} symbols blocked across ${blockedAggregates.length || 1} failure class(es).`
+          : "Scanner path looks healthy — no aggregated blockers.";
 
   const faults = data.faults ?? [];
 
   return (
     <PageContainer>
+      <Card title="Scanner health at a glance" meta="Understand system state in under 10 seconds" tone={heroTone}>
+        <p style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 600 }}>{heroLine}</p>
+        <div className="ui-statusbar">
+          {statusCells.map((c) => (
+            <div className="ui-statuscell" key={c.k}>
+              <span className="ui-statuscell-k">{c.k}</span>
+              <span className="ui-statuscell-v"><span className={`ui-statusdot ${c.dot}`} />{c.v}</span>
+            </div>
+          ))}
+        </div>
+        <KeyValue
+          k="Polygon this minute"
+          v={`${data.rate_limit?.calls_this_minute ?? "—"} / ${data.rate_limit?.minute_cap ?? "—"}`}
+          tone={data.rate_limit?.quota_exceeded ? "warn" : undefined}
+        />
+        {blockedAggregates.length > 0 && (
+          <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
+            {blockedAggregates.map((a) => (
+              <div key={a.class} style={{ fontSize: 14 }}>
+                <strong>{a.label}</strong> — {a.count} symbol{a.count === 1 ? "" : "s"}
+                {a.samples.length ? (
+                  <span style={{ color: "var(--muted)" }}> ({a.samples.join(", ")}{a.count > a.samples.length ? "…" : ""})</span>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
       {faults.length ? (
         <Card title="Subsystem faults" tone="warn" meta="These sections failed to load; the rest of the page is still live">
           {faults.map((f, i) => (
@@ -141,16 +185,6 @@ export default function SystemHealthPage() {
           <div className="ui-section-hint">A faulted subsystem no longer white-screens the page. If the database is faulted here, that is also why alerts and delivery are stalled.</div>
         </Card>
       ) : null}
-
-      {/* Status bar */}
-      <div className="ui-statusbar">
-        {statusCells.map((c) => (
-          <div className="ui-statuscell" key={c.k}>
-            <span className="ui-statuscell-k">{c.k}</span>
-            <span className="ui-statuscell-v"><span className={`ui-statusdot ${c.dot}`} />{c.v}</span>
-          </div>
-        ))}
-      </div>
 
       <ResponsiveGrid min={320}>
         {/* Provider connection — independent of per-symbol staleness */}
@@ -185,7 +219,8 @@ export default function SystemHealthPage() {
         </Card>
       </ResponsiveGrid>
 
-      {/* Data freshness per kind, with the exact allowed max ages */}
+      {/* Data freshness — secondary; glance card covers high-level health */}
+      <DetailsDisclosure summary="Data freshness by type">
       <Card title="Data freshness" meta={`Max ages shown for the ${data.market_session} session`}>
         {data.freshness?.length ? (
           <div className="ui-table-scroll">
@@ -213,11 +248,12 @@ export default function SystemHealthPage() {
           <EmptyState title="No freshness samples yet" reason="The scanner has not recorded any provider responses in this process yet. Rows appear here after the next successful data fetch." />
         )}
       </Card>
+      </DetailsDisclosure>
 
       {/* Blocked setups — aggregated by failure class; per-ticker on demand */}
       <Card
-        title="Why setups are blocked"
-        meta="Repeated provider failures are grouped; expand for per-symbol detail"
+        title="Blocking reasons (detail)"
+        meta="Same aggregates as the glance card — expand only when investigating"
         tone={totalBlocked ? "warn" : undefined}
       >
         {blockedAggregates.length ? (
