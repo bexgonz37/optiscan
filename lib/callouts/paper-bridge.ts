@@ -72,6 +72,15 @@ export function candidateIdempotencyKey(c: Callout, nowMs: number): string {
   return `paper:${c.key}:${c.status}:${dayStamp(nowMs)}`;
 }
 
+/**
+ * REJECTED / unfinished ELIGIBLE candidates may be retried the same day when
+ * capacity, RTH, capital, or cooldown clears. CREATED stays one-shot.
+ */
+export function isRetryablePaperCandidateStatus(status: string | null | undefined): boolean {
+  const s = String(status ?? "").toUpperCase();
+  return s === "REJECTED" || s === "ELIGIBLE";
+}
+
 /** Real quote-as-of timestamp when the timing diagnostics carry it, else null. */
 function quoteAsOfMs(c: Callout, nowMs: number): number | null {
   const age = c.timing?.quoteAgeMs;
@@ -82,6 +91,8 @@ function quoteAsOfMs(c: Callout, nowMs: number): number | null {
  * Bridge a batch of callouts on an EXPLICIT db + create-trade fn (testable core).
  * Non-eligible callouts are ignored; eligible ones dedup on the UNIQUE idempotency
  * key so cycles/restarts/retries never create a second candidate for the same setup.
+ * Transient create refusals (max open / capital / RTH) leave REJECTED and are
+ * retried on later cycles — they must not permanently silence the setup that day.
  */
 export function bridgeCalloutsToPaperOnDb(
   db: BridgeDb,
@@ -99,43 +110,58 @@ export function bridgeCalloutsToPaperOnDb(
     summary.eligible += 1;
 
     const idem = candidateIdempotencyKey(c, nowMs);
-    const existing = db.prepare("SELECT id FROM paper_candidates WHERE idempotency_key=?").get(idem) as any;
-    if (existing) { summary.duplicates += 1; continue; }
+    const existing = db.prepare(
+      "SELECT id, status, paper_trade_id FROM paper_candidates WHERE idempotency_key=?",
+    ).get(idem) as { id: number; status: string; paper_trade_id: number | null } | undefined;
+
+    let candidateId: number;
+    if (existing) {
+      if (existing.status === "CREATED" || existing.paper_trade_id != null) {
+        summary.duplicates += 1;
+        continue;
+      }
+      if (!isRetryablePaperCandidateStatus(existing.status)) {
+        summary.duplicates += 1;
+        continue;
+      }
+      candidateId = Number(existing.id);
+    } else {
+      const k = c.contract!; // eligibility guarantees a valid two-sided contract
+      const est = estimatedEntryPrice(c, env);
+      // Limit for the conservative fill: the realistic estimated entry (ask + bounded
+      // slippage). Slippage is applied ONCE, at fill time, in the fill model — this is
+      // only the marketable limit, never an added cost.
+      try {
+        const info = db.prepare(
+          `INSERT INTO paper_candidates
+             (idempotency_key, setup_identity, source, callout_key, ticker, direction, strategy, horizon,
+              option_symbol, strike, expiration, dte, underlying_price, option_bid, option_ask, option_mid,
+              estimated_entry, quote_asof_ms, entry_state, confidence_tier, setup_score, contract_score,
+              risk_ok, lifecycle_status, callout_ts_ms, trigger_ts_ms, model_state, evidence_state,
+              status, created_at_ms)
+           VALUES (?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?,?, ?,?)`,
+        ).run(
+          idem, c.key, "SUPERVISOR", c.key, c.ticker, c.direction, c.strategyAgent, c.horizon,
+          k.optionSymbol ?? null, k.strike ?? null, k.expiration ?? null, k.dte ?? null,
+          c.underlyingPrice ?? null, k.bid ?? null, k.ask ?? null, k.mid ?? null,
+          est ?? null, quoteAsOfMs(c, nowMs), c.entryState ?? null, c.confidenceTier,
+          c.contractScore ?? null, c.contractScore ?? null,
+          c.riskVerdict?.allowed === false ? 0 : 1, c.lifecycleStatus ?? null,
+          c.timestamp ?? null, c.timing?.secondsSinceTrigger != null ? nowMs - c.timing.secondsSinceTrigger * 1000 : null,
+          c.modelState ?? null, c.evidenceStatus ?? null,
+          "ELIGIBLE", nowMs,
+        );
+        candidateId = Number(info.lastInsertRowid);
+      } catch {
+        // A UNIQUE race (two cycles at once) collapses to a duplicate, never a dup row.
+        summary.duplicates += 1;
+        continue;
+      }
+    }
 
     const k = c.contract!; // eligibility guarantees a valid two-sided contract
     const est = estimatedEntryPrice(c, env);
-    // Limit for the conservative fill: the realistic estimated entry (ask + bounded
-    // slippage). Slippage is applied ONCE, at fill time, in the fill model — this is
-    // only the marketable limit, never an added cost.
     const entryLimit = est ?? k.mid ?? k.ask ?? null;
-
-    let candidateId: number;
-    try {
-      const info = db.prepare(
-        `INSERT INTO paper_candidates
-           (idempotency_key, setup_identity, source, callout_key, ticker, direction, strategy, horizon,
-            option_symbol, strike, expiration, dte, underlying_price, option_bid, option_ask, option_mid,
-            estimated_entry, quote_asof_ms, entry_state, confidence_tier, setup_score, contract_score,
-            risk_ok, lifecycle_status, callout_ts_ms, trigger_ts_ms, model_state, evidence_state,
-            status, created_at_ms)
-         VALUES (?,?,?,?,?,?,?,?, ?,?,?,?,?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?,?, ?,?)`,
-      ).run(
-        idem, c.key, "SUPERVISOR", c.key, c.ticker, c.direction, c.strategyAgent, c.horizon,
-        k.optionSymbol ?? null, k.strike ?? null, k.expiration ?? null, k.dte ?? null,
-        c.underlyingPrice ?? null, k.bid ?? null, k.ask ?? null, k.mid ?? null,
-        est ?? null, quoteAsOfMs(c, nowMs), c.entryState ?? null, c.confidenceTier,
-        c.contractScore ?? null, c.contractScore ?? null,
-        c.riskVerdict?.allowed === false ? 0 : 1, c.lifecycleStatus ?? null,
-        c.timestamp ?? null, c.timing?.secondsSinceTrigger != null ? nowMs - c.timing.secondsSinceTrigger * 1000 : null,
-        c.modelState ?? null, c.evidenceStatus ?? null,
-        "ELIGIBLE", nowMs,
-      );
-      candidateId = Number(info.lastInsertRowid);
-    } catch {
-      // A UNIQUE race (two cycles at once) collapses to a duplicate, never a dup row.
-      summary.duplicates += 1;
-      continue;
-    }
 
     // Create the READY paper trade from the FROZEN alert-time contract. createPaperTrade
     // re-runs freshness + risk + capital; the sweep then does pre-entry revalidation and
@@ -168,7 +194,7 @@ export function bridgeCalloutsToPaperOnDb(
     // Primary outcome (independent of Challenge).
     if (res.ok) {
       summary.created += 1;
-      db.prepare("UPDATE paper_candidates SET status='CREATED', paper_trade_id=? WHERE id=?").run(res.id ?? null, candidateId);
+      db.prepare("UPDATE paper_candidates SET status='CREATED', reject_reason=NULL, paper_trade_id=? WHERE id=?").run(res.id ?? null, candidateId);
     } else {
       const reason = res.risk.failures.join("; ") || "createPaperTrade refused";
       summary.rejected += 1;

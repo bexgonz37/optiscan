@@ -137,14 +137,13 @@ test("correlation window vs RECENTLY DELIVERED alerts: same thesis within 15min 
 });
 
 test("opening session raises the bar: a candidate that delivers midday is withheld at 9:35 ET", async () => {
-  // borderline fixture: quality ≈0.674 — clears the 0.62 midday bar, NOT the 0.68 opening bar
-  const BORDERLINE = (nowMs) => ({ ...STRONG("NVDA"), spreadPct: 6, openInterest: 1500, nowMs });
-  const midday = await decideDeliveryBatch([BORDERLINE(NOW)], { getDb: () => db(), now: () => NOW, deliver: okDeliver().deliver }, ENV);
+  // STRONG ≈0.72 — clears the 0.70 midday bar, NOT the 0.76 opening bar (0.70 + 0.06)
+  const midday = await decideDeliveryBatch([STRONG("NVDA")], { getDb: () => db(), now: () => NOW, deliver: okDeliver().deliver }, ENV);
   assert.equal(midday[0].outcome, "DELIVER_TO_DISCORD");
   const openMs = Date.UTC(2026, 6, 21, 13, 35, 0); // 9:35 ET Tuesday
-  const opening = await decideDeliveryBatch([BORDERLINE(openMs)], { getDb: () => db(), now: () => openMs, deliver: okDeliver().deliver }, ENV);
+  const opening = await decideDeliveryBatch([{ ...STRONG("NVDA"), nowMs: openMs }], { getDb: () => db(), now: () => openMs, deliver: okDeliver().deliver }, ENV);
   assert.equal(opening[0].sessionState, "OPENING_DISCOVERY");
-  assert.equal(opening[0].outcome, "RESEARCH_ONLY", "≈0.674 quality clears 0.62 midday but not 0.68 at the open");
+  assert.equal(opening[0].outcome, "RESEARCH_ONLY", "≈0.72 quality clears 0.70 midday but not 0.76 at the open");
   assert.ok(opening[0].threshold > midday[0].threshold);
 });
 
@@ -216,5 +215,6 @@ test("decision config is env-tunable and clamped", () => {
   const c = decisionConfig({ OPTIONS_QUALITY_DELIVER_BAR: "0.7", OPTIONS_MAX_DELIVER_PER_FLUSH: "3" });
   assert.equal(c.deliverBar, 0.7);
   assert.equal(c.maxPerFlush, 3);
-  assert.equal(decisionConfig({ OPTIONS_QUALITY_DELIVER_BAR: "7" }).deliverBar, 0.62, "out-of-range falls back to default");
+  assert.equal(decisionConfig({ OPTIONS_QUALITY_DELIVER_BAR: "7" }).deliverBar, 0.70, "out-of-range falls back to default");
+  assert.equal(decisionConfig({}).maxPerFlush, 1, "default flush cap prefers fewer, higher-conviction alerts");
 });

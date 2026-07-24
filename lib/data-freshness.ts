@@ -335,6 +335,95 @@ export function describeSymbolActionability(symbol: string, kinds?: DataKind[]) 
   return { symbol: sym, actionable: blocking.length === 0, reasons };
 }
 
+/** Aggregate repeated per-ticker blocks into class counts (System Health). */
+export type BlockedReasonClass =
+  | "rate_limited"
+  | "missing_options"
+  | "persistence_gate"
+  | "provider_error"
+  | "stale"
+  | "other";
+
+export interface BlockedReasonAggregate {
+  class: BlockedReasonClass;
+  label: string;
+  count: number;
+  samples: string[];
+  exampleReason: string | null;
+}
+
+const BLOCKED_CLASS_LABEL: Record<BlockedReasonClass, string> = {
+  rate_limited: "Polygon / provider rate limited",
+  missing_options: "Missing options contracts",
+  persistence_gate: "Persistence gate failed",
+  provider_error: "Provider error",
+  stale: "Stale / delayed data",
+  other: "Other",
+};
+
+export function classifyBlockedFreshness(
+  status: FreshnessStatus,
+  note?: string | null,
+): BlockedReasonClass {
+  const n = String(note ?? "").toLowerCase();
+  if (status === "RATE_LIMITED" || /\b429\b|quota|rate.?limit/.test(n)) return "rate_limited";
+  if (status === "NO_CONTRACTS" || /no option contract|missing options/.test(n)) return "missing_options";
+  if (/persistok|persistence gate|blocked:\s*persistok/.test(n)) return "persistence_gate";
+  if (status === "PROVIDER_ERROR" || status === "DISCONNECTED") return "provider_error";
+  if (status === "STALE" || status === "DELAYED") return "stale";
+  return "other";
+}
+
+/**
+ * Collapse per-symbol blocked rows into class aggregates with sample tickers.
+ * Drill-down lists stay available separately; this is the default health view.
+ */
+export function aggregateBlockedActionability(
+  blocked: Array<{ symbol: string; actionable: boolean; reasons: string[] }>,
+  opts: { sampleLimit?: number } = {},
+): BlockedReasonAggregate[] {
+  const sampleLimit = Math.max(1, opts.sampleLimit ?? 5);
+  const buckets = new Map<BlockedReasonClass, { symbols: Set<string>; example: string | null }>();
+  for (const b of blocked) {
+    if (b.actionable || !b.reasons.length) continue;
+    for (const reason of b.reasons) {
+      const lower = reason.toLowerCase();
+      let cls: BlockedReasonClass = "other";
+      if (/rate-limited|rate limited|quota|429/.test(lower)) cls = "rate_limited";
+      else if (/no option contract|missing options/.test(lower)) cls = "missing_options";
+      else if (/persistok|persistence gate/.test(lower)) cls = "persistence_gate";
+      else if (/provider returned an error|provider is disconnected|unavailable because the provider/.test(lower)) {
+        cls = "provider_error";
+      } else if (/seconds old|stale|delayed/.test(lower)) cls = "stale";
+      const bucket = buckets.get(cls) ?? { symbols: new Set<string>(), example: null };
+      bucket.symbols.add(b.symbol);
+      if (!bucket.example) bucket.example = reason.split("\n")[0] ?? reason;
+      buckets.set(cls, bucket);
+    }
+  }
+  const order: BlockedReasonClass[] = [
+    "rate_limited",
+    "missing_options",
+    "persistence_gate",
+    "provider_error",
+    "stale",
+    "other",
+  ];
+  return order
+    .filter((c) => buckets.has(c))
+    .map((c) => {
+      const b = buckets.get(c)!;
+      const symbols = [...b.symbols].sort();
+      return {
+        class: c,
+        label: BLOCKED_CLASS_LABEL[c],
+        count: symbols.length,
+        samples: symbols.slice(0, sampleLimit),
+        exampleReason: b.example,
+      };
+    });
+}
+
 export function isBlockingFreshness(status: FreshnessStatus): boolean {
   return status === "STALE"
     || status === "DISCONNECTED"

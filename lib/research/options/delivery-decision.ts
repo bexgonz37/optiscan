@@ -54,11 +54,11 @@ export function decisionConfig(env: NodeJS.ProcessEnv = process.env): DecisionCo
     return Number.isFinite(x) && x >= lo && x <= hi ? x : d;
   };
   return {
-    deliverBar: n(env.OPTIONS_QUALITY_DELIVER_BAR, 0.62, 0, 1),
+    deliverBar: n(env.OPTIONS_QUALITY_DELIVER_BAR, 0.70, 0, 1),
     openingBump: n(env.OPTIONS_QUALITY_OPENING_BUMP, 0.06, 0, 0.3),
-    excellentBar: n(env.OPTIONS_QUALITY_EXCELLENT_BAR, 0.75, 0, 1),
+    excellentBar: n(env.OPTIONS_QUALITY_EXCELLENT_BAR, 0.78, 0, 1),
     researchFloor: n(env.OPTIONS_QUALITY_RESEARCH_FLOOR, 0.35, 0, 1),
-    maxPerFlush: n(env.OPTIONS_MAX_DELIVER_PER_FLUSH, 2, 1, 10),
+    maxPerFlush: n(env.OPTIONS_MAX_DELIVER_PER_FLUSH, 1, 1, 10),
     correlationWindowMs: n(env.OPTIONS_CORRELATION_WINDOW_MS, 15 * 60_000, 0, 3_600_000),
   };
 }

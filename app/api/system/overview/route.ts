@@ -6,6 +6,7 @@ import {
   getSystemDataHealth,
   describeSymbolActionability,
   describeBlockingSample,
+  aggregateBlockedActionability,
   maxAgeSecondsFor,
   kindLabel,
   type DataKind,
@@ -100,9 +101,10 @@ export async function GET() {
     };
   }), [] as any);
 
-  // Human-readable blocking reasons per stale symbol (provider health stays
-  // independent — a single stale symbol does not mark the provider down).
+  // Human-readable blocking reasons — aggregated by class for System Health,
+  // with full per-symbol drill-down retained for on-demand inspection.
   const blocked = safe("blocked", () => (dataHealth?.blocking_symbols ?? dataHealth?.stale_symbols ?? []).map((sym: string) => describeSymbolActionability(sym)), [] as any);
+  const blockedAggregates = safe("blocked_aggregates", () => aggregateBlockedActionability(blocked), [] as any);
 
   // Webhook configuration is an ENV-ONLY read — it must NEVER depend on the DB.
   // (Bundling it with the DB-backed ledger below made a DB fault masquerade as
@@ -147,6 +149,7 @@ export async function GET() {
     },
     freshness,
     blocked,
+    blocked_aggregates: blockedAggregates,
     monitored_symbol_count: dataHealth?.monitored_symbols?.length ?? 0,
     stale_symbol_count: dataHealth?.stale_symbols?.length ?? 0,
     blocking_symbol_count: (dataHealth?.blocking_symbols ?? []).length,

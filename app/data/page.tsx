@@ -34,6 +34,13 @@ type Overview = {
   scanner?: { running?: boolean; interval_ms?: number; last_tick_age_ms?: number | null; ticks?: number; triggers?: number; alerts?: number; errors?: number; note?: string | null };
   freshness?: { kind: string; label: string; max_age_seconds: number; status: string; symbol: string | null; age_seconds: number | null; reason: string | null }[];
   blocked?: { symbol: string; actionable: boolean; reasons: string[] }[];
+  blocked_aggregates?: {
+    class: string;
+    label: string;
+    count: number;
+    samples: string[];
+    exampleReason: string | null;
+  }[];
   monitored_symbol_count?: number;
   stale_symbol_count?: number;
   rate_limit?: { status?: string; calls_today?: number | null; daily_cap?: number | null; calls_this_minute?: number | null; minute_cap?: number | null; quota_exceeded?: boolean };
@@ -119,6 +126,8 @@ export default function SystemHealthPage() {
   }
 
   const blocked = (data.blocked ?? []).filter((b) => b.reasons.length);
+  const blockedAggregates = data.blocked_aggregates ?? [];
+  const totalBlocked = blockedAggregates.reduce((n, a) => n + a.count, 0) || blocked.length;
 
   const faults = data.faults ?? [];
 
@@ -205,14 +214,85 @@ export default function SystemHealthPage() {
         )}
       </Card>
 
-      {/* Blocked setups — exact human-readable reasons */}
-      <Card title="Why setups are blocked" meta="Actionable alerts require fresh required data" tone={blocked.length ? "warn" : undefined}>
-        {blocked.length ? (
+      {/* Blocked setups — aggregated by failure class; per-ticker on demand */}
+      <Card
+        title="Why setups are blocked"
+        meta="Repeated provider failures are grouped; expand for per-symbol detail"
+        tone={totalBlocked ? "warn" : undefined}
+      >
+        {blockedAggregates.length ? (
+          <div style={{ display: "grid", gap: 8 }}>
+            {blockedAggregates.map((a) => (
+              <div
+                key={a.class}
+                style={{ paddingBottom: 8, borderBottom: "1px dashed var(--line)" }}
+              >
+                <div style={{ fontWeight: 600 }}>
+                  {a.label} — {a.count} symbol{a.count === 1 ? "" : "s"}
+                </div>
+                {a.samples.length > 0 && (
+                  <div style={{ fontSize: "0.8rem", color: "var(--muted)", marginTop: 2 }}>
+                    Samples: {a.samples.join(", ")}
+                    {a.count > a.samples.length ? ` (+${a.count - a.samples.length} more)` : ""}
+                  </div>
+                )}
+                {a.exampleReason && (
+                  <pre
+                    style={{
+                      margin: "4px 0 0",
+                      whiteSpace: "pre-wrap",
+                      fontSize: "0.74rem",
+                      color: "var(--muted)",
+                      fontFamily: "inherit",
+                    }}
+                  >
+                    {a.exampleReason}
+                  </pre>
+                )}
+              </div>
+            ))}
+            {blocked.length > 0 && (
+              <DetailsDisclosure summary={`Show per-symbol detail (${blocked.length})`}>
+                {blocked.map((b) => (
+                  <div
+                    key={b.symbol}
+                    style={{ paddingBottom: 8, borderBottom: "1px dashed var(--line)", marginBottom: 4 }}
+                  >
+                    <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                      {b.symbol} — <span style={{ color: "var(--bear)" }}>Actionable: No</span>
+                    </div>
+                    {b.reasons.map((r, i) => (
+                      <pre
+                        key={i}
+                        style={{
+                          margin: 0,
+                          whiteSpace: "pre-wrap",
+                          fontSize: "0.74rem",
+                          color: "var(--muted)",
+                          fontFamily: "inherit",
+                        }}
+                      >
+                        {r}
+                      </pre>
+                    ))}
+                  </div>
+                ))}
+              </DetailsDisclosure>
+            )}
+          </div>
+        ) : blocked.length ? (
           blocked.map((b) => (
             <div key={b.symbol} style={{ paddingBottom: 8, borderBottom: "1px dashed var(--line)", marginBottom: 4 }}>
-              <div style={{ fontWeight: 600, marginBottom: 4 }}>{b.symbol} — <span style={{ color: "var(--bear)" }}>Actionable: No</span></div>
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                {b.symbol} — <span style={{ color: "var(--bear)" }}>Actionable: No</span>
+              </div>
               {b.reasons.map((r, i) => (
-                <pre key={i} style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: "0.74rem", color: "var(--muted)", fontFamily: "inherit" }}>{r}</pre>
+                <pre
+                  key={i}
+                  style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: "0.74rem", color: "var(--muted)", fontFamily: "inherit" }}
+                >
+                  {r}
+                </pre>
               ))}
             </div>
           ))

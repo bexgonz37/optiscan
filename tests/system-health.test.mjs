@@ -12,6 +12,7 @@ import {
   getSystemDataHealth,
   describeBlockingSample,
   describeSymbolActionability,
+  aggregateBlockedActionability,
   maxAgeSecondsFor,
   kindLabel,
   sessionLabel,
@@ -98,8 +99,28 @@ test("system overview route keeps provider health separate and reports DB health
   assert.ok(/getSystemDataHealth/.test(route), "uses freshness aggregate");
   assert.ok(/database/.test(route) && /SELECT 1 AS one/.test(route), "checks DB health");
   assert.ok(/describeSymbolActionability|describeBlockingSample/.test(route), "attaches human reasons");
+  assert.ok(/aggregateBlockedActionability/.test(route), "aggregates repeated blocked reasons");
+  assert.ok(/blocked_aggregates/.test(route), "exposes aggregate payload");
   assert.ok(/maxAgeSecondsFor/.test(route), "uses shared thresholds, not duplicated numbers");
   assert.ok(!/polyFetch|fetchBulkQuotes|fetchOptionChain/.test(route), "makes no provider calls");
+  const page = read("app/data/page.tsx");
+  assert.ok(/blocked_aggregates|blockedAggregates/.test(page), "System Health shows aggregated blocks");
+  assert.ok(/Show per-symbol detail/.test(page), "per-symbol drill-down is on demand");
+});
+
+test("aggregateBlockedActionability groups repeated rate-limit / missing-options noise", () => {
+  const rows = [
+    { symbol: "AAPL", actionable: false, reasons: ["AAPL stock quote is unavailable because the data provider is rate-limited (429)."] },
+    { symbol: "MSFT", actionable: false, reasons: ["MSFT stock quote is unavailable because the data provider is rate-limited (429)."] },
+    { symbol: "NVDA", actionable: false, reasons: ["NVDA options chain has no option contracts in the requested scan window."] },
+    { symbol: "OK", actionable: true, reasons: [] },
+  ];
+  const agg = aggregateBlockedActionability(rows);
+  const rate = agg.find((a) => a.class === "rate_limited");
+  const missing = agg.find((a) => a.class === "missing_options");
+  assert.equal(rate?.count, 2);
+  assert.equal(missing?.count, 1);
+  assert.ok(rate?.label.toLowerCase().includes("rate"));
 });
 
 test("Discord panel shows recap NOT CONFIGURED without treating it as a delivery failure, and leaks no secrets", () => {

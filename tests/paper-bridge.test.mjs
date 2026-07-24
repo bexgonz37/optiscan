@@ -142,6 +142,24 @@ if (Database) {
     assert.equal(r[0].paper_trade_id, null, "a rejected candidate never links a trade → never a graded outcome");
   });
 
+  test("REJECTED candidates are retried when capacity clears (same-day)", () => {
+    const db = new Database(":memory:"); db.exec(DDL);
+    const c = buildCallout(ar());
+    const refuse = () => ({ ok: false, risk: { allowed: false, failures: ["max open trades reached"] } });
+    const first = bridgeCalloutsToPaperOnDb(db, [c], refuse, NOW, PAPER_ON);
+    assert.equal(first.rejected, 1);
+    assert.equal(rows(db)[0].status, "REJECTED");
+    const second = bridgeCalloutsToPaperOnDb(db, [c], okCreate, NOW, PAPER_ON);
+    assert.equal(second.created, 1, "retry must create once capacity/gate clears");
+    assert.equal(second.duplicates, 0);
+    assert.equal(rows(db).length, 1);
+    assert.equal(rows(db)[0].status, "CREATED");
+    assert.ok(rows(db)[0].paper_trade_id != null);
+    const third = bridgeCalloutsToPaperOnDb(db, [c], okCreate, NOW, PAPER_ON);
+    assert.equal(third.duplicates, 1);
+    assert.equal(third.created, 0);
+  });
+
   test("bearish paper candidate is blocked while bearish actionability is off", () => {
     const db = new Database(":memory:"); db.exec(DDL);
     const put = buildCallout(ar({ direction: "bearish", candidateStatus: "RESEARCH_ONLY", actionability: "RESEARCH_ONLY", researchOnly: true, selectedContract: { ...ar().selectedContract, side: "put" } }, null));
