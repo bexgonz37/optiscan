@@ -153,7 +153,7 @@ export async function handlePaperBrokerV2Get(
         payload = buildEquityCurvePayload(db, account, filters);
         break;
       case "stats":
-        payload = buildStatsPayload(db, account, process.env);
+        payload = buildStatsPayload(db, account, process.env, filters);
         break;
       default:
         return NextResponse.json(

@@ -79,3 +79,23 @@ export {
   parsePaperApiFilters,
 } from "./paper-read.ts";
 export type { PaperApiFilters } from "./paper-read.ts";
+export {
+  ANALYTICS_METHODOLOGY_VERSION,
+  ANALYTICS_SURFACE_LABEL,
+  KELLY_ADVISORY_ONLY,
+  defaultAnalyticsPolicy,
+} from "./analytics-policy.ts";
+export {
+  buildAnalyticsReport,
+  computePerformanceMetrics,
+  computeRiskMetrics,
+  computeOptionsBreakdown,
+  computeExposureMetrics,
+  computeKellyInputs,
+  computeDrawdownStats,
+  dailyReturns,
+  loadEquityPoints,
+} from "./analytics.ts";
+export type { AnalyticsFilters, EquityPoint } from "./analytics.ts";
+export { listClosedRoundTrips, filterRoundTrips, dteBucket } from "./trades.ts";
+export type { RoundTripTrade, ExitClass } from "./trades.ts";

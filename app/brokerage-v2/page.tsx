@@ -13,6 +13,46 @@ import {
 import { apiFetchJson, describeApiLoadFailure } from "@/lib/client-auth";
 
 const V2_LABEL = "Research / Brokerage V2 — Not Yet Authoritative";
+const ANALYTICS_LABEL = "Research Analytics — Not Yet Authoritative";
+
+type MetricValue = { value: number | null; reason: string | null };
+
+type AnalyticsReport = {
+  label?: string;
+  methodologyVersion?: number;
+  advisoryKellyOnly?: boolean;
+  aggregationLabel?: string;
+  dataQuality?: {
+    sampleSizeTrades: number;
+    sampleSizeEquityPoints: number;
+    sampleSizeDailyReturns: number;
+    dateRange: { fromMs: number | null; toMs: number | null };
+    completenessStatus: string;
+    missingMarkCount: number;
+    staleMarkCount: number;
+    incompleteSnapshotCount: number;
+    excludedSnapshotCount: number;
+    excludedTradeCount: number;
+    warnings: string[];
+  };
+  performance?: Record<string, MetricValue | number | null>;
+  risk?: Record<string, MetricValue>;
+  options?: Record<string, unknown>;
+  exposure?: Record<string, unknown>;
+  kelly?: {
+    warning?: string;
+    warnings?: string[];
+    empiricalWinProbability?: MetricValue;
+    averageWinLossRatio?: MetricValue;
+    fullKellyFraction?: MetricValue;
+    halfKelly?: MetricValue;
+    quarterKelly?: MetricValue;
+    confidenceAdjustedKelly?: MetricValue;
+    sampleSize?: number;
+    winRateConfidenceIntervalPct?: { low: MetricValue; high: MetricValue };
+    riskOfRuinEstimate?: MetricValue;
+  };
+};
 
 type AccountSummary = {
   label?: string;
@@ -125,6 +165,25 @@ function ts(ms: number | null | undefined): string {
   }
 }
 
+function fmtMetric(m: MetricValue | number | null | undefined): string {
+  if (m == null) return "—";
+  if (typeof m === "number") return Number.isFinite(m) ? String(m) : "—";
+  if (m.value == null) return m.reason ? `n/a (${m.reason})` : "—";
+  return String(m.value);
+}
+
+function MetricGrid({ rows }: { rows: Array<[string, string]> }) {
+  return (
+    <div style={{ display: "grid", gap: 6, gridTemplateColumns: "repeat(auto-fill,minmax(220px,1fr))", fontSize: 13 }}>
+      {rows.map(([k, v]) => (
+        <div key={k}>
+          {k}: {v}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function BrokerageV2Page() {
   const [accountKey, setAccountKey] = useState("research_shadow");
   const [audience, setAudience] = useState("");
@@ -134,6 +193,9 @@ export default function BrokerageV2Page() {
   const [fromMs, setFromMs] = useState("");
   const [toMs, setToMs] = useState("");
   const [strategy, setStrategy] = useState("");
+  const [right, setRight] = useState("");
+  const [dteBucket, setDteBucket] = useState("");
+  const [analytics, setAnalytics] = useState<AnalyticsReport | null>(null);
 
   const [disabled, setDisabled] = useState(false);
   const [disableMsg, setDisableMsg] = useState<string | null>(null);
@@ -160,9 +222,11 @@ export default function BrokerageV2Page() {
     if (fromMs.trim()) p.set("fromMs", fromMs.trim());
     if (toMs.trim()) p.set("toMs", toMs.trim());
     if (strategy.trim()) p.set("strategy", strategy.trim());
+    if (right) p.set("right", right);
+    if (dteBucket) p.set("dteBucket", dteBucket);
     p.set("limit", "100");
     return p.toString();
-  }, [accountKey, audience, underlying, status, completeness, fromMs, toMs, strategy]);
+  }, [accountKey, audience, underlying, status, completeness, fromMs, toMs, strategy, right, dteBucket]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -172,6 +236,7 @@ export default function BrokerageV2Page() {
     setDisableMsg(null);
     setEvidence(null);
     setEvidenceId(null);
+    setAnalytics(null);
 
     const accountRes = await apiFetchJson<AccountSummary & { enabled?: boolean; code?: string; error?: string; empty?: boolean }>(
       `/api/paper/account?${qs}`,
@@ -208,11 +273,12 @@ export default function BrokerageV2Page() {
       return;
     }
 
-    const [posRes, ordRes, ledRes, eqRes] = await Promise.all([
+    const [posRes, ordRes, ledRes, eqRes, statsRes] = await Promise.all([
       apiFetchJson<{ positions?: Position[] }>(`/api/paper/positions?${qs}`),
       apiFetchJson<{ orders?: OrderRow[] }>(`/api/paper/orders?${qs}`),
       apiFetchJson<{ entries?: LedgerEntry[] }>(`/api/paper/ledger?${qs}`),
       apiFetchJson<{ points?: CurvePoint[] }>(`/api/paper/equity-curve?${qs}`),
+      apiFetchJson<{ analytics?: AnalyticsReport }>(`/api/paper/stats?${qs}`),
     ]);
 
     setAccount(body as AccountSummary);
@@ -220,6 +286,7 @@ export default function BrokerageV2Page() {
     setOrders(ordRes.ok ? ordRes.data?.orders ?? [] : []);
     setLedger(ledRes.ok ? ledRes.data?.entries ?? [] : []);
     setCurve(eqRes.ok ? eqRes.data?.points ?? [] : []);
+    setAnalytics(statsRes.ok ? statsRes.data?.analytics ?? null : null);
     setLoadState("ok");
     setLoading(false);
   }, [qs]);
@@ -277,6 +344,26 @@ export default function BrokerageV2Page() {
           <label>
             Strategy
             <input value={strategy} onChange={(e) => setStrategy(e.target.value)} style={{ display: "block", width: "100%" }} />
+          </label>
+          <label>
+            Call / Put
+            <select value={right} onChange={(e) => setRight(e.target.value)} style={{ display: "block", width: "100%" }}>
+              <option value="">(any)</option>
+              <option value="call">call</option>
+              <option value="put">put</option>
+            </select>
+          </label>
+          <label>
+            DTE bucket
+            <select value={dteBucket} onChange={(e) => setDteBucket(e.target.value)} style={{ display: "block", width: "100%" }}>
+              <option value="">(any)</option>
+              <option value="0dte">0dte</option>
+              <option value="1_2dte">1_2dte</option>
+              <option value="3_7dte">3_7dte</option>
+              <option value="8_21dte">8_21dte</option>
+              <option value="22_45dte">22_45dte</option>
+              <option value="45plus_dte">45plus_dte</option>
+            </select>
           </label>
           <label>
             Snapshot completeness
@@ -487,6 +574,143 @@ export default function BrokerageV2Page() {
               </ul>
             )}
           </Card>
+
+          {analytics && (
+            <>
+              <Card title="Research analytics">
+                <StatusBadge tone="warn">{ANALYTICS_LABEL}</StatusBadge>
+                <p style={{ marginTop: 8, fontSize: 13 }}>
+                  Methodology v{analytics.methodologyVersion ?? "?"} · {analytics.aggregationLabel ?? "single account"} ·
+                  does not replace subscriber reporting.
+                </p>
+              </Card>
+
+              <Card title="Data quality">
+                {analytics.dataQuality ? (
+                  <MetricGrid
+                    rows={[
+                      ["Trades sample", String(analytics.dataQuality.sampleSizeTrades)],
+                      ["Equity points", String(analytics.dataQuality.sampleSizeEquityPoints)],
+                      ["Daily returns", String(analytics.dataQuality.sampleSizeDailyReturns)],
+                      ["Completeness", analytics.dataQuality.completenessStatus],
+                      ["Missing marks", String(analytics.dataQuality.missingMarkCount)],
+                      ["Stale marks", String(analytics.dataQuality.staleMarkCount)],
+                      ["Incomplete snapshots", String(analytics.dataQuality.incompleteSnapshotCount)],
+                      ["Excluded snapshots", String(analytics.dataQuality.excludedSnapshotCount)],
+                      ["Excluded trades", String(analytics.dataQuality.excludedTradeCount)],
+                      ["Range", `${ts(analytics.dataQuality.dateRange.fromMs)} → ${ts(analytics.dataQuality.dateRange.toMs)}`],
+                      ["Warnings", analytics.dataQuality.warnings.join("; ") || "none"],
+                    ]}
+                  />
+                ) : (
+                  <p>No data-quality block.</p>
+                )}
+              </Card>
+
+              <Card title="Performance">
+                <MetricGrid
+                  rows={[
+                    ["Starting equity", fmtMetric(analytics.performance?.startingEquity as MetricValue)],
+                    ["Ending equity", fmtMetric(analytics.performance?.endingEquity as MetricValue)],
+                    ["Net profit $", fmtMetric(analytics.performance?.netProfitDollars as MetricValue)],
+                    ["Total return %", fmtMetric(analytics.performance?.totalReturnPct as MetricValue)],
+                    ["Realized P&L", fmtMetric(analytics.performance?.realizedPnl as MetricValue)],
+                    ["Unrealized P&L", fmtMetric(analytics.performance?.unrealizedPnl as MetricValue)],
+                    ["Gross profit", fmtMetric(analytics.performance?.grossProfit as MetricValue)],
+                    ["Gross loss", fmtMetric(analytics.performance?.grossLoss as MetricValue)],
+                    ["Win rate %", fmtMetric(analytics.performance?.winRate as MetricValue)],
+                    ["Loss rate %", fmtMetric(analytics.performance?.lossRate as MetricValue)],
+                    ["Avg winner", fmtMetric(analytics.performance?.averageWinner as MetricValue)],
+                    ["Avg loser", fmtMetric(analytics.performance?.averageLoser as MetricValue)],
+                    ["Payoff ratio", fmtMetric(analytics.performance?.payoffRatio as MetricValue)],
+                    ["Profit factor", fmtMetric(analytics.performance?.profitFactor as MetricValue)],
+                    ["Expectancy $", fmtMetric(analytics.performance?.expectancyPerTradeDollars as MetricValue)],
+                    ["Expectancy %", fmtMetric(analytics.performance?.expectancyPerTradeReturnPct as MetricValue)],
+                    ["Median trade return", fmtMetric(analytics.performance?.medianTradeReturn as MetricValue)],
+                    ["Largest winner", fmtMetric(analytics.performance?.largestWinner as MetricValue)],
+                    ["Largest loser", fmtMetric(analytics.performance?.largestLoser as MetricValue)],
+                    ["Consecutive wins", fmtMetric(analytics.performance?.consecutiveWins as MetricValue)],
+                    ["Consecutive losses", fmtMetric(analytics.performance?.consecutiveLosses as MetricValue)],
+                    ["Avg hold ms", fmtMetric(analytics.performance?.averageHoldingTimeMs as MetricValue)],
+                    ["Median hold ms", fmtMetric(analytics.performance?.medianHoldingTimeMs as MetricValue)],
+                  ]}
+                />
+              </Card>
+
+              <Card title="Risk">
+                <MetricGrid
+                  rows={[
+                    ["Max DD $", fmtMetric(analytics.risk?.maximumDrawdownDollars)],
+                    ["Max DD %", fmtMetric(analytics.risk?.maximumDrawdownPct)],
+                    ["Current DD $", fmtMetric(analytics.risk?.currentDrawdownDollars)],
+                    ["Current DD %", fmtMetric(analytics.risk?.currentDrawdownPct)],
+                    ["Recovery ms", fmtMetric(analytics.risk?.recoveryTimeMs)],
+                    ["Volatility (ann %)", fmtMetric(analytics.risk?.volatilityOfAccountReturns)],
+                    ["Downside dev %", fmtMetric(analytics.risk?.downsideDeviation)],
+                    ["Sharpe", fmtMetric(analytics.risk?.sharpeRatio)],
+                    ["Sortino", fmtMetric(analytics.risk?.sortinoRatio)],
+                    ["Calmar", fmtMetric(analytics.risk?.calmarRatio)],
+                    ["Ulcer", fmtMetric(analytics.risk?.ulcerIndex)],
+                    ["VaR %", fmtMetric(analytics.risk?.valueAtRisk)],
+                    ["CVaR %", fmtMetric(analytics.risk?.conditionalValueAtRisk)],
+                    ["Risk of ruin", fmtMetric(analytics.risk?.riskOfRuinEstimate)],
+                  ]}
+                />
+              </Card>
+
+              <Card title="Options breakdown">
+                <pre style={{ whiteSpace: "pre-wrap", fontSize: 11, maxHeight: 280, overflow: "auto" }}>
+                  {JSON.stringify(
+                    {
+                      pnlByCallPut: analytics.options?.pnlByCallPut,
+                      pnlByStrategy: analytics.options?.pnlByStrategy,
+                      pnlByDteBucket: analytics.options?.pnlByDteBucket,
+                      pnlByUnderlying: analytics.options?.pnlByUnderlying,
+                      pnlByMarketRegime: analytics.options?.pnlByMarketRegime,
+                      averagePremiumPaid: analytics.options?.averagePremiumPaid,
+                      slippageCostEstimate: analytics.options?.slippageCostEstimate,
+                      commissionsAndFeeImpact: analytics.options?.commissionsAndFeeImpact,
+                      pctExpiringWorthless: analytics.options?.pctExpiringWorthless,
+                      pctReachingTarget: analytics.options?.pctReachingTarget,
+                      pctHittingStop: analytics.options?.pctHittingStop,
+                      pctExitedByTimeoutOrExpiration: analytics.options?.pctExitedByTimeoutOrExpiration,
+                      sectorPnl: analytics.options?.sectorPnl,
+                    },
+                    null,
+                    2,
+                  )}
+                </pre>
+              </Card>
+
+              <Card title="Exposure">
+                <pre style={{ whiteSpace: "pre-wrap", fontSize: 11, maxHeight: 240, overflow: "auto" }}>
+                  {JSON.stringify(analytics.exposure, null, 2)}
+                </pre>
+              </Card>
+
+              <Card title="Kelly inputs (advisory only)">
+                <StatusBadge tone="warn">Advisory only — never sizes positions or delivery</StatusBadge>
+                <p style={{ marginTop: 8, fontSize: 13 }}>{analytics.kelly?.warning}</p>
+                {(analytics.kelly?.warnings?.length ?? 0) > 0 && (
+                  <p style={{ fontSize: 12 }}>Warnings: {analytics.kelly?.warnings?.join("; ")}</p>
+                )}
+                <MetricGrid
+                  rows={[
+                    ["Sample size", String(analytics.kelly?.sampleSize ?? 0)],
+                    ["Win prob %", fmtMetric(analytics.kelly?.empiricalWinProbability)],
+                    ["Avg win/loss", fmtMetric(analytics.kelly?.averageWinLossRatio)],
+                    ["Full Kelly", fmtMetric(analytics.kelly?.fullKellyFraction)],
+                    ["Half Kelly", fmtMetric(analytics.kelly?.halfKelly)],
+                    ["Quarter Kelly", fmtMetric(analytics.kelly?.quarterKelly)],
+                    ["Confidence-adj Kelly", fmtMetric(analytics.kelly?.confidenceAdjustedKelly)],
+                    ["Win rate CI low", fmtMetric(analytics.kelly?.winRateConfidenceIntervalPct?.low)],
+                    ["Win rate CI high", fmtMetric(analytics.kelly?.winRateConfidenceIntervalPct?.high)],
+                    ["Risk of ruin", fmtMetric(analytics.kelly?.riskOfRuinEstimate)],
+                  ]}
+                />
+              </Card>
+            </>
+          )}
 
           {evidenceId && (
             <Card title={`Evidence chain · ${evidenceId}`}>

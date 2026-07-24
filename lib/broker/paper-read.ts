@@ -12,6 +12,7 @@ import { roundMoney } from "./ledger.ts";
 import { listLedgerEntries } from "./queries.ts";
 import { parseOccSymbol, underlyingFromSymbol } from "./occ.ts";
 import { BROKER_V2_SURFACE_LABEL } from "./surface.ts";
+import { buildAnalyticsReport } from "./analytics.ts";
 import type { AccountType, BrokerAccountRow } from "./types.ts";
 
 export interface PaperApiFilters {
@@ -29,6 +30,12 @@ export interface PaperApiFilters {
   limit?: number;
   offset?: number;
   evidenceChainId?: string | null;
+  /** call | put */
+  right?: string | null;
+  dteBucket?: string | null;
+  completeSnapshotsOnly?: boolean | null;
+  allEquitySnapshots?: boolean | null;
+  realizedOnly?: boolean | null;
 }
 
 function clampLimit(n: number | undefined, d = 100, max = 500): number {
@@ -589,6 +596,7 @@ export function buildStatsPayload(
   db: BrokerDb,
   account: BrokerAccountRow,
   env: NodeJS.ProcessEnv = process.env,
+  filters: PaperApiFilters = {},
 ) {
   const summary = buildAccountSummary(db, account, env);
   const orderCount = (
@@ -619,8 +627,10 @@ export function buildStatsPayload(
       )
       .get(account.id) as { n: number }
   ).n;
+  const analytics = buildAnalyticsReport(db, account, filters, env);
   return {
     label: BROKER_V2_SURFACE_LABEL,
+    analyticsLabel: analytics.label,
     authoritative: false,
     account: summary.account,
     accountSummary: summary,
@@ -632,6 +642,7 @@ export function buildStatsPayload(
       incompleteSnapshots: incompleteSnaps,
       openPositions: summary.openPositionCount,
     },
+    analytics,
   };
 }
 
@@ -836,5 +847,19 @@ export function parsePaperApiFilters(url: URL): PaperApiFilters {
     limit: num("limit") ?? undefined,
     offset: num("offset") ?? undefined,
     evidenceChainId: url.searchParams.get("evidenceChainId") ?? url.searchParams.get("evidence"),
+    right: url.searchParams.get("right") ?? url.searchParams.get("callPut"),
+    dteBucket: url.searchParams.get("dteBucket"),
+    completeSnapshotsOnly:
+      url.searchParams.get("completeSnapshotsOnly") === "1" ||
+      url.searchParams.get("completeSnapshotsOnly") === "true"
+        ? true
+        : url.searchParams.get("completeSnapshotsOnly") === "0"
+          ? false
+          : null,
+    allEquitySnapshots:
+      url.searchParams.get("allEquitySnapshots") === "1" ||
+      url.searchParams.get("allEquitySnapshots") === "true",
+    realizedOnly:
+      url.searchParams.get("realizedOnly") === "1" || url.searchParams.get("realizedOnly") === "true",
   };
 }
