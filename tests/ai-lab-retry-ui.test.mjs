@@ -46,9 +46,9 @@ test("AI Lab retry success refreshes report list", () => {
 });
 
 test("AI Lab retry failure displays exact error response", () => {
-  assert.match(src, /const raw = await res\.text\(\)/);
-  assert.match(src, /payload\?\.error \?\? \(raw \|\| `HTTP \$\{res\.status\}`\)/);
-  assert.match(src, /setRetryMessage\(\{ key, text: String\(detail\), ok: false \}\)/);
+  assert.match(src, /parseApiJsonResponse\(res, "\/api\/ai"\)/);
+  assert.match(src, /describeApiLoadFailure\(parsed\)/);
+  assert.match(src, /setRetryMessage\(\{ key, text: detail, ok: false \}\)/);
 });
 
 test("AI Lab shows structured validation diagnostics under failed nightly report rows", () => {

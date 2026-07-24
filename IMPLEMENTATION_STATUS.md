@@ -25,6 +25,45 @@ Resume tracker for the coordinated quantitative options-intelligence platform. *
 
 **Verification (2026-07-24):** 1837/1837 tests · tsc clean · build OK · commit `f488459` pushed to `origin/main`.
 
+## PRODUCTION REGRESSION FIX — Enterprise pages API load failures (2026-07-24)
+
+Three subscriber-facing pages failed after the Phases 0–21 deploy (`f488459` / docs `5dee3c5`):
+
+| Page | Symptom | Root cause (pre-fix) |
+|---|---|---|
+| `/intelligence` | “Could not load” | Client used raw `fetch` + blind error handling; server route had no try/catch (500 → generic failure) |
+| `/pipeline-health` | “No diagnostics” on auth/server failures | Client called `r.json()` then treated missing `diagnostic` as empty state; **401 JSON has no `diagnostic` field** |
+| `/ai` (AI Lab) | “Unexpected end of JSON input” | Client called `res.json()` without checking body; **GET /api/ai** ran synchronous `ensureServerBoot()` and had no try/catch (timeout/500 → empty body) |
+
+**Shared causes:** (1) fragile client JSON parsing not using shared `apiFetch` / safe parser; (2) missing structured error envelopes on server throw paths; (3) synchronous boot blocking read-only handlers.
+
+**Fix (this commit):**
+
+- `lib/api-error.ts`, `lib/api-response.ts` — structured JSON errors (`SCHEMA_MISMATCH`, `DATABASE_UNAVAILABLE`, etc.)
+- `lib/client-auth.ts` — `parseApiJsonResponse`, `apiFetchJson`, `describeApiLoadFailure`
+- `lib/server-boot.ts` — `deferServerBoot()` (matches `/api/healthz` pattern)
+- API routes: try/catch + JSON content-type on `/api/opportunity-cases`, `/api/opportunity-cases/[id]`, `/api/research/options/pipeline-health`, `GET /api/ai`
+- UI: `/intelligence`, `/intelligence/[id]`, `/pipeline-health`, `/ai` — distinct loading / empty / auth / server / malformed-response states
+- `lib/opportunity-case/store.ts` — explicit missing-table detection (`OpportunityCasesSchemaError`)
+- `next.config.mjs` — `outputFileTracingIncludes` for enterprise API modules in standalone deploy
+- `tests/api-regression.test.mjs` — focused regression coverage
+
+**Deploy version check:** `GET /api/healthz` returns `{ commit, commitShort, branch, db }` (no secrets). Compare `commitShort` to deployed fix hash after push.
+
+**Production migration status:** `opportunity_cases` + evidence-learning tables are created idempotently in `lib/db.ts` SCHEMA on `getDb()` — no separate migration runner required; missing table → `503 SCHEMA_MISMATCH` (not fake empty list).
+
+**External verification (authenticated):**
+
+```powershell
+$BASE="https://YOUR-APP.up.railway.app"; $H=@{ "x-scan-token"=$env:SCAN_API_TOKEN }
+Invoke-RestMethod "$BASE/api/healthz"
+Invoke-RestMethod "$BASE/api/opportunity-cases?limit=5" -Headers $H
+Invoke-RestMethod "$BASE/api/research/options/pipeline-health" -Headers $H
+Invoke-RestMethod "$BASE/api/ai" -Headers $H
+```
+
+**Verification (post-fix):** _pending commit hash_ · tests/tsc/build re-run after commit.
+
 ## ⚠️ CANONICAL WORKING DIRECTORY (read first, every session)
 
 - **Canonical working repo: `C:\Users\bexgo\Downloads\optiscan-main`** (branch `main`).

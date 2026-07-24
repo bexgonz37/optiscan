@@ -6,6 +6,7 @@ import {
 } from "@/components/ui/Shell";
 import { SimpleTable, type Column } from "@/components/ui/Table";
 import { scanHeaders } from "@/hooks/useScanner";
+import { apiFetchJson, describeApiLoadFailure, parseApiJsonResponse } from "@/lib/client-auth";
 
 type Overview = {
   flags?: Record<string, any>;
@@ -166,15 +167,17 @@ export default function AiLabPage() {
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    try {
-      const res = await fetch("/api/ai", { cache: "no-store", headers: scanHeaders() });
-      if (res.status === 401) { setError("Not authorized - AI Lab is private. Provide the scan API token."); setOv(null); return; }
-      const r = await res.json();
-      setOv(r?.overview ?? {});
+    setLoading(true);
+    const result = await apiFetchJson<{ overview?: Overview }>("/api/ai");
+    if (!result.ok) {
+      const { title, detail } = describeApiLoadFailure(result);
+      setError(`${title}: ${detail}`);
+      setOv(null);
+    } else {
+      setOv(result.data?.overview ?? {});
       setError(null);
-    } catch (err: any) {
-      setError(err?.message ?? "Could not load AI overview.");
-    } finally { setLoading(false); }
+    }
+    setLoading(false);
   }, []);
 
   const decide = useCallback(async (action: string, id: number, status: string) => {
@@ -195,12 +198,10 @@ export default function AiLabPage() {
     setRetryMessage(null);
     try {
       const res = await fetch("/api/ai", { method: "POST", headers: { ...scanHeaders(), "content-type": "application/json" }, body: JSON.stringify(body) });
-      const raw = await res.text();
-      let payload: any = null;
-      try { payload = raw ? JSON.parse(raw) : null; } catch { payload = null; }
-      if (!res.ok || payload?.ok === false) {
-        const detail = payload?.error ?? (raw || `HTTP ${res.status}`);
-        setRetryMessage({ key, text: String(detail), ok: false });
+      const parsed = await parseApiJsonResponse(res, "/api/ai");
+      if (!parsed.ok) {
+        const { detail } = describeApiLoadFailure(parsed);
+        setRetryMessage({ key, text: detail, ok: false });
         return;
       }
       setRetryMessage({ key, text: "Retry started successfully.", ok: true });

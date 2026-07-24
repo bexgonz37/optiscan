@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { checkApiToken, unauthorized } from "@/lib/auth";
-import { ensureServerBoot } from "@/lib/server-boot";
+import { deferServerBoot } from "@/lib/server-boot";
+import { jsonFromRouteError } from "@/lib/api-response";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,19 +21,23 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(req: Request) {
   if (!checkApiToken(req)) return unauthorized();
-  ensureServerBoot();
-  const { aiOverview } = await import("@/lib/ai/overview");
-  return NextResponse.json({
-    ok: true,
-    overview: aiOverview(),
-    disclaimer:
-      "Advisory AI layer: offline, scheduled, human-approved. It reads deterministic data and proposes changes; it never edits code, merges, deploys, trades, or bypasses any gate. Every stored narrative's numbers trace to the deterministic summary.",
-  });
+  deferServerBoot();
+  try {
+    const { aiOverview } = await import("@/lib/ai/overview");
+    return NextResponse.json({
+      ok: true,
+      overview: aiOverview(),
+      disclaimer:
+        "Advisory AI layer: offline, scheduled, human-approved. It reads deterministic data and proposes changes; it never edits code, merges, deploys, trades, or bypasses any gate. Every stored narrative's numbers trace to the deterministic summary.",
+    }, { status: 200, headers: { "content-type": "application/json" } });
+  } catch (err) {
+    return jsonFromRouteError(err);
+  }
 }
 
 export async function POST(req: Request) {
   if (!checkApiToken(req)) return unauthorized();
-  ensureServerBoot();
+  deferServerBoot();
   let body: any = {};
   try { body = await req.json(); } catch { /* empty */ }
   const action = String(body?.action ?? "");

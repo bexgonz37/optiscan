@@ -3,6 +3,20 @@
  * Called from server routes (not instrumentation) so dev webpack never bundles sqlite.
  */
 let started = false;
+let bootScheduled = false;
+
+/** Schedule background boot after the HTTP response — never block read-only API handlers. */
+export function deferServerBoot(): void {
+  if (started || bootScheduled) return;
+  bootScheduled = true;
+  setImmediate(() => {
+    try {
+      ensureServerBoot();
+    } catch {
+      /* boot is best-effort */
+    }
+  });
+}
 
 export function ensureServerBoot(): void {
   if (started) return;

@@ -11,6 +11,29 @@ interface CaseDb {
   };
 }
 
+function hasTable(db: CaseDb, name: string): boolean {
+  try {
+    return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name=?").get(name));
+  } catch {
+    return false;
+  }
+}
+
+export function opportunityCasesTableReady(db: CaseDb): boolean {
+  return hasTable(db, "opportunity_cases");
+}
+
+export class OpportunityCasesSchemaError extends Error {
+  constructor(message = "opportunity_cases table missing") {
+    super(message);
+    this.name = "OpportunityCasesSchemaError";
+  }
+}
+
+function requireOpportunityCasesTable(db: CaseDb): void {
+  if (!opportunityCasesTableReady(db)) throw new OpportunityCasesSchemaError();
+}
+
 export function persistOpportunityCaseOnDb(db: CaseDb, c: OpportunityCase): { inserted: boolean; updated: boolean } {
   const existing = db.prepare("SELECT opportunity_id FROM opportunity_cases WHERE opportunity_id=?").get(c.opportunityId);
   const json = serializeCase(c);
@@ -41,12 +64,14 @@ export function persistOpportunityCaseOnDb(db: CaseDb, c: OpportunityCase): { in
 }
 
 export function loadOpportunityCaseOnDb(db: CaseDb, opportunityId: string): OpportunityCase | null {
+  requireOpportunityCasesTable(db);
   const row = db.prepare("SELECT case_json FROM opportunity_cases WHERE opportunity_id=?").get(opportunityId) as { case_json?: string } | undefined;
   if (!row?.case_json) return null;
   return parseCase(row.case_json);
 }
 
 export function listRecentOpportunityCasesOnDb(db: CaseDb, limit = 50): OpportunityCase[] {
+  requireOpportunityCasesTable(db);
   const rows = db.prepare(
     "SELECT case_json FROM opportunity_cases ORDER BY detected_at_ms DESC LIMIT ?",
   ).all(limit) as { case_json: string }[];
@@ -54,6 +79,7 @@ export function listRecentOpportunityCasesOnDb(db: CaseDb, limit = 50): Opportun
 }
 
 export function countOpportunityCasesByDeliveryOnDb(db: CaseDb, sinceMs: number): Record<string, number> {
+  if (!opportunityCasesTableReady(db)) return {};
   const rows = db.prepare(
     "SELECT delivery_decision, COUNT(*) n FROM opportunity_cases WHERE detected_at_ms >= ? GROUP BY delivery_decision",
   ).all(sinceMs) as { delivery_decision: string; n: number }[];

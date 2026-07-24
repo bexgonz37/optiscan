@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { PageContainer, PageHeader, Card, LoadingState, EmptyState, StatusBadge } from "@/components/ui/Shell";
+import { PageContainer, PageHeader, Card, LoadingState, EmptyState, ErrorState, StatusBadge } from "@/components/ui/Shell";
 import { SimpleTable } from "@/components/ui/Table";
-import { scanHeaders } from "@/hooks/useScanner";
+import { apiFetchJson, describeApiLoadFailure } from "@/lib/client-auth";
 
 type OppCase = {
   opportunityId: string;
@@ -15,31 +15,39 @@ type OppCase = {
   detectedAtMs: number;
 };
 
+type CasesResponse = {
+  cases?: OppCase[];
+  count?: number;
+};
+
 export default function IntelligencePage() {
   const [cases, setCases] = useState<OppCase[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [errorTitle, setErrorTitle] = useState<string | null>(null);
+  const [errorDetail, setErrorDetail] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
-    setError(null);
-    try {
-      const r = await fetch("/api/opportunity-cases?limit=40", { headers: scanHeaders() });
-      if (!r.ok) throw new Error("Unable to load opportunity cases");
-      const j = await r.json();
-      setCases((j.cases ?? []).map((c: Record<string, unknown>) => ({
-        opportunityId: c.opportunityId,
-        underlyingSymbol: c.underlyingSymbol,
-        setupFamily: c.setupFamily,
-        deliveryDecision: c.deliveryDecision,
-        acceptanceDecision: c.acceptanceDecision,
-        detectedAtMs: c.detectedAtMs,
-      })));
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Load failed");
-    } finally {
-      setLoading(false);
+    setErrorTitle(null);
+    setErrorDetail(null);
+    const result = await apiFetchJson<CasesResponse>("/api/opportunity-cases?limit=40");
+    if (!result.ok) {
+      const { title, detail } = describeApiLoadFailure(result);
+      setErrorTitle(title);
+      setErrorDetail(detail);
+      setCases([]);
+    } else {
+      const rows = (result.data?.cases ?? []).map((c) => ({
+        opportunityId: String(c.opportunityId),
+        underlyingSymbol: String(c.underlyingSymbol),
+        setupFamily: c.setupFamily ?? null,
+        deliveryDecision: String(c.deliveryDecision),
+        acceptanceDecision: String(c.acceptanceDecision),
+        detectedAtMs: Number(c.detectedAtMs),
+      }));
+      setCases(rows);
     }
+    setLoading(false);
   }, []);
 
   useEffect(() => { void load(); }, [load]);
@@ -51,11 +59,13 @@ export default function IntelligencePage() {
         subtitle="Ranked opportunity cases from the deterministic options pipeline. LIVE records only — not simulated performance."
       />
       {loading && <LoadingState label="Loading opportunity cases…" />}
-      {error && <EmptyState title="Could not load" reason={error} />}
-      {!loading && !error && cases.length === 0 && (
+      {!loading && errorTitle && (
+        <ErrorState title={errorTitle} detail={errorDetail ?? undefined} onRetry={load} />
+      )}
+      {!loading && !errorTitle && cases.length === 0 && (
         <EmptyState title="No cases yet" reason="Cases appear when the independent options monitor evaluates candidates." />
       )}
-      {!loading && cases.length > 0 && (
+      {!loading && !errorTitle && cases.length > 0 && (
         <Card title="Recent opportunities">
           <SimpleTable
             columns={[

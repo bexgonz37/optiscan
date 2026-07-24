@@ -12,6 +12,10 @@ const nextConfig = {
   outputFileTracingIncludes: {
     "/api/research/seed": ["./worker/**/*.ts", "./lib/research/**/*.ts", "./lib/polygon-provider.js", "./lib/data-freshness.ts", "./lib/timestamps.ts", "./lib/trading-session.ts"],
     "/api/research/seed/[runId]": ["./worker/**/*.ts", "./lib/research/**/*.ts", "./lib/polygon-provider.js", "./lib/data-freshness.ts", "./lib/timestamps.ts", "./lib/trading-session.ts"],
+    "/api/opportunity-cases": ["./lib/opportunity-case/**/*.ts", "./lib/strategy/**/*.ts"],
+    "/api/opportunity-cases/[id]": ["./lib/opportunity-case/**/*.ts", "./lib/strategy/**/*.ts"],
+    "/api/research/options/pipeline-health": ["./lib/research/options/**/*.ts", "./lib/opportunity-case/**/*.ts"],
+    "/api/ai": ["./lib/ai/**/*.ts", "./lib/momentum-diagnostics.ts"],
   },
   async redirects() {
     return [

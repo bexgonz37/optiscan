@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   getToken, setToken, clearToken, hasToken, authHeaders, apiFetch,
-  classifyApiError, isBetterSqliteMissing, TOKEN_KEY,
+  classifyApiError, isBetterSqliteMissing, TOKEN_KEY, parseApiJsonResponse,
 } from "../lib/client-auth.ts";
 
 // Minimal localStorage + window mock so the client helper runs under node.
@@ -83,4 +83,16 @@ test("database errors are classified separately from auth errors", () => {
   assert.equal(classifyApiError(200, { error: "discord webhook failed" }), "discord");
   assert.equal(classifyApiError(503, { error: "boom" }), "server");
   assert.equal(classifyApiError(200, null), null);
+});
+
+test("parseApiJsonResponse never throws on empty 500 body", async () => {
+  const res = {
+    status: 500,
+    ok: false,
+    headers: { get: (k) => (k.toLowerCase() === "content-type" ? "application/json" : null) },
+    text: async () => "",
+  };
+  const parsed = await parseApiJsonResponse(res, "/api/ai");
+  assert.equal(parsed.ok, false);
+  assert.match(parsed.parseError ?? "", /Empty response body/);
 });
