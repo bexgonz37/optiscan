@@ -62,7 +62,9 @@ Invoke-RestMethod "$BASE/api/research/options/pipeline-health" -Headers $H
 Invoke-RestMethod "$BASE/api/ai" -Headers $H
 ```
 
-**Verification (post-fix):** _pending commit hash_ · tests/tsc/build re-run after commit.
+**Verification (post-fix):** 1854/1854 tests · tsc clean · build OK · commit `a3ec558` pushed to `origin/main`.
+
+**Deployed verification:** Pending Railway redeploy from `a3ec558`. After deploy, confirm `GET /api/healthz` → `commitShort: "a3ec558"` and authenticated calls above return valid JSON (not empty bodies).
 
 ## ⚠️ CANONICAL WORKING DIRECTORY (read first, every session)
 
