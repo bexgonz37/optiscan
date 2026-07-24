@@ -19,6 +19,7 @@ const nextConfig = {
     "/api/research/options/pipeline-health": ["./lib/research/options/**/*.ts", "./lib/opportunity-case/**/*.ts"],
     "/api/ai": ["./lib/ai/**/*.ts", "./lib/momentum-diagnostics.ts", "./lib/metrics/**/*.ts"],
     "/api/ai/funnel-explorer": ["./lib/metrics/**/*.ts", "./lib/momentum-diagnostics.ts", "./lib/ai/**/*.ts"],
+    "/api/research/brokerage-parity": ["./lib/broker/**/*.ts"],
   },
   async redirects() {
     return [

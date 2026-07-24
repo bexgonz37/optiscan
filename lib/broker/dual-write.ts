@@ -18,7 +18,9 @@ import { createEvidenceChain } from "./evidence.ts";
 import { listAuditEventsForEntity } from "./audit.ts";
 import { marketSnapshotFromOptionsRow, storeMarketSnapshot } from "./market-snapshot.ts";
 import { brokerOptionPnl, brokerReturnPct, recordParityEvent, verifyNumericParity } from "./parity.ts";
+import { sizeFromBuyingPower } from "./buying-power.ts";
 import type { BrokerDb } from "./audit.ts";
+import type { ParityCheckInput } from "./parity.ts";
 
 const OPTIONS_TABLE = "options_paper_trades";
 const LEGACY_TABLE = "paper_trades";
@@ -44,6 +46,22 @@ function loadLegacyRow(db: BrokerDb, tradeId: number) {
   return db.prepare(`SELECT * FROM ${LEGACY_TABLE} WHERE id = ?`).get(tradeId) as Record<string, any> | undefined;
 }
 
+function parityDetail(
+  evidenceChainId: string | null | undefined,
+  legacyAtMs: number | null | undefined,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    evidenceChainId: evidenceChainId ?? null,
+    legacyAtMs: legacyAtMs ?? null,
+    ...extra,
+  };
+}
+
+function withDetail(checks: ParityCheckInput[], detail: Record<string, unknown>): ParityCheckInput[] {
+  return checks.map((c) => ({ ...c, detail: { ...detail, ...(c.detail ?? {}) } }));
+}
+
 function verifyOptionsEntryParity(
   db: BrokerDb,
   row: Record<string, any>,
@@ -53,19 +71,26 @@ function verifyOptionsEntryParity(
   evidenceChainId: string,
   orderId: string,
 ): void {
-  verifyNumericParity(db, [
-    {
-      accountId,
-      legacyTable: OPTIONS_TABLE,
-      legacyId: row.id,
-      brokerEntityKind: "FILL",
-      brokerEntityId: fillId,
-      checkKind: "fill_price",
-      expected: row.entry_fill,
-      actual: fillPrice,
-      tolerance: 0.0001,
-    },
-  ]);
+  const detail = parityDetail(evidenceChainId, row.entered_at_ms);
+  verifyNumericParity(
+    db,
+    withDetail(
+      [
+        {
+          accountId,
+          legacyTable: OPTIONS_TABLE,
+          legacyId: row.id,
+          brokerEntityKind: "FILL",
+          brokerEntityId: fillId,
+          checkKind: "fill_price",
+          expected: row.entry_fill,
+          actual: fillPrice,
+          tolerance: 0.0001,
+        },
+      ],
+      detail,
+    ),
+  );
   recordParityEvent(db, {
     accountId,
     legacyTable: OPTIONS_TABLE,
@@ -75,6 +100,7 @@ function verifyOptionsEntryParity(
     checkKind: "position_lifecycle",
     expected: "ENTERED",
     actual: row.status,
+    detail,
   });
   recordParityEvent(db, {
     accountId,
@@ -83,6 +109,7 @@ function verifyOptionsEntryParity(
     checkKind: "audit_chain",
     expected: true,
     actual: auditChainComplete(db, accountId, evidenceChainId, orderId, fillId),
+    detail,
   });
 }
 
@@ -92,8 +119,10 @@ function verifyOptionsExitParity(
   accountId: string,
   exitFillId: string,
   exitFillPrice: number | null,
+  evidenceChainId: string | null,
 ): void {
-  const checks = [];
+  const detail = parityDetail(evidenceChainId, row.exit_at_ms ?? row.entered_at_ms);
+  const checks: ParityCheckInput[] = [];
   if (exitFillPrice != null) {
     checks.push({
       accountId,
@@ -101,7 +130,7 @@ function verifyOptionsExitParity(
       legacyId: row.id,
       brokerEntityKind: "FILL",
       brokerEntityId: exitFillId,
-      checkKind: "fill_price" as const,
+      checkKind: "fill_price",
       expected: row.exit_fill,
       actual: exitFillPrice,
       tolerance: 0.0001,
@@ -114,7 +143,7 @@ function verifyOptionsExitParity(
       legacyId: row.id,
       brokerEntityKind: "FILL",
       brokerEntityId: exitFillId,
-      checkKind: "realized_pnl" as const,
+      checkKind: "realized_pnl",
       expected: row.pnl,
       actual: brokerOptionPnl(row.entry_fill, row.exit_fill, 1),
       tolerance: 0.05,
@@ -125,13 +154,13 @@ function verifyOptionsExitParity(
       legacyId: row.id,
       brokerEntityKind: "FILL",
       brokerEntityId: exitFillId,
-      checkKind: "return_pct" as const,
+      checkKind: "return_pct",
       expected: row.return_pct,
       actual: brokerReturnPct(row.entry_fill, row.exit_fill),
       tolerance: 0.05,
     });
   }
-  if (checks.length) verifyNumericParity(db, checks);
+  if (checks.length) verifyNumericParity(db, withDetail(checks, detail));
   recordParityEvent(db, {
     accountId,
     legacyTable: OPTIONS_TABLE,
@@ -139,6 +168,7 @@ function verifyOptionsExitParity(
     checkKind: "position_lifecycle",
     expected: "EXITED",
     actual: row.status,
+    detail,
   });
 }
 
@@ -163,6 +193,31 @@ export function dualWriteAfterOptionsPaperEntry(db: BrokerDb, tradeId: number, e
         alertId: row.alert_id,
         marketSnapshotId: marketSnapshot.id,
       },
+    });
+    const sized = sizeFromBuyingPower(db, {
+      accountId: account.id,
+      assetClass: "OPTION",
+      symbol: row.option_symbol,
+      limitPrice: row.entry_fill,
+      contractMultiplier: 100,
+      desiredQuantity: 1,
+      blockDuplicateSymbol: false,
+    });
+    // B2: V2 ledger must account for the mirrored notional. Legacy stays authoritative —
+    // we still mirror, but never silently ignore a buying-power shortfall.
+    recordParityEvent(db, {
+      accountId: account.id,
+      legacyTable: OPTIONS_TABLE,
+      legacyId: row.id,
+      checkKind: "buying_power",
+      expected: true,
+      actual: sized.allowed && sized.quantity >= 1,
+      detail: parityDetail(evidence.id, row.entered_at_ms, {
+        buyingPower: sized.buyingPower,
+        notional: sized.notional,
+        reasons: sized.reasons,
+        openPositions: sized.openPositions,
+      }),
     });
     const mirrored = paperSimBrokerAdapter.mirrorLimitFill(ctx(db, env), {
       accountId: account.id,
@@ -211,7 +266,9 @@ export function dualWriteAfterOptionsPaperExit(db: BrokerDb, tradeId: number, en
         checkKind: "fill_price",
         expected: row.exit_fill,
         actual: null,
-        detail: { reason: "legacy_unpriced_exit" },
+        detail: parityDetail(refreshedLink.evidence_chain_id, row.exit_at_ms, {
+          reason: "legacy_unpriced_exit",
+        }),
       });
       return;
     }
@@ -240,7 +297,7 @@ export function dualWriteAfterOptionsPaperExit(db: BrokerDb, tradeId: number, en
       exitFillId: sell.fillId,
       metadata: { exitMarketSnapshotId: marketSnapshot.id },
     });
-    verifyOptionsExitParity(db, row, accountId, sell.fillId, row.exit_fill);
+    verifyOptionsExitParity(db, row, accountId, sell.fillId, row.exit_fill, evidenceId);
   });
 }
 

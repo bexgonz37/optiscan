@@ -8,7 +8,8 @@ export type ParityCheckKind =
   | "realized_pnl"
   | "return_pct"
   | "position_lifecycle"
-  | "audit_chain";
+  | "audit_chain"
+  | "buying_power";
 
 export interface ParityCheckInput {
   accountId?: string | null;
@@ -38,6 +39,13 @@ export function valuesMatch(expected: unknown, actual: unknown, tolerance = 0.01
 export function recordParityEvent(db: BrokerDb, input: ParityCheckInput): { matched: boolean; id: string } {
   const matched = valuesMatch(input.expected, input.actual, input.tolerance ?? 0.01);
   const id = brokerId("bpar");
+  const now = Date.now();
+  const detail: Record<string, unknown> = { ...(input.detail ?? {}) };
+  // Never silently drop mismatch context — always stamp reconciliation timing.
+  if (detail.reconciliationLatencyMs == null && typeof detail.legacyAtMs === "number") {
+    detail.reconciliationLatencyMs = Math.max(0, now - Number(detail.legacyAtMs));
+  }
+  if (detail.brokerAtMs == null) detail.brokerAtMs = now;
   db.prepare(
     `INSERT INTO broker_parity_events
       (id, account_id, legacy_table, legacy_id, broker_entity_kind, broker_entity_id,
@@ -54,13 +62,13 @@ export function recordParityEvent(db: BrokerDb, input: ParityCheckInput): { matc
     JSON.stringify(input.expected ?? null),
     JSON.stringify(input.actual ?? null),
     matched ? 1 : 0,
-    input.detail ? JSON.stringify(input.detail) : null,
+    JSON.stringify(detail),
     BROKER_RECORD_SCHEMA_VERSION,
-    Date.now(),
+    now,
   );
   if (!matched) {
     console.warn(
-      `[broker-parity] mismatch ${input.legacyTable}:${input.legacyId} ${input.checkKind} expected=${JSON.stringify(input.expected)} actual=${JSON.stringify(input.actual)}`,
+      `[broker-parity] MISMATCH ${input.legacyTable}:${input.legacyId} field=${input.checkKind} expected=${JSON.stringify(input.expected)} actual=${JSON.stringify(input.actual)} brokerEntity=${input.brokerEntityId ?? "n/a"} evidence=${detail.evidenceChainId ?? "n/a"}`,
     );
   }
   return { matched, id };

@@ -37,3 +37,11 @@ export {
   dualWriteAfterLegacyOutcome,
 } from "./dual-write.ts";
 export { recordParityEvent, verifyNumericParity, valuesMatch } from "./parity.ts";
+export { buildParityDashboardReport } from "./parity-report.ts";
+export type { ParityDashboardReport, WindowStats, ParityFailureDetail } from "./parity-report.ts";
+export {
+  sizeFromBuyingPower,
+  defaultBuyingPowerConfig,
+  readBuyingPowerSnapshot,
+} from "./buying-power.ts";
+export type { BuyingPowerConfig, SizeFromBuyingPowerResult } from "./buying-power.ts";

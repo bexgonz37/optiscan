@@ -26,6 +26,7 @@ const ADVANCED_NAV: NavItem[] = [
   { href: "/watchlist", label: "Watchlist" },
   { href: "/quant", label: "Research & Backtesting" },
   { href: "/research-learning", label: "Research & Learning" },
+  { href: "/brokerage-parity", label: "Brokerage Parity" },
   { href: "/improvement", label: "Improvement Agent" },
   { href: "/settings", label: "Settings" },
 ];
@@ -42,6 +43,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   "/performance": { title: "Performance", sub: "Alert track record and paper account" },
   "/quant": { title: "Research & Backtesting", sub: "Setup stats and backtests" },
   "/research-learning": { title: "Research & Learning", sub: "Model readiness, drift, and bounded continuous learning" },
+  "/brokerage-parity": { title: "Brokerage Parity", sub: "Legacy vs V2 dual-write agreement · developer/research only" },
   "/improvement": { title: "Improvement Agent", sub: "Controlled, propose-only code-improvement agent (never edits code autonomously)" },
   "/swing": { title: "Swing Research", sub: "Moved into Callouts → Swing Research tab" },
   "/settings": { title: "Settings", sub: "Alerts, Discord, safety" },
