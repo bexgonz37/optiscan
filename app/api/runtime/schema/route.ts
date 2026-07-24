@@ -16,19 +16,11 @@ export async function GET(req: Request) {
       { status: schema.ok ? 200 : 503, headers: { "content-type": "application/json" } },
     );
   } catch (err) {
-    const { resolveDbLocation } = await import("@/lib/db-schema-readiness");
+    const { inspectPartialDatabaseState } = await import("@/lib/db-schema-readiness");
+    const partial = inspectPartialDatabaseState(process.env);
+    partial.error = String((err as Error)?.message ?? err).slice(0, 240);
     return NextResponse.json(
-      {
-        ok: false,
-        schema: {
-          ok: false,
-          missing: [],
-          present: [],
-          repaired: [],
-          db: resolveDbLocation(process.env),
-          error: String((err as Error)?.message ?? err).slice(0, 240),
-        },
-      },
+      { ok: false, schema: partial },
       { status: 503, headers: { "content-type": "application/json" } },
     );
   }

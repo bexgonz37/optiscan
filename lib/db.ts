@@ -16,6 +16,7 @@ import Database from "better-sqlite3";
 import path from "node:path";
 import fs from "node:fs";
 import { ensureEnterpriseSchemaOnDb, inspectSchemaReadiness } from "@/lib/db-schema-readiness";
+import { ensureOptionsDeliveryDecisionsColumns } from "@/lib/db-legacy-columns";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS alerts (
@@ -1495,7 +1496,7 @@ CREATE TABLE IF NOT EXISTS options_delivery_decisions (
   created_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_options_delivery_decisions ON options_delivery_decisions(outcome, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_options_delivery_final_outcome ON options_delivery_decisions(final_delivery_outcome, created_at_ms);
+-- idx_options_delivery_final_outcome is created after additive column migrations (legacy DBs may lack final_delivery_outcome until then).
 
 -- Canonical Opportunity Case (Enterprise Phase 2). Append-friendly audit record for delivered AND rejected paths.
 CREATE TABLE IF NOT EXISTS opportunity_cases (
@@ -1841,6 +1842,9 @@ function migrate(db: Database.Database) {
     const dedupSql: any = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_alerts_dedup'").get();
     if (dedupSql?.sql && !String(dedupSql.sql).includes("session")) db.exec("DROP INDEX idx_alerts_dedup");
   }
+  // Legacy production DBs may already have options_delivery_decisions without newer columns.
+  // Add columns BEFORE SCHEMA so CREATE INDEX statements in SCHEMA cannot fail on missing columns.
+  ensureOptionsDeliveryDecisionsColumns(db);
   db.exec(SCHEMA);
   const paperCols = cols("paper_trades");
   for (const [col, sql] of PAPER_COLUMN_MIGRATIONS) if (!paperCols.has(col)) db.exec(sql);
@@ -1921,19 +1925,7 @@ function migrate(db: Database.Database) {
     ] as [string, string][]) if (!oa.has(col)) db.exec(sql);
   }
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_delivery_decisions'").get()) {
-    const odd = cols("options_delivery_decisions");
-    for (const [col, sql] of [
-      ["delivery_attempted", "ALTER TABLE options_delivery_decisions ADD COLUMN delivery_attempted INTEGER NOT NULL DEFAULT 0"],
-      ["delivery_sent", "ALTER TABLE options_delivery_decisions ADD COLUMN delivery_sent INTEGER NOT NULL DEFAULT 0"],
-      ["delivery_state", "ALTER TABLE options_delivery_decisions ADD COLUMN delivery_state TEXT"],
-      ["final_delivery_outcome", "ALTER TABLE options_delivery_decisions ADD COLUMN final_delivery_outcome TEXT NOT NULL DEFAULT 'SKIPPED'"],
-      ["delivery_failure_category", "ALTER TABLE options_delivery_decisions ADD COLUMN delivery_failure_category TEXT"],
-      ["final_delivery_reason", "ALTER TABLE options_delivery_decisions ADD COLUMN final_delivery_reason TEXT"],
-      ["delivery_attempted_at_ms", "ALTER TABLE options_delivery_decisions ADD COLUMN delivery_attempted_at_ms INTEGER"],
-      ["delivery_completed_at_ms", "ALTER TABLE options_delivery_decisions ADD COLUMN delivery_completed_at_ms INTEGER"],
-    ] as [string, string][]) if (!odd.has(col)) db.exec(sql);
-    db.exec("UPDATE options_delivery_decisions SET final_delivery_outcome=CASE WHEN outcome='REJECT' THEN 'REJECTED' ELSE 'SKIPPED' END WHERE final_delivery_outcome IS NULL OR final_delivery_outcome=''");
-    db.prepare("CREATE INDEX IF NOT EXISTS idx_options_delivery_final_outcome ON options_delivery_decisions(final_delivery_outcome, created_at_ms)").run();
+    ensureOptionsDeliveryDecisionsColumns(db);
   }
   // Phase 7 (additive): drift-health flag on an existing model_registry table.
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_registry'").get()) {
@@ -2029,7 +2021,13 @@ CREATE INDEX IF NOT EXISTS idx_journal_dedup ON trade_journal(dedup_key);
   }
   const readiness = inspectSchemaReadiness(db);
   if (!readiness.ok) {
-    throw new Error(`enterprise schema incomplete after migrate: ${readiness.missing.join(", ")}`);
+    const parts = [
+      readiness.missing.length ? `tables: ${readiness.missing.join(", ")}` : "",
+      readiness.missingLegacyColumns.length
+        ? `columns: ${readiness.missingLegacyColumns.map((c) => `${c.table}.${c.column}`).join(", ")}`
+        : "",
+    ].filter(Boolean);
+    throw new Error(`schema incomplete after migrate: ${parts.join("; ")}`);
   }
 }
 
@@ -2060,6 +2058,7 @@ export function getDb(): Database.Database {
   return db;
 }
 
-export { inspectSchemaReadiness, repairAndInspectSchemaReadiness, resolveDbLocation } from "@/lib/db-schema-readiness";
+export { inspectSchemaReadiness, repairAndInspectSchemaReadiness, resolveDbLocation, inspectPartialDatabaseState } from "@/lib/db-schema-readiness";
+export { ensureOptionsDeliveryDecisionsColumns } from "@/lib/db-legacy-columns";
 
 export { tradingDay, etCloseMs, minutesToClose } from "@/lib/trading-session";

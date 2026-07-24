@@ -54,6 +54,30 @@ Three subscriber-facing pages failed after the Phases 0–21 deploy (`f488459` /
 
 **Schema repair deploy:** commit `bd13ebc` pushed to `origin/main`. After Railway redeploy, `/api/healthz` must show `schemaOk:true`, `schemaMissing:[]`, and authenticated `/api/opportunity-cases` must not return `SCHEMA_MISMATCH`.
 
+## PRODUCTION SCHEMA REPAIR — `final_delivery_outcome` migration ordering (2026-07-24)
+
+**Symptom (commit `7fc37d4` on Railway):** authenticated `GET /api/runtime/schema` returned HTTP 503 with `"error": "no such column: final_delivery_outcome"`. DB path `/app/data/optiscan.db` existed and was writable; failure was legacy schema ordering, not auth/volume/permissions.
+
+| Item | Detail |
+|---|---|
+| **Column owner** | `options_delivery_decisions.final_delivery_outcome` |
+| **Offending statement** | `CREATE INDEX IF NOT EXISTS idx_options_delivery_final_outcome ON options_delivery_decisions(final_delivery_outcome, created_at_ms)` inside monolithic `db.exec(SCHEMA)` |
+| **Why it failed** | Legacy DB already had `options_delivery_decisions` without newer columns → `CREATE TABLE IF NOT EXISTS` skipped → index creation referenced missing column → migrate aborted before post-SCHEMA ALTERs |
+
+**Old order:** pre-alert column migrations → `db.exec(SCHEMA)` (index fails) → post-SCHEMA column migrations (never reached).
+
+**Corrected order:** pre-alert column migrations → **`ensureOptionsDeliveryDecisionsColumns(db)`** (PRAGMA-guarded ALTERs + backfill + index) → `db.exec(SCHEMA)` (index removed from SCHEMA) → remaining post-SCHEMA migrations → **`ensureOptionsDeliveryDecisionsColumns(db)`** again (idempotent) → **`ensureEnterpriseSchemaOnDb(db)`** → readiness validation.
+
+**Additive SQL:** `ALTER TABLE options_delivery_decisions ADD COLUMN final_delivery_outcome TEXT NOT NULL DEFAULT 'SKIPPED'` (+ related delivery columns); backfill `REJECT` → `REJECTED`; index created only after column exists.
+
+**New modules:** `lib/db-legacy-columns.ts`, `tests/db-legacy-columns.test.mjs`; enhanced `lib/db-schema-readiness.ts` partial-state reporting; `/api/runtime/schema` catch path uses `inspectPartialDatabaseState()`.
+
+**Production before fix:** `/api/runtime/schema` 503, `schema.ok: false`, error `no such column: final_delivery_outcome`, `present`/`repaired` empty.
+
+**Production after fix:** Pending Railway redeploy. Expect `/api/healthz` → `schemaOk: true`, `schemaMissing: []`; `/api/runtime/schema` → 200 with `final_delivery_outcome` in `presentLegacyColumns`; `/api/opportunity-cases`, `/api/research/options/pipeline-health`, `/api/ai` → 200 JSON.
+
+**Verification (post-fix):** 1867/1867 tests · tsc clean · build OK · commit pending push to `origin/main`.
+
 
 ```powershell
 $BASE="https://YOUR-APP.up.railway.app"; $H=@{ "x-scan-token"=$env:SCAN_API_TOKEN }

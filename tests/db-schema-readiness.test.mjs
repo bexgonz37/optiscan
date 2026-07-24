@@ -57,7 +57,8 @@ test("ensureEnterpriseSchemaOnDb is repeat-safe", { skip: !Database }, () => {
 test("getDb migrate path includes enterprise schema repair", () => {
   const dbSrc = read("lib/db.ts");
   assert.match(dbSrc, /ensureEnterpriseSchemaOnDb\(db\)/);
-  assert.match(dbSrc, /enterprise schema incomplete after migrate/);
+  assert.match(dbSrc, /ensureOptionsDeliveryDecisionsColumns\(db\)/);
+  assert.match(dbSrc, /schema incomplete after migrate/);
 });
 
 test("healthz reports schema readiness without secrets", () => {

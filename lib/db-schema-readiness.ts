@@ -5,6 +5,10 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import {
+  LEGACY_COLUMN_CHECKS,
+  listMissingLegacyColumns,
+} from "./db-legacy-columns.ts";
 
 export const ENTERPRISE_REQUIRED_TABLES = [
   "opportunity_cases",
@@ -29,6 +33,9 @@ export interface SchemaReadinessReport {
   ok: boolean;
   missing: EnterpriseRequiredTable[];
   present: EnterpriseRequiredTable[];
+  missingLegacyColumns: Array<{ table: string; column: string }>;
+  presentLegacyColumns: Array<{ table: string; column: string }>;
+  tablesSample: string[];
   db: DbLocationInfo;
   repaired: EnterpriseRequiredTable[];
   error: string | null;
@@ -195,20 +202,86 @@ export function ensureEnterpriseSchemaOnDb(db: SqliteDb): EnterpriseRequiredTabl
   return before;
 }
 
+export function listKnownTables(db: { prepare(sql: string): { all: (...args: any[]) => any[] } }): string[] {
+  try {
+    return (db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as { name: string }[])
+      .map((r) => r.name)
+      .slice(0, 40);
+  } catch {
+    return [];
+  }
+}
+
+function buildReadinessCore(
+  db: SqliteDb,
+  env: NodeJS.ProcessEnv,
+  extra: Partial<SchemaReadinessReport> = {},
+): SchemaReadinessReport {
+  const missing = listMissingEnterpriseTables(db);
+  const present = ENTERPRISE_REQUIRED_TABLES.filter((t) => !missing.includes(t));
+  const missingLegacyColumns = listMissingLegacyColumns(db);
+  const presentLegacyColumns = LEGACY_COLUMN_CHECKS.filter(
+    (c) => !missingLegacyColumns.some((m) => m.table === c.table && m.column === c.column),
+  );
+  return {
+    ok: missing.length === 0 && missingLegacyColumns.length === 0,
+    missing,
+    present,
+    missingLegacyColumns,
+    presentLegacyColumns,
+    tablesSample: listKnownTables(db),
+    db: resolveDbLocation(env),
+    repaired: [],
+    error: null,
+    ...extra,
+  };
+}
+
+/** Read-only snapshot when migrate/getDb fails — never mutates the database. */
+export function inspectPartialDatabaseState(env: NodeJS.ProcessEnv = process.env): SchemaReadinessReport {
+  const dbInfo = resolveDbLocation(env);
+  if (!dbInfo.fileExists) {
+    return {
+      ok: false,
+      missing: [...ENTERPRISE_REQUIRED_TABLES],
+      present: [],
+      missingLegacyColumns: [...LEGACY_COLUMN_CHECKS],
+      presentLegacyColumns: [],
+      tablesSample: [],
+      db: dbInfo,
+      repaired: [],
+      error: "database file not found",
+    };
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const Database = require("better-sqlite3");
+    const db = new Database(dbInfo.file, { readonly: true, fileMustExist: true });
+    try {
+      return buildReadinessCore(db, env);
+    } finally {
+      db.close();
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      missing: [...ENTERPRISE_REQUIRED_TABLES],
+      present: [],
+      missingLegacyColumns: [...LEGACY_COLUMN_CHECKS],
+      presentLegacyColumns: [],
+      tablesSample: [],
+      db: dbInfo,
+      repaired: [],
+      error: String((err as Error)?.message ?? err).slice(0, 240),
+    };
+  }
+}
+
 export function inspectSchemaReadiness(
   db: SqliteDb,
   env: NodeJS.ProcessEnv = process.env,
 ): SchemaReadinessReport {
-  const missing = listMissingEnterpriseTables(db);
-  const present = ENTERPRISE_REQUIRED_TABLES.filter((t) => !missing.includes(t));
-  return {
-    ok: missing.length === 0,
-    missing,
-    present,
-    db: resolveDbLocation(env),
-    repaired: [],
-    error: null,
-  };
+  return buildReadinessCore(db, env);
 }
 
 export function repairAndInspectSchemaReadiness(
