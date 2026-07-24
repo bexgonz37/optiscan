@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { checkApiToken, unauthorized } from "@/lib/auth";
-import { deferServerBoot } from "@/lib/server-boot";
+import { ensureServerBoot } from "@/lib/server-boot";
 import { jsonFromRouteError } from "@/lib/api-response";
 
 export const runtime = "nodejs";
@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 /** Auth-gated paper trade lifecycle diagnostic (Candidate → … → Broker V2). */
 export async function GET(req: Request) {
   if (!checkApiToken(req)) return unauthorized();
-  deferServerBoot();
+  ensureServerBoot();
   try {
     const url = new URL(req.url);
     const lane = url.searchParams.get("lane");
@@ -17,12 +17,18 @@ export async function GET(req: Request) {
     const optionTradeId = url.searchParams.get("optionTradeId");
     const alertId = url.searchParams.get("alertId");
     const { getDb } = await import("@/lib/db");
+    const { ensureBrokerSchemaOnDb } = await import("@/lib/broker/index");
     const {
       listRecentPaperLifecycles,
       buildLegacyPaperLifecycle,
       buildOptionsPaperLifecycle,
     } = await import("@/lib/paper-lifecycle");
     const db = getDb();
+    try {
+      ensureBrokerSchemaOnDb(db as never);
+    } catch {
+      /* broker DDL best-effort — lifecycle still works for legacy stages */
+    }
 
     if (lane === "legacy" && tradeId) {
       const report = buildLegacyPaperLifecycle(db as never, Number(tradeId));

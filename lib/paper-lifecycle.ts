@@ -45,7 +45,21 @@ export interface PaperLifecycleListItem {
 }
 
 function tableExists(db: BrokerDb, name: string): boolean {
-  return Boolean(db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(name));
+  try {
+    return Boolean(db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(name));
+  } catch {
+    return false;
+  }
+}
+
+/** Prefer updated_at_ms when present; paper_trades historically only has created_at_ms. */
+function pickUpdatedAtMs(row: Record<string, any> | null | undefined): number | null {
+  if (!row) return null;
+  const u = row.updated_at_ms;
+  const c = row.created_at_ms;
+  if (u != null && Number.isFinite(Number(u))) return Number(u);
+  if (c != null && Number.isFinite(Number(c))) return Number(c);
+  return null;
 }
 
 function firstBlock(stages: LifecycleStage[]): { stage: string; reason: string | null } | null {
@@ -538,8 +552,10 @@ export function buildOptionsPaperLifecycle(
 export function listRecentPaperLifecycles(db: BrokerDb, limit = 40): PaperLifecycleListItem[] {
   const out: PaperLifecycleListItem[] = [];
   if (tableExists(db, "paper_trades")) {
+    // paper_trades has no updated_at_ms (only created_at_ms) — do not SELECT missing columns
+    // or production classifies "no such column" as SCHEMA_MISMATCH 503.
     const rows = (db
-      .prepare(`SELECT id, ticker, status, updated_at_ms, created_at_ms FROM paper_trades ORDER BY id DESC LIMIT ?`)
+      .prepare(`SELECT id, ticker, status, created_at_ms FROM paper_trades ORDER BY id DESC LIMIT ?`)
       .all?.(Math.min(limit, 30)) ?? []) as Array<Record<string, any>>;
     for (const r of rows) {
       const report = buildLegacyPaperLifecycle(db, Number(r.id));
@@ -552,7 +568,7 @@ export function listRecentPaperLifecycles(db: BrokerDb, limit = 40): PaperLifecy
         blocked: report.blocked,
         blockingReason: report.blockingReason,
         currentStage: report.currentStage,
-        updatedAtMs: Number(r.updated_at_ms ?? r.created_at_ms) || null,
+        updatedAtMs: pickUpdatedAtMs(r),
       });
     }
   }
@@ -575,7 +591,7 @@ export function listRecentPaperLifecycles(db: BrokerDb, limit = 40): PaperLifecy
         blocked: report.blocked,
         blockingReason: report.blockingReason,
         currentStage: report.currentStage,
-        updatedAtMs: Number(r.updated_at_ms ?? r.created_at_ms) || null,
+        updatedAtMs: pickUpdatedAtMs(r),
       });
     }
   }

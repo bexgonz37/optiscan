@@ -91,6 +91,27 @@ test("legacy lifecycle surfaces entry cancel blocker", { skip: !Database }, () =
   assert.equal(report.blocked, true);
 });
 
+test("listRecent works when paper_trades lacks updated_at_ms (prod schema)", { skip: !Database }, () => {
+  const database = new Database(":memory:");
+  database.exec(`
+    CREATE TABLE paper_trades (
+      id INTEGER PRIMARY KEY, ticker TEXT, status TEXT, exit_reason TEXT,
+      entry_price REAL, exit_price REAL, entry_at_ms INTEGER, exit_at_ms INTEGER, created_at_ms INTEGER
+    );
+    CREATE TABLE paper_candidates (
+      id INTEGER PRIMARY KEY, idempotency_key TEXT, status TEXT, reject_reason TEXT,
+      paper_trade_id INTEGER, ticker TEXT, created_at_ms INTEGER
+    );
+  `);
+  database
+    .prepare(`INSERT INTO paper_trades (id, ticker, status, created_at_ms) VALUES (9,'IWM','CANCELLED',500)`)
+    .run();
+  const recent = listRecentPaperLifecycles(database, 10);
+  assert.equal(recent.length, 1);
+  assert.equal(recent[0].id, "legacy:9");
+  assert.equal(recent[0].updatedAtMs, 500);
+});
+
 test("options lifecycle marks SENT without paper_linked as failed mirror", { skip: !Database }, () => {
   const database = db();
   database
