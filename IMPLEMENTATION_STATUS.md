@@ -76,7 +76,7 @@ Three subscriber-facing pages failed after the Phases 0–21 deploy (`f488459` /
 
 **Production after fix:** Pending Railway redeploy. Expect `/api/healthz` → `schemaOk: true`, `schemaMissing: []`; `/api/runtime/schema` → 200 with `final_delivery_outcome` in `presentLegacyColumns`; `/api/opportunity-cases`, `/api/research/options/pipeline-health`, `/api/ai` → 200 JSON.
 
-**Verification (post-fix):** 1867/1867 tests · tsc clean · build OK · commit pending push to `origin/main`.
+**Verification (post-fix):** 1867/1867 tests · tsc clean · build OK · commit `270b059` pushed to `origin/main`.
 
 
 ```powershell
