@@ -52,7 +52,7 @@ Three subscriber-facing pages failed after the Phases 0–21 deploy (`f488459` /
 
 **Production migration status:** Enterprise tables (`opportunity_cases`, evidence-learning) are created by `migrate()` via monolithic SCHEMA **and** an explicit `ensureEnterpriseSchemaOnDb()` repair pass in `lib/db-schema-readiness.ts`. Schema readiness is exposed on `/api/healthz` (`schemaOk`, `schemaMissing`, `dbDirectory`) and `/api/runtime/schema` (auth-gated repair + report).
 
-**Schema repair deploy (pending):** commit _TBD_ — after deploy, `/api/healthz` must show `schemaOk:true`, `schemaMissing:[]`, and authenticated `/api/opportunity-cases` must not return `SCHEMA_MISMATCH`.
+**Schema repair deploy:** commit `bd13ebc` pushed to `origin/main`. After Railway redeploy, `/api/healthz` must show `schemaOk:true`, `schemaMissing:[]`, and authenticated `/api/opportunity-cases` must not return `SCHEMA_MISMATCH`.
 
 
 ```powershell
