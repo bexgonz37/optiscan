@@ -1,6 +1,29 @@
 # OptiScan — Implementation Status
 
-_Last updated: 2026-07-18. Working repo: `~/Downloads/optiscan-main`, branch `main`._
+_Last updated: 2026-07-24. Working repo: `~/Downloads/optiscan-main`, branch `main`._
+
+## ENTERPRISE PLATFORM EXTENSION — Phases 0–21 (2026-07-24)
+
+Resume tracker for the coordinated quantitative options-intelligence platform. **Do not rebuild** quant P1–P9, multi-lane 0–9, or Analog A–E. Map: [`docs/ENTERPRISE_PHASE_MAP.md`](docs/ENTERPRISE_PHASE_MAP.md).
+
+| Phase | Status | Notes |
+|---|---|---|
+| 0 — Audit + phase map | ✅ | `docs/ENTERPRISE_PHASE_MAP.md` |
+| 1 — Pipeline diagnostics | ✅ | `lib/research/options/pipeline-diagnostics.ts`, `GET /api/research/options/pipeline-health`, `/pipeline-health` UI |
+| 2 — Opportunity Case | ✅ | `lib/opportunity-case/*`, `opportunity_cases` table, wired from `loop.ts` |
+| 3 — Strategy contract | ✅ | `lib/strategy/evaluation.ts`, `catalog-adapter.ts` |
+| 4–5 — Library + Conductor | ✅ | `conductor.ts`, `blocked-providers.ts`, Kelly/Monte Carlo RESEARCH_ONLY |
+| 6–11 — Regime/probability/explanation/ranking | ✅ | `lib/opportunity-case/{regime,probability,explanation,ranking,contract-selection}.ts` |
+| 12–20 — Billing INACTIVE, licensing, report cards, learning gov, briefs, replay | ✅ | `lib/billing/`, `lib/licensing/`, `learning-governance.ts`, replay/briefs APIs |
+| 21 — Enterprise UI | ✅ | `/intelligence`, `/intelligence/[id]`, `/pipeline-health` |
+
+**Safety preserved:** BEARISH_ACTIONABLE off; puts RESEARCH_ONLY; strategies never Discord; learning advisory-only; L2/L3 BLOCKED; billing INACTIVE until `BILLING_ENABLED=1` + Stripe key.
+
+**Env:** `OPPORTUNITY_CASE_CAPTURE_ENABLED` (default ON when unset; set `0` to disable audit persist).
+
+**Next resume (unchanged Analog gate):** collect Phase-F/shadow/options live evidence before Analog G–I.
+
+**Verification (2026-07-24):** 1837/1837 tests · tsc clean · build OK · commit pending push.
 
 ## ⚠️ CANONICAL WORKING DIRECTORY (read first, every session)
 

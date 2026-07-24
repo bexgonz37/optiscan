@@ -1496,6 +1496,27 @@ CREATE TABLE IF NOT EXISTS options_delivery_decisions (
 CREATE INDEX IF NOT EXISTS idx_options_delivery_decisions ON options_delivery_decisions(outcome, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_options_delivery_final_outcome ON options_delivery_decisions(final_delivery_outcome, created_at_ms);
 
+-- Canonical Opportunity Case (Enterprise Phase 2). Append-friendly audit record for delivered AND rejected paths.
+CREATE TABLE IF NOT EXISTS opportunity_cases (
+  opportunity_id TEXT PRIMARY KEY,
+  underlying_symbol TEXT NOT NULL,
+  direction TEXT,
+  setup_family TEXT,
+  detected_at_ms INTEGER NOT NULL,
+  market_session TEXT,
+  source_path TEXT NOT NULL,
+  acceptance_decision TEXT NOT NULL,
+  delivery_decision TEXT NOT NULL,
+  rejection_reason_codes_json TEXT,
+  alert_id TEXT,
+  case_json TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_opportunity_cases_detected ON opportunity_cases(detected_at_ms);
+CREATE INDEX IF NOT EXISTS idx_opportunity_cases_symbol ON opportunity_cases(underlying_symbol, detected_at_ms);
+CREATE INDEX IF NOT EXISTS idx_opportunity_cases_delivery ON opportunity_cases(delivery_decision, detected_at_ms);
+
 -- Evidence Learning Engine: durable completed-candidate evidence + deterministic aggregate patterns.
 -- This is ADVISORY ONLY. It is never read by live gates, thresholds, strategy selection, or Discord
 -- delivery. AI may summarize these rows into PENDING human-review recommendations, but nothing here

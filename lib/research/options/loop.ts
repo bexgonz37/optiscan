@@ -9,6 +9,7 @@ import { selectOptionsStrategy, type OptionsCandidateInput, type StrategySelecti
 import { getStrategy } from "./strategy-catalog.ts";
 import { evaluateCallout, type CalloutContract, type CalloutResult } from "./callout.ts";
 import { buildRealOptionEntry, persistRealOptionPaperOnDb, canOpenRealOptionPaper, type OptionQuote, type RealOptionEntry } from "./paper.ts";
+import { persistCaseFromOptionsLive } from "../../opportunity-case/orchestrate.ts";
 
 export interface ChainContract { optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number; bid: number | null; ask: number | null; spreadPct: number | null; volume: number | null; openInterest: number | null; iv: number | null; delta: number | null; providerTimestamp: number | null }
 
@@ -89,6 +90,12 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
       `INSERT INTO options_candidates (symbol, tier, session, selected_strategy, direction, side, research_only, score, considered_json, state, why, option_symbol, freshness_state, callout_message, earliness_phase, escalated_by, feature_snapshot_json, created_at_ms)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(input.symbol, input.tier, input.session, res.selection.selected?.key ?? null, res.selection.direction, res.selection.selected?.side ?? null, res.selection.selected?.researchOnly ? 1 : 0, res.selection.selected?.score ?? null, JSON.stringify(res.selection.considered.slice(0, 8)), res.state, res.callout?.reason ?? res.selection.reason, res.contract?.optionSymbol ?? null, res.callout?.freshness ?? null, res.callout?.message ?? null, extra.earlinessPhase ?? null, extra.escalatedBy ?? null, snapJson, input.nowMs);
+    // Enterprise Opportunity Case audit (additive, isolated — never blocks the live path).
+    if (env.OPPORTUNITY_CASE_CAPTURE_ENABLED !== "0") {
+      try {
+        persistCaseFromOptionsLive(db, { input, evalResult: res, chainLength: chain.length });
+      } catch { /* audit is best-effort */ }
+    }
     // Real-option paper (separate flag). Public callout DELIVERY is NOT wired here (manual/gated).
     // Options-market-hours only (never open from a stale prior-session quote), and gated on
     // dedup / max-concurrent / per-symbol exposure. A fresh executable quote is enforced by the

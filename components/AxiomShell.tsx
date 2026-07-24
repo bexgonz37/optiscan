@@ -10,6 +10,8 @@ import { apiGetJson } from "@/lib/client-auth";
 // need owner attention, and one collapsed ADVANCED group for everything else.
 const DAILY_NAV: NavItem[] = [
   { href: "/", label: "Command Center" },
+  { href: "/intelligence", label: "Intelligence" },
+  { href: "/pipeline-health", label: "Pipeline Health" },
   { href: "/callouts", label: "Callouts" },
   { href: "/paper", label: "Paper Trading" },
   { href: "/performance", label: "Performance" },
