@@ -20,6 +20,7 @@ const nextConfig = {
     "/api/ai": ["./lib/ai/**/*.ts", "./lib/momentum-diagnostics.ts", "./lib/metrics/**/*.ts"],
     "/api/ai/funnel-explorer": ["./lib/metrics/**/*.ts", "./lib/momentum-diagnostics.ts", "./lib/ai/**/*.ts"],
     "/api/research/brokerage-parity": ["./lib/broker/**/*.ts"],
+    "/api/research/brokerage-readiness": ["./lib/broker/**/*.ts"],
   },
   async redirects() {
     return [

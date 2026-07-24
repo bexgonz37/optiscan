@@ -55,8 +55,8 @@ export async function GET(req: Request) {
   const startingBalance = Number(process.env.PAPER_STARTING_BALANCE_USD ?? process.env.PAPER_STARTING_BALANCE ?? 5000);
   const equity = +(startingBalance + summary.totalPnlDollars).toFixed(2);
   const engine = paperEngineState();
-  return NextResponse.json({
-    ok: true,
+  const legacyPayload = {
+    ok: true as const,
     trades,
     summary,
     optionsPerformance: optionsPerf,
@@ -83,7 +83,68 @@ export async function GET(req: Request) {
     decisions: listPaperDecisions(),
     events: recentPaperEvents(200),
     engine,
-  });
+    source: "LEGACY" as const,
+  };
+
+  // B6 shadow-read: never changes returned legacy payload fields above; only records parity events.
+  try {
+    const { resolvePaperReadSource } = await import("@/lib/broker/routing");
+    const { recordShadowReadComparison } = await import("@/lib/broker/shadow-read");
+    const { getDb } = await import("@/lib/db");
+    const route = resolvePaperReadSource(process.env);
+    if (route.runShadowCompare) {
+      const t0 = Date.now();
+      let v2Equity: number | null = null;
+      let v2Open = 0;
+      let v2Realized: number | null = null;
+      try {
+        const { ensureBrokerSchemaOnDb } = await import("@/lib/broker/schema-migrate");
+        const { resolveBrokerAccount, buildAccountSummary, buildStatsPayload } = await import("@/lib/broker/paper-read");
+        const db = getDb();
+        ensureBrokerSchemaOnDb(db as never);
+        const account = resolveBrokerAccount(db as never, { accountKey: "subscriber_paper" });
+        if (account) {
+          const summaryV2 = buildAccountSummary(db as never, account, process.env);
+          v2Equity = summaryV2.totalEquity;
+          v2Open = summaryV2.openPositionCount;
+          v2Realized = summaryV2.realizedPnl;
+          const stats = buildStatsPayload(db as never, account, process.env, {});
+          const pf = stats.analytics?.performance?.profitFactor as { value: number | null } | undefined;
+          const wr = stats.analytics?.performance?.winRate as { value: number | null } | undefined;
+          const dd = stats.analytics?.risk?.maximumDrawdownDollars as { value: number | null } | undefined;
+          recordShadowReadComparison(db as never, {
+            legacyTable: "paper_trades_api",
+            legacyId: "primary",
+            accountId: account.id,
+            legacyLatencyMs: 0,
+            v2LatencyMs: Date.now() - t0,
+            metrics: {
+              trade_count: { legacy: trades.length, v2: stats.counts?.fills ?? null, tolerance: 0 },
+              open_position_count: {
+                legacy: trades.filter((t) => t.status === "ENTERED" || t.status === "READY").length,
+                v2: v2Open,
+              },
+              realized_pnl: { legacy: summary.totalPnlDollars, v2: v2Realized },
+              account_equity: { legacy: equity, v2: v2Equity },
+              win_rate: { legacy: summary.winRatePct ?? null, v2: wr?.value ?? null, tolerance: 0.5 },
+              profit_factor: {
+                legacy: Number.isFinite(summary.profitFactor as number) ? summary.profitFactor : null,
+                v2: pf?.value ?? null,
+                tolerance: 0.05,
+              },
+              drawdown: { legacy: null, v2: dd?.value ?? null },
+            },
+          }, process.env);
+        }
+      } catch {
+        /* shadow failures must never affect legacy response */
+      }
+    }
+  } catch {
+    /* routing import optional */
+  }
+
+  return NextResponse.json(legacyPayload);
 }
 
 /** POST /api/paper/trades — create from an alert ({alertId}) or manually. */

@@ -1,4 +1,25 @@
-export { paperBrokerV2Enabled, requirePaperBrokerV2 } from "./flags.ts";
+export {
+  paperBrokerV2Enabled,
+  paperBrokerV2ShadowReadEnabled,
+  paperBrokerV2ReadsEnabled,
+  requirePaperBrokerV2,
+  validateBrokerV2FlagCombination,
+  assertBrokerV2FlagsSafe,
+  CUTOVER_POLICY_VERSION,
+} from "./flags.ts";
+export { resolvePaperReadSource, rollbackV2ReadsToLegacy } from "./routing.ts";
+export type { PaperReadSource, PaperReadRoute } from "./routing.ts";
+export { evaluateBrokerV2Readiness, defaultReadinessThresholds } from "./readiness.ts";
+export type { ReadinessStatus, ReadinessReport, ReadinessRequirement, ReadinessMetrics } from "./readiness.ts";
+export { runHistoricalReconcileDryRun } from "./reconcile-audit.ts";
+export type { ReconcileDryRunReport, ReconcileDryRunFinding } from "./reconcile-audit.ts";
+export {
+  recordShadowReadComparison,
+  withShadowReadCompare,
+  summarizeShadowReadEvents,
+  shadowCheckKind,
+} from "./shadow-read.ts";
+export type { ShadowMetricKey, ShadowCompareInput } from "./shadow-read.ts";
 export {
   BROKER_REQUIRED_TABLES,
   BROKER_SCHEMA_DDL,
@@ -30,6 +51,15 @@ export { ensureBrokerSchemaOnDb, ensureBrokerColumnMigrations, listMissingBroker
 export { storeMarketSnapshot, marketSnapshotFromOptionsRow } from "./market-snapshot.ts";
 export { paperSimBrokerAdapter, PaperSimBrokerAdapter } from "./adapter/paper-sim.ts";
 export type { BrokerAdapter, BrokerAdapterContext, LimitFillRequest } from "./adapter/contract.ts";
+export {
+  ensureBrokerAccount,
+  openingBalanceUsd,
+  resolveAccountKeyForOptionsPaperKind,
+  resolveAccountKeyForLegacyPortfolio,
+  getLegacyLink,
+  upsertLegacyLink,
+  auditChainComplete,
+} from "./accounts.ts";
 export {
   dualWriteAfterOptionsPaperEntry,
   dualWriteAfterOptionsPaperExit,

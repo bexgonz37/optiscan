@@ -11,7 +11,18 @@ export type ParityCheckKind =
   | "audit_chain"
   | "buying_power"
   | "account_equity"
-  | "unrealized_pnl";
+  | "unrealized_pnl"
+  | "shadow_read_trade_count"
+  | "shadow_read_open_position_count"
+  | "shadow_read_realized_pnl"
+  | "shadow_read_unrealized_pnl"
+  | "shadow_read_account_equity"
+  | "shadow_read_win_rate"
+  | "shadow_read_profit_factor"
+  | "shadow_read_drawdown"
+  | "shadow_read_equity_curve_start"
+  | "shadow_read_equity_curve_end"
+  | "shadow_read_api_latency_ms";
 
 export interface ParityCheckInput {
   accountId?: string | null;

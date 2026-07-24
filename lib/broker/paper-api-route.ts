@@ -163,7 +163,7 @@ export async function handlePaperBrokerV2Get(
     }
 
     return NextResponse.json(
-      { ok: true, enabled: true, ...payload },
+      { ok: true, enabled: true, source: "V2", ...payload },
       { status: 200, headers: JSON_HEADERS },
     );
   } catch (err) {

@@ -155,6 +155,22 @@ export function buildConfigVisibility(env: NodeJS.ProcessEnv = process.env, extr
         : "Brokerage v2 foundation is schema-only; ledger writes remain disabled until explicitly enabled.",
       [],
     ),
+    configItem(
+      "PAPER_BROKER_V2_SHADOW_READ_ENABLED",
+      on(env.PAPER_BROKER_V2_SHADOW_READ_ENABLED) ? "enabled" : "disabled",
+      on(env.PAPER_BROKER_V2_SHADOW_READ_ENABLED)
+        ? "Shadow-read ON — legacy still returned; V2 compared in parallel."
+        : "Shadow-read OFF (default).",
+      [],
+    ),
+    configItem(
+      "PAPER_BROKER_V2_READS_ENABLED",
+      on(env.PAPER_BROKER_V2_READS_ENABLED) ? "enabled" : "disabled",
+      on(env.PAPER_BROKER_V2_READS_ENABLED)
+        ? "V2 paper-accounting reads enabled — unexpected for B6 production."
+        : "V2 reads OFF (required default; legacy authoritative).",
+      on(env.PAPER_BROKER_V2_READS_ENABLED) ? ["paper_trading"] : [],
+    ),
     configItem("DISCORD_WATCH_ALERTS", watchDiscordOn ? "enabled" : "disabled", watchDiscordOn ? "Legacy WATCH heads-up may post to Discord (opt-in, legacy path only)." : "WATCH alerts are dashboard-only (default). They never send under the supervisor path.", []),
     configItem("EARLY_ALERTS_ENABLED", earlyOn ? "enabled" : "disabled", "Early alerts are ignored for normal Discord; ACTIONABLE_NOW is required.", []),
     configItem("BEARISH_ACTIONABLE", bearishOn ? "enabled" : "disabled", bearishOn ? "Bearish actionability is enabled." : "Bearish actionability is off.", bearishOn ? [] : ["options_alerts", "paper_trading"]),

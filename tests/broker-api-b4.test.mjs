@@ -95,10 +95,13 @@ test("B4: V2 paper API routes are auth-gated and call the shared handler", () =>
   assert.doesNotMatch(handler, /getPaperDashboard|listPaperTrades/);
 });
 
-test("B4: legacy paper trades routes unchanged and do not import V2 read models", () => {
+test("B4: legacy paper trades routes remain legacy-authoritative", () => {
   const trades = read("app/api/paper/trades/route.ts");
   assert.match(trades, /checkApiToken/);
-  assert.doesNotMatch(trades, /paper-read|handlePaperBrokerV2Get|buildAccountSummary/);
+  assert.match(trades, /listPaperTrades/);
+  assert.match(trades, /source: \"LEGACY\"/);
+  // B6 may optionally shadow-compare via buildAccountSummary, but must not switch the handler to V2.
+  assert.doesNotMatch(trades, /handlePaperBrokerV2Get/);
   const idRoute = read("app/api/paper/trades/[id]/route.ts");
   assert.doesNotMatch(idRoute, /handlePaperBrokerV2Get/);
 });
