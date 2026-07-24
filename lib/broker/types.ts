@@ -3,7 +3,10 @@
  * Asset-class execution is intentionally generic; no options/stock fill logic here.
  */
 
-export const BROKER_SCHEMA_VERSION = 1;
+export const BROKER_SCHEMA_VERSION = 2;
+
+/** Version stamped on immutable brokerage records for forward-compatible evolution. */
+export const BROKER_RECORD_SCHEMA_VERSION = 2;
 
 export type AccountType =
   | "SUBSCRIBER_PAPER"

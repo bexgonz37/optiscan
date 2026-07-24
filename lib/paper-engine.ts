@@ -37,6 +37,7 @@ import { decideStockEntry, evaluateStockExit, resolveStockExitFill } from "@/lib
 import { buildPaperExplanation, type PaperExplanation } from "@/lib/paper-explain";
 import { listRecentPaperEvents, listPaperEvents, type PaperEventRow } from "@/lib/paper-events";
 import { freezePaperFingerprintForTrade, syncPaperOutcomes, outcomesByTradeId, type PaperOutcomeRow } from "@/lib/outcome-store";
+import { dualWriteAfterLegacyPaperPersist } from "./broker/dual-write.ts";
 import { humanReadable } from "@/lib/setup-fingerprint";
 import { normalizeProviderTimestampMs } from "@/lib/data-freshness";
 import type { ChainContract } from "@/lib/contract-selector";
@@ -166,6 +167,9 @@ function persist(trade: PaperTrade): void {
     TERMINAL_STATES.has(trade.status) && trade.entryPrice != null ? lessonsLearned(trade) : null,
     trade.id,
   );
+  try {
+    if (trade.id != null) dualWriteAfterLegacyPaperPersist(db, trade.id);
+  } catch { /* best-effort */ }
 }
 
 const fillCfg = () => defaultFillConfig();

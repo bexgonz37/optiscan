@@ -21,6 +21,7 @@
 import { buildFingerprint, type FingerprintInput } from "./setup-fingerprint.ts";
 import { gradeOutcome, terminalKind, type OutcomeInput } from "./trade-outcome.ts";
 import { marketSession } from "./trading-session.ts";
+import { dualWriteAfterLegacyOutcome } from "./broker/dual-write.ts";
 
 const TERMINAL_FILLED = new Set(["EXITED", "STOPPED_OUT", "TAKE_PROFIT", "EXPIRED"]);
 
@@ -153,6 +154,11 @@ export function generateOutcomeOnDb(db: any, r: any, nowMs: number): boolean {
     JSON.stringify(graded.dataQualityReasons), r.snapshot_version ?? null, graded.outcomeVersion,
     graded.opportunityGrade, graded.peakFavorablePct, graded.opportunityThresholdPct, graded.opportunityWindow, nowMs,
   );
+  if (res.changes > 0) {
+    try {
+      dualWriteAfterLegacyOutcome(db, r.id);
+    } catch { /* best-effort */ }
+  }
   return res.changes > 0;
 }
 

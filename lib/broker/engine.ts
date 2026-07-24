@@ -7,6 +7,7 @@ import {
   estimateOrderNotional,
   roundMoney,
 } from "./ledger.ts";
+import { BROKER_RECORD_SCHEMA_VERSION } from "./types.ts";
 import type {
   AccountBalances,
   ApplyMarkInput,
@@ -30,11 +31,11 @@ function defaultMultiplier(assetClass: string): number {
 }
 
 export function listLedgerEntries(db: BrokerDb, accountId: string): LedgerEntryRow[] {
-  return db
+  return (db
     .prepare(
       `SELECT * FROM broker_ledger_entries WHERE account_id = ? ORDER BY sequence_num ASC`,
     )
-    .all(accountId) as LedgerEntryRow[];
+    .all?.(accountId) ?? []) as LedgerEntryRow[];
 }
 
 function nextSequenceNum(db: BrokerDb, accountId: string): number {
@@ -86,8 +87,8 @@ function appendLedgerEntry(
     `INSERT INTO broker_ledger_entries
       (id, account_id, sequence_num, entry_kind, asset_class, symbol,
        quantity_delta, cash_delta, reserved_delta, price, currency,
-       ref_kind, ref_id, idempotency_key, description, metadata_json, created_at_ms)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ref_kind, ref_id, idempotency_key, description, record_schema_version, metadata_json, created_at_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.accountId,
@@ -104,6 +105,7 @@ function appendLedgerEntry(
     input.refId,
     input.idempotencyKey,
     input.description ?? null,
+    BROKER_RECORD_SCHEMA_VERSION,
     input.metadata ? JSON.stringify(input.metadata) : null,
     ts,
   );
@@ -133,7 +135,7 @@ function evidenceMapFromOrders(db: BrokerDb, accountId: string): Map<string, str
        FROM broker_orders o
        WHERE o.account_id = ? AND o.evidence_chain_id IS NOT NULL`,
     )
-    .all(accountId) as Array<{ asset_class: string; symbol: string; evidence_chain_id: string }>;
+    .all?.(accountId) as Array<{ asset_class: string; symbol: string; evidence_chain_id: string }>;
   const map = new Map<string, string | null>();
   for (const r of rows) {
     map.set(`${r.asset_class}:${r.symbol}`, r.evidence_chain_id);
@@ -149,7 +151,7 @@ function latestMarks(db: BrokerDb, accountId: string): Map<string, number> {
        WHERE account_id = ?
        ORDER BY marked_at_ms ASC`,
     )
-    .all(accountId) as Array<{ asset_class: string; symbol: string; mark_price: number }>;
+    .all?.(accountId) as Array<{ asset_class: string; symbol: string; mark_price: number }>;
   const map = new Map<string, number>();
   for (const r of rows) {
     map.set(`${r.asset_class}:${r.symbol}`, r.mark_price);
@@ -171,8 +173,8 @@ function appendPositionSnapshot(
     `INSERT INTO broker_position_snapshots
       (id, account_id, asset_class, symbol, side, quantity, average_cost, cost_basis,
        market_price, market_value, unrealized_pnl, realized_pnl_delta, evidence_chain_id,
-       ledger_sequence_through, ref_kind, ref_id, snapshot_at_ms, metadata_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+       market_snapshot_id, ledger_sequence_through, ref_kind, ref_id, record_schema_version, snapshot_at_ms, metadata_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
   ).run(
     id,
     accountId,
@@ -187,9 +189,11 @@ function appendPositionSnapshot(
     position.unrealizedPnl,
     0,
     position.evidenceChainId,
+    null,
     ledgerSequenceThrough,
     refKind,
     refId,
+    BROKER_RECORD_SCHEMA_VERSION,
     snapshotAtMs,
   );
   appendAuditEvent(db, {
@@ -235,8 +239,8 @@ export function snapshotEquity(
     `INSERT INTO broker_equity_snapshots
       (id, account_id, snapshot_at_ms, cash_balance, reserved_balance, buying_power,
        gross_position_value, net_equity, unrealized_pnl, realized_pnl_cumulative,
-       ledger_sequence_through, metadata_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+       ledger_sequence_through, record_schema_version, metadata_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
   ).run(
     id,
     accountId,
@@ -249,6 +253,7 @@ export function snapshotEquity(
     unrealized,
     realized,
     balances.ledgerSequenceThrough,
+    BROKER_RECORD_SCHEMA_VERSION,
   );
   appendAuditEvent(db, {
     accountId,
@@ -393,8 +398,8 @@ export function submitOrder(db: BrokerDb, input: SubmitOrderInput): { orderId: s
   db.prepare(
     `INSERT INTO broker_orders
       (id, account_id, client_order_key, evidence_chain_id, asset_class, symbol, side, quantity, filled_quantity,
-       order_type, limit_price, contract_multiplier, status, reserved_amount, submitted_at_ms, created_at_ms, metadata_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 'SUBMITTED', ?, ?, ?, ?)`,
+       order_type, limit_price, contract_multiplier, status, reserved_amount, submitted_at_ms, record_schema_version, created_at_ms, metadata_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 'SUBMITTED', ?, ?, ?, ?, ?)`,
   ).run(
     orderId,
     input.accountId,
@@ -409,6 +414,7 @@ export function submitOrder(db: BrokerDb, input: SubmitOrderInput): { orderId: s
     multiplier,
     reservedAmount,
     ts,
+    BROKER_RECORD_SCHEMA_VERSION,
     ts,
     input.metadata ? JSON.stringify(input.metadata) : null,
   );
@@ -553,8 +559,8 @@ export function fillOrder(
   db.prepare(
     `INSERT INTO broker_fills
       (id, account_id, order_id, fill_key, asset_class, symbol, side, quantity, price, gross_notional,
-       commission, fees, contract_multiplier, filled_at_ms, created_at_ms, metadata_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       commission, fees, contract_multiplier, market_snapshot_id, filled_at_ms, record_schema_version, created_at_ms, metadata_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     fillId,
     order.account_id,
@@ -569,7 +575,9 @@ export function fillOrder(
     commission,
     fees,
     order.contract_multiplier,
+    (input.metadata as any)?.marketSnapshotId ?? null,
     filledAtMs,
+    BROKER_RECORD_SCHEMA_VERSION,
     ts,
     input.metadata ? JSON.stringify(input.metadata) : null,
   );
@@ -646,9 +654,20 @@ export function applyMark(db: BrokerDb, input: ApplyMarkInput): { markId: string
 
   db.prepare(
     `INSERT INTO broker_marks
-      (id, account_id, asset_class, symbol, mark_price, mark_source, ledger_entry_id, marked_at_ms, metadata_json)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-  ).run(markId, input.accountId, input.assetClass, input.symbol, input.markPrice, input.markSource, ledgerEntry.id, ts);
+      (id, account_id, asset_class, symbol, mark_price, mark_source, ledger_entry_id, market_snapshot_id, marked_at_ms, record_schema_version, metadata_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+  ).run(
+    markId,
+    input.accountId,
+    input.assetClass,
+    input.symbol,
+    input.markPrice,
+    input.markSource,
+    ledgerEntry.id,
+    (input as any).marketSnapshotId ?? null,
+    ts,
+    BROKER_RECORD_SCHEMA_VERSION,
+  );
 
   const entries = listLedgerEntries(db, input.accountId);
   const balances = computeBalances(entries);

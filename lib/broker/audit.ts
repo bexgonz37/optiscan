@@ -1,11 +1,12 @@
 import { brokerId } from "./id.ts";
+import { BROKER_RECORD_SCHEMA_VERSION } from "./types.ts";
 import type { AuditActor, AuditEntityKind } from "./types.ts";
 
 export interface BrokerDb {
   prepare(sql: string): {
-    run: (...args: unknown[]) => { changes: number };
-    get: (...args: unknown[]) => unknown;
-    all: (...args: unknown[]) => unknown[];
+    run: (...args: any[]) => { changes: number; lastInsertRowid?: number | bigint };
+    get: (...args: any[]) => any;
+    all?: (...args: any[]) => any[];
   };
 }
 
@@ -25,8 +26,8 @@ export function appendAuditEvent(
   const now = input.createdAtMs ?? Date.now();
   db.prepare(
     `INSERT INTO broker_audit_events
-      (id, account_id, event_kind, entity_kind, entity_id, actor, payload_json, created_at_ms)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, account_id, event_kind, entity_kind, entity_id, actor, payload_json, record_schema_version, created_at_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     input.accountId ?? null,
@@ -35,6 +36,7 @@ export function appendAuditEvent(
     input.entityId,
     input.actor ?? "SYSTEM",
     JSON.stringify(input.payload),
+    BROKER_RECORD_SCHEMA_VERSION,
     now,
   );
   return id;
@@ -52,7 +54,7 @@ export function listAuditEventsForEntity(
        WHERE entity_kind = ? AND entity_id = ?
        ORDER BY created_at_ms ASC`,
     )
-    .all(entityKind, entityId) as Array<{
+    .all?.(entityKind, entityId) as Array<{
     event_kind: string;
     payload_json: string;
     created_at_ms: number;

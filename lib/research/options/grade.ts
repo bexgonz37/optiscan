@@ -14,6 +14,8 @@
  */
 import { researchFlags } from "../flags.ts";
 import { realOptionExit } from "./paper.ts";
+import { dualWriteAfterOptionsPaperExit } from "../../broker/dual-write.ts";
+import type { BrokerDb } from "../../broker/audit.ts";
 
 export interface OpenPosition {
   id: number; option_symbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number;
@@ -137,6 +139,9 @@ export async function gradeOpenOptionPositionsOnDb(db: GradeDb, deps: GradeDeps,
         "UPDATE options_paper_trades SET status='EXITED', exit_fill=?, pnl=?, return_pct=?, exit_reason=?, exit_at_ms=?, updated_at_ms=? WHERE id=? AND status='ENTERED'",
       ).run(d.exitFill, d.pnl, d.returnPct, d.reason, nowMs, nowMs, pos.id);
       out.graded += 1; out.byReason[d.reason as string] = (out.byReason[d.reason as string] ?? 0) + 1;
+      try {
+        dualWriteAfterOptionsPaperExit(db as BrokerDb, pos.id);
+      } catch { /* best-effort */ }
     } catch { out.errors += 1; }
   }
   return out;

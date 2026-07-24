@@ -7,6 +7,8 @@
  */
 import { researchFlags } from "../flags.ts";
 import { classifyPaperResult, realOptionEntryEligible, defaultRealOptionEntryGate, type PaperResultClass } from "./paper-class.ts";
+import { dualWriteAfterOptionsPaperEntry } from "../../broker/dual-write.ts";
+import type { BrokerDb } from "../../broker/audit.ts";
 
 export interface OptionQuote { optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number; bid: number | null; ask: number | null; volume: number | null; openInterest: number | null; iv: number | null; delta: number | null; quoteAgeMs: number | null; providerTimestamp: number | null }
 
@@ -78,7 +80,13 @@ const paperVals = (e: RealOptionEntry, extra: PaperPersistExtra, kind: PaperKind
 export function persistRealOptionPaperOnDb(db: PaperDb, e: RealOptionEntry, nowMs: number = Date.now(), extra: PaperPersistExtra = {}): void {
   const kind: PaperKind = extra.paperKind ?? "RESEARCH_ONLY_PAPER";
   const entrySource = extra.entrySource ?? (kind === "DELIVERED_ALERT_PAPER" ? "discord_delivery" : "monitor_shadow");
-  db.prepare(`INSERT INTO options_paper_trades (${PAPER_COLS}) VALUES (${PAPER_PLACEHOLDERS})`).run(...paperVals(e, extra, kind, entrySource, nowMs));
+  const r = db.prepare(`INSERT INTO options_paper_trades (${PAPER_COLS}) VALUES (${PAPER_PLACEHOLDERS})`).run(...paperVals(e, extra, kind, entrySource, nowMs));
+  const tradeId = Number((r as { lastInsertRowid?: number | bigint }).lastInsertRowid ?? 0);
+  if (tradeId > 0) {
+    try {
+      dualWriteAfterOptionsPaperEntry(db as BrokerDb, tradeId);
+    } catch { /* dual-write is best-effort; legacy write is authoritative */ }
+  }
 }
 
 /**
@@ -95,6 +103,14 @@ export function persistDeliveredMirrorOnDb(db: PaperDb, e: RealOptionEntry, deci
   const r = db.prepare(
     `INSERT INTO options_paper_trades (${PAPER_COLS}) SELECT ${PAPER_PLACEHOLDERS} WHERE NOT EXISTS (SELECT 1 FROM options_paper_trades WHERE alert_id=? AND paper_kind='DELIVERED_ALERT_PAPER')`,
   ).run(...vals, alertId);
+  if ((r.changes ?? 0) > 0) {
+    const row = db.prepare?.("SELECT id FROM options_paper_trades WHERE alert_id=? AND paper_kind='DELIVERED_ALERT_PAPER' LIMIT 1").get?.(alertId) as { id?: number } | undefined;
+    if (row?.id) {
+      try {
+        dualWriteAfterOptionsPaperEntry(db as BrokerDb, row.id);
+      } catch { /* best-effort */ }
+    }
+  }
   return { inserted: (r.changes ?? 0) > 0, existed: false };
 }
 

@@ -1,5 +1,10 @@
 export { paperBrokerV2Enabled, requirePaperBrokerV2 } from "./flags.ts";
-export { BROKER_REQUIRED_TABLES, BROKER_SCHEMA_DDL } from "./schema-ddl.ts";
+export {
+  BROKER_REQUIRED_TABLES,
+  BROKER_SCHEMA_DDL,
+  BROKER_COLUMN_MIGRATIONS,
+} from "./schema-ddl.ts";
+export { BROKER_RECORD_SCHEMA_VERSION, BROKER_SCHEMA_VERSION } from "./types.ts";
 export type { BrokerRequiredTable } from "./schema-ddl.ts";
 export * from "./types.ts";
 export {
@@ -21,4 +26,14 @@ export {
   getAccountState,
   listLedgerEntries,
 } from "./engine.ts";
-export { ensureBrokerSchemaOnDb, listMissingBrokerTables } from "./schema-migrate.ts";
+export { ensureBrokerSchemaOnDb, ensureBrokerColumnMigrations, listMissingBrokerTables } from "./schema-migrate.ts";
+export { storeMarketSnapshot, marketSnapshotFromOptionsRow } from "./market-snapshot.ts";
+export { paperSimBrokerAdapter, PaperSimBrokerAdapter } from "./adapter/paper-sim.ts";
+export type { BrokerAdapter, BrokerAdapterContext, LimitFillRequest } from "./adapter/contract.ts";
+export {
+  dualWriteAfterOptionsPaperEntry,
+  dualWriteAfterOptionsPaperExit,
+  dualWriteAfterLegacyPaperPersist,
+  dualWriteAfterLegacyOutcome,
+} from "./dual-write.ts";
+export { recordParityEvent, verifyNumericParity, valuesMatch } from "./parity.ts";
