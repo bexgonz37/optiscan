@@ -147,6 +147,14 @@ export function buildConfigVisibility(env: NodeJS.ProcessEnv = process.env, extr
     configItem("PAPER_AUTO_ENTRY", paperAutoOn ? "enabled" : "disabled", paperAutoOn ? "Paper auto-entry is enabled." : "Paper auto-entry is disabled.", paperAutoOn ? [] : ["paper_trading"]),
     configItem("PAPER_ALLOW_ZERO_DTE", zeroDteOn ? "enabled" : "disabled", zeroDteOn ? "0DTE paper trading is enabled." : "0DTE paper trading is disabled.", zeroDteOn ? [] : ["paper_trading"]),
     configItem("PAPER_KILL_SWITCH", killSwitchOn ? "enabled" : "disabled", killSwitchOn ? "Paper kill switch is engaged." : "Paper kill switch is off.", killSwitchOn ? ["paper_trading"] : []),
+    configItem(
+      "PAPER_BROKER_V2_ENABLED",
+      on(env.PAPER_BROKER_V2_ENABLED) ? "enabled" : "disabled",
+      on(env.PAPER_BROKER_V2_ENABLED)
+        ? "Brokerage v2 ledger engine writes are enabled (B1+ dual-write may be active)."
+        : "Brokerage v2 foundation is schema-only; ledger writes remain disabled until explicitly enabled.",
+      [],
+    ),
     configItem("DISCORD_WATCH_ALERTS", watchDiscordOn ? "enabled" : "disabled", watchDiscordOn ? "Legacy WATCH heads-up may post to Discord (opt-in, legacy path only)." : "WATCH alerts are dashboard-only (default). They never send under the supervisor path.", []),
     configItem("EARLY_ALERTS_ENABLED", earlyOn ? "enabled" : "disabled", "Early alerts are ignored for normal Discord; ACTIONABLE_NOW is required.", []),
     configItem("BEARISH_ACTIONABLE", bearishOn ? "enabled" : "disabled", bearishOn ? "Bearish actionability is enabled." : "Bearish actionability is off.", bearishOn ? [] : ["options_alerts", "paper_trading"]),

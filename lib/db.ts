@@ -17,6 +17,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { ensureEnterpriseSchemaOnDb, inspectSchemaReadiness } from "@/lib/db-schema-readiness";
 import { ensureOptionsDeliveryDecisionsColumns } from "@/lib/db-legacy-columns";
+import { ensureBrokerSchemaOnDb } from "@/lib/broker/schema-migrate";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS alerts (
@@ -2020,6 +2021,10 @@ CREATE INDEX IF NOT EXISTS idx_journal_dedup ON trade_journal(dedup_key);
   const repaired = ensureEnterpriseSchemaOnDb(db);
   if (repaired.length > 0) {
     console.info(`[db] enterprise schema repair applied: ${repaired.join(", ")}`);
+  }
+  const brokerRepaired = ensureBrokerSchemaOnDb(db);
+  if (brokerRepaired.length > 0) {
+    console.info(`[db] broker schema repair applied: ${brokerRepaired.join(", ")}`);
   }
   const readiness = inspectSchemaReadiness(db);
   if (!readiness.ok) {
