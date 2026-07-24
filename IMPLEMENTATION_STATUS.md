@@ -23,7 +23,7 @@ Resume tracker for the coordinated quantitative options-intelligence platform. *
 
 **Next resume (unchanged Analog gate):** collect Phase-F/shadow/options live evidence before Analog G–I.
 
-**Verification (2026-07-24):** 1837/1837 tests · tsc clean · build OK · commit pending push.
+**Verification (2026-07-24):** 1837/1837 tests · tsc clean · build OK · commit `f488459` pushed to `origin/main`.
 
 ## ⚠️ CANONICAL WORKING DIRECTORY (read first, every session)
 
