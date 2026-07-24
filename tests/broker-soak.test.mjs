@@ -14,6 +14,8 @@ import {
   paperBrokerV2Enabled,
   paperBrokerV2ShadowReadEnabled,
   paperBrokerV2ReadsEnabled,
+  runHistoricalReconcileDryRun,
+  evaluateBrokerV2Readiness,
 } from "../lib/broker/index.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -207,6 +209,62 @@ test("soak: gate met records evidence without cutover", { skip: !Database }, () 
   assert.equal(summary.flags.dualWrite, false);
   assert.equal(summary.flags.shadowRead, false);
   assert.equal(summary.flags.v2Reads, false);
+});
+
+test("soak: pre-window closed legacy trades do not block no_missing_v2_closed", { skip: !Database }, () => {
+  const database = db();
+  openAccount(database, {
+    accountKey: "subscriber_paper",
+    accountType: "SUBSCRIBER_PAPER",
+    displayName: "S",
+    openingDeposit: 1000,
+  });
+  database.exec(`CREATE TABLE IF NOT EXISTS options_paper_trades (
+    id INTEGER PRIMARY KEY, status TEXT, exit_price REAL, contracts REAL, entered_at_ms INTEGER
+  )`);
+  database
+    .prepare(
+      `INSERT INTO options_paper_trades (id, status, exit_price, contracts, entered_at_ms) VALUES (1,'CLOSED',2,1,1000)`,
+    )
+    .run();
+  database
+    .prepare(
+      `INSERT INTO options_paper_trades (id, status, exit_price, contracts, entered_at_ms) VALUES (2,'CLOSED',2,1,5_000_000)`,
+    )
+    .run();
+
+  const withoutWindow = runHistoricalReconcileDryRun(database, {
+    recordAudit: false,
+    eligibleAfterMs: null,
+  });
+  assert.equal(withoutWindow.missingClosedLegacyCount, 2);
+
+  const withWindow = runHistoricalReconcileDryRun(database, {
+    recordAudit: false,
+    eligibleAfterMs: 2_000_000,
+  });
+  assert.equal(withWindow.missingClosedLegacyCount, 1);
+  assert.equal(withWindow.preWindowUnmirroredClosed, 1);
+  assert.equal(withWindow.eligibleLegacyTrades, 1);
+  assert.ok(withWindow.warnings.some((w) => w.startsWith("pre_window_unmirrored_closed=")));
+
+  const report = evaluateBrokerV2Readiness(
+    database,
+    { BROKER_V2_READINESS_ELIGIBLE_AFTER_MS: "5000000" },
+    Date.now(),
+  );
+  // Only trade 2 is eligible and missing — still fails missing gate, but trade 1 excluded
+  assert.equal(report.dryRun.missingClosedLegacyCount, 1);
+  assert.equal(report.dryRun.preWindowUnmirroredClosed, 1);
+
+  const clear = evaluateBrokerV2Readiness(
+    database,
+    { BROKER_V2_READINESS_ELIGIBLE_AFTER_MS: "9000000" },
+    Date.now(),
+  );
+  assert.equal(clear.dryRun.missingClosedLegacyCount, 0);
+  assert.equal(clear.dryRun.preWindowUnmirroredClosed, 2);
+  assert.ok(!clear.failedRequirements.includes("no_missing_v2_closed"));
 });
 
 test("soak: API + UI expose soak history; scheduler never flips reads", () => {

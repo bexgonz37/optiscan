@@ -327,7 +327,7 @@ export function evaluateBrokerV2Readiness(
   nowMs: number = Date.now(),
 ): ReadinessReport {
   const thresholds = defaultReadinessThresholds(env);
-  const dryRun = runHistoricalReconcileDryRun(db, { nowMs });
+  const dryRun = runHistoricalReconcileDryRun(db, { nowMs, env });
   const metrics = collectMetrics(db, dryRun, nowMs);
   const routing = resolvePaperReadSource(env);
   const shadowReadSummary = summarizeShadowReadEvents(db);

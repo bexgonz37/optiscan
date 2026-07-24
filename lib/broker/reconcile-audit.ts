@@ -18,10 +18,15 @@ export interface ReconcileDryRunReport {
   dryRun: true;
   version: number;
   generatedAtMs: number;
+  /** When set, only legacy trades at/after this entry time are readiness-eligible. */
+  eligibleAfterMs: number | null;
   eligibleLegacyTrades: number;
   mirroredTrades: number;
   legacyNeverMirrored: number;
+  /** Closed eligible trades with no V2 link (blocks readiness). */
   missingClosedLegacyCount: number;
+  /** Closed trades before the soak eligibility window — observed, not readiness-blocking. */
+  preWindowUnmirroredClosed: number;
   v2WithoutLegacySource: number;
   mismatchedEntriesOrExits: number;
   mismatchedQuantities: number;
@@ -43,7 +48,25 @@ export interface ReconcileDryRunReport {
   auditEventId: string | null;
 }
 
-const DRY_RUN_VERSION = 1;
+const DRY_RUN_VERSION = 2;
+
+/** Resolve soak/readiness eligibility floor from env (forward dual-write window). */
+export function resolveReadinessEligibleAfterMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number | null {
+  const raw = env.BROKER_V2_READINESS_ELIGIBLE_AFTER_MS;
+  if (raw == null || String(raw).trim() === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+}
+
+function legacyEntryMs(row: Record<string, any>): number | null {
+  for (const key of ["entered_at_ms", "entry_at_ms", "created_at_ms", "opened_at_ms"]) {
+    const n = Number(row[key]);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
 
 function tableExists(db: BrokerDb, name: string): boolean {
   return Boolean(db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(name));
@@ -75,16 +98,29 @@ function isClosedLegacyPaper(row: Record<string, any>): boolean {
  */
 export function runHistoricalReconcileDryRun(
   db: BrokerDb,
-  opts: { nowMs?: number; recordAudit?: boolean } = {},
+  opts: {
+    nowMs?: number;
+    recordAudit?: boolean;
+    eligibleAfterMs?: number | null;
+    env?: NodeJS.ProcessEnv;
+  } = {},
 ): ReconcileDryRunReport {
   const nowMs = opts.nowMs ?? Date.now();
+  const eligibleAfterMs =
+    opts.eligibleAfterMs !== undefined
+      ? opts.eligibleAfterMs
+      : resolveReadinessEligibleAfterMs(opts.env ?? process.env);
   const findings: ReconcileDryRunFinding[] = [];
   const warnings: string[] = [];
+  if (eligibleAfterMs != null) {
+    warnings.push(`readiness_eligible_after_ms=${eligibleAfterMs}`);
+  }
 
   let eligible = 0;
   let mirrored = 0;
   let legacyNeverMirrored = 0;
   let missingClosed = 0;
+  let preWindowUnmirroredClosed = 0;
   let mismatchedEntries = 0;
   let mismatchedQty = 0;
   let mismatchedPnl = 0;
@@ -101,9 +137,24 @@ export function runHistoricalReconcileDryRun(
   const scanLegacy = (table: string, closedFn: (r: Record<string, any>) => boolean) => {
     if (!tableExists(db, table)) return;
     const rows = (db.prepare(`SELECT * FROM ${table}`).all?.() ?? []) as Array<Record<string, any>>;
-    eligible += rows.length;
     for (const row of rows) {
       const id = String(row.id);
+      const entryMs = legacyEntryMs(row);
+      const inWindow =
+        eligibleAfterMs == null || entryMs == null || entryMs >= eligibleAfterMs;
+      if (!inWindow) {
+        // Pre-soak history: observe only; dual-write was not active yet.
+        const link = hasLinks
+          ? (db
+              .prepare(`SELECT id FROM broker_legacy_links WHERE legacy_table=? AND legacy_id=?`)
+              .get(table, id) as { id: string } | undefined)
+          : undefined;
+        if (!link && closedFn(row)) {
+          preWindowUnmirroredClosed += 1;
+        }
+        continue;
+      }
+      eligible += 1;
       const link = hasLinks
         ? (db
             .prepare(`SELECT * FROM broker_legacy_links WHERE legacy_table=? AND legacy_id=?`)
@@ -214,6 +265,11 @@ export function runHistoricalReconcileDryRun(
   if (hasPaper) scanLegacy("paper_trades", isClosedLegacyPaper);
   if (!hasOptions && !hasPaper) {
     warnings.push("no_legacy_trade_tables_present");
+  }
+  if (preWindowUnmirroredClosed > 0) {
+    warnings.push(
+      `pre_window_unmirrored_closed=${preWindowUnmirroredClosed} (excluded from readiness; set BROKER_V2_READINESS_ELIGIBLE_AFTER_MS)`,
+    );
   }
 
   let v2WithoutLegacy = 0;
@@ -360,10 +416,12 @@ export function runHistoricalReconcileDryRun(
         entityId: "broker_v2_reconcile_dry_run",
         payload: {
           version: DRY_RUN_VERSION,
+          eligibleAfterMs,
           eligible,
           mirrored,
           legacyNeverMirrored,
           missingClosed,
+          preWindowUnmirroredClosed,
           findingCount: findings.length,
           dryRun: true,
         },
@@ -378,10 +436,12 @@ export function runHistoricalReconcileDryRun(
     dryRun: true,
     version: DRY_RUN_VERSION,
     generatedAtMs: nowMs,
+    eligibleAfterMs,
     eligibleLegacyTrades: eligible,
     mirroredTrades: mirrored,
     legacyNeverMirrored,
     missingClosedLegacyCount: missingClosed,
+    preWindowUnmirroredClosed,
     v2WithoutLegacySource: v2WithoutLegacy,
     mismatchedEntriesOrExits: mismatchedEntries,
     mismatchedQuantities: mismatchedQty,

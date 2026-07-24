@@ -14,9 +14,17 @@ Cutover: **NOT authorized** until human approval after `READY_FOR_CONTROLLED_CUT
 
 | Flag | Soak guidance |
 |---|---|
-| `PAPER_BROKER_V2_ENABLED` | Default `0` in repo. **Optional ops enable = `1`** only to dual-write mirrors for soak evidence. Does not change user-visible authority. |
+| `PAPER_BROKER_V2_ENABLED` | Default `0` in repo. **Production soak: set `1`** to dual-write mirrors for evidence. Does not change user-visible authority. |
 | `PAPER_BROKER_V2_SHADOW_READ_ENABLED` | Keep `0` until readiness ≥ `READY_FOR_SHADOW_READS`, then optional. |
 | `PAPER_BROKER_V2_READS_ENABLED` | **Must stay `0`** until explicit cutover approval. |
+
+### Soak eligibility window
+
+Set `BROKER_V2_READINESS_ELIGIBLE_AFTER_MS` to the epoch ms when dual-write was enabled for soak.
+
+- Closed legacy trades **before** that timestamp are observed (`preWindowUnmirroredClosed`) but **do not** fail `no_missing_v2_closed`.
+- Forward dual-write after that timestamp remains fully gated.
+- Historical backfill remains out of scope for soak (see cutover policy).
 
 Invalid combinations remain blocked by `validateBrokerV2FlagCombination`.
 

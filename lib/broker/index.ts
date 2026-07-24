@@ -21,7 +21,10 @@ export {
   SOAK_REPORT_VERSION,
 } from "./soak-report.ts";
 export type { DailyReadinessSummary, SoakPeriodSummary } from "./soak-report.ts";
-export { runHistoricalReconcileDryRun } from "./reconcile-audit.ts";
+export {
+  runHistoricalReconcileDryRun,
+  resolveReadinessEligibleAfterMs,
+} from "./reconcile-audit.ts";
 export type { ReconcileDryRunReport, ReconcileDryRunFinding } from "./reconcile-audit.ts";
 export {
   recordShadowReadComparison,
