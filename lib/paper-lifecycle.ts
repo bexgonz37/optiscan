@@ -62,10 +62,27 @@ function pickUpdatedAtMs(row: Record<string, any> | null | undefined): number | 
   return null;
 }
 
+/**
+ * Blocking reason = first stage that still prevents a healthy complete lifecycle.
+ * Early candidate/decision noise is ignored once Paper Trade Created is OK.
+ */
 function firstBlock(stages: LifecycleStage[]): { stage: string; reason: string | null } | null {
-  const hit = stages.find((s) => s.status === "FAILED" || (s.status === "SKIPPED" && s.reason));
-  if (!hit) return null;
-  return { stage: hit.stage, reason: hit.reason };
+  const byId = new Map(stages.map((s) => [s.stage, s]));
+  const paperOk = byId.get("paper_created")?.status === "OK";
+  const ignoreEarly = new Set(["candidate", "supervisor_decision"]);
+  for (const s of stages) {
+    if (paperOk && ignoreEarly.has(s.stage)) continue;
+    if (s.status === "FAILED") return { stage: s.stage, reason: s.reason };
+  }
+  // Intentional skips (Discord N/A on Supervisor path) are not blockers
+  return null;
+}
+
+function soakEligibleAfterMs(): number | null {
+  const raw = process.env.BROKER_V2_READINESS_ELIGIBLE_AFTER_MS;
+  if (raw == null || raw === "") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
 }
 
 function stage(
@@ -257,8 +274,22 @@ export function buildLegacyPaperLifecycle(db: BrokerDb, tradeId: number): PaperL
 
   // Broker V2
   const v2On = process.env.PAPER_BROKER_V2_ENABLED === "1";
+  const eligibleAfter = soakEligibleAfterMs();
+  const tradeMs = Number(trade.entry_at_ms ?? trade.created_at_ms) || null;
+  const preSoak = eligibleAfter != null && tradeMs != null && tradeMs < eligibleAfter;
   if (!v2On) {
     stages.push(stage("broker_mirrored", "Brokerage V2 Mirrored", "N/A", null, "PAPER_BROKER_V2_ENABLED!=1", {}));
+  } else if (!link && preSoak) {
+    stages.push(
+      stage(
+        "broker_mirrored",
+        "Brokerage V2 Mirrored",
+        "N/A",
+        null,
+        "pre-soak trade (before BROKER_V2_READINESS_ELIGIBLE_AFTER_MS) — excluded from mirror gate",
+        { legacyTable: "paper_trades" },
+      ),
+    );
   } else if (!link) {
     stages.push(
       stage("broker_mirrored", "Brokerage V2 Mirrored", entered ? "FAILED" : "PENDING", null, "no broker_legacy_links row", {
@@ -294,7 +325,7 @@ export function buildLegacyPaperLifecycle(db: BrokerDb, tradeId: number): PaperL
       candidateId: candidate?.id ?? null,
     },
     currentStage: current,
-    blocked: Boolean(block && (block.reason || stages.some((s) => s.status === "FAILED"))),
+    blocked: Boolean(block),
     blockingReason: block?.reason ?? null,
     stages,
     summary: `${trade.ticker ?? "?"} ${status}${block?.reason ? ` — blocked: ${block.reason}` : ""}`,
@@ -333,16 +364,27 @@ export function buildOptionsPaperLifecycle(
           .prepare(`SELECT * FROM options_delivery_decisions WHERE alert_id=? ORDER BY id DESC LIMIT 1`)
           .get(alertId) as Record<string, any> | undefined)
       : undefined;
-  const candidate =
-    tableExists(db, "options_candidates") && (alert?.candidate_symbol || trade?.option_symbol)
-      ? (db
-          .prepare(
-            `SELECT * FROM options_candidates WHERE symbol=? ORDER BY id DESC LIMIT 1`,
-          )
-          .get(String(alert?.candidate_symbol ?? trade?.underlying_symbol ?? "").toUpperCase() || "___") as
-          | Record<string, any>
-          | undefined)
-      : undefined;
+  // Prefer a READY/SELECTED candidate near trade time — latest REJECT for the ticker is often unrelated.
+  const candSymbol = String(alert?.candidate_symbol ?? trade?.underlying_symbol ?? "").toUpperCase();
+  let candidate: Record<string, any> | undefined;
+  if (tableExists(db, "options_candidates") && candSymbol) {
+    const tradeMs = Number(trade?.created_at_ms) || Number(alert?.created_at_ms) || Date.now();
+    candidate = db
+      .prepare(
+        `SELECT * FROM options_candidates
+         WHERE symbol=? AND UPPER(COALESCE(state,'')) IN ('READY','SELECTED')
+           AND created_at_ms <= ?
+         ORDER BY id DESC LIMIT 1`,
+      )
+      .get(candSymbol, tradeMs + 60_000) as Record<string, any> | undefined;
+    if (!candidate && (alert || trade)) {
+      candidate = undefined; // treat as OK via fallback below
+    } else if (!candidate) {
+      candidate = db
+        .prepare(`SELECT * FROM options_candidates WHERE symbol=? ORDER BY id DESC LIMIT 1`)
+        .get(candSymbol) as Record<string, any> | undefined;
+    }
+  }
 
   const symbol = String(
     alert?.candidate_symbol ?? trade?.option_symbol ?? candidate?.symbol ?? "?",
@@ -382,7 +424,16 @@ export function buildOptionsPaperLifecycle(
       ),
     );
   } else {
-    stages.push(stage("candidate", "Candidate", alert || trade ? "OK" : "PENDING", null, candidate ? null : "no options_candidates row", {}));
+    stages.push(
+      stage(
+        "candidate",
+        "Candidate",
+        alert || trade ? "OK" : "PENDING",
+        Number(alert?.created_at_ms ?? trade?.created_at_ms) || null,
+        alert || trade ? "inferred from delivered alert / paper trade" : "no options_candidates row",
+        {},
+      ),
+    );
   }
 
   if (decision) {
@@ -504,10 +555,24 @@ export function buildOptionsPaperLifecycle(
   }
 
   const v2On = process.env.PAPER_BROKER_V2_ENABLED === "1";
+  const eligibleAfter = soakEligibleAfterMs();
+  const tradeMs = Number(trade?.entered_at_ms ?? trade?.created_at_ms) || null;
+  const preSoak = eligibleAfter != null && tradeMs != null && tradeMs < eligibleAfter;
   if (!v2On) {
     stages.push(stage("broker_mirrored", "Brokerage V2 Mirrored", "N/A", null, "PAPER_BROKER_V2_ENABLED!=1", {}));
   } else if (!trade) {
     stages.push(stage("broker_mirrored", "Brokerage V2 Mirrored", "PENDING", null, "no paper trade to mirror", {}));
+  } else if (!link && preSoak) {
+    stages.push(
+      stage(
+        "broker_mirrored",
+        "Brokerage V2 Mirrored",
+        "N/A",
+        null,
+        "pre-soak trade (before BROKER_V2_READINESS_ELIGIBLE_AFTER_MS) — excluded from mirror gate",
+        {},
+      ),
+    );
   } else if (!link) {
     stages.push(
       stage("broker_mirrored", "Brokerage V2 Mirrored", entered ? "FAILED" : "PENDING", null, "no broker_legacy_links row", {}),
