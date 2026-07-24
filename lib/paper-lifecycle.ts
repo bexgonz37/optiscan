@@ -473,8 +473,8 @@ export function buildOptionsPaperLifecycle(
     ),
   );
 
-  if (tStatus === "EXITED") {
-    const ungradable = trade?.exit_reason === "expiration_no_quote" || trade?.return_pct == null;
+  if (tStatus === "EXITED" && trade) {
+    const ungradable = trade.exit_reason === "expiration_no_quote" || trade.return_pct == null;
     stages.push(
       stage(
         "graded",
