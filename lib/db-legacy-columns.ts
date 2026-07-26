@@ -102,6 +102,31 @@ export const OPTIONS_DELIVERY_DECISIONS_COLUMN_MIGRATIONS: ReadonlyArray<[string
 
 
 
+export const OPTIONS_SHADOW_OUTCOMES_COLUMN_MIGRATIONS: ReadonlyArray<[string, string]> = [
+  ["bid_at_decision", "ALTER TABLE options_shadow_outcomes ADD COLUMN bid_at_decision REAL"],
+  ["ask_at_decision", "ALTER TABLE options_shadow_outcomes ADD COLUMN ask_at_decision REAL"],
+  ["spread_pct_at_decision", "ALTER TABLE options_shadow_outcomes ADD COLUMN spread_pct_at_decision REAL"],
+  ["dte_at_decision", "ALTER TABLE options_shadow_outcomes ADD COLUMN dte_at_decision INTEGER"],
+  ["strike_at_decision", "ALTER TABLE options_shadow_outcomes ADD COLUMN strike_at_decision REAL"],
+  ["expiration_at_decision", "ALTER TABLE options_shadow_outcomes ADD COLUMN expiration_at_decision TEXT"],
+  ["quality_score", "ALTER TABLE options_shadow_outcomes ADD COLUMN quality_score REAL"],
+  ["block_reasons_json", "ALTER TABLE options_shadow_outcomes ADD COLUMN block_reasons_json TEXT"],
+  ["underlying_return_1m", "ALTER TABLE options_shadow_outcomes ADD COLUMN underlying_return_1m REAL"],
+  ["underlying_return_5m", "ALTER TABLE options_shadow_outcomes ADD COLUMN underlying_return_5m REAL"],
+  ["underlying_return_15m", "ALTER TABLE options_shadow_outcomes ADD COLUMN underlying_return_15m REAL"],
+  ["underlying_return_30m", "ALTER TABLE options_shadow_outcomes ADD COLUMN underlying_return_30m REAL"],
+  ["underlying_return_60m", "ALTER TABLE options_shadow_outcomes ADD COLUMN underlying_return_60m REAL"],
+  ["option_return_1m", "ALTER TABLE options_shadow_outcomes ADD COLUMN option_return_1m REAL"],
+  ["option_return_5m", "ALTER TABLE options_shadow_outcomes ADD COLUMN option_return_5m REAL"],
+  ["option_return_15m", "ALTER TABLE options_shadow_outcomes ADD COLUMN option_return_15m REAL"],
+  ["option_return_30m", "ALTER TABLE options_shadow_outcomes ADD COLUMN option_return_30m REAL"],
+  ["option_return_60m", "ALTER TABLE options_shadow_outcomes ADD COLUMN option_return_60m REAL"],
+  ["mfe_at_ms", "ALTER TABLE options_shadow_outcomes ADD COLUMN mfe_at_ms INTEGER"],
+  ["mae_at_ms", "ALTER TABLE options_shadow_outcomes ADD COLUMN mae_at_ms INTEGER"],
+  ["missing_data_reason", "ALTER TABLE options_shadow_outcomes ADD COLUMN missing_data_reason TEXT"],
+  ["final_result", "ALTER TABLE options_shadow_outcomes ADD COLUMN final_result TEXT"],
+];
+
 export const OPTIONS_SHADOW_DECISIONS_COLUMN_MIGRATIONS: ReadonlyArray<[string, string]> = [
 
   ["actual_action", "ALTER TABLE options_shadow_decisions ADD COLUMN actual_action TEXT"],
@@ -290,6 +315,7 @@ export function ensureSubscriberPipelineInstrumentationColumns(db: ColumnDb): st
   }
   ensureOptionsDeliveryDecisionsColumns(db);
   ensureOptionsShadowDecisionsColumns(db);
+  ensureOptionsShadowOutcomesColumns(db);
   return added;
 }
 
@@ -316,6 +342,20 @@ export function ensureOptionsShadowDecisionsColumns(db: ColumnDb): string[] {
 
   return added;
 
+}
+
+export function ensureOptionsShadowOutcomesColumns(db: ColumnDb): string[] {
+  if (!hasSqliteTable(db, "options_shadow_outcomes")) return [];
+  const cols = tableColumns(db, "options_shadow_outcomes");
+  const added: string[] = [];
+  for (const [col, sql] of OPTIONS_SHADOW_OUTCOMES_COLUMN_MIGRATIONS) {
+    if (!cols.has(col)) {
+      db.exec(sql);
+      cols.add(col);
+      added.push(`options_shadow_outcomes.${col}`);
+    }
+  }
+  return added;
 }
 
 

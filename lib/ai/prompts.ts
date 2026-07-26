@@ -58,6 +58,7 @@ export interface WeeklyPromptContext {
   quantResearch?: unknown;
   relevantFiles: string[];
   strategyVersion: string | null;
+  evidencePacket?: unknown;
 }
 
 /** Weekly strategy-improvement proposal prompt. Proposals are PENDING_APPROVAL. */
@@ -83,6 +84,7 @@ export function weeklyProposalPrompt(ctx: WeeklyPromptContext): Prompt {
     "Prior proposals (avoid duplicates):", JSON.stringify(ctx.priorProposals),
     "Current relevant configuration:", JSON.stringify(ctx.currentConfig),
     "Weekly AI quant research context (calculation inventory, Evidence Learning aggregates, gate trace requirements, and experiment rules):", JSON.stringify(ctx.quantResearch ?? null),
+    "Deterministic evidence packet (lane-labeled metrics; prefer this over huge raw dumps):", JSON.stringify(ctx.evidencePacket ?? null),
     "Relevant files you may reference (curated; the ONLY files you may name):", JSON.stringify(ctx.relevantFiles),
   ].join("\n");
   return { system, user };

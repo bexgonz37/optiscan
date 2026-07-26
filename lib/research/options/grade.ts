@@ -26,6 +26,7 @@ import {
 } from "../../opportunity-case/live.ts";
 import { formatOpportunityClosedUpdate, formatReturnMilestoneUpdate } from "./milestone-format.ts";
 import { assertSubscriberScanAllowed } from "../../market-session-guard.ts";
+import { isMilestoneDiscordEligibleOnDb } from "../../opportunity-case/milestone-eligibility.ts";
 
 export interface OpenPosition {
   id: number; option_symbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number;
@@ -226,6 +227,14 @@ async function maybeUpdateOpportunityLifecycle(
       } catch { /* optional */ }
     }
     if (!caseId) return 0;
+
+    const eligibility = isMilestoneDiscordEligibleOnDb(db as any, {
+      alertId: pos.alert_id,
+      opportunityCaseId: caseId,
+      paperKind: pos.paper_kind ?? "DELIVERED_ALERT_PAPER",
+      nowMs,
+    }, env);
+    if (!eligibility.eligible) return 0;
 
     const mark = realOptionExit(pos.entry_fill, quote!.bid as number, quote!.ask as number);
     const applied = applyOpportunityMarkOnDb(db as any, {

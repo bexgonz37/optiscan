@@ -150,8 +150,14 @@ export function ensureServerBoot(): void {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { startShadowOutcomeGrader } = require("@/lib/research/options/shadow-outcomes");
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const liveDeps = require("@/lib/research/options/live-deps").buildLiveOptionsDeps();
-    const started = startShadowOutcomeGrader({ getDb: liveDeps.getDb }, process.env);
+    const { buildLiveGradeDeps } = require("@/lib/research/options/live-deps");
+    const gradeDeps = buildLiveGradeDeps();
+    const started = startShadowOutcomeGrader({
+      getDb: gradeDeps.getDb,
+      now: gradeDeps.now,
+      fetchOptionQuote: gradeDeps.getQuote,
+      fetchUnderlying: gradeDeps.fetchUnderlying,
+    }, process.env);
     if (started.started) console.info("[shadow-outcomes] grader started");
   } catch (err) {
     console.warn("[shadow-outcomes] grader not started:", (err as Error)?.message);

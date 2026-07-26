@@ -19,6 +19,7 @@ import { ensureEnterpriseSchemaOnDb, inspectSchemaReadiness } from "@/lib/db-sch
 import {
   ensureOptionsDeliveryDecisionsColumns,
   ensureOptionsShadowDecisionsColumns,
+  ensureOptionsShadowOutcomesColumns,
   ensureSubscriberPipelineInstrumentationColumns,
   OPTIONS_ALERTS_INSTRUMENTATION_MIGRATIONS,
   OPTIONS_CANDIDATES_INSTRUMENTATION_MIGRATIONS,
@@ -914,6 +915,16 @@ CREATE TABLE IF NOT EXISTS ai_proposals (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_proposals_status ON ai_proposals(status, created_at_ms);
 
+CREATE TABLE IF NOT EXISTS ai_evidence_packets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  packet_id TEXT NOT NULL UNIQUE,
+  period_start_ms INTEGER NOT NULL,
+  period_end_ms INTEGER NOT NULL,
+  packet_json TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_evidence_packets_created ON ai_evidence_packets(created_at_ms);
+
 -- AI cost + audit log. ONE row per provider job attempt-set (including skips), so
 -- monthly spend, latency, retries, and failures are fully auditable. month_key
 -- (YYYY-MM in ET) powers the soft/hard monthly limit checks.
@@ -1551,8 +1562,30 @@ CREATE TABLE IF NOT EXISTS options_shadow_outcomes (
   return_15m REAL,
   return_30m REAL,
   return_60m REAL,
+  underlying_return_1m REAL,
+  underlying_return_5m REAL,
+  underlying_return_15m REAL,
+  underlying_return_30m REAL,
+  underlying_return_60m REAL,
+  option_return_1m REAL,
+  option_return_5m REAL,
+  option_return_15m REAL,
+  option_return_30m REAL,
+  option_return_60m REAL,
+  bid_at_decision REAL,
+  ask_at_decision REAL,
+  spread_pct_at_decision REAL,
+  dte_at_decision INTEGER,
+  strike_at_decision REAL,
+  expiration_at_decision TEXT,
+  quality_score REAL,
+  block_reasons_json TEXT,
   mfe_pct REAL,
   mae_pct REAL,
+  mfe_at_ms INTEGER,
+  mae_at_ms INTEGER,
+  missing_data_reason TEXT,
+  final_result TEXT,
   t1_hit INTEGER,
   t2_hit INTEGER,
   stop_hit INTEGER,
@@ -2068,6 +2101,10 @@ function migrate(db: Database.Database) {
     const aiJobCols = cols("ai_job_runs");
     for (const [col, sql] of AI_JOB_RUN_COLUMN_MIGRATIONS) if (!aiJobCols.has(col)) db.exec(sql);
   }
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ai_proposals'").get()) {
+    const propCols = cols("ai_proposals");
+    if (!propCols.has("workflow_json")) db.exec("ALTER TABLE ai_proposals ADD COLUMN workflow_json TEXT");
+  }
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='momentum_diagnostics'").get()) {
     const momentumDiagCols = cols("momentum_diagnostics");
     for (const [col, sql] of MOMENTUM_DIAGNOSTIC_COLUMN_MIGRATIONS) if (!momentumDiagCols.has(col)) db.exec(sql);
@@ -2155,6 +2192,9 @@ function migrate(db: Database.Database) {
   }
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_shadow_decisions'").get()) {
     ensureOptionsShadowDecisionsColumns(db);
+  }
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_shadow_outcomes'").get()) {
+    ensureOptionsShadowOutcomesColumns(db);
   }
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_candidates'").get()
     || db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_alerts'").get()) {
@@ -2299,6 +2339,7 @@ export { inspectSchemaReadiness, repairAndInspectSchemaReadiness, resolveDbLocat
 export {
   ensureOptionsDeliveryDecisionsColumns,
   ensureOptionsShadowDecisionsColumns,
+  ensureOptionsShadowOutcomesColumns,
   ensureSubscriberPipelineInstrumentationColumns,
   listMissingShadowSoakTables,
   readInstrumentationFallbackInserts,

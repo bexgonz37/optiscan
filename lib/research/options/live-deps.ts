@@ -100,9 +100,12 @@ export function buildLiveOptionsDeps(): OptionsMonitorDeps {
   };
 }
 
-/** Live deps for the AUTOMATIC grader: refresh one open contract's quote by fetching its underlying's
- *  chain and matching the OCC symbol. Returns null when unavailable (position stays open, not fabricated). */
-export function buildLiveGradeDeps(): { getDb: () => any; now: () => number; getQuote: (optionSymbol: string, underlyingSymbol: string) => Promise<{ bid: number | null; ask: number | null; quoteAgeMs: number | null } | null> } {
+export function buildLiveGradeDeps(): {
+  getDb: () => any;
+  now: () => number;
+  getQuote: (optionSymbol: string, underlyingSymbol: string) => Promise<{ bid: number | null; ask: number | null; quoteAgeMs: number | null } | null>;
+  fetchUnderlying: (symbol: string) => Promise<number | null>;
+} {
   return {
     now: Date.now,
     getDb: () => require("@/lib/db").getDb(), // eslint-disable-line @typescript-eslint/no-require-imports
@@ -116,6 +119,12 @@ export function buildLiveGradeDeps(): { getDb: () => any; now: () => number; get
       const c = mapOptionContracts(res.contracts, nowMs).find((x) => x.optionSymbol === optionSymbol);
       if (!c) return null;
       return { bid: c.bid, ask: c.ask, quoteAgeMs: c.providerTimestamp != null ? nowMs - c.providerTimestamp : null };
+    },
+    fetchUnderlying: async (symbol: string) => {
+      const quotes = await marketSnapshot(Date.now());
+      const q = quotes.find((x: any) => String(x.symbol).toUpperCase() === symbol.toUpperCase());
+      const p = Number(q?.price);
+      return Number.isFinite(p) ? p : null;
     },
   };
 }

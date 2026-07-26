@@ -28,6 +28,12 @@ type Diagnostic = {
     regularCloseMs?: number;
   };
   lifecycle?: { recentSuppressions: Record<string, unknown>[]; milestoneDeliveryFailures: number };
+  evidenceIntegrity?: {
+    paperChain: { paperLinkRate: number | null; unhealthyRows: number; sent24h: number };
+    shadowGrader: { pendingOutcomes: number; missingDataPct: number; wouldSend: number; wouldBlock: number };
+    quantLanes: { lanesWithEvidence: number; lanesInsufficient: number };
+    aiWeekly: { lastStatus: string | null; validationFailed24h: number };
+  };
 };
 
 type PipelineHealthResponse = {
@@ -105,6 +111,15 @@ export default function PipelineHealthPage() {
               <p>State: {diag.sessionGuard.state} · session date: {diag.sessionGuard.tradingSessionDate}</p>
               <p>Scan allowed: {diag.sessionGuard.subscriberScanAllowed ? "yes" : "no"} · delivery allowed: {diag.sessionGuard.subscriberDeliveryAllowed ? "yes" : "no"}</p>
               <p>{diag.sessionGuard.reason}</p>
+            </Card>
+          )}
+          {diag.evidenceIntegrity && (
+            <Card title="Evidence integrity">
+              <p>Paper link rate (24h): {diag.evidenceIntegrity.paperChain.paperLinkRate ?? "n/a"} · unhealthy rows: {diag.evidenceIntegrity.paperChain.unhealthyRows}</p>
+              <p>Shadow pending outcomes: {diag.evidenceIntegrity.shadowGrader.pendingOutcomes} · missing data: {diag.evidenceIntegrity.shadowGrader.missingDataPct}%</p>
+              <p>Quant lanes with evidence: {diag.evidenceIntegrity.quantLanes.lanesWithEvidence} · insufficient: {diag.evidenceIntegrity.quantLanes.lanesInsufficient}</p>
+              <p>AI weekly last status: {diag.evidenceIntegrity.aiWeekly.lastStatus ?? "n/a"} · validation failures (24h): {diag.evidenceIntegrity.aiWeekly.validationFailed24h}</p>
+              <p><a href="/api/research/options/paper-chain">Paper chain API</a> · <a href="/api/research/options/quant-lanes">Quant lanes API</a></p>
             </Card>
           )}
           {diag.lifecycle?.recentSuppressions && diag.lifecycle.recentSuppressions.length > 0 && (

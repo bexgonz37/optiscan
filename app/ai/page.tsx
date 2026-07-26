@@ -169,6 +169,8 @@ export default function AiLabPage() {
   const [obsError, setObsError] = useState<string | null>(null);
   const [trace, setTrace] = useState<any>(null);
   const [selectedId, setSelectedId] = useState<string>("");
+  const [recommendations, setRecommendations] = useState<any[]>([]);
+  const [cursorPrompt, setCursorPrompt] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -182,6 +184,16 @@ export default function AiLabPage() {
       setError(null);
     }
     setLoading(false);
+  }, []);
+
+  const loadRecs = useCallback(async () => {
+    const result = await apiFetchJson<{ recommendations?: any[] }>("/api/ai/recommendations");
+    if (result.ok) setRecommendations(result.data?.recommendations ?? []);
+  }, []);
+
+  const exportCursorPrompt = useCallback(async (id: number) => {
+    const result = await apiFetchJson<{ cursorPrompt?: string }>(`/api/ai/recommendations?id=${id}&export=cursor`);
+    if (result.ok) setCursorPrompt(result.data?.cursorPrompt ?? null);
   }, []);
 
   const loadObs = useCallback(async () => {
@@ -242,9 +254,10 @@ export default function AiLabPage() {
   useEffect(() => {
     load();
     loadObs();
-    const id = setInterval(() => { load(); loadObs(); }, 60000);
+    loadRecs();
+    const id = setInterval(() => { load(); loadObs(); loadRecs(); }, 60000);
     return () => clearInterval(id);
-  }, [load, loadObs]);
+  }, [load, loadObs, loadRecs]);
 
   if (error && !ov) return <PageContainer><ErrorState title="AI Lab unavailable" detail={error} onRetry={load} /></PageContainer>;
   if (loading && !ov) return <PageContainer><Card title="Loading AI Lab"><LoadingState rows={5} /></Card></PageContainer>;
@@ -742,6 +755,36 @@ export default function AiLabPage() {
 
       <Card title="Proposals" meta={`${pending.length} pending / ${accepted.length} accepted / ${rejected.length} rejected`}>
         <SimpleTable columns={proposalCols} rows={pending} rowKey={(p) => String(p.id)} emptyTitle="No pending proposals" emptyReason="The weekly job proposes changes on Friday night / Saturday. Nothing is applied automatically." />
+      </Card>
+
+      <Card title="AI Recommendations workflow" meta={`${recommendations.length} tracked · export-only Cursor prompts`}>
+        {recommendations.length === 0 ? (
+          <EmptyState title="No recommendations yet" reason="Weekly proposals with evidence packets appear here after a successful weekly job." />
+        ) : (
+          <SimpleTable
+            columns={[
+              { key: "title", header: "Title", render: (r: any) => r.title },
+              { key: "status", header: "Workflow", render: (r: any) => r.workflowStatus ?? r.status },
+              { key: "packet", header: "Evidence", render: (r: any) => r.evidencePacketId ?? "n/a" },
+              {
+                key: "export", header: "Export", render: (r: any) => (
+                  <button disabled={busy} onClick={() => exportCursorPrompt(r.id)} style={{ fontSize: 12, padding: "3px 8px" }}>
+                    Export Cursor Prompt
+                  </button>
+                ),
+              },
+            ]}
+            rows={recommendations.slice(0, 20)}
+            rowKey={(r: any) => String(r.id)}
+            emptyTitle="No recommendations"
+            emptyReason=""
+          />
+        )}
+        {cursorPrompt && (
+          <DetailsDisclosure summary="Exported Cursor prompt (copy only — no repo edits)">
+            <pre style={{ whiteSpace: "pre-wrap", fontSize: 12, maxHeight: 320, overflow: "auto" }}>{cursorPrompt}</pre>
+          </DetailsDisclosure>
+        )}
       </Card>
 
       <ResponsiveGrid min={320}>

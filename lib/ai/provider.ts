@@ -382,6 +382,10 @@ export async function runStructuredAiJob<T>(
         diagnostics.markdownFenceStripped = diagnostics.markdownFenceStripped || parsed.markdownFenceStripped;
         diagnostics.extractedJson = diagnostics.extractedJson || parsed.extractedJson;
         diagnostics.parserOutput = parserOutput(parsed.json);
+        if (parsed.json && typeof parsed.json === "object" && !Array.isArray(parsed.json)
+          && Object.keys(parsed.json as object).length === 0) {
+          throw new Error("empty tool/input object — retry with proposals array or { proposals: [] }");
+        }
         data = validate(parsed.json);
       } catch (verr: any) {
         const message = String(verr?.message ?? verr);

@@ -20,6 +20,9 @@ import { subscriberDiscordOwnershipSummary } from "../../subscriber-discord-owne
 import { evaluateMarketSessionGuard } from "../../market-session-guard.ts";
 import { inspectSchemaReadiness } from "../../db-schema-readiness.ts";
 import { readInstrumentationFallbackInserts } from "../../db-legacy-columns.ts";
+import { buildPaperChainDiagnostic } from "./paper-chain.ts";
+import { buildShadowSoakAggregate } from "./shadow-outcomes.ts";
+import { buildQuantLaneReport } from "./quant-lanes.ts";
 
 interface DiagDb {
   prepare(sql: string): { get: (...a: any[]) => any; all: (...a: any[]) => any[]; run?: (...a: any[]) => { changes: number } };
@@ -78,6 +81,12 @@ export interface WhyNoAlertsDiagnostic {
     missingShadowSoakTables: string[];
     missingInstrumentationColumns: Array<{ table: string; column: string }>;
     instrumentationFallbackInserts: number;
+  };
+  evidenceIntegrity?: {
+    paperChain: { paperLinkRate: number | null; unhealthyRows: number; sent24h: number };
+    shadowGrader: { pendingOutcomes: number; missingDataPct: number; wouldSend: number; wouldBlock: number };
+    quantLanes: { lanesWithEvidence: number; lanesInsufficient: number };
+    aiWeekly: { lastStatus: string | null; validationFailed24h: number };
   };
 }
 
@@ -239,6 +248,42 @@ export function buildWhyNoAlertsDiagnostic(
         missingShadowSoakTables: schema.missingShadowSoakTables,
         missingInstrumentationColumns: schema.missingInstrumentationColumns,
         instrumentationFallbackInserts: readInstrumentationFallbackInserts(),
+      };
+    })() : undefined,
+    evidenceIntegrity: db ? (() => {
+      const paper = buildPaperChainDiagnostic(db as any, env, 50);
+      const shadow = buildShadowSoakAggregate(db as any, env, 7);
+      const quant = buildQuantLaneReport(db as any, env);
+      let lastAi: string | null = null;
+      let validationFailed24h = 0;
+      if (hasTable(db, "ai_job_runs")) {
+        lastAi = String((db.prepare(
+          "SELECT status FROM ai_job_runs WHERE job_type='weekly_proposals' ORDER BY created_at_ms DESC LIMIT 1",
+        ).get() as { status?: string } | undefined)?.status ?? null);
+        validationFailed24h = Number((db.prepare(
+          "SELECT COUNT(*) n FROM ai_job_runs WHERE job_type='weekly_proposals' AND status='VALIDATION_FAILED' AND created_at_ms >= ?",
+        ).get(since24h) as { n: number })?.n ?? 0);
+      }
+      const pendingOutcomes = hasTable(db, "options_shadow_outcomes")
+        ? Number((db.prepare("SELECT COUNT(*) n FROM options_shadow_outcomes WHERE data_status='PENDING'").get() as { n: number })?.n ?? 0)
+        : 0;
+      return {
+        paperChain: {
+          paperLinkRate: paper.paperLinkRate,
+          unhealthyRows: paper.rows.filter((r) => r.graderHealth !== "healthy").length,
+          sent24h: paper.sent24h,
+        },
+        shadowGrader: {
+          pendingOutcomes,
+          missingDataPct: shadow.missingDataPct,
+          wouldSend: shadow.wouldSend,
+          wouldBlock: shadow.wouldBlock,
+        },
+        quantLanes: {
+          lanesWithEvidence: quant.lanes.filter((l) => !l.insufficientEvidence).length,
+          lanesInsufficient: quant.lanes.filter((l) => l.insufficientEvidence).length,
+        },
+        aiWeekly: { lastStatus: lastAi, validationFailed24h },
       };
     })() : undefined,
   };

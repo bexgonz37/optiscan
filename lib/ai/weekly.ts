@@ -20,6 +20,7 @@ import { PRIMARY_PORTFOLIO, CHALLENGE_PORTFOLIO, STOCK_DAY_TRADER_PORTFOLIO } fr
 import { validateWeeklyProposals, type WeeklyProposalDraft } from "./schemas.ts";
 import { screenProposalSafety } from "./safety.ts";
 import { runStructuredAiJob, type ProviderDeps } from "./provider.ts";
+import { buildEvidencePacket, persistEvidencePacketOnDb } from "./evidence-packet.ts";
 import { estimateCostUsd, maxJobCostUsd } from "./pricing.ts";
 import {
   insertReportOnDb, insertProposalOnDb, listReportsOnDb, listLessonsOnDb, listProposalsOnDb,
@@ -236,6 +237,9 @@ export async function runWeeklyProposals(opts: WeeklyJobOptions = {}): Promise<W
 
   // 2. Curated context (summaries + lessons + prior proposals + config + file map).
   const lessons = listLessonsOnDb(db, 100);
+  const periodStartMs = nowMs - 7 * 24 * 3600_000;
+  const evidencePacket = buildEvidencePacket(db, { periodStartMs, periodEndMs: nowMs, env: opts.env });
+  persistEvidencePacketOnDb(db, evidencePacket);
   const { system, user } = weeklyProposalPrompt({
     weekKey,
     weeklySummary: summary,
@@ -247,6 +251,7 @@ export async function runWeeklyProposals(opts: WeeklyJobOptions = {}): Promise<W
     quantResearch: summary.quantResearch,
     relevantFiles: CURATED_STRATEGY_FILES,
     strategyVersion: currentStrategyVersion(db),
+    evidencePacket,
   });
 
   const call = await runStructuredAiJob<WeeklyProposalDraft[]>(
@@ -290,7 +295,7 @@ export async function runWeeklyProposals(opts: WeeklyJobOptions = {}): Promise<W
     const dedupKey = `${weekKey}|${draft.affectedStrategy ?? "all"}|${slug(draft.title)}`;
     const { created: madeNew } = insertProposalOnDb(db, {
       dedupKey, periodKey: weekKey, title: draft.title, problem: draft.problem,
-      evidence: draft.evidence, sampleSize: draft.sampleSize, affectedStrategy: draft.affectedStrategy,
+      evidence: { text: draft.evidence, packetId: evidencePacket.id, completenessPct: evidencePacket.lanes[0]?.completenessPct ?? null }, sampleSize: draft.sampleSize, affectedStrategy: draft.affectedStrategy,
       affectedSession: draft.affectedSession, affectedConfig: draft.affectedConfig, proposedChange: draft.proposedChange,
       relevantFiles: draft.relevantFiles, changeLevel: draft.changeLevel, expectedBenefit: draft.expectedBenefit,
       downsideRisk: draft.downsideRisk, overfittingRisk: draft.overfittingRisk, requiredTests: draft.requiredTests,

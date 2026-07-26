@@ -16,13 +16,16 @@ type OutcomeDb = {
 
 export type ShadowDataStatus = "PENDING" | "OK" | "MISSING" | "STALE" | "SESSION_CLOSED";
 
-const HORIZONS_MS = [
-  ["return_1m", 60_000],
-  ["return_5m", 5 * 60_000],
-  ["return_15m", 15 * 60_000],
-  ["return_30m", 30 * 60_000],
-  ["return_60m", 60 * 60_000],
+const HORIZONS = [
+  { returnCol: "return_1m", optionCol: "option_return_1m", underlyingCol: "underlying_return_1m", ms: 60_000 },
+  { returnCol: "return_5m", optionCol: "option_return_5m", underlyingCol: "underlying_return_5m", ms: 5 * 60_000 },
+  { returnCol: "return_15m", optionCol: "option_return_15m", underlyingCol: "underlying_return_15m", ms: 15 * 60_000 },
+  { returnCol: "return_30m", optionCol: "option_return_30m", underlyingCol: "underlying_return_30m", ms: 30 * 60_000 },
+  { returnCol: "return_60m", optionCol: "option_return_60m", underlyingCol: "underlying_return_60m", ms: 60 * 60_000 },
 ] as const;
+
+const MAX_HORIZON_MS = 60 * 60_000;
+const GRADEABLE_PATHS = new Set(["proposed", "independent"]);
 
 export interface ShadowOutcomeRow {
   id: number;
@@ -40,6 +43,14 @@ export interface ShadowOutcomeRow {
   frozen_stop: number | null;
   underlying_at_decision: number | null;
   option_at_decision: number | null;
+  bid_at_decision: number | null;
+  ask_at_decision: number | null;
+  spread_pct_at_decision: number | null;
+  dte_at_decision: number | null;
+  strike_at_decision: number | null;
+  expiration_at_decision: string | null;
+  quality_score: number | null;
+  block_reasons_json: string | null;
   entry_quality_verdict: string | null;
   entry_quality_dimensions_json: string | null;
   session_guard_state: string | null;
@@ -49,12 +60,26 @@ export interface ShadowOutcomeRow {
   return_15m: number | null;
   return_30m: number | null;
   return_60m: number | null;
+  underlying_return_1m: number | null;
+  underlying_return_5m: number | null;
+  underlying_return_15m: number | null;
+  underlying_return_30m: number | null;
+  underlying_return_60m: number | null;
+  option_return_1m: number | null;
+  option_return_5m: number | null;
+  option_return_15m: number | null;
+  option_return_30m: number | null;
+  option_return_60m: number | null;
   mfe_pct: number | null;
   mae_pct: number | null;
+  mfe_at_ms: number | null;
+  mae_at_ms: number | null;
   t1_hit: number | null;
   t2_hit: number | null;
   stop_hit: number | null;
   underlying_direction_correct: number | null;
+  missing_data_reason: string | null;
+  final_result: string | null;
   data_status: ShadowDataStatus;
   marks_json: string | null;
   created_at_ms: number;
@@ -63,7 +88,10 @@ export interface ShadowOutcomeRow {
 
 export interface ShadowOutcomeDeps {
   getDb?: () => OutcomeDb;
-  fetchOptionQuote?: (optionSymbol: string) => Promise<{ bid: number | null; ask: number | null; quoteAgeMs: number | null } | null>;
+  fetchOptionQuote?: (
+    optionSymbol: string,
+    underlyingSymbol: string,
+  ) => Promise<{ bid: number | null; ask: number | null; quoteAgeMs: number | null } | null>;
   fetchUnderlying?: (symbol: string) => Promise<number | null>;
   now?: () => number;
 }
@@ -81,6 +109,28 @@ function optionReturnPct(entry: number, mark: number): number | null {
   return +(((mark / entry) - 1) * 100).toFixed(4);
 }
 
+function underlyingReturnPct(entry: number, now: number): number | null {
+  if (!Number.isFinite(entry) || entry <= 0 || !Number.isFinite(now)) return null;
+  return +(((now - entry) / entry) * 100).toFixed(4);
+}
+
+function gradeMaxQuoteAgeMs(env: NodeJS.ProcessEnv): number {
+  const n = Number(env.SHADOW_GRADE_MAX_QUOTE_AGE_MS ?? env.OPTIONS_GRADE_MAX_QUOTE_AGE_MS);
+  return Number.isFinite(n) && n >= 1000 ? n : 900_000;
+}
+
+function gradeRowCap(env: NodeJS.ProcessEnv): number {
+  const n = Number(env.SHADOW_OUTCOME_GRADE_MAX_ROWS);
+  return Number.isFinite(n) && n > 0 ? Math.min(100, Math.floor(n)) : 25;
+}
+
+function qualityScoreFromResult(result: ShadowDecisionResult): number | null {
+  const d = result.entryQuality?.dimensions;
+  if (!d) return null;
+  const vals = Object.values(d).map((x) => x?.score).filter((x): x is number => Number.isFinite(x));
+  return vals.length ? +(vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(1) : null;
+}
+
 export function upsertShadowOutcomeFromDecision(
   db: OutcomeDb,
   shadowDecisionId: number,
@@ -92,7 +142,9 @@ export function upsertShadowOutcomeFromDecision(
   const d = input.deliveryInput;
   if (!d) return;
   const nowMs = input.nowMs ?? Date.now();
-  const optMid = d.entry?.mid ?? ((d.contract.bid ?? 0) + (d.contract.ask ?? 0)) / 2;
+  const bid = d.contract.bid ?? null;
+  const ask = d.contract.ask ?? null;
+  const optMid = d.entry?.mid ?? ((bid ?? 0) + (ask ?? 0)) / 2;
   try {
     const existing = db.prepare(
       "SELECT id FROM options_shadow_outcomes WHERE shadow_decision_id=? LIMIT 1",
@@ -102,9 +154,11 @@ export function upsertShadowOutcomeFromDecision(
       `INSERT INTO options_shadow_outcomes (
         shadow_decision_id, candidate_symbol, strategy, side, trading_session_date, path, would_send,
         option_symbol, frozen_entry, frozen_t1, frozen_t2, frozen_stop, underlying_at_decision,
-        option_at_decision, entry_quality_verdict, entry_quality_dimensions_json, session_guard_state,
+        option_at_decision, bid_at_decision, ask_at_decision, spread_pct_at_decision, dte_at_decision,
+        strike_at_decision, expiration_at_decision, quality_score, block_reasons_json,
+        entry_quality_verdict, entry_quality_dimensions_json, session_guard_state,
         decision_at_ms, data_status, created_at_ms, updated_at_ms
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(
       shadowDecisionId,
       input.symbol,
@@ -120,7 +174,15 @@ export function upsertShadowOutcomeFromDecision(
       d.entry?.stop ?? null,
       d.currentUnderlyingPrice,
       optMid,
-      result.entryQuality?.composite.primaryVerdict ?? null,
+      bid,
+      ask,
+      d.contract.spreadPct ?? null,
+      d.contract.dte ?? null,
+      d.contract.strike ?? null,
+      d.contract.expiration ?? null,
+      qualityScoreFromResult(result),
+      JSON.stringify(result.blockReasons ?? []),
+      result.entryQuality?.composite.primaryVerdict ?? result.entryQuality?.verdict ?? null,
       result.entryQuality ? JSON.stringify(result.entryQuality.dimensions) : null,
       result.sessionState,
       nowMs,
@@ -131,26 +193,55 @@ export function upsertShadowOutcomeFromDecision(
   } catch { /* isolated */ }
 }
 
+/** Shadow grader must never write live subscriber artifacts. Exported for tests. */
+export function assertShadowGraderIsolation(db: OutcomeDb): { ok: boolean; violations: string[] } {
+  const violations: string[] = [];
+  const forbiddenWrites = [
+    "options_alerts",
+    "options_paper_trades",
+    "opportunity_cases",
+    "opportunity_milestones",
+    "subscriber_claims",
+    "social_drafts",
+  ];
+  for (const table of forbiddenWrites) {
+    if (hasTable(db, table)) violations.push(`forbidden_table_present:${table}`);
+  }
+  return { ok: violations.length === 0, violations };
+}
+
 export async function gradeShadowOutcomesOnDb(
   db: OutcomeDb,
   deps: ShadowOutcomeDeps = {},
   env: NodeJS.ProcessEnv = process.env,
   nowMs = deps.now?.() ?? Date.now(),
-): Promise<{ updated: number; pending: number }> {
-  if (!hasTable(db, "options_shadow_outcomes")) return { updated: 0, pending: 0 };
+): Promise<{ updated: number; pending: number; skipped: number }> {
+  if (!hasTable(db, "options_shadow_outcomes")) return { updated: 0, pending: 0, skipped: 0 };
   const scanGuard = assertSubscriberScanAllowed(nowMs, env);
   const scanMode = String(env.MARKET_SESSION_GUARD ?? "shadow").toLowerCase();
   const canRefreshQuotes = scanGuard.ok || scanMode === "shadow" || scanMode === "0";
+  const maxQuoteAgeMs = gradeMaxQuoteAgeMs(env);
+  const rowCap = gradeRowCap(env);
 
   let updated = 0;
   let pending = 0;
+  let skipped = 0;
   const rows = db.prepare(
-    "SELECT * FROM options_shadow_outcomes WHERE data_status IN ('PENDING','OK') ORDER BY decision_at_ms ASC LIMIT 50",
-  ).all() as ShadowOutcomeRow[];
+    `SELECT * FROM options_shadow_outcomes
+     WHERE data_status IN ('PENDING','OK')
+       AND path IN ('proposed','independent')
+       AND option_symbol IS NOT NULL
+     ORDER BY decision_at_ms ASC
+     LIMIT ?`,
+  ).all(rowCap) as ShadowOutcomeRow[];
 
   for (const row of rows) {
+    if (!GRADEABLE_PATHS.has(row.path) || !row.option_symbol) {
+      skipped += 1;
+      continue;
+    }
+
     const ageMs = nowMs - row.decision_at_ms;
-    const maxHorizon = 60 * 60_000;
     if (ageMs < 60_000) {
       pending += 1;
       continue;
@@ -160,39 +251,86 @@ export async function gradeShadowOutcomesOnDb(
     let underlyingNow: number | null = null;
 
     if (canRefreshQuotes && deps.fetchOptionQuote && row.option_symbol) {
-      try { quote = await deps.fetchOptionQuote(row.option_symbol); } catch { quote = null; }
+      try {
+        quote = await deps.fetchOptionQuote(row.option_symbol, row.candidate_symbol);
+      } catch {
+        quote = null;
+      }
     }
     if (canRefreshQuotes && deps.fetchUnderlying) {
-      try { underlyingNow = await deps.fetchUnderlying(row.candidate_symbol); } catch { underlyingNow = null; }
+      try {
+        underlyingNow = await deps.fetchUnderlying(row.candidate_symbol);
+      } catch {
+        underlyingNow = null;
+      }
     }
 
     const entry = row.frozen_entry;
-    const mark = quote && quote.bid != null && quote.ask != null ? (quote.bid + quote.ask) / 2 : null;
-    const returnNow = entry != null && mark != null ? optionReturnPct(entry, mark) : null;
-
-    const marks: Record<string, number | null> = row.marks_json ? JSON.parse(row.marks_json) : {};
-    if (returnNow != null) marks[`r_${Math.floor(ageMs / 60_000)}m`] = returnNow;
+    const freshQuote = quote != null
+      && quote.bid != null && quote.bid > 0
+      && quote.ask != null && quote.ask > 0
+      && (quote.quoteAgeMs == null || quote.quoteAgeMs <= maxQuoteAgeMs);
+    const mark = freshQuote ? (quote!.bid! + quote!.ask!) / 2 : null;
+    const optionReturnNow = entry != null && mark != null ? optionReturnPct(entry, mark) : null;
+    const underlyingReturnNow = row.underlying_at_decision != null && underlyingNow != null
+      ? underlyingReturnPct(row.underlying_at_decision, underlyingNow)
+      : null;
 
     const updates: Record<string, number | null> = {};
-    for (const [col, horizonMs] of HORIZONS_MS) {
-      if (ageMs >= horizonMs && row[col as keyof ShadowOutcomeRow] == null && returnNow != null) {
-        updates[col] = returnNow;
+    for (const h of HORIZONS) {
+      const existing = row[h.returnCol as keyof ShadowOutcomeRow];
+      if (ageMs >= h.ms && existing == null && optionReturnNow != null) {
+        updates[h.returnCol] = optionReturnNow;
+        updates[h.optionCol] = optionReturnNow;
+        if (underlyingReturnNow != null) updates[h.underlyingCol] = underlyingReturnNow;
       }
     }
 
     let mfe = row.mfe_pct;
     let mae = row.mae_pct;
-    if (returnNow != null) {
-      mfe = mfe == null ? returnNow : Math.max(mfe, returnNow);
-      mae = mae == null ? returnNow : Math.min(mae, returnNow);
+    let mfeAtMs = row.mfe_at_ms;
+    let maeAtMs = row.mae_at_ms;
+    if (optionReturnNow != null) {
+      if (mfe == null || optionReturnNow > mfe) {
+        mfe = optionReturnNow;
+        mfeAtMs = nowMs;
+      }
+      if (mae == null || optionReturnNow < mae) {
+        mae = optionReturnNow;
+        maeAtMs = nowMs;
+      }
     }
 
     let dataStatus: ShadowDataStatus = row.data_status;
-    if (!canRefreshQuotes && ageMs > maxHorizon) dataStatus = "SESSION_CLOSED";
-    else if (ageMs > maxHorizon && returnNow == null) dataStatus = "MISSING";
-    else if (quote?.quoteAgeMs != null && quote.quoteAgeMs > 900_000) dataStatus = "STALE";
-    else if (Object.keys(updates).length > 0 || returnNow != null) dataStatus = ageMs >= maxHorizon ? "OK" : "PENDING";
-    else if (ageMs >= maxHorizon) dataStatus = "MISSING";
+    let missingDataReason = row.missing_data_reason;
+    let finalResult = row.final_result;
+
+    if (!canRefreshQuotes) {
+      if (ageMs >= MAX_HORIZON_MS) {
+        dataStatus = "SESSION_CLOSED";
+        missingDataReason = "SESSION_CLOSED";
+        finalResult = finalResult ?? "INCOMPLETE";
+      }
+    } else if (!freshQuote) {
+      if (ageMs >= MAX_HORIZON_MS && row.return_60m == null) {
+        dataStatus = "MISSING";
+        missingDataReason = "QUOTE_UNAVAILABLE";
+        finalResult = finalResult ?? "INCOMPLETE";
+      }
+    } else if (quote?.quoteAgeMs != null && quote.quoteAgeMs > maxQuoteAgeMs) {
+      dataStatus = "STALE";
+      missingDataReason = "STALE_QUOTE";
+    } else if (Object.keys(updates).length > 0 || optionReturnNow != null) {
+      dataStatus = ageMs >= MAX_HORIZON_MS && row.return_60m != null ? "OK" : "PENDING";
+      if (ageMs >= MAX_HORIZON_MS) {
+        finalResult = row.return_60m != null || updates.return_60m != null ? "COMPLETE" : "INCOMPLETE";
+        if (row.return_60m != null || updates.return_60m != null) dataStatus = "OK";
+      }
+    } else if (ageMs >= MAX_HORIZON_MS) {
+      dataStatus = row.return_60m != null ? "OK" : "MISSING";
+      missingDataReason = row.return_60m != null ? missingDataReason : (missingDataReason ?? "QUOTE_UNAVAILABLE");
+      finalResult = row.return_60m != null ? "COMPLETE" : "INCOMPLETE";
+    }
 
     const t1Hit = row.frozen_t1 != null && mark != null && mark >= row.frozen_t1 ? 1 : row.t1_hit;
     const t2Hit = row.frozen_t2 != null && mark != null && mark >= row.frozen_t2 ? 1 : row.t2_hit;
@@ -203,6 +341,9 @@ export async function gradeShadowOutcomesOnDb(
         : underlyingNow > row.underlying_at_decision) ? 1 : 0)
       : row.underlying_direction_correct;
 
+    const marks: Record<string, unknown> = row.marks_json ? JSON.parse(row.marks_json) : {};
+    if (optionReturnNow != null) marks[`r_${Math.floor(ageMs / 60_000)}m`] = optionReturnNow;
+
     try {
       db.prepare(
         `UPDATE options_shadow_outcomes SET
@@ -211,8 +352,19 @@ export async function gradeShadowOutcomesOnDb(
           return_15m=COALESCE(?, return_15m),
           return_30m=COALESCE(?, return_30m),
           return_60m=COALESCE(?, return_60m),
-          mfe_pct=?, mae_pct=?, t1_hit=?, t2_hit=?, stop_hit=?, underlying_direction_correct=?,
-          data_status=?, marks_json=?, updated_at_ms=?
+          option_return_1m=COALESCE(?, option_return_1m),
+          option_return_5m=COALESCE(?, option_return_5m),
+          option_return_15m=COALESCE(?, option_return_15m),
+          option_return_30m=COALESCE(?, option_return_30m),
+          option_return_60m=COALESCE(?, option_return_60m),
+          underlying_return_1m=COALESCE(?, underlying_return_1m),
+          underlying_return_5m=COALESCE(?, underlying_return_5m),
+          underlying_return_15m=COALESCE(?, underlying_return_15m),
+          underlying_return_30m=COALESCE(?, underlying_return_30m),
+          underlying_return_60m=COALESCE(?, underlying_return_60m),
+          mfe_pct=?, mae_pct=?, mfe_at_ms=?, mae_at_ms=?,
+          t1_hit=?, t2_hit=?, stop_hit=?, underlying_direction_correct=?,
+          missing_data_reason=?, final_result=?, data_status=?, marks_json=?, updated_at_ms=?
          WHERE id=?`,
       ).run(
         updates.return_1m ?? null,
@@ -220,12 +372,26 @@ export async function gradeShadowOutcomesOnDb(
         updates.return_15m ?? null,
         updates.return_30m ?? null,
         updates.return_60m ?? null,
+        updates.option_return_1m ?? null,
+        updates.option_return_5m ?? null,
+        updates.option_return_15m ?? null,
+        updates.option_return_30m ?? null,
+        updates.option_return_60m ?? null,
+        updates.underlying_return_1m ?? null,
+        updates.underlying_return_5m ?? null,
+        updates.underlying_return_15m ?? null,
+        updates.underlying_return_30m ?? null,
+        updates.underlying_return_60m ?? null,
         mfe,
         mae,
+        mfeAtMs,
+        maeAtMs,
         t1Hit,
         t2Hit,
         stopHit,
         dirCorrect,
+        missingDataReason,
+        finalResult,
         dataStatus,
         JSON.stringify(marks),
         nowMs,
@@ -236,7 +402,7 @@ export async function gradeShadowOutcomesOnDb(
     } catch { /* isolated */ }
   }
 
-  return { updated, pending };
+  return { updated, pending, skipped };
 }
 
 let graderTimer: ReturnType<typeof setInterval> | null = null;
@@ -405,7 +571,7 @@ export function buildShadowSoakAggregate(db: OutcomeDb, _env: NodeJS.ProcessEnv 
       out.blockedWinRate60m = winRate(blocked.map((o) => o.return_60m!));
       out.severeLossesPrevented = blocked.filter((o) => (o.return_60m ?? 0) <= -25).length;
       out.largeWinnersBlocked = blocked.filter((o) => (o.return_60m ?? 0) >= 20).length;
-      const missing = outcomes.filter((o) => o.data_status === "MISSING" || o.data_status === "STALE").length;
+      const missing = outcomes.filter((o) => o.data_status === "MISSING" || o.data_status === "STALE" || o.data_status === "SESSION_CLOSED").length;
       out.missingDataPct = outcomes.length ? +(missing / outcomes.length * 100).toFixed(1) : 0;
     }
 

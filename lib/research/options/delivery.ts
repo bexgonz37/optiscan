@@ -501,6 +501,33 @@ export async function optionsWebhookTransportTest(deps: { send?: (p: Record<stri
   return { ok: res.ok, configured: true, status: res.status, latencyMs: res.latencyMs, error: res.error };
 }
 
+/** Milestone connectivity test — threaded reply labeled TEST ONLY; no paper/alert rows. */
+export async function optionsMilestoneConnectivityTest(deps: {
+  send?: (p: Record<string, unknown>) => Promise<SendResult>;
+  env?: NodeJS.ProcessEnv;
+  replyToMessageId?: string | null;
+} = {}): Promise<{ ok: boolean; configured: boolean; status: number | null; latencyMs: number; error: string | null; replied: boolean }> {
+  const env = deps.env ?? process.env;
+  const configured = Boolean(String(env.DISCORD_WEBHOOK_OPTIONS ?? "").trim());
+  if (!configured) return { ok: false, configured: false, status: null, latencyMs: 0, error: "DISCORD_WEBHOOK_OPTIONS not set", replied: false };
+  const send = deps.send ?? defaultSend;
+  const content = `TEST ONLY — NOT A TRADE\nMilestone connectivity check (return ladder / closed / report card path). ${BETA_LABEL}`;
+  const payload: Record<string, unknown> = { content };
+  if (deps.replyToMessageId) {
+    payload.message_reference = { message_id: deps.replyToMessageId };
+    payload.allowed_mentions = { parse: [] };
+  }
+  const res = await send(payload);
+  return {
+    ok: res.ok,
+    configured: true,
+    status: res.status,
+    latencyMs: res.latencyMs,
+    error: res.error,
+    replied: Boolean(deps.replyToMessageId),
+  };
+}
+
 /** Read-only delivery metrics (never includes the webhook secret). */
 export function readDeliveryMetricsOnDb(db: DDb): Record<string, unknown> {
   const has = Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_alerts'").get());

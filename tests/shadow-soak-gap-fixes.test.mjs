@@ -374,7 +374,10 @@ test("shadow outcomes table stays isolated from delivered alerts", () => {
 
       trading_session_date TEXT, path TEXT, would_send INTEGER, option_symbol TEXT, frozen_entry REAL, frozen_t1 REAL,
 
-      frozen_t2 REAL, frozen_stop REAL, underlying_at_decision REAL, option_at_decision REAL, entry_quality_verdict TEXT,
+      frozen_t2 REAL, frozen_stop REAL, underlying_at_decision REAL, option_at_decision REAL,
+      bid_at_decision REAL, ask_at_decision REAL, spread_pct_at_decision REAL, dte_at_decision INTEGER,
+      strike_at_decision REAL, expiration_at_decision TEXT, quality_score REAL, block_reasons_json TEXT,
+      entry_quality_verdict TEXT,
 
       entry_quality_dimensions_json TEXT, session_guard_state TEXT, decision_at_ms INTEGER, data_status TEXT,
 
