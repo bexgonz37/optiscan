@@ -71,3 +71,39 @@ export function formatCompactAlert(i: CompactAlertInput): string {
   else if (i.dte != null && i.dte <= 2) lines.push("⚡ Short-dated — manage risk");
   return lines.join("\n");
 }
+
+export interface PrivateLiveAlertInput extends CompactAlertInput {
+  optionSymbol?: string | null;
+  alertTimeEt?: string | null;
+  timingClass?: "EARLY" | "TIMELY";
+  actionableReason?: string | null;
+  invalidation?: string | null;
+}
+
+const etTimeFmt = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  hour: "numeric",
+  minute: "2-digit",
+  hour12: true,
+});
+
+/** Private live Discord alert — includes frozen entry, targets, timing class, and invalidation. */
+export function formatPrivateLiveAlert(i: PrivateLiveAlertInput): string {
+  const call = i.side === "call";
+  const emoji = call ? "🟢" : "🔴";
+  const sym = i.symbol.toUpperCase();
+  const lines: string[] = [];
+  lines.push(`${emoji} **${sym} ${call ? "CALL" : "PUT"}** · $${strikeStr(i.strike)} · exp ${mmdd(i.expiration)}`);
+  if (i.optionSymbol) lines.push(`Contract: \`${i.optionSymbol}\``);
+  lines.push(`Entry **$${i.entryMid.toFixed(2)}** · T1 **$${i.t1.toFixed(2)}** · T2 **$${i.t2.toFixed(2)}** · Stop **$${i.stop.toFixed(2)}**`);
+  if (i.underlyingPrice != null && i.underlyingPrice > 0) {
+    lines.push(`${sym} @ $${px(i.underlyingPrice)}`);
+  }
+  const alertEt = i.alertTimeEt ?? etTimeFmt.format(new Date());
+  lines.push(`Alert ${alertEt} ET · **${i.timingClass ?? "TIMELY"}**`);
+  if (i.actionableReason) lines.push(i.actionableReason);
+  if (i.invalidation) lines.push(`Invalidation: ${i.invalidation}`);
+  if (i.dte != null && i.dte <= 0) lines.push("⚡ 0DTE — high risk, small size");
+  else if (i.dte != null && i.dte <= 2) lines.push("⚡ Short-dated — manage risk");
+  return lines.join("\n");
+}

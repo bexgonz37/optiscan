@@ -14,6 +14,8 @@ import { assertSubscriberDeliveryAllowed, isSameTradingSession } from "../../mar
 import { evaluateEntryQuality, entryQualityFromDelivery } from "../../entry-quality-gate.ts";
 import { persistAlertInstrumentation, type AlertInstrumentation } from "./instrumentation.ts";
 import { recordProposedShadowFromDelivery } from "./shadow-runner.ts";
+import { revalidateBeforeDiscordSend } from "./final-delivery-revalidation.ts";
+import { formatPrivateLiveAlert } from "./format.ts";
 import { tradingDay } from "../../trading-session.ts";
 import {
   attachEvidenceToOpportunityOnDb,
@@ -57,6 +59,8 @@ export interface DeliveryInput {
   firstDetectedAtMs?: number | null;
   underlyingAtFirstDetection?: number | null;
   optionAtFirstDetection?: number | null;
+  firstReadyAtMs?: number | null;
+  readyExpiresAtMs?: number | null;
   featureSnapshot?: Record<string, unknown> | null;
 }
 
@@ -342,15 +346,64 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
     } catch { /* lifecycle helpers optional when schema not migrated */ }
   }
 
+  const finalGate = revalidateBeforeDiscordSend({
+    deliveryInput: input,
+    nowMs,
+    firstReadyAtMs: input.firstReadyAtMs,
+    readyExpiresAtMs: input.readyExpiresAtMs,
+  }, env);
+  if (!finalGate.allowed && finalGate.rejectionCode) {
+    const inst: AlertInstrumentation = {
+      entryQualityVerdict: finalGate.rejectionCode,
+      entryQualityReasonsJson: JSON.stringify(finalGate.reasons),
+      tradingSessionDate: tradingDay(nowMs),
+      firstDetectedAtMs: input.firstDetectedAtMs,
+      underlyingAtFirstDetection: input.underlyingAtFirstDetection,
+      optionAtFirstDetection: input.optionAtFirstDetection,
+      underlyingAtDelivery: input.currentUnderlyingPrice,
+      optionAtDelivery: input.entry?.mid ?? null,
+      deliveryLatencyMs: input.firstDetectedAtMs ? nowMs - input.firstDetectedAtMs : null,
+      evidenceSnapshotJson: JSON.stringify({ finalGate: finalGate.metrics, dimensions: finalGate.entryQuality.dimensions }),
+    };
+    try { persistAlertInstrumentation(dbEarly, alertId, inst); } catch { /* isolated */ }
+    if (livingCaseId && livingFingerprint && env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0") {
+      try {
+        db.prepare("DELETE FROM opportunity_active_index WHERE opportunity_fingerprint=? AND opportunity_case_id=?").run(livingFingerprint, livingCaseId);
+      } catch { /* isolated */ }
+    }
+    const rejectState = finalGate.rejectionCode === "QUOTE_STALE" || finalGate.rejectionCode === "STALE_READY_CANDIDATE" ? "TOO_LATE" as const : "REJECTED" as const;
+    return finalize(deps, input, alertId, rejectState, finalGate.rejectionCode, nowMs, state);
+  }
+
+  const liveMessage = input.entry
+    ? formatPrivateLiveAlert({
+      symbol: input.candidateSymbol,
+      side: input.contract.side,
+      strike: input.contract.strike,
+      expiration: input.contract.expiration,
+      entryMid: input.entry.mid,
+      t1: input.entry.t1,
+      t2: input.entry.t2,
+      stop: input.entry.stop,
+      strategyKey: input.strategy,
+      underlyingPrice: input.currentUnderlyingPrice,
+      dte: input.contract.dte ?? null,
+      optionSymbol: input.contract.optionSymbol,
+      timingClass: finalGate.timingClass === "EARLY" ? "EARLY" : "TIMELY",
+      actionableReason: finalGate.actionableReason,
+      invalidation: finalGate.invalidation,
+    })
+    : input.message;
+
   // Claim the slot as SEND_ATTEMPTED BEFORE sending, so a concurrent/duplicate call dedups.
-  try { persist(db, alertId, input, "SEND_ATTEMPTED", { attemptedAtMs: nowMs, retryCount: priorRetries, sessionState: state }, nowMs); } catch { /* isolated */ }
+  try { persist(db, alertId, { ...input, message: liveMessage }, "SEND_ATTEMPTED", { attemptedAtMs: nowMs, retryCount: priorRetries, sessionState: state }, nowMs); } catch { /* isolated */ }
   try {
     if (livingCaseId || livingFingerprint) {
       db.prepare("UPDATE options_alerts SET opportunity_case_id=?, opportunity_fingerprint=? WHERE alert_id=?").run(livingCaseId, livingFingerprint, alertId);
     }
   } catch { /* columns optional */ }
 
-  const payload = { content: `${input.message}\n\n${BETA_LABEL}` };
+  const payload = { content: `${liveMessage}\n\n${BETA_LABEL}` };
   const send = deps.send ?? defaultSend;
   let attempt = priorRetries, res: SendResult;
   for (;;) {
@@ -377,8 +430,8 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
         evidenceSnapshotJson: input.featureSnapshot ? JSON.stringify(input.featureSnapshot) : null,
         sessionStateAtDelivery: state,
         deliveryLatencyMs: latencyMs,
-        entryQualityVerdict: shadow.entryQuality?.verdict ?? "ALLOW",
-        entryQualityReasonsJson: shadow.entryQuality ? JSON.stringify(shadow.entryQuality.reasons) : null,
+        entryQualityVerdict: finalGate.timingClass,
+        entryQualityReasonsJson: JSON.stringify({ reasons: finalGate.reasons, actionable: finalGate.actionableReason, invalidation: finalGate.invalidation }),
         tradingSessionDate: tradingDay(nowMs),
         deliveredAtMs: sentAt,
       });

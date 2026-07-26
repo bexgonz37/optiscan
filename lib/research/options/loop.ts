@@ -203,6 +203,8 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
         firstDetectedAtMs: inst.firstDetectedAtMs,
         underlyingAtFirstDetection: inst.underlyingAtFirstDetection,
         optionAtFirstDetection: inst.optionAtFirstDetection,
+        firstReadyAtMs: inst.firstReadyAtMs,
+        readyExpiresAtMs: inst.readyExpiresAtMs,
         tradingSessionDate: inst.tradingSessionDate,
         featureSnapshot: (extra.featureSnapshot && typeof extra.featureSnapshot === "object") ? extra.featureSnapshot as Record<string, unknown> : null,
       };

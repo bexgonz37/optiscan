@@ -279,6 +279,56 @@ export interface ShadowSoakAggregate {
   supervisorWouldSend: number;
   independentWouldSend: number;
   instrumentationFallbackInserts: number;
+  liveDelivery?: LiveDeliveryMetrics;
+}
+
+export interface LiveDeliveryMetrics {
+  alertsSent24h: number;
+  alertsBlocked24h: number;
+  blockReasons: Record<string, number>;
+  avgDetectionToDiscordMs: number | null;
+  supervisorSendAttempts24h: number;
+  legacySendAttempts24h: number;
+  batchingLateBlocks: number;
+}
+
+export function buildLiveDeliveryMetrics(db: OutcomeDb, nowMs = Date.now()): LiveDeliveryMetrics {
+  const out: LiveDeliveryMetrics = {
+    alertsSent24h: 0,
+    alertsBlocked24h: 0,
+    blockReasons: {},
+    avgDetectionToDiscordMs: null,
+    supervisorSendAttempts24h: 0,
+    legacySendAttempts24h: 0,
+    batchingLateBlocks: 0,
+  };
+  const since = nowMs - 24 * 60 * 60_000;
+  try {
+    if (hasTable(db, "options_alerts")) {
+      out.alertsSent24h = Number((db.prepare("SELECT COUNT(*) n FROM options_alerts WHERE state='SENT' AND sent_at_ms >= ?").get(since) as { n: number })?.n ?? 0);
+      const blocked = db.prepare(
+        "SELECT failure_reason r, COUNT(*) c FROM options_alerts WHERE state IN ('REJECTED','TOO_LATE') AND updated_at_ms >= ? GROUP BY failure_reason",
+      ).all(since) as { r: string | null; c: number }[];
+      for (const row of blocked) {
+        const reason = row.r ?? "unknown";
+        out.alertsBlocked24h += row.c;
+        out.blockReasons[reason] = (out.blockReasons[reason] ?? 0) + row.c;
+        if (/STALE_READY|LATE_ENTRY|CHASED|MOVE_ALREADY|batch wait/i.test(reason)) out.batchingLateBlocks += row.c;
+      }
+      const latencies = (db.prepare(
+        `SELECT ai.delivery_latency_ms l FROM options_alert_instrumentation ai
+         JOIN options_alerts oa ON oa.alert_id = ai.alert_id
+         WHERE oa.state='SENT' AND oa.sent_at_ms >= ? AND ai.delivery_latency_ms IS NOT NULL`,
+      ).all(since) as { l: number }[]).map((r) => r.l);
+      if (latencies.length) out.avgDetectionToDiscordMs = Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length);
+    }
+    if (hasTable(db, "options_shadow_decisions")) {
+      out.supervisorSendAttempts24h = Number((db.prepare(
+        "SELECT COUNT(*) n FROM options_shadow_decisions WHERE path='supervisor' AND would_send=1 AND created_at_ms >= ?",
+      ).get(since) as { n: number })?.n ?? 0);
+    }
+  } catch { /* isolated */ }
+  return out;
 }
 
 export function buildShadowSoakAggregate(db: OutcomeDb, _env: NodeJS.ProcessEnv = process.env, days = 7): ShadowSoakAggregate {
@@ -364,6 +414,7 @@ export function buildShadowSoakAggregate(db: OutcomeDb, _env: NodeJS.ProcessEnv 
       const { readInstrumentationFallbackInserts } = require("../../db-legacy-columns.ts") as typeof import("../../db-legacy-columns.ts");
       out.instrumentationFallbackInserts = readInstrumentationFallbackInserts();
     } catch { /* optional */ }
+    out.liveDelivery = buildLiveDeliveryMetrics(db);
   } catch { /* isolated */ }
   return out;
 }
