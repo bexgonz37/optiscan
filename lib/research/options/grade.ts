@@ -16,11 +16,20 @@ import { researchFlags } from "../flags.ts";
 import { realOptionExit } from "./paper.ts";
 import { dualWriteAfterOptionsPaperExit } from "../../broker/dual-write.ts";
 import type { BrokerDb } from "../../broker/audit.ts";
+import {
+  applyOpportunityMarkOnDb,
+  closeOpportunityOnDb,
+  completeMilestoneDeliveryOnDb,
+  findOpportunityCaseIdByAlertOnDb,
+  loadCaseJsonOnDb,
+} from "../../opportunity-case/live.ts";
+import { formatOpportunityClosedUpdate, formatReturnMilestoneUpdate } from "./milestone-format.ts";
 
 export interface OpenPosition {
   id: number; option_symbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number;
   entry_fill: number; result_class: string; strategy: string; underlying_price: number | null;
   target: number | null; invalidation: number | null; entered_at_ms: number; status: string;
+  paper_kind?: string | null; alert_id?: string | null;
 }
 export interface RefreshedQuote { bid: number | null; ask: number | null; quoteAgeMs: number | null }
 
@@ -87,15 +96,74 @@ export interface GradeDeps {
   /** Refresh the latest quote for an open OCC contract. Returns null when unavailable (kept open). */
   getQuote: (optionSymbol: string, underlyingSymbol: string) => Promise<RefreshedQuote | null>;
   now?: () => number;
+  /** Optional Discord sender for milestone / close updates (tests inject; live uses options webhook). */
+  sendMilestone?: (payload: Record<string, unknown>) => Promise<{ ok: boolean; messageId?: string | null }>;
 }
-export interface GradePassResult { examined: number; graded: number; held: number; errors: number; byReason: Record<string, number> }
+export interface GradePassResult {
+  examined: number;
+  graded: number;
+  held: number;
+  errors: number;
+  byReason: Record<string, number>;
+  milestonesDelivered?: number;
+  closesDelivered?: number;
+}
 
 const occUnderlying = (occ: string) => occ.match(/^O:([A-Z]+)/)?.[1] ?? "";
+const BETA_LABEL = "PAPER/BETA TEST — NOT FINANCIAL ADVICE";
 function hasTable(db: GradeDb, table: string): boolean {
   try { return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)); } catch { return false; }
 }
 function hasCol(db: GradeDb, table: string, col: string): boolean {
   try { return Boolean(db.prepare(`SELECT 1 FROM pragma_table_info('${table}') WHERE name=?`).get(col)); } catch { return false; }
+}
+
+function resolveOpeningDiscordMessageId(db: GradeDb, caseId: string, alertId?: string | null): string | null {
+  try {
+    const oc = loadCaseJsonOnDb(db as any, caseId);
+    if (oc?.discord?.messageId) return String(oc.discord.messageId);
+  } catch { /* optional */ }
+  if (!alertId) return null;
+  try {
+    const row = db.prepare("SELECT discord_message_id FROM options_alerts WHERE alert_id=?").get(alertId) as { discord_message_id?: string } | undefined;
+    return row?.discord_message_id ? String(row.discord_message_id) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function sendLifecycleDiscordUpdate(
+  deps: GradeDeps,
+  content: string,
+  replyToMessageId: string | null,
+): Promise<{ ok: boolean; messageId: string | null; replied: boolean }> {
+  const payload: Record<string, unknown> = { content: `${content}\n\n${BETA_LABEL}` };
+  if (replyToMessageId) {
+    payload.message_reference = { message_id: replyToMessageId };
+    payload.allowed_mentions = { parse: [] };
+  }
+  const sendOnce = async (body: Record<string, unknown>) => {
+    if (deps.sendMilestone) {
+      const r = await deps.sendMilestone(body);
+      return { ok: Boolean(r.ok), messageId: r.messageId ?? null };
+    }
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { postToDiscord } = require("@/lib/notifications");
+    const r = await postToDiscord(body, { webhook: "options" });
+    return { ok: true, messageId: r.messageId ?? null };
+  };
+  try {
+    const r = await sendOnce(payload);
+    return { ...r, replied: Boolean(replyToMessageId && payload.message_reference) };
+  } catch {
+    if (!replyToMessageId) return { ok: false, messageId: null, replied: false };
+    try {
+      const r = await sendOnce({ content: `${content}\n\n${BETA_LABEL}` });
+      return { ...r, replied: false };
+    } catch {
+      return { ok: false, messageId: null, replied: false };
+    }
+  }
 }
 function recordObservedMark(db: GradeDb, pos: OpenPosition, quote: RefreshedQuote | null, nowMs: number, cfg: GradeConfig): void {
   const fresh = quote != null && quote.bid != null && quote.bid > 0 && quote.ask != null && quote.ask > 0
@@ -118,20 +186,122 @@ function recordObservedMark(db: GradeDb, pos: OpenPosition, quote: RefreshedQuot
   } catch { /* mark storage is observability-only; never affect grading */ }
 }
 
+async function maybeUpdateOpportunityLifecycle(
+  db: GradeDb,
+  pos: OpenPosition,
+  quote: RefreshedQuote | null,
+  nowMs: number,
+  cfg: GradeConfig,
+  deps: GradeDeps,
+  env: NodeJS.ProcessEnv,
+): Promise<number> {
+  if (env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED === "0") return 0;
+  if (pos.paper_kind && pos.paper_kind !== "DELIVERED_ALERT_PAPER") return 0;
+  if (!(pos.entry_fill > 0)) return 0;
+  const fresh = quote != null && quote.bid != null && quote.bid > 0 && quote.ask != null && quote.ask > 0
+    && (quote.quoteAgeMs == null || quote.quoteAgeMs <= cfg.maxQuoteAgeMs);
+  if (!fresh) return 0;
+  try {
+    let caseId = pos.alert_id ? findOpportunityCaseIdByAlertOnDb(db as any, pos.alert_id) : null;
+    if (!caseId && pos.alert_id) {
+      try {
+        const row = db.prepare("SELECT opportunity_case_id FROM options_alerts WHERE alert_id=?").get(pos.alert_id) as { opportunity_case_id?: string } | undefined;
+        caseId = row?.opportunity_case_id ? String(row.opportunity_case_id) : null;
+      } catch { /* optional */ }
+    }
+    if (!caseId) return 0;
+
+    const mark = realOptionExit(pos.entry_fill, quote!.bid as number, quote!.ask as number);
+    const applied = applyOpportunityMarkOnDb(db as any, {
+      opportunityCaseId: caseId,
+      frozenEntry: pos.entry_fill,
+      currentMark: mark.exitFill,
+      returnPct: mark.returnPct,
+      nowMs,
+      env,
+    });
+    if (!applied.claimed || applied.deliverReturnMilestone == null || !applied.summary) return 0;
+
+    const content = formatReturnMilestoneUpdate({
+      symbol: occUnderlying(pos.option_symbol) || "UNK",
+      optionType: pos.side === "put" ? "PUT" : "CALL",
+      strike: pos.strike,
+      milestonePercent: applied.deliverReturnMilestone,
+      summary: applied.summary,
+      opportunityCaseId: caseId,
+    });
+    const replyToMessageId = resolveOpeningDiscordMessageId(db, caseId, pos.alert_id);
+    const sent = await sendLifecycleDiscordUpdate(deps, content, replyToMessageId);
+    completeMilestoneDeliveryOnDb(db as any, {
+      opportunityCaseId: caseId,
+      milestonePercent: applied.deliverReturnMilestone,
+      discordMessageId: sent.messageId,
+      nowMs,
+      ok: sent.ok,
+      claimToken: applied.claimToken,
+    });
+    return sent.ok ? 1 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function maybeDeliverOpportunityClosedDiscord(
+  db: GradeDb,
+  pos: OpenPosition,
+  caseId: string,
+  exit: { reason: string | null; returnPct: number | null; exitFill: number | null },
+  nowMs: number,
+  deps: GradeDeps,
+): Promise<boolean> {
+  try {
+    const oc = loadCaseJsonOnDb(db as any, caseId);
+    const summary = oc?.summary;
+    if (!summary) return false;
+    const content = formatOpportunityClosedUpdate({
+      symbol: occUnderlying(pos.option_symbol) || "UNK",
+      optionType: pos.side === "put" ? "PUT" : "CALL",
+      strike: pos.strike,
+      summary: {
+        ...summary,
+        currentMark: exit.exitFill ?? summary.currentMark,
+        currentReturnPct: exit.returnPct ?? summary.currentReturnPct,
+        currentStatus: "CLOSED",
+        active: false,
+      },
+      exitReason: exit.reason,
+      opportunityCaseId: caseId,
+    });
+    const replyToMessageId = resolveOpeningDiscordMessageId(db, caseId, pos.alert_id);
+    const sent = await sendLifecycleDiscordUpdate(deps, content, replyToMessageId);
+    return sent.ok;
+  } catch {
+    return false;
+  }
+}
+
 /** Grade all OPEN real-option paper positions once. Isolated per-row: a single failing quote never
  *  aborts the pass. Idempotent — only status='ENTERED' rows are examined, and an EXIT flips the status. */
 export async function gradeOpenOptionPositionsOnDb(db: GradeDb, deps: GradeDeps, env: NodeJS.ProcessEnv = process.env, cfg: GradeConfig = defaultGradeConfig(env)): Promise<GradePassResult> {
   const now = deps.now ?? Date.now;
   const has = Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_paper_trades'").get());
-  if (!has) return { examined: 0, graded: 0, held: 0, errors: 0, byReason: {} };
-  const rows = db.prepare("SELECT id, option_symbol, side, strike, expiration, dte, entry_fill, result_class, strategy, underlying_price, target, invalidation, entered_at_ms, status FROM options_paper_trades WHERE status='ENTERED' AND result_class='REAL_OPTION_PAPER'").all() as OpenPosition[];
-  const out: GradePassResult = { examined: rows.length, graded: 0, held: 0, errors: 0, byReason: {} };
+  if (!has) return { examined: 0, graded: 0, held: 0, errors: 0, byReason: {}, milestonesDelivered: 0, closesDelivered: 0 };
+  let rows: OpenPosition[];
+  try {
+    rows = db.prepare("SELECT id, option_symbol, side, strike, expiration, dte, entry_fill, result_class, strategy, underlying_price, target, invalidation, entered_at_ms, status, paper_kind, alert_id FROM options_paper_trades WHERE status='ENTERED' AND result_class='REAL_OPTION_PAPER'").all() as OpenPosition[];
+  } catch {
+    rows = db.prepare("SELECT id, option_symbol, side, strike, expiration, dte, entry_fill, result_class, strategy, underlying_price, target, invalidation, entered_at_ms, status FROM options_paper_trades WHERE status='ENTERED' AND result_class='REAL_OPTION_PAPER'").all() as OpenPosition[];
+  }
+  const out: GradePassResult = { examined: rows.length, graded: 0, held: 0, errors: 0, byReason: {}, milestonesDelivered: 0, closesDelivered: 0 };
   for (const pos of rows) {
     const nowMs = now();
     let quote: RefreshedQuote | null = null;
     try { quote = await deps.getQuote(pos.option_symbol, occUnderlying(pos.option_symbol)); }
     catch { out.errors += 1; quote = null; } // provider hiccup on one contract must not stop the pass
     recordObservedMark(db, pos, quote, nowMs, cfg);
+    try {
+      out.milestonesDelivered = (out.milestonesDelivered ?? 0) + await maybeUpdateOpportunityLifecycle(db, pos, quote, nowMs, cfg, deps, env);
+    } catch { /* lifecycle never blocks grading */ }
     const d = decideOptionExit(pos, quote, nowMs, cfg);
     if (d.action !== "exit") { out.held += 1; continue; }
     try {
@@ -142,6 +312,29 @@ export async function gradeOpenOptionPositionsOnDb(db: GradeDb, deps: GradeDeps,
       try {
         dualWriteAfterOptionsPaperExit(db as BrokerDb, pos.id);
       } catch { /* best-effort */ }
+      if (env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0" && (!pos.paper_kind || pos.paper_kind === "DELIVERED_ALERT_PAPER") && pos.alert_id) {
+        try {
+          const caseId = findOpportunityCaseIdByAlertOnDb(db as any, pos.alert_id);
+          if (caseId) {
+            closeOpportunityOnDb(db as any, {
+              opportunityCaseId: caseId,
+              nowMs,
+              exitReason: d.reason,
+              returnPct: d.returnPct,
+              currentMark: d.exitFill,
+            });
+            try {
+              if (await maybeDeliverOpportunityClosedDiscord(db, pos, caseId, {
+                reason: d.reason,
+                returnPct: d.returnPct,
+                exitFill: d.exitFill,
+              }, nowMs, deps)) {
+                out.closesDelivered = (out.closesDelivered ?? 0) + 1;
+              }
+            } catch { /* Discord close never blocks grading */ }
+          }
+        } catch { /* isolated */ }
+      }
     } catch { out.errors += 1; }
   }
   return out;

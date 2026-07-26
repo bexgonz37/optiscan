@@ -10,6 +10,8 @@ import { getStrategy } from "./strategy-catalog.ts";
 import { evaluateCallout, type CalloutContract, type CalloutResult } from "./callout.ts";
 import { buildRealOptionEntry, persistRealOptionPaperOnDb, canOpenRealOptionPaper, type OptionQuote, type RealOptionEntry } from "./paper.ts";
 import { persistCaseFromOptionsLive } from "../../opportunity-case/orchestrate.ts";
+import { buildOpportunityIdentity, opportunityFingerprint } from "../../opportunity-case/identity.ts";
+import { attachEvidenceToOpportunityOnDb, findActiveOpportunityByFingerprintOnDb } from "../../opportunity-case/live.ts";
 
 export interface ChainContract { optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number; bid: number | null; ask: number | null; spreadPct: number | null; volume: number | null; openInterest: number | null; iv: number | null; delta: number | null; providerTimestamp: number | null }
 
@@ -90,10 +92,46 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
       `INSERT INTO options_candidates (symbol, tier, session, selected_strategy, direction, side, research_only, score, considered_json, state, why, option_symbol, freshness_state, callout_message, earliness_phase, escalated_by, feature_snapshot_json, created_at_ms)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(input.symbol, input.tier, input.session, res.selection.selected?.key ?? null, res.selection.direction, res.selection.selected?.side ?? null, res.selection.selected?.researchOnly ? 1 : 0, res.selection.selected?.score ?? null, JSON.stringify(res.selection.considered.slice(0, 8)), res.state, res.callout?.reason ?? res.selection.reason, res.contract?.optionSymbol ?? null, res.callout?.freshness ?? null, res.callout?.message ?? null, extra.earlinessPhase ?? null, extra.escalatedBy ?? null, snapJson, input.nowMs);
+    // Living Opportunity Case: if an active opportunity already matches, attach evidence and do not
+    // submit another opening delivery. Audit capture still runs (bound to the living case id).
+    let livingOpportunityCaseId: string | null = null;
+    let suppressOpeningAsDuplicate = false;
+    if (env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0" && res.contract && res.selection.selected) {
+      try {
+        const fp = opportunityFingerprint(buildOpportunityIdentity({
+          symbol: input.symbol,
+          side: res.contract.side,
+          expiration: res.contract.expiration,
+          strike: res.contract.strike,
+          strategyKey: res.selection.selected.key,
+          nowMs: input.nowMs,
+          direction: res.selection.direction,
+        }));
+        const active = findActiveOpportunityByFingerprintOnDb(db, fp);
+        if (active) {
+          livingOpportunityCaseId = active.opportunityCaseId;
+          suppressOpeningAsDuplicate = true;
+          attachEvidenceToOpportunityOnDb(db, {
+            opportunityCaseId: active.opportunityCaseId,
+            nowMs: input.nowMs,
+            source: "options_loop",
+            signalType: res.state === "READY" ? "repeat_ready_signal" : "repeat_evaluation",
+            score: res.selection.selected.score ?? null,
+            details: {
+              state: res.state,
+              optionSymbol: res.contract.optionSymbol,
+              strategy: res.selection.selected.key,
+              matched: res.selection.considered.find((c) => c.key === res.selection.selected!.key)?.matched ?? [],
+            },
+            strengthen: res.state === "READY",
+          });
+        }
+      } catch { /* isolated */ }
+    }
     // Enterprise Opportunity Case audit (additive, isolated — never blocks the live path).
     if (env.OPPORTUNITY_CASE_CAPTURE_ENABLED !== "0") {
       try {
-        persistCaseFromOptionsLive(db, { input, evalResult: res, chainLength: chain.length });
+        persistCaseFromOptionsLive(db, { input, evalResult: res, chainLength: chain.length, livingOpportunityCaseId });
       } catch { /* audit is best-effort */ }
     }
     // Real-option paper (separate flag). Public callout DELIVERY is NOT wired here (manual/gated).
@@ -112,6 +150,9 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
     // EARLY_OPTIONS_CALLOUTS_ENABLED=1 (delivery re-checks the flag + freshness/chase). The linked
     // paper trade (if any) uses the EXACT same OCC contract as the callout.
     if (res.state === "READY" && res.contract && res.callout?.message && researchFlags(env).earlyOptionsCallouts) {
+      if (suppressOpeningAsDuplicate) {
+        // Active Opportunity Case already owns this fingerprint — evidence attached above; no new open.
+      } else {
       const strat = getStrategy(res.selection.selected!.key);
       const px = input.underlying.price ?? 0;
       const deliveryInput = {
@@ -135,6 +176,7 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
         } catch { /* isolated */ }
       } else {
         console.error("[options-delivery] refusing immediate subscriber delivery: portfolio delivery collector is required");
+      }
       }
     }
   } catch { /* isolated: options discovery never affects the live path */ }

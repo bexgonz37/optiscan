@@ -12,6 +12,11 @@ import {
 
 export const ENTERPRISE_REQUIRED_TABLES = [
   "opportunity_cases",
+  "opportunity_active_index",
+  "opportunity_milestones",
+  "opportunity_evidence_events",
+  "opportunity_content_events",
+  "opportunity_suppression_log",
   "evidence_learning_examples",
   "evidence_learning_patterns",
   "evidence_learning_runs",
@@ -71,6 +76,92 @@ CREATE TABLE IF NOT EXISTS opportunity_cases (
 CREATE INDEX IF NOT EXISTS idx_opportunity_cases_detected ON opportunity_cases(detected_at_ms);
 CREATE INDEX IF NOT EXISTS idx_opportunity_cases_symbol ON opportunity_cases(underlying_symbol, detected_at_ms);
 CREATE INDEX IF NOT EXISTS idx_opportunity_cases_delivery ON opportunity_cases(delivery_decision, detected_at_ms);
+
+-- Living Opportunity Case lifecycle (additive repair for long-lived production volumes).
+CREATE TABLE IF NOT EXISTS opportunity_active_index (
+  opportunity_fingerprint TEXT PRIMARY KEY,
+  opportunity_case_id TEXT NOT NULL UNIQUE,
+  symbol TEXT NOT NULL,
+  session_date TEXT NOT NULL,
+  strategy_key TEXT,
+  lifecycle_status TEXT NOT NULL,
+  opened_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_opportunity_active_symbol ON opportunity_active_index(symbol, session_date, lifecycle_status);
+
+CREATE TABLE IF NOT EXISTS opportunity_milestones (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  opportunity_case_id TEXT NOT NULL,
+  event_key TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  milestone_percent REAL,
+  label TEXT NOT NULL,
+  reached_at_ms INTEGER NOT NULL,
+  contract_mark REAL,
+  return_percent REAL,
+  delivered_at_ms INTEGER,
+  claim_token TEXT,
+  discord_message_id TEXT,
+  details_json TEXT,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  UNIQUE(opportunity_case_id, event_key)
+);
+CREATE INDEX IF NOT EXISTS idx_opportunity_milestones_case ON opportunity_milestones(opportunity_case_id, delivered_at_ms);
+
+CREATE TABLE IF NOT EXISTS opportunity_evidence_events (
+  id TEXT PRIMARY KEY,
+  opportunity_case_id TEXT NOT NULL,
+  observed_at_ms INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  signal_type TEXT NOT NULL,
+  score REAL,
+  details_json TEXT,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_opportunity_evidence_case ON opportunity_evidence_events(opportunity_case_id, observed_at_ms);
+
+CREATE TABLE IF NOT EXISTS opportunity_content_events (
+  id TEXT PRIMARY KEY,
+  opportunity_case_id TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  occurred_at_ms INTEGER NOT NULL,
+  frozen_entry REAL,
+  current_mark REAL,
+  return_percent REAL,
+  milestone_percent REAL,
+  max_return_percent REAL,
+  direction TEXT,
+  option_type TEXT,
+  strike REAL,
+  expiration TEXT,
+  original_thesis_json TEXT,
+  evidence_summary_json TEXT,
+  strategy_key TEXT,
+  content_status TEXT NOT NULL DEFAULT 'PENDING',
+  label TEXT,
+  payload_json TEXT,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_opportunity_content_status ON opportunity_content_events(content_status, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_opportunity_content_case ON opportunity_content_events(opportunity_case_id, occurred_at_ms);
+
+CREATE TABLE IF NOT EXISTS opportunity_suppression_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol TEXT NOT NULL,
+  strategy TEXT,
+  fingerprint TEXT,
+  existing_opportunity_case_id TEXT,
+  decision TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  latest_return_percent REAL,
+  next_undelivered_milestone REAL,
+  details_json TEXT,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_opportunity_suppression_symbol ON opportunity_suppression_log(symbol, created_at_ms);
 
 CREATE TABLE IF NOT EXISTS evidence_learning_examples (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

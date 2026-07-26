@@ -13,6 +13,8 @@ import {
   type OpportunityCase,
   type SelectedContract,
 } from "../schema.ts";
+import { buildOpportunityIdentity, opportunityFingerprint } from "../identity.ts";
+import { setupSentence } from "../../research/options/format.ts";
 
 export interface OptionsLiveAdapterInput {
   input: OptionsCandidateInput;
@@ -20,6 +22,8 @@ export interface OptionsLiveAdapterInput {
   chainLength: number;
   deliveryDecision?: DeliveryDecision | null;
   alertId?: string | null;
+  /** When set, bind this audit row to the living opportunity case id. */
+  livingOpportunityCaseId?: string | null;
 }
 
 export function adaptOptionsLiveToCase(args: OptionsLiveAdapterInput): OpportunityCase {
@@ -27,15 +31,36 @@ export function adaptOptionsLiveToCase(args: OptionsLiveAdapterInput): Opportuni
   const sel = evalResult.selection.selected;
   const nowMs = input.nowMs;
   const oc = createEmptyCase(input.symbol, nowMs, "options_live");
-  oc.opportunityId = deterministicOpportunityId([
-    input.symbol,
-    sel?.key ?? "none",
-    evalResult.contract?.optionSymbol ?? "none",
-    String(Math.floor(nowMs / 60_000)),
-  ]);
+  const side = evalResult.contract?.side ?? sel?.side ?? "call";
+  const identity = evalResult.contract && sel
+    ? buildOpportunityIdentity({
+      symbol: input.symbol,
+      side,
+      expiration: evalResult.contract.expiration,
+      strike: evalResult.contract.strike,
+      strategyKey: sel.key,
+      nowMs,
+      direction: evalResult.selection.direction,
+    })
+    : null;
+  const fingerprint = identity ? opportunityFingerprint(identity) : null;
+  // Prefer the living case id when an active opportunity already owns this fingerprint.
+  // Otherwise keep a stable per-fingerprint pending id (no minute bucket) so repeats upsert.
+  oc.opportunityId = args.livingOpportunityCaseId
+    ?? (fingerprint
+      ? deterministicOpportunityId([fingerprint, "pending"])
+      : deterministicOpportunityId([
+        input.symbol,
+        sel?.key ?? "none",
+        evalResult.contract?.optionSymbol ?? "none",
+        String(Math.floor(nowMs / 60_000)),
+      ]));
+  oc.opportunityFingerprint = fingerprint;
+  oc.sessionDate = identity?.sessionDate ?? null;
   oc.marketSession = input.session;
   oc.direction = evalResult.selection.direction === "bearish" ? "bearish" : evalResult.selection.direction === "bullish" ? "bullish" : "neutral";
   oc.setupFamily = sel?.key ?? null;
+  if (sel?.key) oc.originalThesis = [setupSentence(sel.key)];
   oc.underlyingQuote = {
     price: input.underlying.price,
     velPct: input.underlying.velPct,

@@ -18,10 +18,18 @@ export interface BuildCaseInput {
   alertId?: string | null;
   marketContext?: Record<string, unknown> | null;
   forwardEvidence?: { n: number; winRate: number } | null;
+  livingOpportunityCaseId?: string | null;
 }
 
 export function buildOpportunityCaseFromOptionsLive(args: BuildCaseInput): OpportunityCase {
-  let c = adaptOptionsLiveToCase(args);
+  let c = adaptOptionsLiveToCase({
+    input: args.input,
+    evalResult: args.evalResult,
+    chainLength: args.chainLength,
+    deliveryDecision: args.deliveryDecision,
+    alertId: args.alertId,
+    livingOpportunityCaseId: args.livingOpportunityCaseId,
+  });
   const regime = regimeFromMarketContext(args.marketContext ?? null, args.input.nowMs);
   c = attachRegimeToCase(c, regime);
 

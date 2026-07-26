@@ -37,17 +37,27 @@ export async function GET(req: Request) {
   });
 }
 
-/** Operator transport test (token-gated): sends ONE synthetic connectivity message to the options
- *  webhook. No ticker/contract/entry; creates no paper trade or performance record. */
+/** Operator tests (token-gated):
+ *  - action=transport_test: ONE synthetic connectivity message (no paper/performance).
+ *  - action=lifecycle_smoke: full Opportunity Case open→suppress→milestone→close path.
+ *    HARD gated by OPTIONS_LIFECYCLE_SMOKE=1.
+ */
 export async function POST(req: Request) {
   if (!checkApiToken(req)) return unauthorized();
   ensureServerBoot();
   let body: any = {};
   try { body = await req.json(); } catch { /* empty */ }
-  if (String(body.action ?? "").toLowerCase() !== "transport_test") {
-    return NextResponse.json({ ok: false, error: "action must be 'transport_test'" }, { status: 400 });
+  const action = String(body.action ?? "").toLowerCase();
+  if (action === "transport_test") {
+    const { optionsWebhookTransportTest } = await import("@/lib/research/options/delivery");
+    const result = await optionsWebhookTransportTest();
+    return NextResponse.json({ ok: result.ok, result });
   }
-  const { optionsWebhookTransportTest } = await import("@/lib/research/options/delivery");
-  const result = await optionsWebhookTransportTest();
-  return NextResponse.json({ ok: result.ok, result });
+  if (action === "lifecycle_smoke") {
+    const { getDb } = await import("@/lib/db");
+    const { runOpportunityLifecycleSmoke } = await import("@/lib/research/options/lifecycle-smoke");
+    const result = await runOpportunityLifecycleSmoke({ getDb });
+    return NextResponse.json({ ok: result.ok, result }, { status: result.ok ? 200 : 409 });
+  }
+  return NextResponse.json({ ok: false, error: "action must be 'transport_test' or 'lifecycle_smoke'" }, { status: 400 });
 }

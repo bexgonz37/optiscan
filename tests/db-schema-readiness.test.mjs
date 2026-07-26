@@ -66,7 +66,21 @@ test("healthz reports schema readiness without secrets", () => {
   assert.match(src, /schemaOk/);
   assert.match(src, /schemaMissing/);
   assert.match(src, /dbDirectory/);
+  assert.match(src, /lifecycle/);
+  assert.match(src, /opportunityLifecycleSchemaReady/);
   assert.doesNotMatch(src, /SCAN_API_TOKEN|POLYGON_API_KEY/);
+});
+
+test("enterprise required tables include opportunity lifecycle store", () => {
+  for (const t of [
+    "opportunity_active_index",
+    "opportunity_milestones",
+    "opportunity_evidence_events",
+    "opportunity_content_events",
+    "opportunity_suppression_log",
+  ]) {
+    assert.ok(ENTERPRISE_REQUIRED_TABLES.includes(t), `missing required table ${t}`);
+  }
 });
 
 test("runtime schema route is auth-gated and returns structured JSON", () => {

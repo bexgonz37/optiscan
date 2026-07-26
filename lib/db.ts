@@ -1520,6 +1520,92 @@ CREATE INDEX IF NOT EXISTS idx_opportunity_cases_detected ON opportunity_cases(d
 CREATE INDEX IF NOT EXISTS idx_opportunity_cases_symbol ON opportunity_cases(underlying_symbol, detected_at_ms);
 CREATE INDEX IF NOT EXISTS idx_opportunity_cases_delivery ON opportunity_cases(delivery_decision, detected_at_ms);
 
+-- Living Opportunity Case lifecycle (additive). One active opportunity per fingerprint.
+CREATE TABLE IF NOT EXISTS opportunity_active_index (
+  opportunity_fingerprint TEXT PRIMARY KEY,
+  opportunity_case_id TEXT NOT NULL UNIQUE,
+  symbol TEXT NOT NULL,
+  session_date TEXT NOT NULL,
+  strategy_key TEXT,
+  lifecycle_status TEXT NOT NULL,
+  opened_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_opportunity_active_symbol ON opportunity_active_index(symbol, session_date, lifecycle_status);
+
+CREATE TABLE IF NOT EXISTS opportunity_milestones (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  opportunity_case_id TEXT NOT NULL,
+  event_key TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  milestone_percent REAL,
+  label TEXT NOT NULL,
+  reached_at_ms INTEGER NOT NULL,
+  contract_mark REAL,
+  return_percent REAL,
+  delivered_at_ms INTEGER,
+  claim_token TEXT,
+  discord_message_id TEXT,
+  details_json TEXT,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  UNIQUE(opportunity_case_id, event_key)
+);
+CREATE INDEX IF NOT EXISTS idx_opportunity_milestones_case ON opportunity_milestones(opportunity_case_id, delivered_at_ms);
+
+CREATE TABLE IF NOT EXISTS opportunity_evidence_events (
+  id TEXT PRIMARY KEY,
+  opportunity_case_id TEXT NOT NULL,
+  observed_at_ms INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  signal_type TEXT NOT NULL,
+  score REAL,
+  details_json TEXT,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_opportunity_evidence_case ON opportunity_evidence_events(opportunity_case_id, observed_at_ms);
+
+CREATE TABLE IF NOT EXISTS opportunity_content_events (
+  id TEXT PRIMARY KEY,
+  opportunity_case_id TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  occurred_at_ms INTEGER NOT NULL,
+  frozen_entry REAL,
+  current_mark REAL,
+  return_percent REAL,
+  milestone_percent REAL,
+  max_return_percent REAL,
+  direction TEXT,
+  option_type TEXT,
+  strike REAL,
+  expiration TEXT,
+  original_thesis_json TEXT,
+  evidence_summary_json TEXT,
+  strategy_key TEXT,
+  content_status TEXT NOT NULL DEFAULT 'PENDING',
+  label TEXT,
+  payload_json TEXT,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_opportunity_content_status ON opportunity_content_events(content_status, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_opportunity_content_case ON opportunity_content_events(opportunity_case_id, occurred_at_ms);
+
+CREATE TABLE IF NOT EXISTS opportunity_suppression_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol TEXT NOT NULL,
+  strategy TEXT,
+  fingerprint TEXT,
+  existing_opportunity_case_id TEXT,
+  decision TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  latest_return_percent REAL,
+  next_undelivered_milestone REAL,
+  details_json TEXT,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_opportunity_suppression_symbol ON opportunity_suppression_log(symbol, created_at_ms);
+
 -- Evidence Learning Engine: durable completed-candidate evidence + deterministic aggregate patterns.
 -- This is ADVISORY ONLY. It is never read by live gates, thresholds, strategy selection, or Discord
 -- delivery. AI may summarize these rows into PENDING human-review recommendations, but nothing here
@@ -1925,7 +2011,27 @@ function migrate(db: Database.Database) {
       ["target_t2", "ALTER TABLE options_alerts ADD COLUMN target_t2 REAL"],
       ["target_stop", "ALTER TABLE options_alerts ADD COLUMN target_stop REAL"],
       ["target_method", "ALTER TABLE options_alerts ADD COLUMN target_method TEXT"],
+      ["opportunity_case_id", "ALTER TABLE options_alerts ADD COLUMN opportunity_case_id TEXT"],
+      ["opportunity_fingerprint", "ALTER TABLE options_alerts ADD COLUMN opportunity_fingerprint TEXT"],
+      ["discord_message_id", "ALTER TABLE options_alerts ADD COLUMN discord_message_id TEXT"],
     ] as [string, string][]) if (!oa.has(col)) db.exec(sql);
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_options_alerts_opportunity ON options_alerts(opportunity_case_id, state)").run();
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_options_alerts_fingerprint ON options_alerts(opportunity_fingerprint, state)").run();
+  }
+  // Living Opportunity Case columns (additive, repeat-safe).
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='opportunity_cases'").get()) {
+    const ocCols = cols("opportunity_cases");
+    for (const [col, sql] of [
+      ["opportunity_fingerprint", "ALTER TABLE opportunity_cases ADD COLUMN opportunity_fingerprint TEXT"],
+      ["session_date", "ALTER TABLE opportunity_cases ADD COLUMN session_date TEXT"],
+      ["lifecycle_status", "ALTER TABLE opportunity_cases ADD COLUMN lifecycle_status TEXT"],
+      ["summary_json", "ALTER TABLE opportunity_cases ADD COLUMN summary_json TEXT"],
+      ["discord_channel_id", "ALTER TABLE opportunity_cases ADD COLUMN discord_channel_id TEXT"],
+      ["discord_message_id", "ALTER TABLE opportunity_cases ADD COLUMN discord_message_id TEXT"],
+      ["discord_thread_id", "ALTER TABLE opportunity_cases ADD COLUMN discord_thread_id TEXT"],
+      ["opening_delivered_at_ms", "ALTER TABLE opportunity_cases ADD COLUMN opening_delivered_at_ms INTEGER"],
+    ] as [string, string][]) if (!ocCols.has(col)) db.exec(sql);
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_opportunity_cases_fingerprint ON opportunity_cases(lifecycle_status, opportunity_fingerprint, session_date)").run();
   }
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_delivery_decisions'").get()) {
     ensureOptionsDeliveryDecisionsColumns(db);

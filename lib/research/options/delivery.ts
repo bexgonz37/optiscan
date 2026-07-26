@@ -10,6 +10,16 @@ import { buildRealOptionEntry, persistDeliveredMirrorOnDb, type OptionQuote } fr
 import { sessionState, openingWindowAllows, defaultOpeningLimit } from "./session-state.ts";
 import type { FrozenEntry } from "./callout.ts";
 import { OPTIONS_TIER0 } from "./discovery.ts";
+import {
+  attachEvidenceToOpportunityOnDb,
+  claimOpportunityOpenOnDb,
+  findActiveOpportunityByFingerprintOnDb,
+  loadCaseJsonOnDb,
+  logSuppressionOnDb,
+  markOpportunityOpenedDeliveredOnDb,
+  opportunityLifecycleSchemaReady,
+} from "../../opportunity-case/live.ts";
+import { buildOpportunityIdentity, opportunityFingerprint } from "../../opportunity-case/identity.ts";
 
 export type DeliveryState = "READY" | "SEND_ATTEMPTED" | "SENT" | "SEND_FAILED" | "TOO_LATE" | "REJECTED" | "EXPIRED";
 
@@ -42,7 +52,15 @@ export interface DeliveryInput {
 
 export interface SendResult { ok: boolean; status: number | null; messageId: string | null; latencyMs: number; ambiguous: boolean; error: string | null }
 export interface DeliveryDeps { getDb?: () => any; send?: (payload: Record<string, unknown>) => Promise<SendResult>; now?: () => number; maxRetries?: number }
-export interface DeliveryOutcome { state: DeliveryState; alertId: string; sent: boolean; reason: string; paperLinked: boolean }
+export interface DeliveryOutcome {
+  state: DeliveryState;
+  alertId: string;
+  sent: boolean;
+  reason: string;
+  paperLinked: boolean;
+  opportunityCaseId?: string | null;
+  suppressedDuplicate?: boolean;
+}
 
 interface DDb { prepare(sql: string): { get: (...a: any[]) => any; all: (...a: any[]) => any[]; run: (...a: any[]) => { changes: number } } }
 const liveDb = () => require("@/lib/db").getDb(); // eslint-disable-line @typescript-eslint/no-require-imports
@@ -104,15 +122,22 @@ function persist(db: DDb, alertId: string, i: DeliveryInput, state: DeliveryStat
 
 /**
  * Gated single-callout delivery. Re-checks freshness/spread/chase at delivery time; dedups by
- * alertId (no second message, no duplicate after an ambiguous timeout); writes SENT only after a
+ * alertId (no second message, no duplicate after an ambiguous timeout); when opportunity lifecycle
+ * is enabled, also enforces one active Opportunity Case per fingerprint. Writes SENT only after a
  * successful Discord response. Never throws into the caller.
  */
 export async function deliverOptionsCallout(input: DeliveryInput, deps: DeliveryDeps = {}, env: NodeJS.ProcessEnv = process.env): Promise<DeliveryOutcome> {
   const now = deps.now ?? Date.now;
   const nowMs = now();
   const f = researchFlags(env);
-  const alertId = optionsAlertId(input.candidateSymbol, input.strategy, input.contract.optionSymbol, nowMs);
-  const base = (state: DeliveryState, sent: boolean, reason: string, paperLinked = false): DeliveryOutcome => ({ state, alertId, sent, reason, paperLinked });
+  let alertId = optionsAlertId(input.candidateSymbol, input.strategy, input.contract.optionSymbol, nowMs);
+  const base = (
+    state: DeliveryState,
+    sent: boolean,
+    reason: string,
+    paperLinked = false,
+    extra: { opportunityCaseId?: string | null; suppressedDuplicate?: boolean } = {},
+  ): DeliveryOutcome => ({ state, alertId, sent, reason, paperLinked, ...extra });
 
   // FLAGS + kill switch — ZERO webhook sends unless both flags on and not killed.
   if (!f.independentOptionsDiscovery || !f.earlyOptionsCallouts) return base("READY", false, "callouts_disabled");
@@ -132,16 +157,69 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
 
   const db = (deps.getDb ?? liveDb)();
   const state = sessionState(nowMs, env);
+  let livingCaseId: string | null = null;
+  let livingFingerprint: string | null = null;
 
-  // SETUP dedup (rolling, per symbol+side+strategy — NOT a global cooldown): a new expiration/strike or
-  // minor score change on the SAME setup is not a new alert. A genuinely different strategy is a new key.
-  const setupDedupMs = Number(env.OPTIONS_SETUP_DEDUP_MS);
-  const dedupWindow = Number.isFinite(setupDedupMs) && setupDedupMs > 0 ? setupDedupMs : 20 * 60_000;
-  try {
-    // exclude THIS alert_id: the identical event falls through to the precise alertId dedup below.
-    const dup = db.prepare("SELECT 1 FROM options_alerts WHERE candidate_symbol=? AND side=? AND strategy=? AND state='SENT' AND sent_at_ms >= ? AND alert_id != ? LIMIT 1").get(input.candidateSymbol, input.contract.side, input.strategy, nowMs - dedupWindow, alertId);
-    if (dup) return finalize(deps, input, alertId, "REJECTED", "duplicate_setup", nowMs, state);
-  } catch { /* table lazily created */ }
+  const lifecycleReady = env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0" && opportunityLifecycleSchemaReady(db);
+
+  // Early active-opportunity suppress (before alertId bucket short-circuit) so repeats across
+  // the same 5-minute alert_id still attach evidence and never look like a fresh SENT.
+  if (lifecycleReady) {
+    try {
+      livingFingerprint = opportunityFingerprint(buildOpportunityIdentity({
+        symbol: input.candidateSymbol,
+        side: input.contract.side,
+        expiration: input.contract.expiration,
+        strike: input.contract.strike,
+        strategyKey: input.strategy,
+        nowMs,
+        direction: "bullish",
+      }));
+      const active = findActiveOpportunityByFingerprintOnDb(db, livingFingerprint);
+      if (active) {
+        livingCaseId = active.opportunityCaseId;
+        try {
+          attachEvidenceToOpportunityOnDb(db, {
+            opportunityCaseId: active.opportunityCaseId,
+            nowMs,
+            source: "options_delivery",
+            signalType: "duplicate_opening_suppressed",
+            score: null,
+            details: { strategy: input.strategy, optionSymbol: input.contract.optionSymbol, alertId },
+          });
+          const oc = loadCaseJsonOnDb(db, active.opportunityCaseId);
+          logSuppressionOnDb(db, {
+            symbol: input.candidateSymbol,
+            strategy: input.strategy,
+            fingerprint: livingFingerprint,
+            existingOpportunityCaseId: active.opportunityCaseId,
+            reason: "MATCHING_ACTIVE_OPPORTUNITY",
+            decision: "SUPPRESSED_DUPLICATE",
+            latestReturnPercent: oc?.summary?.currentReturnPct ?? null,
+            nextUndeliveredMilestone: oc?.summary?.nextUndeliveredReturnMilestone ?? null,
+            nowMs,
+          });
+        } catch { /* isolated */ }
+        return finalize(deps, input, alertId, "REJECTED", "matching_active_opportunity", nowMs, state, {
+          opportunityCaseId: active.opportunityCaseId,
+          suppressedDuplicate: true,
+        });
+      }
+    } catch { /* schema optional */ }
+  }
+
+  // SETUP dedup (rolling, per symbol+side+strategy — NOT a global cooldown).
+  // When the living Opportunity Case lifecycle schema is ready, fingerprint claim below is the authority
+  // (exact contract/session identity). The coarse rolling guard is retained as a fallback otherwise.
+  if (!lifecycleReady) {
+    const setupDedupMs = Number(env.OPTIONS_SETUP_DEDUP_MS);
+    const dedupWindow = Number.isFinite(setupDedupMs) && setupDedupMs > 0 ? setupDedupMs : 20 * 60_000;
+    try {
+      // exclude THIS alert_id: the identical event falls through to the precise alertId dedup below.
+      const dup = db.prepare("SELECT 1 FROM options_alerts WHERE candidate_symbol=? AND side=? AND strategy=? AND state='SENT' AND sent_at_ms >= ? AND alert_id != ? LIMIT 1").get(input.candidateSymbol, input.contract.side, input.strategy, nowMs - dedupWindow, alertId);
+      if (dup) return finalize(deps, input, alertId, "REJECTED", "duplicate_setup", nowMs, state);
+    } catch { /* table lazily created */ }
+  }
 
   // OPENING-BELL anti-spam: a ROLLING-window limit (releases naturally, never a fixed cooldown). Tier 0
   // is exempt from the cap so a stronger SPY/QQQ/IWM setup is never crowded out by broad opening noise.
@@ -153,15 +231,82 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
     } catch { /* isolated */ }
   }
   // Dedup / no-duplicate-after-ambiguous-timeout: an existing SENT or SEND_ATTEMPTED row wins.
+  // With lifecycle enabled, true duplicates are already suppressed by active fingerprint above.
+  // A SENT row in the same 5-minute bucket after the opportunity closed must not permanently block re-entry.
   let existing: any = null;
   try { existing = db.prepare("SELECT state, retry_count FROM options_alerts WHERE alert_id=?").get(alertId); } catch { /* table may be created lazily by caller */ }
+  if (existing && (existing.state === "SENT" || existing.state === "SEND_ATTEMPTED")) {
+    if (lifecycleReady && existing.state === "SENT") {
+      // Re-entry after close: mint a fresh alert id so the old 5-minute bucket cannot block forever.
+      alertId = optionsAlertId(input.candidateSymbol, input.strategy, input.contract.optionSymbol, nowMs, 1);
+      try { existing = db.prepare("SELECT state, retry_count FROM options_alerts WHERE alert_id=?").get(alertId); } catch { existing = null; }
+    } else {
+      return base(existing.state, false, "duplicate_suppressed", true);
+    }
+  }
   if (existing && (existing.state === "SENT" || existing.state === "SEND_ATTEMPTED")) return base(existing.state, false, "duplicate_suppressed", true);
   const maxRetries = deps.maxRetries ?? 1;
   const priorRetries = existing?.retry_count ?? 0;
   if (existing && existing.state === "SEND_FAILED" && priorRetries >= maxRetries) return base("SEND_FAILED", false, "retry_ceiling_reached");
 
+  // Living Opportunity Case claim — immediately before send so failed gates never orphan an active row.
+  // Kill switch / missing schema: OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED=0 or unmigrated DB → legacy dedup.
+  if (lifecycleReady) {
+    try {
+      const claim = claimOpportunityOpenOnDb(db, {
+        symbol: input.candidateSymbol,
+        side: input.contract.side,
+        expiration: input.contract.expiration,
+        strike: input.contract.strike,
+        strategyKey: input.strategy,
+        nowMs,
+        direction: "bullish",
+        frozenEntry: input.entry?.mid ?? null,
+        optionSymbol: input.contract.optionSymbol,
+        alertId,
+        why: input.message?.split("\n")[1] ?? null,
+      });
+      livingFingerprint = claim.fingerprint;
+      if (!claim.claimed && claim.existing) {
+        livingCaseId = claim.opportunityCaseId;
+        try {
+          attachEvidenceToOpportunityOnDb(db, {
+            opportunityCaseId: claim.opportunityCaseId,
+            nowMs,
+            source: "options_delivery",
+            signalType: "duplicate_opening_suppressed",
+            score: null,
+            details: { strategy: input.strategy, optionSymbol: input.contract.optionSymbol, alertId },
+          });
+          const oc = loadCaseJsonOnDb(db, claim.opportunityCaseId);
+          logSuppressionOnDb(db, {
+            symbol: input.candidateSymbol,
+            strategy: input.strategy,
+            fingerprint: claim.fingerprint,
+            existingOpportunityCaseId: claim.opportunityCaseId,
+            reason: "MATCHING_ACTIVE_OPPORTUNITY",
+            decision: "SUPPRESSED_DUPLICATE",
+            latestReturnPercent: oc?.summary?.currentReturnPct ?? null,
+            nextUndeliveredMilestone: oc?.summary?.nextUndeliveredReturnMilestone ?? null,
+            nowMs,
+          });
+        } catch { /* isolated */ }
+        return finalize(deps, input, alertId, "REJECTED", "matching_active_opportunity", nowMs, state, {
+          opportunityCaseId: claim.opportunityCaseId,
+          suppressedDuplicate: true,
+        });
+      }
+      if (claim.claimed) livingCaseId = claim.opportunityCaseId;
+    } catch { /* lifecycle helpers optional when schema not migrated */ }
+  }
+
   // Claim the slot as SEND_ATTEMPTED BEFORE sending, so a concurrent/duplicate call dedups.
   try { persist(db, alertId, input, "SEND_ATTEMPTED", { attemptedAtMs: nowMs, retryCount: priorRetries, sessionState: state }, nowMs); } catch { /* isolated */ }
+  try {
+    if (livingCaseId || livingFingerprint) {
+      db.prepare("UPDATE options_alerts SET opportunity_case_id=?, opportunity_fingerprint=? WHERE alert_id=?").run(livingCaseId, livingFingerprint, alertId);
+    }
+  } catch { /* columns optional */ }
 
   const payload = { content: `${input.message}\n\n${BETA_LABEL}` };
   const send = deps.send ?? defaultSend;
@@ -178,18 +323,49 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
     // a mirror failure just leaves paper_linked=0 (surfaced) and can be retried idempotently later.
     const linked = createDeliveredMirror(db, input, alertId, env);
     try { persist(db, alertId, input, "SENT", { status: res.status, latencyMs: res.latencyMs, retryCount: attempt, sentAtMs: now(), attemptedAtMs: nowMs, paperLinked: linked, sessionState: state }, now()); } catch { /* isolated */ }
-    return base("SENT", true, "delivered", linked);
+    try {
+      db.prepare("UPDATE options_alerts SET discord_message_id=?, opportunity_case_id=COALESCE(opportunity_case_id, ?), opportunity_fingerprint=COALESCE(opportunity_fingerprint, ?) WHERE alert_id=?")
+        .run(res.messageId ?? null, livingCaseId, livingFingerprint, alertId);
+    } catch { /* optional columns */ }
+    if (livingCaseId && env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0") {
+      try {
+        markOpportunityOpenedDeliveredOnDb(db, {
+          opportunityCaseId: livingCaseId,
+          alertId,
+          discordMessageId: res.messageId ?? null,
+          frozenEntry: input.entry?.mid ?? null,
+          nowMs: now(),
+        });
+      } catch { /* content/summary failures never block SENT */ }
+    }
+    return base("SENT", true, "delivered", linked, { opportunityCaseId: livingCaseId });
   }
   const paperLinked = Boolean(input.paperOptionSymbol && input.paperOptionSymbol === input.contract.optionSymbol);
   // An AMBIGUOUS timeout may have been delivered — exhaust retries so NO later call can resend it.
   const finalRetryCount = res.ambiguous ? maxRetries : attempt;
   try { persist(db, alertId, input, "SEND_FAILED", { status: res.status, latencyMs: res.latencyMs, retryCount: finalRetryCount, failureReason: res.ambiguous ? `ambiguous_timeout: ${res.error}` : res.error, sessionState: state }, now()); } catch { /* isolated */ }
-  return base("SEND_FAILED", false, res.ambiguous ? "ambiguous_timeout_no_retry" : "send_failed", paperLinked);
+  // Clear send failure (not ambiguous): release the active opportunity claim so a later retry can open.
+  // Ambiguous timeouts keep the claim — Discord may already have the message.
+  if (!res.ambiguous && livingCaseId && livingFingerprint && env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0") {
+    try {
+      db.prepare("DELETE FROM opportunity_active_index WHERE opportunity_fingerprint=? AND opportunity_case_id=?").run(livingFingerprint, livingCaseId);
+    } catch { /* isolated */ }
+  }
+  return base("SEND_FAILED", false, res.ambiguous ? "ambiguous_timeout_no_retry" : "send_failed", paperLinked, { opportunityCaseId: livingCaseId });
 }
 
-function finalize(deps: DeliveryDeps, input: DeliveryInput, alertId: string, state: DeliveryState, reason: string, nowMs: number, sessionSt?: string): DeliveryOutcome {
+function finalize(
+  deps: DeliveryDeps,
+  input: DeliveryInput,
+  alertId: string,
+  state: DeliveryState,
+  reason: string,
+  nowMs: number,
+  sessionSt?: string,
+  extra: { opportunityCaseId?: string | null; suppressedDuplicate?: boolean } = {},
+): DeliveryOutcome {
   try { persist((deps.getDb ?? liveDb)(), alertId, input, state, { failureReason: reason, sessionState: sessionSt }, nowMs); } catch { /* isolated */ }
-  return { state, alertId, sent: false, reason, paperLinked: false };
+  return { state, alertId, sent: false, reason, paperLinked: false, ...extra };
 }
 
 /** Operator transport test: verify DISCORD_WEBHOOK_OPTIONS + send a synthetic connectivity message.

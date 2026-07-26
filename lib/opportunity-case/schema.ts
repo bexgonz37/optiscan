@@ -1,10 +1,14 @@
 /**
  * Versioned canonical Opportunity Case — one options opportunity throughout its lifecycle.
  * PURE schema + helpers. Immutable frozen trade values after freeze.
+ * The Opportunity Summary is the living projection all downstream consumers should read.
  */
 import type { StrategyEvaluation } from "../strategy/evaluation.ts";
+import type { OpportunityLifecycleStatus } from "./lifecycle.ts";
+import { emptyOpportunitySummary, type OpportunitySummary } from "./summary.ts";
 
 export const OPPORTUNITY_CASE_SCHEMA_VERSION = 1;
+export type { OpportunityLifecycleStatus, OpportunitySummary };
 
 export type MissingDataState = "present" | "missing" | "stale" | "blocked" | "insufficient";
 
@@ -152,6 +156,20 @@ export interface OpportunityCase {
 
   createdAtMs: number;
   updatedAtMs: number;
+
+  /** Stable setup identity for active-opportunity dedup (optional on legacy rows). */
+  opportunityFingerprint?: string | null;
+  sessionDate?: string | null;
+  lifecycleStatus?: OpportunityLifecycleStatus | null;
+  /** Living summary — single source of truth for downstream consumers. */
+  summary?: OpportunitySummary | null;
+  originalThesis?: string[];
+  discord?: {
+    channelId: string | null;
+    messageId: string | null;
+    threadId: string | null;
+    deliveredAt: string | null;
+  } | null;
 }
 
 export function deterministicOpportunityId(parts: string[]): string {
@@ -196,6 +214,12 @@ export function createEmptyCase(symbol: string, nowMs: number, sourcePath: Oppor
     discordDeliveryStatus: null,
     createdAtMs: nowMs,
     updatedAtMs: nowMs,
+    opportunityFingerprint: null,
+    sessionDate: null,
+    lifecycleStatus: null,
+    summary: emptyOpportunitySummary("CREATED", nowMs),
+    originalThesis: [],
+    discord: { channelId: null, messageId: null, threadId: null, deliveredAt: null },
   };
 }
 
@@ -207,6 +231,11 @@ export function parseCase(json: string): OpportunityCase | null {
   try {
     const o = JSON.parse(json) as OpportunityCase;
     if (o.schemaVersion !== OPPORTUNITY_CASE_SCHEMA_VERSION) return null;
+    // Backward compatible: synthesize living fields for legacy rows.
+    if (!o.summary) o.summary = emptyOpportunitySummary((o.lifecycleStatus as OpportunityLifecycleStatus) ?? "CREATED", o.updatedAtMs ?? o.createdAtMs);
+    if (!o.originalThesis) o.originalThesis = o.summary.originalThesis ?? [];
+    if (!o.discord) o.discord = { channelId: null, messageId: null, threadId: null, deliveredAt: null };
+    if (o.lifecycleStatus == null && o.deliveryDecision === "delivered") o.lifecycleStatus = "CREATED";
     return o;
   } catch {
     return null;

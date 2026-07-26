@@ -31,6 +31,7 @@ export async function GET() {
   let schemaOk = false;
   let schemaMissing: string[] = [];
   let dbDirectory: string | null = null;
+  let lifecycle: { enabled: boolean; schemaReady: boolean; active: boolean } | null = null;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { getDb, inspectSchemaReadiness, resolveDbLocation } = require("@/lib/db");
@@ -40,6 +41,15 @@ export async function GET() {
     const schema = inspectSchemaReadiness(db, process.env);
     schemaOk = schema.ok;
     schemaMissing = schema.missing;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const live = require("@/lib/opportunity-case/live");
+      const enabled = Boolean(live.opportunityLifecycleEnabled(process.env));
+      const schemaReady = Boolean(live.opportunityLifecycleSchemaReady(db));
+      lifecycle = { enabled, schemaReady, active: enabled && schemaReady };
+    } catch {
+      lifecycle = { enabled: process.env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0", schemaReady: false, active: false };
+    }
   } catch (e: any) {
     dbOk = false;
     dbError = String(e?.message ?? e).slice(0, 200); // safe: sqlite error text, never a secret
@@ -66,6 +76,7 @@ export async function GET() {
     dbDirectory,
     schemaOk,
     schemaMissing,
+    lifecycle,
     service: "optiscan",
     commit,
     commitShort,

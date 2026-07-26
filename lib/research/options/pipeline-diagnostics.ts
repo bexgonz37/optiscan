@@ -8,6 +8,13 @@ import { deliveryDecisionMetricsOnDb } from "./delivery-decision.ts";
 import { readDeliveryMetricsOnDb } from "./delivery.ts";
 import { readRuntimeStatusOnDb } from "./runtime.ts";
 import { countOpportunityCasesByDeliveryOnDb } from "../../opportunity-case/store.ts";
+import {
+  opportunityLifecycleEnabled,
+  opportunityLifecycleSchemaReady,
+  readLifecycleMetricsOnDb,
+  recentSuppressionsOnDb,
+} from "../../opportunity-case/live.ts";
+import { explainTickerAlertDecision, type TickerAlertExplanation } from "./why-no-alert.ts";
 
 interface DiagDb {
   prepare(sql: string): { get: (...a: any[]) => any; all: (...a: any[]) => any[]; run?: (...a: any[]) => { changes: number } };
@@ -39,6 +46,21 @@ export interface WhyNoAlertsDiagnostic {
   latency: { detectionToDecisionP50: number | null; detectionToDecisionP95: number | null };
   opportunityCases: Record<string, number>;
   rejectionReasons: { code: string; count: number }[];
+  lifecycle?: {
+    enabled: boolean;
+    schemaReady: boolean;
+    active: boolean;
+    newOpportunitiesCreated: number;
+    duplicateOpeningAlertsSuppressed: number;
+    evidenceEventsAttached: number;
+    milestonesReached: number;
+    milestoneUpdatesDelivered: number;
+    milestoneDeliveryFailures: number;
+    activeOpportunities: number;
+    contentEventsPending: number;
+    recentSuppressions: Record<string, unknown>[];
+  };
+  tickerExplanation?: TickerAlertExplanation | null;
 }
 
 function hasTable(db: DiagDb, name: string): boolean {
@@ -49,7 +71,12 @@ function hasTable(db: DiagDb, name: string): boolean {
   }
 }
 
-export function buildWhyNoAlertsDiagnostic(db: DiagDb | null, env: NodeJS.ProcessEnv = process.env, nowMs = Date.now()): WhyNoAlertsDiagnostic {
+export function buildWhyNoAlertsDiagnostic(
+  db: DiagDb | null,
+  env: NodeJS.ProcessEnv = process.env,
+  nowMs = Date.now(),
+  opts: { symbol?: string | null } = {},
+): WhyNoAlertsDiagnostic {
   const f = researchFlags(env);
   const monitor = optionsMonitorHealth(env, nowMs);
   const metrics = optionsMonitorMetrics();
@@ -146,6 +173,27 @@ export function buildWhyNoAlertsDiagnostic(db: DiagDb | null, env: NodeJS.Proces
     },
     opportunityCases,
     rejectionReasons,
+    lifecycle: (() => {
+      const enabled = opportunityLifecycleEnabled(env);
+      const schemaReady = db ? opportunityLifecycleSchemaReady(db as any) : false;
+      const m = db ? readLifecycleMetricsOnDb(db as any) : {};
+      const activeOpportunities = Number((m as any).activeOpportunities ?? 0);
+      return {
+        enabled,
+        schemaReady,
+        active: enabled && schemaReady,
+        newOpportunitiesCreated: Number((m as any).newOpportunitiesCreated ?? 0),
+        duplicateOpeningAlertsSuppressed: Number((m as any).duplicateOpeningAlertsSuppressed ?? 0),
+        evidenceEventsAttached: Number((m as any).evidenceEventsAttached ?? 0),
+        milestonesReached: Number((m as any).milestonesReached ?? 0),
+        milestoneUpdatesDelivered: Number((m as any).milestoneUpdatesDelivered ?? 0),
+        milestoneDeliveryFailures: Number((m as any).milestoneDeliveryFailures ?? 0),
+        activeOpportunities,
+        contentEventsPending: Number((m as any).contentEventsPending ?? 0),
+        recentSuppressions: db ? recentSuppressionsOnDb(db as any, 15) : [],
+      };
+    })(),
+    tickerExplanation: opts.symbol ? explainTickerAlertDecision(db, opts.symbol, nowMs) : null,
   };
 }
 
