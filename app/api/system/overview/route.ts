@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireApiToken } from "@/lib/api-route-auth";
 import { ensureServerBoot } from "@/lib/server-boot";
 import { getCallStats, hasPolygon } from "@/lib/polygon-provider";
 import { loopState } from "@/lib/scanner-loop";
@@ -16,6 +17,8 @@ import { discordDeliverySummary, listDiscordDeliveries } from "@/lib/alert-store
 import { discordWebhookConfigured } from "@/lib/notifications";
 import { marketSession } from "@/lib/trading-session";
 import { supervisorTelemetry } from "@/lib/supervisor-cycle";
+import { quotaPolicySnapshot } from "@/lib/quota-policy";
+import { subscriberDiscordOwnershipSummary } from "@/lib/subscriber-discord-owner";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,7 +47,9 @@ const FRESHNESS_KINDS: DataKind[] = [
  * whole route and tripping the app error boundary ("Something went wrong").
  */
 
-export async function GET() {
+export async function GET(req: Request) {
+  const denied = requireApiToken(req);
+  if (denied) return denied;
   // Request-local so concurrent requests never share fault state.
   const faults: string[] = [];
   const safe = <T,>(label: string, fn: () => T, fallback: T): T => {
@@ -126,6 +131,8 @@ export async function GET() {
 
   const provider: any = dataHealth?.provider ?? { rate_limit_status: "UNKNOWN" };
 
+  const quota = safe("quota_policy", () => quotaPolicySnapshot(), null as ReturnType<typeof quotaPolicySnapshot> | null);
+
   return NextResponse.json({
     ok: faults.length === 0,
     faults,
@@ -164,6 +171,15 @@ export async function GET() {
       calls_this_minute: callStats?.callsThisMinute ?? null,
       minute_cap: callStats?.minuteCap ?? null,
       quota_exceeded: callStats?.quotaExceeded ?? false,
+      grader_daily_reserve: callStats?.graderDailyReserve ?? null,
+      discovery_daily_budget: callStats?.discoveryDailyBudget ?? null,
+      discovery_paused: callStats?.discoveryPaused ?? false,
+      quota_mode: callStats?.quotaMode ?? quota?.quotaMode ?? null,
+      operator_warning: quota?.operatorWarning ?? null,
+    },
+    alert_reliability: {
+      ownership: subscriberDiscordOwnershipSummary(),
+      kill_switch: process.env.OPTIONS_CALLOUTS_KILL === "1",
     },
     database: db,
     discord,

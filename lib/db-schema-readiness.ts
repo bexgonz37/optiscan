@@ -8,6 +8,10 @@ import path from "node:path";
 import {
   LEGACY_COLUMN_CHECKS,
   listMissingLegacyColumns,
+  listMissingShadowSoakTables,
+  hasSqliteColumn as legacyHasSqliteColumn,
+  hasSqliteTable as legacyHasSqliteTable,
+  SUBSCRIBER_PIPELINE_INSTRUMENTATION_CHECKS,
 } from "./db-legacy-columns.ts";
 
 export const ENTERPRISE_REQUIRED_TABLES = [
@@ -40,6 +44,8 @@ export interface SchemaReadinessReport {
   present: EnterpriseRequiredTable[];
   missingLegacyColumns: Array<{ table: string; column: string }>;
   presentLegacyColumns: Array<{ table: string; column: string }>;
+  missingShadowSoakTables: string[];
+  missingInstrumentationColumns: Array<{ table: string; column: string }>;
   tablesSample: string[];
   db: DbLocationInfo;
   repaired: EnterpriseRequiredTable[];
@@ -314,12 +320,24 @@ function buildReadinessCore(
   const presentLegacyColumns = LEGACY_COLUMN_CHECKS.filter(
     (c) => !missingLegacyColumns.some((m) => m.table === c.table && m.column === c.column),
   );
+  const missingShadowSoakTables = listMissingShadowSoakTables(db);
+  const missingInstrumentationColumns = SUBSCRIBER_PIPELINE_INSTRUMENTATION_CHECKS.filter(({ table, column }) => {
+    if (!legacyHasSqliteTable(db, table)) return false;
+    return !legacyHasSqliteColumn(db, table, column);
+  });
+  const hasOptionsPipeline = legacyHasSqliteTable(db, "options_candidates")
+    || legacyHasSqliteTable(db, "options_shadow_decisions")
+    || legacyHasSqliteTable(db, "options_alerts");
+  const soakReady = !hasOptionsPipeline
+    || (missingShadowSoakTables.length === 0 && missingInstrumentationColumns.length === 0);
   return {
-    ok: missing.length === 0 && missingLegacyColumns.length === 0,
+    ok: missing.length === 0 && missingLegacyColumns.length === 0 && soakReady,
     missing,
     present,
     missingLegacyColumns,
     presentLegacyColumns,
+    missingShadowSoakTables,
+    missingInstrumentationColumns,
     tablesSample: listKnownTables(db),
     db: resolveDbLocation(env),
     repaired: [],
@@ -338,6 +356,8 @@ export function inspectPartialDatabaseState(env: NodeJS.ProcessEnv = process.env
       present: [],
       missingLegacyColumns: [...LEGACY_COLUMN_CHECKS],
       presentLegacyColumns: [],
+      missingShadowSoakTables: ["options_shadow_decisions", "options_shadow_outcomes"],
+      missingInstrumentationColumns: [...SUBSCRIBER_PIPELINE_INSTRUMENTATION_CHECKS],
       tablesSample: [],
       db: dbInfo,
       repaired: [],
@@ -360,6 +380,8 @@ export function inspectPartialDatabaseState(env: NodeJS.ProcessEnv = process.env
       present: [],
       missingLegacyColumns: [...LEGACY_COLUMN_CHECKS],
       presentLegacyColumns: [],
+      missingShadowSoakTables: ["options_shadow_decisions", "options_shadow_outcomes"],
+      missingInstrumentationColumns: [...SUBSCRIBER_PIPELINE_INSTRUMENTATION_CHECKS],
       tablesSample: [],
       db: dbInfo,
       repaired: [],

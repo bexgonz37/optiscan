@@ -73,17 +73,25 @@ test("delivered callouts ⇒ no config-blocked count", () => {
 });
 
 // ── optionsDeliveryGateReason (PURE) ──────────────────────────────────────────
+const supervisorOwnerEnv = { CALLOUT_CANONICAL_PATH: "supervisor", AGENT_CALLOUT_DISCORD: "1", SUBSCRIBER_OPTIONS_DISCORD_OWNER: "supervisor" };
+
 test("gate reason is null only when supervisor path + master switch + webhook are all on", () => {
-  assert.equal(optionsDeliveryGateReason({ CALLOUT_CANONICAL_PATH: "supervisor", AGENT_CALLOUT_DISCORD: "1" }, true), null);
+  assert.equal(optionsDeliveryGateReason(supervisorOwnerEnv, true), null);
+});
+test("independent subscriber owner blocks supervisor delivery first", () => {
+  assert.match(
+    optionsDeliveryGateReason({ CALLOUT_CANONICAL_PATH: "supervisor", AGENT_CALLOUT_DISCORD: "1" }, true),
+    /SUBSCRIBER_OPTIONS_DISCORD_OWNER=independent/,
+  );
 });
 test("legacy canonical path is the first-reported blocker", () => {
-  assert.match(optionsDeliveryGateReason({ CALLOUT_CANONICAL_PATH: "legacy", AGENT_CALLOUT_DISCORD: "1" }, true), /CALLOUT_CANONICAL_PATH != supervisor/);
+  assert.match(optionsDeliveryGateReason({ ...supervisorOwnerEnv, CALLOUT_CANONICAL_PATH: "legacy" }, true), /CALLOUT_CANONICAL_PATH != supervisor/);
 });
 test("master switch off is reported when path is supervisor", () => {
-  assert.match(optionsDeliveryGateReason({ CALLOUT_CANONICAL_PATH: "supervisor", AGENT_CALLOUT_DISCORD: "0" }, true), /AGENT_CALLOUT_DISCORD != 1/);
+  assert.match(optionsDeliveryGateReason({ ...supervisorOwnerEnv, AGENT_CALLOUT_DISCORD: "0" }, true), /AGENT_CALLOUT_DISCORD != 1/);
 });
 test("missing webhook is reported once path + switch are on", () => {
-  assert.match(optionsDeliveryGateReason({ CALLOUT_CANONICAL_PATH: "supervisor", AGENT_CALLOUT_DISCORD: "1" }, false), /DISCORD_WEBHOOK_OPTIONS/);
+  assert.match(optionsDeliveryGateReason(supervisorOwnerEnv, false), /DISCORD_WEBHOOK_OPTIONS/);
 });
 
 // ── nightly integration ───────────────────────────────────────────────────────

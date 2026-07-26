@@ -17,9 +17,11 @@ import { decideEmission, isMeaningfulTransition, type EmissionDecision } from "@
 import { formatCalloutDiscord, type DiscordCalloutPayload } from "@/lib/callouts/discord-format";
 import { loadPriorCallouts, persistCalloutState, type CalloutStateWrite } from "@/lib/callouts/state-store";
 import { calloutWebhook, supervisorDiscordDeliveryEnabled, optionsDeliveryGateReason } from "@/lib/callouts/routing";
+import { supervisorOptionsDiscordBlocked, supervisorOptionsDiscordBlockReason } from "../subscriber-discord-owner.ts";
 import { nowOnlyActionable } from "@/lib/callouts/eligibility";
 import { optionAlertDeliverable, canonicalOptionContract, sameOptionContract } from "@/lib/callouts/option-line";
 import { deliverCalloutDiscord, discordWebhookConfigured } from "@/lib/notifications";
+import { recordSupervisorShadowObservation } from "@/lib/research/options/shadow-runner";
 import { reviewPortfolio } from "@/lib/agents/portfolio";
 import { bridgeCalloutsToPaper, type BridgeSummary } from "@/lib/callouts/paper-bridge";
 import { envConcurrency, mapLimit } from "@/lib/bounded-concurrency";
@@ -229,6 +231,25 @@ export async function buildCalloutsForTickers(
     deliveryStatus: null,
   }));
 
+  // Observation-only supervisor shadow records — never sends when independent owns Discord.
+  if (opts.deliver) {
+    try {
+      const db = require("@/lib/db").getDb(); // eslint-disable-line @typescript-eslint/no-require-imports
+      for (const b of bundles) {
+        if (calloutWebhook(b.callout) !== "options") continue;
+        const actionable = nowOnlyActionable(b.callout).ok;
+        const supervisorWouldSend = Boolean(b.decision.emit && actionable && b.discord);
+        recordSupervisorShadowObservation(db, {
+          symbol: b.callout.ticker,
+          strategy: b.callout.horizon ?? "supervisor",
+          side: b.callout.direction === "bearish" ? "put" : "call",
+          supervisorWouldSend,
+          nowMs,
+        }, process.env);
+      }
+    } catch { /* isolated */ }
+  }
+
   // Deliver ONE tracked message per emitted canonical opportunity/horizon — only
   // when explicitly asked AND the supervisor path is the canonical Discord sender.
   let delivered = 0;
@@ -250,6 +271,10 @@ export async function buildCalloutsForTickers(
       // assert the published contract is the SAME one the paper bridge trades — both
       // read Callout.contract, so a divergence here means a code regression.
       if (webhook === "options") {
+        if (supervisorOptionsDiscordBlocked()) {
+          b.deliveryStatus = `skipped: ${supervisorOptionsDiscordBlockReason() ?? "subscriber owner is independent"}`;
+          continue;
+        }
         const deliverable = optionAlertDeliverable(b.callout);
         if (!deliverable.ok) {
           b.deliveryStatus = `skipped: CONTRACT DATA INCOMPLETE — ${deliverable.reason}`;

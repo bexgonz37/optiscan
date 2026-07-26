@@ -16,7 +16,13 @@ import Database from "better-sqlite3";
 import path from "node:path";
 import fs from "node:fs";
 import { ensureEnterpriseSchemaOnDb, inspectSchemaReadiness } from "@/lib/db-schema-readiness";
-import { ensureOptionsDeliveryDecisionsColumns } from "@/lib/db-legacy-columns";
+import {
+  ensureOptionsDeliveryDecisionsColumns,
+  ensureOptionsShadowDecisionsColumns,
+  ensureSubscriberPipelineInstrumentationColumns,
+  OPTIONS_ALERTS_INSTRUMENTATION_MIGRATIONS,
+  OPTIONS_CANDIDATES_INSTRUMENTATION_MIGRATIONS,
+} from "@/lib/db-legacy-columns";
 import { ensureBrokerSchemaOnDb } from "@/lib/broker/schema-migrate";
 
 const SCHEMA = `
@@ -1499,6 +1505,66 @@ CREATE TABLE IF NOT EXISTS options_delivery_decisions (
 CREATE INDEX IF NOT EXISTS idx_options_delivery_decisions ON options_delivery_decisions(outcome, created_at_ms);
 -- idx_options_delivery_final_outcome is created after additive column migrations (legacy DBs may lack final_delivery_outcome until then).
 
+-- Shadow-mode comparison: proposed gates vs actual paths (never sends Discord).
+CREATE TABLE IF NOT EXISTS options_shadow_decisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  trading_session_date TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  strategy TEXT,
+  side TEXT,
+  path TEXT NOT NULL,
+  would_send INTEGER NOT NULL DEFAULT 0,
+  entry_quality_verdict TEXT,
+  session_guard_state TEXT,
+  reasons_json TEXT,
+  metrics_json TEXT,
+  underlying_returns_json TEXT,
+  option_returns_json TEXT,
+  alert_fingerprint TEXT,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_options_shadow_decisions ON options_shadow_decisions(trading_session_date, created_at_ms);
+
+-- Shadow soak forward outcomes — isolated from DELIVERED_ALERT_PAPER / claims / social.
+CREATE TABLE IF NOT EXISTS options_shadow_outcomes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  shadow_decision_id INTEGER,
+  candidate_symbol TEXT NOT NULL,
+  strategy TEXT,
+  side TEXT,
+  trading_session_date TEXT NOT NULL,
+  path TEXT NOT NULL,
+  would_send INTEGER NOT NULL DEFAULT 0,
+  option_symbol TEXT,
+  frozen_entry REAL,
+  frozen_t1 REAL,
+  frozen_t2 REAL,
+  frozen_stop REAL,
+  underlying_at_decision REAL,
+  option_at_decision REAL,
+  entry_quality_verdict TEXT,
+  entry_quality_dimensions_json TEXT,
+  session_guard_state TEXT,
+  decision_at_ms INTEGER NOT NULL,
+  return_1m REAL,
+  return_5m REAL,
+  return_15m REAL,
+  return_30m REAL,
+  return_60m REAL,
+  mfe_pct REAL,
+  mae_pct REAL,
+  t1_hit INTEGER,
+  t2_hit INTEGER,
+  stop_hit INTEGER,
+  underlying_direction_correct INTEGER,
+  data_status TEXT NOT NULL DEFAULT 'PENDING',
+  marks_json TEXT,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_options_shadow_outcomes ON options_shadow_outcomes(trading_session_date, decision_at_ms);
+CREATE INDEX IF NOT EXISTS idx_options_shadow_outcomes_decision ON options_shadow_outcomes(shadow_decision_id);
+
 -- Canonical Opportunity Case (Enterprise Phase 2). Append-friendly audit record for delivered AND rejected paths.
 CREATE TABLE IF NOT EXISTS opportunity_cases (
   opportunity_id TEXT PRIMARY KEY,
@@ -1605,6 +1671,55 @@ CREATE TABLE IF NOT EXISTS opportunity_suppression_log (
   created_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_opportunity_suppression_symbol ON opportunity_suppression_log(symbol, created_at_ms);
+
+-- Paid Discord subscribers (Stripe + Discord role sync). Owner-only ops; subscribers never access the web app.
+CREATE TABLE IF NOT EXISTS subscribers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  stripe_customer_id TEXT UNIQUE,
+  stripe_subscription_id TEXT UNIQUE,
+  discord_user_id TEXT UNIQUE,
+  email TEXT,
+  status TEXT NOT NULL DEFAULT 'inactive',
+  plan_id TEXT,
+  current_period_end_ms INTEGER,
+  grace_until_ms INTEGER,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_subscribers_status ON subscribers(status, updated_at_ms);
+
+CREATE TABLE IF NOT EXISTS subscription_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  stripe_event_id TEXT NOT NULL UNIQUE,
+  event_type TEXT NOT NULL,
+  payload_json TEXT,
+  processed_ok INTEGER NOT NULL DEFAULT 1,
+  error TEXT,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_subscription_events_type ON subscription_events(event_type, created_at_ms);
+
+CREATE TABLE IF NOT EXISTS discord_role_sync_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  discord_user_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  ok INTEGER NOT NULL DEFAULT 0,
+  reason TEXT,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_discord_role_sync_user ON discord_role_sync_log(discord_user_id, created_at_ms);
+
+CREATE TABLE IF NOT EXISTS discord_send_attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  alert_id TEXT,
+  opportunity_case_id TEXT,
+  kind TEXT NOT NULL,
+  ambiguous INTEGER NOT NULL DEFAULT 0,
+  discord_message_id TEXT,
+  error TEXT,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_discord_send_attempts_alert ON discord_send_attempts(alert_id, created_at_ms);
 
 -- Evidence Learning Engine: durable completed-candidate evidence + deterministic aggregate patterns.
 -- This is ADVISORY ONLY. It is never read by live gates, thresholds, strategy selection, or Discord
@@ -1969,6 +2084,7 @@ function migrate(db: Database.Database) {
       ["earliness_phase", "ALTER TABLE options_candidates ADD COLUMN earliness_phase TEXT"],
       ["escalated_by", "ALTER TABLE options_candidates ADD COLUMN escalated_by TEXT"],
       ["feature_snapshot_json", "ALTER TABLE options_candidates ADD COLUMN feature_snapshot_json TEXT"],
+      ...OPTIONS_CANDIDATES_INSTRUMENTATION_MIGRATIONS,
     ] as [string, string][]) if (!oc.has(col)) db.exec(sql);
   }
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_paper_trades'").get()) {
@@ -2014,6 +2130,7 @@ function migrate(db: Database.Database) {
       ["opportunity_case_id", "ALTER TABLE options_alerts ADD COLUMN opportunity_case_id TEXT"],
       ["opportunity_fingerprint", "ALTER TABLE options_alerts ADD COLUMN opportunity_fingerprint TEXT"],
       ["discord_message_id", "ALTER TABLE options_alerts ADD COLUMN discord_message_id TEXT"],
+      ...OPTIONS_ALERTS_INSTRUMENTATION_MIGRATIONS,
     ] as [string, string][]) if (!oa.has(col)) db.exec(sql);
     db.prepare("CREATE INDEX IF NOT EXISTS idx_options_alerts_opportunity ON options_alerts(opportunity_case_id, state)").run();
     db.prepare("CREATE INDEX IF NOT EXISTS idx_options_alerts_fingerprint ON options_alerts(opportunity_fingerprint, state)").run();
@@ -2035,6 +2152,13 @@ function migrate(db: Database.Database) {
   }
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_delivery_decisions'").get()) {
     ensureOptionsDeliveryDecisionsColumns(db);
+  }
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_shadow_decisions'").get()) {
+    ensureOptionsShadowDecisionsColumns(db);
+  }
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_candidates'").get()
+    || db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_alerts'").get()) {
+    ensureSubscriberPipelineInstrumentationColumns(db);
   }
   // Phase 7 (additive): drift-health flag on an existing model_registry table.
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_registry'").get()) {
@@ -2172,6 +2296,13 @@ export function getDb(): Database.Database {
 }
 
 export { inspectSchemaReadiness, repairAndInspectSchemaReadiness, resolveDbLocation, inspectPartialDatabaseState } from "@/lib/db-schema-readiness";
-export { ensureOptionsDeliveryDecisionsColumns } from "@/lib/db-legacy-columns";
+export {
+  ensureOptionsDeliveryDecisionsColumns,
+  ensureOptionsShadowDecisionsColumns,
+  ensureSubscriberPipelineInstrumentationColumns,
+  listMissingShadowSoakTables,
+  readInstrumentationFallbackInserts,
+  incrementInstrumentationFallbackInserts,
+} from "@/lib/db-legacy-columns";
 
 export { tradingDay, etCloseMs, minutesToClose } from "@/lib/trading-session";

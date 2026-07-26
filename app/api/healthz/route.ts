@@ -35,27 +35,27 @@ export async function GET() {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { getDb, inspectSchemaReadiness, resolveDbLocation } = require("@/lib/db");
-    dbDirectory = resolveDbLocation(process.env).directory;
+    dbDirectory = resolveDbLocation().directory;
     const db = getDb();
     dbOk = db.prepare("SELECT 1 AS one").get()?.one === 1;
-    const schema = inspectSchemaReadiness(db, process.env);
+    const schema = inspectSchemaReadiness(db);
     schemaOk = schema.ok;
     schemaMissing = schema.missing;
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const live = require("@/lib/opportunity-case/live");
-      const enabled = Boolean(live.opportunityLifecycleEnabled(process.env));
+      const enabled = Boolean(live.opportunityLifecycleEnabled());
       const schemaReady = Boolean(live.opportunityLifecycleSchemaReady(db));
       lifecycle = { enabled, schemaReady, active: enabled && schemaReady };
     } catch {
-      lifecycle = { enabled: process.env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0", schemaReady: false, active: false };
+      lifecycle = { enabled: false, schemaReady: false, active: false };
     }
   } catch (e: any) {
     dbOk = false;
     dbError = String(e?.message ?? e).slice(0, 200); // safe: sqlite error text, never a secret
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      dbDirectory = require("@/lib/db-schema-readiness").resolveDbLocation(process.env).directory;
+      dbDirectory = require("@/lib/db-schema-readiness").resolveDbLocation().directory;
     } catch { /* ignore */ }
   }
 

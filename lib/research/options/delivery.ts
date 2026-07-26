@@ -10,6 +10,11 @@ import { buildRealOptionEntry, persistDeliveredMirrorOnDb, type OptionQuote } fr
 import { sessionState, openingWindowAllows, defaultOpeningLimit } from "./session-state.ts";
 import type { FrozenEntry } from "./callout.ts";
 import { OPTIONS_TIER0 } from "./discovery.ts";
+import { assertSubscriberDeliveryAllowed, isSameTradingSession } from "../../market-session-guard.ts";
+import { evaluateEntryQuality, entryQualityFromDelivery } from "../../entry-quality-gate.ts";
+import { persistAlertInstrumentation, type AlertInstrumentation } from "./instrumentation.ts";
+import { recordProposedShadowFromDelivery } from "./shadow-runner.ts";
+import { tradingDay } from "../../trading-session.ts";
 import {
   attachEvidenceToOpportunityOnDb,
   claimOpportunityOpenOnDb,
@@ -48,6 +53,11 @@ export interface DeliveryInput {
   tier?: 0 | 1 | 2;
   paperOptionSymbol?: string | null; // when real-option paper linked — MUST match contract.optionSymbol
   maxSpreadPct?: number; maxQuoteAgeMs?: number;
+  tradingSessionDate?: string | null;
+  firstDetectedAtMs?: number | null;
+  underlyingAtFirstDetection?: number | null;
+  optionAtFirstDetection?: number | null;
+  featureSnapshot?: Record<string, unknown> | null;
 }
 
 export interface SendResult { ok: boolean; status: number | null; messageId: string | null; latencyMs: number; ambiguous: boolean; error: string | null }
@@ -143,8 +153,40 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
   if (!f.independentOptionsDiscovery || !f.earlyOptionsCallouts) return base("READY", false, "callouts_disabled");
   if (env.OPTIONS_PORTFOLIO_DELIVERY_ENABLED !== "1") return base("REJECTED", false, "portfolio_delivery_required");
   if (env.OPTIONS_CALLOUTS_KILL === "1") return base("REJECTED", false, "kill_switch_engaged");
+  try {
+    const { validateSubscriberConfig, shouldBlockIndependentDelivery } = require("../../subscriber-config-validator.ts") as typeof import("../../subscriber-config-validator.ts");
+    const cfgVal = validateSubscriberConfig(env);
+    if (shouldBlockIndependentDelivery(cfgVal, env)) return base("REJECTED", false, `subscriber_config:${cfgVal.fatal.join("; ")}`);
+  } catch { /* validator optional in tests */ }
   // Puts are RESEARCH_ONLY → never sent as actionable callouts (suppressed, reported).
   if (input.researchOnly || input.contract.side === "put") { try { persist((deps.getDb ?? liveDb)(), alertId, input, "REJECTED", { failureReason: "research_only_put_suppressed" }, nowMs); } catch { /* isolated */ } return base("REJECTED", false, "research_only_put_suppressed"); }
+
+  const sessionGuard = assertSubscriberDeliveryAllowed(nowMs, env);
+  if (!sessionGuard.ok) {
+    return finalize(deps, input, alertId, "REJECTED", `session_guard:${sessionGuard.guard.state}`, nowMs, sessionGuard.guard.optionsSessionState);
+  }
+
+  const candidateSession = input.tradingSessionDate ?? tradingDay(input.firstDetectedAtMs ?? nowMs);
+  if (!isSameTradingSession(candidateSession, nowMs)) {
+    return finalize(deps, input, alertId, "REJECTED", "EXPIRED_TRADING_SESSION", nowMs, sessionGuard.guard.optionsSessionState);
+  }
+
+  const dbEarly = (deps.getDb ?? liveDb)();
+  const shadow = recordProposedShadowFromDelivery(dbEarly, input, {
+    firstDetectedAtMs: input.firstDetectedAtMs,
+    underlyingAtFirstDetection: input.underlyingAtFirstDetection,
+    optionAtFirstDetection: input.optionAtFirstDetection,
+    featureSnapshot: input.featureSnapshot,
+  }, env);
+  if (shadow.entryQuality && shadow.entryQuality.composite.subscriberAction === "BLOCK" && String(env.ENTRY_QUALITY_GATE ?? "shadow").toLowerCase() === "enforce") {
+    const inst: AlertInstrumentation = {
+      entryQualityVerdict: shadow.entryQuality.composite.primaryVerdict,
+      entryQualityReasonsJson: JSON.stringify(shadow.entryQuality.composite.reasons),
+      tradingSessionDate: tradingDay(nowMs),
+    };
+    try { persistAlertInstrumentation(dbEarly, alertId, inst); } catch { /* isolated */ }
+    return finalize(deps, input, alertId, "REJECTED", `entry_quality:${shadow.entryQuality.composite.primaryVerdict}`, nowMs, sessionGuard.guard.optionsSessionState);
+  }
 
   // Re-verify freshness / spread / chase at DELIVERY time.
   const maxSpread = input.maxSpreadPct ?? 10, maxAge = input.maxQuoteAgeMs ?? 15_000;
@@ -322,7 +364,26 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
     // quote/underlying/strategy/decision-timestamp/alert_id). Never blocks or alters the SENT outcome;
     // a mirror failure just leaves paper_linked=0 (surfaced) and can be retried idempotently later.
     const linked = createDeliveredMirror(db, input, alertId, env);
-    try { persist(db, alertId, input, "SENT", { status: res.status, latencyMs: res.latencyMs, retryCount: attempt, sentAtMs: now(), attemptedAtMs: nowMs, paperLinked: linked, sessionState: state }, now()); } catch { /* isolated */ }
+    const sentAt = now();
+    const optMid = input.entry?.mid ?? ((input.contract.bid ?? 0) + (input.contract.ask ?? 0)) / 2;
+    const latencyMs = input.firstDetectedAtMs ? sentAt - input.firstDetectedAtMs : null;
+    try {
+      persistAlertInstrumentation(db, alertId, {
+        firstDetectedAtMs: input.firstDetectedAtMs,
+        underlyingAtFirstDetection: input.underlyingAtFirstDetection,
+        optionAtFirstDetection: input.optionAtFirstDetection,
+        underlyingAtDelivery: input.currentUnderlyingPrice,
+        optionAtDelivery: optMid,
+        evidenceSnapshotJson: input.featureSnapshot ? JSON.stringify(input.featureSnapshot) : null,
+        sessionStateAtDelivery: state,
+        deliveryLatencyMs: latencyMs,
+        entryQualityVerdict: shadow.entryQuality?.verdict ?? "ALLOW",
+        entryQualityReasonsJson: shadow.entryQuality ? JSON.stringify(shadow.entryQuality.reasons) : null,
+        tradingSessionDate: tradingDay(nowMs),
+        deliveredAtMs: sentAt,
+      });
+    } catch { /* isolated */ }
+    try { persist(db, alertId, input, "SENT", { status: res.status, latencyMs: res.latencyMs, retryCount: attempt, sentAtMs: sentAt, attemptedAtMs: nowMs, paperLinked: linked, sessionState: state }, now()); } catch { /* isolated */ }
     try {
       db.prepare("UPDATE options_alerts SET discord_message_id=?, opportunity_case_id=COALESCE(opportunity_case_id, ?), opportunity_fingerprint=COALESCE(opportunity_fingerprint, ?) WHERE alert_id=?")
         .run(res.messageId ?? null, livingCaseId, livingFingerprint, alertId);
@@ -344,6 +405,14 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
   // An AMBIGUOUS timeout may have been delivered — exhaust retries so NO later call can resend it.
   const finalRetryCount = res.ambiguous ? maxRetries : attempt;
   try { persist(db, alertId, input, "SEND_FAILED", { status: res.status, latencyMs: res.latencyMs, retryCount: finalRetryCount, failureReason: res.ambiguous ? `ambiguous_timeout: ${res.error}` : res.error, sessionState: state }, now()); } catch { /* isolated */ }
+  if (res.ambiguous) {
+    try {
+      db.prepare(
+        `INSERT INTO discord_send_attempts (alert_id, opportunity_case_id, kind, ambiguous, discord_message_id, error, created_at_ms)
+         VALUES (?,?,?,?,?,?,?)`,
+      ).run(alertId, livingCaseId, "opening", 1, null, res.error ?? "ambiguous_timeout", now());
+    } catch { /* optional table */ }
+  }
   // Clear send failure (not ambiguous): release the active opportunity claim so a later retry can open.
   // Ambiguous timeouts keep the claim — Discord may already have the message.
   if (!res.ambiguous && livingCaseId && livingFingerprint && env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0") {

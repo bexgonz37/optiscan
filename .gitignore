@@ -37,3 +37,6 @@ data/
 
 # local dev logs
 dev-server*.log
+
+# generated replay / forensic outputs (fixtures may be committed separately)
+scripts/replay-subscriber-week-output.json

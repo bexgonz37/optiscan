@@ -12,12 +12,15 @@ const DAILY_NAV: NavItem[] = [
   { href: "/", label: "Command Center" },
   { href: "/intelligence", label: "Intelligence" },
   { href: "/pipeline-health", label: "Pipeline Health" },
+  { href: "/shadow-soak", label: "Shadow Soak" },
   { href: "/callouts", label: "Callouts" },
   { href: "/paper", label: "Paper Trading" },
   { href: "/paper-lifecycle", label: "Paper Lifecycle" },
   { href: "/performance", label: "Performance" },
   { href: "/ai", label: "AI Lab" },
   { href: "/data", label: "System Health" },
+  { href: "/subscriptions", label: "Subscriptions" },
+  { href: "/social-drafts", label: "Social Drafts" },
   { href: "/guide", label: "Guide" },
 ];
 
@@ -37,6 +40,8 @@ const ADVANCED_NAV: NavItem[] = [
 const PAGE_META: Record<string, { title: string; sub: string }> = {
   "/": { title: "Command Center", sub: "What matters right now" },
   "/data": { title: "System Health", sub: "Data freshness, Discord, and reliability" },
+  "/subscriptions": { title: "Subscriptions", sub: "Stripe ↔ Discord role sync health" },
+  "/social-drafts": { title: "Social Drafts", sub: "Verified milestone copy — approve before posting" },
   "/copilot": { title: "Explain Signals", sub: "Coming soon" },
   "/callouts": { title: "Callouts", sub: "Every horizon in one place (0DTE–90DTE, momentum stocks, put research)" },
   "/alerts": { title: "Options Callouts", sub: "Moved into Callouts · accuracy & journal still here" },
@@ -58,6 +63,8 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   "/settings": { title: "Settings", sub: "Alerts, Discord, safety" },
   "/review": { title: "Review", sub: "Methodology and limits" },
   "/guide": { title: "Guide", sub: "How to use OptiScan" },
+  "/shadow-soak": { title: "Shadow Soak", sub: "Kill-switch evidence — would-send vs would-block without Discord openings" },
+  "/pipeline-health": { title: "Pipeline Health", sub: "Subscriber pipeline diagnostics and blockers" },
   "/scanner": { title: "Live Scanner", sub: "0DTE options · share momentum tape" },
 };
 

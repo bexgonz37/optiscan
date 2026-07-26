@@ -134,7 +134,7 @@ test("Stage B: supervisor runs but Discord delivery stays OFF", () => {
 
 // 11. Stage C selects exactly one options callout sender.
 test("Stage C: supervisor becomes the sole options sender (legacy stands down)", () => {
-  const stageC = { SUPERVISOR_RUNTIME: "1", CALLOUT_CANONICAL_PATH: "supervisor", AGENT_CALLOUT_DISCORD: "1" };
+  const stageC = { SUPERVISOR_RUNTIME: "1", CALLOUT_CANONICAL_PATH: "supervisor", AGENT_CALLOUT_DISCORD: "1", SUBSCRIBER_OPTIONS_DISCORD_OWNER: "supervisor" };
   assert.equal(supervisorDiscordDeliveryEnabled(stageC), true, "supervisor sends");
   assert.equal(legacyOptionsSuppressed(stageC), true, "legacy options suppressed → no double-send");
   assert.equal(calloutCanonicalPath(stageC), "supervisor");

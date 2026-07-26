@@ -286,44 +286,62 @@ test("5-11: return milestones — thresholds, jump, no spam, concurrent claim", 
     nowMs: t,
   });
 
-  // +24% → no deliverable milestone
+  // +19% → no deliverable milestone (default ladder starts at 20)
   let mark = applyOpportunityMarkOnDb(d, {
     opportunityCaseId: claim.opportunityCaseId,
     frozenEntry: 5.2,
-    currentMark: 5.2 * 1.24,
-    returnPct: 24,
+    currentMark: 5.2 * 1.19,
+    returnPct: 19,
     nowMs: t + 1000,
   });
   assert.equal(mark.deliverReturnMilestone, null);
 
-  // +25% → claim +25
+  // +20% → claim +20
   mark = applyOpportunityMarkOnDb(d, {
     opportunityCaseId: claim.opportunityCaseId,
     frozenEntry: 5.2,
-    currentMark: 5.2 * 1.25,
-    returnPct: 25,
+    currentMark: 5.2 * 1.20,
+    returnPct: 20,
     nowMs: t + 2000,
   });
-  assert.equal(mark.deliverReturnMilestone, 25);
+  assert.equal(mark.deliverReturnMilestone, 20);
   assert.equal(mark.claimed, true);
   completeMilestoneDeliveryOnDb(d, {
     opportunityCaseId: claim.opportunityCaseId,
-    milestonePercent: 25,
-    discordMessageId: "m25",
+    milestonePercent: 20,
+    discordMessageId: "m20",
     nowMs: t + 2001,
     ok: true,
     claimToken: mark.claimToken,
   });
 
-  // Multiple loops above +25 do not resend
+  // Loops between +20 and +30 do not resend
+  mark = applyOpportunityMarkOnDb(d, {
+    opportunityCaseId: claim.opportunityCaseId,
+    frozenEntry: 5.2,
+    currentMark: 5.2 * 1.25,
+    returnPct: 25,
+    nowMs: t + 3000,
+  });
+  assert.equal(mark.deliverReturnMilestone, null);
+
+  // +30% → claim +30
   mark = applyOpportunityMarkOnDb(d, {
     opportunityCaseId: claim.opportunityCaseId,
     frozenEntry: 5.2,
     currentMark: 5.2 * 1.30,
     returnPct: 30,
-    nowMs: t + 3000,
+    nowMs: t + 3500,
   });
-  assert.equal(mark.deliverReturnMilestone, null);
+  assert.equal(mark.deliverReturnMilestone, 30);
+  completeMilestoneDeliveryOnDb(d, {
+    opportunityCaseId: claim.opportunityCaseId,
+    milestonePercent: 30,
+    discordMessageId: "m30",
+    nowMs: t + 3501,
+    ok: true,
+    claimToken: mark.claimToken,
+  });
 
   // Dip below and recover — still no resend
   mark = applyOpportunityMarkOnDb(d, {
@@ -342,9 +360,8 @@ test("5-11: return milestones — thresholds, jump, no spam, concurrent claim", 
   });
   assert.equal(mark.deliverReturnMilestone, null);
 
-  // Jump to +58 → only +50 claimed for delivery (25 already reached)
-  // First persist crossed analytics via evaluate helper
-  const ev = evaluateReturnMilestones({ returnPct: 58, priorReached: [25], levels: [25, 50, 75, 100] });
+  // Jump to +58 → only +50 claimed for delivery (20 and 30 already reached)
+  const ev = evaluateReturnMilestones({ returnPct: 58, priorReached: [20, 30], levels: [20, 30, 50, 75, 100] });
   assert.equal(ev.deliverPercent, 50);
   mark = applyOpportunityMarkOnDb(d, {
     opportunityCaseId: claim.opportunityCaseId,

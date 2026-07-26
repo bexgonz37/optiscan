@@ -12,6 +12,22 @@ type Diagnostic = {
   candidates: { observed24h: number; ready24h: number; rejected24h: number };
   delivery: { sent24h: number; failed24h: number };
   discord: { webhookConfigured: boolean };
+  alertReliability?: {
+    ownership: { owner: string; independentOwns: boolean; supervisorOptionsBlocked: boolean };
+    quota: { quotaMode: string; discoveryPaused: boolean; operatorWarning: string | null; callsToday: number; discoveryDailyBudget: number };
+    killSwitch: boolean;
+    ambiguousOpens24h: number;
+  };
+  sessionGuard?: {
+    state: string;
+    tradingSessionDate: string;
+    subscriberScanAllowed: boolean;
+    subscriberDeliveryAllowed: boolean;
+    reason: string;
+    regularOpenMs?: number;
+    regularCloseMs?: number;
+  };
+  lifecycle?: { recentSuppressions: Record<string, unknown>[]; milestoneDeliveryFailures: number };
 };
 
 type PipelineHealthResponse = {
@@ -71,6 +87,33 @@ export default function PipelineHealthPage() {
             <p>Discord SENT: {diag.delivery.sent24h} · Failed: {diag.delivery.failed24h}</p>
             <p>Webhook configured: {diag.discord.webhookConfigured ? "yes" : "no"}</p>
           </Card>
+          {diag.alertReliability && (
+            <Card title="Alert reliability" tone={diag.alertReliability.killSwitch || diag.alertReliability.quota.discoveryPaused ? "warn" : undefined}>
+              <p>
+                Subscriber options owner: {diag.alertReliability.ownership.owner.toUpperCase()}
+                {diag.alertReliability.ownership.independentOwns ? " · Supervisor Discord: SUPPRESSED" : ""}
+                {!diag.alertReliability.ownership.independentOwns ? ` · supervisor blocked: ${diag.alertReliability.ownership.supervisorOptionsBlocked ? "yes" : "no"}` : ""}
+              </p>
+              <p>Quota mode: {diag.alertReliability.quota.quotaMode} · discovery paused: {diag.alertReliability.quota.discoveryPaused ? "yes" : "no"}</p>
+              {diag.alertReliability.quota.operatorWarning && <p>{diag.alertReliability.quota.operatorWarning}</p>}
+              <p>Ambiguous opening sends (24h): {diag.alertReliability.ambiguousOpens24h}</p>
+              {diag.alertReliability.killSwitch && <StatusBadge tone="bad">OPTIONS_CALLOUTS_KILL engaged</StatusBadge>}
+            </Card>
+          )}
+          {diag.sessionGuard && (
+            <Card title="Market session guard" tone={diag.sessionGuard.subscriberDeliveryAllowed ? undefined : "warn"}>
+              <p>State: {diag.sessionGuard.state} · session date: {diag.sessionGuard.tradingSessionDate}</p>
+              <p>Scan allowed: {diag.sessionGuard.subscriberScanAllowed ? "yes" : "no"} · delivery allowed: {diag.sessionGuard.subscriberDeliveryAllowed ? "yes" : "no"}</p>
+              <p>{diag.sessionGuard.reason}</p>
+            </Card>
+          )}
+          {diag.lifecycle?.recentSuppressions && diag.lifecycle.recentSuppressions.length > 0 && (
+            <Card title="Recent lifecycle suppressions">
+              <ul>{diag.lifecycle.recentSuppressions.slice(0, 8).map((s, i) => (
+                <li key={i}>{String((s as { reason?: string }).reason ?? JSON.stringify(s))}</li>
+              ))}</ul>
+            </Card>
+          )}
         </>
       )}
     </PageContainer>

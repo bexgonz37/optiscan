@@ -20,10 +20,12 @@ import {
   applyOpportunityMarkOnDb,
   closeOpportunityOnDb,
   completeMilestoneDeliveryOnDb,
+  emitContentEventForCase,
   findOpportunityCaseIdByAlertOnDb,
   loadCaseJsonOnDb,
 } from "../../opportunity-case/live.ts";
 import { formatOpportunityClosedUpdate, formatReturnMilestoneUpdate } from "./milestone-format.ts";
+import { assertSubscriberScanAllowed } from "../../market-session-guard.ts";
 
 export interface OpenPosition {
   id: number; option_symbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number;
@@ -58,21 +60,35 @@ export interface ExitDecision {
   exitFill: number | null; pnl: number | null; returnPct: number | null; note: string;
 }
 
+export function subscriberExitMode(env: NodeJS.ProcessEnv = process.env): "targets_then_bands" | "bands_only" {
+  const raw = String(env.OPTIONS_SUBSCRIBER_EXIT_MODE ?? "targets_then_bands").trim().toLowerCase();
+  return raw === "bands_only" ? "bands_only" : "targets_then_bands";
+}
+
 /**
- * PURE exit decision on a single open position given the latest quote. Priority: a fresh quote hitting
- * target/stop closes at a real price; otherwise expiration/time-stop close on time. When a position
- * expires without any usable quote, it is closed HONESTLY with pnl=null (we do not fabricate a price).
+ * PURE exit decision on a single open position given the latest quote. Priority:
+ * 1) Frozen T1/stop prices (subscriber-visible targets) when OPTIONS_SUBSCRIBER_EXIT_MODE=targets_then_bands
+ * 2) Option return % bands (safety backstop)
+ * 3) Expiration / time-stop
  */
-export function decideOptionExit(pos: OpenPosition, quote: RefreshedQuote | null, nowMs: number, cfg: GradeConfig = defaultGradeConfig()): ExitDecision {
+export function decideOptionExit(pos: OpenPosition, quote: RefreshedQuote | null, nowMs: number, cfg: GradeConfig = defaultGradeConfig(), env: NodeJS.ProcessEnv = process.env): ExitDecision {
   const hold = (note: string): ExitDecision => ({ action: "hold", reason: null, exitFill: null, pnl: null, returnPct: null, note });
   const fresh = quote != null && quote.bid != null && quote.bid > 0 && quote.ask != null && quote.ask > 0
     && (quote.quoteAgeMs == null || quote.quoteAgeMs <= cfg.maxQuoteAgeMs);
 
-  // With a fresh two-sided quote, evaluate a price-based target/stop first (closes at a REAL exit fill).
   if (fresh) {
     const ex = realOptionExit(pos.entry_fill, quote!.bid as number, quote!.ask as number);
-    if (ex.returnPct >= cfg.takeProfitPct) return { action: "exit", reason: "target_hit", exitFill: ex.exitFill, pnl: ex.pnl, returnPct: ex.returnPct, note: `option return ${ex.returnPct}% ≥ +${cfg.takeProfitPct}%` };
-    if (ex.returnPct <= -cfg.stopLossPct) return { action: "exit", reason: "stop_hit", exitFill: ex.exitFill, pnl: ex.pnl, returnPct: ex.returnPct, note: `option return ${ex.returnPct}% ≤ -${cfg.stopLossPct}%` };
+    const mode = subscriberExitMode(env);
+    if (mode === "targets_then_bands") {
+      if (pos.target != null && pos.target > 0 && ex.exitFill >= pos.target) {
+        return { action: "exit", reason: "target_hit", exitFill: ex.exitFill, pnl: ex.pnl, returnPct: ex.returnPct, note: `exit at frozen T1 ${pos.target} (mark ${ex.exitFill})` };
+      }
+      if (pos.invalidation != null && pos.invalidation > 0 && ex.exitFill <= pos.invalidation) {
+        return { action: "exit", reason: "stop_hit", exitFill: ex.exitFill, pnl: ex.pnl, returnPct: ex.returnPct, note: `exit at frozen stop ${pos.invalidation} (mark ${ex.exitFill})` };
+      }
+    }
+    if (ex.returnPct >= cfg.takeProfitPct) return { action: "exit", reason: "target_hit", exitFill: ex.exitFill, pnl: ex.pnl, returnPct: ex.returnPct, note: `option return ${ex.returnPct}% ≥ +${cfg.takeProfitPct}% safety band` };
+    if (ex.returnPct <= -cfg.stopLossPct) return { action: "exit", reason: "stop_hit", exitFill: ex.exitFill, pnl: ex.pnl, returnPct: ex.returnPct, note: `option return ${ex.returnPct}% ≤ -${cfg.stopLossPct}% safety band` };
   }
 
   // Expiration — closes regardless of quote availability (time, not price).
@@ -240,6 +256,12 @@ async function maybeUpdateOpportunityLifecycle(
       ok: sent.ok,
       claimToken: applied.claimToken,
     });
+    try {
+      emitContentEventForCase(db as any, caseId, "RETURN_MILESTONE", nowMs, {
+        milestonePercent: applied.deliverReturnMilestone,
+        label: `+${applied.deliverReturnMilestone}%`,
+      });
+    } catch { /* never block Discord */ }
     return sent.ok ? 1 : 0;
   } catch {
     return 0;
@@ -293,12 +315,15 @@ export async function gradeOpenOptionPositionsOnDb(db: GradeDb, deps: GradeDeps,
     rows = db.prepare("SELECT id, option_symbol, side, strike, expiration, dte, entry_fill, result_class, strategy, underlying_price, target, invalidation, entered_at_ms, status FROM options_paper_trades WHERE status='ENTERED' AND result_class='REAL_OPTION_PAPER'").all() as OpenPosition[];
   }
   const out: GradePassResult = { examined: rows.length, graded: 0, held: 0, errors: 0, byReason: {}, milestonesDelivered: 0, closesDelivered: 0 };
+  const nowMsStart = now();
+  const scanGuard = assertSubscriberScanAllowed(nowMsStart, env);
+  const allowFreshMarks = scanGuard.ok || env.MARKET_SESSION_GUARD === "shadow" || env.MARKET_SESSION_GUARD === "0";
   for (const pos of rows) {
     const nowMs = now();
     let quote: RefreshedQuote | null = null;
     try { quote = await deps.getQuote(pos.option_symbol, occUnderlying(pos.option_symbol)); }
     catch { out.errors += 1; quote = null; } // provider hiccup on one contract must not stop the pass
-    recordObservedMark(db, pos, quote, nowMs, cfg);
+    if (allowFreshMarks) recordObservedMark(db, pos, quote, nowMs, cfg);
     try {
       out.milestonesDelivered = (out.milestonesDelivered ?? 0) + await maybeUpdateOpportunityLifecycle(db, pos, quote, nowMs, cfg, deps, env);
     } catch { /* lifecycle never blocks grading */ }

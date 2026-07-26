@@ -20,6 +20,13 @@ import {
 } from "./store.ts";
 import { deliverNightlyRecapOnDb } from "./recap.ts";
 
+const INTERNAL_RESEARCH_BANNER = "INTERNAL RESEARCH — MARKET CLOSED";
+
+function labelInternalResearchSummary<T extends { patterns: string[] }>(summary: T): T {
+  if (summary.patterns.includes(INTERNAL_RESEARCH_BANNER)) return summary;
+  return { ...summary, patterns: [INTERNAL_RESEARCH_BANNER, ...summary.patterns] };
+}
+
 function lazyDb(): DbLike {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   return require("@/lib/db").getDb();
@@ -170,6 +177,7 @@ export async function runNightlyDiagnosis(opts: NightlyJobOptions = {}): Promise
     const momentum = gatherMomentumDigestForDay(day, db);
     const options = gatherOptionsDigestForDay(day, db);
     summary = buildNightlySummary({ tradingDay: day, periodStartMs: null, periodEndMs: nowMs, outcomes, candidates, live, momentum, options });
+    summary = labelInternalResearchSummary(summary);
   } catch (err: any) {
     return { ...result, skippedReason: `summary failed: ${err?.message ?? err}` };
   }

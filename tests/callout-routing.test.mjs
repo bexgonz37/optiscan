@@ -32,7 +32,13 @@ test("supervisor Discord delivery requires BOTH the canonical path and the maste
   assert.equal(supervisorDiscordDeliveryEnabled({}), false);
   assert.equal(supervisorDiscordDeliveryEnabled({ CALLOUT_CANONICAL_PATH: "supervisor" }), false);
   assert.equal(supervisorDiscordDeliveryEnabled({ AGENT_CALLOUT_DISCORD: "1" }), false);
-  assert.equal(supervisorDiscordDeliveryEnabled({ CALLOUT_CANONICAL_PATH: "supervisor", AGENT_CALLOUT_DISCORD: "1" }), true);
+  const supervisorOwner = { CALLOUT_CANONICAL_PATH: "supervisor", AGENT_CALLOUT_DISCORD: "1", SUBSCRIBER_OPTIONS_DISCORD_OWNER: "supervisor" };
+  assert.equal(supervisorDiscordDeliveryEnabled(supervisorOwner), true);
+  assert.equal(
+    supervisorDiscordDeliveryEnabled({ CALLOUT_CANONICAL_PATH: "supervisor", AGENT_CALLOUT_DISCORD: "1" }),
+    false,
+    "independent owner blocks supervisor even when path + switch are on",
+  );
 });
 
 test("legacy options sender stands down exactly when supervisor is canonical", () => {

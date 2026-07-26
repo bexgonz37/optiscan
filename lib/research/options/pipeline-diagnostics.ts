@@ -15,6 +15,11 @@ import {
   recentSuppressionsOnDb,
 } from "../../opportunity-case/live.ts";
 import { explainTickerAlertDecision, type TickerAlertExplanation } from "./why-no-alert.ts";
+import { quotaPolicySnapshot } from "../../quota-policy.ts";
+import { subscriberDiscordOwnershipSummary } from "../../subscriber-discord-owner.ts";
+import { evaluateMarketSessionGuard } from "../../market-session-guard.ts";
+import { inspectSchemaReadiness } from "../../db-schema-readiness.ts";
+import { readInstrumentationFallbackInserts } from "../../db-legacy-columns.ts";
 
 interface DiagDb {
   prepare(sql: string): { get: (...a: any[]) => any; all: (...a: any[]) => any[]; run?: (...a: any[]) => { changes: number } };
@@ -61,6 +66,19 @@ export interface WhyNoAlertsDiagnostic {
     recentSuppressions: Record<string, unknown>[];
   };
   tickerExplanation?: TickerAlertExplanation | null;
+  alertReliability?: {
+    ownership: ReturnType<typeof subscriberDiscordOwnershipSummary>;
+    quota: ReturnType<typeof quotaPolicySnapshot>;
+    killSwitch: boolean;
+    ambiguousOpens24h: number;
+  };
+  sessionGuard?: ReturnType<typeof evaluateMarketSessionGuard>;
+  schemaReadiness?: {
+    ok: boolean;
+    missingShadowSoakTables: string[];
+    missingInstrumentationColumns: Array<{ table: string; column: string }>;
+    instrumentationFallbackInserts: number;
+  };
 }
 
 function hasTable(db: DiagDb, name: string): boolean {
@@ -89,6 +107,12 @@ export function buildWhyNoAlertsDiagnostic(
   if (!String(env.DISCORD_WEBHOOK_OPTIONS ?? "").trim()) likelyBlockers.push("DISCORD_WEBHOOK_OPTIONS not configured");
   if (monitor.breakerState === "open") likelyBlockers.push("Provider circuit breaker OPEN");
   if (!monitor.alive && f.independentOptionsDiscovery) likelyBlockers.push("Options monitor not alive (no recent cycle)");
+  if (db) {
+    const schema = inspectSchemaReadiness(db as any, env);
+    if (!schema.ok && env.SUBSCRIBER_CONFIG_STRICT !== "0") {
+      likelyBlockers.push("Instrumentation schema incomplete for shadow soak");
+    }
+  }
 
   const byState: Record<string, number> = {};
   let observed24h = 0, ready24h = 0, rejected24h = 0;
@@ -139,6 +163,13 @@ export function buildWhyNoAlertsDiagnostic(
   else if (sent24h === 0) summary = "READY candidates exist but no Discord SENT in 24h — review delivery decisions";
 
   const det = metrics.detectionToDecisionMs as { p50?: number | null; p95?: number | null } | undefined;
+
+  let ambiguousOpens24h = 0;
+  if (db && hasTable(db, "discord_send_attempts")) {
+    ambiguousOpens24h = Number(
+      (db.prepare("SELECT COUNT(*) n FROM discord_send_attempts WHERE ambiguous=1 AND created_at_ms >= ?").get(since24h) as { n: number })?.n ?? 0,
+    );
+  }
 
   return {
     ok: likelyBlockers.length === 0,
@@ -194,6 +225,22 @@ export function buildWhyNoAlertsDiagnostic(
       };
     })(),
     tickerExplanation: opts.symbol ? explainTickerAlertDecision(db, opts.symbol, nowMs) : null,
+    alertReliability: {
+      ownership: subscriberDiscordOwnershipSummary(env),
+      quota: quotaPolicySnapshot(env, nowMs),
+      killSwitch: env.OPTIONS_CALLOUTS_KILL === "1",
+      ambiguousOpens24h,
+    },
+    sessionGuard: evaluateMarketSessionGuard(nowMs, env),
+    schemaReadiness: db ? (() => {
+      const schema = inspectSchemaReadiness(db as any, env);
+      return {
+        ok: schema.ok,
+        missingShadowSoakTables: schema.missingShadowSoakTables,
+        missingInstrumentationColumns: schema.missingInstrumentationColumns,
+        instrumentationFallbackInserts: readInstrumentationFallbackInserts(),
+      };
+    })() : undefined,
   };
 }
 

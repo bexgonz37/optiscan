@@ -15,6 +15,7 @@ import { decideDeliveryBatch, type DeliverySubmission } from "./delivery-decisio
 import { runOptionsCandidate, type ChainContract } from "./loop.ts";
 import { computeOptionsFeatures, featuresToUnderlying, type Bar, type FeatureContext } from "./features.ts";
 import { summarizeChainFeatures, chainFeaturesToActivity, type OptionContract } from "./chain-features.ts";
+import { assertSubscriberScanAllowed } from "../../market-session-guard.ts";
 
 export function portfolioDeliveryStatus(env: NodeJS.ProcessEnv = process.env): { required: boolean; enabled: boolean; healthy: boolean; reason: string | null } {
   const required = researchFlags(env).independentOptionsDiscovery;
@@ -161,6 +162,13 @@ export async function runOptionsMonitorCycle(tier: 0 | 1 | 2, symbols: string[],
   let scanned = 0, created = 0, rejected = 0, chains = 0;
 
   if (breakerOpen(s, t0)) { s.metrics.throttles += 1; return { tier, scanned: 0, created: 0, rejected: 0, chains: 0, durationMs: now() - t0 }; }
+
+  const scanGuard = assertSubscriberScanAllowed(t0, env);
+  const guardMode = String(env.MARKET_SESSION_GUARD ?? "shadow").toLowerCase();
+  if (!scanGuard.ok && guardMode !== "shadow" && guardMode !== "0") {
+    s.metrics.throttles += 1;
+    return { tier, scanned: 0, created: 0, rejected: 0, chains: 0, durationMs: now() - t0 };
+  }
 
   // PORTFOLIO DELIVERY (flag-gated): collect every READY candidate this cycle so they compete in ONE
   // ranked delivery decision instead of racing first-come to Discord. Sensitivity unchanged — research

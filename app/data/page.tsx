@@ -43,7 +43,21 @@ type Overview = {
   }[];
   monitored_symbol_count?: number;
   stale_symbol_count?: number;
-  rate_limit?: { status?: string; calls_today?: number | null; daily_cap?: number | null; calls_this_minute?: number | null; minute_cap?: number | null; quota_exceeded?: boolean };
+  rate_limit?: {
+    status?: string;
+    calls_today?: number | null;
+    daily_cap?: number | null;
+    calls_this_minute?: number | null;
+    minute_cap?: number | null;
+    quota_exceeded?: boolean;
+    discovery_paused?: boolean;
+    quota_mode?: string | null;
+    operator_warning?: string | null;
+  };
+  alert_reliability?: {
+    ownership?: { owner?: string; independentOwns?: boolean; supervisorOptionsBlocked?: boolean };
+    kill_switch?: boolean;
+  };
   database?: { ok?: boolean; note?: string };
   discord?: { summary?: { status: string; count: number }[] };
   entitlement_limitations?: string[];
@@ -138,8 +152,10 @@ export default function SystemHealthPage() {
     ? "Provider key missing — scanner cannot fetch data."
     : !dbOk
       ? "Database fault — paper and delivery may be stalled."
-      : data.rate_limit?.quota_exceeded
-        ? "Polygon minute/daily quota pressure — non-critical work should defer."
+      : data.rate_limit?.discovery_paused
+        ? (data.rate_limit?.operator_warning ?? "Polygon discovery budget reached — grader reserve active.")
+        : data.rate_limit?.quota_exceeded
+          ? "Polygon minute/daily quota pressure — non-critical work should defer."
         : totalBlocked
           ? `${totalBlocked} symbols blocked across ${blockedAggregates.length || 1} failure class(es).`
           : "Scanner path looks healthy — no aggregated blockers.";
@@ -163,6 +179,13 @@ export default function SystemHealthPage() {
           v={`${data.rate_limit?.calls_this_minute ?? "—"} / ${data.rate_limit?.minute_cap ?? "—"}`}
           tone={data.rate_limit?.quota_exceeded ? "warn" : undefined}
         />
+        {data.alert_reliability?.ownership && (
+          <KeyValue
+            k="Subscriber Discord owner"
+            v={`${data.alert_reliability.ownership.owner ?? "?"}${data.alert_reliability.kill_switch ? " · KILL SWITCH ON" : ""}`}
+            tone={data.alert_reliability.kill_switch ? "warn" : undefined}
+          />
+        )}
         {blockedAggregates.length > 0 && (
           <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
             {blockedAggregates.map((a) => (

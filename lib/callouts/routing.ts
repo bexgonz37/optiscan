@@ -13,6 +13,7 @@
  * requires the existing AGENT_CALLOUT_DISCORD=1 master switch.
  */
 import type { Callout } from "./callout.ts";
+import { supervisorOptionsDiscordBlocked, supervisorOptionsDiscordBlockReason } from "../subscriber-discord-owner.ts";
 
 export type CalloutWebhook = "options" | "stocks";
 
@@ -30,8 +31,9 @@ export function calloutCanonicalPath(env: NodeJS.ProcessEnv = process.env): Cano
   return env.CALLOUT_CANONICAL_PATH === "supervisor" ? "supervisor" : "legacy";
 }
 
-/** True only when the supervisor path is canonical AND Discord auto-send is on. */
+/** True only when the supervisor path is canonical AND Discord auto-send is on AND independent does not own subscriber Discord. */
 export function supervisorDiscordDeliveryEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (supervisorOptionsDiscordBlocked(env)) return false;
   return calloutCanonicalPath(env) === "supervisor" && env.AGENT_CALLOUT_DISCORD === "1";
 }
 
@@ -42,6 +44,8 @@ export function supervisorDiscordDeliveryEnabled(env: NodeJS.ProcessEnv = proces
  * exact reason recorded in options_diagnostics when emittable callouts go undelivered.
  */
 export function optionsDeliveryGateReason(env: NodeJS.ProcessEnv = process.env, webhookConfigured = false): string | null {
+  const ownerBlock = supervisorOptionsDiscordBlockReason(env);
+  if (ownerBlock) return ownerBlock;
   if (calloutCanonicalPath(env) !== "supervisor") return "CALLOUT_CANONICAL_PATH != supervisor (legacy path owns options; supervisor callouts are preview-only)";
   if (env.AGENT_CALLOUT_DISCORD !== "1") return "AGENT_CALLOUT_DISCORD != 1 (supervisor Discord master switch is off)";
   if (!webhookConfigured) return "DISCORD_WEBHOOK_OPTIONS is not configured";

@@ -181,8 +181,16 @@ export function buildConfigVisibility(env: NodeJS.ProcessEnv = process.env, extr
     configItem("ALERT_DB_DIR", dbDir, dbDir === "/app/data" ? "Database is using persistent path /app/data." : `Database path is ${dbDir}. Railway should use /app/data.`, dbDir === "/app/data" ? [] : ["paper_trading"]),
   ];
 
+  let ownership: { owner: string; independentOwns: boolean; supervisorOptionsBlocked: boolean } | null = null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    ownership = require("./subscriber-discord-owner").subscriberDiscordOwnershipSummary(env);
+  } catch { /* optional in tests */ }
+
   const summary = [
-    supervisorDiscordOn ? "Options Discord is enabled." : "Options Discord is disabled by Supervisor routing/config (need CALLOUT_CANONICAL_PATH=supervisor AND AGENT_CALLOUT_DISCORD=1).",
+    ownership?.independentOwns
+      ? `Subscriber options owner: INDEPENDENT — supervisor Discord ${ownership.supervisorOptionsBlocked ? "SUPPRESSED" : "NOT suppressed (misconfigured)"}.`
+      : supervisorDiscordOn ? "Options Discord is enabled." : "Options Discord is disabled by Supervisor routing/config (need CALLOUT_CANONICAL_PATH=supervisor AND AGENT_CALLOUT_DISCORD=1).",
     independentOptionsOn && !portfolioDeliveryOn ? "Independent options subscriber delivery is blocked because OPTIONS_PORTFOLIO_DELIVERY_ENABLED is not 1." : "Independent options portfolio-delivery requirement is satisfied or discovery is disabled.",
     stockOn ? "Regular-hours stock Discord is enabled when DISCORD_WEBHOOK_STOCKS is configured and a fresh actionable setup exists." : "Momentum stock Discord is disabled because STOCK_CALLOUTS is off.",
     extendedStockReady
@@ -204,11 +212,21 @@ export function buildConfigVisibility(env: NodeJS.ProcessEnv = process.env, extr
   // if not, exactly which gate is blocking it? This is the single place to look when
   // "no alerts are coming through". Deterministic; derived only from the flags above.
   const optionsBlockers: string[] = [];
-  if (!supervisorOn) optionsBlockers.push("SUPERVISOR_RUNTIME != 1");
-  if (canonicalPath !== "supervisor") optionsBlockers.push("CALLOUT_CANONICAL_PATH != supervisor");
-  if (!on(env.AGENT_CALLOUT_DISCORD)) optionsBlockers.push("AGENT_CALLOUT_DISCORD != 1");
-  if (!optionsWebhookOn) optionsBlockers.push("DISCORD_WEBHOOK_OPTIONS missing");
-  if (independentOptionsOn && !portfolioDeliveryOn) optionsBlockers.push("OPTIONS_PORTFOLIO_DELIVERY_ENABLED != 1 while INDEPENDENT_OPTIONS_DISCOVERY_ENABLED=1");
+  const earlyOptionsOn = on(env.EARLY_OPTIONS_CALLOUTS_ENABLED);
+  if (ownership?.independentOwns) {
+    if (!independentOptionsOn) optionsBlockers.push("INDEPENDENT_OPTIONS_DISCOVERY_ENABLED != 1");
+    if (!earlyOptionsOn) optionsBlockers.push("EARLY_OPTIONS_CALLOUTS_ENABLED != 1");
+    if (!portfolioDeliveryOn) optionsBlockers.push("OPTIONS_PORTFOLIO_DELIVERY_ENABLED != 1");
+    if (!optionsWebhookOn) optionsBlockers.push("DISCORD_WEBHOOK_OPTIONS missing");
+    if (on(env.OPTIONS_CALLOUTS_KILL)) optionsBlockers.push("OPTIONS_CALLOUTS_KILL=1");
+    if (ownership.supervisorOptionsBlocked === false) optionsBlockers.push("supervisor options Discord not suppressed");
+  } else {
+    if (!supervisorOn) optionsBlockers.push("SUPERVISOR_RUNTIME != 1");
+    if (canonicalPath !== "supervisor") optionsBlockers.push("CALLOUT_CANONICAL_PATH != supervisor");
+    if (!on(env.AGENT_CALLOUT_DISCORD)) optionsBlockers.push("AGENT_CALLOUT_DISCORD != 1");
+    if (!optionsWebhookOn) optionsBlockers.push("DISCORD_WEBHOOK_OPTIONS missing");
+    if (independentOptionsOn && !portfolioDeliveryOn) optionsBlockers.push("OPTIONS_PORTFOLIO_DELIVERY_ENABLED != 1 while INDEPENDENT_OPTIONS_DISCOVERY_ENABLED=1");
+  }
 
   const stockBlockers: string[] = [];
   if (!stockOn) stockBlockers.push("STOCK_CALLOUTS != 1");

@@ -17,6 +17,8 @@ import {
   formatExplanationDiscord,
 } from "@/lib/alert-format";
 import { containsBannedPublicLanguage } from "@/lib/language-modes";
+import { assertSubscriberDeliveryAllowed } from "@/lib/market-session-guard";
+import { supervisorOptionsDiscordBlocked } from "@/lib/subscriber-discord-owner";
 import { isOptionsSession } from "@/lib/trading-session";
 import {
   getNotificationSettings,
@@ -36,6 +38,7 @@ import {
 } from "@/lib/alert-store";
 import { actionableFreshness, type DataKind } from "@/lib/data-freshness";
 import { legacyOptionsSuppressed, legacyWatchDiscordEnabled } from "@/lib/callouts/routing";
+import { legacyOptionsSubscriberDiscordBlocked } from "./subscriber-discord-owner.ts";
 
 export type DiscordWebhookKind = "options" | "stocks" | "recap" | "default";
 
@@ -264,13 +267,15 @@ export async function postScoreboardEmbed(
   }
 }
 
-/** Quiet WATCH post — no role mention, 30 min dedup per ticker. */
+function legacyOptionsDiscordBlocked(): boolean {
+  return legacyOptionsSuppressed() || legacyOptionsSubscriberDiscordBlocked();
+}
 export async function notifyWatchAlert(alertId: number, alertLike: any): Promise<void> {
   try {
-    if (legacyOptionsSuppressed()) {
+    if (legacyOptionsDiscordBlocked()) {
       insertNotificationEvent({
         alertId, channel: "discord_webhook", status: "skipped",
-        error: "legacy watch Discord suppressed by supervisor canonical callout path",
+        error: "legacy watch Discord suppressed — independent options owns subscriber Discord",
       });
       return;
     }
@@ -324,10 +329,12 @@ export async function notifyNewAlert(alertId: number, alertLike: any): Promise<v
     // LEGACY options Discord sender stands down so the same opportunity is never
     // sent twice. Stock alerts always use the legacy stock path (the supervisor
     // does not own them), and paper/alert capture is unaffected.
-    if (!isStock && legacyOptionsSuppressed()) {
+    if (!isStock && legacyOptionsDiscordBlocked()) {
       insertNotificationEvent({
         alertId, channel: "discord_webhook", status: "skipped",
-        error: "superseded by supervisor canonical callout path (CALLOUT_CANONICAL_PATH=supervisor)",
+        error: legacyOptionsSubscriberDiscordBlocked()
+          ? "superseded by independent options subscriber path (SUBSCRIBER_OPTIONS_DISCORD_OWNER=independent)"
+          : "superseded by supervisor canonical callout path (CALLOUT_CANONICAL_PATH=supervisor)",
       });
       return;
     }
@@ -595,6 +602,25 @@ export async function deliverCalloutDiscord(input: {
   idempotencyKey: string;
 }): Promise<{ sent: boolean; skipped?: boolean; deliveryId?: string; reason?: string; status: string }> {
   const { webhook, payload, idempotencyKey } = input;
+  if (webhook === "options") {
+    if (supervisorOptionsDiscordBlocked()) {
+      const deliveryId = createDiscordDelivery({
+        alertId: null, channelType: "discord_webhook", webhookName: webhook,
+        payloadType: "callout", payload, idempotencyKey,
+        status: "SUPPRESSED", failureReason: "supervisor options suppressed (independent owner)",
+      });
+      return { sent: false, skipped: true, deliveryId, reason: "supervisor options suppressed", status: "SUPPRESSED" };
+    }
+    const guard = assertSubscriberDeliveryAllowed();
+    if (!guard.ok) {
+      const deliveryId = createDiscordDelivery({
+        alertId: null, channelType: "discord_webhook", webhookName: webhook,
+        payloadType: "callout", payload, idempotencyKey,
+        status: "SUPPRESSED", failureReason: `session_guard:${guard.guard.state}`,
+      });
+      return { sent: false, skipped: true, deliveryId, reason: guard.guard.reason, status: "SUPPRESSED" };
+    }
+  }
   if (!discordWebhookConfigured(webhook)) {
     const deliveryId = createDiscordDelivery({
       alertId: null, channelType: "discord_webhook", webhookName: webhook,
@@ -647,6 +673,10 @@ export async function retryDiscordDelivery(deliveryId: string): Promise<{ ok: bo
   const d = getDiscordDelivery(deliveryId);
   if (!d) return { ok: false, error: "delivery not found" };
   if (!d.payload_json) return { ok: false, error: "delivery has no stored payload" };
+  if (d.webhook_name === "options") {
+    const guard = assertSubscriberDeliveryAllowed();
+    if (!guard.ok) return { ok: false, error: `session_guard:${guard.guard.state} — ${guard.guard.reason}` };
+  }
   let payload: any;
   try { payload = JSON.parse(d.payload_json); } catch { return { ok: false, error: "stored payload is invalid JSON" }; }
   updateDiscordDelivery(deliveryId, { status: "SENDING", attempted: true });

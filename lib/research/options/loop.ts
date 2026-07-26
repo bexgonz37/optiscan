@@ -12,6 +12,10 @@ import { buildRealOptionEntry, persistRealOptionPaperOnDb, canOpenRealOptionPape
 import { persistCaseFromOptionsLive } from "../../opportunity-case/orchestrate.ts";
 import { buildOpportunityIdentity, opportunityFingerprint } from "../../opportunity-case/identity.ts";
 import { attachEvidenceToOpportunityOnDb, findActiveOpportunityByFingerprintOnDb } from "../../opportunity-case/live.ts";
+import { buildCandidateInstrumentation, persistCandidateInstrumentation, isReadyCandidateExpired } from "./instrumentation.ts";
+import { sessionState } from "./session-state.ts";
+import { assertSubscriberDeliveryAllowed, isSameTradingSession } from "../../market-session-guard.ts";
+import { incrementInstrumentationFallbackInserts } from "../../db-legacy-columns.ts";
 
 export interface ChainContract { optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number; bid: number | null; ask: number | null; spreadPct: number | null; volume: number | null; openInterest: number | null; iv: number | null; delta: number | null; providerTimestamp: number | null }
 
@@ -88,10 +92,39 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
   const snapJson = extra.featureSnapshot !== undefined ? JSON.stringify(extra.featureSnapshot) : null;
   try {
     const db = (deps.getDb ?? liveDb)();
-    db.prepare(
-      `INSERT INTO options_candidates (symbol, tier, session, selected_strategy, direction, side, research_only, score, considered_json, state, why, option_symbol, freshness_state, callout_message, earliness_phase, escalated_by, feature_snapshot_json, created_at_ms)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    ).run(input.symbol, input.tier, input.session, res.selection.selected?.key ?? null, res.selection.direction, res.selection.selected?.side ?? null, res.selection.selected?.researchOnly ? 1 : 0, res.selection.selected?.score ?? null, JSON.stringify(res.selection.considered.slice(0, 8)), res.state, res.callout?.reason ?? res.selection.reason, res.contract?.optionSymbol ?? null, res.callout?.freshness ?? null, res.callout?.message ?? null, extra.earlinessPhase ?? null, extra.escalatedBy ?? null, snapJson, input.nowMs);
+    const inst = buildCandidateInstrumentation({
+      nowMs: input.nowMs,
+      underlyingPrice: input.underlying.price ?? null,
+      optionMid: res.contract ? ((res.contract.bid ?? 0) + (res.contract.ask ?? 0)) / 2 : null,
+      session: input.session,
+      sessionState: sessionState(input.nowMs, env),
+      featureSnapshot: extra.featureSnapshot,
+      state: res.state,
+    }, env);
+    let candidateId = 0;
+    try {
+      const insert = db.prepare(
+        `INSERT INTO options_candidates (symbol, tier, session, selected_strategy, direction, side, research_only, score, considered_json, state, why, option_symbol, freshness_state, callout_message, earliness_phase, escalated_by, feature_snapshot_json, first_detected_at_ms, underlying_at_first_detection, option_at_first_detection, session_state_at_detection, trading_session_date, market_structure_snapshot_json, first_ready_at_ms, underlying_at_ready, option_at_ready, ready_expires_at_ms, created_at_ms)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      );
+      const info = insert.run(
+        input.symbol, input.tier, input.session, res.selection.selected?.key ?? null, res.selection.direction, res.selection.selected?.side ?? null, res.selection.selected?.researchOnly ? 1 : 0, res.selection.selected?.score ?? null, JSON.stringify(res.selection.considered.slice(0, 8)), res.state, res.callout?.reason ?? res.selection.reason, res.contract?.optionSymbol ?? null, res.callout?.freshness ?? null, res.callout?.message ?? null, extra.earlinessPhase ?? null, extra.escalatedBy ?? null, snapJson,
+        inst.firstDetectedAtMs, inst.underlyingAtFirstDetection, inst.optionAtFirstDetection, inst.sessionStateAtDetection, inst.tradingSessionDate, inst.marketStructureSnapshotJson,
+        inst.firstReadyAtMs ?? null, inst.underlyingAtReady ?? null, inst.optionAtReady ?? null, inst.readyExpiresAtMs ?? null,
+        input.nowMs,
+      ) as { lastInsertRowid?: number | bigint };
+      candidateId = Number(info.lastInsertRowid ?? 0);
+    } catch {
+      incrementInstrumentationFallbackInserts();
+      const info = db.prepare(
+        `INSERT INTO options_candidates (symbol, tier, session, selected_strategy, direction, side, research_only, score, considered_json, state, why, option_symbol, freshness_state, callout_message, earliness_phase, escalated_by, feature_snapshot_json, created_at_ms)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      ).run(
+        input.symbol, input.tier, input.session, res.selection.selected?.key ?? null, res.selection.direction, res.selection.selected?.side ?? null, res.selection.selected?.researchOnly ? 1 : 0, res.selection.selected?.score ?? null, JSON.stringify(res.selection.considered.slice(0, 8)), res.state, res.callout?.reason ?? res.selection.reason, res.contract?.optionSymbol ?? null, res.callout?.freshness ?? null, res.callout?.message ?? null, extra.earlinessPhase ?? null, extra.escalatedBy ?? null, snapJson, input.nowMs,
+      ) as { lastInsertRowid?: number | bigint };
+      candidateId = Number(info.lastInsertRowid ?? 0);
+    }
+    if (candidateId > 0) persistCandidateInstrumentation(db, candidateId, inst);
     // Living Opportunity Case: if an active opportunity already matches, attach evidence and do not
     // submit another opening delivery. Audit capture still runs (bound to the living case id).
     let livingOpportunityCaseId: string | null = null;
@@ -150,7 +183,15 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
     // EARLY_OPTIONS_CALLOUTS_ENABLED=1 (delivery re-checks the flag + freshness/chase). The linked
     // paper trade (if any) uses the EXACT same OCC contract as the callout.
     if (res.state === "READY" && res.contract && res.callout?.message && researchFlags(env).earlyOptionsCallouts) {
-      if (suppressOpeningAsDuplicate) {
+      const guard = assertSubscriberDeliveryAllowed(input.nowMs, env);
+      const guardMode = String(env.MARKET_SESSION_GUARD ?? "shadow").toLowerCase();
+      if (!guard.ok && guardMode !== "shadow" && guardMode !== "0") {
+        // Subscriber lane blocked outside allowed session — research paper may still run above.
+      } else if (inst.readyExpiresAtMs != null && isReadyCandidateExpired(inst.readyExpiresAtMs, input.nowMs)) {
+        // READY TTL expired before batch collection.
+      } else if (!isSameTradingSession(inst.tradingSessionDate, input.nowMs)) {
+        // Prior-session READY candidate — do not revive for delivery.
+      } else if (suppressOpeningAsDuplicate) {
         // Active Opportunity Case already owns this fingerprint — evidence attached above; no new open.
       } else {
       const strat = getStrategy(res.selection.selected!.key);
@@ -159,6 +200,11 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
         candidateSymbol: input.symbol, strategy: res.selection.selected!.key, researchOnly: res.selection.selected!.researchOnly,
         contract: { optionSymbol: res.contract.optionSymbol, side: res.contract.side, strike: res.contract.strike, expiration: res.contract.expiration, bid: res.contract.bid, ask: res.contract.ask, spreadPct: res.contract.spreadPct, quoteAgeMs: res.contract.providerTimestamp != null ? input.nowMs - res.contract.providerTimestamp : null, dte: res.contract.dte, volume: res.contract.volume, openInterest: res.contract.openInterest, iv: res.contract.iv, delta: res.contract.delta, providerTimestamp: res.contract.providerTimestamp },
         message: res.callout.message, observedUnderlyingPrice: px, currentUnderlyingPrice: px, chaseLimitPct: strat?.chaseLimitPct ?? 0.6, underlyingPrice: px, decisionMs: input.nowMs, session: input.session, entry: res.callout.entry, tier: input.tier, paperOptionSymbol,
+        firstDetectedAtMs: inst.firstDetectedAtMs,
+        underlyingAtFirstDetection: inst.underlyingAtFirstDetection,
+        optionAtFirstDetection: inst.optionAtFirstDetection,
+        tradingSessionDate: inst.tradingSessionDate,
+        featureSnapshot: (extra.featureSnapshot && typeof extra.featureSnapshot === "object") ? extra.featureSnapshot as Record<string, unknown> : null,
       };
       if (extra.collectDelivery) {
         // Portfolio delivery: submit into the cycle batch so every READY candidate competes before Discord.

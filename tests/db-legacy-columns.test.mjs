@@ -84,10 +84,11 @@ test("legacy column migration is repeat-safe and preserves existing rows", { ski
 test("full migrate on legacy fixture adds final_delivery_outcome and enterprise tables", { skip: !Database }, async () => {
   const db = legacyProductionDb();
   const { ensureEnterpriseSchemaOnDb } = await import("../lib/db-schema-readiness.ts");
+  const { ensureOptionsDeliveryDecisionsColumns, ensureOptionsShadowDecisionsColumns, ensureSubscriberPipelineInstrumentationColumns } = await import("../lib/db-legacy-columns.ts");
   ensureOptionsDeliveryDecisionsColumns(db);
   const schema = read("lib/db.ts").match(/const SCHEMA = `([\s\S]*?)`;/)[1];
   assert.doesNotThrow(() => db.exec(schema));
-  ensureOptionsDeliveryDecisionsColumns(db);
+  ensureSubscriberPipelineInstrumentationColumns(db);
   ensureEnterpriseSchemaOnDb(db);
   assert.equal(hasSqliteColumn(db, "options_delivery_decisions", "final_delivery_outcome"), true);
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='opportunity_cases'").get());

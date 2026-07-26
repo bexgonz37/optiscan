@@ -23,6 +23,18 @@ export function ensureServerBoot(): void {
   started = true;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { validateSubscriberConfigWithSchema, persistSubscriberConfigValidation } = require("@/lib/subscriber-config-validator");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const db = require("@/lib/db").getDb();
+    const validation = validateSubscriberConfigWithSchema(db, process.env);
+    persistSubscriberConfigValidation(db, validation, Date.now());
+    if (!validation.ok) console.error("[subscriber-config] FATAL:", validation.fatal.join("; "));
+    if (validation.warnings.length) console.warn("[subscriber-config] warnings:", validation.warnings.join("; "));
+  } catch (err) {
+    console.warn("[subscriber-config] validation skipped:", (err as Error)?.message);
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     require("@/lib/alert-tracker").startAlertTracker();
   } catch (err) {
     console.warn("[alert-lab] tracker not started:", (err as Error)?.message);
@@ -74,10 +86,17 @@ export function ensureServerBoot(): void {
     // Independent OPTIONS monitoring loop (in-process, bounded, SEPARATE from the stock radar).
     // HARD no-op unless INDEPENDENT_OPTIONS_DISCOVERY_ENABLED=1. Never sends Discord; paper/shadow only.
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { startOptionsMonitor } = require("@/lib/research/options/monitor");
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const started = startOptionsMonitor(require("@/lib/research/options/live-deps").buildLiveOptionsDeps(), process.env);
-    if (started.started) console.info("[options-monitor] started");
+    const { validateSubscriberConfigWithSchema, shouldBlockIndependentDelivery } = require("@/lib/subscriber-config-validator");
+    const cfgVal = validateSubscriberConfigWithSchema(require("@/lib/db").getDb(), process.env);
+    if (shouldBlockIndependentDelivery(cfgVal, process.env)) {
+      console.error("[options-monitor] not started: subscriber config invalid under strict mode —", cfgVal.fatal.join("; "));
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { startOptionsMonitor } = require("@/lib/research/options/monitor");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const started = startOptionsMonitor(require("@/lib/research/options/live-deps").buildLiveOptionsDeps(), process.env);
+      if (started.started) console.info("[options-monitor] started");
+    }
   } catch (err) {
     console.warn("[options-monitor] not started:", (err as Error)?.message);
   }
@@ -125,6 +144,17 @@ export function ensureServerBoot(): void {
     if (started.started) console.info("[ai-research-queue] started");
   } catch (err) {
     console.warn("[ai-research-queue] not started:", (err as Error)?.message);
+  }
+  try {
+    // Shadow outcome grader — forward marks for soak evidence (isolated from delivered-alert paper).
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { startShadowOutcomeGrader } = require("@/lib/research/options/shadow-outcomes");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const liveDeps = require("@/lib/research/options/live-deps").buildLiveOptionsDeps();
+    const started = startShadowOutcomeGrader({ getDb: liveDeps.getDb }, process.env);
+    if (started.started) console.info("[shadow-outcomes] grader started");
+  } catch (err) {
+    console.warn("[shadow-outcomes] grader not started:", (err as Error)?.message);
   }
   // (removed) A boot-time block used to force-lower scanner gates to
   // 0.12%/min / 1.25x on every start — it silently undid any tightening the

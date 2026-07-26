@@ -6,7 +6,7 @@ import type { OpportunityLifecycleStatus, LifecycleEventType } from "./lifecycle
 import { lifecycleEventLabel, nextLifecycleStatus } from "./lifecycle.ts";
 import type { OpportunityMilestoneRecord } from "./summary.ts";
 
-export const DEFAULT_RETURN_MILESTONES = [25, 50, 75, 100, 150, 200] as const;
+export const DEFAULT_RETURN_MILESTONES = [20, 30, 50, 75, 100] as const;
 
 export function returnMilestonesFromEnv(env: NodeJS.ProcessEnv = process.env): number[] {
   const raw = String(env.OPTIONS_RETURN_MILESTONES ?? "").trim();

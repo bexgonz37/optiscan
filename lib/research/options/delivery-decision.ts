@@ -9,6 +9,10 @@ import { rankCandidates, type RankableCandidate } from "./ranking.ts";
 import { deliverOptionsCallout, type DeliveryInput } from "./delivery.ts";
 import { sessionState, type SessionState } from "./session-state.ts";
 import { OPTIONS_TIER0 } from "./discovery.ts";
+import { assertSubscriberDeliveryAllowed, evaluateMarketSessionGuard, isSameTradingSession } from "../../market-session-guard.ts";
+import { evaluateEntryQuality, entryQualityFromDelivery } from "../../entry-quality-gate.ts";
+import { markCandidatesBatchEntered } from "./instrumentation.ts";
+import { recordProposedShadowFromDelivery } from "./shadow-runner.ts";
 
 export interface DeliverySubmission {
   deliveryInput: DeliveryInput;
@@ -192,8 +196,39 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
   const session = sessionState(nowMs, env);
   const deliverBar = +(cfg.deliverBar + (session === "OPENING_DISCOVERY" ? cfg.openingBump : 0)).toFixed(4);
 
+  const sessionGuard = assertSubscriberDeliveryAllowed(nowMs, env);
+  const guardMode = String(env.MARKET_SESSION_GUARD ?? "shadow").toLowerCase();
+  const marketGuard = evaluateMarketSessionGuard(nowMs, env);
+  const minutesToSessionClose = Math.round((marketGuard.regularCloseMs - nowMs) / 60000);
+  if (!sessionGuard.ok && guardMode !== "shadow" && guardMode !== "0") {
+    return batch.map((s, i) => ({
+      symbol: s.symbol,
+      strategy: s.strategy,
+      side: s.side,
+      tier: s.tier,
+      outcome: "REJECT" as const,
+      reason: `session_guard:${sessionGuard.guard.state}`,
+      quality: 0,
+      components: {},
+      rank: i + 1,
+      batchSize: batch.length,
+      clusterKey: clusterKey(s.symbol, s.side),
+      threshold: deliverBar,
+      sessionState: session,
+      wouldDeliverSolo: false,
+      alertId: null,
+      deliveryAttempted: false,
+      deliverySent: false,
+      deliveryState: null,
+      finalDeliveryOutcome: "REJECTED" as const,
+      deliveryFailureCategory: "session_guard",
+      finalDeliveryReason: sessionGuard.guard.reason,
+    }));
+  }
+
   let db: DDb | null = null;
   try { db = deps.getDb ? deps.getDb() : null; } catch { db = null; }
+  if (db) markCandidatesBatchEntered(db, batch.map((s) => s.symbol), nowMs);
 
   // Evidence hierarchy per strategy (cached): FORWARD live-mirror outcomes + leak-free HISTORICAL replay
   // (underlying-forward), blended and sample-gated. This is how the 5-year replay data + accruing live
@@ -230,6 +265,34 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
   for (let rank = 0; rank < ranked.length; rank++) {
     const x = scored[ranked[rank].i];
     const ck = clusterKey(x.s.symbol, x.s.side);
+    const candidateSession = x.s.deliveryInput.tradingSessionDate ?? null;
+    if (candidateSession && !isSameTradingSession(candidateSession, nowMs)) {
+      decisions.push({
+        sub: x.s,
+        symbol: x.s.symbol,
+        strategy: x.s.strategy,
+        side: x.s.side,
+        tier: x.s.tier,
+        outcome: "REJECT",
+        reason: "EXPIRED_TRADING_SESSION",
+        quality: x.quality,
+        components: x.components,
+        rank: rank + 1,
+        batchSize: batch.length,
+        clusterKey: ck,
+        threshold: deliverBar,
+        sessionState: session,
+        wouldDeliverSolo: false,
+        alertId: null,
+        deliveryAttempted: false,
+        deliverySent: false,
+        deliveryState: null,
+        finalDeliveryOutcome: "REJECTED",
+        deliveryFailureCategory: "expired_trading_session",
+        finalDeliveryReason: `candidate session ${candidateSession} != current session`,
+      });
+      continue;
+    }
     const base: DeliveryDecision & { sub: DeliverySubmission } = {
       sub: x.s,
       symbol: x.s.symbol,
@@ -273,6 +336,39 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
       decisions.push(base);
       continue;
     }
+    const eqInput = entryQualityFromDelivery({
+      side: x.s.side,
+      dte: x.s.deliveryInput.contract.dte ?? null,
+      underlyingNow: x.s.deliveryInput.currentUnderlyingPrice,
+      optionNow: x.s.deliveryInput.entry?.mid ?? ((x.s.deliveryInput.contract.bid ?? 0) + (x.s.deliveryInput.contract.ask ?? 0)) / 2,
+      observedUnderlyingPrice: x.s.deliveryInput.observedUnderlyingPrice,
+      contract: x.s.deliveryInput.contract,
+      entry: x.s.deliveryInput.entry ?? null,
+      firstDetectedAtMs: x.s.deliveryInput.firstDetectedAtMs,
+      underlyingAtFirstDetection: x.s.deliveryInput.underlyingAtFirstDetection,
+      optionAtFirstDetection: x.s.deliveryInput.optionAtFirstDetection,
+      featureSnapshot: x.s.deliveryInput.featureSnapshot ?? null,
+      minutesToSessionClose,
+      sessionState: session,
+      nowMs,
+    }, nowMs, env);
+    const eq = evaluateEntryQuality(eqInput, env);
+    if (db) {
+      recordProposedShadowFromDelivery(db, x.s.deliveryInput, {
+        firstDetectedAtMs: x.s.deliveryInput.firstDetectedAtMs,
+        underlyingAtFirstDetection: x.s.deliveryInput.underlyingAtFirstDetection,
+        optionAtFirstDetection: x.s.deliveryInput.optionAtFirstDetection,
+        featureSnapshot: x.s.deliveryInput.featureSnapshot,
+      }, env);
+    }
+    if (eq.composite.subscriberAction === "BLOCK" && String(env.ENTRY_QUALITY_GATE ?? "shadow").toLowerCase() === "enforce") {
+      base.outcome = "REJECT";
+      base.reason = `entry_quality:${eq.composite.primaryVerdict}`;
+      base.finalDeliveryOutcome = "REJECTED";
+      base.finalDeliveryReason = eq.composite.reasons.join("; ") || eq.composite.primaryVerdict;
+      decisions.push(base);
+      continue;
+    }
     base.outcome = "DELIVER_TO_DISCORD";
     base.reason = `subscriber_worthy: quality ${x.quality} >= bar ${deliverBar}${excellent ? " (independently excellent)" : ""}; rank ${rank + 1}/${batch.length}; cluster ${ck}`;
     base.finalDeliveryReason = "selected_for_delivery";
@@ -306,18 +402,50 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
     const batchId = `bd_${nowMs}`;
     const competing = decisions.slice(0, 8).map((d) => ({ symbol: d.symbol, strategy: d.strategy, quality: d.quality, outcome: d.outcome, finalDeliveryOutcome: d.finalDeliveryOutcome, reason: d.reason.slice(0, 80) }));
     for (const d of decisions) {
+      const latencyMs = d.sub.deliveryInput.firstDetectedAtMs ? nowMs - d.sub.deliveryInput.firstDetectedAtMs : null;
+      const eqInput = entryQualityFromDelivery({
+        side: d.sub.side,
+        dte: d.sub.deliveryInput.contract.dte ?? null,
+        underlyingNow: d.sub.deliveryInput.currentUnderlyingPrice,
+        optionNow: d.sub.deliveryInput.entry?.mid ?? ((d.sub.deliveryInput.contract.bid ?? 0) + (d.sub.deliveryInput.contract.ask ?? 0)) / 2,
+        observedUnderlyingPrice: d.sub.deliveryInput.observedUnderlyingPrice,
+        contract: d.sub.deliveryInput.contract,
+        entry: d.sub.deliveryInput.entry ?? null,
+        firstDetectedAtMs: d.sub.deliveryInput.firstDetectedAtMs,
+        underlyingAtFirstDetection: d.sub.deliveryInput.underlyingAtFirstDetection,
+        optionAtFirstDetection: d.sub.deliveryInput.optionAtFirstDetection,
+        featureSnapshot: d.sub.deliveryInput.featureSnapshot ?? null,
+        minutesToSessionClose,
+        sessionState: d.sessionState,
+        nowMs,
+      }, nowMs, env);
+      const eq = evaluateEntryQuality(eqInput, env);
       try {
         db.prepare(
-          `INSERT INTO options_delivery_decisions (batch_id, symbol, strategy, side, tier, outcome, reason, quality, rank, batch_size, components_json, cluster_key, threshold, session_state, alert_id, would_deliver_solo, competing_json, delivery_attempted, delivery_sent, delivery_state, final_delivery_outcome, delivery_failure_category, final_delivery_reason, delivery_attempted_at_ms, delivery_completed_at_ms, created_at_ms)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          `INSERT INTO options_delivery_decisions (batch_id, symbol, strategy, side, tier, outcome, reason, quality, rank, batch_size, components_json, cluster_key, threshold, session_state, alert_id, would_deliver_solo, competing_json, delivery_attempted, delivery_sent, delivery_state, final_delivery_outcome, delivery_failure_category, final_delivery_reason, delivery_attempted_at_ms, delivery_completed_at_ms, entry_quality_verdict, delivery_latency_ms, batch_entered_at_ms, created_at_ms)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         ).run(
           batchId, d.symbol, d.strategy, d.side, d.tier, d.outcome, d.reason, d.quality, d.rank, d.batchSize,
           JSON.stringify(d.components), d.clusterKey, d.threshold, d.sessionState, d.alertId, d.wouldDeliverSolo ? 1 : 0,
           JSON.stringify(competing.filter((c) => !(c.symbol === d.symbol && c.strategy === d.strategy))),
           d.deliveryAttempted ? 1 : 0, d.deliverySent ? 1 : 0, d.deliveryState, d.finalDeliveryOutcome,
-          d.deliveryFailureCategory, d.finalDeliveryReason, d.deliveryAttempted ? nowMs : null, d.deliveryAttempted ? nowMs : null, nowMs,
+          d.deliveryFailureCategory, d.finalDeliveryReason, d.deliveryAttempted ? nowMs : null, d.deliveryAttempted ? nowMs : null,
+          eq.composite.primaryVerdict, latencyMs, nowMs, nowMs,
         );
-      } catch { /* isolated */ }
+      } catch {
+        try {
+          db.prepare(
+            `INSERT INTO options_delivery_decisions (batch_id, symbol, strategy, side, tier, outcome, reason, quality, rank, batch_size, components_json, cluster_key, threshold, session_state, alert_id, would_deliver_solo, competing_json, delivery_attempted, delivery_sent, delivery_state, final_delivery_outcome, delivery_failure_category, final_delivery_reason, delivery_attempted_at_ms, delivery_completed_at_ms, created_at_ms)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          ).run(
+            batchId, d.symbol, d.strategy, d.side, d.tier, d.outcome, d.reason, d.quality, d.rank, d.batchSize,
+            JSON.stringify(d.components), d.clusterKey, d.threshold, d.sessionState, d.alertId, d.wouldDeliverSolo ? 1 : 0,
+            JSON.stringify(competing.filter((c) => !(c.symbol === d.symbol && c.strategy === d.strategy))),
+            d.deliveryAttempted ? 1 : 0, d.deliverySent ? 1 : 0, d.deliveryState, d.finalDeliveryOutcome,
+            d.deliveryFailureCategory, d.finalDeliveryReason, d.deliveryAttempted ? nowMs : null, d.deliveryAttempted ? nowMs : null, nowMs,
+          );
+        } catch { /* isolated */ }
+      }
     }
   }
 

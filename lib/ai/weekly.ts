@@ -31,6 +31,13 @@ function lazyDb(): DbLike {
   return require("@/lib/db").getDb();
 }
 
+const INTERNAL_RESEARCH_BANNER = "INTERNAL RESEARCH — MARKET CLOSED";
+
+function labelInternalResearchSummary<T extends { patterns: string[] }>(summary: T): T {
+  if (summary.patterns.includes(INTERNAL_RESEARCH_BANNER)) return summary;
+  return { ...summary, patterns: [INTERNAL_RESEARCH_BANNER, ...summary.patterns] };
+}
+
 /** Hand-maintained map of decision-relevant files (roadmap §10 — NOT repo RAG). */
 export const CURATED_STRATEGY_FILES = [
   "lib/entry-window.ts",
@@ -198,6 +205,7 @@ export async function runWeeklyProposals(opts: WeeklyJobOptions = {}): Promise<W
         evidenceLearning: evidenceLearningSnapshotOnDb(db),
       }),
     };
+    summary = labelInternalResearchSummary(summary);
   } catch (err: any) {
     return { ...result, skippedReason: `weekly summary failed: ${err?.message ?? err}` };
   }
