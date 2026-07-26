@@ -16,6 +16,7 @@ export const dynamic = "force-dynamic";
  *   { action: "decide_lesson", id, status, decisionState, notes? }
  *   { action: "run_nightly" | "run_weekly" }
  *   { action: "retry_nightly_narrative", periodKey? | reportId? }
+ *   { action: "retry_weekly_proposals", periodKey? | reportId? }
  *   { action: "refresh_evidence_learning" }
  * The AI never self-approves; accept/reject is always a human action here.
  */
@@ -72,6 +73,13 @@ export async function POST(req: Request) {
       const reportId = Number(body?.reportId);
       const periodKey = String(body?.periodKey ?? "").trim();
       const res = await retryNightlyNarrative({ reportId: Number.isFinite(reportId) ? reportId : undefined, periodKey: periodKey || undefined });
+      return NextResponse.json({ ok: true, result: res });
+    }
+    if (action === "retry_weekly_proposals") {
+      const { retryWeeklyProposals } = await import("@/lib/ai/weekly");
+      const reportId = Number(body?.reportId);
+      const periodKey = String(body?.periodKey ?? "").trim();
+      const res = await retryWeeklyProposals({ reportId: Number.isFinite(reportId) ? reportId : undefined, periodKey: periodKey || undefined });
       return NextResponse.json({ ok: true, result: res });
     }
     if (action === "run_weekly") {

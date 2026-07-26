@@ -246,24 +246,40 @@ export function extractJson(text: string): unknown {
   return extractJsonWithMeta(text).json;
 }
 
+/** Appended to the system prompt on the paid validation retry (attempt > 0). */
+const STRUCTURED_RETRY_INSTRUCTION =
+  " CRITICAL RETRY: your previous reply contained no usable structured payload."
+  + " Respond ONLY with the required structured JSON (call the provided tool when one is defined)."
+  + " Do not emit reasoning, prose, markdown, or an empty object."
+  + " If the evidence is insufficient, return the minimal valid payload (for example an empty list field) instead of nothing.";
+
 async function callOnce(
   input: AiCallInput,
   apiKey: string,
   fetchImpl: typeof fetch,
+  attempt: number,
 ): Promise<{ text: string; inputTokens: number; outputTokens: number; httpStatus: number; responseType: string; contentTypes: string[] }> {
   const body: any = {
     model: input.model,
     max_tokens: input.maxOutputTokens,
-    system: input.system,
+    system: attempt > 0 ? input.system + STRUCTURED_RETRY_INSTRUCTION : input.system,
     messages: [{ role: "user", content: input.user }],
   };
   if (input.toolName && input.toolInputSchema) {
     body.tools = [{
       name: input.toolName,
-      description: "Return the required structured JSON payload for OptiScan.",
+      description: "Return the required structured JSON payload for OptiScan. If evidence is insufficient, call this tool with an empty list field rather than omitting the call.",
       input_schema: input.toolInputSchema,
     }];
+    // Force the structured tool. Do NOT send thinking:{type:"disabled"} — some
+    // Anthropic models reject that field with HTTP 400. Forced tool_choice plus
+    // the validation retry (structured-output instruction) is the safe path.
     body.tool_choice = { type: "tool", name: input.toolName };
+  }
+  // On the paid validation retry after a thinking-only / empty miss, give the
+  // model a little more room so a prior reasoning burn cannot starve the payload.
+  if (attempt > 0) {
+    body.max_tokens = Math.min(Math.max(input.maxOutputTokens, 1024) * 2, 16_000);
   }
 
   let res: Response;
@@ -308,18 +324,22 @@ async function callOnce(
   const blocks = Array.isArray(parsed?.content) ? parsed.content : [];
   const contentTypes = blocks.map((b: any) => String(b?.type ?? "unknown"));
   const tool = blocks.find((b: any) => b?.type === "tool_use" && (!input.toolName || b?.name === input.toolName));
+  // Hidden reasoning is NEVER a payload source: only tool_use input and text blocks
+  // are extracted. Thinking/redacted_thinking blocks are recorded in contentTypes for
+  // diagnostics and otherwise discarded.
   const text = tool
     ? JSON.stringify(tool.input ?? {})
     : blocks.filter((b: any) => b?.type === "text").map((b: any) => b.text).join("");
   const inputTokens = Number(parsed?.usage?.input_tokens ?? 0) || 0;
   const outputTokens = Number(parsed?.usage?.output_tokens ?? 0) || 0;
+  const thinkingOnly = !tool && !text && contentTypes.some((t: string) => t === "thinking" || t === "redacted_thinking");
 
   return {
     text,
     inputTokens,
     outputTokens,
     httpStatus: res.status,
-    responseType: tool ? "tool_use" : text ? "text" : "empty",
+    responseType: tool ? "tool_use" : text ? "text" : thinkingOnly ? "thinking_only" : "empty",
     contentTypes,
   };
 }
@@ -366,7 +386,7 @@ export async function runStructuredAiJob<T>(
 
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
-      const { text, inputTokens, outputTokens, httpStatus, responseType, contentTypes } = await callOnce(input, apiKey, fetchImpl);
+      const { text, inputTokens, outputTokens, httpStatus, responseType, contentTypes } = await callOnce(input, apiKey, fetchImpl, attempt);
       diagnostics.attempts = attempt + 1;
       diagnostics.httpStatus = httpStatus;
       diagnostics.responseType = responseType;
@@ -378,6 +398,9 @@ export async function runStructuredAiJob<T>(
 
       let data: T;
       try {
+        if (responseType === "thinking_only") {
+          throw new Error("thinking-only response: model returned only reasoning blocks with no tool or text payload");
+        }
         const parsed = extractJsonWithMeta(text);
         diagnostics.markdownFenceStripped = diagnostics.markdownFenceStripped || parsed.markdownFenceStripped;
         diagnostics.extractedJson = diagnostics.extractedJson || parsed.extractedJson;

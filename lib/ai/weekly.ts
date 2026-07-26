@@ -17,14 +17,14 @@ import { WEEKLY_PROPOSAL_PROMPT_VERSION, weeklyProposalPrompt } from "./prompts.
 import { weeklyQuantResearchContext } from "./quant-research.ts";
 import { refreshEvidenceLearningOnDb, evidenceLearningSnapshotOnDb } from "./evidence-learning.ts";
 import { PRIMARY_PORTFOLIO, CHALLENGE_PORTFOLIO, STOCK_DAY_TRADER_PORTFOLIO } from "../paper-challenge.ts";
-import { validateWeeklyProposals, type WeeklyProposalDraft } from "./schemas.ts";
+import { validateWeeklyProposals, WEEKLY_PROPOSALS_TOOL_SCHEMA, type WeeklyProposalDraft } from "./schemas.ts";
 import { screenProposalSafety } from "./safety.ts";
 import { runStructuredAiJob, type ProviderDeps } from "./provider.ts";
 import { buildEvidencePacket, persistEvidencePacketOnDb } from "./evidence-packet.ts";
 import { estimateCostUsd, maxJobCostUsd } from "./pricing.ts";
 import {
   insertReportOnDb, insertProposalOnDb, listReportsOnDb, listLessonsOnDb, listProposalsOnDb,
-  recordAiJobRunOnDb, setReportNarrativeOnDb, costGateOnDb, type DbLike,
+  recordAiJobRunOnDb, setReportNarrativeOnDb, costGateOnDb, getReportOnDb, type DbLike,
 } from "./store.ts";
 
 function lazyDb(): DbLike {
@@ -164,6 +164,7 @@ export interface WeeklyJobResult {
   proposalsBlocked: number;
   narrativeStatus: string;
   costUsd: number;
+  diagnostic?: unknown;
 }
 
 export interface WeeklyJobOptions {
@@ -219,26 +220,64 @@ export async function runWeeklyProposals(opts: WeeklyJobOptions = {}): Promise<W
   result.ran = true;
   if (!created) return { ...result, narrativeStatus: report.narrativeStatus, skippedReason: "already ran for this week" };
 
+  const outcome = await generateWeeklyProposalsForReport(db, cfg, {
+    reportId: report.id, summary, weekKey, nowMs, env: opts.env, provider: opts.provider, jobType: "weekly_proposals",
+  });
+  return { ...result, ...outcome };
+}
+
+interface WeeklyAiOutcome {
+  narrativeStatus: string;
+  costUsd: number;
+  proposalsCreated: number;
+  proposalsBlocked: number;
+  diagnostic?: unknown;
+}
+
+/**
+ * The AI-call portion of the weekly job, shared by the scheduled run and the
+ * manual retry. The deterministic evidence packet is built and persisted BEFORE
+ * the model is called so it survives any provider failure. The model MUST answer
+ * through the forced submit_weekly_proposals tool; { proposals: [] } is success.
+ */
+async function generateWeeklyProposalsForReport(
+  db: DbLike,
+  cfg: AiConfig,
+  args: {
+    reportId: number;
+    summary: NightlySummary & { quantResearch?: ReturnType<typeof weeklyQuantResearchContext> };
+    weekKey: string;
+    nowMs: number;
+    env?: NodeJS.ProcessEnv;
+    provider?: ProviderDeps;
+    jobType: string;
+  },
+): Promise<WeeklyAiOutcome> {
+  const { reportId, summary, weekKey, nowMs, jobType } = args;
+  const outcome: WeeklyAiOutcome = { narrativeStatus: "PENDING", costUsd: 0, proposalsCreated: 0, proposalsBlocked: 0 };
+
   if (!cfg.weeklyProposalsEnabled) {
     const diagnostic = { reason: "AI weekly proposals disabled or API key missing", flags: { enabled: cfg.enabled, hasApiKey: cfg.hasApiKey, weeklyProposalsEnabled: cfg.weeklyProposalsEnabled } };
-    const jobRunId = recordAiJobRunOnDb(db, { jobType: "weekly_proposals", model: cfg.weeklyModel, status: "SKIPPED_DISABLED", errorCategory: "disabled", diagnostic, nowMs });
-    setReportNarrativeOnDb(db, report.id, { narrative: null, status: "SKIPPED", model: cfg.weeklyModel, aiJobRunId: jobRunId, diagnostic, nowMs });
-    return { ...result, narrativeStatus: "SKIPPED" };
+    const jobRunId = recordAiJobRunOnDb(db, { jobType, model: cfg.weeklyModel, status: "SKIPPED_DISABLED", errorCategory: "disabled", diagnostic, nowMs });
+    setReportNarrativeOnDb(db, reportId, { narrative: null, status: "SKIPPED", model: cfg.weeklyModel, aiJobRunId: jobRunId, diagnostic, nowMs });
+    return { ...outcome, narrativeStatus: "SKIPPED", diagnostic };
   }
   // PRE-FLIGHT hard block: reserve this call's max possible cost so it can never exceed the hard limit.
   const weeklyReserveUsd = maxJobCostUsd(cfg.weeklyModel, cfg.maxInputTokensPerJob, cfg.maxOutputTokensPerJob);
   const gate = costGateOnDb(db, cfg, nowMs, weeklyReserveUsd);
   if (!gate.allowed) {
     const diagnostic = { reason: "monthly hard limit reached", spendUsd: gate.spendUsd, hardLimitUsd: gate.hardLimitUsd };
-    const jobRunId = recordAiJobRunOnDb(db, { jobType: "weekly_proposals", model: cfg.weeklyModel, status: "SKIPPED_HARD_LIMIT", errorCategory: "budget", error: `monthly hard limit reached ($${gate.spendUsd.toFixed(2)})`, diagnostic, nowMs });
-    setReportNarrativeOnDb(db, report.id, { narrative: null, status: "SKIPPED", model: cfg.weeklyModel, aiJobRunId: jobRunId, diagnostic, nowMs });
-    return { ...result, narrativeStatus: "SKIPPED" };
+    const jobRunId = recordAiJobRunOnDb(db, { jobType, model: cfg.weeklyModel, status: "SKIPPED_HARD_LIMIT", errorCategory: "budget", error: `monthly hard limit reached ($${gate.spendUsd.toFixed(2)})`, diagnostic, nowMs });
+    setReportNarrativeOnDb(db, reportId, { narrative: null, status: "SKIPPED", model: cfg.weeklyModel, aiJobRunId: jobRunId, diagnostic, nowMs });
+    return { ...outcome, narrativeStatus: "SKIPPED", diagnostic };
   }
 
   // 2. Curated context (summaries + lessons + prior proposals + config + file map).
+  // The evidence packet is persisted BEFORE the provider call — model failures can
+  // never lose the deterministic evidence for this window.
   const lessons = listLessonsOnDb(db, 100);
   const periodStartMs = nowMs - 7 * 24 * 3600_000;
-  const evidencePacket = buildEvidencePacket(db, { periodStartMs, periodEndMs: nowMs, env: opts.env });
+  const evidencePacket = buildEvidencePacket(db, { periodStartMs, periodEndMs: nowMs, env: args.env });
   persistEvidencePacketOnDb(db, evidencePacket);
   const { system, user } = weeklyProposalPrompt({
     weekKey,
@@ -247,7 +286,7 @@ export async function runWeeklyProposals(opts: WeeklyJobOptions = {}): Promise<W
     acceptedLessons: lessons.filter((l) => l.status === "ACCEPTED"),
     rejectedLessons: lessons.filter((l) => l.status === "REJECTED"),
     priorProposals: listProposalsOnDb(db, 20).map((p) => ({ title: p.title, status: p.status, affectedStrategy: p.affectedStrategy })),
-    currentConfig: weeklyContextConfig(opts.env),
+    currentConfig: weeklyContextConfig(args.env),
     quantResearch: summary.quantResearch,
     relevantFiles: CURATED_STRATEGY_FILES,
     strategyVersion: currentStrategyVersion(db),
@@ -262,18 +301,20 @@ export async function runWeeklyProposals(opts: WeeklyJobOptions = {}): Promise<W
       maxOutputTokens: cfg.maxOutputTokensPerJob,
       timeoutMs: cfg.jobTimeoutMs,
       maxRetries: cfg.maxRetries,
+      toolName: "submit_weekly_proposals",
+      toolInputSchema: WEEKLY_PROPOSALS_TOOL_SCHEMA as unknown as Record<string, unknown>,
       validatorName: "validateWeeklyProposals",
       promptVersion: WEEKLY_PROPOSAL_PROMPT_VERSION,
     },
     (json) => validateWeeklyProposals(json),
-    opts.provider,
+    args.provider,
   );
   const costUsd = estimateCostUsd(cfg.weeklyModel, call.inputTokens, call.outputTokens);
-  result.costUsd = costUsd;
+  outcome.costUsd = costUsd;
   const diagnostic = call.ok ? null : aiFailureDiagnostic(call);
   const status = call.ok ? "SUCCESS" : call.errorCategory === "timeout" ? "TIMEOUT" : call.errorCategory === "validation" ? "VALIDATION_FAILED" : "ERROR";
   const jobRunId = recordAiJobRunOnDb(db, {
-    jobType: "weekly_proposals", model: cfg.weeklyModel,
+    jobType, model: cfg.weeklyModel,
     status,
     errorCategory: call.ok ? "none" : call.errorCategory, error: call.error,
     inputTokens: call.inputTokens, outputTokens: call.outputTokens, estimatedCostUsd: costUsd,
@@ -281,17 +322,18 @@ export async function runWeeklyProposals(opts: WeeklyJobOptions = {}): Promise<W
   });
 
   if (!call.ok || !call.data) {
-    result.narrativeStatus = call.errorCategory === "validation" ? "VALIDATION_FAILED" : "ERROR";
-    setReportNarrativeOnDb(db, report.id, { narrative: null, status: result.narrativeStatus, model: cfg.weeklyModel, aiJobRunId: jobRunId, diagnostic, nowMs });
-    return result;
+    outcome.narrativeStatus = call.errorCategory === "validation" ? "VALIDATION_FAILED" : "ERROR";
+    outcome.diagnostic = diagnostic;
+    setReportNarrativeOnDb(db, reportId, { narrative: null, status: outcome.narrativeStatus, model: cfg.weeklyModel, aiJobRunId: jobRunId, diagnostic, nowMs });
+    return outcome;
   }
-  result.narrativeStatus = "OK";
-  setReportNarrativeOnDb(db, report.id, { narrative: { proposals: call.data.length }, status: "OK", model: cfg.weeklyModel, aiJobRunId: jobRunId, diagnostic: null, nowMs });
+  outcome.narrativeStatus = "OK";
+  setReportNarrativeOnDb(db, reportId, { narrative: { proposals: call.data.length }, status: "OK", model: cfg.weeklyModel, aiJobRunId: jobRunId, diagnostic: null, nowMs });
 
   // 3. Store each proposal — after a HARD safety screen. Nothing is applied.
   for (const draft of call.data) {
     const screen = screenProposalSafety(draft);
-    if (!screen.ok) { result.proposalsBlocked += 1; continue; }
+    if (!screen.ok) { outcome.proposalsBlocked += 1; continue; }
     const dedupKey = `${weekKey}|${draft.affectedStrategy ?? "all"}|${slug(draft.title)}`;
     const { created: madeNew } = insertProposalOnDb(db, {
       dedupKey, periodKey: weekKey, title: draft.title, problem: draft.problem,
@@ -301,9 +343,42 @@ export async function runWeeklyProposals(opts: WeeklyJobOptions = {}): Promise<W
       downsideRisk: draft.downsideRisk, overfittingRisk: draft.overfittingRisk, requiredTests: draft.requiredTests,
       backtestPlan: draft.backtestPlan, shadowTestPlan: draft.shadowTestPlan, paperTestPlan: draft.paperTestPlan,
       rollbackPlan: draft.rollbackPlan, suggestedPatch: draft.suggestedPatch, confidence: draft.confidence,
-      sourceReportId: report.id, model: cfg.weeklyModel, nowMs,
+      sourceReportId: reportId, model: cfg.weeklyModel, nowMs,
     });
-    if (madeNew) result.proposalsCreated += 1;
+    if (madeNew) outcome.proposalsCreated += 1;
   }
-  return result;
+  return outcome;
+}
+
+/**
+ * Manually re-run the AI proposal portion of an ALREADY-STORED weekly report
+ * (e.g. after a provider failure) without waiting for the next ISO week. The
+ * deterministic summary is never rebuilt or overwritten; proposals stay
+ * deduplicated per week. Never throws.
+ */
+export async function retryWeeklyProposals(
+  opts: WeeklyJobOptions & { reportId?: number; periodKey?: string } = {},
+): Promise<WeeklyJobResult> {
+  const nowMs = opts.nowMs ?? Date.now();
+  const db = opts.db ?? lazyDb();
+  const cfg = opts.config ?? aiConfig(opts.env);
+  const periodKey = opts.periodKey ?? opts.weekKey ?? isoWeekKey(tradingDay(nowMs));
+  const row = opts.reportId
+    ? (db.prepare("SELECT period_key FROM ai_reports WHERE id=? AND report_type='weekly'").get(opts.reportId) as any)
+    : null;
+  const report = row ? getReportOnDb(db, "weekly", row.period_key) : getReportOnDb(db, "weekly", periodKey);
+  if (!report) {
+    return {
+      ran: false, skippedReason: `stored weekly report not found for ${periodKey}`, weekKey: periodKey,
+      reportId: null, summary: null, proposalsCreated: 0, proposalsBlocked: 0, narrativeStatus: "MISSING", costUsd: 0,
+    };
+  }
+
+  const outcome = await generateWeeklyProposalsForReport(db, cfg, {
+    reportId: report.id, summary: report.summary, weekKey: report.periodKey,
+    nowMs, env: opts.env, provider: opts.provider, jobType: "weekly_proposals_retry",
+  });
+  return {
+    ran: true, weekKey: report.periodKey, reportId: report.id, summary: report.summary, ...outcome,
+  };
 }

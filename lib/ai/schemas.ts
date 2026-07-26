@@ -388,6 +388,50 @@ export const NIGHTLY_NARRATIVE_TOOL_SCHEMA = {
 } as const;
 
 /**
+ * Forced tool schema for the weekly proposals job. The model MUST answer through
+ * this tool; { "proposals": [] } is a valid, successful "no proposal this week"
+ * response when evidence is insufficient.
+ */
+export const WEEKLY_PROPOSALS_TOOL_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["proposals"],
+  properties: {
+    proposals: {
+      type: "array",
+      maxItems: 3,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["title", "problem", "evidence", "sampleSize", "proposedChange", "confidence"],
+        properties: {
+          title: { type: "string", minLength: 1 },
+          problem: { type: "string", minLength: 1 },
+          evidence: { type: "string", minLength: 1 },
+          sampleSize: { type: "number" },
+          affectedStrategy: { type: "string" },
+          affectedSession: { type: "string" },
+          affectedConfig: { type: "string" },
+          proposedChange: { type: "string", minLength: 1 },
+          relevantFiles: { type: "array", items: { type: "string" } },
+          changeLevel: { type: "string", enum: ["config-only", "code-level"] },
+          expectedBenefit: { type: "string" },
+          downsideRisk: { type: "string" },
+          overfittingRisk: { type: "string" },
+          requiredTests: { type: "string" },
+          backtestPlan: { type: "string" },
+          shadowTestPlan: { type: "string" },
+          paperTestPlan: { type: "string" },
+          rollbackPlan: { type: "string" },
+          suggestedPatch: { type: "string" },
+          confidence: { type: "string", enum: ["LOW", "MEDIUM", "HIGH"] },
+        },
+      },
+    },
+  },
+} as const;
+
+/**
  * Validate the nightly narrative structure AND enforce the anti-fabrication guard
  * against typed deterministic evidence present in the summary.
  */
