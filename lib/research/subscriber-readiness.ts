@@ -19,7 +19,7 @@ import { tradingDay, isMarketHoliday } from "../trading-session.ts";
 import { subscriberDiscordOwnershipSummary } from "../subscriber-discord-owner.ts";
 import { quotaPolicySnapshot } from "../quota-policy.ts";
 import { subscriberOpsSummary } from "../billing/subscribers-store.ts";
-import { readinessSampleCutoffMs } from "./readiness-sample.ts";
+import { readinessSampleCutoffMs, readinessEligibleAlertWhere, readinessEligibleArgs, classifyReadinessDuplicatesOnDb, classifyHistoricalPaperRowsOnDb } from "./readiness-sample.ts";
 
 export type ReadinessStatus = "NOT_READY" | "SUBSCRIBER_READY";
 
@@ -153,6 +153,8 @@ function deliveredSixtyMinReturns(db: ReadinessDb, cutoffMs: number): { graded: 
   if (!hasTable(db, "options_paper_trades") || !hasTable(db, "options_alerts")) {
     return { graded: [], total: 0, missingQuote: 0 };
   }
+  const { sql: eligSql } = readinessEligibleAlertWhere("a");
+  const eligArgs = readinessEligibleArgs(cutoffMs);
   let rows: any[] = [];
   try {
     rows = db.prepare(
@@ -160,9 +162,8 @@ function deliveredSixtyMinReturns(db: ReadinessDb, cutoffMs: number): { graded: 
          FROM options_paper_trades p
          INNER JOIN options_alerts a ON a.alert_id = p.alert_id
         WHERE p.paper_kind='DELIVERED_ALERT_PAPER'
-          AND a.state='SENT' AND a.research_only=0
-          AND a.sent_at_ms IS NOT NULL AND a.sent_at_ms >= ?`,
-    ).all(cutoffMs) as any[];
+          AND ${eligSql}`,
+    ).all(...eligArgs) as any[];
   } catch { return { graded: [], total: 0, missingQuote: 0 }; }
   const marksTable = hasTable(db, "options_paper_marks");
   const graded: number[] = [];
@@ -204,14 +205,17 @@ export function evaluateSubscriberReadiness(db: ReadinessDb, env: NodeJS.Process
   const remainingWarnings: string[] = [];
   const sampleCutoffMs = readinessSampleCutoffMs(env);
   const sampleCutoffIso = new Date(sampleCutoffMs).toISOString();
-  const sampleSql =
-    "state='SENT' AND research_only=0 AND sent_at_ms IS NOT NULL AND sent_at_ms >= ?";
+  const { sql: eligSql } = readinessEligibleAlertWhere("a");
+  const eligArgs = readinessEligibleArgs(sampleCutoffMs);
+  const dupClass = classifyReadinessDuplicatesOnDb(db, env);
+  const paperClass = classifyHistoricalPaperRowsOnDb(db, env);
 
-  // ── Delivered-alert launch sample (post-cutoff only; historical rows preserved for research) ──
+  // ── Strict eligible launch sample (post-cutoff independent Discord deliveries only) ──
   const alertsTable = hasTable(db, "options_alerts");
-  const deliveredSent = alertsTable ? num(db, `SELECT COUNT(*) n FROM options_alerts WHERE ${sampleSql}`, sampleCutoffMs) : 0;
-  const deliveredLinked = alertsTable
-    ? num(db, `SELECT COUNT(*) n FROM options_alerts WHERE ${sampleSql} AND paper_linked=1`, sampleCutoffMs)
+  const deliveredSent = alertsTable ? num(db, `SELECT COUNT(*) n FROM options_alerts a WHERE ${eligSql}`, ...eligArgs) : 0;
+  const deliveredLinked = deliveredSent; // strict filter already requires paper_linked=1
+  const deliveredSentLoose = alertsTable
+    ? num(db, "SELECT COUNT(*) n FROM options_alerts WHERE state='SENT' AND research_only=0 AND sent_at_ms IS NOT NULL AND sent_at_ms >= ?", sampleCutoffMs)
     : 0;
   const deliveredSentHistorical = alertsTable
     ? num(db, "SELECT COUNT(*) n FROM options_alerts WHERE state='SENT' AND research_only=0 AND sent_at_ms IS NOT NULL AND sent_at_ms < ?", sampleCutoffMs)
@@ -219,9 +223,9 @@ export function evaluateSubscriberReadiness(db: ReadinessDb, env: NodeJS.Process
   const validTradingDays = alertsTable
     ? num(
       db,
-      `SELECT COUNT(DISTINCT COALESCE(trading_session_date, date(sent_at_ms/1000,'unixepoch'))) n
-         FROM options_alerts WHERE ${sampleSql}`,
-      sampleCutoffMs,
+      `SELECT COUNT(DISTINCT COALESCE(a.trading_session_date, date(a.sent_at_ms/1000,'unixepoch'))) n
+         FROM options_alerts a WHERE ${eligSql}`,
+      ...eligArgs,
     )
     : 0;
   const paperLinkRate = deliveredSent > 0 ? deliveredLinked / deliveredSent : null;
@@ -229,24 +233,24 @@ export function evaluateSubscriberReadiness(db: ReadinessDb, env: NodeJS.Process
   const earlyTimelySent = alertsTable
     ? num(
       db,
-      `SELECT COUNT(*) n FROM options_alerts WHERE ${sampleSql}
-         AND entry_quality_verdict IN ('EARLY','TIMELY','ALLOW')`,
-      sampleCutoffMs,
+      `SELECT COUNT(*) n FROM options_alerts a WHERE ${eligSql}
+         AND a.entry_quality_verdict IN ('EARLY','TIMELY','ALLOW')`,
+      ...eligArgs,
     )
     : 0;
   const lateChasedSent = alertsTable
     ? num(
       db,
-      `SELECT COUNT(*) n FROM options_alerts WHERE ${sampleSql}
-         AND entry_quality_verdict IN ('LATE','CHASED')`,
-      sampleCutoffMs,
+      `SELECT COUNT(*) n FROM options_alerts a WHERE ${eligSql}
+         AND a.entry_quality_verdict IN ('LATE','CHASED')`,
+      ...eligArgs,
     )
     : 0;
   const entryQualityScored = alertsTable
     ? num(
       db,
-      `SELECT COUNT(*) n FROM options_alerts WHERE ${sampleSql} AND entry_quality_verdict IS NOT NULL`,
-      sampleCutoffMs,
+      `SELECT COUNT(*) n FROM options_alerts a WHERE ${eligSql} AND a.entry_quality_verdict IS NOT NULL`,
+      ...eligArgs,
     )
     : 0;
   const earlyTimelyRate = deliveredSent > 0 ? earlyTimelySent / deliveredSent : null;
@@ -258,9 +262,8 @@ export function evaluateSubscriberReadiness(db: ReadinessDb, env: NodeJS.Process
   if (alertsTable) {
     try {
       for (const r of db.prepare(
-        `SELECT sent_at_ms, trading_session_date FROM options_alerts
-          WHERE ${sampleSql}`,
-      ).all(sampleCutoffMs) as any[]) {
+        `SELECT a.sent_at_ms, a.trading_session_date FROM options_alerts a WHERE ${eligSql}`,
+      ).all(...eligArgs) as any[]) {
         const sentAt = Number(r.sent_at_ms);
         if (!Number.isFinite(sentAt)) continue;
         if (isNonTradingDay(sentAt, env)) { sessionViolations += 1; continue; }
@@ -271,20 +274,7 @@ export function evaluateSubscriberReadiness(db: ReadinessDb, env: NodeJS.Process
   }
 
   // ── Duplicate DELIVERED openings (suppressed dupes are fine; two real SENDs for one setup are not) ──
-  let duplicateDelivered = 0;
-  if (alertsTable) {
-    duplicateDelivered = num(
-      db,
-      `SELECT COALESCE(SUM(dupes),0) n FROM (
-         SELECT COUNT(*) - 1 AS dupes
-           FROM options_alerts
-          WHERE ${sampleSql}
-          GROUP BY COALESCE(opportunity_fingerprint, candidate_symbol || '|' || side || '|' || strategy || '|' || option_symbol)
-         HAVING COUNT(*) > 1
-       )`,
-      sampleCutoffMs,
-    );
-  }
+  let duplicateDelivered = dupClass.actualDuplicateDeliveriesPostCutoff;
   const duplicateRate = deliveredSent > 0 ? duplicateDelivered / deliveredSent : 0;
 
   // ── Supervisor / legacy subscriber sends (must be structurally blocked AND never observed) ──
@@ -351,8 +341,8 @@ export function evaluateSubscriberReadiness(db: ReadinessDb, env: NodeJS.Process
   // ── Data integrity (auto signals feeding the "no unresolved data-integrity issues" gate) ──
   let instrumentationFallbackInserts = 0;
   let schemaOk = true;
-  let paperUnhealthyRows = 0;      // stuck_open / missing_case — operational (warning, not a hard gate)
-  let paperMissingMirrorRows = 0;  // linked-but-no-mirror — genuine data-integrity corruption
+  let paperUnhealthyRows = paperClass.launchSampleUnhealthy;
+  let paperMissingMirrorRows = paperClass.byCause.missing_mirror ?? 0;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     instrumentationFallbackInserts = require("@/lib/db-legacy-columns").readInstrumentationFallbackInserts();
@@ -361,13 +351,6 @@ export function evaluateSubscriberReadiness(db: ReadinessDb, env: NodeJS.Process
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const schema = require("@/lib/db-schema-readiness").inspectSchemaReadiness(db, env);
     schemaOk = Boolean(schema?.ok);
-  } catch { /* optional */ }
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const chain = require("@/lib/research/options/paper-chain").buildPaperChainDiagnostic(db, env, 100, sampleCutoffMs);
-    const rows = chain.rows as { graderHealth: string }[];
-    paperMissingMirrorRows = rows.filter((r) => r.graderHealth === "missing_mirror").length;
-    paperUnhealthyRows = rows.filter((r) => r.graderHealth === "stuck_open" || r.graderHealth === "missing_case").length;
   } catch { /* optional */ }
   // Hard integrity gate keys on genuine corruption only. missing_case is normal when the opportunity
   // lifecycle is off; stuck_open is operational — both surface as warnings, never a silent READY block.
@@ -417,6 +400,9 @@ export function evaluateSubscriberReadiness(db: ReadinessDb, env: NodeJS.Process
   if (deliveredSentHistorical > 0) {
     remainingWarnings.push(`${deliveredSentHistorical} historical delivered alert(s) before launch sample cutoff (excluded from readiness)`);
   }
+  if (paperClass.historicalUnhealthy > 0) {
+    remainingWarnings.push(`${paperClass.historicalUnhealthy} historical paper row(s) with missing_case/mirror (excluded from launch sample)`);
+  }
   if (paperUnhealthyRows > 0) {
     remainingWarnings.push(`${paperUnhealthyRows} launch-sample paper row(s) stuck_open/missing_case (operational — review grader)`);
   }
@@ -431,12 +417,20 @@ export function evaluateSubscriberReadiness(db: ReadinessDb, env: NodeJS.Process
     metrics: {
       sampleCutoffMs,
       sampleCutoffIso,
+      sampleCutoffEnv: "SUBSCRIBER_READINESS_ELIGIBLE_AFTER_MS",
       deliveredSentHistorical,
+      deliveredSentLoose,
       validTradingDays,
       deliveredSent,
       deliveredLinked,
       entryQualityScored,
       earlyTimelyRateScored: earlyTimelyRateScored == null ? null : +earlyTimelyRateScored.toFixed(4),
+      duplicateFingerprintExtrasAllTime: dupClass.fingerprintExtrasAllTime,
+      duplicateSuppressedBeforeDelivery: dupClass.suppressedBeforeDelivery,
+      sentWithoutDiscordPostCutoff: dupClass.sentWithoutDiscordPostCutoff,
+      paperUnhealthyHistorical: paperClass.historicalUnhealthy,
+      paperHealthyLaunchSample: paperClass.launchSampleHealthy,
+      paperUnhealthyByCauseJson: JSON.stringify(paperClass.byCause),
       paperLinkRate: paperLinkRate == null ? null : +paperLinkRate.toFixed(4),
       completeGradingRate: completeGradingRate == null ? null : +completeGradingRate.toFixed(4),
       gradedSample: gradedN,

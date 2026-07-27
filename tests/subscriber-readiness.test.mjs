@@ -20,6 +20,12 @@ db.exec(`
     alert_id TEXT PRIMARY KEY, candidate_symbol TEXT NOT NULL, strategy TEXT, option_symbol TEXT, side TEXT,
     research_only INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, paper_linked INTEGER NOT NULL DEFAULT 0,
     entry_quality_verdict TEXT, opportunity_fingerprint TEXT, trading_session_date TEXT, sent_at_ms INTEGER,
+    discord_message_id TEXT, opportunity_case_id TEXT, entry_mid REAL,
+    created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
+  );
+  CREATE TABLE opportunity_cases (
+    opportunity_id TEXT PRIMARY KEY, alert_id TEXT, source_path TEXT NOT NULL DEFAULT 'independent',
+    delivery_decision TEXT NOT NULL DEFAULT 'DELIVERED', detected_at_ms INTEGER NOT NULL,
     created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
   );
   CREATE TABLE options_paper_trades (
@@ -68,12 +74,12 @@ const READY_ENV = {
   DISCORD_BOT_TOKEN: "bot_x",
   DISCORD_GUILD_ID: "guild_x",
   DISCORD_SUBSCRIBER_ROLE_ID: "role_x",
-  OPTIONS_MILESTONE_ELIGIBLE_AFTER_MS: String(Date.parse("2026-01-01T00:00:00-05:00")),
+  SUBSCRIBER_READINESS_ELIGIBLE_AFTER_MS: String(Date.parse("2026-01-01T00:00:00-05:00")),
 };
 
 function reset() {
   for (const t of [
-    "options_alerts", "options_paper_trades", "options_paper_marks", "opportunity_milestones",
+    "options_alerts", "opportunity_cases", "options_paper_trades", "options_paper_marks", "opportunity_milestones",
     "options_subscriber_readiness_state", "options_subscriber_readiness_attestations", "discord_deliveries",
   ]) {
     try { db.prepare(`DELETE FROM ${t}`).run(); } catch { /* table optional */ }
@@ -103,12 +109,18 @@ function seedReady({ winners = 22, losers = 8 } = {}) {
     const sessionDate = tradingDay(sentAt);
     const alertId = `oa_${i}`;
     const opt = `O:TEST${i}260717C00100000`;
+    const caseId = `oc_${i}`;
     db.prepare(
       `INSERT INTO options_alerts
         (alert_id, candidate_symbol, strategy, option_symbol, side, research_only, state, paper_linked,
-         entry_quality_verdict, opportunity_fingerprint, trading_session_date, sent_at_ms, created_at_ms, updated_at_ms)
-       VALUES (?,?,?,?,?,0,'SENT',1,'EARLY',?,?,?,?,?)`,
-    ).run(alertId, `SYM${i}`, "sr_reclaim", opt, "call", `fp_${i}`, sessionDate, sentAt, sentAt, sentAt);
+         entry_quality_verdict, opportunity_fingerprint, trading_session_date, sent_at_ms,
+         discord_message_id, opportunity_case_id, entry_mid, created_at_ms, updated_at_ms)
+       VALUES (?,?,?,?,?,0,'SENT',1,'EARLY',?,?,?,?,?,?,?,?)`,
+    ).run(alertId, `SYM${i}`, "sr_reclaim", opt, "call", `fp_${i}`, sessionDate, sentAt, `discord_${i}`, caseId, 1.0, sentAt, sentAt);
+    db.prepare(
+      `INSERT INTO opportunity_cases (opportunity_id, alert_id, source_path, delivery_decision, detected_at_ms, created_at_ms, updated_at_ms)
+       VALUES (?,?, 'independent', 'DELIVERED', ?, ?, ?)`,
+    ).run(caseId, alertId, sentAt, sentAt, sentAt);
 
     const ret = i < winners ? 50 : -20;
     const enteredAt = sentAt;
@@ -308,7 +320,7 @@ test("a FAILED send is retried WITHOUT a new edge and never double-sends the REA
 test("historical alerts before launch cutoff are excluded from readiness sample", () => {
   reset();
   const cutoff = Date.parse("2026-05-01T00:00:00-04:00");
-  const env = { ...READY_ENV, OPTIONS_MILESTONE_ELIGIBLE_AFTER_MS: String(cutoff) };
+  const env = { ...READY_ENV, SUBSCRIBER_READINESS_ELIGIBLE_AFTER_MS: String(cutoff) };
   // Historical alert (before cutoff) with duplicate fingerprint
   const oldMs = Date.parse("2026-04-01T15:00:00-04:00");
   db.prepare(
