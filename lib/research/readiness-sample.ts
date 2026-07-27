@@ -20,6 +20,12 @@ export function readinessSampleCutoffMs(env: NodeJS.ProcessEnv = process.env): n
     const n = Number(dedicated);
     if (Number.isFinite(n) && n > 0) return n;
   }
+  // Same remediation deploy timestamp already set for milestone spam prevention — use only when dedicated var unset.
+  const milestoneFallback = String(env.OPTIONS_MILESTONE_ELIGIBLE_AFTER_MS ?? "").trim();
+  if (milestoneFallback) {
+    const n = Number(milestoneFallback);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
   if (defaultEligibleAfterMs == null) defaultEligibleAfterMs = Date.now();
   return defaultEligibleAfterMs;
 }
@@ -30,8 +36,9 @@ export function readinessSampleCutoffSource(env: NodeJS.ProcessEnv = process.env
   if (dedicated && Number.isFinite(Number(dedicated)) && Number(dedicated) > 0) {
     return "SUBSCRIBER_READINESS_ELIGIBLE_AFTER_MS";
   }
-  if (defaultEligibleAfterMs != null && String(env.SUBSCRIBER_READINESS_ELIGIBLE_AFTER_MS ?? "").trim() === "") {
-    return "process_boot_default";
+  const milestoneFallback = String(env.OPTIONS_MILESTONE_ELIGIBLE_AFTER_MS ?? "").trim();
+  if (milestoneFallback && Number.isFinite(Number(milestoneFallback)) && Number(milestoneFallback) > 0) {
+    return "OPTIONS_MILESTONE_ELIGIBLE_AFTER_MS_fallback";
   }
   return "process_boot_default";
 }

@@ -395,6 +395,8 @@ export function evaluateSubscriberReadiness(db: ReadinessDb, env: NodeJS.Process
 
   if (readinessSampleCutoffSource(env) === "process_boot_default") {
     remainingWarnings.push("SUBSCRIBER_READINESS_ELIGIBLE_AFTER_MS is not set — using process boot time as cutoff (set to remediation deploy ms)");
+  } else if (readinessSampleCutoffSource(env) === "OPTIONS_MILESTONE_ELIGIBLE_AFTER_MS_fallback") {
+    remainingWarnings.push("Using OPTIONS_MILESTONE_ELIGIBLE_AFTER_MS as readiness cutoff fallback — set SUBSCRIBER_READINESS_ELIGIBLE_AFTER_MS explicitly");
   }
   if (quota.discoveryPaused) remainingWarnings.push(`Discovery paused (quota mode ${quota.quotaMode})`);
   if (quota.operatorWarning) remainingWarnings.push(quota.operatorWarning);
