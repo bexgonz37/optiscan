@@ -133,6 +133,79 @@ export async function GET(req: Request) {
 
   const quota = safe("quota_policy", () => quotaPolicySnapshot(), null as ReturnType<typeof quotaPolicySnapshot> | null);
 
+  const independentOptions = safe("independent_options", () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { optionsMonitorHealth, optionsMonitorMetrics } = require("@/lib/research/options/monitor");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { evaluateMarketSessionGuard } = require("@/lib/market-session-guard");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { readRuntimeStatusOnDb } = require("@/lib/research/options/runtime");
+    const ownership = subscriberDiscordOwnershipSummary();
+    const monitor = optionsMonitorHealth(process.env, now);
+    const metrics = optionsMonitorMetrics();
+    const sessionGuard = evaluateMarketSessionGuard(now, process.env);
+    let runtimeStatus: Record<string, unknown> | null = null;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { getDb } = require("@/lib/db");
+      runtimeStatus = readRuntimeStatusOnDb(getDb(), process.env) as Record<string, unknown>;
+    } catch { /* optional */ }
+    const lastCycleMs = Math.max(
+      monitor.lastTier0CycleMs ?? 0,
+      monitor.lastTier1CycleMs ?? 0,
+      monitor.lastTier2CycleMs ?? 0,
+    );
+    return {
+      ownership: ownership.owner,
+      independentOwns: ownership.independentOwns,
+      killSwitch: process.env.OPTIONS_CALLOUTS_KILL === "1",
+      discoveryEnabled: monitor.enabled,
+      monitorRunning: monitor.running,
+      monitorAlive: monitor.alive,
+      breakerState: monitor.breakerState,
+      lastTier0CycleMs: monitor.lastTier0CycleMs,
+      lastTier1CycleMs: monitor.lastTier1CycleMs,
+      lastTier2CycleMs: monitor.lastTier2CycleMs,
+      lastCycleAgeMs: lastCycleMs > 0 ? Math.max(0, now - lastCycleMs) : null,
+      session: sessionGuard.state,
+      sessionGuardReason: sessionGuard.reason ?? null,
+      polygonConfigured: hasPolygon(),
+      webhookConfigured: discordWebhookConfigured("options"),
+      portfolioDelivery: monitor.portfolioDelivery,
+      unhealthyReason: monitor.unhealthyReason,
+      runtimeSession: runtimeStatus?.session ?? metrics.sessionState ?? null,
+      metrics: {
+        sessionState: metrics.sessionState,
+        throttles: metrics.throttles,
+        providerFailures: metrics.providerFailures,
+        discoveryPaused: callStats?.discoveryPaused ?? false,
+      },
+    };
+  }, null as Record<string, unknown> | null);
+
+  // #region agent log
+  fetch("http://127.0.0.1:7918/ingest/1e1970bf-a3dc-4c9e-aaba-c7720ad4daf2", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "3a4126" },
+    body: JSON.stringify({
+      sessionId: "3a4126",
+      runId: "overview",
+      hypothesisId: "H1",
+      location: "app/api/system/overview/route.ts:GET",
+      message: "overview health snapshot",
+      data: {
+        stockScannerRunning: loop.running,
+        independentAlive: independentOptions?.monitorAlive,
+        independentSession: independentOptions?.session,
+        polygonConfigured: independentOptions?.polygonConfigured ?? hasPolygon(),
+        supervisorEnabled,
+        owner: independentOptions?.ownership,
+      },
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
+
   return NextResponse.json({
     ok: faults.length === 0,
     faults,
@@ -180,6 +253,17 @@ export async function GET(req: Request) {
     alert_reliability: {
       ownership: subscriberDiscordOwnershipSummary(),
       kill_switch: process.env.OPTIONS_CALLOUTS_KILL === "1",
+    },
+    independent_options: independentOptions,
+    stock_scanner: {
+      running: loop.running,
+      interval_ms: loop.intervalMs,
+      last_tick_age_ms: lastTickAgeMs,
+      ticks: loop.ticks,
+      triggers: loop.triggers,
+      alerts: loop.alerts,
+      errors: loop.errors,
+      note: loop.note,
     },
     database: db,
     discord,

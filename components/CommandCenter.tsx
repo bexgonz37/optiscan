@@ -42,48 +42,121 @@ type Overview = {
   supervisor?: { enabled?: boolean };
   paper?: { enabled?: boolean };
   model?: { state?: string };
+  independent_options?: {
+    ownership?: string;
+    independentOwns?: boolean;
+    killSwitch?: boolean;
+    monitorAlive?: boolean;
+    monitorRunning?: boolean;
+    session?: string;
+    polygonConfigured?: boolean;
+    webhookConfigured?: boolean;
+    lastCycleAgeMs?: number | null;
+    unhealthyReason?: string | null;
+    discoveryEnabled?: boolean;
+  };
+  stock_scanner?: { running?: boolean };
+  alert_reliability?: { ownership?: { owner?: string }; kill_switch?: boolean };
 };
 
-type AttentionItem = { text: string; tone: "ok" | "warn" | "bad" };
+type AttentionItem = { text: string; tone: "ok" | "warn" | "bad" | "info" };
+type AttentionSection = { title: string; items: AttentionItem[] };
 
 /**
- * Plain-English owner summary. No secrets, no raw error objects — just what is
- * running and what (if anything) needs attention right now.
+ * Plain-English owner summary split by pipeline. When independent owns subscriber Discord,
+ * stock/supervisor disabled states are informational — not actionable problems.
  */
-function buildAttention(ov: Overview | null, openTrades: number, actionable: number, discordFail: number): AttentionItem[] {
-  if (!ov) return [{ text: "Checking system status…", tone: "warn" }];
-  const items: AttentionItem[] = [];
-  const problems: AttentionItem[] = [];
+function buildAttentionSections(
+  ov: Overview | null,
+  openTrades: number,
+  actionable: number,
+  discordFail: number,
+): AttentionSection[] {
+  if (!ov) return [{ title: "System", items: [{ text: "Checking system status…", tone: "warn" }] }];
 
-  if (ov.scanner?.running) items.push({ text: "Scanner is running", tone: "ok" });
-  else problems.push({ text: "The scanner is stopped — signals will not update", tone: "bad" });
+  const ind = ov.independent_options;
+  const independentOwns = Boolean(ind?.independentOwns ?? ov.alert_reliability?.ownership?.owner === "independent");
+  const sections: AttentionSection[] = [];
 
-  items.push({ text: `Market session: ${ov.market_session ?? "unknown"}`, tone: ov.market_session === "closed" ? "warn" : "ok" });
+  // ── Independent Options Pipeline ──
+  const optionsItems: AttentionItem[] = [];
+  if (ind?.killSwitch ?? ov.alert_reliability?.kill_switch) {
+    optionsItems.push({ text: "Options callouts kill switch is ON — no subscriber alerts", tone: "bad" });
+  } else {
+    optionsItems.push({ text: "Options callouts kill switch is off", tone: "ok" });
+  }
+  if (ind?.monitorAlive) {
+    optionsItems.push({ text: "Independent options monitor is alive (recent tier cycle)", tone: "ok" });
+  } else if (ind?.monitorRunning) {
+    optionsItems.push({ text: "Independent options monitor is running but no recent tier cycle", tone: "warn" });
+  } else if (ind?.discoveryEnabled === false) {
+    optionsItems.push({ text: "Independent options discovery is disabled in config", tone: "info" });
+  } else {
+    optionsItems.push({ text: "Independent options monitor is not running in this process", tone: "warn" });
+  }
+  const optSession = ind?.session ?? ov.market_session ?? "unknown";
+  optionsItems.push({
+    text: `Options session (session guard): ${optSession}`,
+    tone: optSession === "closed" ? "info" : "ok",
+  });
+  const polyOk = ind?.polygonConfigured ?? ov.provider?.configured;
+  if (!polyOk) optionsItems.push({ text: "Polygon/Massive API key is not configured", tone: "bad" });
+  else optionsItems.push({ text: "Polygon/Massive market-data key is configured", tone: "ok" });
+  if (ind?.webhookConfigured === false) {
+    optionsItems.push({ text: "Discord options webhook is not configured", tone: "bad" });
+  } else if (discordFail > 0) {
+    optionsItems.push({ text: "Some Discord deliveries need review", tone: "warn" });
+  } else {
+    optionsItems.push({ text: "Discord options webhook is configured", tone: "ok" });
+  }
+  if (ind?.unhealthyReason) {
+    optionsItems.push({ text: `Options delivery note: ${ind.unhealthyReason}`, tone: "warn" });
+  }
+  sections.push({ title: "Independent Options Pipeline", items: optionsItems });
 
-  if (!ov.provider?.configured) problems.push({ text: "Market-data key is not configured", tone: "bad" });
-  else if ((ov.stale_symbol_count ?? 0) > 0) problems.push({ text: "Market data is stale", tone: "warn" });
-  else if (ov.provider?.connected === false) problems.push({ text: "Market data provider is unavailable", tone: "warn" });
-  else items.push({ text: "Market data is healthy", tone: "ok" });
+  // ── Stock / Supervisor Pipeline ──
+  const stockItems: AttentionItem[] = [];
+  const stockRunning = ov.stock_scanner?.running ?? ov.scanner?.running;
+  if (stockRunning) stockItems.push({ text: "Stock momentum scanner is running", tone: "ok" });
+  else stockItems.push({ text: "Stock momentum scanner is stopped (does not affect independent options)", tone: "info" });
+  if (ov.supervisor?.enabled) {
+    stockItems.push({ text: "Supervisor runtime is enabled", tone: "ok" });
+  } else if (independentOwns) {
+    stockItems.push({ text: "Supervisor is intentionally disabled — independent path owns subscriber alerts", tone: "info" });
+  } else {
+    stockItems.push({ text: "Supervisor is disabled — no automatic stock callouts", tone: "warn" });
+  }
+  if ((ov.stale_symbol_count ?? 0) > 0) {
+    stockItems.push({ text: `${ov.stale_symbol_count} stock symbols have stale data`, tone: "warn" });
+  }
+  if (actionable > 0) {
+    stockItems.push({ text: `${actionable} actionable stock setup${actionable === 1 ? "" : "s"} on supervisor path`, tone: "ok" });
+  }
+  sections.push({ title: "Stock / Supervisor Pipeline", items: stockItems });
 
-  const optionsHook = ov.discord?.webhooks?.options;
-  if (optionsHook === false) problems.push({ text: "Discord options webhook is not configured", tone: "warn" });
-  else if (discordFail > 0) problems.push({ text: "Some Discord deliveries need review", tone: "warn" });
-  else items.push({ text: "Discord is connected", tone: "ok" });
+  // ── Paper and Grading ──
+  const paperItems: AttentionItem[] = [];
+  if (ov.paper?.enabled !== false) {
+    paperItems.push({ text: `Paper grading engine enabled (${openTrades} open trade${openTrades === 1 ? "" : "s"})`, tone: "ok" });
+  } else {
+    paperItems.push({ text: "Paper trading is stopped", tone: "info" });
+  }
+  sections.push({ title: "Paper and Grading", items: paperItems });
 
-  if (ov.supervisor?.enabled) items.push({ text: "Supervisor is enabled", tone: "ok" });
-  else problems.push({ text: "The Supervisor is currently disabled — no automatic callouts", tone: "warn" });
-
-  if (ov.paper?.enabled !== false) items.push({ text: `Paper trading is running (${openTrades} open)`, tone: "ok" });
-  else items.push({ text: "Paper trading is stopped", tone: "warn" });
-
-  if (actionable > 0) items.push({ text: `${actionable} new actionable callout${actionable === 1 ? "" : "s"}`, tone: "ok" });
-
+  // ── AI and Content Jobs ──
+  const aiItems: AttentionItem[] = [];
   const model = ov.model?.state ?? "";
-  if (/VALIDATED/.test(model)) items.push({ text: "Prediction model: validated", tone: "ok" });
-  else if (/EXPERIMENTAL/.test(model)) items.push({ text: "Prediction model: experimental (research only)", tone: "warn" });
-  else items.push({ text: "The prediction model is still collecting outcomes", tone: "warn" });
+  if (/VALIDATED/.test(model)) aiItems.push({ text: "Prediction model: validated", tone: "ok" });
+  else if (/EXPERIMENTAL/.test(model)) aiItems.push({ text: "Prediction model: experimental (research only)", tone: "info" });
+  else aiItems.push({ text: "Prediction model is still collecting outcomes", tone: "info" });
+  sections.push({ title: "AI and Content Jobs", items: aiItems });
 
-  return [...problems, ...items];
+  return sections;
+}
+
+/** Flat list for backward-compatible overall status check. */
+function buildAttention(ov: Overview | null, openTrades: number, actionable: number, discordFail: number): AttentionItem[] {
+  return buildAttentionSections(ov, openTrades, actionable, discordFail).flatMap((s) => s.items);
 }
 
 const STATUS_TONE: Record<string, BadgeTone> = {
@@ -205,14 +278,16 @@ export function CommandCenter() {
   const openTrades = (trades ?? []).filter((t) => t.status === "ENTERED" || t.status === "READY");
   const discordFail = (overview?.discord?.summary ?? []).filter((s) => ["FAILED", "RETRYING"].includes(s.status)).reduce((n, s) => n + Number(s.count ?? 0), 0);
   const actionableCount = (buckets?.ACTIONABLE ?? []).length;
-  const attention = buildAttention(overview, openTrades.length, actionableCount, discordFail);
-  const allOk = attention.every((a) => a.tone === "ok");
+  const attentionSections = buildAttentionSections(overview, openTrades.length, actionableCount, discordFail);
+  const attention = attentionSections.flatMap((s) => s.items);
+  const allOk = attention.every((a) => a.tone === "ok" || a.tone === "info");
 
-  const statusCells: { k: string; v: string; dot: "ok" | "warn" | "bad" }[] = [
-    { k: "Session", v: overview?.market_session ?? "—", dot: overview?.market_session === "closed" ? "warn" : "ok" },
-    { k: "Provider", v: !overview?.provider?.configured ? "no key" : overview?.provider?.connected ? "connected" : "down", dot: !overview?.provider?.configured ? "bad" : overview?.provider?.connected ? "ok" : "warn" },
-    { k: "Freshness", v: (overview?.stale_symbol_count ?? 0) === 0 ? "OK" : `${overview?.stale_symbol_count} stale`, dot: (overview?.stale_symbol_count ?? 0) === 0 ? "ok" : "warn" },
-    { k: "Scanner", v: overview?.scanner?.running ? "running" : "idle", dot: overview?.scanner?.running ? "ok" : "warn" },
+  const ind = overview?.independent_options;
+  const statusCells: { k: string; v: string; dot: "ok" | "warn" | "bad" | "info" }[] = [
+    { k: "Options", v: ind?.monitorAlive ? "alive" : ind?.monitorRunning ? "running" : "idle", dot: ind?.monitorAlive ? "ok" : "warn" },
+    { k: "Session", v: ind?.session ?? overview?.market_session ?? "—", dot: (ind?.session ?? overview?.market_session) === "closed" ? "info" : "ok" },
+    { k: "Polygon", v: (ind?.polygonConfigured ?? overview?.provider?.configured) ? "configured" : "no key", dot: (ind?.polygonConfigured ?? overview?.provider?.configured) ? "ok" : "bad" },
+    { k: "Stock scan", v: (overview?.stock_scanner?.running ?? overview?.scanner?.running) ? "running" : "idle", dot: "info" },
     { k: "Discord", v: discordFail ? `${discordFail} review` : "OK", dot: discordFail ? "warn" : "ok" },
     { k: "Paper", v: `${openTrades.length} open`, dot: "ok" },
   ];
@@ -263,9 +338,16 @@ export function CommandCenter() {
           </span>
         </div>
         <ul className="cc-attention-list">
-          {attention.map((a, i) => (
-            <li key={i} className={`cc-attention-item ${a.tone}`}>
-              <span className={`ui-statusdot ${a.tone}`} />{a.text}
+          {attentionSections.map((section) => (
+            <li key={section.title} className="cc-attention-section">
+              <div className="cc-attention-section-title">{section.title}</div>
+              <ul className="cc-attention-sublist">
+                {section.items.map((a, i) => (
+                  <li key={`${section.title}-${i}`} className={`cc-attention-item ${a.tone}`}>
+                    <span className={`ui-statusdot ${a.tone === "info" ? "ok" : a.tone}`} />{a.text}
+                  </li>
+                ))}
+              </ul>
             </li>
           ))}
         </ul>

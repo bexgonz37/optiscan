@@ -41,7 +41,7 @@ export interface PaperChainRow {
   t2Hit: boolean;
   stopHit: boolean;
   latestMarkReturnPct: number | null;
-  graderHealth: "healthy" | "stuck_open" | "missing_mirror" | "missing_case" | "unknown";
+  graderHealth: "healthy" | "stuck_open" | "missing_mirror" | "missing_case" | "historical_pre_lifecycle" | "unknown";
   missingDataWarnings: string[];
   lifecycleBlocked: boolean;
   blockingReason: string | null;
@@ -85,7 +85,12 @@ function graderHealthForRow(
   return "healthy";
 }
 
-export function buildPaperChainDiagnostic(db: ChainDb, env: NodeJS.ProcessEnv = process.env, limit = 40): PaperChainDiagnostic {
+export function buildPaperChainDiagnostic(
+  db: ChainDb,
+  env: NodeJS.ProcessEnv = process.env,
+  limit = 40,
+  minSentAtMs: number | null = null,
+): PaperChainDiagnostic {
   const nowMs = Date.now();
   const since = nowMs - 24 * 3600_000;
   const out: PaperChainDiagnostic = {
@@ -107,12 +112,19 @@ export function buildPaperChainDiagnostic(db: ChainDb, env: NodeJS.ProcessEnv = 
   ).get(since) as { n: number })?.n ?? 0);
   out.paperLinkRate = out.sent24h ? +(out.linked24h / out.sent24h).toFixed(4) : null;
 
-  const alerts = db.prepare(
-    `SELECT * FROM options_alerts
-     WHERE state='SENT' AND research_only=0
-     ORDER BY sent_at_ms DESC
-     LIMIT ?`,
-  ).all(limit) as Record<string, unknown>[];
+  const alerts = minSentAtMs != null
+    ? db.prepare(
+      `SELECT * FROM options_alerts
+         WHERE state='SENT' AND research_only=0 AND sent_at_ms IS NOT NULL AND sent_at_ms >= ?
+         ORDER BY sent_at_ms DESC
+         LIMIT ?`,
+    ).all(minSentAtMs, limit) as Record<string, unknown>[]
+    : db.prepare(
+      `SELECT * FROM options_alerts
+         WHERE state='SENT' AND research_only=0
+         ORDER BY sent_at_ms DESC
+         LIMIT ?`,
+    ).all(limit) as Record<string, unknown>[];
 
   for (const alert of alerts) {
     const alertId = String(alert.alert_id);

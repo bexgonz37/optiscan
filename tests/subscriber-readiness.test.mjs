@@ -68,6 +68,7 @@ const READY_ENV = {
   DISCORD_BOT_TOKEN: "bot_x",
   DISCORD_GUILD_ID: "guild_x",
   DISCORD_SUBSCRIBER_ROLE_ID: "role_x",
+  OPTIONS_MILESTONE_ELIGIBLE_AFTER_MS: String(Date.parse("2026-01-01T00:00:00-05:00")),
 };
 
 function reset() {
@@ -302,6 +303,30 @@ test("a FAILED send is retried WITHOUT a new edge and never double-sends the REA
   // Third run: nothing owed → no further sends.
   await runReadinessTransition(db, deps, READY_ENV, { trigger: "manual", nowMs: NOW + 10_000 });
   assert.equal(calls, 2, "no resend once SENT");
+});
+
+test("historical alerts before launch cutoff are excluded from readiness sample", () => {
+  reset();
+  const cutoff = Date.parse("2026-05-01T00:00:00-04:00");
+  const env = { ...READY_ENV, OPTIONS_MILESTONE_ELIGIBLE_AFTER_MS: String(cutoff) };
+  // Historical alert (before cutoff) with duplicate fingerprint
+  const oldMs = Date.parse("2026-04-01T15:00:00-04:00");
+  db.prepare(
+    `INSERT INTO options_alerts
+      (alert_id, candidate_symbol, strategy, option_symbol, side, research_only, state, paper_linked,
+       entry_quality_verdict, opportunity_fingerprint, trading_session_date, sent_at_ms, created_at_ms, updated_at_ms)
+     VALUES ('oa_old1', 'OLD', 'sr_reclaim', 'O:OLD', 'call', 0, 'SENT', 1, 'LATE', 'fp_dup', '2026-04-01', ?, ?, ?),
+            ('oa_old2', 'OLD', 'sr_reclaim', 'O:OLD2', 'call', 0, 'SENT', 1, 'LATE', 'fp_dup', '2026-04-01', ?, ?, ?)`,
+  ).run(oldMs, oldMs, oldMs, oldMs + 1000, oldMs + 1000, oldMs + 1000);
+  db.prepare(
+    "INSERT INTO discord_deliveries (delivery_id, webhook_name, payload_type, status) VALUES ('d_old', 'options', 'callout', 'SENT')",
+  ).run();
+  seedReady({ winners: 22, losers: 8 });
+  const report = evaluateSubscriberReadiness(db, env, NOW);
+  assert.equal(report.metrics.deliveredSent, 30, "only post-cutoff seed alerts count");
+  assert.equal(report.metrics.duplicateDeliveredCount, 0, "pre-cutoff duplicate fingerprints excluded");
+  assert.equal(report.metrics.deliveredSentHistorical, 2);
+  assert.ok(Number(report.metrics.supervisorLegacySendsHistorical) >= 0);
 });
 
 test("test-notification sends a labeled message and NEVER changes readiness state", async () => {

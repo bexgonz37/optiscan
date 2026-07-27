@@ -19,6 +19,7 @@ import { tradingDay, isMarketHoliday } from "../trading-session.ts";
 import { subscriberDiscordOwnershipSummary } from "../subscriber-discord-owner.ts";
 import { quotaPolicySnapshot } from "../quota-policy.ts";
 import { subscriberOpsSummary } from "../billing/subscribers-store.ts";
+import { readinessSampleCutoffMs } from "./readiness-sample.ts";
 
 export type ReadinessStatus = "NOT_READY" | "SUBSCRIBER_READY";
 
@@ -148,14 +149,20 @@ export function readAttestationsOnDb(db: ReadinessDb): AttestationView[] {
  *   • else if closed after 60 min with no intermediate mark → realized return;
  *   • else null (not yet gradable — counts against the complete-grading gate, never fabricated).
  */
-function deliveredSixtyMinReturns(db: ReadinessDb): { graded: number[]; total: number; missingQuote: number } {
-  if (!hasTable(db, "options_paper_trades")) return { graded: [], total: 0, missingQuote: 0 };
+function deliveredSixtyMinReturns(db: ReadinessDb, cutoffMs: number): { graded: number[]; total: number; missingQuote: number } {
+  if (!hasTable(db, "options_paper_trades") || !hasTable(db, "options_alerts")) {
+    return { graded: [], total: 0, missingQuote: 0 };
+  }
   let rows: any[] = [];
   try {
     rows = db.prepare(
-      `SELECT id, entered_at_ms, exit_at_ms, status, return_pct, exit_reason
-         FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER'`,
-    ).all() as any[];
+      `SELECT p.id, p.entered_at_ms, p.exit_at_ms, p.status, p.return_pct, p.exit_reason
+         FROM options_paper_trades p
+         INNER JOIN options_alerts a ON a.alert_id = p.alert_id
+        WHERE p.paper_kind='DELIVERED_ALERT_PAPER'
+          AND a.state='SENT' AND a.research_only=0
+          AND a.sent_at_ms IS NOT NULL AND a.sent_at_ms >= ?`,
+    ).all(cutoffMs) as any[];
   } catch { return { graded: [], total: 0, missingQuote: 0 }; }
   const marksTable = hasTable(db, "options_paper_marks");
   const graded: number[] = [];
@@ -195,28 +202,65 @@ export function evaluateSubscriberReadiness(db: ReadinessDb, env: NodeJS.Process
   const subs = subscriberOpsSummary(db);
   const attestations = readAttestationsOnDb(db);
   const remainingWarnings: string[] = [];
+  const sampleCutoffMs = readinessSampleCutoffMs(env);
+  const sampleCutoffIso = new Date(sampleCutoffMs).toISOString();
+  const sampleSql =
+    "state='SENT' AND research_only=0 AND sent_at_ms IS NOT NULL AND sent_at_ms >= ?";
 
-  // ── Delivered-alert launch sample ──────────────────────────────────────────
+  // ── Delivered-alert launch sample (post-cutoff only; historical rows preserved for research) ──
   const alertsTable = hasTable(db, "options_alerts");
-  const deliveredSent = alertsTable ? num(db, "SELECT COUNT(*) n FROM options_alerts WHERE state='SENT' AND research_only=0") : 0;
-  const deliveredLinked = alertsTable ? num(db, "SELECT COUNT(*) n FROM options_alerts WHERE state='SENT' AND research_only=0 AND paper_linked=1") : 0;
+  const deliveredSent = alertsTable ? num(db, `SELECT COUNT(*) n FROM options_alerts WHERE ${sampleSql}`, sampleCutoffMs) : 0;
+  const deliveredLinked = alertsTable
+    ? num(db, `SELECT COUNT(*) n FROM options_alerts WHERE ${sampleSql} AND paper_linked=1`, sampleCutoffMs)
+    : 0;
+  const deliveredSentHistorical = alertsTable
+    ? num(db, "SELECT COUNT(*) n FROM options_alerts WHERE state='SENT' AND research_only=0 AND sent_at_ms IS NOT NULL AND sent_at_ms < ?", sampleCutoffMs)
+    : 0;
   const validTradingDays = alertsTable
-    ? num(db, "SELECT COUNT(DISTINCT COALESCE(trading_session_date, date(sent_at_ms/1000,'unixepoch'))) n FROM options_alerts WHERE state='SENT' AND research_only=0")
+    ? num(
+      db,
+      `SELECT COUNT(DISTINCT COALESCE(trading_session_date, date(sent_at_ms/1000,'unixepoch'))) n
+         FROM options_alerts WHERE ${sampleSql}`,
+      sampleCutoffMs,
+    )
     : 0;
   const paperLinkRate = deliveredSent > 0 ? deliveredLinked / deliveredSent : null;
 
-  const earlyTimelySent = alertsTable ? num(db, "SELECT COUNT(*) n FROM options_alerts WHERE state='SENT' AND research_only=0 AND entry_quality_verdict IN ('EARLY','TIMELY','ALLOW')") : 0;
-  const lateChasedSent = alertsTable ? num(db, "SELECT COUNT(*) n FROM options_alerts WHERE state='SENT' AND research_only=0 AND entry_quality_verdict IN ('LATE','CHASED')") : 0;
+  const earlyTimelySent = alertsTable
+    ? num(
+      db,
+      `SELECT COUNT(*) n FROM options_alerts WHERE ${sampleSql}
+         AND entry_quality_verdict IN ('EARLY','TIMELY','ALLOW')`,
+      sampleCutoffMs,
+    )
+    : 0;
+  const lateChasedSent = alertsTable
+    ? num(
+      db,
+      `SELECT COUNT(*) n FROM options_alerts WHERE ${sampleSql}
+         AND entry_quality_verdict IN ('LATE','CHASED')`,
+      sampleCutoffMs,
+    )
+    : 0;
+  const entryQualityScored = alertsTable
+    ? num(
+      db,
+      `SELECT COUNT(*) n FROM options_alerts WHERE ${sampleSql} AND entry_quality_verdict IS NOT NULL`,
+      sampleCutoffMs,
+    )
+    : 0;
   const earlyTimelyRate = deliveredSent > 0 ? earlyTimelySent / deliveredSent : null;
   const lateChasedRate = deliveredSent > 0 ? lateChasedSent / deliveredSent : null;
+  const earlyTimelyRateScored = entryQualityScored > 0 ? earlyTimelySent / entryQualityScored : null;
 
   // ── Session violations: weekend / holiday / cross-session openings (must be 0) ──
   let sessionViolations = 0;
   if (alertsTable) {
     try {
       for (const r of db.prepare(
-        "SELECT sent_at_ms, trading_session_date FROM options_alerts WHERE state='SENT' AND research_only=0 AND sent_at_ms IS NOT NULL",
-      ).all() as any[]) {
+        `SELECT sent_at_ms, trading_session_date FROM options_alerts
+          WHERE ${sampleSql}`,
+      ).all(sampleCutoffMs) as any[]) {
         const sentAt = Number(r.sent_at_ms);
         if (!Number.isFinite(sentAt)) continue;
         if (isNonTradingDay(sentAt, env)) { sessionViolations += 1; continue; }
@@ -234,10 +278,11 @@ export function evaluateSubscriberReadiness(db: ReadinessDb, env: NodeJS.Process
       `SELECT COALESCE(SUM(dupes),0) n FROM (
          SELECT COUNT(*) - 1 AS dupes
            FROM options_alerts
-          WHERE state='SENT' AND research_only=0
+          WHERE ${sampleSql}
           GROUP BY COALESCE(opportunity_fingerprint, candidate_symbol || '|' || side || '|' || strategy || '|' || option_symbol)
          HAVING COUNT(*) > 1
        )`,
+      sampleCutoffMs,
     );
   }
   const duplicateRate = deliveredSent > 0 ? duplicateDelivered / deliveredSent : 0;
@@ -245,17 +290,28 @@ export function evaluateSubscriberReadiness(db: ReadinessDb, env: NodeJS.Process
   // ── Supervisor / legacy subscriber sends (must be structurally blocked AND never observed) ──
   const supervisorLegacyStructurallyBlocked = ownership.independentOwns && ownership.supervisorOptionsBlocked && ownership.legacyOptionsBlocked;
   let supervisorLegacySends = 0;
+  let supervisorLegacySendsHistorical = 0;
   if (hasTable(db, "discord_deliveries")) {
     // The supervisor canonical path posts options callouts via deliverCalloutDiscord (payload_type='callout').
-    // Under owner=independent these are recorded SUPPRESSED, never SENT — any SENT row here is a violation.
+    // Under owner=independent these are recorded SUPPRESSED, never SENT — any post-cutoff SENT row is a violation.
     supervisorLegacySends = num(
       db,
-      "SELECT COUNT(*) n FROM discord_deliveries WHERE webhook_name='options' AND payload_type='callout' AND status='SENT'",
+      `SELECT COUNT(*) n FROM discord_deliveries
+        WHERE webhook_name='options' AND payload_type='callout' AND status='SENT'
+          AND (CAST(strftime('%s', created_at) AS INTEGER) * 1000) >= ?`,
+      sampleCutoffMs,
+    );
+    supervisorLegacySendsHistorical = num(
+      db,
+      `SELECT COUNT(*) n FROM discord_deliveries
+        WHERE webhook_name='options' AND payload_type='callout' AND status='SENT'
+          AND (CAST(strftime('%s', created_at) AS INTEGER) * 1000) < ?`,
+      sampleCutoffMs,
     );
   }
 
   // ── Profitability (60m-or-exit) over CLOSED & graded delivered trades ──
-  const sixty = deliveredSixtyMinReturns(db);
+  const sixty = deliveredSixtyMinReturns(db, sampleCutoffMs);
   const gradedN = sixty.graded.length;
   const medianReturn = median(sixty.graded);
   const expectancy = mean(sixty.graded);
@@ -273,10 +329,18 @@ export function evaluateSubscriberReadiness(db: ReadinessDb, env: NodeJS.Process
 
   // ── Milestone proof: BOTH a return-milestone AND an opportunity-closed update actually delivered ──
   const returnMilestonesDelivered = hasTable(db, "opportunity_milestones")
-    ? num(db, "SELECT COUNT(*) n FROM opportunity_milestones WHERE event_type='RETURN_MILESTONE' AND delivered_at_ms IS NOT NULL")
+    ? num(
+      db,
+      "SELECT COUNT(*) n FROM opportunity_milestones WHERE event_type='RETURN_MILESTONE' AND delivered_at_ms IS NOT NULL AND delivered_at_ms >= ?",
+      sampleCutoffMs,
+    )
     : 0;
   const closedUpdatesDelivered = hasTable(db, "opportunity_milestones")
-    ? num(db, "SELECT COUNT(*) n FROM opportunity_milestones WHERE event_type='OPPORTUNITY_CLOSED' AND delivered_at_ms IS NOT NULL")
+    ? num(
+      db,
+      "SELECT COUNT(*) n FROM opportunity_milestones WHERE event_type='OPPORTUNITY_CLOSED' AND delivered_at_ms IS NOT NULL AND delivered_at_ms >= ?",
+      sampleCutoffMs,
+    )
     : 0;
 
   // ── Stripe + Discord-role readiness ──
@@ -300,7 +364,7 @@ export function evaluateSubscriberReadiness(db: ReadinessDb, env: NodeJS.Process
   } catch { /* optional */ }
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const chain = require("@/lib/research/options/paper-chain").buildPaperChainDiagnostic(db, env, 100);
+    const chain = require("@/lib/research/options/paper-chain").buildPaperChainDiagnostic(db, env, 100, sampleCutoffMs);
     const rows = chain.rows as { graderHealth: string }[];
     paperMissingMirrorRows = rows.filter((r) => r.graderHealth === "missing_mirror").length;
     paperUnhealthyRows = rows.filter((r) => r.graderHealth === "stuck_open" || r.graderHealth === "missing_case").length;
@@ -350,7 +414,37 @@ export function evaluateSubscriberReadiness(db: ReadinessDb, env: NodeJS.Process
   if (quota.operatorWarning) remainingWarnings.push(quota.operatorWarning);
   if (subs.pastDue > 0) remainingWarnings.push(`${subs.pastDue} subscriber(s) past due`);
   if (gradedN > 0 && gradedN < 30) remainingWarnings.push(`Profitability sample small (${gradedN}/30 graded) — statistically thin`);
-  if (paperUnhealthyRows > 0) remainingWarnings.push(`${paperUnhealthyRows} paper row(s) stuck_open/missing_case (operational — review grader)`);
+  if (deliveredSentHistorical > 0) {
+    remainingWarnings.push(`${deliveredSentHistorical} historical delivered alert(s) before launch sample cutoff (excluded from readiness)`);
+  }
+  if (paperUnhealthyRows > 0) {
+    remainingWarnings.push(`${paperUnhealthyRows} launch-sample paper row(s) stuck_open/missing_case (operational — review grader)`);
+  }
+
+  // #region agent log
+  fetch("http://127.0.0.1:7918/ingest/1e1970bf-a3dc-4c9e-aaba-c7720ad4daf2", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "3a4126" },
+    body: JSON.stringify({
+      sessionId: "3a4126",
+      runId: "readiness",
+      hypothesisId: "H2",
+      location: "lib/research/subscriber-readiness.ts:evaluateSubscriberReadiness",
+      message: "readiness sample boundaries",
+      data: {
+        sampleCutoffMs,
+        deliveredSent,
+        deliveredSentHistorical,
+        duplicateDelivered,
+        supervisorLegacySends,
+        supervisorLegacySendsHistorical,
+        gradedSample: gradedN,
+        paperUnhealthyRows,
+      },
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
 
   return {
     generatedAtMs: nowMs,
@@ -360,9 +454,14 @@ export function evaluateSubscriberReadiness(db: ReadinessDb, env: NodeJS.Process
     failingSafetyGates,
     gates,
     metrics: {
+      sampleCutoffMs,
+      sampleCutoffIso,
+      deliveredSentHistorical,
       validTradingDays,
       deliveredSent,
       deliveredLinked,
+      entryQualityScored,
+      earlyTimelyRateScored: earlyTimelyRateScored == null ? null : +earlyTimelyRateScored.toFixed(4),
       paperLinkRate: paperLinkRate == null ? null : +paperLinkRate.toFixed(4),
       completeGradingRate: completeGradingRate == null ? null : +completeGradingRate.toFixed(4),
       gradedSample: gradedN,
@@ -376,6 +475,7 @@ export function evaluateSubscriberReadiness(db: ReadinessDb, env: NodeJS.Process
       duplicateRate: +duplicateRate.toFixed(4),
       sessionViolations,
       supervisorLegacySends,
+      supervisorLegacySendsHistorical,
       missingQuotePct,
       maxMissingQuotePct,
       returnMilestonesDelivered,

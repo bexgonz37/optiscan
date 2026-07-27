@@ -141,6 +141,10 @@ function SubscriberReadinessCard() {
       {state?.lastNotificationError && <KeyValue k="Notification error" v={state.lastNotificationError} tone="bear" />}
 
       <div style={{ marginTop: 8 }}>
+        <KeyValue k="Launch sample cutoff" v={m.sampleCutoffIso ? String(m.sampleCutoffIso).slice(0, 19) + "Z" : "—"} />
+        {Number(m.deliveredSentHistorical) > 0 && (
+          <KeyValue k="Historical (excluded)" v={`${m.deliveredSentHistorical} alerts before cutoff`} tone="muted" />
+        )}
         <KeyValue k="Trading days" v={String(m.validTradingDays ?? "—")} />
         <KeyValue k="Delivered / linked" v={`${m.deliveredSent ?? "—"} / ${m.deliveredLinked ?? "—"}`} />
         <KeyValue k="Paper-link rate" v={m.paperLinkRate == null ? "—" : `${Math.round(Number(m.paperLinkRate) * 100)}%`} />
@@ -150,10 +154,16 @@ function SubscriberReadinessCard() {
         <KeyValue k="Win rate" v={m.winRate == null ? "—" : `${Math.round(Number(m.winRate) * 100)}%`} />
         <KeyValue k="Profit factor" v={String(m.profitFactor ?? "—")} />
         <KeyValue k="Early/Timely" v={m.earlyTimelyRate == null ? "—" : `${Math.round(Number(m.earlyTimelyRate) * 100)}%`} />
+        {m.earlyTimelyRateScored != null && Number(m.entryQualityScored) < Number(m.deliveredSent) && (
+          <KeyValue k="Early/Timely (scored only)" v={`${Math.round(Number(m.earlyTimelyRateScored) * 100)}% (${m.entryQualityScored} scored)`} tone="muted" />
+        )}
         <KeyValue k="Late/Chased" v={m.lateChasedRate == null ? "—" : `${Math.round(Number(m.lateChasedRate) * 100)}%`} />
         <KeyValue k="Duplicate deliveries" v={String(m.duplicateDeliveredCount ?? 0)} tone={Number(m.duplicateDeliveredCount) > 0 ? "bear" : "muted"} />
         <KeyValue k="Session violations" v={String(m.sessionViolations ?? 0)} tone={Number(m.sessionViolations) > 0 ? "bear" : "muted"} />
         <KeyValue k="Supervisor/legacy sends" v={String(m.supervisorLegacySends ?? 0)} tone={Number(m.supervisorLegacySends) > 0 ? "bear" : "muted"} />
+        {Number(m.supervisorLegacySendsHistorical) > 0 && (
+          <KeyValue k="Supervisor/legacy (historical)" v={String(m.supervisorLegacySendsHistorical)} tone="muted" />
+        )}
         <KeyValue k="Missing-quote" v={`${m.missingQuotePct ?? 0}%`} />
         <KeyValue k="Milestone proof" v={`return ${m.returnMilestonesDelivered ?? 0} · closed ${m.closedUpdatesDelivered ?? 0}`} />
         <KeyValue k="Stripe / role ready" v={`${m.stripeReady ? "yes" : "no"} / ${m.discordRoleReady ? "yes" : "no"}`} />

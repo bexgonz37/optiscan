@@ -22,6 +22,9 @@ test("home page renders the Command Center, not the live scanner grid", () => {
 test("Command Center has all seven required sections", () => {
   const cc = read("components/CommandCenter.tsx");
   for (const section of [
+    "What needs my attention?",
+    "Independent Options Pipeline",
+    "Stock / Supervisor Pipeline",
     "Actionable Now",
     "Near Trigger",
     "Developing Setups",
@@ -31,8 +34,8 @@ test("Command Center has all seven required sections", () => {
   ]) {
     assert.ok(cc.includes(section), `missing section: ${section}`);
   }
-  // status bar with the six required signals
-  for (const cell of ["Session", "Provider", "Freshness", "Scanner", "Discord", "Paper"]) {
+  // status bar with pipeline-specific signals (independent options first)
+  for (const cell of ["Options", "Session", "Polygon", "Stock scan", "Discord", "Paper"]) {
     assert.ok(cc.includes(cell), `status bar missing: ${cell}`);
   }
 });

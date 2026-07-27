@@ -451,6 +451,8 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
           nowMs: now(),
         });
       } catch { /* content/summary failures never block SENT */ }
+    } else if (env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0" && lifecycleReady && !livingCaseId) {
+      console.error(`[options-delivery] SENT without opportunity case for ${alertId} — grader/readiness will be incomplete`);
     }
     return base("SENT", true, "delivered", linked, { opportunityCaseId: livingCaseId });
   }
