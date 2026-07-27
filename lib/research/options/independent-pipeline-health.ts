@@ -196,7 +196,9 @@ export function buildIndependentPipelineHealth(input: IndependentPipelineHealthI
   const polygonLabel = !polygonConfigured
     ? "Polygon/Massive API key is not configured"
     : polygonHealthy
-      ? "Polygon/Massive provider configured and healthy in worker"
+      ? (runMode === "RUNNING_IN_THIS_PROCESS"
+        ? "Polygon/Massive provider configured and healthy"
+        : "Polygon/Massive provider configured and healthy in worker")
       : "Polygon/Massive provider configured but reporting elevated failures";
 
   const processNote = runMode === "RUNNING_IN_WORKER"

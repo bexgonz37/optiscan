@@ -189,30 +189,6 @@ export async function GET(req: Request) {
       webhookConfigured: discordWebhookConfigured("options"),
       recentSentCount24h,
     });
-    // #region agent log
-    fetch("http://127.0.0.1:7918/ingest/1e1970bf-a3dc-4c9e-aaba-c7720ad4daf2", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "3a4126" },
-      body: JSON.stringify({
-        sessionId: "3a4126",
-        runId: "post-fix",
-        hypothesisId: "H-web-vs-worker",
-        location: "app/api/system/overview/route.ts:independent_options",
-        message: "independent pipeline health",
-        data: {
-          runMode: health.runMode,
-          monitorAlive: health.monitorAlive,
-          localRunning: monitor.running,
-          heartbeatFresh: Boolean(runtimeStatus?.heartbeatFresh),
-          session: health.session,
-          polygonConfigured: health.polygonConfigured,
-          sources: health.sources,
-          labels: health.labels,
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
     return {
       ...health,
       portfolioDelivery: monitor.portfolioDelivery,
