@@ -5,6 +5,7 @@
  */
 import { tradingDay } from "../trading-session.ts";
 import type { OvernightPlan, OvernightRecommendation } from "../research/overnight/next-session-plan.ts";
+import { resolveOperatingMode } from "../dashboard/operating-mode.ts";
 
 export type OwnerResearchNotifyKind =
   | "eod_watchlist"
@@ -172,6 +173,107 @@ export async function sendOwnerResearchNotify(opts: {
   if (!res.ok) return { sent: false, skipped: false, reason: res.reason, kind: opts.kind };
   markSent(opts.db, day, opts.kind, symbol);
   return { sent: true, skipped: false, reason: "ok", kind: opts.kind };
+}
+
+export interface OwnerResearchTestResult {
+  ok: boolean;
+  configured: boolean;
+  sent: boolean;
+  reason: string;
+  messageId: string | null;
+  operatingMode: string;
+  operatingLabel: string;
+}
+
+/**
+ * Owner manual TEST — recap webhook only. Never writes idempotency log, readiness state,
+ * subscriber alerts, trades, or Twitter/X drafts.
+ */
+export async function sendOwnerResearchTestNotification(
+  env: NodeJS.ProcessEnv = process.env,
+  nowMs: number = Date.now(),
+): Promise<OwnerResearchTestResult> {
+  const webhook = String(env.DISCORD_WEBHOOK_RECAP ?? "").trim();
+  if (!webhook) {
+    return {
+      ok: false,
+      configured: false,
+      sent: false,
+      reason: "DISCORD_WEBHOOK_RECAP not configured",
+      messageId: null,
+      operatingMode: "",
+      operatingLabel: "",
+    };
+  }
+  if (!enabled(env)) {
+    return {
+      ok: false,
+      configured: true,
+      sent: false,
+      reason: "OWNER_RESEARCH_DISCORD_ENABLED!=1",
+      messageId: null,
+      operatingMode: "",
+      operatingLabel: "",
+    };
+  }
+
+  let monitorAlive: boolean | null = null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { optionsMonitorHealth } = require("../research/options/monitor");
+    const monitor = optionsMonitorHealth(env, nowMs);
+    monitorAlive = monitor.alive || monitor.running;
+  } catch {
+    monitorAlive = null;
+  }
+
+  const operating = resolveOperatingMode({
+    nowMs,
+    monitorAlive,
+    providerConfigured: Boolean(String(env.POLYGON_API_KEY ?? env.MASSIVE_API_KEY ?? "").trim()),
+    providerHealthy: monitorAlive,
+    dbOk: true,
+  });
+
+  const content = [
+    "🧪 **TEST — OWNER RESEARCH NOTIFICATION**",
+    "_Recap channel only · no trade · no subscriber alert · readiness unchanged_",
+    "",
+    `Operating mode: **${operating.label}**`,
+    `Session detail: ${operating.detail}`,
+    "",
+    "**Sample next-session row (format check):**",
+    "**#1 SPY** · BULLISH · ORB continuation",
+    "Trigger: hold above prior high · Invalidation: lose VWAP",
+    "Preferred DTE: 0DTE · Moneyness: ATM · Confidence: 82",
+    "Main reason: ranked setup with clear trigger (fixture sample).",
+    "Main risk: wide spread if chased without fresh quote.",
+    "⚠️ VERIFY CONTRACT AFTER OPTIONS OPEN · quotes STALE · PRIOR SESSION",
+  ].join("\n");
+
+  const { postToDiscord } = await import("../notifications.ts");
+  try {
+    const res = await postToDiscord({ content: content.slice(0, 1900) }, { webhook: "recap", skipPublicCheck: true });
+    return {
+      ok: true,
+      configured: true,
+      sent: true,
+      reason: "ok",
+      messageId: res.messageId,
+      operatingMode: operating.mode,
+      operatingLabel: operating.label,
+    };
+  } catch (e: any) {
+    return {
+      ok: false,
+      configured: true,
+      sent: false,
+      reason: String(e?.message ?? e),
+      messageId: null,
+      operatingMode: operating.mode,
+      operatingLabel: operating.label,
+    };
+  }
 }
 
 /** Pure fixtures for screenshot / review HTML (no network). */
