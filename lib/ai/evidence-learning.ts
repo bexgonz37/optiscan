@@ -224,11 +224,12 @@ function materializePaperExamples(db: EvidenceDb, nowMs: number, limit: number):
   const rows = db.prepare(
     `SELECT ${paperSelect(db)} FROM options_paper_trades
       WHERE status='EXITED' AND result_class='REAL_OPTION_PAPER'
-        AND COALESCE(paper_kind,'LEGACY_UNCLASSIFIED') IN ('DELIVERED_ALERT_PAPER','RESEARCH_ONLY_PAPER')
+        AND COALESCE(paper_kind,'LEGACY_UNCLASSIFIED') IN ('DELIVERED_ALERT_PAPER','RESEARCH_ONLY_PAPER','ZERO_DTE_RESEARCH_PAPER')
         AND NOT EXISTS (
           SELECT 1 FROM evidence_learning_examples e
            WHERE e.source_kind=CASE
              WHEN COALESCE(options_paper_trades.paper_kind,'')='DELIVERED_ALERT_PAPER' THEN 'delivered_alert'
+             WHEN COALESCE(options_paper_trades.paper_kind,'')='ZERO_DTE_RESEARCH_PAPER' THEN 'zero_dte_research'
              ELSE 'research_only'
            END
              AND e.source_id=CAST(options_paper_trades.id AS TEXT)
@@ -246,7 +247,11 @@ function materializePaperExamples(db: EvidenceDb, nowMs: number, limit: number):
     const relVol = pickFeature(feature, "underlying.relVolume", "relVolume");
     const vwapDist = pickFeature(feature, "underlying.vwapDistPct", "vwapDistPct");
     const returnPct = num(p.return_pct);
-    const audience = p.paper_kind === "DELIVERED_ALERT_PAPER" ? "DELIVERED" : "RESEARCH_ONLY";
+    const audience = p.paper_kind === "DELIVERED_ALERT_PAPER"
+      ? "DELIVERED"
+      : p.paper_kind === "ZERO_DTE_RESEARCH_PAPER"
+        ? "ZERO_DTE_RESEARCH"
+        : "RESEARCH_ONLY";
     const components = parseJson(decision?.components_json) ?? {};
     const levels = levelInteractions(feature);
     const missing = missingMap({
@@ -261,7 +266,11 @@ function materializePaperExamples(db: EvidenceDb, nowMs: number, limit: number):
       maePct: p.mae_pct,
     });
     insert.run(
-      audience === "DELIVERED" ? "delivered_alert" : "research_only",
+      audience === "DELIVERED"
+        ? "delivered_alert"
+        : audience === "ZERO_DTE_RESEARCH"
+          ? "zero_dte_research"
+          : "research_only",
       "options_paper_trades",
       String(p.id),
       p.alert_id ?? p.option_symbol ?? null,

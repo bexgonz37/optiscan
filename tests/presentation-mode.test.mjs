@@ -41,12 +41,11 @@ test("TradeExplanationCard renders from the object; Advanced is additive only", 
   assert.ok(!/selectContract|polyFetch|place_option_order|fetch\(/.test(src), "no logic in the renderer");
 });
 
-test("Command Center passes the mode and renders the shared card (one object, two views)", () => {
+test("Command Center is the terminal control room (presentation toggle lives elsewhere)", () => {
   const cc = read("components/CommandCenter.tsx");
-  assert.ok(/usePresentationMode/.test(cc), "reads the global mode");
-  assert.ok(/TradeExplanationCard/.test(cc), "renders the shared card");
-  assert.ok(/mode=\{mode\}/.test(cc), "threads the mode to sections/cards");
-  assert.ok(/Simple/.test(cc) && /Advanced/.test(cc), "exposes the toggle");
+  assert.ok(/\/api\/command-center/.test(cc), "uses canonical snapshot");
+  assert.ok(/Pipeline funnel|Open positions|Highest-quality setups/.test(cc), "trader panels present");
+  assert.ok(!/place_option_order|polyFetch/.test(cc), "no trading/provider calls");
 });
 
 test("ChartPanel surfaces the same selection explanation object in the reality check", () => {

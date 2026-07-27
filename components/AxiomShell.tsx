@@ -4,80 +4,90 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { marketSession, type MarketSession } from "@/lib/trading-session";
 import { NavRail, type NavItem } from "@/components/ui/NavRail";
+import { HeaderUnlock } from "@/components/HeaderUnlock";
 import { apiGetJson } from "@/lib/client-auth";
 
-// Owner Mode is the default experience: a short DAILY list of the pages that
-// need owner attention, and one collapsed ADVANCED group for everything else.
-const DAILY_NAV: NavItem[] = [
+// Primary product navigation — trader-facing hierarchy.
+const PRODUCT_NAV: NavItem[] = [
   { href: "/", label: "Command Center" },
-  { href: "/intelligence", label: "Intelligence" },
-  { href: "/pipeline-health", label: "Pipeline Health" },
-  { href: "/shadow-soak", label: "Shadow Soak" },
-  { href: "/callouts", label: "Callouts" },
-  { href: "/paper", label: "Paper Trading" },
-  { href: "/paper-lifecycle", label: "Paper Lifecycle" },
-  { href: "/performance", label: "Performance" },
-  { href: "/ai", label: "AI Lab" },
-  { href: "/data", label: "System Health" },
-  { href: "/subscriptions", label: "Subscriptions" },
-  { href: "/social-drafts", label: "Social Drafts" },
+  { href: "/callouts", label: "Live Options" },
+  { href: "/quant", label: "Quant Lab" },
+  { href: "/paper", label: "Paper & Research" },
+  { href: "/paper/0dte", label: "0DTE Research" },
+  { href: "/scanner", label: "Scanner" },
+  { href: "/intelligence", label: "Strategy Lab" },
   { href: "/content-drafts", label: "Content Drafts" },
-  { href: "/guide", label: "Guide" },
+  { href: "/ai", label: "AI Advisory" },
+  { href: "/pipeline-health#readiness", label: "Paid Beta Readiness" },
 ];
 
-// Base advanced tools. Improvement Agent is marked inactive (see below) when
-// improvement automation is disabled on the server.
+// Diagnostics & developer tools — collapsed by default.
 const ADVANCED_NAV: NavItem[] = [
-  { href: "/watchlist", label: "Watchlist" },
-  { href: "/quant", label: "Research & Backtesting" },
+  { href: "/pipeline-health", label: "Pipeline Diagnostics" },
+  { href: "/shadow-soak", label: "Shadow Soak" },
+  { href: "/data", label: "System Health" },
+  { href: "/paper-lifecycle", label: "Paper Lifecycle" },
+  { href: "/performance", label: "Performance" },
   { href: "/research-learning", label: "Research & Learning" },
+  { href: "/subscriptions", label: "Subscriptions" },
+  { href: "/social-drafts", label: "Social Drafts" },
+  { href: "/watchlist", label: "Watchlist" },
   { href: "/brokerage-parity", label: "Brokerage Parity" },
   { href: "/brokerage-v2", label: "Brokerage V2" },
   { href: "/brokerage-readiness", label: "Brokerage Readiness" },
   { href: "/improvement", label: "Improvement Agent" },
+  { href: "/guide", label: "Guide" },
   { href: "/settings", label: "Settings" },
 ];
 
 const PAGE_META: Record<string, { title: string; sub: string }> = {
-  "/": { title: "Command Center", sub: "What matters right now" },
+  "/": { title: "Command Center", sub: "Live control room — what matters now" },
   "/data": { title: "System Health", sub: "Data freshness, Discord, and reliability" },
   "/subscriptions": { title: "Subscriptions", sub: "Stripe ↔ Discord role sync health" },
   "/social-drafts": { title: "Social Drafts", sub: "Verified milestone copy — approve before posting" },
-  "/content-drafts": { title: "Content Drafts", sub: "Owner-only X/Twitter suggestions — never auto-posted" },
+  "/content-drafts": { title: "Content Drafts", sub: "Owner-only drafts — never auto-posted" },
   "/copilot": { title: "Explain Signals", sub: "Coming soon" },
-  "/callouts": { title: "Callouts", sub: "Every horizon in one place (0DTE–90DTE, momentum stocks, put research)" },
-  "/alerts": { title: "Options Callouts", sub: "Moved into Callouts · accuracy & journal still here" },
+  "/callouts": { title: "Live Options", sub: "Active alerts, contracts, and open risk" },
+  "/alerts": { title: "Options Callouts", sub: "Moved into Live Options" },
   "/watchlist": { title: "Watchlist", sub: "Symbols the scanner is monitoring" },
-  "/paper": { title: "Paper Trading", sub: "Autonomous simulated trades, no real money" },
+  "/paper": { title: "Paper Trading & Research", sub: "Delivered · 0DTE Research · Stock · Shadow" },
   "/paper-lifecycle": {
     title: "Paper Lifecycle",
     sub: "Candidate → Entry → Exit → Graded → Broker V2 — blockers visible",
   },
   "/performance": { title: "Performance", sub: "Alert track record and paper account" },
-  "/ai": { title: "AI Lab", sub: "Advisory nightly diagnosis & weekly proposals — off by default, human-approved" },
-  "/quant": { title: "Research & Backtesting", sub: "Setup stats and backtests" },
+  "/ai": { title: "AI Advisory", sub: "Interprets Quant Lab — never controls live alerts" },
+  "/quant": { title: "Quant Lab", sub: "Lane-separated edge, MFE/MAE, and breakdowns" },
   "/research-learning": { title: "Research & Learning", sub: "Model readiness, drift, and bounded continuous learning" },
   "/brokerage-parity": { title: "Brokerage Parity", sub: "Legacy vs V2 dual-write agreement · developer/research only" },
   "/brokerage-v2": { title: "Brokerage V2", sub: "Research / Brokerage V2 — Not Yet Authoritative" },
   "/brokerage-readiness": { title: "Brokerage Readiness", sub: "Operational Validation (Soak) — No Production Cutover" },
   "/improvement": { title: "Improvement Agent", sub: "Controlled, propose-only code-improvement agent (never edits code autonomously)" },
-  "/swing": { title: "Swing Research", sub: "Moved into Callouts → Swing Research tab" },
-  "/settings": { title: "Settings", sub: "Alerts, Discord, safety" },
+  "/swing": { title: "Swing Research", sub: "Moved into Live Options" },
+  "/settings": { title: "Settings", sub: "Token, Discord, and safety" },
   "/review": { title: "Review", sub: "Methodology and limits" },
   "/guide": { title: "Guide", sub: "How to use OptiScan" },
-  "/shadow-soak": { title: "Shadow Soak", sub: "Kill-switch evidence — would-send vs would-block without Discord openings" },
-  "/pipeline-health": { title: "Pipeline Health", sub: "Subscriber pipeline diagnostics and blockers" },
-  "/scanner": { title: "Live Scanner", sub: "0DTE options · share momentum tape" },
+  "/shadow-soak": { title: "Shadow Soak", sub: "Would-send vs would-block — no Discord openings" },
+  "/pipeline-health": { title: "Advanced Diagnostics", sub: "Funnel, blockers, and paid-beta readiness" },
+  "/scanner": { title: "Scanner", sub: "0DTE tape · SPY/QQQ priority" },
+  "/intelligence": { title: "Strategy Lab", sub: "Opportunity cases and strategy dossiers" },
+  "/paper/0dte": { title: "Aggressive 0DTE Research", sub: "Simulated $100k ledger — never Discord" },
 };
 
 function isActive(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
-  // The consolidated Callouts destination lights up for the old callout URLs too.
   if (href === "/callouts") {
     return pathname === "/callouts" || pathname === "/alerts"
       || pathname === "/swing" || pathname.startsWith("/alert-lab");
   }
-  return pathname === href || pathname.startsWith(`${href}/`);
+  if (href === "/paper/0dte") {
+    return pathname === "/paper/0dte" || pathname.startsWith("/paper/0dte/");
+  }
+  if (href === "/paper") {
+    return pathname === "/paper" || (pathname.startsWith("/paper/") && !pathname.startsWith("/paper/0dte"));
+  }
+  const pathOnly = href.split("#")[0];
+  return pathname === pathOnly || pathname.startsWith(`${pathOnly}/`);
 }
 
 export function AxiomShell({ children }: { children: ReactNode }) {
@@ -88,7 +98,13 @@ export function AxiomShell({ children }: { children: ReactNode }) {
   const [liveLabel, setLiveLabel] = useState("Checking data...");
   const [improvementActive, setImprovementActive] = useState<boolean | null>(null);
 
-  const pageKey = pathname === "/" ? "/" : `/${pathname.split("/").filter(Boolean)[0]}`;
+  const segments = pathname.split("/").filter(Boolean);
+  const pageKey =
+    pathname === "/"
+      ? "/"
+      : segments[0] === "paper" && segments[1] === "0dte"
+        ? "/paper/0dte"
+        : `/${segments[0]}`;
   const pageMeta = PAGE_META[pageKey] ?? { title: "OptiScan", sub: "Live terminal" };
 
   // Mark the Improvement Agent inactive in the sidebar when automation is off
@@ -183,9 +199,9 @@ export function AxiomShell({ children }: { children: ReactNode }) {
             }
             tagline="OPTIONS SCANNER"
             sections={[
-              { title: "DAILY", items: DAILY_NAV },
+              { title: "PRODUCT", items: PRODUCT_NAV },
               {
-                title: "ADVANCED TOOLS",
+                title: "ADVANCED DIAGNOSTICS",
                 items: advancedNav,
                 collapsible: true,
                 collapsedByDefault: true,
@@ -212,9 +228,19 @@ export function AxiomShell({ children }: { children: ReactNode }) {
               <div className="pgtop">
                 <div className="pgtitle">{pageMeta.title}</div>
                 <div className="pgsub">{pageMeta.sub}</div>
-                <div className="clk" style={{ marginLeft: "auto" }}>{clock} ET</div>
+                <div className="pgtop-actions">
+                  <HeaderUnlock />
+                  <div className="clk">{clock} ET</div>
+                </div>
               </div>
-            ) : null}
+            ) : (
+              <div className="pgtop pgtop-live">
+                <div className="pgtop-actions" style={{ marginLeft: "auto" }}>
+                  <HeaderUnlock />
+                  <div className="clk">{clock} ET</div>
+                </div>
+              </div>
+            )}
             <div className="pagewrap">{children}</div>
           </div>
         </div>

@@ -3,20 +3,16 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import {
-  PageContainer, Card, StatusBadge, EmptyState, LoadingState, ErrorState, KeyValue,
-} from "@/components/ui/Shell";
+import { EmptyState, LoadingState, ErrorState } from "@/components/ui/Shell";
 import { apiFetch } from "@/lib/client-auth";
 import { SwingResearchPanel } from "@/components/SwingResearchPanel";
+import { DEMO_CALLOUTS, DEMO_CALLOUTS_NOTE, isSupervisorRoutingNote } from "@/lib/dashboard/demo-callouts";
+import { isUiReviewMode } from "@/lib/dashboard/ui-review";
+import { TermSpark, actionTone } from "@/components/terminal/TermViz";
 
 /**
- * Callouts (consolidated). ONE owner-facing destination for every opportunity
- * horizon. Read-only: it renders canonical callouts produced by the agent
- * Supervisor (via /api/callouts) — the frontend never recomputes a trading
- * decision. Puts are research-only; nothing here implies a guaranteed outcome.
- *
- * The old Options Callouts (/alerts) and Swing Research (/swing) URLs still work;
- * their live-callout experience is merged here behind simple tabs.
+ * Live Options — compact ranked scanner. Canonical supervisor callouts.
+ * SIGNAL / CONTRACT / ENTRY / FINAL ACTION are separate visual states.
  */
 
 type Callout = {
@@ -27,7 +23,21 @@ type Callout = {
   strategyAgent: string;
   horizon: string;
   reason: string;
-  contract: { optionSymbol: string | null; strike: number | null; expiration: string | null; dte: number | null; side: string | null; bid: number | null; ask: number | null; mid: number | null; spreadPct: number | null; delta: number | null; iv?: number | null; volume?: number | null; openInterest?: number | null } | null;
+  contract: {
+    optionSymbol: string | null;
+    strike: number | null;
+    expiration: string | null;
+    dte: number | null;
+    side: string | null;
+    bid: number | null;
+    ask: number | null;
+    mid: number | null;
+    spreadPct: number | null;
+    delta?: number | null;
+    iv?: number | null;
+    volume?: number | null;
+    openInterest?: number | null;
+  } | null;
   underlyingPrice: number | null;
   confidenceTier: "HIGH" | "MEDIUM" | "LOW";
   estimatedEntry: number | null;
@@ -47,20 +57,34 @@ type Callout = {
   researchOnlyWarning: string | null;
   insufficientEvidenceWarning: string | null;
   primaryBlockingReason: string | null;
+  demo?: boolean;
 };
 
-// Tab keys are stable (deep-linkable via ?tab=); labels are what the owner reads.
+type RowView = {
+  c: Callout;
+  rank: number;
+  systemAction: "SEND" | "WATCH" | "RESEARCH" | "BLOCK" | "WAIT";
+  signalScore: number | null;
+  contractState: "READY" | "THIN" | "UNAVAILABLE";
+  entryState: "ACTIONABLE" | "WAIT" | "BLOCK" | "UNKNOWN";
+  finalAction: "SEND" | "WATCH" | "RESEARCH" | "BLOCK" | "WAIT";
+  actionScore: number | null;
+  reason: string;
+  risk: string;
+  undSpark: number[];
+  premSpark: number[];
+};
+
 const TABS: { key: string; label: string }[] = [
   { key: "all", label: "All" },
   { key: "0dte", label: "0DTE" },
-  { key: "1-5", label: "1–5 DTE" },
-  { key: "6-10", label: "6–10 DTE" },
-  { key: "11-35", label: "11–35 DTE" },
-  { key: "36-90", label: "36–90 DTE" },
-  { key: "stocks", label: "Momentum Stocks" },
-  { key: "puts", label: "Put Research" },
-  { key: "rejected", label: "Rejected / Blocked" },
-  { key: "swing", label: "Swing Research" },
+  { key: "1-5", label: "1–5" },
+  { key: "6-10", label: "6–10" },
+  { key: "11-35", label: "11–35" },
+  { key: "36-90", label: "36–90" },
+  { key: "puts", label: "Puts" },
+  { key: "rejected", label: "Blocked" },
+  { key: "swing", label: "Swing" },
 ];
 
 const HORIZON_BY_TAB: Record<string, string> = {
@@ -71,73 +95,90 @@ const HORIZON_BY_TAB: Record<string, string> = {
   "36-90": "36–90 DTE",
 };
 
-const BLOCKED_STATUSES = new Set(["NO_VALID_CONTRACT", "DATA_STALE", "INVALIDATED", "BLOCKED"]);
+const BLOCKED = new Set(["NO_VALID_CONTRACT", "DATA_STALE", "INVALIDATED", "BLOCKED"]);
 
-function tone(status: string): "bull" | "warn" | "bear" | "muted" {
-  if (status === "ACTIONABLE_NOW") return "bull";
-  if (status === "NEAR_TRIGGER" || status === "DEVELOPING") return "warn";
-  if (status === "INVALIDATED" || status === "DATA_STALE") return "bear";
-  return "muted";
-}
-
-function tierTone(tier: string): "bull" | "warn" | "muted" {
-  if (tier === "HIGH") return "bull";
-  if (tier === "MEDIUM") return "warn";
-  return "muted";
-}
-
-function entryStatusTone(label: string): "bull" | "warn" | "bear" | "muted" {
-  if (label === "ACTIONABLE NOW") return "bull";
-  if (label === "WAIT FOR PULLBACK" || label === "WAIT") return "warn";
-  if (label === "NO VALID ENTRY" || label === "MISSED") return "bear";
-  return "muted";
-}
-
-/** "$182.40" — never fabricates; a missing value renders as "—". */
 function money(v: number | null | undefined): string {
   return typeof v === "number" && Number.isFinite(v) ? `$${v.toFixed(2)}` : "—";
 }
 
-/** "2026-07-14" → "Jul 14". Falls back to the raw string on any parse issue. */
-function expiryLabel(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(`${iso}T00:00:00`);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
+function mapRow(c: Callout, rank: number): RowView {
+  const bid = c.contract?.bid ?? null;
+  const ask = c.contract?.ask ?? null;
+  const mid = c.contract?.mid ?? null;
+  const spread = c.contract?.spreadPct ?? null;
+  const hasQuote = (bid != null && ask != null) || mid != null;
+  const stale = c.quoteFreshness !== "fresh" || BLOCKED.has(c.status) || c.status === "DATA_STALE";
+  const contractUnavailable = !hasQuote || !c.contract?.optionSymbol || stale;
 
-/** How many days to expiry, shown as a plain badge (0DTE = expires today). */
-function dteLabel(dte: number | null): string {
-  if (dte == null) return "";
-  if (dte <= 0) return "0DTE · expires today";
-  if (dte === 1) return "1DTE · expires tomorrow";
-  return `${dte}DTE`;
-}
+  let contractState: RowView["contractState"] = "READY";
+  if (contractUnavailable) contractState = "UNAVAILABLE";
+  else if (spread != null && spread > 12) contractState = "THIN";
 
-/** Plain-English contract line, e.g. "SPY $755 CALL · exp Jul 14 · 0DTE". */
-function contractHeadline(c: Callout): string {
-  const side = (c.contract?.side ?? (c.direction === "bearish" ? "put" : "call")).toUpperCase();
-  const strike = c.contract?.strike != null ? `$${c.contract.strike}` : "";
-  const parts = [`${c.ticker} ${strike} ${side}`.replace(/\s+/g, " ").trim()];
-  if (c.contract?.expiration) parts.push(`exp ${expiryLabel(c.contract.expiration)}`);
-  const d = dteLabel(c.contract?.dte ?? null);
-  if (d) parts.push(d);
-  return parts.join(" · ");
-}
+  const signalScore =
+    c.contractScore != null && Number.isFinite(c.contractScore)
+      ? Math.round(Math.max(0, Math.min(100, Number(c.contractScore))))
+      : c.confidenceTier === "HIGH" ? 85 : c.confidenceTier === "MEDIUM" ? 65 : 40;
 
-function isStock(c: Callout): boolean {
-  return /momentum|stock/i.test(c.strategyAgent ?? "");
-}
+  let entryState: RowView["entryState"] = "UNKNOWN";
+  if (c.primaryBlockingReason || BLOCKED.has(c.status)) entryState = "BLOCK";
+  else if (c.entryStatusLabel === "ACTIONABLE NOW" && c.actionable) entryState = "ACTIONABLE";
+  else if (contractUnavailable || c.estimatedEntry == null) entryState = "WAIT";
+  else entryState = "WAIT";
 
-function isRejected(c: Callout): boolean {
-  return BLOCKED_STATUSES.has(c.status) || Boolean(c.primaryBlockingReason);
+  let systemAction: RowView["systemAction"] = "WATCH";
+  if (c.direction === "bearish" || c.researchOnlyWarning) systemAction = "RESEARCH";
+  if (entryState === "BLOCK" || c.primaryBlockingReason) systemAction = "BLOCK";
+  else if (entryState === "ACTIONABLE" && contractState === "READY") systemAction = "SEND";
+  else if (contractState === "UNAVAILABLE") systemAction = "WAIT";
+
+  // Final action cannot show SEND when contract data missing — even if signal is 99.
+  let finalAction: RowView["finalAction"] = systemAction;
+  if (contractState === "UNAVAILABLE") finalAction = "WAIT";
+  if (entryState === "BLOCK") finalAction = "BLOCK";
+
+  let actionScore: number | null = signalScore;
+  if (contractState === "UNAVAILABLE") actionScore = Math.min(signalScore, 25);
+  else if (contractState === "THIN") actionScore = Math.min(signalScore, 45);
+  if (finalAction === "BLOCK") actionScore = Math.min(actionScore, 15);
+  if (finalAction === "WAIT") actionScore = Math.min(actionScore, 55);
+  if (finalAction === "SEND") actionScore = Math.max(actionScore, Math.round(signalScore * 0.85));
+
+  const reason = contractUnavailable
+    ? "Contract data unavailable"
+    : (c.reason?.slice(0, 90) ?? "—");
+  const risk = c.primaryBlockingReason
+    ? c.primaryBlockingReason.replace(/_/g, " ")
+    : (c.doNotEnter?.slice(0, 70) ?? (spread != null && spread > 10 ? `Spread ${spread.toFixed(1)}%` : "Premium decay"));
+
+  const und = c.underlyingPrice;
+  const undSpark = und != null ? [und * 0.998, und * 0.999, und, und * 1.001, und].map((x) => +x.toFixed(3)) : [];
+  // Only use synthetic und spark in review when demo; otherwise leave empty if no series
+  const undSparkOut = c.demo ? undSpark : (und != null ? [und] : []);
+  const prem = mid ?? c.estimatedEntry;
+  const premSpark = c.demo && prem != null
+    ? [prem * 0.92, prem * 0.96, prem, prem * 1.04, prem * 1.02].map((x) => +x.toFixed(3))
+    : [];
+
+  return {
+    c,
+    rank,
+    systemAction,
+    signalScore,
+    contractState,
+    entryState,
+    finalAction,
+    actionScore,
+    reason,
+    risk,
+    undSpark: undSparkOut.length >= 2 ? undSparkOut : [],
+    premSpark,
+  };
 }
 
 function matchesTab(c: Callout, tab: string): boolean {
   if (tab === "all") return true;
   if (tab === "puts") return c.direction === "bearish";
-  if (tab === "stocks") return isStock(c);
-  if (tab === "rejected") return isRejected(c);
+  if (tab === "rejected") return BLOCKED.has(c.status) || Boolean(c.primaryBlockingReason);
   const horizon = HORIZON_BY_TAB[tab];
   if (horizon) return c.horizon === horizon;
   return true;
@@ -149,16 +190,28 @@ function CalloutsInner() {
   const [tab, setTab] = useState(TABS.some((t) => t.key === initialTab) ? initialTab : "all");
   const [callouts, setCallouts] = useState<Callout[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [note, setNote] = useState<string>("");
+  const [note, setNote] = useState("");
   const [tickers, setTickers] = useState("SPY,QQQ");
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    if (isUiReviewMode()) {
+      setCallouts(DEMO_CALLOUTS as Callout[]);
+      setNote(DEMO_CALLOUTS_NOTE);
+      setError(null);
+      return;
+    }
     try {
       const res = await apiFetch(`/api/callouts?tickers=${encodeURIComponent(tickers)}`, { cache: "no-store" });
-      if (res.status === 401) { setError("This dashboard needs your private OptiScan access token."); return; }
+      if (res.status === 401) {
+        setError("This dashboard needs your private OptiScan access token.");
+        return;
+      }
       const r = await res.json();
-      setCallouts(r?.callouts ?? []);
-      setNote(r?.note ?? "");
+      const rows: Callout[] = r?.callouts ?? [];
+      setCallouts(rows);
+      const rawNote = String(r?.note ?? "");
+      setNote(isSupervisorRoutingNote(rawNote) ? "" : rawNote);
       setError(null);
     } catch (err: any) {
       setError(err?.message ?? "Could not load callouts.");
@@ -166,7 +219,7 @@ function CalloutsInner() {
   }, [tickers]);
 
   useEffect(() => {
-    if (tab === "swing") return; // swing tab uses its own on-demand scan
+    if (tab === "swing") return;
     load();
     const id = setInterval(load, 20000);
     return () => clearInterval(id);
@@ -177,124 +230,225 @@ function CalloutsInner() {
     [callouts, tab],
   );
 
-  const tabBar = (
-    <div className="callouts-tabs" role="tablist" aria-label="Callout horizons">
-      {TABS.map((t) => (
-        <button
-          key={t.key}
-          type="button"
-          role="tab"
-          aria-selected={tab === t.key}
-          className={`callouts-tab${tab === t.key ? " on" : ""}`}
-          onClick={() => setTab(t.key)}
-        >
-          {t.label}
-        </button>
-      ))}
-    </div>
+  const rows = useMemo(
+    () => filtered.map((c, i) => mapRow(c, i + 1)),
+    [filtered],
   );
 
-  return (
-    <PageContainer>
-      <div className="axiom-compat-note">
-        This is the one place for every horizon. Looking for accuracy or your
-        trade journal? They live in <Link href="/performance">Performance</Link>.
-      </div>
-      {tabBar}
+  const counts = useMemo(() => {
+    const c = { SEND: 0, WATCH: 0, RESEARCH: 0, BLOCK: 0, WAIT: 0, fresh: 0, stale: 0 };
+    for (const r of rows) {
+      c[r.finalAction] += 1;
+      if (r.c.quoteFreshness === "fresh") c.fresh += 1;
+      else c.stale += 1;
+    }
+    return c;
+  }, [rows]);
 
-      {tab === "swing" ? (
+  if (tab === "swing") {
+    return (
+      <div className="ui-page cc-term cc-term-live-options">
+        <div className="cc-term-strip cc-term-tabs-strip">
+          <div className="cc-term-tabs" role="tablist">
+            {TABS.map((t) => (
+              <button key={t.key} type="button" className={`cc-term-tab${tab === t.key ? " on" : ""}`} onClick={() => setTab(t.key)}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </div>
         <SwingResearchPanel />
-      ) : error && !callouts ? (
+      </div>
+    );
+  }
+
+  return (
+    <div className="ui-page cc-term cc-term-live-options">
+      <div className="cc-term-strip">
+        <div className="cc-term-strip-chips">
+          {(["SEND", "WATCH", "RESEARCH", "BLOCK"] as const).map((k) => (
+            <div key={k} className={`cc-term-chip ${actionTone(k)}`}>
+              <span className="cc-term-chip-label">{k}</span>
+              <span className="cc-term-chip-state">{counts[k]}</span>
+            </div>
+          ))}
+          <div className="cc-term-chip ok">
+            <span className="cc-term-chip-label">Fresh</span>
+            <span className="cc-term-chip-state">{counts.fresh}</span>
+          </div>
+          <div className="cc-term-chip warn">
+            <span className="cc-term-chip-label">Stale</span>
+            <span className="cc-term-chip-state">{counts.stale}</span>
+          </div>
+        </div>
+        <div className="cc-term-strip-meta">
+          <label className="cc-term-ticker-input">
+            <span>Tickers</span>
+            <input value={tickers} onChange={(e) => setTickers(e.target.value)} onBlur={load} />
+          </label>
+        </div>
+      </div>
+
+      <div className="cc-term-strip cc-term-tabs-strip">
+        <div className="cc-term-tabs" role="tablist">
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              className={`cc-term-tab${tab === t.key ? " on" : ""}`}
+              onClick={() => setTab(t.key)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <p className="cc-term-disclaimer">
+        Research only — SIGNAL ≠ FINAL ACTION. Missing chain/quote forces WAIT/BLOCK.{" "}
+        <Link href="/performance" className="cc-term-link">Track record</Link>
+      </p>
+      {note ? <p className="cc-term-footnote info">{note}</p> : null}
+
+      {error && !callouts ? (
         <ErrorState detail={error} onRetry={load} />
       ) : !callouts ? (
-        <Card title="Loading callouts"><LoadingState rows={4} /></Card>
+        <LoadingState rows={4} />
+      ) : rows.length === 0 ? (
+        <EmptyState icon="🔬" title="No callouts" reason="No setups for this tab." />
       ) : (
         <>
-          <Card title="Symbols" meta={note}>
-            <label style={{ display: "inline-flex", gap: 6, alignItems: "center", fontSize: 13 }}>
-              <span style={{ opacity: 0.7 }}>Tickers</span>
-              <input value={tickers} onChange={(e) => setTickers(e.target.value)} onBlur={load} style={{ padding: "3px 6px", width: 200 }} />
-            </label>
-          </Card>
+          <div className="cc-term-setup-scroll term-live-table-wrap">
+            <table className="cc-term-setup-table term-live-scanner">
+              <thead>
+                <tr>
+                  <th>#</th><th>Sym</th><th>Und</th><th>Prem</th><th>Side</th><th>Contract</th><th>DTE</th>
+                  <th>Strategy</th><th>Final</th><th>Score</th>
+                  <th>Signal</th><th>Contract</th><th>Entry</th>
+                  <th>Quality</th><th>E / T1 / Stop</th><th>Sprd</th><th>Fresh</th><th>Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => {
+                  const c = r.c;
+                  const side = (c.contract?.side ?? (c.direction === "bearish" ? "put" : "call")).toUpperCase();
+                  const t1 = c.estimatedEntry != null ? c.estimatedEntry * 1.35 : null;
+                  const stop = c.estimatedEntry != null ? c.estimatedEntry * 0.72 : null;
+                  return (
+                    <tr
+                      key={c.key}
+                      className="term-live-row clickable"
+                      onClick={() => setExpanded(expanded === c.key ? null : c.key)}
+                    >
+                      <td>{r.rank}</td>
+                      <td className="cc-term-opp-sym">{c.ticker}{c.demo ? " ·DEMO" : ""}</td>
+                      <td><TermSpark values={r.undSpark} width={44} height={14} /></td>
+                      <td><TermSpark values={r.premSpark} width={44} height={14} /></td>
+                      <td>{side}</td>
+                      <td className="cc-term-mono">
+                        {c.contract?.optionSymbol
+                          ? String(c.contract.optionSymbol).slice(0, 18)
+                          : "—"}
+                      </td>
+                      <td>{c.contract?.dte ?? "—"}</td>
+                      <td>{c.strategyAgent}</td>
+                      <td><span className={`cc-term-pill ${actionTone(r.finalAction)}`}>{r.finalAction}</span></td>
+                      <td className="num">{r.actionScore ?? "—"}</td>
+                      <td className="num">{r.signalScore ?? "—"}</td>
+                      <td>
+                        <span className={`cc-term-pill ${r.contractState === "READY" ? "ok" : r.contractState === "THIN" ? "warn" : "bad"}`}>
+                          {r.contractState}
+                        </span>
+                      </td>
+                      <td>
+                        <span className={`cc-term-pill ${actionTone(r.entryState === "ACTIONABLE" ? "SEND" : r.entryState === "BLOCK" ? "BLOCK" : "WATCH")}`}>
+                          {r.entryState}
+                        </span>
+                      </td>
+                      <td>{c.confidenceTier}</td>
+                      <td className="cc-term-mono">{money(c.estimatedEntry)} / {money(t1)} / {money(stop)}</td>
+                      <td>{c.contract?.spreadPct != null ? `${Number(c.contract.spreadPct).toFixed(1)}%` : "—"}</td>
+                      <td>{c.quoteFreshness}</td>
+                      <td className="term-reason-cell">
+                        <div>{r.reason}</div>
+                        <div className="muted">Risk: {r.risk}</div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
 
-          {filtered.length === 0 ? (
-            <Card title="No callouts">
-              <EmptyState icon="🔬" title="No callouts match this tab" reason="No agent produced a callout for these tickers/horizon right now. This is expected outside active momentum or when data is stale — nothing is fabricated." />
-            </Card>
-          ) : (
-            filtered.map((c) => (
-              <Card key={c.key} title={`${c.ticker} ${c.direction === "bearish" ? "PUT" : "CALL"} · ${c.confidenceTier} CONFIDENCE`} meta={c.strategyAgent}>
-                {/* COMPACT TRADE CARD — the exact contract + real prices at alert time. */}
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
-                  <StatusBadge tone={tierTone(c.confidenceTier)}>{c.confidenceTier} CONFIDENCE</StatusBadge>
-                  <StatusBadge tone={entryStatusTone(c.entryStatusLabel)}>{c.entryStatusLabel}</StatusBadge>
-                </div>
-                <KeyValue k="Contract" v={contractHeadline(c)} />
-                <KeyValue k="Expiration" v={c.contract?.expiration ? expiryLabel(c.contract.expiration) : "—"} />
-                <KeyValue k="DTE" v={c.contract?.dte != null ? String(c.contract.dte) : "—"} />
-                <KeyValue k="Stock" v={money(c.underlyingPrice)} />
-                <KeyValue
-                  k="Option"
-                  v={c.contract && (c.contract.bid != null || c.contract.ask != null)
-                    ? `${money(c.contract.bid)} bid / ${money(c.contract.ask)} ask (mid ${money(c.contract.mid)})`
-                    : "—"}
-                />
-                <KeyValue
-                  k="Estimated entry"
-                  v={c.estimatedEntry != null && c.entryStatusLabel === "ACTIONABLE NOW" ? money(c.estimatedEntry) : "NO VALID ENTRY YET"}
-                  tone={c.estimatedEntry != null && c.entryStatusLabel === "ACTIONABLE NOW" ? undefined : "warn"}
-                />
-                <KeyValue k="Horizon" v={c.horizon} />
-                {c.probability == null && c.contractScore != null && (
-                  <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>SETUP SCORE — NOT A WIN PROBABILITY: {c.contractScore}</div>
-                )}
-                {c.researchOnlyWarning && <p style={{ margin: "6px 0 0", fontSize: 12, opacity: 0.8 }}>🔬 {c.researchOnlyWarning}</p>}
-
-                {/* ADVANCED — technical detail, collapsed by default. */}
-                <details style={{ marginTop: 8 }}>
-                  <summary style={{ cursor: "pointer", fontSize: 12, opacity: 0.7 }}>Advanced</summary>
-                  <div style={{ marginTop: 6 }}>
-                    <div style={{ marginBottom: 6 }}><StatusBadge tone={tone(c.status)}>{c.status.replace(/_/g, " ")}</StatusBadge></div>
-                    {c.contract && (
-                      <>
-                        <KeyValue
-                          k="Greeks / liquidity"
-                          v={[
-                            c.contract.delta != null ? `Δ ${Math.abs(Number(c.contract.delta)).toFixed(2)}` : null,
-                            c.contract.iv != null ? `IV ${Number(c.contract.iv).toFixed(2)}` : null,
-                            c.contract.spreadPct != null ? `spread ${Number(c.contract.spreadPct).toFixed(2)}%` : null,
-                            c.contract.openInterest != null ? `OI ${c.contract.openInterest}` : null,
-                            c.contract.volume != null ? `vol ${c.contract.volume}` : null,
-                          ].filter(Boolean).join(" · ") || "—"}
-                        />
-                        <div style={{ fontSize: 11, opacity: 0.45, marginTop: 2 }}>{c.contract.optionSymbol ?? ""}</div>
-                      </>
-                    )}
-                    {c.waitFor && <KeyValue k="Next required condition" v={c.waitFor} />}
-                    {c.doNotEnter && <KeyValue k="Do not enter if" v={c.doNotEnter} />}
-                    {c.currently && <KeyValue k="Currently" v={c.currently} />}
-                    {c.alreadyHappened && <KeyValue k="Already happened (context)" v={c.alreadyHappened} />}
-                    <KeyValue k="Quote freshness" v={c.quoteFreshness} tone={c.quoteFreshness === "fresh" ? undefined : "warn"} />
-                    <KeyValue k="Setup score / rank" v={`${c.contractScore ?? "—"}${c.portfolioRank != null ? ` · rank ${c.portfolioRank.toFixed(1)}` : ""}`} />
-                    <KeyValue k="Evidence" v={`${c.evidenceStatus.replace(/_/g, " ")} (sample ${c.sampleSize})`} />
-                    <KeyValue k="Model" v={c.probability != null ? `${c.modelState} · p ${(c.probability * 100).toFixed(1)}%` : `${c.modelState.replace(/_/g, " ")} — no probability`} />
-                    <p style={{ margin: "6px 0 0", fontSize: 13, opacity: 0.85 }}>{c.reason}</p>
-                    {c.primaryBlockingReason && <KeyValue k="Blocked by" v={c.primaryBlockingReason} tone="warn" />}
-                    {c.insufficientEvidenceWarning && <p style={{ margin: "2px 0 0", fontSize: 12, opacity: 0.8 }}>ℹ {c.insufficientEvidenceWarning}</p>}
+          {/* Mobile cards */}
+          <div className="term-mobile-setups">
+            <div className="term-setup-cards">
+              {rows.slice(0, 10).map((r) => (
+                <button
+                  key={`m-${r.c.key}`}
+                  type="button"
+                  className="term-setup-card clickable"
+                  onClick={() => setExpanded(expanded === r.c.key ? null : r.c.key)}
+                >
+                  <div className="term-setup-card-top">
+                    <span className="cc-term-opp-sym">{r.c.ticker}</span>
+                    <span className={`cc-term-pill ${actionTone(r.finalAction)}`}>{r.finalAction}</span>
+                    <span className="term-action-score">{r.actionScore ?? "—"}</span>
                   </div>
-                </details>
-              </Card>
-            ))
-          )}
+                  <div className="term-setup-card-sparks">
+                    <TermSpark values={r.undSpark} width={60} height={16} fill />
+                    <TermSpark values={r.premSpark} width={60} height={16} />
+                  </div>
+                  <div className="term-setup-card-meta">
+                    SIGNAL {r.signalScore} · CONTRACT {r.contractState} · ENTRY {r.entryState}
+                  </div>
+                  <div className="term-setup-card-reason">{r.reason}</div>
+                  {expanded === r.c.key ? (
+                    <div className="term-drilldown">
+                      <p>{r.c.reason}</p>
+                      <p className="muted">{r.c.contract?.optionSymbol ?? "no contract"}</p>
+                      <p className="muted">Status {r.c.status} · quote {r.c.quoteFreshness}</p>
+                      {r.c.primaryBlockingReason ? <p className="bad">Block: {r.c.primaryBlockingReason}</p> : null}
+                    </div>
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {expanded ? (
+            <div className="cc-term-panel term-desktop-drill">
+              <div className="cc-term-panel-body">
+                {(() => {
+                  const r = rows.find((x) => x.c.key === expanded);
+                  if (!r) return null;
+                  const c = r.c;
+                  return (
+                    <>
+                      <strong>{c.ticker}</strong> · Technical drilldown
+                      <p>{c.reason}</p>
+                      <p className="cc-term-mono muted">{c.contract?.optionSymbol ?? "Contract data unavailable"}</p>
+                      <p className="muted">
+                        Δ {c.contract?.delta ?? "—"} · IV {c.contract?.iv ?? "—"} · OI {c.contract?.openInterest ?? "—"} · vol {c.contract?.volume ?? "—"}
+                      </p>
+                      <p className="muted">Evidence {c.evidenceStatus} (n={c.sampleSize}) · model {c.modelState}</p>
+                      {c.waitFor ? <p>Wait: {c.waitFor}</p> : null}
+                      {c.doNotEnter ? <p>Do not enter: {c.doNotEnter}</p> : null}
+                    </>
+                  );
+                })()}
+              </div>
+            </div>
+          ) : null}
         </>
       )}
-    </PageContainer>
+    </div>
   );
 }
 
 export default function CalloutsPage() {
   return (
-    <Suspense fallback={<PageContainer><Card title="Loading callouts"><LoadingState rows={4} /></Card></PageContainer>}>
+    <Suspense fallback={<div className="ui-page cc-term"><LoadingState rows={4} /></div>}>
       <CalloutsInner />
     </Suspense>
   );

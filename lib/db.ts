@@ -2214,17 +2214,38 @@ function migrate(db: Database.Database) {
       ["mfe_pct", "ALTER TABLE options_paper_trades ADD COLUMN mfe_pct REAL"],
       ["mae_pct", "ALTER TABLE options_paper_trades ADD COLUMN mae_pct REAL"],
       ["last_mark_return_pct", "ALTER TABLE options_paper_trades ADD COLUMN last_mark_return_pct REAL"],
+      // Aggressive 0DTE Research ledger (additive; never used by delivered/readiness paths).
+      ["strategy_family", "ALTER TABLE options_paper_trades ADD COLUMN strategy_family TEXT"],
+      ["exit_policy_version", "ALTER TABLE options_paper_trades ADD COLUMN exit_policy_version TEXT"],
+      ["time_bucket", "ALTER TABLE options_paper_trades ADD COLUMN time_bucket TEXT"],
+      ["market_regime", "ALTER TABLE options_paper_trades ADD COLUMN market_regime TEXT"],
+      ["contract_moneyness", "ALTER TABLE options_paper_trades ADD COLUMN contract_moneyness TEXT"],
+      ["delta_band", "ALTER TABLE options_paper_trades ADD COLUMN delta_band TEXT"],
+      ["account_risk_usd", "ALTER TABLE options_paper_trades ADD COLUMN account_risk_usd REAL"],
+      ["fingerprint", "ALTER TABLE options_paper_trades ADD COLUMN fingerprint TEXT"],
+      ["contract_alts_json", "ALTER TABLE options_paper_trades ADD COLUMN contract_alts_json TEXT"],
     ] as [string, string][]) if (!op.has(col)) db.exec(sql);
     // Backfill legacy rows to a QUARANTINE kind: pre-foundation trades cannot be proven as delivered
     // mirrors, so they must never count as subscriber performance — and they aren't Lab experiments
     // either, so they stay out of research learning too. Idempotent (only touches NULL rows).
     db.exec("UPDATE options_paper_trades SET paper_kind='LEGACY_UNCLASSIFIED', entry_source=COALESCE(entry_source,'pre_foundation') WHERE paper_kind IS NULL");
     db.prepare("CREATE INDEX IF NOT EXISTS idx_options_paper_kind ON options_paper_trades(paper_kind, alert_id)").run();
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_options_paper_kind_status ON options_paper_trades(paper_kind, status)").run();
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_options_paper_kind_fp ON options_paper_trades(paper_kind, fingerprint)").run();
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_options_paper_kind_entered ON options_paper_trades(paper_kind, entered_at_ms)").run();
     // STRUCTURAL separation: subscriber stats read ONLY the delivered view; the (future) Research Lab
     // reads ONLY the research view. A view physically cannot return the other kind — mixing is impossible.
     // Created here (after the ALTER) so paper_kind is guaranteed to exist. Repeat-safe.
     db.exec("CREATE VIEW IF NOT EXISTS options_paper_delivered AS SELECT * FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER'");
     db.exec("CREATE VIEW IF NOT EXISTS options_paper_research AS SELECT * FROM options_paper_trades WHERE paper_kind='RESEARCH_ONLY_PAPER'");
+    db.exec("CREATE VIEW IF NOT EXISTS options_paper_zero_dte_research AS SELECT * FROM options_paper_trades WHERE paper_kind='ZERO_DTE_RESEARCH_PAPER'");
+    db.exec(`CREATE TABLE IF NOT EXISTS paper_0dte_account_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      equity_usd REAL NOT NULL,
+      cash_usd REAL NOT NULL,
+      starting_balance_usd REAL NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    )`);
   }
   // Compact-alert foundation (additive, repeat-safe): frozen entry midpoint + deterministic targets +
   // session state persisted on each alert.

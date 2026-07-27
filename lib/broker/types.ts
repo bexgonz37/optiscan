@@ -12,6 +12,7 @@ export type AccountType =
   | "SUBSCRIBER_PAPER"
   | "RESEARCH_SHADOW"
   | "REPLAY_LAB"
+  | "ZERO_DTE_RESEARCH"
   | "LIVE_BROKER";
 
 export type AdapterKind = "PAPER_SIM" | "LIVE_BROKER";

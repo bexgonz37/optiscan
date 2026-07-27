@@ -22,6 +22,7 @@
 export const TOKEN_KEY = "optiscan:token";
 export const UNAUTHORIZED_EVENT = "optiscan:unauthorized";
 export const TOKEN_CHANGED_EVENT = "optiscan:token-changed";
+export const UNLOCK_PROMPT_EVENT = "optiscan:unlock-prompt";
 
 export function getToken(): string | null {
   try {
@@ -72,6 +73,17 @@ export function requestUnlock(): void {
   try {
     if (typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Open the unlock modal without implying a rejected token (header / settings). */
+export function promptUnlock(): void {
+  try {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent(UNLOCK_PROMPT_EVENT));
     }
   } catch {
     /* ignore */

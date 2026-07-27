@@ -110,6 +110,6 @@ test("Command Center no longer warns that the monitor is stopped merely because 
   assert.ok(!/not running in this process/.test(cc), "must not use the old false-warning copy");
   assert.ok(/\/api\/command-center/.test(cc), "must use authenticated canonical snapshot");
   assert.ok(/scanHeaders\(\)/.test(cc), "must send scan token");
-  assert.ok(/What is working right now/.test(cc), "must use independent-first primary section");
-  assert.ok(/Optional stock scanner/.test(cc), "stock/supervisor must be collapsed/optional");
+  assert.ok(/OPTISCAN|Live pipeline|mapSystemChips/.test(cc), "must use independent-first system strip / pipeline");
+  assert.ok(/Optional systems/.test(cc), "stock/supervisor must be collapsed/optional");
 });

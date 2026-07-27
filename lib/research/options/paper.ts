@@ -61,8 +61,9 @@ interface PaperDb { prepare(sql: string): { get?: (...a: any[]) => any; run: (..
 
 /** Audience classification — the STRUCTURAL separator for the AI Research Lab data foundation.
  *  DELIVERED_ALERT_PAPER is the exact mirror of a delivered Discord alert; RESEARCH_ONLY_PAPER is a
- *  shadow/experiment subscribers never see. They are never combined in any statistic. */
-export type PaperKind = "DELIVERED_ALERT_PAPER" | "RESEARCH_ONLY_PAPER";
+ *  shadow/experiment subscribers never see; ZERO_DTE_RESEARCH_PAPER is the Aggressive 0DTE Research
+ *  $100k ledger (simulated only). They are never combined in readiness or delivered stats. */
+export type PaperKind = "DELIVERED_ALERT_PAPER" | "RESEARCH_ONLY_PAPER" | "ZERO_DTE_RESEARCH_PAPER";
 export interface PaperPersistExtra {
   session?: string | null; coreBroad?: string | null; featureSnapshotJson?: string;
   paperKind?: PaperKind; alertId?: string | null; entrySource?: string; experimentId?: string | null; experimentVariant?: string | null;
@@ -79,7 +80,11 @@ const paperVals = (e: RealOptionEntry, extra: PaperPersistExtra, kind: PaperKind
  *  explicitly says so (see persistDeliveredMirrorOnDb). Flag-gated OnDb. */
 export function persistRealOptionPaperOnDb(db: PaperDb, e: RealOptionEntry, nowMs: number = Date.now(), extra: PaperPersistExtra = {}): void {
   const kind: PaperKind = extra.paperKind ?? "RESEARCH_ONLY_PAPER";
-  const entrySource = extra.entrySource ?? (kind === "DELIVERED_ALERT_PAPER" ? "discord_delivery" : "monitor_shadow");
+  const entrySource = extra.entrySource ?? (
+    kind === "DELIVERED_ALERT_PAPER" ? "discord_delivery"
+      : kind === "ZERO_DTE_RESEARCH_PAPER" ? "zero_dte_research"
+        : "monitor_shadow"
+  );
   const r = db.prepare(`INSERT INTO options_paper_trades (${PAPER_COLS}) VALUES (${PAPER_PLACEHOLDERS})`).run(...paperVals(e, extra, kind, entrySource, nowMs));
   const tradeId = Number((r as { lastInsertRowid?: number | bigint }).lastInsertRowid ?? 0);
   if (tradeId > 0) {

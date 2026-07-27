@@ -162,6 +162,47 @@ export function ensureServerBoot(): void {
   } catch (err) {
     console.warn("[shadow-outcomes] grader not started:", (err as Error)?.message);
   }
+  try {
+    // Aggressive 0DTE Research — simulated $100k ledger. HARD no-op unless PAPER_0DTE_RESEARCH_ENABLED=1.
+    // Never Discord; never readiness. Separate cadence from subscriber monitor.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { startZeroDteResearchRuntime } = require("@/lib/research/options/zero-dte-research");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { buildLiveOptionsDeps, buildLiveGradeDeps } = require("@/lib/research/options/live-deps");
+    const mon = buildLiveOptionsDeps();
+    const gradeDeps = buildLiveGradeDeps();
+    const started = startZeroDteResearchRuntime({
+      getDb: mon.getDb,
+      gradeDeps,
+      getUnderlying: async (symbol: string) => {
+        const batch = await mon.getUnderlyingBatch([symbol]);
+        const snap = batch.get(symbol.toUpperCase());
+        if (!snap || !(Number(snap.price) > 0)) return null;
+        return { price: Number(snap.price), session: String(snap.session ?? mon.session?.() ?? "") };
+      },
+      getChain: async (symbol: string) => {
+        const chain = await mon.getChain(symbol);
+        return (chain ?? []).map((c: any) => ({
+          optionSymbol: c.optionSymbol ?? c.option_symbol,
+          side: c.side,
+          strike: Number(c.strike),
+          expiration: String(c.expiration ?? ""),
+          dte: Number(c.dte ?? 0),
+          bid: c.bid ?? null,
+          ask: c.ask ?? null,
+          delta: c.delta ?? null,
+          volume: c.volume ?? null,
+          openInterest: c.openInterest ?? c.open_interest ?? null,
+          iv: c.iv ?? null,
+          quoteAgeMs: c.quoteAgeMs ?? null,
+          providerTimestamp: c.providerTimestamp ?? null,
+        }));
+      },
+    }, process.env);
+    if (started) console.info("[zero-dte-research] started");
+  } catch (err) {
+    console.warn("[zero-dte-research] not started:", (err as Error)?.message);
+  }
   // (removed) A boot-time block used to force-lower scanner gates to
   // 0.12%/min / 1.25x on every start — it silently undid any tightening the
   // user saved in Settings and was a root cause of the noisy-callout audit

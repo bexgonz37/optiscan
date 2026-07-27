@@ -20,6 +20,11 @@ const ACCOUNT_MAP: Record<string, { accountKey: string; accountType: AccountType
     accountType: "REPLAY_LAB",
     displayName: "Replay Lab",
   },
+  zero_dte_research: {
+    accountKey: "zero_dte_research",
+    accountType: "ZERO_DTE_RESEARCH",
+    displayName: "Aggressive 0DTE Research",
+  },
 };
 
 export function openingBalanceUsd(env: NodeJS.ProcessEnv = process.env): number {
@@ -27,8 +32,16 @@ export function openingBalanceUsd(env: NodeJS.ProcessEnv = process.env): number 
   return Number.isFinite(n) && n > 0 ? n : 1_000_000;
 }
 
+/** Opening deposit for the Aggressive 0DTE Research ledger (simulated). */
+export function zeroDteResearchOpeningBalanceUsd(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.PAPER_0DTE_STARTING_BALANCE_USD ?? "100000");
+  return Number.isFinite(n) && n > 0 ? n : 100_000;
+}
+
 export function resolveAccountKeyForOptionsPaperKind(paperKind: string | null | undefined): string {
-  return paperKind === "DELIVERED_ALERT_PAPER" ? "subscriber_paper" : "research_shadow";
+  if (paperKind === "DELIVERED_ALERT_PAPER") return "subscriber_paper";
+  if (paperKind === "ZERO_DTE_RESEARCH_PAPER") return "zero_dte_research";
+  return "research_shadow";
 }
 
 export function resolveAccountKeyForLegacyPortfolio(portfolio: string | null | undefined): string {
@@ -41,11 +54,12 @@ export function ensureBrokerAccount(db: BrokerDb, accountKey: string, env: NodeJ
   const existing = db.prepare(`SELECT * FROM broker_accounts WHERE account_key = ?`).get(accountKey) as BrokerAccountRow | undefined;
   if (existing) return existing;
   const cfg = ACCOUNT_MAP[accountKey] ?? ACCOUNT_MAP.subscriber_paper;
+  const deposit = accountKey === "zero_dte_research" ? zeroDteResearchOpeningBalanceUsd(env) : openingBalanceUsd(env);
   const { accountId } = openAccount(db, {
     accountKey: cfg.accountKey,
     accountType: cfg.accountType,
     displayName: cfg.displayName,
-    openingDeposit: openingBalanceUsd(env),
+    openingDeposit: deposit,
     metadata: { source: "dual_write_b1" },
   });
   return db.prepare(`SELECT * FROM broker_accounts WHERE id = ?`).get(accountId) as BrokerAccountRow;

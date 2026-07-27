@@ -67,11 +67,21 @@ const STATE_CLASS: Record<string, string> = {
 };
 
 function PaperPageInner() {
+  const [tab, setTab] = useState<"delivered" | "0dte" | "stock" | "shadow">("stock");
   const [data, setData] = useState<any>(null);
+  const [zeroDte, setZeroDte] = useState<any>(null);
+  const [deliveredChain, setDeliveredChain] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [recentAlerts, setRecentAlerts] = useState<any[]>([]);
   const [createNote, setCreateNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      const q = new URLSearchParams(window.location.search).get("tab");
+      if (q === "0dte" || q === "delivered" || q === "stock" || q === "shadow") setTab(q);
+    } catch { /* ignore */ }
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -81,6 +91,22 @@ function PaperPageInner() {
     } catch (e: any) {
       setError(e?.message ?? "load failed");
     }
+  }, []);
+
+  const loadZeroDte = useCallback(async () => {
+    try {
+      const res = await fetch("/api/research/options/zero-dte-research", { cache: "no-store", headers: scanHeaders() });
+      const d = await res.json();
+      if (d?.ok) setZeroDte(d);
+    } catch { /* best effort */ }
+  }, []);
+
+  const loadDelivered = useCallback(async () => {
+    try {
+      const res = await fetch("/api/research/options/paper-chain", { cache: "no-store", headers: scanHeaders() });
+      const d = await res.json();
+      if (d?.ok || d?.rows) setDeliveredChain(d);
+    } catch { /* best effort */ }
   }, []);
 
   const loadAlerts = useCallback(async () => {
@@ -94,9 +120,24 @@ function PaperPageInner() {
   useEffect(() => {
     load();
     loadAlerts();
-    const t = setInterval(load, 7_000);
+    loadZeroDte();
+    loadDelivered();
+    const t = setInterval(() => {
+      load();
+      if (tab === "0dte") loadZeroDte();
+      if (tab === "delivered") loadDelivered();
+    }, 7_000);
     return () => clearInterval(t);
-  }, [load, loadAlerts]);
+  }, [load, loadAlerts, loadZeroDte, loadDelivered, tab]);
+
+  const switchTab = (next: typeof tab) => {
+    setTab(next);
+    try {
+      const u = new URL(window.location.href);
+      u.searchParams.set("tab", next);
+      window.history.replaceState({}, "", u.toString());
+    } catch { /* ignore */ }
+  };
 
   const act = useCallback(async (id: number, action: "cancel" | "close") => {
     setBusyId(id);
@@ -146,13 +187,129 @@ function PaperPageInner() {
   return (
     <div className="page axiom-utility">
       <main className="main-col axiom-live">
+        <div className="paper-account-tabs" style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+          {([
+            ["delivered", "Delivered Options"],
+            ["0dte", "0DTE Research"],
+            ["stock", "Stock Paper"],
+            ["shadow", "Shadow / Historical"],
+          ] as const).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={`ui-btn ui-btn-sm${tab === id ? " ui-btn-primary" : ""}`}
+              onClick={() => switchTab(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {tab === "0dte" ? (
+          <section className="panel main">
+            <h2 className="section-title">Aggressive 0DTE Research — simulated only</h2>
+            <p className="muted text-sm">Separate $100k ledger. Never mixes with Discord-delivered alert performance or subscriber readiness.</p>
+            <p style={{ margin: "10px 0 14px" }}>
+              <a href="/paper/0dte" className="ui-btn ui-btn-primary" style={{ textDecoration: "none" }}>
+                Open full 0DTE Research terminal →
+              </a>
+            </p>
+            {!zeroDte ? <p className="muted">Loading research account…</p> : (
+              <>
+                <div className="axiom-strip paper-strip" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(120px,1fr))", gap: 8 }}>
+                  <StatTile label="Equity" value={dollars(zeroDte.snapshot?.account?.equityUsd)} />
+                  <StatTile label="Daily P&L" value={dollars(zeroDte.snapshot?.account?.dailyPnlUsd)} />
+                  <StatTile label="Unrealized" value={dollars(zeroDte.snapshot?.account?.unrealizedPnlUsd)} />
+                  <StatTile label="Realized" value={dollars(zeroDte.snapshot?.account?.realizedPnlUsd)} />
+                  <StatTile label="Open risk" value={dollars(zeroDte.snapshot?.account?.openRiskUsd)} />
+                  <StatTile label="Buying power" value={dollars(zeroDte.snapshot?.account?.buyingPowerUsd)} />
+                  <StatTile label="Trades today" value={String(zeroDte.snapshot?.today?.trades ?? 0)} />
+                  <StatTile label="SPY / QQQ" value={`${zeroDte.snapshot?.today?.spy ?? 0} / ${zeroDte.snapshot?.today?.qqq ?? 0}`} />
+                  <StatTile label="Win rate" value={zeroDte.snapshot?.performance?.winRate == null ? "—" : `${Math.round(zeroDte.snapshot.performance.winRate * 100)}%`} />
+                  <StatTile label="Profit factor" value={num(zeroDte.snapshot?.performance?.profitFactor, "", 2)} />
+                  <StatTile label="Best family" value={String(zeroDte.snapshot?.performance?.bestFamily ?? "—")} />
+                  <StatTile label="Worst family" value={String(zeroDte.snapshot?.performance?.worstFamily ?? "—")} />
+                </div>
+                <p className="muted text-sm" style={{ marginTop: 8 }}>
+                  Lane {zeroDte.config?.enabled ? "ARMED" : "IDLE (PAPER_0DTE_RESEARCH_ENABLED≠1)"} · graded {zeroDte.snapshot?.performance?.gradedSample ?? 0}
+                </p>
+                <table className="mini-table" style={{ marginTop: 12, width: "100%" }}>
+                  <thead>
+                    <tr>
+                      <th>Symbol</th><th>Side</th><th>Family</th><th>Entry</th><th>Unreal</th><th>MFE</th><th>MAE</th><th>Policy</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(zeroDte.snapshot?.openPositions ?? []).map((r: any) => (
+                      <tr key={r.id}>
+                        <td>
+                          <a href={`/paper/0dte/${r.id}`}>{r.symbol ?? "—"}</a>
+                        </td>
+                        <td>{r.side}</td>
+                        <td>{r.family}</td>
+                        <td>{r.entry != null ? `$${Number(r.entry).toFixed(2)}` : "—"}</td>
+                        <td>{num(r.unrealizedPct, "%")}</td>
+                        <td>{num(r.mfePct, "%")}</td>
+                        <td>{num(r.maePct, "%")}</td>
+                        <td>{r.exitPolicy ?? "—"}</td>
+                      </tr>
+                    ))}
+                    {(zeroDte.snapshot?.openPositions ?? []).length === 0 ? (
+                      <tr><td colSpan={8} className="muted">No open 0DTE research positions</td></tr>
+                    ) : null}
+                  </tbody>
+                </table>
+              </>
+            )}
+          </section>
+        ) : null}
+
+        {tab === "delivered" ? (
+          <section className="panel main">
+            <h2 className="section-title">Delivered Options</h2>
+            <p className="muted text-sm">Private Discord alerts and their DELIVERED_ALERT_PAPER mirrors only.</p>
+            <table className="mini-table" style={{ width: "100%" }}>
+              <thead>
+                <tr><th>Symbol</th><th>Status</th><th>Entry</th><th>Return</th><th>MFE</th><th>MAE</th><th>Health</th></tr>
+              </thead>
+              <tbody>
+                {(deliveredChain?.rows ?? deliveredChain?.detail?.rows ?? []).slice(0, 40).map((r: any) => (
+                  <tr key={r.alertId ?? r.id}>
+                    <td>{r.symbol ?? "—"}</td>
+                    <td>{r.paperStatus ?? "—"}</td>
+                    <td>{r.frozenEntry != null ? `$${Number(r.frozenEntry).toFixed(2)}` : "—"}</td>
+                    <td>{num(r.latestMarkReturnPct ?? r.returnPct, "%")}</td>
+                    <td>{num(r.mfePct, "%")}</td>
+                    <td>{num(r.maePct, "%")}</td>
+                    <td>{r.graderHealth ?? "—"}</td>
+                  </tr>
+                ))}
+                {(deliveredChain?.rows ?? []).length === 0 ? (
+                  <tr><td colSpan={7} className="muted">No delivered mirrors in sample</td></tr>
+                ) : null}
+              </tbody>
+            </table>
+          </section>
+        ) : null}
+
+        {tab === "shadow" ? (
+          <section className="panel main">
+            <h2 className="section-title">Shadow / Historical</h2>
+            <p className="muted text-sm">
+              Replay, modeled, blocked, and research-only historical analysis. See{" "}
+              <a href="/shadow-soak">Shadow Soak</a> and Pipeline Health for deep diagnostics.
+              Legacy RESEARCH_ONLY_PAPER rows stay here — never in Delivered or 0DTE Research tabs.
+            </p>
+          </section>
+        ) : null}
+
+        {tab === "stock" ? (
+        <>
         <CardTip metric="paperTrading" className="utility-hero">
           <section className="panel main utility-intro">
-            <h2 className="section-title"><InfoTip metric="paperTrading">Paper trading</InfoTip></h2>
+            <h2 className="section-title"><InfoTip metric="paperTrading">Stock Paper</InfoTip></h2>
             <p className="muted text-sm">
-              Fully autonomous paper trading — deterministic rules only, no AI approval step required. Fresh TRADE callouts auto-enter when
-              <code> PAPER_AUTO_ENTRY=1</code>; hot symbols re-price every ~7s via the scanner&apos;s own chain refresh;
-              everything else sweeps every {engine?.sweepMs ? Math.round(engine.sweepMs / 1000) : 30}s.
+              Fully autonomous stock/legacy paper trading — deterministic rules only. Separate from Delivered Options and Aggressive 0DTE Research.
             </p>
             <div className="utility-badges">
               {account ? <span className="pill badge">Paper account {dollars(account.startingBalance)}</span> : null}
@@ -675,6 +832,8 @@ function PaperPageInner() {
               );})}
             </div>
           </Panel>
+        ) : null}
+        </>
         ) : null}
       </main>
     </div>

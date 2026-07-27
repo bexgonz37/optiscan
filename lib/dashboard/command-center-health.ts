@@ -12,9 +12,13 @@ export interface HealthLine {
 
 export function overviewAuthFailed(ov: Record<string, unknown> | null | undefined): boolean {
   if (!ov) return true;
-  if (ov.ok === false) return true;
   if (typeof ov.error === "string" && /unauthor|token|forbidden/i.test(ov.error)) return true;
   if (ov.status === 401 || ov.code === 401) return true;
+  // Canonical command-center snapshot uses `independent`, not overview's `independent_options`.
+  if (ov.sourceEndpoint === "/api/command-center" || ov.independent != null) {
+    return false;
+  }
+  if (ov.ok === false) return true;
   // Token-gated overview without independent_options almost always means auth failure or old schema.
   if (ov.independent_options == null && ov.provider == null && ov.scanner == null) return true;
   return false;

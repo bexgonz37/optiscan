@@ -106,12 +106,35 @@ export async function GET(req: Request) {
     const { buildPaperChainDiagnostic } = require("@/lib/research/options/paper-chain");
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { optionsGraderState, readGradingBacklogOnDb } = require("@/lib/research/options/grade");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { aggregatePaperSample } = require("@/lib/dashboard/command-center-view");
     const cutoff = readinessSampleCutoffMs(process.env);
     const chain = buildPaperChainDiagnostic(db, process.env, 40, cutoff);
     const grader = optionsGraderState();
     const backlog = readGradingBacklogOnDb(db);
     const open = chain.rows.filter((r: any) => r.paperStatus === "ENTERED");
     const closed = chain.rows.filter((r: any) => r.paperStatus === "EXITED");
+    const sample = aggregatePaperSample(chain.rows);
+
+    // Read-only equity series from closed delivered mirrors (cumulative return %).
+    let equityCurve: { t: number; equityPct: number; symbol?: string }[] = [];
+    try {
+      const exits = db.prepare(
+        `SELECT p.exited_at_ms AS t, p.return_pct AS ret, a.candidate_symbol AS symbol
+           FROM options_paper_trades p
+           LEFT JOIN options_alerts a ON a.alert_id = p.alert_id
+          WHERE p.paper_kind='DELIVERED_ALERT_PAPER' AND p.status='EXITED'
+            AND p.return_pct IS NOT NULL AND p.exited_at_ms IS NOT NULL
+          ORDER BY p.exited_at_ms ASC
+          LIMIT 80`,
+      ).all() as { t: number; ret: number; symbol?: string }[];
+      let cum = 0;
+      equityCurve = exits.map((e) => {
+        cum += Number(e.ret);
+        return { t: Number(e.t), equityPct: +cum.toFixed(4), symbol: e.symbol };
+      });
+    } catch { /* optional */ }
+
     return {
       cutoffMs: cutoff,
       openDelivered: open.length,
@@ -129,6 +152,8 @@ export async function GET(req: Request) {
       },
       backlog,
       unhealthy: chain.rows.filter((r: any) => r.graderHealth === "stuck_open" || r.graderHealth === "missing_case" || r.graderHealth === "missing_mirror").length,
+      sample,
+      equityCurve,
     };
   }, null);
 
@@ -165,6 +190,180 @@ export async function GET(req: Request) {
       } catch { /* optional */ }
     }
     return { enabled, webhookConfigured: webhook, pendingEvents: pending, drafts, latest };
+  }, null);
+
+  const ai = safe("ai", () => {
+    if (!db) return null;
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { aiOverviewOnDb } = require("@/lib/ai/overview");
+    const ov = aiOverviewOnDb(db, process.env, now);
+    const pending = ov.proposals?.pending ?? [];
+    const latestWeekly = ov.weeklyHistory?.[0] ?? null;
+    const latestRec = pending[0] ?? ov.proposals?.accepted?.[0] ?? null;
+    return {
+      nightlyStatus: ov.schedule?.lastNightlyStatus ?? null,
+      nightlyAtMs: ov.schedule?.lastNightlyAtMs ?? null,
+      nightlyDay: ov.schedule?.lastNightlyDay ?? null,
+      weeklyStatus: latestWeekly?.narrativeStatus ?? null,
+      weeklyAtMs: latestWeekly?.createdAtMs ?? null,
+      pendingApproval: pending.length,
+      latestRecommendation: latestRec
+        ? {
+            id: latestRec.id,
+            title: latestRec.title ?? null,
+            status: latestRec.status ?? null,
+          }
+        : null,
+      evidenceSampleSize: Number(ov.evidenceLearning?.examples?.total ?? 0) || null,
+      enabled: Boolean(ov.flags?.enabled),
+    };
+  }, null);
+
+  const zeroDteResearch = safe("zeroDteResearch", () => {
+    if (!db) return null;
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { buildZeroDteResearchSnapshot, zeroDteResearchConfig } = require("@/lib/research/options/zero-dte-research");
+    const cfg = zeroDteResearchConfig(process.env);
+    const snap = buildZeroDteResearchSnapshot(db, process.env, now);
+    return {
+      enabled: cfg.enabled,
+      label: snap.label,
+      account: snap.account,
+      today: snap.today,
+      bestOpen: snap.bestOpen,
+      worstOpen: snap.worstOpen,
+      openCount: snap.openPositions?.length ?? 0,
+      winRate: snap.performance?.winRate ?? null,
+      profitFactor: snap.performance?.profitFactor ?? null,
+      equityCurve: snap.equityCurve ?? null,
+      openRiskUsd: snap.account?.openRiskUsd ?? null,
+    };
+  }, null);
+
+  const rankedSetups = safe("rankedSetups", () => {
+    if (!db) return [];
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { buildRankedSetupsNow } = require("@/lib/research/options/ranked-setups");
+    return buildRankedSetupsNow(db, now, 12);
+  }, []);
+
+  const indices = safe("indices", () => {
+    // Prefer last known underlying from open paper / alerts — never fabricate live Massive quotes here.
+    if (!db) return { spy: null, qqq: null };
+    const lastUnd = (sym: string) => {
+      let price: number | null = null;
+      let asOfMs: number | null = null;
+      let source: "paper_cache" | "alert_cache" | "unavailable" = "unavailable";
+      try {
+        const row = db.prepare(
+          `SELECT underlying_price p, updated_at_ms t FROM options_paper_trades
+           WHERE option_symbol LIKE ? AND underlying_price IS NOT NULL
+           ORDER BY updated_at_ms DESC LIMIT 1`,
+        ).get(`O:${sym}%`) as { p: number; t: number } | undefined;
+        if (row?.p != null) {
+          price = Number(row.p);
+          asOfMs = Number(row.t);
+          source = "paper_cache";
+        }
+      } catch { /* */ }
+      if (price == null) {
+        try {
+          const row = db.prepare(
+            `SELECT delivered_underlying p, COALESCE(sent_at_ms, updated_at_ms) t FROM options_alerts
+             WHERE candidate_symbol=? AND delivered_underlying IS NOT NULL
+             ORDER BY COALESCE(sent_at_ms, updated_at_ms) DESC LIMIT 1`,
+          ).get(sym) as { p: number; t: number } | undefined;
+          if (row?.p != null) {
+            price = Number(row.p);
+            asOfMs = Number(row.t);
+            source = "alert_cache";
+          }
+        } catch { /* */ }
+      }
+      let spark: number[] = [];
+      try {
+        spark = (db.prepare(
+          `SELECT delivered_underlying p FROM options_alerts
+           WHERE candidate_symbol=? AND delivered_underlying IS NOT NULL
+           ORDER BY COALESCE(sent_at_ms, updated_at_ms) ASC LIMIT 24`,
+        ).all(sym) as { p: number }[]).map((r) => Number(r.p)).filter(Number.isFinite);
+      } catch { /* */ }
+      return {
+        symbol: sym,
+        price,
+        asOfMs,
+        source,
+        spark,
+        // Derived UI states from cached pipeline — not live Massive tape.
+        momentum: spark.length >= 2 ? (spark[spark.length - 1]! >= spark[0]! ? "UP" : "DOWN") : "UNKNOWN",
+        volumeState: "UNAVAILABLE",
+        volatilityState: "UNAVAILABLE",
+        vwapRelation: "UNAVAILABLE",
+      };
+    };
+    return { spy: lastUnd("SPY"), qqq: lastUnd("QQQ") };
+  }, { spy: null, qqq: null });
+
+  const quantSummary = safe("quantSummary", () => {
+    if (!db) return null;
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { buildQuantLaneReport } = require("@/lib/research/options/quant-lanes");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { buildQuantLabSnapshot } = require("@/lib/research/options/quant-lab");
+    const report = buildQuantLaneReport(db, process.env);
+    const delivered = report.lanes.find((l: { lane: string }) => l.lane === "delivered_alert_paper") ?? null;
+    const zeroDte = report.lanes.find((l: { lane: string }) => l.lane === "zero_dte_research_paper") ?? null;
+    let pulse: Record<string, unknown> | null = null;
+    try {
+      const lab = buildQuantLabSnapshot(db, process.env);
+      const lane = lab?.lanes?.delivered ?? lab;
+      const fam = lane?.breakdowns?.strategyFamily ?? [];
+      const tod = lane?.breakdowns?.timeOfDay ?? [];
+      const best = [...fam].sort((a: any, b: any) => (b.expectancy ?? -999) - (a.expectancy ?? -999))[0];
+      const worst = [...fam].sort((a: any, b: any) => (a.expectancy ?? 999) - (b.expectancy ?? 999))[0];
+      const bestBucket = [...tod].sort((a: any, b: any) => (b.expectancy ?? -999) - (a.expectancy ?? -999))[0];
+      pulse = {
+        expectancy: lane?.metrics?.expectancy ?? delivered?.expectancy ?? null,
+        profitFactor: lane?.metrics?.profitFactor ?? delivered?.profitFactor ?? null,
+        captureEfficiency: lane?.metrics?.captureEfficiency ?? null,
+        bestStrategy: best?.key ?? null,
+        worstStrategy: worst?.key ?? null,
+        bestTimeBucket: bestBucket?.key ?? null,
+        sampleSize: lane?.sampleSize ?? delivered?.sampleSize ?? null,
+        confidence: lane?.confidence ?? delivered?.confidence ?? null,
+      };
+    } catch { /* optional */ }
+    return {
+      generatedAtMs: report.generatedAtMs,
+      delivered: delivered
+        ? {
+            sampleSize: delivered.sampleSize,
+            winRate: delivered.winRate,
+            expectancy: delivered.expectancy,
+            profitFactor: delivered.profitFactor,
+            confidence: delivered.confidence,
+            mfeAvg: delivered.mfeAvg,
+            maeAvg: delivered.maeAvg,
+          }
+        : null,
+      zeroDteResearch: zeroDte
+        ? {
+            sampleSize: zeroDte.sampleSize,
+            winRate: zeroDte.winRate,
+            expectancy: zeroDte.expectancy,
+            profitFactor: zeroDte.profitFactor,
+            confidence: zeroDte.confidence,
+          }
+        : null,
+      pulse,
+      href: "/quant",
+    };
+  }, null);
+
+  const providerBudget = safe("providerBudget", () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { estimateMassiveRequestBudget } = require("@/lib/research/options/provider-budget");
+    return estimateMassiveRequestBudget(process.env);
   }, null);
 
   const commit = safe("commit", () => ({
@@ -213,6 +412,12 @@ export async function GET(req: Request) {
       : null,
     paper,
     content,
+    ai,
+    zeroDteResearch,
+    rankedSetups,
+    indices,
+    quantSummary,
+    providerBudget,
     stock,
   });
 }

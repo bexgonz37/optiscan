@@ -61,6 +61,8 @@ export function readinessEligibleAlertWhere(alias = "a"): { sql: string; cutoffM
     `${p}entry_mid IS NOT NULL`,
     `EXISTS (SELECT 1 FROM options_paper_trades p WHERE p.alert_id=${p}alert_id AND p.paper_kind='DELIVERED_ALERT_PAPER')`,
     `(SELECT COUNT(*) FROM options_paper_trades p2 WHERE p2.alert_id=${p}alert_id AND p2.paper_kind='DELIVERED_ALERT_PAPER') = 1`,
+    // Defense in depth: Aggressive 0DTE Research ledger must never enter readiness.
+    `NOT EXISTS (SELECT 1 FROM options_paper_trades pz WHERE pz.alert_id=${p}alert_id AND pz.paper_kind='ZERO_DTE_RESEARCH_PAPER')`,
     `NOT EXISTS (SELECT 1 FROM opportunity_cases oc WHERE oc.opportunity_id=${p}opportunity_case_id AND oc.source_path IN ('shadow','research_only'))`,
   ].join(" AND ");
   return { sql, cutoffMs };

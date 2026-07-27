@@ -9,6 +9,7 @@ import { MobileBottomNav } from "@/components/MobileBottomNav";
 import { ComplianceFooter } from "@/components/ComplianceFooter";
 import { AxiomShell } from "@/components/AxiomShell";
 import { UnlockGate } from "@/components/UnlockGate";
+import { UiReviewBanner } from "@/components/UiReviewBanner";
 
 const chakra = Chakra_Petch({
   subsets: ["latin"],
@@ -43,6 +44,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         <ToastProvider>
+          <UiReviewBanner />
           <AxiomShell>
             <div className="app-shell">
               {children}

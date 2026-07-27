@@ -8,6 +8,7 @@ export type QuantLane =
   | "shadow_would_send"
   | "shadow_would_block"
   | "research_only_paper"
+  | "zero_dte_research_paper"
   | "historical_replay"
   | "supervisor_observations";
 
@@ -233,6 +234,7 @@ export function buildQuantLaneReport(db: QuantDb, env: NodeJS.ProcessEnv = proce
       shadowLaneMetrics(db, true, "shadow_would_send", "Shadow would-send"),
       shadowLaneMetrics(db, false, "shadow_would_block", "Shadow would-block"),
       paperLaneMetrics(db, "RESEARCH_ONLY_PAPER", "research_only_paper", "Research-only paper"),
+      paperLaneMetrics(db, "ZERO_DTE_RESEARCH_PAPER", "zero_dte_research_paper", "0DTE research paper"),
       {
         lane: "historical_replay",
         label: "Historical replay",

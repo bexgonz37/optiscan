@@ -13,15 +13,20 @@ test("home page renders the Command Center, not the live scanner grid", () => {
   assert.ok(!/LivePageTabs/.test(page), "live scanner grid must not be the home page");
 });
 
-test("Command Center has independent-first sections", () => {
+test("Command Center has trader-first terminal sections", () => {
   const cc = read("components/CommandCenter.tsx");
   for (const section of [
-    "What is working right now",
-    "Independent Options",
-    "Paper Trading",
-    "Content Engine",
-    "Subscriber Readiness",
-    "Optional stock scanner",
+    "Highest-quality setups",
+    "Delivered equity",
+    "0DTE Research",
+    "Quant pulse",
+    "Pipeline funnel",
+    "Open positions",
+    "Live accounts",
+    "Content",
+    "AI advisory",
+    "Paid-beta",
+    "cc-term-optional",
   ]) {
     assert.ok(cc.includes(section), `missing section: ${section}`);
   }

@@ -1475,6 +1475,18 @@ tbody td:first-child {
 @keyframes slideout {
   to { transform: translateX(30px); opacity: 0; }
 }
+@media (max-width: 768px) {
+  #toasts {
+    right: 12px;
+    left: 12px;
+    bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+    align-items: stretch;
+  }
+  .toast {
+    min-width: 0;
+    max-width: none;
+  }
+}
 
 ::-webkit-scrollbar {
   width: 9px;
@@ -2101,7 +2113,7 @@ tr.clickable {
   }
   .mobile-bottom-links {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 6px;
   }
   .mobile-bottom-link {

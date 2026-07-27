@@ -72,7 +72,7 @@ function NavLinks({ items, isActive }: { items: NavItem[]; isActive: (href: stri
     <>
       {items.map((item) => (
         <Link
-          key={item.href}
+          key={`${item.href}:${item.label}`}
           href={item.href}
           prefetch
           className={`navitem${isActive(item.href) ? " on" : ""}${item.disabled ? " dis" : ""}`}

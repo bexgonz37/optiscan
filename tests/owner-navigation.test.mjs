@@ -25,38 +25,39 @@ test("all routes still have a page (nothing removed)", () => {
   }
 });
 
-// ── owner mode is the default: DAILY vs ADVANCED ────────────────────────────
-test("DAILY nav holds exactly the six owner destinations", () => {
-  const daily = shell.match(/const DAILY_NAV[\s\S]*?\];/)[0];
-  for (const href of ['"/"', '"/callouts"', '"/paper"', '"/performance"', '"/data"', '"/guide"']) {
-    assert.ok(daily.includes(href), `DAILY missing ${href}`);
+// ── owner mode is the default: PRODUCT vs ADVANCED DIAGNOSTICS ──────────────
+test("PRODUCT nav holds the control-room owner destinations", () => {
+  const product = shell.match(/const PRODUCT_NAV[\s\S]*?\];/)[0];
+  for (const href of ['"/"', '"/callouts"', '"/quant"', '"/paper"', '"/paper/0dte"', '"/scanner"', '"/intelligence"', '"/content-drafts"', '"/ai"']) {
+    assert.ok(product.includes(href), `PRODUCT missing ${href}`);
   }
-  // Advanced-only routes must NOT be in DAILY.
-  for (const href of ['"/watchlist"', '"/quant"', '"/settings"', '"/improvement"']) {
-    assert.ok(!daily.includes(href), `DAILY should not contain ${href}`);
+  // Deep diagnostics must NOT be in PRODUCT primary list.
+  for (const href of ['"/watchlist"', '"/improvement"', '"/data"', '"/guide"', '"/settings"']) {
+    assert.ok(!product.includes(href), `PRODUCT should not contain ${href}`);
   }
 });
 
 test("ADVANCED nav holds the advanced tools", () => {
   const adv = shell.match(/const ADVANCED_NAV[\s\S]*?\];/)[0];
-  for (const href of ['"/watchlist"', '"/quant"', '"/research-learning"', '"/improvement"', '"/settings"']) {
+  for (const href of ['"/watchlist"', '"/research-learning"', '"/improvement"', '"/data"', '"/guide"', '"/settings"']) {
     assert.ok(adv.includes(href), `ADVANCED missing ${href}`);
   }
+  assert.ok(adv.includes('"/pipeline-health"'), "Pipeline diagnostics belong in ADVANCED");
+  assert.ok(!adv.includes('"/quant"'), "Quant Lab belongs in PRODUCT");
 });
 
 test("ADVANCED section is collapsible and collapsed by default", () => {
-  assert.match(shell, /title:\s*"ADVANCED TOOLS"/);
-  const block = shell.match(/title:\s*"ADVANCED TOOLS"[\s\S]*?\}/)[0];
+  assert.match(shell, /title:\s*"ADVANCED DIAGNOSTICS"/);
+  const block = shell.match(/title:\s*"ADVANCED DIAGNOSTICS"[\s\S]*?\}/)[0];
   assert.match(block, /collapsible:\s*true/);
   assert.match(block, /collapsedByDefault:\s*true/);
-  // NavRail actually honors collapsedByDefault (open state derives from it).
   assert.match(navrail, /useState\(!collapsedByDefault\)/);
   assert.match(navrail, /aria-expanded=\{open\}/);
 });
 
-test("DAILY group is not collapsible (always visible)", () => {
-  const daily = shell.match(/\{\s*title:\s*"DAILY"[\s\S]*?\}/)[0];
-  assert.ok(!/collapsible/.test(daily), "DAILY must stay expanded");
+test("PRODUCT group is not collapsible (always visible)", () => {
+  const product = shell.match(/\{\s*title:\s*"PRODUCT"[\s\S]*?\}/)[0];
+  assert.ok(!/collapsible/.test(product), "PRODUCT must stay expanded");
 });
 
 // ── Improvement Agent hidden/inactive when automation off ───────────────────
@@ -67,11 +68,10 @@ test("Improvement Agent is marked inactive when automation is disabled", () => {
 });
 
 // ── mobile navigation ───────────────────────────────────────────────────────
-test("mobile bottom nav points at owner destinations and consolidates callouts", () => {
-  for (const href of ['"/"', '"/callouts"', '"/data"', '"/guide"']) {
+test("mobile bottom nav points at product destinations and consolidates callouts", () => {
+  for (const href of ['"/"', '"/callouts"', '"/quant"', '"/paper/0dte"', '"/pipeline-health"']) {
     assert.ok(mobile.includes(href), `mobile nav missing ${href}`);
   }
-  // Old /alerts and /swing map to the Callouts tab for active state.
   assert.match(mobile, /href === "\/callouts"[\s\S]*?"\/alerts"[\s\S]*?"\/swing"/);
 });
 
@@ -86,8 +86,8 @@ test("legacy /alerts and /swing map to the consolidated Callouts destination", (
 
 // ── Callouts page exposes every horizon as a tab ─────────────────────────────
 test("Callouts page exposes every required tab", () => {
-  for (const label of ["All", "0DTE", "1–5 DTE", "6–10 DTE", "11–35 DTE", "36–90 DTE",
-    "Momentum Stocks", "Put Research", "Rejected / Blocked", "Swing Research"]) {
+  for (const label of ["All", "0DTE", "1–5", "6–10", "11–35", "36–90",
+    "Puts", "Blocked", "Swing"]) {
     assert.ok(callouts.includes(`"${label}"`), `Callouts tab missing: ${label}`);
   }
   // Deep-link support so redirects can target a filter.
@@ -154,6 +154,9 @@ test("UnlockGate is mounted globally and asks for the token privately", () => {
   assert.match(unlock, /Unlock OptiScan/);
   assert.match(unlock, /type="password"/); // token entry is masked
   assert.match(unlock, /This dashboard needs your private OptiScan access token/);
+  assert.match(unlock, /if \(!open\) return null/);
+  assert.ok(!/unlock-fab/.test(unlock), "floating FAB removed — use header unlock");
+  assert.match(shell, /HeaderUnlock/);
   // Developer instructions must NOT appear in the owner unlock flow.
   assert.ok(!/npm install|localStorage|better-sqlite3/i.test(unlock), "no dev instructions in unlock UI");
 });

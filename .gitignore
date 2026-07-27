@@ -40,3 +40,10 @@ dev-server*.log
 
 # generated replay / forensic outputs (fixtures may be committed separately)
 scripts/replay-subscriber-week-output.json
+
+# UI review screenshots and local demo DB artifacts — never ship to production
+artifacts/terminal-review/
+*.demo.db
+scripts/railway-*.json
+scripts/env-map-*.json
+scripts/env-map-report.txt

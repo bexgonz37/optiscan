@@ -5,33 +5,36 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * Navigation spec (Phase 5). Source-spec tests (client components can't run in
- * the node test runner). Lock the simplified primary nav AND guarantee that
- * renamed/removed routes still resolve via redirects — no dead links.
+ * Navigation spec — product hierarchy + advanced diagnostics.
+ * Source-spec tests (client components can't run in the node test runner).
  */
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => readFileSync(join(root, p), "utf8");
 
-test("owner-mode nav lists the daily + advanced destinations", () => {
+test("product nav lists the trader-facing destinations", () => {
   const shell = read("components/AxiomShell.tsx");
-  // Owner Mode is the default: a short DAILY list + a collapsed ADVANCED group.
-  const daily = [
+  const product = [
     ["/", "Command Center"],
-    ["/callouts", "Callouts"],
-    ["/paper", "Paper Trading"],
-    ["/performance", "Performance"],
-    ["/data", "System Health"],
-    ["/guide", "Guide"],
+    ["/callouts", "Live Options"],
+    ["/quant", "Quant Lab"],
+    ["/paper", "Paper & Research"],
+    ["/paper/0dte", "0DTE Research"],
+    ["/scanner", "Scanner"],
+    ["/intelligence", "Strategy Lab"],
+    ["/content-drafts", "Content Drafts"],
+    ["/ai", "AI Advisory"],
   ];
   const advanced = [
+    ["/pipeline-health", "Pipeline Diagnostics"],
     ["/watchlist", "Watchlist"],
-    ["/quant", "Research & Backtesting"],
     ["/research-learning", "Research & Learning"],
     ["/improvement", "Improvement Agent"],
+    ["/data", "System Health"],
+    ["/guide", "Guide"],
     ["/settings", "Settings"],
   ];
-  for (const [href, label] of [...daily, ...advanced]) {
+  for (const [href, label] of [...product, ...advanced]) {
     assert.ok(shell.includes(`href: "${href}"`), `nav missing href ${href}`);
     assert.ok(shell.includes(label), `nav missing label "${label}"`);
   }
@@ -45,7 +48,7 @@ test("new Watchlist and Performance pages exist", () => {
 test("renamed / removed routes still resolve via redirects (no dead links)", () => {
   const redirects = {
     "app/stocks/page.tsx": "/watchlist",
-    "app/now/page.tsx": "/scanner", // live view relocated when "/" became the Command Center
+    "app/now/page.tsx": "/scanner",
     "app/review/page.tsx": "/alerts",
   };
   for (const [file, target] of Object.entries(redirects)) {

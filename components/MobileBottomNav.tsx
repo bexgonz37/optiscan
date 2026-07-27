@@ -7,16 +7,16 @@ import { useEffect, useState } from "react";
 
 const ITEMS = [
   { href: "/", label: "Home", icon: "◎" },
-  { href: "/callouts", label: "Callouts", icon: "⚡" },
-  { href: "/paper", label: "Paper", icon: "📄" },
-  { href: "/data", label: "Health", icon: "✚" },
-  { href: "/guide", label: "Guide", icon: "?" },
+  { href: "/callouts", label: "Live", icon: "⚡" },
+  { href: "/quant", label: "Quant", icon: "Σ" },
+  { href: "/paper/0dte", label: "0DTE", icon: "◈" },
+  { href: "/pipeline-health", label: "More", icon: "☰" },
 ] as const;
 
 const SESSION_HINT: Record<MarketSession, string> = {
   regular: "0DTE live",
-  premarket: "Callouts 9:30 ET",
-  afterhours: "Callouts 9:30 ET",
+  premarket: "Alerts 9:30 ET",
+  afterhours: "Alerts 9:30 ET",
   closed: "Closed",
 };
 

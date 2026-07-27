@@ -24,11 +24,17 @@ function hasTable(db: ChainDb, name: string): boolean {
 export interface PaperChainRow {
   alertId: string;
   symbol: string;
+  side: string | null;
+  strategy: string | null;
+  optionSymbol: string | null;
+  entryQuality: string | null;
   sentAtMs: number | null;
+  ageMs: number | null;
   discordMessageId: string | null;
   opportunityCaseId: string | null;
   paperTradeId: number | null;
   frozenEntry: number | null;
+  markPrice: number | null;
   frozenT1: number | null;
   frozenT2: number | null;
   frozenStop: number | null;
@@ -147,14 +153,22 @@ export function buildPaperChainDiagnostic(
     if (!alert.discord_message_id) warnings.push("missing_opening_discord_message_id");
     if (paper?.status === "ENTERED" && paper.last_mark_return_pct == null) warnings.push("no_recent_marks");
 
+    const sentAtMs = alert.sent_at_ms != null ? Number(alert.sent_at_ms) : null;
+    const frozenEntry = alert.entry_mid != null ? Number(alert.entry_mid) : (paper?.entry_fill != null ? Number(paper.entry_fill) : null);
     out.rows.push({
       alertId,
       symbol: String(alert.candidate_symbol ?? ""),
-      sentAtMs: alert.sent_at_ms != null ? Number(alert.sent_at_ms) : null,
+      side: alert.side != null ? String(alert.side) : null,
+      strategy: alert.strategy != null ? String(alert.strategy) : null,
+      optionSymbol: alert.option_symbol != null ? String(alert.option_symbol) : (paper?.option_symbol != null ? String(paper.option_symbol) : null),
+      entryQuality: alert.entry_quality_verdict != null ? String(alert.entry_quality_verdict) : null,
+      sentAtMs,
+      ageMs: sentAtMs != null ? Math.max(0, nowMs - sentAtMs) : null,
       discordMessageId: alert.discord_message_id != null ? String(alert.discord_message_id) : null,
       opportunityCaseId: caseId,
       paperTradeId: paper?.id != null ? Number(paper.id) : null,
-      frozenEntry: alert.entry_mid != null ? Number(alert.entry_mid) : (paper?.entry_fill != null ? Number(paper.entry_fill) : null),
+      frozenEntry,
+      markPrice: mark,
       frozenT1: alert.target_t1 != null ? Number(alert.target_t1) : null,
       frozenT2: alert.target_t2 != null ? Number(alert.target_t2) : null,
       frozenStop: alert.target_stop != null ? Number(alert.target_stop) : null,

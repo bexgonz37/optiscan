@@ -62,6 +62,7 @@ function audienceToAccountKey(audience: string | null | undefined): string | nul
   if (!audience) return null;
   const a = audience.toLowerCase();
   if (a === "delivered" || a === "subscriber" || a === "subscriber_paper") return "subscriber_paper";
+  if (a === "zero_dte" || a === "zero_dte_research" || a === "0dte") return "zero_dte_research";
   if (a === "research" || a === "shadow" || a === "research_shadow") return "research_shadow";
   if (a === "replay" || a === "replay_lab") return "replay_lab";
   return null;

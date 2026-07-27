@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  getToken, setToken, apiFetch, UNAUTHORIZED_EVENT,
+  setToken, apiFetch, UNAUTHORIZED_EVENT, UNLOCK_PROMPT_EVENT,
 } from "@/lib/client-auth";
 
 /**
@@ -45,8 +45,13 @@ export function UnlockGate() {
   // Open on any 401 raised by the shared apiFetch helper.
   useEffect(() => {
     const onUnauthorized = () => openPrompt("Your access token was rejected. Enter the current token to continue.");
+    const onPrompt = () => openPrompt();
     window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
-    return () => window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    window.addEventListener(UNLOCK_PROMPT_EVENT, onPrompt);
+    return () => {
+      window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+      window.removeEventListener(UNLOCK_PROMPT_EVENT, onPrompt);
+    };
   }, [openPrompt]);
 
   // First-load probe: if the server is gated and we can't reach it authorized,
@@ -88,20 +93,7 @@ export function UnlockGate() {
     }
   }, [value]);
 
-  if (!open) {
-    // A discreet re-entry affordance only appears if we have no token at all.
-    if (getToken()) return null;
-    return (
-      <button
-        type="button"
-        className="unlock-fab"
-        onClick={() => openPrompt()}
-        aria-label="Enter OptiScan access token"
-      >
-        🔒 Enter access token
-      </button>
-    );
-  }
+  if (!open) return null;
 
   return (
     <div className="unlock-overlay" role="dialog" aria-modal="true" aria-labelledby="unlock-title">
