@@ -40,7 +40,7 @@ import { actionableFreshness, type DataKind } from "@/lib/data-freshness";
 import { legacyOptionsSuppressed, legacyWatchDiscordEnabled } from "@/lib/callouts/routing";
 import { legacyOptionsSubscriberDiscordBlocked } from "./subscriber-discord-owner.ts";
 
-export type DiscordWebhookKind = "options" | "stocks" | "recap" | "default";
+export type DiscordWebhookKind = "options" | "stocks" | "recap" | "content" | "default";
 
 const WATCH_DEDUP_MS = 30 * 60_000;
 const LIVE_OPTIONS_MAX_AGE_MS = Number(process.env.DISCORD_OPTIONS_MAX_ALERT_AGE_MS ?? 90_000);
@@ -54,6 +54,8 @@ function webhookEnv(kind: DiscordWebhookKind): string | undefined {
   if (kind === "options") return process.env.DISCORD_WEBHOOK_OPTIONS ?? process.env.DISCORD_WEBHOOK_URL;
   if (kind === "stocks") return process.env.DISCORD_WEBHOOK_STOCKS;
   if (kind === "recap") return process.env.DISCORD_WEBHOOK_RECAP;
+  // Private content-drafts channel; falls back to the recap/owner channel when not separately set.
+  if (kind === "content") return process.env.DISCORD_WEBHOOK_CONTENT ?? process.env.DISCORD_WEBHOOK_RECAP;
   return process.env.DISCORD_WEBHOOK_URL;
 }
 

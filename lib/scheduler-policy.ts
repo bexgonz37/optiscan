@@ -17,6 +17,10 @@ export interface SchedulerIntervals {
   aiCheckMs: number;       // how often to CHECK whether an offline AI job is due
   /** How often to CHECK whether today's Brokerage V2 soak readiness report is due. */
   brokerReadinessMs: number;
+  /** How often to re-evaluate owner subscriber-readiness (state machine + edge notification). */
+  subscriberReadinessMs: number;
+  /** How often to scan PENDING content events and deliver private Twitter/X draft ideas. */
+  contentDraftsMs: number;
 }
 
 function clampInt(v: string | undefined, def: number, min: number, max: number): number {
@@ -44,6 +48,11 @@ export function schedulerIntervals(env: NodeJS.ProcessEnv = process.env): Schedu
     aiCheckMs: clampInt(env.SCHED_AI_CHECK_MS, 5 * 60_000, 60_000, 60 * 60_000),
     // 60 min default soak readiness check; idempotent per ET day. Never faster than 15m.
     brokerReadinessMs: clampInt(env.SCHED_BROKER_READINESS_MS, 60 * 60_000, 15 * 60_000, 24 * 60 * 60_000),
+    // 15 min default subscriber-readiness re-evaluation. Frequent enough to REVOKE promptly on a
+    // safety breach; READY promotions still only fire on a completed-day boundary. Never faster than 5m.
+    subscriberReadinessMs: clampInt(env.SCHED_SUBSCRIBER_READINESS_MS, 15 * 60_000, 5 * 60_000, 6 * 60 * 60_000),
+    // 3 min default content-drafts scan (owner review pipeline; never auto-posts). Never faster than 60s.
+    contentDraftsMs: clampInt(env.SCHED_CONTENT_DRAFTS_MS, 3 * 60_000, 60_000, 60 * 60_000),
   };
 }
 

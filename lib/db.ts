@@ -1598,6 +1598,43 @@ CREATE TABLE IF NOT EXISTS options_shadow_outcomes (
 CREATE INDEX IF NOT EXISTS idx_options_shadow_outcomes ON options_shadow_outcomes(trading_session_date, decision_at_ms);
 CREATE INDEX IF NOT EXISTS idx_options_shadow_outcomes_decision ON options_shadow_outcomes(shadow_decision_id);
 
+-- Subscriber-readiness state machine (owner-only launch gate). SINGLE row (id=1): the current
+-- NOT_READY / SUBSCRIBER_READY status, the exact evidence snapshot at the last transition, and the
+-- notification-delivery bookkeeping that makes the READY / REVOKED message fire exactly once per edge
+-- (persisted BEFORE the Discord send, so a restart never resends). Nothing here changes trading,
+-- billing, roles, or code — it only records that the measurable launch bar was met.
+CREATE TABLE IF NOT EXISTS options_subscriber_readiness_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  status TEXT NOT NULL DEFAULT 'NOT_READY',        -- NOT_READY | SUBSCRIBER_READY
+  transition_id INTEGER NOT NULL DEFAULT 0,        -- monotonic; increments on every real edge
+  last_evaluated_at_ms INTEGER,
+  last_transition_at_ms INTEGER,
+  last_failing_gate TEXT,                          -- gate id that caused the most recent REVOKE
+  evidence_snapshot_json TEXT,                     -- frozen report at the last transition
+  ready_notified_transition_id INTEGER,            -- transition_id whose READY message was sent
+  revoked_notified_transition_id INTEGER,          -- transition_id whose REVOKED message was sent
+  last_notification_kind TEXT,                     -- READY | REVOKED
+  last_notification_status TEXT,                   -- PENDING | SENT | FAILED | SKIPPED_NO_WEBHOOK
+  last_notification_error TEXT,
+  last_notification_message_id TEXT,
+  last_notification_at_ms INTEGER,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+
+-- Owner attestations for the non-measurable launch gates (billing/cancellation/failed-payment/
+-- role-revocation tested, legal & licensing checklist, no unresolved Critical issues). Code cannot
+-- observe that a flow was TESTED, so readiness requires an explicit persisted owner sign-off with
+-- who + when. Clearing a row (attested=0) immediately makes that gate fail again.
+CREATE TABLE IF NOT EXISTS options_subscriber_readiness_attestations (
+  attestation_key TEXT PRIMARY KEY,                -- e.g. billing_flows_tested, legal_checklist_complete
+  attested INTEGER NOT NULL DEFAULT 0,             -- 1 = signed off
+  attested_by TEXT,                                -- owner-supplied label (never a secret)
+  note TEXT,
+  attested_at_ms INTEGER,
+  updated_at_ms INTEGER NOT NULL
+);
+
 -- Canonical Opportunity Case (Enterprise Phase 2). Append-friendly audit record for delivered AND rejected paths.
 CREATE TABLE IF NOT EXISTS opportunity_cases (
   opportunity_id TEXT PRIMARY KEY,

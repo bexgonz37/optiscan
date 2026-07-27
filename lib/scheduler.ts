@@ -20,7 +20,7 @@ import { schedulerIntervals, jobDue } from "@/lib/scheduler-policy";
 const LEASE_NAME = "scheduler";
 const BASE_TICK_MS = 15_000;
 
-type JobName = "maintenance" | "learning" | "supervisor" | "improvement" | "aiJobs" | "brokerReadiness";
+type JobName = "maintenance" | "learning" | "supervisor" | "improvement" | "aiJobs" | "brokerReadiness" | "subscriberReadiness" | "contentDrafts";
 
 export interface SchedulerState {
   started: boolean;
@@ -43,8 +43,8 @@ function state(): SchedulerState {
   const g = globalThis as G;
   g.__optiscanScheduler ??= {
     started: false, isOwner: false, ownerPid: null, lastBeatAtMs: null,
-    lastRun: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null, brokerReadiness: null },
-    runs: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0 },
+    lastRun: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null, brokerReadiness: null, subscriberReadiness: null, contentDrafts: null },
+    runs: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0, subscriberReadiness: 0, contentDrafts: 0 },
     note: "not started", lastError: null,
   };
   return g.__optiscanScheduler;
@@ -149,6 +149,29 @@ async function brokerReadinessJob(nowMs: number): Promise<void> {
   runBrokerReadinessSoakJob(process.env, nowMs);
 }
 
+/**
+ * Owner subscriber-readiness state machine. Re-evaluates the strict launch gate and sends at most one
+ * recap-channel message per NOT_READY⇄SUBSCRIBER_READY edge. READY promotions only fire on a completed-
+ * day boundary; a safety/integrity breach revokes immediately. Never enables billing/roles/deploys.
+ */
+async function subscriberReadinessJob(nowMs: number): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { runReadinessTransition } = require("@/lib/research/subscriber-readiness-notifier");
+  await runReadinessTransition(db(), {}, process.env, { trigger: "intraday", nowMs });
+}
+
+/**
+ * Content Event Engine — DETERMINISTIC (no language model). Scans PENDING opportunity_content_events and
+ * delivers private Twitter/X draft ideas to the owner's content Discord channel for manual review.
+ * Never auto-posts. HARD no-op unless CONTENT_EVENTS_ENABLED=1 and a webhook is configured.
+ */
+async function contentDraftsJob(): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { contentEventsEnabled, runContentDraftsScan } = require("@/lib/content/content-drafts-runtime");
+  if (!contentEventsEnabled(process.env)) return;
+  await runContentDraftsScan(db(), {}, process.env);
+}
+
 async function beat(): Promise<void> {
   const s = state();
   const nowMs = Date.now();
@@ -193,6 +216,12 @@ async function beat(): Promise<void> {
   }
   if (jobDue(s.lastRun.brokerReadiness, iv.brokerReadinessMs, nowMs)) {
     await runJob("brokerReadiness", () => brokerReadinessJob(nowMs), nowMs);
+  }
+  if (jobDue(s.lastRun.subscriberReadiness, iv.subscriberReadinessMs, nowMs)) {
+    await runJob("subscriberReadiness", () => subscriberReadinessJob(nowMs), nowMs);
+  }
+  if (jobDue(s.lastRun.contentDrafts, iv.contentDraftsMs, nowMs)) {
+    await runJob("contentDrafts", () => contentDraftsJob(), nowMs);
   }
 }
 
