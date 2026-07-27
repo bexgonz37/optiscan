@@ -11,10 +11,12 @@ import {
 const CUTOFF = Date.parse("2026-07-26T23:36:55.228Z");
 const ENV = { SUBSCRIBER_READINESS_ELIGIBLE_AFTER_MS: String(CUTOFF) };
 
-test("readiness cutoff uses SUBSCRIBER_READINESS_ELIGIBLE_AFTER_MS only", () => {
+test("readiness cutoff prefers SUBSCRIBER_READINESS_ELIGIBLE_AFTER_MS over milestone fallback", () => {
   resetReadinessEligibleDefaultForTests(null);
   assert.equal(readinessSampleCutoffMs(ENV), CUTOFF);
-  assert.notEqual(readinessSampleCutoffMs({ OPTIONS_MILESTONE_ELIGIBLE_AFTER_MS: "999" }), 999);
+  assert.equal(readinessSampleCutoffMs({ SUBSCRIBER_READINESS_ELIGIBLE_AFTER_MS: String(CUTOFF), OPTIONS_MILESTONE_ELIGIBLE_AFTER_MS: "999" }), CUTOFF);
+  assert.equal(readinessSampleCutoffMs({ OPTIONS_MILESTONE_ELIGIBLE_AFTER_MS: String(CUTOFF) }), CUTOFF);
+  assert.equal(readinessSampleCutoffSource({ OPTIONS_MILESTONE_ELIGIBLE_AFTER_MS: String(CUTOFF) }), "OPTIONS_MILESTONE_ELIGIBLE_AFTER_MS_fallback");
 });
 
 test("duplicate classification separates all-time fingerprints from post-cutoff actual sends", () => {
