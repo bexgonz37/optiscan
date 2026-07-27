@@ -258,10 +258,10 @@ export function buildWhyNoAlertsDiagnostic(
       let validationFailed24h = 0;
       if (hasTable(db, "ai_job_runs")) {
         lastAi = String((db.prepare(
-          "SELECT status FROM ai_job_runs WHERE job_type='weekly_proposals' ORDER BY created_at_ms DESC LIMIT 1",
+          "SELECT status FROM ai_job_runs WHERE job_type IN ('weekly_proposals','weekly_proposals_retry') ORDER BY created_at_ms DESC LIMIT 1",
         ).get() as { status?: string } | undefined)?.status ?? null);
         validationFailed24h = Number((db.prepare(
-          "SELECT COUNT(*) n FROM ai_job_runs WHERE job_type='weekly_proposals' AND status='VALIDATION_FAILED' AND created_at_ms >= ?",
+          "SELECT COUNT(*) n FROM ai_job_runs WHERE job_type IN ('weekly_proposals','weekly_proposals_retry') AND status='VALIDATION_FAILED' AND created_at_ms >= ?",
         ).get(since24h) as { n: number })?.n ?? 0);
       }
       const pendingOutcomes = hasTable(db, "options_shadow_outcomes")
