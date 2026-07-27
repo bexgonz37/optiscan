@@ -182,29 +182,6 @@ export async function GET(req: Request) {
     };
   }, { scannerRunning: false, supervisorEnabled: false, independentOwns: ownership.independentOwns });
 
-  // #region agent log
-  fetch("http://127.0.0.1:7918/ingest/1e1970bf-a3dc-4c9e-aaba-c7720ad4daf2", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "3a4126" },
-    body: JSON.stringify({
-      sessionId: "3a4126",
-      runId: "post-fix",
-      hypothesisId: "H-auth-overview",
-      location: "app/api/command-center/route.ts:GET",
-      message: "command-center snapshot",
-      data: {
-        runMode: independent?.runMode,
-        monitorAlive: independent?.monitorAlive,
-        session: independent?.session,
-        polygonConfigured: independent?.polygonConfigured,
-        delivered: readiness?.metrics?.deliveredSent,
-        paperOpen: paper?.openDelivered,
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
-
   return NextResponse.json({
     ok: faults.length === 0,
     faults,
