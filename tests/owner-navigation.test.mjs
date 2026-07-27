@@ -25,38 +25,35 @@ test("all routes still have a page (nothing removed)", () => {
   }
 });
 
-// ── owner mode is the default: PRODUCT vs ADVANCED DIAGNOSTICS ──────────────
-test("PRODUCT nav holds the control-room owner destinations", () => {
+// ── owner mode is the default: PRODUCT vs DEEP LINKS ──────────────
+test("PRODUCT nav holds NOW RESEARCH PAPER primary destinations", () => {
   const product = shell.match(/const PRODUCT_NAV[\s\S]*?\];/)[0];
-  for (const href of ['"/"', '"/callouts"', '"/quant"', '"/paper"', '"/paper/0dte"', '"/scanner"', '"/intelligence"', '"/content-drafts"', '"/ai"']) {
+  for (const href of ['"/"', '"/research"', '"/paper"']) {
     assert.ok(product.includes(href), `PRODUCT missing ${href}`);
   }
-  // Deep diagnostics must NOT be in PRODUCT primary list.
-  for (const href of ['"/watchlist"', '"/improvement"', '"/data"', '"/guide"', '"/settings"']) {
+  for (const href of ['"/callouts"', '"/quant"', '"/watchlist"', '"/improvement"', '"/data"', '"/guide"', '"/settings"']) {
     assert.ok(!product.includes(href), `PRODUCT should not contain ${href}`);
   }
+  assert.match(shell, /label: "MORE"/);
 });
 
-test("ADVANCED nav holds the advanced tools", () => {
+test("ADVANCED nav holds deep tools previously in PRODUCT", () => {
   const adv = shell.match(/const ADVANCED_NAV[\s\S]*?\];/)[0];
-  for (const href of ['"/watchlist"', '"/research-learning"', '"/improvement"', '"/data"', '"/guide"', '"/settings"']) {
+  for (const href of ['"/watchlist"', '"/research-learning"', '"/improvement"', '"/data"', '"/guide"', '"/settings"', '"/quant"', '"/callouts"']) {
     assert.ok(adv.includes(href), `ADVANCED missing ${href}`);
   }
   assert.ok(adv.includes('"/pipeline-health"'), "Pipeline diagnostics belong in ADVANCED");
-  assert.ok(!adv.includes('"/quant"'), "Quant Lab belongs in PRODUCT");
 });
 
-test("ADVANCED section is collapsible and collapsed by default", () => {
-  assert.match(shell, /title:\s*"ADVANCED DIAGNOSTICS"/);
-  const block = shell.match(/title:\s*"ADVANCED DIAGNOSTICS"[\s\S]*?\}/)[0];
-  assert.match(block, /collapsible:\s*true/);
-  assert.match(block, /collapsedByDefault:\s*true/);
+test("DEEP LINKS section is collapsible and collapsed by default", () => {
+  assert.match(shell, /title:\s*"DEEP LINKS"/);
+  assert.match(shell, /collapsedByDefault:\s*true/);
   assert.match(navrail, /useState\(!collapsedByDefault\)/);
   assert.match(navrail, /aria-expanded=\{open\}/);
 });
 
 test("PRODUCT group is not collapsible (always visible)", () => {
-  const product = shell.match(/\{\s*title:\s*"PRODUCT"[\s\S]*?\}/)[0];
+  const product = shell.match(/\{\s*title:\s*"PRODUCT"[\s\S]*?\},/)[0];
   assert.ok(!/collapsible/.test(product), "PRODUCT must stay expanded");
 });
 
@@ -68,11 +65,12 @@ test("Improvement Agent is marked inactive when automation is disabled", () => {
 });
 
 // ── mobile navigation ───────────────────────────────────────────────────────
-test("mobile bottom nav points at product destinations and consolidates callouts", () => {
-  for (const href of ['"/"', '"/callouts"', '"/quant"', '"/paper/0dte"', '"/pipeline-health"']) {
+test("mobile bottom nav points at NOW RESEARCH PAPER MORE", () => {
+  for (const href of ['"/"', '"/research"', '"/paper"']) {
     assert.ok(mobile.includes(href), `mobile nav missing ${href}`);
   }
-  assert.match(mobile, /href === "\/callouts"[\s\S]*?"\/alerts"[\s\S]*?"\/swing"/);
+  assert.match(mobile, /MoreDrawer/);
+  assert.match(mobile, /label: "NOW"/);
 });
 
 // ── consolidation: old URLs still work + light up Callouts ───────────────────

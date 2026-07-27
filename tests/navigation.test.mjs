@@ -12,20 +12,16 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => readFileSync(join(root, p), "utf8");
 
-test("product nav lists the trader-facing destinations", () => {
+test("product nav lists the decision-first destinations", () => {
   const shell = read("components/AxiomShell.tsx");
   const product = [
-    ["/", "Command Center"],
-    ["/callouts", "Live Options"],
-    ["/quant", "Quant Lab"],
-    ["/paper", "Paper & Research"],
-    ["/paper/0dte", "0DTE Research"],
-    ["/scanner", "Scanner"],
-    ["/intelligence", "Strategy Lab"],
-    ["/content-drafts", "Content Drafts"],
-    ["/ai", "AI Advisory"],
+    ["/", "NOW"],
+    ["/research", "RESEARCH"],
+    ["/paper", "PAPER"],
   ];
   const advanced = [
+    ["/callouts", "Live Options"],
+    ["/quant", "Quant Lab"],
     ["/pipeline-health", "Pipeline Diagnostics"],
     ["/watchlist", "Watchlist"],
     ["/research-learning", "Research & Learning"],
@@ -38,6 +34,7 @@ test("product nav lists the trader-facing destinations", () => {
     assert.ok(shell.includes(`href: "${href}"`), `nav missing href ${href}`);
     assert.ok(shell.includes(label), `nav missing label "${label}"`);
   }
+  assert.ok(shell.includes('label: "MORE"'), "MORE drawer entry required");
 });
 
 test("new Watchlist and Performance pages exist", () => {
@@ -48,7 +45,7 @@ test("new Watchlist and Performance pages exist", () => {
 test("renamed / removed routes still resolve via redirects (no dead links)", () => {
   const redirects = {
     "app/stocks/page.tsx": "/watchlist",
-    "app/now/page.tsx": "/scanner",
+    "app/now/page.tsx": "/",
     "app/review/page.tsx": "/alerts",
   };
   for (const [file, target] of Object.entries(redirects)) {

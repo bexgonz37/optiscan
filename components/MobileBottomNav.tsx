@@ -2,47 +2,59 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { marketSession, type MarketSession } from "@/lib/trading-session";
 import { useEffect, useState } from "react";
+import { MoreDrawer } from "@/components/MoreDrawer";
+import { resolveOperatingModeFromHealth } from "@/lib/dashboard/operating-mode";
+import { getUiReviewSession, isUiReviewMode } from "@/lib/dashboard/ui-review";
+import { scanHeaders } from "@/hooks/useScanner";
 
 const ITEMS = [
-  { href: "/", label: "Home", icon: "◎" },
-  { href: "/callouts", label: "Live", icon: "⚡" },
-  { href: "/quant", label: "Quant", icon: "Σ" },
-  { href: "/paper/0dte", label: "0DTE", icon: "◈" },
-  { href: "/pipeline-health", label: "More", icon: "☰" },
+  { href: "/", label: "NOW", icon: "◎" },
+  { href: "/research", label: "Research", icon: "Σ" },
+  { href: "/paper", label: "Paper", icon: "◈" },
 ] as const;
-
-const SESSION_HINT: Record<MarketSession, string> = {
-  regular: "0DTE live",
-  premarket: "Alerts 9:30 ET",
-  afterhours: "Alerts 9:30 ET",
-  closed: "Closed",
-};
 
 function isActive(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
-  if (href === "/callouts") {
-    return pathname === "/callouts" || pathname === "/alerts"
-      || pathname === "/swing" || pathname.startsWith("/alert-lab");
-  }
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
 export function MobileBottomNav() {
   const pathname = usePathname() ?? "/";
-  const [session, setSession] = useState<MarketSession | null>(null);
+  const [hint, setHint] = useState("");
+  const [moreOpen, setMoreOpen] = useState(false);
 
   useEffect(() => {
-    const update = () => setSession(marketSession());
-    update();
-    const t = setInterval(update, 60_000);
-    return () => clearInterval(t);
+    let cancelled = false;
+    const update = async () => {
+      if (isUiReviewMode()) {
+        const mode = resolveOperatingModeFromHealth(null, {
+          sessionOverride: getUiReviewSession(),
+        });
+        if (!cancelled) setHint(mode.label);
+        return;
+      }
+      try {
+        const res = await fetch("/api/health", { cache: "no-store", headers: scanHeaders() });
+        const body = await res.json().catch(() => null);
+        if (cancelled) return;
+        const mode = resolveOperatingModeFromHealth(body, { fetchFailed: !res.ok && !body });
+        setHint(mode.label);
+      } catch {
+        if (!cancelled) setHint("SYSTEM OFFLINE");
+      }
+    };
+    void update();
+    const t = setInterval(() => { void update(); }, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
   }, []);
 
   return (
     <nav className="mobile-bottom-nav" aria-label="Main navigation">
-      <div className="mobile-bottom-session">{session ? SESSION_HINT[session] : ""}</div>
+      <div className="mobile-bottom-session">{hint}</div>
       <div className="mobile-bottom-links">
         {ITEMS.map((item) => (
           <Link
@@ -55,7 +67,16 @@ export function MobileBottomNav() {
             <span>{item.label}</span>
           </Link>
         ))}
+        <button
+          type="button"
+          className={`mobile-bottom-link${moreOpen ? " active" : ""}`}
+          onClick={() => setMoreOpen(true)}
+        >
+          <span className="mobile-bottom-icon" aria-hidden>☰</span>
+          <span>More</span>
+        </button>
       </div>
+      <MoreDrawer open={moreOpen} onClose={() => setMoreOpen(false)} />
     </nav>
   );
 }

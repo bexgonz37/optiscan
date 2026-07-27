@@ -41,11 +41,11 @@ test("TradeExplanationCard renders from the object; Advanced is additive only", 
   assert.ok(!/selectContract|polyFetch|place_option_order|fetch\(/.test(src), "no logic in the renderer");
 });
 
-test("Command Center is the terminal control room (presentation toggle lives elsewhere)", () => {
-  const cc = read("components/CommandCenter.tsx");
-  assert.ok(/\/api\/command-center/.test(cc), "uses canonical snapshot");
-  assert.ok(/Pipeline funnel|Open positions|Highest-quality setups/.test(cc), "trader panels present");
-  assert.ok(!/place_option_order|polyFetch/.test(cc), "no trading/provider calls");
+test("NOW page is the terminal decision screen (presentation toggle lives elsewhere)", () => {
+  const now = read("components/NowPage.tsx");
+  assert.ok(/\/api\/now/.test(now), "uses canonical snapshot");
+  assert.ok(/TRADE_NOW|ALMOST_READY|Open positions/.test(now), "trader panels present");
+  assert.ok(!/place_option_order|polyFetch/.test(now), "no trading/provider calls");
 });
 
 test("ChartPanel surfaces the same selection explanation object in the reality check", () => {

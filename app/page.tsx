@@ -1,16 +1,16 @@
 "use client";
 
 import { Suspense } from "react";
-import { CommandCenter } from "@/components/CommandCenter";
+import { NowPage } from "@/components/NowPage";
 
 /**
- * Home is the calm, sectioned Command Center (Phase 6). The full live scanner
- * moved to /scanner and is linked from here.
+ * Home is the decision-first NOW page.
+ * Deep links to Live Options, Quant, etc. remain available from cards and MORE.
  */
 export default function Page() {
   return (
     <Suspense fallback={null}>
-      <CommandCenter />
+      <NowPage />
     </Suspense>
   );
 }

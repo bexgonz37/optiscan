@@ -7,41 +7,37 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => readFileSync(join(root, p), "utf8");
 
-test("home page renders the Command Center, not the live scanner grid", () => {
+test("home page renders the NOW page, not the live scanner grid", () => {
   const page = read("app/page.tsx");
-  assert.ok(/CommandCenter/.test(page), "home must render CommandCenter");
+  assert.ok(/NowPage/.test(page), "home must render NowPage");
   assert.ok(!/LivePageTabs/.test(page), "live scanner grid must not be the home page");
 });
 
-test("Command Center has trader-first terminal sections", () => {
-  const cc = read("components/CommandCenter.tsx");
+test("NOW page has decision-first sections", () => {
+  const now = read("components/NowPage.tsx");
   for (const section of [
-    "Highest-quality setups",
-    "Delivered equity",
-    "0DTE Research",
-    "Quant pulse",
-    "Pipeline funnel",
+    "TRADE_NOW",
+    "ALMOST_READY",
+    "TOMORROW",
+    "AVOID",
     "Open positions",
-    "Live accounts",
-    "Content",
-    "AI advisory",
-    "Paid-beta",
-    "cc-term-optional",
+    "heroTitle",
+    "operatingLabel",
   ]) {
-    assert.ok(cc.includes(section), `missing section: ${section}`);
+    assert.ok(now.includes(section), `missing section: ${section}`);
   }
 });
 
-test("Command Center reads authenticated command-center snapshot", () => {
-  const cc = read("components/CommandCenter.tsx");
-  assert.ok(/\/api\/command-center/.test(cc), "must use canonical command-center API");
-  assert.ok(/scanHeaders/.test(cc), "must send scan token");
-  assert.ok(/cache:\s*[\"']no-store[\"']/.test(cc), "must disable fetch cache");
+test("NOW page reads authenticated /api/now snapshot", () => {
+  const now = read("components/NowPage.tsx");
+  assert.ok(/\/api\/now/.test(now), "must use canonical now API");
+  assert.ok(/scanHeaders/.test(now), "must send scan token");
+  assert.ok(/cache:\s*[\"']no-store[\"']/.test(now), "must disable fetch cache");
 });
 
-test("Command Center is read-only (no order placement, no provider calls)", () => {
-  const cc = read("components/CommandCenter.tsx");
-  assert.ok(!/place_equity_order|place_option_order|polyFetch/.test(cc), "must not trade or call providers directly");
+test("NOW page is read-only (no order placement, no provider calls)", () => {
+  const now = read("components/NowPage.tsx");
+  assert.ok(!/place_equity_order|place_option_order|polyFetch/.test(now), "must not trade or call providers directly");
 });
 
 test("live scanner is preserved at /scanner", () => {

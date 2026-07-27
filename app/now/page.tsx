@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-/** /now → the live scanner (moved to /scanner when "/" became the Command Center). */
+/** /now permanently redirects to the unified NOW page at /. */
 export default function NowRedirect() {
-  redirect("/scanner");
+  redirect("/");
 }

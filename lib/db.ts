@@ -2392,6 +2392,28 @@ CREATE INDEX IF NOT EXISTS idx_journal_dedup ON trade_journal(dedup_key);
   if (brokerRepaired.length > 0) {
     console.info(`[db] broker schema repair applied: ${brokerRepaired.join(", ")}`);
   }
+  // Overnight next-session watchlist (additive, repeat-safe).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS overnight_watchlist (
+      trading_day TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      rank INTEGER NOT NULL,
+      plan_version TEXT NOT NULL,
+      built_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (trading_day, symbol)
+    );
+  `);
+  db.prepare("CREATE INDEX IF NOT EXISTS idx_overnight_watchlist_day ON overnight_watchlist(trading_day, rank)").run();
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS owner_research_notify_log (
+      trading_day TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      symbol TEXT NOT NULL DEFAULT '',
+      sent_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (trading_day, kind, symbol)
+    );
+  `);
   const readiness = inspectSchemaReadiness(db);
   if (!readiness.ok) {
     const parts = [

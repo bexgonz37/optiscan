@@ -43,6 +43,7 @@ scripts/replay-subscriber-week-output.json
 
 # UI review screenshots and local demo DB artifacts — never ship to production
 artifacts/terminal-review/
+artifacts/now-review/
 *.demo.db
 scripts/railway-*.json
 scripts/env-map-*.json

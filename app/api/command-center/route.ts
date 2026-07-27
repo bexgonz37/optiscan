@@ -391,6 +391,21 @@ export async function GET(req: Request) {
     commit: commit.commit,
     commitShort: commit.commitShort,
     independent,
+    operatingMode: (() => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { resolveOperatingMode } = require("@/lib/dashboard/operating-mode");
+        return resolveOperatingMode({
+          nowMs: now,
+          monitorAlive: Boolean(independent?.monitorAlive || independent?.localAlive),
+          providerConfigured: Boolean(independent?.polygonConfigured),
+          providerHealthy: independent?.polygonHealthy == null ? true : Boolean(independent?.polygonHealthy),
+          dbOk: db != null,
+        });
+      } catch {
+        return null;
+      }
+    })(),
     pipeline: pipeline
       ? {
           summary: pipeline.summary,

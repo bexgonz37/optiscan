@@ -150,29 +150,22 @@ test("command-center route passes DB handle to buildWhyNoAlertsDiagnostic", () =
   assert.ok(/aiOverviewOnDb/.test(route));
 });
 
-test("Command Center terminal UI uses authenticated snapshot and trader panels", () => {
-  const cc = readFileSync(join(root, "components/CommandCenter.tsx"), "utf8");
-  assert.ok(/\/api\/command-center/.test(cc));
-  assert.ok(/scanHeaders\(\)/.test(cc));
-  assert.ok(/Highest-quality setups/.test(cc));
-  assert.ok(/Delivered equity|Open positions/.test(cc));
-  assert.ok(/Pipeline funnel|Pipeline/.test(cc));
-  assert.ok(/Live accounts/.test(cc));
-  assert.ok(/Paid-beta|readiness/i.test(cc));
-  assert.ok(/cc-term-optional|Optional systems/.test(cc));
-  assert.ok(/AI advisory/.test(cc));
-  assert.ok(!/not running in this process/.test(cc));
-  assert.ok(/commitShort|Commit/.test(cc));
-  assert.ok(/rankedSetups/.test(cc));
-});
-
-test("PRODUCT nav matches control-room destinations", () => {
+test("PRODUCT nav matches decision-first destinations", () => {
   const shell = readFileSync(join(root, "components/AxiomShell.tsx"), "utf8");
+  assert.ok(/label: "NOW"/.test(shell));
+  assert.ok(/label: "RESEARCH"/.test(shell));
+  assert.ok(/label: "PAPER"/.test(shell));
+  assert.ok(/label: "MORE"/.test(shell));
   assert.ok(/Live Options/.test(shell));
-  assert.ok(/Paper & Research/.test(shell));
   assert.ok(/0DTE Research/.test(shell));
   assert.ok(/Quant Lab/.test(shell));
-  assert.ok(/Content Drafts/.test(shell));
-  assert.ok(/ADVANCED_NAV[\s\S]*Shadow Soak/.test(shell));
-  assert.ok(/PRODUCT_NAV[\s\S]*Command Center/.test(shell));
+});
+
+test("Command Center terminal UI uses authenticated snapshot and trader panels", () => {
+  const now = readFileSync(join(root, "components/NowPage.tsx"), "utf8");
+  assert.ok(/\/api\/now/.test(now));
+  assert.ok(/scanHeaders\(\)/.test(now));
+  assert.ok(/TRADE_NOW|ALMOST_READY|TOMORROW|AVOID/.test(now));
+  assert.ok(/Open positions/.test(now));
+  assert.ok(/operatingLabel/.test(now));
 });

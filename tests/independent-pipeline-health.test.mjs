@@ -105,11 +105,12 @@ test("recent independent sends without local monitor still avoid false stopped w
   assert.doesNotMatch(health.labels.monitor, /not running/i);
 });
 
-test("Command Center no longer warns that the monitor is stopped merely because web process is idle", () => {
+test("NOW page no longer warns that the monitor is stopped merely because web process is idle", () => {
+  const nowPage = readFileSync(join(root, "components/NowPage.tsx"), "utf8");
   const cc = readFileSync(join(root, "components/CommandCenter.tsx"), "utf8");
-  assert.ok(!/not running in this process/.test(cc), "must not use the old false-warning copy");
-  assert.ok(/\/api\/command-center/.test(cc), "must use authenticated canonical snapshot");
-  assert.ok(/scanHeaders\(\)/.test(cc), "must send scan token");
-  assert.ok(/OPTISCAN|Live pipeline|mapSystemChips/.test(cc), "must use independent-first system strip / pipeline");
-  assert.ok(/Optional systems/.test(cc), "stock/supervisor must be collapsed/optional");
+  assert.ok(!/not running in this process/.test(nowPage), "must not use the old false-warning copy");
+  assert.ok(/\/api\/now/.test(nowPage), "must use authenticated NOW snapshot");
+  assert.ok(/scanHeaders\(\)/.test(nowPage), "must send scan token");
+  assert.match(nowPage, /operatingLabel|operatingMode/);
+  assert.match(cc, /NowPage as CommandCenter/);
 });

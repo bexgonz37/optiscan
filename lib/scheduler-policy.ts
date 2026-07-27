@@ -21,6 +21,8 @@ export interface SchedulerIntervals {
   subscriberReadinessMs: number;
   /** How often to scan PENDING content events and deliver private Twitter/X draft ideas. */
   contentDraftsMs: number;
+  /** How often to CHECK overnight research schedule windows (ET clock gates inside the job). */
+  overnightResearchMs: number;
 }
 
 function clampInt(v: string | undefined, def: number, min: number, max: number): number {
@@ -53,6 +55,8 @@ export function schedulerIntervals(env: NodeJS.ProcessEnv = process.env): Schedu
     subscriberReadinessMs: clampInt(env.SCHED_SUBSCRIBER_READINESS_MS, 15 * 60_000, 5 * 60_000, 6 * 60 * 60_000),
     // 3 min default content-drafts scan (owner review pipeline; never auto-posts). Never faster than 60s.
     contentDraftsMs: clampInt(env.SCHED_CONTENT_DRAFTS_MS, 3 * 60_000, 60_000, 60 * 60_000),
+    // 5 min default overnight research window check. Never faster than 60s.
+    overnightResearchMs: clampInt(env.SCHED_OVERNIGHT_RESEARCH_MS, 5 * 60_000, 60_000, 60 * 60_000),
   };
 }
 

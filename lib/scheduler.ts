@@ -20,7 +20,7 @@ import { schedulerIntervals, jobDue } from "@/lib/scheduler-policy";
 const LEASE_NAME = "scheduler";
 const BASE_TICK_MS = 15_000;
 
-type JobName = "maintenance" | "learning" | "supervisor" | "improvement" | "aiJobs" | "brokerReadiness" | "subscriberReadiness" | "contentDrafts";
+type JobName = "maintenance" | "learning" | "supervisor" | "improvement" | "aiJobs" | "brokerReadiness" | "subscriberReadiness" | "contentDrafts" | "overnightResearch";
 
 export interface SchedulerState {
   started: boolean;
@@ -43,8 +43,8 @@ function state(): SchedulerState {
   const g = globalThis as G;
   g.__optiscanScheduler ??= {
     started: false, isOwner: false, ownerPid: null, lastBeatAtMs: null,
-    lastRun: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null, brokerReadiness: null, subscriberReadiness: null, contentDrafts: null },
-    runs: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0, subscriberReadiness: 0, contentDrafts: 0 },
+    lastRun: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null, brokerReadiness: null, subscriberReadiness: null, contentDrafts: null, overnightResearch: null },
+    runs: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0, subscriberReadiness: 0, contentDrafts: 0, overnightResearch: 0 },
     note: "not started", lastError: null,
   };
   return g.__optiscanScheduler;
@@ -172,6 +172,82 @@ async function contentDraftsJob(): Promise<void> {
   await runContentDraftsScan(db(), {}, process.env);
 }
 
+/** ET minutes since midnight for schedule windows. */
+function etMinutesNow(nowMs: number): number {
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(new Date(nowMs));
+  const h = Number(parts.find((p) => p.type === "hour")?.value ?? 0) % 24;
+  const m = Number(parts.find((p) => p.type === "minute")?.value ?? 0);
+  return h * 60 + m;
+}
+
+/**
+ * Overnight / next-session research — builds deterministic watchlist + optional owner Discord.
+ * Never sends subscriber "buy now" after hours. Gated Discord via OWNER_RESEARCH_DISCORD_ENABLED.
+ */
+async function overnightResearchJob(nowMs: number): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const {
+    buildNextSessionPlan,
+    persistOvernightPlan,
+    loadOvernightPlan,
+    overnightPlanDelta,
+  } = require("@/lib/research/overnight/next-session-plan");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const {
+    formatEodWatchlist,
+    formatEveningDelta,
+    formatPremarketPlan,
+    formatMarketOpenConfirm,
+    sendOwnerResearchNotify,
+  } = require("@/lib/notifications/owner-research-notify");
+
+  const minutes = etMinutesNow(nowMs);
+  const database = db();
+  const prev = loadOvernightPlan(database);
+  const plan = buildNextSessionPlan(database, nowMs);
+  persistOvernightPlan(database, plan);
+
+  // Windows (ET): post-close 16:15–16:45, evening 20:30–21:00, premarket 08:00–08:30, open 09:35–10:00
+  if (minutes >= 16 * 60 + 15 && minutes < 16 * 60 + 45) {
+    await sendOwnerResearchNotify({
+      db: database,
+      kind: "eod_watchlist",
+      content: formatEodWatchlist(plan),
+      nowMs,
+    });
+  } else if (minutes >= 20 * 60 + 30 && minutes < 21 * 60) {
+    const delta = overnightPlanDelta(prev, plan);
+    if (delta.changed) {
+      await sendOwnerResearchNotify({
+        db: database,
+        kind: "evening_delta",
+        content: formatEveningDelta(plan, delta.reasons),
+        nowMs,
+      });
+    }
+  } else if (minutes >= 8 * 60 && minutes < 8 * 60 + 30) {
+    await sendOwnerResearchNotify({
+      db: database,
+      kind: "premarket_plan",
+      content: formatPremarketPlan(plan),
+      nowMs,
+    });
+  } else if (minutes >= 9 * 60 + 35 && minutes < 10 * 60) {
+    await sendOwnerResearchNotify({
+      db: database,
+      kind: "market_open_confirm",
+      content: formatMarketOpenConfirm(plan),
+      nowMs,
+    });
+  }
+}
+
 async function beat(): Promise<void> {
   const s = state();
   const nowMs = Date.now();
@@ -222,6 +298,9 @@ async function beat(): Promise<void> {
   }
   if (jobDue(s.lastRun.contentDrafts, iv.contentDraftsMs, nowMs)) {
     await runJob("contentDrafts", () => contentDraftsJob(), nowMs);
+  }
+  if (jobDue(s.lastRun.overnightResearch, iv.overnightResearchMs, nowMs)) {
+    await runJob("overnightResearch", () => overnightResearchJob(nowMs), nowMs);
   }
 }
 

@@ -188,6 +188,11 @@ function PaperPageInner() {
     <div className="page axiom-utility">
       <main className="main-col axiom-live">
         <div className="paper-account-tabs" style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+          <a href="/paper?tab=delivered" className="ui-btn ui-btn-sm" style={{ textDecoration: "none" }}>Delivered Options</a>
+          <a href="/paper/0dte" className="ui-btn ui-btn-sm" style={{ textDecoration: "none" }}>Aggressive 0DTE</a>
+          <a href="/paper?tab=stock" className="ui-btn ui-btn-sm" style={{ textDecoration: "none" }}>Stock Paper</a>
+        </div>
+        <div className="paper-account-tabs" style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
           {([
             ["delivered", "Delivered Options"],
             ["0dte", "0DTE Research"],

@@ -5,25 +5,29 @@ import { useEffect, useState, type ReactNode } from "react";
 import { marketSession, type MarketSession } from "@/lib/trading-session";
 import { NavRail, type NavItem } from "@/components/ui/NavRail";
 import { HeaderUnlock } from "@/components/HeaderUnlock";
+import { MoreDrawer } from "@/components/MoreDrawer";
 import { apiGetJson } from "@/lib/client-auth";
+import { resolveOperatingModeFromHealth } from "@/lib/dashboard/operating-mode";
+import { getUiReviewSession, isUiReviewMode } from "@/lib/dashboard/ui-review";
 
-// Primary product navigation — trader-facing hierarchy.
+// Primary product navigation — decision-first (4 tabs).
 const PRODUCT_NAV: NavItem[] = [
-  { href: "/", label: "Command Center" },
-  { href: "/callouts", label: "Live Options" },
-  { href: "/quant", label: "Quant Lab" },
-  { href: "/paper", label: "Paper & Research" },
-  { href: "/paper/0dte", label: "0DTE Research" },
-  { href: "/scanner", label: "Scanner" },
-  { href: "/intelligence", label: "Strategy Lab" },
-  { href: "/content-drafts", label: "Content Drafts" },
-  { href: "/ai", label: "AI Advisory" },
-  { href: "/pipeline-health#readiness", label: "Paid Beta Readiness" },
+  { href: "/", label: "NOW" },
+  { href: "/research", label: "RESEARCH" },
+  { href: "/paper", label: "PAPER" },
 ];
 
-// Diagnostics & developer tools — collapsed by default.
+// Deep tools remain reachable but not in primary nav.
 const ADVANCED_NAV: NavItem[] = [
+  { href: "/callouts", label: "Live Options" },
+  { href: "/quant", label: "Quant Lab" },
+  { href: "/scanner", label: "Scanner" },
+  { href: "/intelligence", label: "Strategy Lab" },
+  { href: "/ai", label: "AI Advisory" },
+  { href: "/paper/0dte", label: "0DTE Research" },
+  { href: "/content-drafts", label: "Content Drafts" },
   { href: "/pipeline-health", label: "Pipeline Diagnostics" },
+  { href: "/pipeline-health/research-platform", label: "Research Platform Ops" },
   { href: "/shadow-soak", label: "Shadow Soak" },
   { href: "/data", label: "System Health" },
   { href: "/paper-lifecycle", label: "Paper Lifecycle" },
@@ -41,7 +45,8 @@ const ADVANCED_NAV: NavItem[] = [
 ];
 
 const PAGE_META: Record<string, { title: string; sub: string }> = {
-  "/": { title: "Command Center", sub: "Live control room — what matters now" },
+  "/": { title: "NOW", sub: "What is actionable — and what to watch next" },
+  "/research": { title: "Research", sub: "Quant · Scanner · Strategy · AI" },
   "/data": { title: "System Health", sub: "Data freshness, Discord, and reliability" },
   "/subscriptions": { title: "Subscriptions", sub: "Stripe ↔ Discord role sync health" },
   "/social-drafts": { title: "Social Drafts", sub: "Verified milestone copy — approve before posting" },
@@ -97,6 +102,7 @@ export function AxiomShell({ children }: { children: ReactNode }) {
   const [liveOk, setLiveOk] = useState<boolean | null>(null);
   const [liveLabel, setLiveLabel] = useState("Checking data...");
   const [improvementActive, setImprovementActive] = useState<boolean | null>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
 
   const segments = pathname.split("/").filter(Boolean);
   const pageKey =
@@ -151,31 +157,17 @@ export function AxiomShell({ children }: { children: ReactNode }) {
         const res = await fetch("/api/health", { cache: "no-store" });
         const body = await res.json().catch(() => null);
         if (cancelled) return;
-        const loopUp = Boolean(body?.ok ?? body?.loopRunning);
-        const serverMs = Number(body?.serverTimeMs ?? Date.parse(body?.time ?? ""));
-        const skewMs = Number.isFinite(serverMs) ? Date.now() - serverMs : 0;
-        const tickAge = Number(body?.lastTickAgeMs);
-        setLiveOk(loopUp);
-        if (Math.abs(skewMs) > 120_000) {
-          setLiveLabel("Clock issue - times unreliable");
-        } else if (loopUp && tickAge != null && tickAge > 12_000 && body?.session !== "closed") {
-          setLiveLabel("Data delayed - wait");
-        } else if (loopUp) {
-          setLiveLabel("Live data OK");
-        } else if (body?.loopRunning === false && String(body?.note ?? "").includes("advisory lock")) {
-          setLiveLabel("Scanner starting");
-        } else if (body?.session === "closed") {
-          setLiveLabel("Market closed - data OK");
-          setLiveOk(true);
-        } else if (body?.keyPresent === false) {
-          setLiveLabel("Missing data key");
-        } else {
-          setLiveLabel("Scanner starting");
-        }
+        const mode = resolveOperatingModeFromHealth(body, {
+          sessionOverride: isUiReviewMode() ? getUiReviewSession() : null,
+          fetchFailed: !res.ok && !body,
+        });
+        setLiveOk(mode.mode !== "SYSTEM_OFFLINE" && mode.mode !== "MARKET_DATA_UNAVAILABLE");
+        setLiveLabel(mode.label);
       } catch {
         if (!cancelled) {
+          const mode = resolveOperatingModeFromHealth(null, { fetchFailed: true });
           setLiveOk(false);
-          setLiveLabel("Server offline");
+          setLiveLabel(mode.label);
         }
       }
     };
@@ -186,6 +178,11 @@ export function AxiomShell({ children }: { children: ReactNode }) {
       clearInterval(id);
     };
   }, []);
+
+  const productWithMore: NavItem[] = [
+    ...PRODUCT_NAV,
+    { href: "#more", label: "MORE" },
+  ];
 
   return (
     <div className="axiom-viewport">
@@ -199,16 +196,26 @@ export function AxiomShell({ children }: { children: ReactNode }) {
             }
             tagline="OPTIONS SCANNER"
             sections={[
-              { title: "PRODUCT", items: PRODUCT_NAV },
               {
-                title: "ADVANCED DIAGNOSTICS",
+                title: "PRODUCT",
+                items: productWithMore,
+              },
+              {
+                title: "DEEP LINKS",
                 items: advancedNav,
                 collapsible: true,
                 collapsedByDefault: true,
                 storageKey: "optiscan:nav:advanced",
               },
             ]}
-            isActive={(href) => isActive(pathname, href)}
+            isActive={(href) => (href === "#more" ? moreOpen : isActive(pathname, href))}
+            onItemClick={(href) => {
+              if (href === "#more") {
+                setMoreOpen(true);
+                return true;
+              }
+              return false;
+            }}
             footer={
               <>
                 <div className="scanpill">
@@ -229,6 +236,9 @@ export function AxiomShell({ children }: { children: ReactNode }) {
                 <div className="pgtitle">{pageMeta.title}</div>
                 <div className="pgsub">{pageMeta.sub}</div>
                 <div className="pgtop-actions">
+                  <button type="button" className="header-unlock-btn" onClick={() => setMoreOpen(true)}>
+                    MORE
+                  </button>
                   <HeaderUnlock />
                   <div className="clk">{clock} ET</div>
                 </div>
@@ -245,6 +255,7 @@ export function AxiomShell({ children }: { children: ReactNode }) {
           </div>
         </div>
       </div>
+      <MoreDrawer open={moreOpen} onClose={() => setMoreOpen(false)} />
     </div>
   );
 }
