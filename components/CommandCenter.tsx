@@ -48,23 +48,38 @@ type Overview = {
     killSwitch?: boolean;
     monitorAlive?: boolean;
     monitorRunning?: boolean;
+    runMode?: "RUNNING_IN_THIS_PROCESS" | "RUNNING_IN_WORKER" | "NOT_RUNNING" | "UNKNOWN";
     session?: string;
     polygonConfigured?: boolean;
+    polygonHealthy?: boolean;
     webhookConfigured?: boolean;
     lastCycleAgeMs?: number | null;
     unhealthyReason?: string | null;
     discoveryEnabled?: boolean;
+    sources?: {
+      monitor?: string;
+      session?: string;
+      polygon?: string;
+      webhook?: string;
+    };
+    labels?: {
+      monitor?: string;
+      session?: string;
+      polygon?: string;
+      processNote?: string | null;
+    };
   };
   stock_scanner?: { running?: boolean };
   alert_reliability?: { ownership?: { owner?: string }; kill_switch?: boolean };
 };
 
-type AttentionItem = { text: string; tone: "ok" | "warn" | "bad" | "info" };
+type AttentionItem = { text: string; tone: "ok" | "warn" | "bad" | "info"; source?: string };
 type AttentionSection = { title: string; items: AttentionItem[] };
 
 /**
  * Plain-English owner summary split by pipeline. When independent owns subscriber Discord,
  * stock/supervisor disabled states are informational — not actionable problems.
+ * Independent options health prefers worker/DB heartbeat labels from the overview API.
  */
 function buildAttentionSections(
   ov: Overview | null,
@@ -81,65 +96,96 @@ function buildAttentionSections(
   // ── Independent Options Pipeline ──
   const optionsItems: AttentionItem[] = [];
   if (ind?.killSwitch ?? ov.alert_reliability?.kill_switch) {
-    optionsItems.push({ text: "Options callouts kill switch is ON — no subscriber alerts", tone: "bad" });
+    optionsItems.push({ text: "Options callouts kill switch is ON — no subscriber alerts", tone: "bad", source: "Environment configuration" });
   } else {
-    optionsItems.push({ text: "Options callouts kill switch is off", tone: "ok" });
+    optionsItems.push({ text: "Options callouts kill switch is off", tone: "ok", source: "Environment configuration" });
   }
-  if (ind?.monitorAlive) {
-    optionsItems.push({ text: "Independent options monitor is alive (recent tier cycle)", tone: "ok" });
-  } else if (ind?.monitorRunning) {
-    optionsItems.push({ text: "Independent options monitor is running but no recent tier cycle", tone: "warn" });
-  } else if (ind?.discoveryEnabled === false) {
-    optionsItems.push({ text: "Independent options discovery is disabled in config", tone: "info" });
+
+  const runMode = ind?.runMode;
+  const monitorLabel = ind?.labels?.monitor;
+  if (monitorLabel) {
+    const tone =
+      runMode === "RUNNING_IN_WORKER" || runMode === "RUNNING_IN_THIS_PROCESS" ? "ok"
+        : runMode === "UNKNOWN" ? "info"
+          : runMode === "NOT_RUNNING" && ind?.discoveryEnabled === false ? "info"
+            : "warn";
+    optionsItems.push({ text: monitorLabel, tone, source: ind?.sources?.monitor });
+  } else if (ind?.monitorAlive) {
+    optionsItems.push({ text: "Independent options monitor is alive", tone: "ok", source: ind?.sources?.monitor ?? "Database heartbeat" });
+  } else if (ind == null) {
+    optionsItems.push({ text: "Independent options monitor status is unknown", tone: "info", source: "Unknown" });
+  } else if (ind.discoveryEnabled === false) {
+    optionsItems.push({ text: "Independent options discovery is disabled in config", tone: "info", source: "Environment configuration" });
   } else {
-    optionsItems.push({ text: "Independent options monitor is not running in this process", tone: "warn" });
+    optionsItems.push({ text: "Independent options monitor status is unknown", tone: "info", source: "Unknown" });
   }
-  const optSession = ind?.session ?? ov.market_session ?? "unknown";
+
+  if (ind?.labels?.processNote) {
+    optionsItems.push({ text: ind.labels.processNote, tone: "info", source: "Local process" });
+  }
+
+  const sessionLabel = ind?.labels?.session
+    ?? (ind?.session ? `Current options session: ${ind.session}` : null)
+    ?? (ov.market_session ? `Current options session: ${ov.market_session}` : "Current options session: unknown");
+  const sessionUnknown = /unknown/i.test(sessionLabel);
   optionsItems.push({
-    text: `Options session (session guard): ${optSession}`,
-    tone: optSession === "closed" ? "info" : "ok",
+    text: sessionLabel,
+    tone: sessionUnknown ? "info" : "ok",
+    source: ind?.sources?.session ?? "Session guard",
   });
+
+  const polygonLabel = ind?.labels?.polygon;
   const polyOk = ind?.polygonConfigured ?? ov.provider?.configured;
-  if (!polyOk) optionsItems.push({ text: "Polygon/Massive API key is not configured", tone: "bad" });
-  else optionsItems.push({ text: "Polygon/Massive market-data key is configured", tone: "ok" });
-  if (ind?.webhookConfigured === false) {
-    optionsItems.push({ text: "Discord options webhook is not configured", tone: "bad" });
-  } else if (discordFail > 0) {
-    optionsItems.push({ text: "Some Discord deliveries need review", tone: "warn" });
+  if (polygonLabel) {
+    optionsItems.push({
+      text: polygonLabel,
+      tone: !polyOk ? "bad" : (ind?.polygonHealthy === false ? "warn" : "ok"),
+      source: ind?.sources?.polygon ?? "Environment configuration",
+    });
+  } else if (!polyOk) {
+    optionsItems.push({ text: "Polygon/Massive API key is not configured", tone: "bad", source: "Environment configuration" });
   } else {
-    optionsItems.push({ text: "Discord options webhook is configured", tone: "ok" });
+    optionsItems.push({ text: "Polygon/Massive provider configured and healthy in worker", tone: "ok", source: "Environment configuration" });
+  }
+
+  if (ind?.webhookConfigured === false) {
+    optionsItems.push({ text: "Discord options webhook is not configured", tone: "bad", source: "Environment configuration" });
+  } else if (discordFail > 0) {
+    optionsItems.push({ text: "Some Discord deliveries need review", tone: "warn", source: "Database heartbeat" });
+  } else {
+    optionsItems.push({ text: "Discord options webhook is configured", tone: "ok", source: ind?.sources?.webhook ?? "Environment configuration" });
   }
   if (ind?.unhealthyReason) {
-    optionsItems.push({ text: `Options delivery note: ${ind.unhealthyReason}`, tone: "warn" });
+    optionsItems.push({ text: `Options delivery note: ${ind.unhealthyReason}`, tone: "warn", source: "Local process" });
   }
   sections.push({ title: "Independent Options Pipeline", items: optionsItems });
 
   // ── Stock / Supervisor Pipeline ──
   const stockItems: AttentionItem[] = [];
   const stockRunning = ov.stock_scanner?.running ?? ov.scanner?.running;
-  if (stockRunning) stockItems.push({ text: "Stock momentum scanner is running", tone: "ok" });
-  else stockItems.push({ text: "Stock momentum scanner is stopped (does not affect independent options)", tone: "info" });
+  if (stockRunning) stockItems.push({ text: "Stock momentum scanner is running", tone: "ok", source: "Local process" });
+  else stockItems.push({ text: "Stock momentum scanner is stopped (does not affect independent options)", tone: "info", source: "Local process" });
   if (ov.supervisor?.enabled) {
-    stockItems.push({ text: "Supervisor runtime is enabled", tone: "ok" });
+    stockItems.push({ text: "Supervisor runtime is enabled", tone: "ok", source: "Environment configuration" });
   } else if (independentOwns) {
-    stockItems.push({ text: "Supervisor is intentionally disabled — independent path owns subscriber alerts", tone: "info" });
+    stockItems.push({ text: "Supervisor is intentionally disabled — independent path owns subscriber alerts", tone: "info", source: "Environment configuration" });
   } else {
-    stockItems.push({ text: "Supervisor is disabled — no automatic stock callouts", tone: "warn" });
+    stockItems.push({ text: "Supervisor is disabled — no automatic stock callouts", tone: "warn", source: "Environment configuration" });
   }
   if ((ov.stale_symbol_count ?? 0) > 0) {
-    stockItems.push({ text: `${ov.stale_symbol_count} stock symbols have stale data`, tone: "warn" });
+    stockItems.push({ text: `${ov.stale_symbol_count} stock symbols have stale data`, tone: "warn", source: "Provider telemetry" });
   }
   if (actionable > 0) {
-    stockItems.push({ text: `${actionable} actionable stock setup${actionable === 1 ? "" : "s"} on supervisor path`, tone: "ok" });
+    stockItems.push({ text: `${actionable} actionable stock setup${actionable === 1 ? "" : "s"} on supervisor path`, tone: "ok", source: "Local process" });
   }
   sections.push({ title: "Stock / Supervisor Pipeline", items: stockItems });
 
   // ── Paper and Grading ──
   const paperItems: AttentionItem[] = [];
   if (ov.paper?.enabled !== false) {
-    paperItems.push({ text: `Paper grading engine enabled (${openTrades} open trade${openTrades === 1 ? "" : "s"})`, tone: "ok" });
+    paperItems.push({ text: `Paper grading engine enabled (${openTrades} open trade${openTrades === 1 ? "" : "s"})`, tone: "ok", source: "Environment configuration" });
   } else {
-    paperItems.push({ text: "Paper trading is stopped", tone: "info" });
+    paperItems.push({ text: "Paper trading is stopped", tone: "info", source: "Environment configuration" });
   }
   sections.push({ title: "Paper and Grading", items: paperItems });
 
@@ -283,9 +329,16 @@ export function CommandCenter() {
   const allOk = attention.every((a) => a.tone === "ok" || a.tone === "info");
 
   const ind = overview?.independent_options;
+  const optionsAlive = ind?.runMode === "RUNNING_IN_WORKER" || ind?.runMode === "RUNNING_IN_THIS_PROCESS" || ind?.monitorAlive;
+  const optionsLabel =
+    ind?.runMode === "RUNNING_IN_WORKER" ? "worker"
+      : ind?.runMode === "RUNNING_IN_THIS_PROCESS" ? "local"
+        : optionsAlive ? "alive"
+          : ind?.runMode === "UNKNOWN" ? "unknown"
+            : "idle";
   const statusCells: { k: string; v: string; dot: "ok" | "warn" | "bad" | "info" }[] = [
-    { k: "Options", v: ind?.monitorAlive ? "alive" : ind?.monitorRunning ? "running" : "idle", dot: ind?.monitorAlive ? "ok" : "warn" },
-    { k: "Session", v: ind?.session ?? overview?.market_session ?? "—", dot: (ind?.session ?? overview?.market_session) === "closed" ? "info" : "ok" },
+    { k: "Options", v: optionsLabel, dot: optionsAlive ? "ok" : ind?.runMode === "UNKNOWN" ? "info" : "warn" },
+    { k: "Session", v: ind?.session ?? overview?.market_session ?? "—", dot: /closed/i.test(String(ind?.session ?? overview?.market_session ?? "")) ? "info" : "ok" },
     { k: "Polygon", v: (ind?.polygonConfigured ?? overview?.provider?.configured) ? "configured" : "no key", dot: (ind?.polygonConfigured ?? overview?.provider?.configured) ? "ok" : "bad" },
     { k: "Stock scan", v: (overview?.stock_scanner?.running ?? overview?.scanner?.running) ? "running" : "idle", dot: "info" },
     { k: "Discord", v: discordFail ? `${discordFail} review` : "OK", dot: discordFail ? "warn" : "ok" },
@@ -344,7 +397,9 @@ export function CommandCenter() {
               <ul className="cc-attention-sublist">
                 {section.items.map((a, i) => (
                   <li key={`${section.title}-${i}`} className={`cc-attention-item ${a.tone}`}>
-                    <span className={`ui-statusdot ${a.tone === "info" ? "ok" : a.tone}`} />{a.text}
+                    <span className={`ui-statusdot ${a.tone === "info" ? "ok" : a.tone}`} />
+                    <span>{a.text}</span>
+                    {a.source ? <span className="cc-attention-source" title="Health data source"> · {a.source}</span> : null}
                   </li>
                 ))}
               </ul>

@@ -140,49 +140,87 @@ export async function GET(req: Request) {
     const { evaluateMarketSessionGuard } = require("@/lib/market-session-guard");
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { readRuntimeStatusOnDb } = require("@/lib/research/options/runtime");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { buildIndependentPipelineHealth } = require("@/lib/research/options/independent-pipeline-health");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { researchFlags } = require("@/lib/research/flags");
     const ownership = subscriberDiscordOwnershipSummary();
     const monitor = optionsMonitorHealth(process.env, now);
     const metrics = optionsMonitorMetrics();
     const sessionGuard = evaluateMarketSessionGuard(now, process.env);
     let runtimeStatus: Record<string, unknown> | null = null;
+    let recentSentCount24h: number | null = null;
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { getDb } = require("@/lib/db");
-      runtimeStatus = readRuntimeStatusOnDb(getDb(), process.env) as Record<string, unknown>;
+      const db = getDb();
+      runtimeStatus = readRuntimeStatusOnDb(db, process.env, now) as Record<string, unknown>;
+      try {
+        const since = now - 24 * 3600_000;
+        recentSentCount24h = Number((db.prepare(
+          "SELECT COUNT(*) n FROM options_alerts WHERE state='SENT' AND research_only=0 AND sent_at_ms >= ?",
+        ).get(since) as { n?: number } | undefined)?.n ?? 0);
+      } catch { recentSentCount24h = null; }
     } catch { /* optional */ }
     const hb = (runtimeStatus?.heartbeat ?? null) as Record<string, unknown> | null;
-    const dbAlive = Boolean(runtimeStatus?.heartbeatFresh);
-    const dbRunning = Boolean(hb?.running);
-    const lastTier0CycleMs = monitor.lastTier0CycleMs ?? null;
-    const lastTier1CycleMs = monitor.lastTier1CycleMs ?? (hb?.lastTier1CycleMs as number | null) ?? null;
-    const lastTier2CycleMs = monitor.lastTier2CycleMs ?? (hb?.lastTier2CycleMs as number | null) ?? null;
-    const lastCycleMs = Math.max(lastTier0CycleMs ?? 0, lastTier1CycleMs ?? 0, lastTier2CycleMs ?? 0);
-    const monitorAlive = monitor.alive || dbAlive;
-    const monitorRunning = monitor.running || dbRunning;
-    return {
+    const selfCheck = (runtimeStatus?.selfCheck ?? null) as { items?: { name: string; ok: boolean }[] } | null;
+    const selfCheckPolygonOk = selfCheck?.items?.find((i) => i.name === "polygonApiKey")?.ok ?? null;
+    const health = buildIndependentPipelineHealth({
+      nowMs: now,
+      discoveryEnabled: Boolean(researchFlags(process.env).independentOptionsDiscovery ?? monitor.enabled),
+      killSwitch: process.env.OPTIONS_CALLOUTS_KILL === "1",
       ownership: ownership.owner,
       independentOwns: ownership.independentOwns,
-      killSwitch: process.env.OPTIONS_CALLOUTS_KILL === "1",
-      discoveryEnabled: monitor.enabled,
-      monitorRunning,
-      monitorAlive,
-      breakerState: monitor.breakerState !== "closed" ? monitor.breakerState : String(hb?.breaker ?? monitor.breakerState),
-      lastTier0CycleMs,
-      lastTier1CycleMs,
-      lastTier2CycleMs,
-      lastCycleAgeMs: lastCycleMs > 0 ? Math.max(0, now - lastCycleMs) : (runtimeStatus?.heartbeatAgeMs as number | null),
-      heartbeatAgeMs: runtimeStatus?.heartbeatAgeMs ?? null,
-      session: sessionGuard.state,
+      localRunning: monitor.running,
+      localAlive: monitor.alive,
+      localLastTier0CycleMs: monitor.lastTier0CycleMs,
+      localLastTier1CycleMs: monitor.lastTier1CycleMs,
+      localLastTier2CycleMs: monitor.lastTier2CycleMs,
+      localBreaker: monitor.breakerState,
+      localUnhealthyReason: monitor.unhealthyReason,
+      portfolioHealthy: Boolean(monitor.portfolioDelivery?.healthy),
+      heartbeat: hb,
+      heartbeatAgeMs: (runtimeStatus?.heartbeatAgeMs as number | null) ?? null,
+      heartbeatFresh: Boolean(runtimeStatus?.heartbeatFresh),
+      sessionGuardState: sessionGuard.state ?? null,
       sessionGuardReason: sessionGuard.reason ?? null,
-      polygonConfigured: hasPolygon(),
+      polygonEnvConfigured: hasPolygon(),
+      selfCheckPolygonOk,
       webhookConfigured: discordWebhookConfigured("options"),
+      recentSentCount24h,
+    });
+    // #region agent log
+    fetch("http://127.0.0.1:7918/ingest/1e1970bf-a3dc-4c9e-aaba-c7720ad4daf2", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "3a4126" },
+      body: JSON.stringify({
+        sessionId: "3a4126",
+        runId: "post-fix",
+        hypothesisId: "H-web-vs-worker",
+        location: "app/api/system/overview/route.ts:independent_options",
+        message: "independent pipeline health",
+        data: {
+          runMode: health.runMode,
+          monitorAlive: health.monitorAlive,
+          localRunning: monitor.running,
+          heartbeatFresh: Boolean(runtimeStatus?.heartbeatFresh),
+          session: health.session,
+          polygonConfigured: health.polygonConfigured,
+          sources: health.sources,
+          labels: health.labels,
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+    return {
+      ...health,
       portfolioDelivery: monitor.portfolioDelivery,
-      unhealthyReason: monitor.unhealthyReason,
-      runtimeSession: (hb?.session as string | null) ?? runtimeStatus?.session ?? metrics.sessionState ?? null,
+      runtimeSession: (hb?.session as string | null) ?? health.session,
       metrics: {
-        sessionState: metrics.sessionState,
+        sessionState: health.session,
         throttles: metrics.throttles,
-        providerFailures: metrics.providerFailures,
+        providerFailures: Number(hb?.providerFailures ?? metrics.providerFailures ?? 0),
         discoveryPaused: callStats?.discoveryPaused ?? false,
       },
     };
