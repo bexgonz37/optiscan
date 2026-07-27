@@ -108,8 +108,8 @@ test("recent independent sends without local monitor still avoid false stopped w
 test("Command Center no longer warns that the monitor is stopped merely because web process is idle", () => {
   const cc = readFileSync(join(root, "components/CommandCenter.tsx"), "utf8");
   assert.ok(!/not running in this process/.test(cc), "must not use the old false-warning copy");
-  assert.ok(/RUNNING_IN_WORKER/.test(cc), "must understand worker run mode");
-  assert.ok(/labels\?\.monitor|labels\.monitor/.test(cc), "must prefer API monitor labels over local process inference");
-  assert.ok(/cc-attention-source/.test(cc), "must render health source labels");
-  assert.ok(/processNote/.test(cc), "must surface web-does-not-host-scanner note as informational");
+  assert.ok(/\/api\/command-center/.test(cc), "must use authenticated canonical snapshot");
+  assert.ok(/scanHeaders\(\)/.test(cc), "must send scan token");
+  assert.ok(/What is working right now/.test(cc), "must use independent-first primary section");
+  assert.ok(/Optional stock scanner/.test(cc), "stock/supervisor must be collapsed/optional");
 });

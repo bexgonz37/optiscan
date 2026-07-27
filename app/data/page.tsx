@@ -14,6 +14,7 @@ import {
   type BadgeTone,
 } from "@/components/ui/Shell";
 import { DiscordDeliveryPanel } from "@/components/DiscordDeliveryPanel";
+import { scanHeaders } from "@/hooks/useScanner";
 
 /**
  * System Health (Phase 2). A human-readable view of provider connection,
@@ -84,7 +85,7 @@ export default function SystemHealthPage() {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch("/api/system/overview", { cache: "no-store" });
+      const res = await fetch("/api/system/overview", { cache: "no-store", headers: scanHeaders() });
       const text = await res.text();
       let body: Overview | null = null;
       try { body = text ? (JSON.parse(text) as Overview) : null; } catch { /* non-JSON error page */ }

@@ -435,7 +435,19 @@
 .cc-starthere { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 14px; border-radius: 10px; border: 1px solid rgba(90,169,255,0.28); background: rgba(90,169,255,0.08); margin-bottom: 12px; font-size: 0.85rem; }
 .cc-starthere-badge { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent, #5aa9ff); border: 1px solid currentColor; border-radius: 5px; padding: 2px 6px; }
 .cc-starthere-x { margin-left: auto; background: none; border: none; color: var(--muted, #8b97a8); cursor: pointer; font-size: 0.9rem; }
-.cc-attention { border: 1px solid rgba(120,160,200,0.16); border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; background: var(--panel, rgba(12,18,27,0.5)); }
+.cc-attention-source { opacity: 0.55; font-size: 0.72rem; }
+.cc-attention-section { list-style: none; }
+.cc-attention-section-title { font-weight: 600; font-size: 0.78rem; margin: 6px 0 4px; opacity: 0.85; }
+.cc-attention-sublist { list-style: none; padding: 0; margin: 0 0 8px; }
+.cc-meta { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; font-size: 0.78rem; opacity: 0.75; margin-bottom: 12px; }
+.cc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px 14px; margin-bottom: 12px; }
+.cc-kv { display: flex; flex-direction: column; gap: 2px; }
+.cc-kv-k { font-size: 0.72rem; opacity: 0.65; }
+.cc-kv-v { font-size: 0.88rem; font-weight: 600; }
+.cc-kv.ok .cc-kv-v { color: var(--bull, #34d399); }
+.cc-kv.warn .cc-kv-v { color: var(--amber, #f6c454); }
+.cc-kv.bad .cc-kv-v { color: var(--bear, #f2607a); }
+.cc-collapse-btn { background: transparent; border: 1px solid rgba(120,160,200,0.2); color: inherit; border-radius: 8px; padding: 8px 12px; cursor: pointer; width: 100%; text-align: left; font-size: 0.9rem; }
 .cc-attention-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
 .cc-attention-title { font-weight: 700; font-size: 0.95rem; color: var(--txt, #eaf5fd); }
 .cc-attention-overall { font-size: 0.8rem; }

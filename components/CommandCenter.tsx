@@ -1,517 +1,299 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Card, StatusBadge, EmptyState, LoadingState, type BadgeTone } from "@/components/ui/Shell";
+import { Card, StatusBadge, EmptyState, LoadingState } from "@/components/ui/Shell";
 import { SimpleTable, type Column } from "@/components/ui/Table";
 import { scanHeaders } from "@/hooks/useScanner";
-import { usePresentationMode } from "@/hooks/usePresentationMode";
-import { TradeExplanationCard } from "@/components/TradeExplanationCard";
-import type { TradeExplanation } from "@/lib/trade-explanation";
-import type { PresentationMode } from "@/lib/dashboard-prefs";
+import { overviewAuthFailed, primaryWorkingNowLines, type HealthLine } from "@/lib/dashboard/command-center-health";
 
 /**
- * Command Center (Phase 6). A calm, sectioned main page — NOT one constantly
- * re-ranked card grid. Reads persisted opportunity lifecycle (/api/opportunities),
- * system health (/api/system/overview), paper trades, and recent alerts. Card
- * order is stable (the store returns a deterministic, hysteresis-smoothed order),
- * and there is no flashing/animation. Every empty section explains why.
+ * Command Center — owner ops home focused on Independent Options.
+ * Uses authenticated /api/command-center (same token as Pipeline Health).
+ * Stock/supervisor is collapsed and informational when independent owns alerts.
  */
 
-type Opp = {
-  opportunity_id: string;
-  ticker: string;
-  setup_type: string;
-  current_status: string;
-  current_score: number;
-  highest_score: number;
-  trigger_level: number | null;
-  entry_zone: string | null;
-  last_updated_at: string;
-  explanation?: TradeExplanation;
+type Snapshot = {
+  ok?: boolean;
+  faults?: string[];
+  generatedAtMs?: number;
+  generatedAtIso?: string;
+  sourceEndpoint?: string;
+  commitShort?: string | null;
+  independent?: Record<string, any> | null;
+  pipeline?: Record<string, any> | null;
+  readiness?: Record<string, any> | null;
+  paper?: Record<string, any> | null;
+  content?: Record<string, any> | null;
+  stock?: Record<string, any> | null;
+  error?: string;
+  status?: number;
 };
 
-type Buckets = Record<string, Opp[]>;
-
-type Overview = {
-  market_session?: string;
-  provider?: { connected?: boolean; configured?: boolean };
-  scanner?: { running?: boolean };
-  stale_symbol_count?: number;
-  discord?: { summary?: { status: string; count: number }[]; webhooks?: Record<string, boolean> };
-  supervisor?: { enabled?: boolean };
-  paper?: { enabled?: boolean };
-  model?: { state?: string };
-  independent_options?: {
-    ownership?: string;
-    independentOwns?: boolean;
-    killSwitch?: boolean;
-    monitorAlive?: boolean;
-    monitorRunning?: boolean;
-    runMode?: "RUNNING_IN_THIS_PROCESS" | "RUNNING_IN_WORKER" | "NOT_RUNNING" | "UNKNOWN";
-    session?: string;
-    polygonConfigured?: boolean;
-    polygonHealthy?: boolean;
-    webhookConfigured?: boolean;
-    lastCycleAgeMs?: number | null;
-    unhealthyReason?: string | null;
-    discoveryEnabled?: boolean;
-    sources?: {
-      monitor?: string;
-      session?: string;
-      polygon?: string;
-      webhook?: string;
-    };
-    labels?: {
-      monitor?: string;
-      session?: string;
-      polygon?: string;
-      processNote?: string | null;
-    };
-  };
-  stock_scanner?: { running?: boolean };
-  alert_reliability?: { ownership?: { owner?: string }; kill_switch?: boolean };
-};
-
-type AttentionItem = { text: string; tone: "ok" | "warn" | "bad" | "info"; source?: string };
-type AttentionSection = { title: string; items: AttentionItem[] };
-
-/**
- * Plain-English owner summary split by pipeline. When independent owns subscriber Discord,
- * stock/supervisor disabled states are informational — not actionable problems.
- * Independent options health prefers worker/DB heartbeat labels from the overview API.
- */
-function buildAttentionSections(
-  ov: Overview | null,
-  openTrades: number,
-  actionable: number,
-  discordFail: number,
-): AttentionSection[] {
-  if (!ov) return [{ title: "System", items: [{ text: "Checking system status…", tone: "warn" }] }];
-
-  const ind = ov.independent_options;
-  const independentOwns = Boolean(ind?.independentOwns ?? ov.alert_reliability?.ownership?.owner === "independent");
-  const sections: AttentionSection[] = [];
-
-  // ── Independent Options Pipeline ──
-  const optionsItems: AttentionItem[] = [];
-  if (ind?.killSwitch ?? ov.alert_reliability?.kill_switch) {
-    optionsItems.push({ text: "Options callouts kill switch is ON — no subscriber alerts", tone: "bad", source: "Environment configuration" });
-  } else {
-    optionsItems.push({ text: "Options callouts kill switch is off", tone: "ok", source: "Environment configuration" });
-  }
-
-  const runMode = ind?.runMode;
-  const monitorLabel = ind?.labels?.monitor;
-  if (monitorLabel) {
-    const tone =
-      runMode === "RUNNING_IN_WORKER" || runMode === "RUNNING_IN_THIS_PROCESS" ? "ok"
-        : runMode === "UNKNOWN" ? "info"
-          : runMode === "NOT_RUNNING" && ind?.discoveryEnabled === false ? "info"
-            : "warn";
-    optionsItems.push({ text: monitorLabel, tone, source: ind?.sources?.monitor });
-  } else if (ind?.monitorAlive) {
-    optionsItems.push({ text: "Independent options monitor is alive", tone: "ok", source: ind?.sources?.monitor ?? "Database heartbeat" });
-  } else if (ind == null) {
-    optionsItems.push({ text: "Independent options monitor status is unknown", tone: "info", source: "Unknown" });
-  } else if (ind.discoveryEnabled === false) {
-    optionsItems.push({ text: "Independent options discovery is disabled in config", tone: "info", source: "Environment configuration" });
-  } else {
-    optionsItems.push({ text: "Independent options monitor status is unknown", tone: "info", source: "Unknown" });
-  }
-
-  if (ind?.labels?.processNote) {
-    optionsItems.push({ text: ind.labels.processNote, tone: "info", source: "Local process" });
-  }
-
-  const sessionLabel = ind?.labels?.session
-    ?? (ind?.session ? `Current options session: ${ind.session}` : null)
-    ?? (ov.market_session ? `Current options session: ${ov.market_session}` : "Current options session: unknown");
-  const sessionUnknown = /unknown/i.test(sessionLabel);
-  optionsItems.push({
-    text: sessionLabel,
-    tone: sessionUnknown ? "info" : "ok",
-    source: ind?.sources?.session ?? "Session guard",
-  });
-
-  const polygonLabel = ind?.labels?.polygon;
-  const polyOk = ind?.polygonConfigured ?? ov.provider?.configured;
-  if (polygonLabel) {
-    optionsItems.push({
-      text: polygonLabel,
-      tone: !polyOk ? "bad" : (ind?.polygonHealthy === false ? "warn" : "ok"),
-      source: ind?.sources?.polygon ?? "Environment configuration",
-    });
-  } else if (!polyOk) {
-    optionsItems.push({ text: "Polygon/Massive API key is not configured", tone: "bad", source: "Environment configuration" });
-  } else {
-    optionsItems.push({ text: "Polygon/Massive provider configured and healthy in worker", tone: "ok", source: "Environment configuration" });
-  }
-
-  if (ind?.webhookConfigured === false) {
-    optionsItems.push({ text: "Discord options webhook is not configured", tone: "bad", source: "Environment configuration" });
-  } else if (discordFail > 0) {
-    optionsItems.push({ text: "Some Discord deliveries need review", tone: "warn", source: "Database heartbeat" });
-  } else {
-    optionsItems.push({ text: "Discord options webhook is configured", tone: "ok", source: ind?.sources?.webhook ?? "Environment configuration" });
-  }
-  if (ind?.unhealthyReason) {
-    optionsItems.push({ text: `Options delivery note: ${ind.unhealthyReason}`, tone: "warn", source: "Local process" });
-  }
-  sections.push({ title: "Independent Options Pipeline", items: optionsItems });
-
-  // ── Stock / Supervisor Pipeline ──
-  const stockItems: AttentionItem[] = [];
-  const stockRunning = ov.stock_scanner?.running ?? ov.scanner?.running;
-  if (stockRunning) stockItems.push({ text: "Stock momentum scanner is running", tone: "ok", source: "Local process" });
-  else stockItems.push({ text: "Stock momentum scanner is stopped (does not affect independent options)", tone: "info", source: "Local process" });
-  if (ov.supervisor?.enabled) {
-    stockItems.push({ text: "Supervisor runtime is enabled", tone: "ok", source: "Environment configuration" });
-  } else if (independentOwns) {
-    stockItems.push({ text: "Supervisor is intentionally disabled — independent path owns subscriber alerts", tone: "info", source: "Environment configuration" });
-  } else {
-    stockItems.push({ text: "Supervisor is disabled — no automatic stock callouts", tone: "warn", source: "Environment configuration" });
-  }
-  if ((ov.stale_symbol_count ?? 0) > 0) {
-    stockItems.push({ text: `${ov.stale_symbol_count} stock symbols have stale data`, tone: "warn", source: "Provider telemetry" });
-  }
-  if (actionable > 0) {
-    stockItems.push({ text: `${actionable} actionable stock setup${actionable === 1 ? "" : "s"} on supervisor path`, tone: "ok", source: "Local process" });
-  }
-  sections.push({ title: "Stock / Supervisor Pipeline", items: stockItems });
-
-  // ── Paper and Grading ──
-  const paperItems: AttentionItem[] = [];
-  if (ov.paper?.enabled !== false) {
-    paperItems.push({ text: `Paper grading engine enabled (${openTrades} open trade${openTrades === 1 ? "" : "s"})`, tone: "ok", source: "Environment configuration" });
-  } else {
-    paperItems.push({ text: "Paper trading is stopped", tone: "info", source: "Environment configuration" });
-  }
-  sections.push({ title: "Paper and Grading", items: paperItems });
-
-  // ── AI and Content Jobs ──
-  const aiItems: AttentionItem[] = [];
-  const model = ov.model?.state ?? "";
-  if (/VALIDATED/.test(model)) aiItems.push({ text: "Prediction model: validated", tone: "ok" });
-  else if (/EXPERIMENTAL/.test(model)) aiItems.push({ text: "Prediction model: experimental (research only)", tone: "info" });
-  else aiItems.push({ text: "Prediction model is still collecting outcomes", tone: "info" });
-  sections.push({ title: "AI and Content Jobs", items: aiItems });
-
-  return sections;
+function fmtAge(ms: number | null | undefined): string {
+  if (ms == null || !Number.isFinite(ms)) return "—";
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  if (ms < 3600_000) return `${Math.round(ms / 60_000)}m`;
+  return `${Math.round(ms / 3600_000)}h`;
 }
 
-/** Flat list for backward-compatible overall status check. */
-function buildAttention(ov: Overview | null, openTrades: number, actionable: number, discordFail: number): AttentionItem[] {
-  return buildAttentionSections(ov, openTrades, actionable, discordFail).flatMap((s) => s.items);
+function fmtPct(v: unknown): string {
+  if (v == null || !Number.isFinite(Number(v))) return "—";
+  return `${Number(v).toFixed(2)}%`;
 }
 
-const STATUS_TONE: Record<string, BadgeTone> = {
-  ENTRY_CONFIRMED: "live",
-  NEAR_TRIGGER: "info",
-  WAIT_FOR_PULLBACK: "info",
-  BUILDING: "warn",
-  WATCHING: "muted",
-  EXTENDED: "warn",
-  INVALIDATED: "bad",
-  DATA_STALE: "bad",
-  NO_VALID_CONTRACT: "muted",
-  RESEARCH_ONLY: "muted",
-};
-
-function statusText(s: string): string {
-  return s.replace(/_/g, " ").toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
+function fmtTime(ms: number | null | undefined): string {
+  if (ms == null) return "—";
+  try {
+    return new Date(ms).toLocaleString("en-US", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", month: "short", day: "numeric" });
+  } catch { return "—"; }
 }
 
-function ago(iso: string): string {
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return "";
-  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
-  if (s < 60) return `${s}s ago`;
-  if (s < 3600) return `${Math.round(s / 60)}m ago`;
-  return `${Math.round(s / 3600)}h ago`;
-}
-
-function OpportunityCard({ o, mode }: { o: Opp; mode: PresentationMode }) {
-  // Both Simple and Advanced render the SAME explanation object; the mode only
-  // selects which fields show. When no explanation is attached, fall back to the
-  // compact status/score card.
-  if (o.explanation) {
-    return (
-      <div className="cc-opp">
-        <TradeExplanationCard explanation={o.explanation} mode={mode} />
-        <div className="cc-opp-foot">
-          Score {Math.round(o.current_score)} <span className="cc-opp-dim">/ peak {Math.round(o.highest_score)}</span>
-          {o.entry_zone ? <> · entry {o.entry_zone}</> : null} · updated {ago(o.last_updated_at)}
-        </div>
-      </div>
-    );
-  }
+function LineList({ items }: { items: HealthLine[] }) {
   return (
-    <div className="cc-opp">
-      <div className="cc-opp-top">
-        <span className="cc-opp-ticker">{o.ticker}</span>
-        <StatusBadge tone={STATUS_TONE[o.current_status] ?? "muted"}>{statusText(o.current_status)}</StatusBadge>
-      </div>
-      <div className="cc-opp-meta">{o.setup_type.replace(/_/g, " ")}</div>
-      <div className="cc-opp-row">
-        <span>Score</span>
-        <span className="cc-opp-num">{Math.round(o.current_score)}<span className="cc-opp-dim"> / peak {Math.round(o.highest_score)}</span></span>
-      </div>
-      {o.entry_zone ? (
-        <div className="cc-opp-row"><span>Entry zone</span><span className="cc-opp-num">{o.entry_zone}</span></div>
-      ) : null}
-      <div className="cc-opp-foot">updated {ago(o.last_updated_at)}</div>
+    <ul className="cc-attention-list">
+      {items.map((a, i) => (
+        <li key={`${a.text}-${i}`} className={`cc-attention-item ${a.tone}`}>
+          <span className={`ui-statusdot ${a.tone === "info" ? "ok" : a.tone}`} />
+          <span>{a.text}</span>
+          {a.source ? <span className="cc-attention-source"> · {a.source}</span> : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function Kv({ k, v, tone }: { k: string; v: string; tone?: "ok" | "warn" | "bad" | "muted" }) {
+  return (
+    <div className={`cc-kv ${tone ?? ""}`}>
+      <span className="cc-kv-k">{k}</span>
+      <span className="cc-kv-v">{v}</span>
     </div>
   );
 }
 
-function Section({ title, hint, items, emptyReason, mode }: { title: string; hint: string; items: Opp[]; emptyReason: ReactNode; mode: PresentationMode }) {
-  return (
-    <section className="ui-section">
-      <div className="ui-section-head">
-        <span className="ui-section-title">{title}</span>
-        <span className="ui-section-count">{items.length}</span>
-      </div>
-      <div className="ui-section-hint">{hint}</div>
-      {items.length ? (
-        <div className="cc-opp-grid">
-          {items.map((o) => <OpportunityCard key={o.opportunity_id} o={o} mode={mode} />)}
-        </div>
-      ) : (
-        <EmptyState title="Nothing here right now" reason={emptyReason} />
-      )}
-    </section>
-  );
-}
-
 export function CommandCenter() {
-  const [buckets, setBuckets] = useState<Buckets | null>(null);
-  const [overview, setOverview] = useState<Overview | null>(null);
-  const [trades, setTrades] = useState<any[] | null>(null);
-  const [alerts, setAlerts] = useState<any[] | null>(null);
-  const [mode, setMode] = usePresentationMode();
-  const [showStartHere, setShowStartHere] = useState(false);
-
-  useEffect(() => {
-    try { setShowStartHere(localStorage.getItem("optiscan:seen-guide") !== "1"); } catch { /* ignore */ }
-  }, []);
-  const dismissStartHere = useCallback(() => {
-    try { localStorage.setItem("optiscan:seen-guide", "1"); } catch { /* ignore */ }
-    setShowStartHere(false);
-  }, []);
+  const [snap, setSnap] = useState<Snapshot | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [stockOpen, setStockOpen] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
-    const h = { cache: "no-store" as const, headers: scanHeaders() };
-    const [opp, ov, paper, al] = await Promise.all([
-      fetch("/api/opportunities", { cache: "no-store" }).then((r) => r.json()).catch(() => null),
-      fetch("/api/system/overview", { cache: "no-store" }).then((r) => r.json()).catch(() => null),
-      fetch("/api/paper/trades", h).then((r) => r.json()).catch(() => null),
-      fetch("/api/alerts?limit=15", h).then((r) => r.json()).catch(() => null),
-    ]);
-    if (opp?.buckets) setBuckets(opp.buckets);
-    else if (opp) setBuckets({});
-    if (ov) setOverview(ov);
-    if (paper) setTrades(Array.isArray(paper.trades) ? paper.trades : []);
-    if (al) setAlerts(Array.isArray(al.alerts) ? al.alerts : []);
+    setRefreshing(true);
+    try {
+      const res = await fetch("/api/command-center", { cache: "no-store", headers: scanHeaders() });
+      const json = await res.json().catch(() => null);
+      if (!res.ok) {
+        setLoadError(json?.error ?? `HTTP ${res.status}`);
+        setSnap(json ?? { ok: false, status: res.status, error: "unauthorized" });
+        return;
+      }
+      setLoadError(null);
+      setSnap(json);
+    } catch (err: any) {
+      setLoadError(String(err?.message ?? err));
+    } finally {
+      setRefreshing(false);
+    }
   }, []);
 
   useEffect(() => {
     load();
-    const id = setInterval(load, 5000);
+    const id = setInterval(load, 10_000);
     return () => clearInterval(id);
   }, [load]);
 
-  const openTrades = (trades ?? []).filter((t) => t.status === "ENTERED" || t.status === "READY");
-  const discordFail = (overview?.discord?.summary ?? []).filter((s) => ["FAILED", "RETRYING"].includes(s.status)).reduce((n, s) => n + Number(s.count ?? 0), 0);
-  const actionableCount = (buckets?.ACTIONABLE ?? []).length;
-  const attentionSections = buildAttentionSections(overview, openTrades.length, actionableCount, discordFail);
-  const attention = attentionSections.flatMap((s) => s.items);
-  const allOk = attention.every((a) => a.tone === "ok" || a.tone === "info");
-
-  const ind = overview?.independent_options;
-  const optionsAlive = ind?.runMode === "RUNNING_IN_WORKER" || ind?.runMode === "RUNNING_IN_THIS_PROCESS" || ind?.monitorAlive;
-  const optionsLabel =
-    ind?.runMode === "RUNNING_IN_WORKER" ? "worker"
-      : ind?.runMode === "RUNNING_IN_THIS_PROCESS" ? "local"
-        : optionsAlive ? "alive"
-          : ind?.runMode === "UNKNOWN" ? "unknown"
-            : "idle";
-  const statusCells: { k: string; v: string; dot: "ok" | "warn" | "bad" | "info" }[] = [
-    { k: "Options", v: optionsLabel, dot: optionsAlive ? "ok" : ind?.runMode === "UNKNOWN" ? "info" : "warn" },
-    { k: "Session", v: ind?.session ?? overview?.market_session ?? "—", dot: /closed/i.test(String(ind?.session ?? overview?.market_session ?? "")) ? "info" : "ok" },
-    { k: "Polygon", v: (ind?.polygonConfigured ?? overview?.provider?.configured) ? "configured" : "no key", dot: (ind?.polygonConfigured ?? overview?.provider?.configured) ? "ok" : "bad" },
-    { k: "Stock scan", v: (overview?.stock_scanner?.running ?? overview?.scanner?.running) ? "running" : "idle", dot: "info" },
-    { k: "Discord", v: discordFail ? `${discordFail} review` : "OK", dot: discordFail ? "warn" : "ok" },
-    { k: "Paper", v: `${openTrades.length} open`, dot: "ok" },
-  ];
-
-  const b = buckets ?? {};
-  const actionable = b.ACTIONABLE ?? [];
-  const near = b.NEAR_TRIGGER ?? [];
-  const developing = b.DEVELOPING ?? [];
-  const extendedInvalid = b.EXTENDED_OR_INVALID ?? [];
-
-  const tradeCols: Column<any>[] = [
-    { key: "ticker", header: "Ticker", render: (t) => t.ticker ?? "—" },
-    { key: "contract", header: "Contract", render: (t) => t.optionSymbol ?? t.optionType ?? "—" },
-    { key: "status", header: "Status", render: (t) => <StatusBadge tone={t.status === "ENTERED" ? "live" : "info"}>{statusText(String(t.status ?? ""))}</StatusBadge> },
-    { key: "contracts", header: "Qty", align: "right", render: (t) => String(t.contracts ?? 1) },
-    { key: "entry", header: "Entry", align: "right", render: (t) => (t.entryPrice != null ? `$${Number(t.entryPrice).toFixed(2)}` : t.entryLimit != null ? `$${Number(t.entryLimit).toFixed(2)}` : "—") },
-  ];
-
-  const alertCols: Column<any>[] = [
-    { key: "time", header: "Time", render: (a) => (a.alert_time ? new Date(a.alert_time).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", timeZone: "America/New_York" }) : "—") },
-    { key: "ticker", header: "Ticker", render: (a) => a.ticker ?? "—" },
-    { key: "side", header: "Side", render: (a) => <StatusBadge tone={String(a.option_side).toLowerCase() === "put" ? "bear" : "bull"}>{a.option_side ?? a.direction ?? "—"}</StatusBadge> },
-    { key: "source", header: "Source", render: (a) => a.source ?? "—" },
-    { key: "score", header: "Signal", align: "right", render: (a) => (a.signal_score != null ? Math.round(a.signal_score) : "—") },
-  ];
-
-  if (!buckets && !overview) {
+  if (!snap && !loadError) {
     return <div className="ui-page"><Card title="Loading Command Center"><LoadingState rows={4} /></Card></div>;
   }
 
+  const authFailed = overviewAuthFailed(snap as any) || Boolean(loadError);
+  const ind = snap?.independent ?? null;
+  const pipe = snap?.pipeline ?? null;
+  const paper = snap?.paper ?? null;
+  const readiness = snap?.readiness ?? null;
+  const content = snap?.content ?? null;
+  const stock = snap?.stock ?? null;
+
+  const latestRow = paper?.rows?.[0];
+  const latestAlertLabel = latestRow
+    ? `${latestRow.symbol} · ${fmtTime(latestRow.sentAtMs)} · ${latestRow.graderHealth ?? "—"}`
+    : null;
+
+  const workingNow = primaryWorkingNowLines({
+    independent: ind,
+    authFailed,
+    discordFail: 0,
+    graderRunning: paper?.grader?.running ?? null,
+    graderLastCycleAgeMs: paper?.grader?.lastCycleAgeMs ?? null,
+    contentEnabled: content?.enabled ?? null,
+    contentWebhook: content?.webhookConfigured ?? null,
+    latestAlertLabel,
+  });
+
+  const openRows = (paper?.rows ?? []).filter((r: any) => r.paperStatus === "ENTERED");
+  const paperCols: Column<any>[] = [
+    { key: "symbol", header: "Symbol", render: (r) => r.symbol ?? "—" },
+    { key: "entry", header: "Frozen entry", align: "right", render: (r) => (r.frozenEntry != null ? `$${Number(r.frozenEntry).toFixed(2)}` : "—") },
+    { key: "unreal", header: "Unrealized", align: "right", render: (r) => fmtPct(r.latestMarkReturnPct) },
+    { key: "mfe", header: "MFE", align: "right", render: (r) => fmtPct(r.mfePct) },
+    { key: "mae", header: "MAE", align: "right", render: (r) => fmtPct(r.maePct) },
+    { key: "status", header: "Status", render: (r) => <StatusBadge tone={r.paperStatus === "ENTERED" ? "live" : "muted"}>{r.paperStatus ?? "—"}</StatusBadge> },
+  ];
+
+  const m = readiness?.metrics ?? {};
+  const delivery = pipe?.delivery ?? {};
+  const candidates = pipe?.candidates ?? {};
+  const mon = pipe?.monitor ?? {};
+
   return (
     <div className="ui-page cc-page">
-      {showStartHere ? (
-        <div className="cc-starthere">
-          <span className="cc-starthere-badge">Start here</span>
-          <span>New to OptiScan? The Guide explains every page in plain English.</span>
-          <Link href="/guide" className="ui-btn ui-btn-sm ui-btn-primary" onClick={dismissStartHere}>Open the Guide →</Link>
-          <button type="button" className="cc-starthere-x" onClick={dismissStartHere} aria-label="Dismiss">✕</button>
-        </div>
+      <div className="cc-meta">
+        <span>Last refreshed: {snap?.generatedAtIso ? new Date(snap.generatedAtIso).toLocaleTimeString() : "—"}</span>
+        <span>Source: {snap?.sourceEndpoint ?? "/api/command-center"}</span>
+        <span>Commit: {snap?.commitShort ?? "—"}</span>
+        <button type="button" className="ui-btn ui-btn-sm" disabled={refreshing} onClick={() => void load()}>
+          {refreshing ? "Refreshing…" : "Refresh"}
+        </button>
+      </div>
+
+      {loadError ? (
+        <Card title="Auth / load error" tone="warn">
+          <p>{loadError}. Open Settings and set your scan token — Command Center uses the same token as Pipeline Health.</p>
+        </Card>
       ) : null}
 
-      {/* What needs my attention? */}
+      {/* What is working right now */}
       <section className="cc-attention">
         <div className="cc-attention-head">
-          <span className="cc-attention-title">What needs my attention?</span>
-          <span className={`cc-attention-overall ${allOk ? "ok" : "warn"}`}>
-            {allOk ? "Everything is running normally" : "Some items need a look"}
+          <span className="cc-attention-title">What is working right now</span>
+          <span className={`cc-attention-overall ${workingNow.every((x) => x.tone === "ok" || x.tone === "info") ? "ok" : "warn"}`}>
+            Independent options path
           </span>
         </div>
-        <ul className="cc-attention-list">
-          {attentionSections.map((section) => (
-            <li key={section.title} className="cc-attention-section">
-              <div className="cc-attention-section-title">{section.title}</div>
-              <ul className="cc-attention-sublist">
-                {section.items.map((a, i) => (
-                  <li key={`${section.title}-${i}`} className={`cc-attention-item ${a.tone}`}>
-                    <span className={`ui-statusdot ${a.tone === "info" ? "ok" : a.tone}`} />
-                    <span>{a.text}</span>
-                    {a.source ? <span className="cc-attention-source" title="Health data source"> · {a.source}</span> : null}
-                  </li>
-                ))}
-              </ul>
-            </li>
-          ))}
-        </ul>
+        <LineList items={workingNow} />
         <div className="cc-attention-links">
-          <Link href="/callouts" className="ui-btn ui-btn-sm">Review callouts →</Link>
+          <Link href="/pipeline-health" className="ui-btn ui-btn-sm">Pipeline health →</Link>
           <Link href="/paper" className="ui-btn ui-btn-sm">Paper trades →</Link>
-          <Link href="/data" className="ui-btn ui-btn-sm">System health →</Link>
         </div>
       </section>
 
-      {/* Status Bar */}
-      <div className="ui-statusbar">
-        {statusCells.map((c) => (
-          <div className="ui-statuscell" key={c.k}>
-            <span className="ui-statuscell-k">{c.k}</span>
-            <span className="ui-statuscell-v"><span className={`ui-statusdot ${c.dot}`} />{c.v}</span>
-          </div>
-        ))}
-      </div>
-
-      <div className="cc-toolbar">
-        <span className="ui-section-hint">Calm view of what matters right now. Opportunities evolve in place — cards do not re-rank on every tick.</span>
-        <div className="cc-toolbar-right">
-          <div className="tx-modetoggle" role="group" aria-label="Presentation detail level">
-            <button
-              type="button"
-              className={`ui-btn ui-btn-sm${mode === "simple" ? " tx-modeon" : ""}`}
-              aria-pressed={mode === "simple"}
-              onClick={() => setMode("simple")}
-            >
-              Simple
-            </button>
-            <button
-              type="button"
-              className={`ui-btn ui-btn-sm${mode === "advanced" ? " tx-modeon" : ""}`}
-              aria-pressed={mode === "advanced"}
-              onClick={() => setMode("advanced")}
-            >
-              Advanced
-            </button>
-          </div>
-          <Link href="/scanner" className="ui-btn ui-btn-sm">Open live scanner →</Link>
-        </div>
-      </div>
-
-      <Section
-        title="Actionable Now"
-        hint="Confirmed entries on fresh data with a valid contract, non-extended price, and acceptable risk. Bearish setups stay research-only."
-        items={actionable}
-        emptyReason="No setup is confirmed for entry right now. This fills when a monitored symbol breaks its level with momentum on fresh required data."
-        mode={mode}
-      />
-
-      <Section
-        title="Near Trigger"
-        hint="Close to confirmation — watch for the trigger or a pullback into the entry zone."
-        items={near}
-        emptyReason="Nothing is near a trigger. Setups appear here as they build conviction toward confirmation."
-        mode={mode}
-      />
-
-      <Section
-        title="Developing Setups"
-        hint="Still forming — building conviction but not yet near a trigger."
-        items={developing}
-        emptyReason="No setups are developing yet. The scanner adds them here as momentum and volume build during the session."
-        mode={mode}
-      />
-
-      {/* Open Paper Trades */}
+      {/* Independent Options */}
       <section className="ui-section">
         <div className="ui-section-head">
-          <span className="ui-section-title">Open Paper Trades</span>
-          <span className="ui-section-count">{openTrades.length}</span>
+          <span className="ui-section-title">Independent Options</span>
         </div>
         <Card>
+          <div className="cc-grid">
+            <Kv k="Monitor" v={String(ind?.runMode ?? "—")} tone={ind?.monitorAlive ? "ok" : "warn"} />
+            <Kv k="Heartbeat age" v={fmtAge(ind?.heartbeatAgeMs ?? ind?.lastCycleAgeMs)} />
+            <Kv k="Tier0 / Tier1 age" v={`${fmtAge(ind?.lastTier0CycleMs != null ? Date.now() - ind.lastTier0CycleMs : null)} / ${fmtAge(ind?.lastTier1CycleMs != null ? Date.now() - ind.lastTier1CycleMs : null)}`} />
+            <Kv k="Symbols scanned" v={String(mon?.metrics?.symbolsScanned ?? ind?.metrics?.symbolsScanned ?? "—")} />
+            <Kv k="Candidates 24h" v={`${candidates.observed24h ?? "—"} observed · ${candidates.ready24h ?? "—"} READY`} />
+            <Kv k="Delivered today" v={String(delivery.sent24h ?? paper?.sent24h ?? "—")} />
+            <Kv k="Kill switch" v={ind?.killSwitch ? "ON" : "off"} tone={ind?.killSwitch ? "bad" : "ok"} />
+            <Kv k="Ownership" v={String(ind?.ownership ?? "—")} />
+            <Kv k="Latest block / reject" v={String(pipe?.rejectionReasons?.[0]?.reason ?? pipe?.summary ?? "—")} />
+            <Kv k="Latest delivered" v={latestAlertLabel ?? "—"} />
+          </div>
+        </Card>
+      </section>
+
+      {/* Paper Trading */}
+      <section className="ui-section">
+        <div className="ui-section-head">
+          <span className="ui-section-title">Paper Trading (delivered mirrors)</span>
+          <span className="ui-section-count">{openRows.length} open</span>
+        </div>
+        <Card>
+          <p className="ui-section-hint">
+            Unrealized = latest mark return. MFE/MAE are path extremes. 60-minute and realized closed returns are separate — see Subscriber Readiness for launch-sample 60m stats.
+          </p>
+          <div className="cc-grid">
+            <Kv k="Open delivered" v={String(paper?.openDelivered ?? openRows.length)} />
+            <Kv k="Closed in sample" v={String(paper?.closedInSample ?? 0)} />
+            <Kv k="Grader heartbeat" v={fmtAge(paper?.grader?.lastCycleAgeMs)} tone={paper?.grader?.running === false ? "warn" : "ok"} />
+            <Kv k="Paper-link 24h" v={paper?.paperLinkRate == null ? "—" : `${Math.round(Number(paper.paperLinkRate) * 100)}%`} />
+            <Kv k="Unhealthy rows (sample)" v={String(paper?.unhealthy ?? 0)} tone={Number(paper?.unhealthy) > 0 ? "warn" : "muted"} />
+            <Kv k="Readiness 60m median" v={fmtPct(m.medianReturn60m)} />
+            <Kv k="Readiness expectancy" v={fmtPct(m.expectancy)} />
+            <Kv k="Graded (60m/exit)" v={String(m.gradedSample ?? "—")} />
+          </div>
           <SimpleTable
-            columns={tradeCols}
-            rows={openTrades}
-            rowKey={(t, i) => String(t.id ?? i)}
-            emptyTitle="No open paper trades"
-            emptyReason="The paper engine has no open simulated positions. Trades appear here when a confirmed setup passes the risk engine."
+            columns={paperCols}
+            rows={openRows}
+            rowKey={(r, i) => String(r.alertId ?? i)}
+            emptyTitle="No open delivered paper trades"
+            emptyReason="Open DELIVERED_ALERT_PAPER mirrors appear here after independent Discord sends."
           />
         </Card>
       </section>
 
-      <Section
-        title="Extended or Invalidated"
-        hint="No longer valid entries — price ran past the zone or the invalidation level was broken."
-        items={extendedInvalid}
-        emptyReason="Nothing has extended or invalidated today. Setups move here once they run too far or break their invalidation level."
-        mode={mode}
-      />
-
-      {/* Recent Alerts */}
+      {/* Content Engine */}
       <section className="ui-section">
         <div className="ui-section-head">
-          <span className="ui-section-title">Recent Alerts</span>
-          <span className="ui-section-count">{alerts?.length ?? 0}</span>
+          <span className="ui-section-title">Content Engine</span>
         </div>
         <Card>
-          <SimpleTable
-            columns={alertCols}
-            rows={alerts ?? []}
-            rowKey={(a, i) => String(a.id ?? i)}
-            emptyTitle="No alerts yet today"
-            emptyReason="No callouts have fired in this session. This is a stable chronological feed — the newest alerts appear at the top as they happen."
-          />
+          <div className="cc-grid">
+            <Kv k="Enabled" v={content?.enabled ? "yes" : "no"} tone="muted" />
+            <Kv k="Webhook" v={content?.webhookConfigured ? "configured" : "missing"} tone={content?.enabled && !content?.webhookConfigured ? "warn" : "muted"} />
+            <Kv k="Pending events" v={String(content?.pendingEvents ?? 0)} />
+            <Kv k="Drafts total" v={String(content?.drafts?.total ?? 0)} />
+            <Kv k="Drafts delivered" v={String(content?.drafts?.delivered ?? 0)} />
+            <Kv k="Drafts skipped" v={String(content?.drafts?.skipped ?? 0)} />
+            <Kv k="Latest draft" v={content?.latest ? `${content.latest.category ?? "—"} · ${content.latest.discord_delivery_status ?? content.latest.status ?? "—"}` : "—"} />
+          </div>
+          <Link href="/content-drafts" className="ui-btn ui-btn-sm">Content drafts →</Link>
         </Card>
+      </section>
+
+      {/* Subscriber Readiness */}
+      <section className="ui-section">
+        <div className="ui-section-head">
+          <span className="ui-section-title">Subscriber Readiness</span>
+          <StatusBadge tone={readiness?.ready ? "live" : "warn"}>{readiness?.status ?? "—"}</StatusBadge>
+        </div>
+        <Card tone="warn">
+          <p className="ui-section-hint">
+            <strong>Future paid-beta readiness — does not mean live scanner is broken.</strong>
+            Stripe, Discord role, legal attestations, and 10-day sample gates live here only.
+          </p>
+          <div className="cc-grid">
+            <Kv k="Launch sample" v={`${m.deliveredSent ?? "—"} / ${m.deliveredLinked ?? "—"} linked`} />
+            <Kv k="EARLY/TIMELY" v={m.earlyTimelyRate == null ? "—" : `${Math.round(Number(m.earlyTimelyRate) * 100)}%`} />
+            <Kv k="Duplicates (launch)" v={String(m.duplicateDeliveredCount ?? 0)} />
+            <Kv k="Supervisor/legacy (launch)" v={String(m.supervisorLegacySends ?? 0)} />
+            <Kv k="Median 60m" v={fmtPct(m.medianReturn60m)} />
+            <Kv k="Profit factor" v={String(m.profitFactor ?? "—")} />
+            <Kv k="Stripe / role" v={`${m.stripeReady ? "yes" : "no"} / ${m.discordRoleReady ? "yes" : "no"}`} tone="muted" />
+          </div>
+          <Link href="/pipeline-health" className="ui-btn ui-btn-sm">Full readiness card →</Link>
+        </Card>
+      </section>
+
+      {/* Optional stock scanner — collapsed */}
+      <section className="ui-section">
+        <button type="button" className="cc-collapse-btn" onClick={() => setStockOpen((v) => !v)} aria-expanded={stockOpen}>
+          Optional stock scanner {stockOpen ? "▾" : "▸"}
+        </button>
+        {stockOpen ? (
+          <Card>
+            <div className="cc-grid">
+              <Kv k="Stock momentum scanner" v={stock?.scannerRunning ? "running" : "stopped"} tone="muted" />
+              <Kv
+                k="Supervisor"
+                v={stock?.supervisorEnabled
+                  ? "enabled"
+                  : stock?.independentOwns
+                    ? "intentionally disabled — independent owns options alerts"
+                    : "disabled"}
+                tone="muted"
+              />
+            </div>
+            <p className="ui-section-hint">These do not affect independent options Discord delivery.</p>
+          </Card>
+        ) : null}
       </section>
     </div>
   );

@@ -4,12 +4,6 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-/**
- * Command Center spec (Phase 6). Source-spec (client component). Locks the
- * required sections, the calm/stable contract, and that it reads persisted
- * opportunities rather than re-ranking a live grid.
- */
-
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => readFileSync(join(root, p), "utf8");
 
@@ -19,32 +13,25 @@ test("home page renders the Command Center, not the live scanner grid", () => {
   assert.ok(!/LivePageTabs/.test(page), "live scanner grid must not be the home page");
 });
 
-test("Command Center has all seven required sections", () => {
+test("Command Center has independent-first sections", () => {
   const cc = read("components/CommandCenter.tsx");
   for (const section of [
-    "What needs my attention?",
-    "Independent Options Pipeline",
-    "Stock / Supervisor Pipeline",
-    "Actionable Now",
-    "Near Trigger",
-    "Developing Setups",
-    "Open Paper Trades",
-    "Extended or Invalidated",
-    "Recent Alerts",
+    "What is working right now",
+    "Independent Options",
+    "Paper Trading",
+    "Content Engine",
+    "Subscriber Readiness",
+    "Optional stock scanner",
   ]) {
     assert.ok(cc.includes(section), `missing section: ${section}`);
   }
-  // status bar with pipeline-specific signals (independent options first)
-  for (const cell of ["Options", "Session", "Polygon", "Stock scan", "Discord", "Paper"]) {
-    assert.ok(cc.includes(cell), `status bar missing: ${cell}`);
-  }
 });
 
-test("Command Center reads persisted opportunity buckets (stable, not re-ranked live)", () => {
+test("Command Center reads authenticated command-center snapshot", () => {
   const cc = read("components/CommandCenter.tsx");
-  assert.ok(/\/api\/opportunities/.test(cc), "must read persisted opportunities");
-  assert.ok(/ACTIONABLE|NEAR_TRIGGER|DEVELOPING|EXTENDED_OR_INVALID/.test(cc), "must consume lifecycle buckets");
-  assert.ok(/cards do not re-rank/i.test(cc), "must document the calm/stable intent");
+  assert.ok(/\/api\/command-center/.test(cc), "must use canonical command-center API");
+  assert.ok(/scanHeaders/.test(cc), "must send scan token");
+  assert.ok(/cache:\s*[\"']no-store[\"']/.test(cc), "must disable fetch cache");
 });
 
 test("Command Center is read-only (no order placement, no provider calls)", () => {

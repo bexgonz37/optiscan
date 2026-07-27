@@ -187,10 +187,35 @@ export function getPaperChainDetail(db: ChainDb, alertId: string): Record<string
     ? String(alert.opportunity_case_id)
     : findOpportunityCaseIdByAlertOnDb(db as any, alertId);
   const oc = caseId ? loadCaseJsonOnDb(db as any, caseId) : null;
+  const paper = hasTable(db, "options_paper_trades")
+    ? (db.prepare(
+      "SELECT * FROM options_paper_trades WHERE alert_id=? AND paper_kind='DELIVERED_ALERT_PAPER' ORDER BY id ASC LIMIT 1",
+    ).get(alertId) as Record<string, unknown> | undefined)
+    : undefined;
+  let marks: Record<string, unknown>[] = [];
+  if (paper?.id != null && hasTable(db, "options_paper_marks")) {
+    try {
+      marks = db.prepare(
+        "SELECT id, trade_id, option_symbol, mark_at_ms, bid, ask, exit_fill, return_pct, quote_age_ms, created_at_ms FROM options_paper_marks WHERE trade_id=? ORDER BY mark_at_ms ASC",
+      ).all(paper.id) as Record<string, unknown>[];
+    } catch { marks = []; }
+  }
+  const enteredAt = paper?.entered_at_ms != null ? Number(paper.entered_at_ms) : null;
+  const sixtyMinMark = marks.find((m) => enteredAt != null && Number(m.mark_at_ms) - enteredAt >= 60 * 60_000) ?? null;
+  const diagnosticRows = buildPaperChainDiagnostic(db, process.env, 40).rows;
+  const diagnostic = diagnosticRows.find((r) => r.alertId === alertId) ?? diagnosticRows[0] ?? null;
   return {
     alert,
+    paper: paper ?? null,
+    marks,
+    sixtyMinMark,
+    markConvention: {
+      entry: "conservativeEntryFill = mid + 0.6*(ask-mid) toward ask; Discord frozen entry uses entry_mid shown to subscriber",
+      markUsed: "realOptionExit exitFill = mid - 0.6*(mid-bid) toward bid (conservative sell)",
+      returnPct: "((exitFill - entry_fill) / entry_fill) * 100 on OPTION premium, never underlying",
+    },
     lifecycle,
     opportunityCase: oc,
-    diagnostic: buildPaperChainDiagnostic(db, process.env, 1).rows[0] ?? null,
+    diagnostic,
   };
 }
