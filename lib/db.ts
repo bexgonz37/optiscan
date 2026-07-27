@@ -1727,6 +1727,44 @@ CREATE TABLE IF NOT EXISTS opportunity_content_events (
 CREATE INDEX IF NOT EXISTS idx_opportunity_content_status ON opportunity_content_events(content_status, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_opportunity_content_case ON opportunity_content_events(opportunity_case_id, occurred_at_ms);
 
+-- Individual Content Event Engine drafts (owner-only Twitter/X suggestions). Never auto-posted.
+CREATE TABLE IF NOT EXISTS content_drafts (
+  id TEXT PRIMARY KEY,
+  fingerprint TEXT NOT NULL UNIQUE,
+  content_event_id TEXT NOT NULL,
+  opportunity_case_id TEXT,
+  alert_id TEXT,
+  claim_packet_id TEXT,
+  category TEXT NOT NULL,
+  template_family TEXT NOT NULL,
+  template_version TEXT NOT NULL DEFAULT 'v1',
+  platform TEXT NOT NULL DEFAULT 'twitter',
+  draft_text TEXT NOT NULL,
+  char_count INTEGER NOT NULL,
+  hashtags_json TEXT,
+  screenshot_suggestion TEXT,
+  chart_annotation TEXT,
+  cta_type TEXT NOT NULL DEFAULT 'NONE',
+  result_type TEXT,
+  frozen_entry REAL,
+  mark_used REAL,
+  original_alert_at_ms INTEGER,
+  trading_session_date TEXT,
+  status TEXT NOT NULL DEFAULT 'GENERATED',
+  discord_delivery_status TEXT NOT NULL DEFAULT 'PENDING',
+  discord_message_id TEXT,
+  final_copy TEXT,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  approved_at_ms INTEGER,
+  rejected_at_ms INTEGER,
+  manually_posted_at_ms INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_content_drafts_event ON content_drafts(content_event_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_content_drafts_status ON content_drafts(status, discord_delivery_status);
+CREATE INDEX IF NOT EXISTS idx_content_drafts_symbol_cat ON content_drafts(category, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_content_drafts_case ON content_drafts(opportunity_case_id, created_at_ms);
+
 CREATE TABLE IF NOT EXISTS opportunity_suppression_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   symbol TEXT NOT NULL,

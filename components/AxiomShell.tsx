@@ -21,6 +21,7 @@ const DAILY_NAV: NavItem[] = [
   { href: "/data", label: "System Health" },
   { href: "/subscriptions", label: "Subscriptions" },
   { href: "/social-drafts", label: "Social Drafts" },
+  { href: "/content-drafts", label: "Content Drafts" },
   { href: "/guide", label: "Guide" },
 ];
 
@@ -42,6 +43,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   "/data": { title: "System Health", sub: "Data freshness, Discord, and reliability" },
   "/subscriptions": { title: "Subscriptions", sub: "Stripe ↔ Discord role sync health" },
   "/social-drafts": { title: "Social Drafts", sub: "Verified milestone copy — approve before posting" },
+  "/content-drafts": { title: "Content Drafts", sub: "Owner-only X/Twitter suggestions — never auto-posted" },
   "/copilot": { title: "Explain Signals", sub: "Coming soon" },
   "/callouts": { title: "Callouts", sub: "Every horizon in one place (0DTE–90DTE, momentum stocks, put research)" },
   "/alerts": { title: "Options Callouts", sub: "Moved into Callouts · accuracy & journal still here" },

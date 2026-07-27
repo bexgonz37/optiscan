@@ -32,16 +32,43 @@ export type SocialDraftDb = DraftDb;
 const FORBIDDEN_ACTIONABLE_PHRASES = [
   /\benter now\b/i,
   /\bbuy now\b/i,
-  /\bget in now\b/i,
+  /\bget in\b/i,
   /\bact now\b/i,
   /\bjoin now\b/i,
+  /\bwe just caught this\b/i,
+  /\bmoving now\b/i,
+  /\blive setup\b/i,
+  /\bstill time to enter\b/i,
+  /\bthis is happening right now\b/i,
+];
+
+/** Extra phrases blocked outside regular market hours (recap/watchlist language only). */
+const OUTSIDE_SESSION_FORBIDDEN = [
+  /\benter now\b/i,
+  /\bbuy now\b/i,
+  /\bget in\b/i,
+  /\bwe just caught this\b/i,
+  /\bmoving now\b/i,
+  /\blive setup\b/i,
+  /\bstill time to enter\b/i,
+  /\bthis is happening right now\b/i,
 ];
 
 /** Block live-action language in milestone/social copy — past tense + frozen entry only. */
-export function validateSocialDraftLanguage(text: string): { ok: boolean; reasons: string[] } {
+export function validateSocialDraftLanguage(
+  text: string,
+  opts: { outsideRegularSession?: boolean } = {},
+): { ok: boolean; reasons: string[] } {
   const reasons: string[] = [];
   for (const re of FORBIDDEN_ACTIONABLE_PHRASES) {
     if (re.test(text)) reasons.push(`forbidden actionable phrase: ${re.source}`);
+  }
+  if (opts.outsideRegularSession) {
+    for (const re of OUTSIDE_SESSION_FORBIDDEN) {
+      if (re.test(text) && !reasons.some((r) => r.includes(re.source))) {
+        reasons.push(`outside-session forbidden phrase: ${re.source}`);
+      }
+    }
   }
   return { ok: reasons.length === 0, reasons };
 }

@@ -11,6 +11,7 @@
  * by adding a rule in `eligibleCategories` + a TEMPLATES entry — no engine changes needed.
  */
 import { validateSocialDraftLanguage } from "../social-drafts.ts";
+import { isPerformanceCategory, isSafeCategory, mfeDisclaimer } from "./claim-integrity.ts";
 
 export type ContentCategory =
   | "JUST_ENTERED_RADAR"
@@ -22,7 +23,19 @@ export type ContentCategory =
   | "CLOSED_WINNER"
   | "CLOSED_LOSER"
   | "WHY_THIS_WORKED"
-  | "WHY_THIS_FAILED";
+  | "WHY_THIS_FAILED"
+  | "NEXT_SESSION_WATCH"
+  | "EDUCATIONAL_BREAKDOWN"
+  | "MARKET_OBSERVATION";
+
+export type CtaType =
+  | "NONE"
+  | "EDUCATIONAL"
+  | "PROOF_RECAP"
+  | "SOFT_FOLLOW"
+  | "STRONG_PROMO";
+
+export const TEMPLATE_VERSION = "v1";
 
 /** Raw values available to templates. `undefined`/`null` ⇒ any line referencing it is dropped. */
 export interface ContentVars {
@@ -55,6 +68,9 @@ export interface DraftMeta {
   suggestedScreenshot: string;
   suggestedChartAnnotation: string;
   suggestedCta: string;
+  ctaType: CtaType;
+  templateFamily: string;
+  templateVersion: string;
 }
 
 export interface ContentDraftBundle {
@@ -165,11 +181,17 @@ interface CategoryTemplates {
   templates: string[][];
   screenshot: string;
   chartAnnotation: string;
-  cta: string;
+  /** Per-template CTA types — deliberate mix; not every draft gets subscribe/follow. */
+  ctaTypes: CtaType[];
 }
 
-const CTA_FOLLOW = "Follow for more setups like this. Not financial advice.";
-const CTA_DISCORD = "Full breakdowns drop first in the private Discord. Education only — not financial advice.";
+const CTA_COPY: Record<CtaType, string> = {
+  NONE: "",
+  EDUCATIONAL: "Education only — not financial advice.",
+  PROOF_RECAP: "Receipts from the private Discord board. Past results do not guarantee future performance.",
+  SOFT_FOLLOW: "Follow for more setups like this. Not financial advice.",
+  STRONG_PROMO: "Full breakdowns drop first in the private Discord. Education only — not financial advice.",
+};
 
 const TEMPLATES: Record<ContentCategory, CategoryTemplates> = {
   JUST_ENTERED_RADAR: {
@@ -212,7 +234,7 @@ const TEMPLATES: Record<ContentCategory, CategoryTemplates> = {
     ],
     screenshot: "Scanner row for {{symbol}} showing the relative-volume spike and options-flow flag.",
     chartAnnotation: "Mark the VWAP reclaim and the volume bar that crossed {{relativeVolume}}.",
-    cta: CTA_FOLLOW,
+    ctaTypes: ["NONE", "EDUCATIONAL", "SOFT_FOLLOW", "STRONG_PROMO"],
   },
   HIGH_CONVICTION: {
     templates: [
@@ -243,7 +265,7 @@ const TEMPLATES: Record<ContentCategory, CategoryTemplates> = {
     ],
     screenshot: "Conviction panel for {{symbol}} with the confidence score visible.",
     chartAnnotation: "Highlight the support at {{support}} and the reclaim of {{vwap}}.",
-    cta: CTA_DISCORD,
+    ctaTypes: ["EDUCATIONAL", "SOFT_FOLLOW", "STRONG_PROMO"],
   },
   CONVICTION_INCREASED: {
     templates: [
@@ -267,7 +289,7 @@ const TEMPLATES: Record<ContentCategory, CategoryTemplates> = {
     ],
     screenshot: "Timeline for {{symbol}} showing the conviction step-up.",
     chartAnnotation: "Annotate the higher-low that confirmed the thesis.",
-    cta: CTA_FOLLOW,
+    ctaTypes: ["NONE", "EDUCATIONAL", "SOFT_FOLLOW"],
   },
   THESIS_WEAKENED: {
     templates: [
@@ -290,31 +312,107 @@ const TEMPLATES: Record<ContentCategory, CategoryTemplates> = {
     ],
     screenshot: "Chart of {{symbol}} showing the failed hold of {{support}}.",
     chartAnnotation: "Mark where price lost {{support}} / {{vwap}}.",
-    cta: CTA_FOLLOW,
+    ctaTypes: ["NONE", "EDUCATIONAL", "SOFT_FOLLOW"],
+  },
+  NEXT_SESSION_WATCH: {
+    templates: [
+      [
+        "Watchlist for next session: {{symbol}}",
+        "",
+        "• Rel volume {{relativeVolume}}",
+        "• Levels: support {{support}} / resistance {{resistance}}",
+        "",
+        "Recap only — not a live entry call.",
+      ],
+      [
+        "{{symbol}} stays on the board for the next regular session.",
+        "Thesis: {{reason}}.",
+      ],
+      [
+        "Next-session watch: {{symbol}} {{contract}}.",
+        "No actionable entry right now — waiting for regular hours.",
+      ],
+    ],
+    screenshot: "Watchlist card for {{symbol}} with levels marked.",
+    chartAnnotation: "Mark {{support}} and {{resistance}} for the next session plan.",
+    ctaTypes: ["NONE", "EDUCATIONAL", "SOFT_FOLLOW"],
+  },
+  EDUCATIONAL_BREAKDOWN: {
+    templates: [
+      [
+        "How I read {{symbol}} today:",
+        "",
+        "• Rel volume {{relativeVolume}}",
+        "• Structure vs {{vwap}}",
+        "• {{reason}}",
+        "",
+        "Education only — not a trade recommendation.",
+      ],
+      [
+        "Options flow lesson from {{symbol}}:",
+        "{{reason}}.",
+        "",
+        "Watching structure, not chasing candles.",
+      ],
+      [
+        "{{symbol}} breakdown (educational):",
+        "• {{sector}}",
+        "• {{catalyst}}",
+        "• Contract of interest: {{contract}}",
+      ],
+    ],
+    screenshot: "Annotated educational chart for {{symbol}}.",
+    chartAnnotation: "Label VWAP, support, and the flow that mattered.",
+    ctaTypes: ["NONE", "EDUCATIONAL", "SOFT_FOLLOW"],
+  },
+  MARKET_OBSERVATION: {
+    templates: [
+      [
+        "Market observation: {{symbol}}",
+        "",
+        "{{reason}}",
+        "",
+        "Not a call to act — just what the tape showed.",
+      ],
+      [
+        "Noted on {{symbol}}: rel volume {{relativeVolume}}.",
+        "Logging it for the journal.",
+      ],
+      [
+        "{{symbol}} observation from the session.",
+        "Levels of interest: {{support}} / {{resistance}}.",
+      ],
+    ],
+    screenshot: "Session observation card for {{symbol}}.",
+    chartAnnotation: "Mark the observation window and key levels.",
+    ctaTypes: ["NONE", "EDUCATIONAL", "SOFT_FOLLOW"],
   },
   NEW_HIGH: {
     templates: [
       [
-        "{{symbol}} {{contract}} just printed a new high.",
+        "{{symbol}} {{contract}} printed a new high of the move.",
         "",
-        "Up {{returnPct}} from the frozen entry {{premium}}.",
+        "Up {{returnPct}} from the frozen Discord entry {{premium}}.",
+        "",
+        "MFE note: max favorable move {{maxReturnPct}} — not a realized subscriber return.",
       ],
       [
         "New high of the move on {{symbol}}.",
-        "Frozen entry was {{premium}} — now {{returnPct}}.",
+        "Frozen entry was {{premium}} — current mark {{returnPct}}.",
       ],
       [
-        "{{symbol}} keeps extending. {{returnPct}} and counting from entry.",
+        "{{symbol}} keeps extending. {{returnPct}} from frozen entry.",
+        "Peak favorable excursion {{maxReturnPct}} is not the same as a closed gain.",
       ],
     ],
     screenshot: "Option P&L card for {{symbol}} {{contract}} at the new high.",
     chartAnnotation: "Mark the frozen entry and the new high on the option chart.",
-    cta: CTA_DISCORD,
+    ctaTypes: ["PROOF_RECAP", "EDUCATIONAL", "STRONG_PROMO"],
   },
   RETURN_MILESTONE: {
     templates: [
       [
-        "{{symbol}} {{contract}} just hit {{milestonePercent}} from the frozen Discord entry {{premium}}.",
+        "{{symbol}} {{contract}} hit {{milestonePercent}} from the frozen Discord entry {{premium}}.",
         "",
         "Called {{elapsed}} ago.",
       ],
@@ -328,32 +426,32 @@ const TEMPLATES: Record<ContentCategory, CategoryTemplates> = {
         "Receipts, not hindsight.",
       ],
       [
-        "{{symbol}} runner update — {{milestonePercent}} from entry.",
-        "Max seen: {{maxReturnPct}}.",
+        "{{symbol}} runner update — {{milestonePercent}} from frozen entry.",
+        "Max favorable move seen: {{maxReturnPct}} (MFE — not a realized return).",
       ],
     ],
     screenshot: "Threaded Discord milestone card for {{symbol}} showing {{milestonePercent}}.",
     chartAnnotation: "Annotate the entry mark and the {{milestonePercent}} level.",
-    cta: CTA_DISCORD,
+    ctaTypes: ["PROOF_RECAP", "NONE", "EDUCATIONAL", "STRONG_PROMO"],
   },
   CLOSED_WINNER: {
     templates: [
       [
         "Closed: {{symbol}} {{contract}} finished {{returnPct}}.",
         "",
-        "Frozen entry {{premium}}. Max was {{maxReturnPct}}.",
+        "Frozen entry {{premium}}. Max favorable move was {{maxReturnPct}} (MFE).",
       ],
       [
         "{{symbol}} is in the books at {{returnPct}}.",
         "Called it, tracked it, closed it. Receipts.",
       ],
       [
-        "Winner closed on {{symbol}}: {{returnPct}} from the frozen entry.",
+        "Winner closed on {{symbol}}: {{returnPct}} from the frozen Discord entry.",
       ],
     ],
     screenshot: "Closed report card for {{symbol}} with the final {{returnPct}}.",
     chartAnnotation: "Mark entry, peak {{maxReturnPct}}, and the close.",
-    cta: CTA_DISCORD,
+    ctaTypes: ["PROOF_RECAP", "EDUCATIONAL", "STRONG_PROMO"],
   },
   CLOSED_LOSER: {
     templates: [
@@ -372,7 +470,7 @@ const TEMPLATES: Record<ContentCategory, CategoryTemplates> = {
     ],
     screenshot: "Closed report card for {{symbol}} showing the {{returnPct}} loss.",
     chartAnnotation: "Mark entry and the invalidation that closed it.",
-    cta: CTA_FOLLOW,
+    ctaTypes: ["NONE", "EDUCATIONAL", "PROOF_RECAP"],
   },
   WHY_THIS_WORKED: {
     templates: [
@@ -395,7 +493,7 @@ const TEMPLATES: Record<ContentCategory, CategoryTemplates> = {
     ],
     screenshot: "Annotated chart of the full {{symbol}} move, entry to close.",
     chartAnnotation: "Label the signal ({{reason}}), the entry, and the exit.",
-    cta: CTA_DISCORD,
+    ctaTypes: ["PROOF_RECAP", "EDUCATIONAL", "SOFT_FOLLOW"],
   },
   WHY_THIS_FAILED: {
     templates: [
@@ -416,7 +514,7 @@ const TEMPLATES: Record<ContentCategory, CategoryTemplates> = {
     ],
     screenshot: "Annotated chart showing where the {{symbol}} thesis broke.",
     chartAnnotation: "Mark the invalidation point and {{support}} loss.",
-    cta: CTA_FOLLOW,
+    ctaTypes: ["NONE", "EDUCATIONAL", "PROOF_RECAP"],
   },
 };
 
@@ -448,9 +546,30 @@ export function eligibleCategories(
       return (v.returnPct ?? 0) >= 0 ? ["CLOSED_WINNER"] : ["CLOSED_LOSER"];
     case "OPPORTUNITY_REPORT_CARD_READY":
       return (v.returnPct ?? 0) >= 0 ? ["WHY_THIS_WORKED"] : ["WHY_THIS_FAILED"];
+    case "NEXT_SESSION_WATCH":
+      return ["NEXT_SESSION_WATCH"];
+    case "EDUCATIONAL_BREAKDOWN":
+      return ["EDUCATIONAL_BREAKDOWN"];
+    case "MARKET_OBSERVATION":
+      return ["MARKET_OBSERVATION"];
     default:
       return [];
   }
+}
+
+/**
+ * Filter categories for private testing: safe categories always allowed;
+ * performance categories only when claimVerified=true.
+ */
+export function filterCategoriesForClaim(
+  cats: ContentCategory[],
+  claimVerified: boolean,
+): ContentCategory[] {
+  return cats.filter((c) => {
+    if (isSafeCategory(c)) return true;
+    if (isPerformanceCategory(c)) return claimVerified;
+    return false;
+  });
 }
 
 function hashtagsFor(v: ContentVars, category: ContentCategory): string[] {
@@ -462,26 +581,57 @@ function hashtagsFor(v: ContentVars, category: ContentCategory): string[] {
   return [...tags];
 }
 
+export interface BuildDraftOpts {
+  /** When true, session is outside regular hours — block live-action phrases. */
+  outsideRegularSession?: boolean;
+  /** Append MFE disclaimer to drafts that mention maxReturnPct. */
+  appendMfeDisclaimer?: boolean;
+}
+
 /** Build 3–5 template drafts for a single category. Drops templates that can't render (missing vars). */
-export function buildDraftBundle(category: ContentCategory, v: ContentVars): ContentDraftBundle | null {
+export function buildDraftBundle(
+  category: ContentCategory,
+  v: ContentVars,
+  opts: BuildDraftOpts = {},
+): ContentDraftBundle | null {
   const spec = TEMPLATES[category];
   if (!spec) return null;
   const drafts: DraftMeta[] = [];
-  for (const tpl of spec.templates) {
-    const text = renderTemplate(tpl, v);
+  for (let i = 0; i < spec.templates.length; i++) {
+    const tpl = spec.templates[i];
+    let text = renderTemplate(tpl, v);
     if (!text) continue;
-    if (!validateSocialDraftLanguage(text).ok) continue; // never emit "buy now"-style live language
-    if (text.length > 280) continue;                     // respect the X character budget
+    const ctaType = spec.ctaTypes[i % spec.ctaTypes.length] ?? "NONE";
+    const cta = CTA_COPY[ctaType];
+    if (opts.appendMfeDisclaimer && v.maxReturnPct != null && /max favorable|MFE/i.test(text)) {
+      const disc = mfeDisclaimer(v.maxReturnPct);
+      if (!text.includes("not the same as a realized") && (text.length + disc.length + 2) <= 280) {
+        text = `${text}\n\n${disc}`;
+      }
+    }
+    const lang = validateSocialDraftLanguage(text, { outsideRegularSession: opts.outsideRegularSession === true });
+    if (!lang.ok) continue;
+    if (text.length > 280) continue;
     drafts.push({
       text,
       charCount: text.length,
       hashtags: hashtagsFor(v, category),
       suggestedScreenshot: renderLine(spec.screenshot, v) ?? spec.screenshot.replace(/\{\{\w+\}\}/g, "").replace(/\s+/g, " ").trim(),
       suggestedChartAnnotation: renderLine(spec.chartAnnotation, v) ?? spec.chartAnnotation.replace(/\{\{\w+\}\}/g, "").replace(/\s+/g, " ").trim(),
-      suggestedCta: spec.cta,
+      suggestedCta: cta || "(none)",
+      ctaType,
+      templateFamily: `${category}_${i}`,
+      templateVersion: TEMPLATE_VERSION,
     });
     if (drafts.length >= 5) break;
   }
   if (drafts.length < 1) return null;
   return { category, symbol: v.symbol ? String(v.symbol).toUpperCase() : "?", drafts, generatedByLlm: false };
+}
+
+/** List of template families for a category (for regenerate). */
+export function templateFamiliesFor(category: ContentCategory): string[] {
+  const spec = TEMPLATES[category];
+  if (!spec) return [];
+  return spec.templates.map((_, i) => `${category}_${i}`);
 }

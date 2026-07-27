@@ -16,7 +16,7 @@ export type ContentEventType =
   | "CONFIRMATION"
   | "EXIT_HIT";
 
-export type ContentStatus = "PENDING" | "DRAFTED" | "APPROVED" | "REJECTED";
+export type ContentStatus = "PENDING" | "DRAFTED" | "PROCESSED" | "APPROVED" | "REJECTED";
 
 export interface OpportunityContentEvent {
   id: string;

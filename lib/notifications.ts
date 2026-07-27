@@ -54,8 +54,8 @@ function webhookEnv(kind: DiscordWebhookKind): string | undefined {
   if (kind === "options") return process.env.DISCORD_WEBHOOK_OPTIONS ?? process.env.DISCORD_WEBHOOK_URL;
   if (kind === "stocks") return process.env.DISCORD_WEBHOOK_STOCKS;
   if (kind === "recap") return process.env.DISCORD_WEBHOOK_RECAP;
-  // Private content-drafts channel; falls back to the recap/owner channel when not separately set.
-  if (kind === "content") return process.env.DISCORD_WEBHOOK_CONTENT ?? process.env.DISCORD_WEBHOOK_RECAP;
+  // Private content-drafts channel ONLY — never fall back to recap/subscriber webhooks.
+  if (kind === "content") return process.env.DISCORD_WEBHOOK_CONTENT;
   return process.env.DISCORD_WEBHOOK_URL;
 }
 
