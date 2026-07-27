@@ -399,6 +399,7 @@ export const WEEKLY_PROPOSALS_TOOL_SCHEMA = {
   properties: {
     proposals: {
       type: "array",
+      description: "Array of proposal objects (not a JSON string). Use [] when evidence is insufficient.",
       maxItems: 3,
       items: {
         type: "object",
@@ -514,12 +515,43 @@ function validateOneProposal(j: Record<string, unknown>): WeeklyProposalDraft {
   };
 }
 
+/**
+ * Anthropic tool_use occasionally stringifies nested JSON (e.g.
+ * { proposals: "{\"proposals\":[...]}" } or { proposals: "[...]" }).
+ * Unwrap once so a structurally-valid payload is not rejected as a schema miss.
+ * Never walks thinking content — only the already-extracted tool/text JSON.
+ */
+function coerceWeeklyProposalsRoot(json: unknown): unknown {
+  let root: unknown = json;
+  if (typeof root === "string") {
+    try { root = JSON.parse(root); } catch {
+      throw new Error("weekly proposals payload was a non-JSON string");
+    }
+  }
+  if (root && typeof root === "object" && !Array.isArray(root)) {
+    const proposals = (root as { proposals?: unknown }).proposals;
+    if (typeof proposals === "string") {
+      let inner: unknown;
+      try { inner = JSON.parse(proposals); } catch {
+        throw new Error("proposals field was a non-JSON string");
+      }
+      if (Array.isArray(inner)) return { proposals: inner };
+      if (inner && typeof inner === "object" && Array.isArray((inner as { proposals?: unknown }).proposals)) {
+        return inner;
+      }
+      throw new Error("proposals string did not parse to an array or { proposals: [...] }");
+    }
+  }
+  return root;
+}
+
 /** Validate the weekly proposals payload: { proposals: [...] } or a bare array. */
 export function validateWeeklyProposals(json: unknown): WeeklyProposalDraft[] {
-  const arr = Array.isArray(json)
-    ? json
-    : (json && typeof json === "object" && Array.isArray((json as any).proposals))
-      ? (json as any).proposals
+  const root = coerceWeeklyProposalsRoot(json);
+  const arr = Array.isArray(root)
+    ? root
+    : (root && typeof root === "object" && Array.isArray((root as { proposals?: unknown }).proposals))
+      ? (root as { proposals: unknown[] }).proposals
       : null;
   if (!arr) throw new Error("weekly proposals must be an array or { proposals: [...] }");
   if (arr.length === 0) return [];

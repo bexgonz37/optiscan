@@ -204,6 +204,26 @@ test("malformed tool payload is rejected", async () => {
   assert.match(res.error, /proposals/i);
 });
 
+test("stringified proposals field inside tool_use is coerced and accepted", async () => {
+  const nested = JSON.stringify({ proposals: [VALID_PROPOSAL] });
+  const res = await runStructuredAiJob(TOOL, (json) => validateWeeklyProposals(json), {
+    fetchImpl: toolFetch({ proposals: nested }),
+    env: KEY_ENV,
+  });
+  assert.equal(res.ok, true);
+  assert.equal(res.data.length, 1);
+  assert.equal(res.data[0].title, VALID_PROPOSAL.title);
+});
+
+test("stringified bare proposals array inside tool_use is coerced and accepted", async () => {
+  const res = await runStructuredAiJob(TOOL, (json) => validateWeeklyProposals(json), {
+    fetchImpl: toolFetch({ proposals: JSON.stringify([VALID_PROPOSAL]) }),
+    env: KEY_ENV,
+  });
+  assert.equal(res.ok, true);
+  assert.equal(res.data.length, 1);
+});
+
 test("schema-invalid proposal is rejected", async () => {
   const res = await runStructuredAiJob(TOOL, (json) => validateWeeklyProposals(json), {
     fetchImpl: toolFetch({
