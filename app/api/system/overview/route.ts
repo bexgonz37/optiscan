@@ -188,30 +188,6 @@ export async function GET(req: Request) {
     };
   }, null as Record<string, unknown> | null);
 
-  // #region agent log
-  fetch("http://127.0.0.1:7918/ingest/1e1970bf-a3dc-4c9e-aaba-c7720ad4daf2", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "3a4126" },
-    body: JSON.stringify({
-      sessionId: "3a4126",
-      runId: "post-fix",
-      hypothesisId: "H1",
-      location: "app/api/system/overview/route.ts:GET",
-      message: "overview health snapshot",
-      data: {
-        stockScannerRunning: loop.running,
-        independentAlive: independentOptions?.monitorAlive,
-        independentSession: independentOptions?.session,
-        polygonConfigured: independentOptions?.polygonConfigured ?? hasPolygon(),
-        supervisorEnabled,
-        owner: independentOptions?.ownership,
-        heartbeatAgeMs: independentOptions?.heartbeatAgeMs,
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
-
   return NextResponse.json({
     ok: faults.length === 0,
     faults,
