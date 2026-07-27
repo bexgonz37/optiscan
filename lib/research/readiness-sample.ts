@@ -15,13 +15,25 @@ export function resetReadinessEligibleDefaultForTests(ms: number | null): void {
 
 /** Confirmed private-live remediation deploy timestamp (ms). */
 export function readinessSampleCutoffMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = String(env.SUBSCRIBER_READINESS_ELIGIBLE_AFTER_MS ?? "").trim();
-  if (raw) {
-    const n = Number(raw);
+  const dedicated = String(env.SUBSCRIBER_READINESS_ELIGIBLE_AFTER_MS ?? "").trim();
+  if (dedicated) {
+    const n = Number(dedicated);
     if (Number.isFinite(n) && n > 0) return n;
   }
   if (defaultEligibleAfterMs == null) defaultEligibleAfterMs = Date.now();
   return defaultEligibleAfterMs;
+}
+
+/** Which env var supplied the cutoff (for dashboard transparency). */
+export function readinessSampleCutoffSource(env: NodeJS.ProcessEnv = process.env): string {
+  const dedicated = String(env.SUBSCRIBER_READINESS_ELIGIBLE_AFTER_MS ?? "").trim();
+  if (dedicated && Number.isFinite(Number(dedicated)) && Number(dedicated) > 0) {
+    return "SUBSCRIBER_READINESS_ELIGIBLE_AFTER_MS";
+  }
+  if (defaultEligibleAfterMs != null && String(env.SUBSCRIBER_READINESS_ELIGIBLE_AFTER_MS ?? "").trim() === "") {
+    return "process_boot_default";
+  }
+  return "process_boot_default";
 }
 
 /**

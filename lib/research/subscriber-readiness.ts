@@ -19,7 +19,7 @@ import { tradingDay, isMarketHoliday } from "../trading-session.ts";
 import { subscriberDiscordOwnershipSummary } from "../subscriber-discord-owner.ts";
 import { quotaPolicySnapshot } from "../quota-policy.ts";
 import { subscriberOpsSummary } from "../billing/subscribers-store.ts";
-import { readinessSampleCutoffMs, readinessEligibleAlertWhere, readinessEligibleArgs, classifyReadinessDuplicatesOnDb, classifyHistoricalPaperRowsOnDb } from "./readiness-sample.ts";
+import { readinessSampleCutoffMs, readinessSampleCutoffSource, readinessEligibleAlertWhere, readinessEligibleArgs, classifyReadinessDuplicatesOnDb, classifyHistoricalPaperRowsOnDb } from "./readiness-sample.ts";
 
 export type ReadinessStatus = "NOT_READY" | "SUBSCRIBER_READY";
 
@@ -393,6 +393,9 @@ export function evaluateSubscriberReadiness(db: ReadinessDb, env: NodeJS.Process
   const ready = blockingGates.length === 0 && attestedAll;
   const status: ReadinessStatus = ready ? "SUBSCRIBER_READY" : "NOT_READY";
 
+  if (readinessSampleCutoffSource(env) === "process_boot_default") {
+    remainingWarnings.push("SUBSCRIBER_READINESS_ELIGIBLE_AFTER_MS is not set — using process boot time as cutoff (set to remediation deploy ms)");
+  }
   if (quota.discoveryPaused) remainingWarnings.push(`Discovery paused (quota mode ${quota.quotaMode})`);
   if (quota.operatorWarning) remainingWarnings.push(quota.operatorWarning);
   if (subs.pastDue > 0) remainingWarnings.push(`${subs.pastDue} subscriber(s) past due`);
@@ -417,7 +420,7 @@ export function evaluateSubscriberReadiness(db: ReadinessDb, env: NodeJS.Process
     metrics: {
       sampleCutoffMs,
       sampleCutoffIso,
-      sampleCutoffEnv: "SUBSCRIBER_READINESS_ELIGIBLE_AFTER_MS",
+      sampleCutoffEnv: readinessSampleCutoffSource(env),
       deliveredSentHistorical,
       deliveredSentLoose,
       validTradingDays,

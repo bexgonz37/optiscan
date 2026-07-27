@@ -158,6 +158,7 @@ function SubscriberReadinessCard() {
           <KeyValue k="Early/Timely (scored only)" v={`${Math.round(Number(m.earlyTimelyRateScored) * 100)}% (${m.entryQualityScored} scored)`} tone="muted" />
         )}
         <KeyValue k="Late/Chased" v={m.lateChasedRate == null ? "—" : `${Math.round(Number(m.lateChasedRate) * 100)}%`} />
+        <KeyValue k="Duplicate deliveries (launch sample)" v={String(m.duplicateDeliveredCount ?? 0)} tone={Number(m.duplicateDeliveredCount) > 0 ? "bear" : "muted"} />
         {Number(m.duplicateFingerprintExtrasAllTime) > 0 && (
           <KeyValue k="Duplicate fingerprints (all-time audit)" v={String(m.duplicateFingerprintExtrasAllTime)} tone="muted" />
         )}
