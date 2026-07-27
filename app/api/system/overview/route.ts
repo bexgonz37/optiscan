@@ -150,30 +150,35 @@ export async function GET(req: Request) {
       const { getDb } = require("@/lib/db");
       runtimeStatus = readRuntimeStatusOnDb(getDb(), process.env) as Record<string, unknown>;
     } catch { /* optional */ }
-    const lastCycleMs = Math.max(
-      monitor.lastTier0CycleMs ?? 0,
-      monitor.lastTier1CycleMs ?? 0,
-      monitor.lastTier2CycleMs ?? 0,
-    );
+    const hb = (runtimeStatus?.heartbeat ?? null) as Record<string, unknown> | null;
+    const dbAlive = Boolean(runtimeStatus?.heartbeatFresh);
+    const dbRunning = Boolean(hb?.running);
+    const lastTier0CycleMs = monitor.lastTier0CycleMs ?? null;
+    const lastTier1CycleMs = monitor.lastTier1CycleMs ?? (hb?.lastTier1CycleMs as number | null) ?? null;
+    const lastTier2CycleMs = monitor.lastTier2CycleMs ?? (hb?.lastTier2CycleMs as number | null) ?? null;
+    const lastCycleMs = Math.max(lastTier0CycleMs ?? 0, lastTier1CycleMs ?? 0, lastTier2CycleMs ?? 0);
+    const monitorAlive = monitor.alive || dbAlive;
+    const monitorRunning = monitor.running || dbRunning;
     return {
       ownership: ownership.owner,
       independentOwns: ownership.independentOwns,
       killSwitch: process.env.OPTIONS_CALLOUTS_KILL === "1",
       discoveryEnabled: monitor.enabled,
-      monitorRunning: monitor.running,
-      monitorAlive: monitor.alive,
-      breakerState: monitor.breakerState,
-      lastTier0CycleMs: monitor.lastTier0CycleMs,
-      lastTier1CycleMs: monitor.lastTier1CycleMs,
-      lastTier2CycleMs: monitor.lastTier2CycleMs,
-      lastCycleAgeMs: lastCycleMs > 0 ? Math.max(0, now - lastCycleMs) : null,
+      monitorRunning,
+      monitorAlive,
+      breakerState: monitor.breakerState !== "closed" ? monitor.breakerState : String(hb?.breaker ?? monitor.breakerState),
+      lastTier0CycleMs,
+      lastTier1CycleMs,
+      lastTier2CycleMs,
+      lastCycleAgeMs: lastCycleMs > 0 ? Math.max(0, now - lastCycleMs) : (runtimeStatus?.heartbeatAgeMs as number | null),
+      heartbeatAgeMs: runtimeStatus?.heartbeatAgeMs ?? null,
       session: sessionGuard.state,
       sessionGuardReason: sessionGuard.reason ?? null,
       polygonConfigured: hasPolygon(),
       webhookConfigured: discordWebhookConfigured("options"),
       portfolioDelivery: monitor.portfolioDelivery,
       unhealthyReason: monitor.unhealthyReason,
-      runtimeSession: runtimeStatus?.session ?? metrics.sessionState ?? null,
+      runtimeSession: (hb?.session as string | null) ?? runtimeStatus?.session ?? metrics.sessionState ?? null,
       metrics: {
         sessionState: metrics.sessionState,
         throttles: metrics.throttles,
@@ -189,7 +194,7 @@ export async function GET(req: Request) {
     headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "3a4126" },
     body: JSON.stringify({
       sessionId: "3a4126",
-      runId: "overview",
+      runId: "post-fix",
       hypothesisId: "H1",
       location: "app/api/system/overview/route.ts:GET",
       message: "overview health snapshot",
@@ -200,6 +205,7 @@ export async function GET(req: Request) {
         polygonConfigured: independentOptions?.polygonConfigured ?? hasPolygon(),
         supervisorEnabled,
         owner: independentOptions?.ownership,
+        heartbeatAgeMs: independentOptions?.heartbeatAgeMs,
       },
       timestamp: Date.now(),
     }),

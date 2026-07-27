@@ -421,31 +421,6 @@ export function evaluateSubscriberReadiness(db: ReadinessDb, env: NodeJS.Process
     remainingWarnings.push(`${paperUnhealthyRows} launch-sample paper row(s) stuck_open/missing_case (operational — review grader)`);
   }
 
-  // #region agent log
-  fetch("http://127.0.0.1:7918/ingest/1e1970bf-a3dc-4c9e-aaba-c7720ad4daf2", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "3a4126" },
-    body: JSON.stringify({
-      sessionId: "3a4126",
-      runId: "readiness",
-      hypothesisId: "H2",
-      location: "lib/research/subscriber-readiness.ts:evaluateSubscriberReadiness",
-      message: "readiness sample boundaries",
-      data: {
-        sampleCutoffMs,
-        deliveredSent,
-        deliveredSentHistorical,
-        duplicateDelivered,
-        supervisorLegacySends,
-        supervisorLegacySendsHistorical,
-        gradedSample: gradedN,
-        paperUnhealthyRows,
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
-
   return {
     generatedAtMs: nowMs,
     status,
