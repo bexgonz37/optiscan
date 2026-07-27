@@ -70,6 +70,15 @@ test("primary working-now lines never claim Polygon missing when independent hea
   assert.ok(!lines.some((l) => /Supervisor/.test(l.text)), "supervisor must not appear in primary section");
 });
 
+test("command-center route passes DB handle to buildWhyNoAlertsDiagnostic", () => {
+  const route = readFileSync(join(root, "app/api/command-center/route.ts"), "utf8");
+  assert.ok(
+    /buildWhyNoAlertsDiagnostic\(\s*db\s*,/.test(route),
+    "must pass sqlite db, not { getDb } deps bag (causes a.prepare is not a function)",
+  );
+  assert.ok(!/buildWhyNoAlertsDiagnostic\(\s*\{\s*getDb/.test(route));
+});
+
 test("Command Center uses authenticated command-center endpoint and collapses stock", () => {
   const cc = readFileSync(join(root, "components/CommandCenter.tsx"), "utf8");
   assert.ok(/\/api\/command-center/.test(cc));

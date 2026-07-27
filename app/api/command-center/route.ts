@@ -87,7 +87,8 @@ export async function GET(req: Request) {
   const pipeline = safe("pipeline", () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { buildWhyNoAlertsDiagnostic } = require("@/lib/research/options/pipeline-diagnostics");
-    return buildWhyNoAlertsDiagnostic({ getDb: () => db }, process.env, now);
+    // Must pass the DB handle (same as /api/research/options/pipeline-health), not a deps bag.
+    return buildWhyNoAlertsDiagnostic(db, process.env, now);
   }, null);
 
   const readiness = safe("readiness", () => {
@@ -181,6 +182,30 @@ export async function GET(req: Request) {
       independentOwns: ownership.independentOwns,
     };
   }, { scannerRunning: false, supervisorEnabled: false, independentOwns: ownership.independentOwns });
+
+  // #region agent log
+  fetch("http://127.0.0.1:7918/ingest/1e1970bf-a3dc-4c9e-aaba-c7720ad4daf2", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "3a4126" },
+    body: JSON.stringify({
+      sessionId: "3a4126",
+      runId: "post-fix",
+      hypothesisId: "H-pipeline-db-arg",
+      location: "app/api/command-center/route.ts:GET",
+      message: "command-center pipeline snapshot",
+      data: {
+        ok: faults.length === 0,
+        faults,
+        pipelineNull: pipeline == null,
+        sent24h: pipeline?.delivery?.sent24h ?? null,
+        observed24h: pipeline?.candidates?.observed24h ?? null,
+        summary: pipeline?.summary ?? null,
+        monitorAlive: independent?.monitorAlive ?? null,
+      },
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
 
   return NextResponse.json({
     ok: faults.length === 0,
