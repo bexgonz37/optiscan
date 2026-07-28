@@ -13,9 +13,7 @@ export async function GET(req: Request) {
   if (denied) return denied;
   const webhooks = {
     options: discordWebhookConfigured("options"),
-    stocks: discordWebhookConfigured("stocks"),
     recap: discordWebhookConfigured("recap"),
-    default: discordWebhookConfigured("default"),
   };
   const metrics = discordDeliveryWindowMetrics(24);
   const routing = buildDiscordRoutingRows({
@@ -23,7 +21,10 @@ export async function GET(req: Request) {
     lastOptionsSendAt: metrics.lastSentAt ?? null,
   });
   const readiness = buildSubscriberDiscordReadiness({
-    webhooks,
+    webhooks: {
+      ...webhooks,
+      stocks: discordWebhookConfigured("stocks"),
+    },
     metrics,
     optionsRequired: true,
     stocksRequired: process.env.STOCK_CALLOUTS === "1",
