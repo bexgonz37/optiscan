@@ -639,30 +639,23 @@ export function evaluateEntryQuality(input: EntryQualityInput, env: NodeJS.Proce
   let setupQuality = dim(75, "PASS");
 
   if (input.side === "put") {
-
-    marketAlignment = dim(0, "FAIL", ["subscriber PUTs disabled until shadow/replay validation"]);
-
-    setupQuality = dim(0, "FAIL", ["PUT setup not subscriber-ready"]);
-
-    const dimensions: EntryQualityDimensions = {
-
-      setupQuality,
-
-      entryEarliness: dim(50, "WARN"),
-
-      contractQuality,
-
-      remainingOpportunity: dim(50, "WARN"),
-
-      sessionRisk,
-
-      marketAlignment,
-
-    };
-
-    const composite = buildComposite(dimensions, "WRONG_DIRECTIONAL_STRUCTURE", "SHADOW_ONLY", env);
-
-    return { verdict: composite.primaryVerdict, subscriberAction: composite.subscriberAction, reasons: composite.reasons, metrics, dimensions, composite };
+    if (input.higherHighs === true && input.higherLows === true) {
+      marketAlignment = dim(0, "FAIL", ["higher highs and higher lows - bullish structure"]);
+      setupQuality = dim(20, "FAIL", ["bullish structure on PUT"]);
+    } else if (input.aboveVwap === true && (input.vwapDistPct ?? 0) > 0.05) {
+      marketAlignment = dim(20, "FAIL", ["PUT while materially above VWAP"]);
+      setupQuality = dim(30, "FAIL", ["above VWAP on PUT"]);
+    } else if (input.momentumAccel != null && input.momentumAccel > 0 && (input.underlyingMove5m ?? 0) > 0) {
+      marketAlignment = dim(35, "FAIL", ["accelerating bullish momentum on PUT"]);
+      setupQuality = dim(40, "WARN", ["bullish momentum acceleration"]);
+    } else {
+      let setupScore = 70;
+      if (input.lowerHighs === true && input.lowerLows === true) setupScore += 15;
+      if (input.aboveVwap === false) setupScore += 10;
+      if (input.momentumAccel != null && input.momentumAccel < 0) setupScore += 5;
+      if (input.marketAligned === true) { setupScore += 5; marketAlignment = dim(90, "PASS", ["market aligned"]); }
+      setupQuality = dim(setupScore, setupScore >= 70 ? "PASS" : "WARN");
+    }
 
   }
 
@@ -714,10 +707,10 @@ export function evaluateEntryQuality(input: EntryQualityInput, env: NodeJS.Proce
 
   // Remaining opportunity — T1/T2 in FrozenEntry are option premium targets, not underlying levels.
   const upsideT1 = input.targets?.t1 != null
-    ? upsideToTargetPct(input.optionNow, input.targets.t1, input.side)
+    ? upsideToTargetPct(input.optionNow, input.targets.t1, "call")
     : upsideToTargetPct(input.underlyingNow, input.targets?.t1 ?? null, input.side);
   const upsideT2 = input.targets?.t2 != null
-    ? upsideToTargetPct(input.optionNow, input.targets.t2, input.side)
+    ? upsideToTargetPct(input.optionNow, input.targets.t2, "call")
     : null;
   metrics.upside_to_t1_pct = upsideT1;
   metrics.upside_to_t2_pct = upsideT2;
@@ -918,7 +911,7 @@ export function entryQualityFromDelivery(
 
     aboveVwap: typeof feature.aboveVwap === "boolean" ? feature.aboveVwap : null,
 
-    momentumAccel: typeof feature.accel === "number" ? feature.accel : (typeof snap.accel === "number" ? snap.accel : null),
+    momentumAccel: typeof feature.accel === "number" ? feature.accel : (typeof feature.accelPct === "number" ? feature.accelPct : (typeof snap.accel === "number" ? snap.accel : null)),
 
     higherHighs: typeof feature.higherHighs === "boolean" ? feature.higherHighs : null,
 

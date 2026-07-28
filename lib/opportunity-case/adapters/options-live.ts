@@ -97,13 +97,16 @@ export function adaptOptionsLiveToCase(args: OptionsLiveAdapterInput): Opportuni
   }
 
   const gates: HardGateResult[] = [];
-  if (sel?.researchOnly || evalResult.contract?.side === "put") {
+  const putDeliveredByAuthority = evalResult.contract?.side === "put"
+    && deliveryDecision?.outcome === "DELIVER_TO_DISCORD"
+    && deliveryDecision.deliverySent;
+  if (sel?.researchOnly || (evalResult.contract?.side === "put" && !putDeliveredByAuthority)) {
     gates.push({
-      gateId: "puts_research_only",
+      gateId: "bearish_authority",
       passed: false,
-      reasonCode: "research_only_put",
-      explanation: "Puts remain RESEARCH_ONLY on Discord unless explicitly authorized",
-      finalAuthority: true,
+      reasonCode: deliveryDecision?.reason ?? (sel?.researchOnly ? "research_only" : "bearish_authority_required"),
+      explanation: "PUT delivery is controlled by the independent bearish authority; adapter rows are audit-only unless delivery proof exists.",
+      finalAuthority: false,
     });
   }
   if (evalResult.state === "REJECTED" || evalResult.callout?.state === "REJECTED") {

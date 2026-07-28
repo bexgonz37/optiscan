@@ -98,7 +98,7 @@ test("10. a delivered alert (paper enabled) creates ONE linked DELIVERED_ALERT_P
 test("11. research-only puts are NOT sent as actionable callouts (suppressed)", async () => {
   const d = db(); const { spy, send } = okSend();
   const r = await deliverOptionsCallout(input({ researchOnly: true, contract: { ...input().contract, side: "put", optionSymbol: "O:HOOD260320P00099000" } }), { getDb: () => d, send, now: () => NOW }, ON);
-  assert.equal(r.state, "REJECTED"); assert.match(r.reason, /research_only_put/);
+  assert.equal(r.state, "REJECTED"); assert.match(r.reason, /bearish_pipeline_disabled/);
   assert.equal(spy.calls.length, 0);
   assert.equal(d.prepare("SELECT COUNT(*) n FROM options_alerts WHERE research_only=1").get().n, 1);
 });

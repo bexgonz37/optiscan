@@ -17,6 +17,7 @@ import { recordProposedShadowFromDelivery } from "./shadow-runner.ts";
 import { revalidateBeforeDiscordSend } from "./final-delivery-revalidation.ts";
 import { formatPrivateLiveAlert } from "./format.ts";
 import { tradingDay } from "../../trading-session.ts";
+import { evaluateBearishAuthority } from "./bearish-authority.ts";
 import {
   attachEvidenceToOpportunityOnDb,
   claimOpportunityOpenOnDb,
@@ -202,7 +203,24 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
     if (shouldBlockIndependentDelivery(cfgVal, env)) return base("REJECTED", false, `subscriber_config:${cfgVal.fatal.join("; ")}`);
   } catch { /* validator optional in tests */ }
   // Puts are RESEARCH_ONLY → never sent as actionable callouts (suppressed, reported).
-  if (input.researchOnly || input.contract.side === "put") { try { persist((deps.getDb ?? liveDb)(), alertId, input, "REJECTED", { failureReason: "research_only_put_suppressed" }, nowMs); } catch { /* isolated */ } return base("REJECTED", false, "research_only_put_suppressed"); }
+  if (input.contract.side === "put") {
+    const auth = evaluateBearishAuthority({
+      symbol: input.candidateSymbol,
+      side: "put",
+      strategy: input.strategy,
+      researchOnly: input.researchOnly,
+      deliveryInput: input,
+      nowMs,
+    }, env);
+    if (!auth.maySubscriberSend) {
+      const reason = `${auth.reasonCode}: ${auth.blockers.join("; ") || auth.reasons.join("; ") || auth.state}`;
+      try { persist((deps.getDb ?? liveDb)(), alertId, input, "REJECTED", { failureReason: reason }, nowMs); } catch { /* isolated */ }
+      return base("REJECTED", false, reason);
+    }
+  } else if (input.researchOnly) {
+    try { persist((deps.getDb ?? liveDb)(), alertId, input, "REJECTED", { failureReason: "research_only_suppressed" }, nowMs); } catch { /* isolated */ }
+    return base("REJECTED", false, "research_only_suppressed");
+  }
 
   const sessionGuard = assertSubscriberDeliveryAllowed(nowMs, env);
   if (!sessionGuard.ok) {
@@ -258,7 +276,7 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
         strike: input.contract.strike,
         strategyKey: input.strategy,
         nowMs,
-        direction: "bullish",
+        direction: input.contract.side === "put" ? "bearish" : "bullish",
       }));
       const active = findActiveOpportunityByFingerprintOnDb(db, livingFingerprint);
       if (active) {
@@ -345,7 +363,7 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
         strike: input.contract.strike,
         strategyKey: input.strategy,
         nowMs,
-        direction: "bullish",
+        direction: input.contract.side === "put" ? "bearish" : "bullish",
         frozenEntry: input.entry?.mid ?? null,
         optionSymbol: input.contract.optionSymbol,
         alertId,

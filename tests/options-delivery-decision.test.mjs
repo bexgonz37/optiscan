@@ -202,12 +202,12 @@ test("missing portfolio delivery config fails closed with zero decision rows", a
   assert.equal(d.prepare("SELECT COUNT(*) n FROM options_alerts").get().n, 0, "no legacy immediate options alert is created");
 });
 
-test("puts stay research-only in the decision layer too (bearish safeguards untouched)", async () => {
+test("puts stay research-only in the decision layer unless bearish pipeline is enabled", async () => {
   const put = { ...EXCELLENT("NVDA"), side: "put", researchOnly: true };
   const { sent, deliver } = okDeliver();
   const out = await decideDeliveryBatch([put], { getDb: () => db(), now: () => NOW, deliver }, ENV);
   assert.equal(out[0].outcome, "RESEARCH_ONLY");
-  assert.equal(out[0].reason, "research_only_put");
+  assert.equal(out[0].reason, "bearish_pipeline_disabled");
   assert.equal(sent.length, 0);
 });
 

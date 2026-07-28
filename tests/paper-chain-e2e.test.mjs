@@ -96,5 +96,28 @@ test("paper chain E2E: SENT → paper_linked → diagnostic row", async () => {
   assert.equal(diag.rows[0].alertId, out.alertId);
   assert.equal(diag.rows[0].discordMessageId, "discord-123");
   assert.ok(diag.rows[0].paperTradeId);
+  assert.equal(diag.rows[0].deliveryProofStatus, "verified_delivered");
+  assert.equal(diag.rows[0].subscriberDelivered, true);
   assert.equal(diag.rows[0].graderHealth, "healthy");
+});
+
+test("paper chain marks HTTP-accepted rows without Discord message proof as audit-only", async () => {
+  const d = new Database(":memory:");
+  install(d);
+  const now = Date.UTC(2026, 6, 22, 14, 35);
+  const out = await deliverOptionsCallout(input, {
+    getDb: () => d,
+    now: () => now,
+    send: async () => ({ ok: true, status: 200, latencyMs: 12, messageId: null }),
+  }, ENV);
+  assert.equal(out.sent, true);
+  d.prepare("UPDATE options_paper_trades SET status='EXITED', pnl=500, return_pct=500 WHERE alert_id=?").run(out.alertId);
+
+  const diag = buildPaperChainDiagnostic(d, ENV, 5);
+  assert.equal(diag.rows.length, 1);
+  assert.equal(diag.rows[0].deliveryProofStatus, "app_sent_unverified");
+  assert.equal(diag.rows[0].subscriberDelivered, false);
+  assert.deepEqual(diag.rows[0].missingDataWarnings, ["missing_opening_discord_message_id"]);
+  assert.equal(diag.sumPnlUsd, 500, "raw operational audit still sees the closed mirror");
+  assert.equal(diag.verifiedSumPnlUsd, null, "unverified row cannot become subscriber-delivered performance");
 });

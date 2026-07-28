@@ -108,9 +108,11 @@ export function postableOptionsAlerts<T extends {
   short_rate_at_alert?: number | null;
   volume_surge_at_alert?: number | null;
   move_status?: string | null;
+  subscriber_delivered?: boolean | number | null;
 }>(alerts: T[]): T[] {
   return alerts.filter((a) => {
     if (a.asset_class === "stock") return false;
+    if ("subscriber_delivered" in a && a.subscriber_delivered !== true && a.subscriber_delivered !== 1) return false;
     const spread = a.entry_spread_pct;
     const score = a.signal_score ?? 0;
     const speed = Math.abs(Number(a.short_rate_at_alert ?? 0));
@@ -165,6 +167,7 @@ export function premiumDiscordCallouts<T extends {
   short_rate_at_alert?: number | null;
   volume_surge_at_alert?: number | null;
   move_status?: string | null;
+  subscriber_delivered?: boolean | number | null;
 }>(alerts: T[]): T[] {
   return postableOptionsAlerts(alerts).filter(
     (a) => String(a.capture_action ?? "").toUpperCase() === "TRADE",

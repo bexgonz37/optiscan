@@ -136,9 +136,14 @@ export function DailyPostPack({ alerts, tradingDay }: { alerts: any[]; tradingDa
                 <div className="muted text-xs">
                   {formatOptionsContract(a) ?? "—"} · {fmtMarketTime(a.alert_time)} · {a.trading_day ?? ""}
                 </div>
-                <button type="button" className="pill btn btn-xs" onClick={() => onCopy(`a-${a.id}`, tweet)}>
-                  {copied === `a-${a.id}` ? "Copied!" : "Copy tweet"}
-                </button>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <a className="pill btn btn-xs detail-link" href={`/alerts/${a.id}`} title="View Alert Details">
+                    Details
+                  </a>
+                  <button type="button" className="pill btn btn-xs" onClick={() => onCopy(`a-${a.id}`, tweet)}>
+                    {copied === `a-${a.id}` ? "Copied!" : "Copy tweet"}
+                  </button>
+                </div>
               </div>
             );
           })

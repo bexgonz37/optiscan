@@ -10,13 +10,14 @@ const forensic = JSON.parse(readFileSync(join(root, "scripts/tmp-forensic-week-a
 
 const enforceEnv = { ENTRY_QUALITY_GATE: "enforce", OPTIONS_0DTE_DELIVERY_CUTOFF_MINUTES: "60" };
 
-test("PUT subscriber action is SHADOW_ONLY", () => {
+test("PUT with bullish structure is blocked by entry-quality structure checks", () => {
   const mon = Date.parse("2026-07-20T14:00:00-04:00");
   const r = evaluateEntryQuality(
-    { side: "put", dte: 1, nowMs: mon, underlyingNow: 100, optionNow: 1.5, minutesToSessionClose: 300, quoteAgeMs: 500, spreadPct: 4 },
+    { side: "put", dte: 1, nowMs: mon, underlyingNow: 100, optionNow: 1.5, minutesToSessionClose: 300, quoteAgeMs: 500, spreadPct: 4, higherHighs: true, higherLows: true },
     enforceEnv,
   );
-  assert.equal(r.subscriberAction, "SHADOW_ONLY");
+  assert.equal(r.verdict, "WRONG_DIRECTIONAL_STRUCTURE");
+  assert.equal(r.subscriberAction, "BLOCK");
 });
 
 test("stale quote blocks with QUOTE_STALE", () => {

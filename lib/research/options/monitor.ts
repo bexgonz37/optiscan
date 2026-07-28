@@ -16,6 +16,7 @@ import { runOptionsCandidate, type ChainContract } from "./loop.ts";
 import { computeOptionsFeatures, featuresToUnderlying, type Bar, type FeatureContext } from "./features.ts";
 import { summarizeChainFeatures, chainFeaturesToActivity, type OptionContract } from "./chain-features.ts";
 import { assertSubscriberScanAllowed } from "../../market-session-guard.ts";
+import { bearishPipelineEnabled, latestPendingBearishEscalationForSymbol } from "./bearish-authority.ts";
 
 export function portfolioDeliveryStatus(env: NodeJS.ProcessEnv = process.env): { required: boolean; enabled: boolean; healthy: boolean; reason: string | null } {
   const required = researchFlags(env).independentOptionsDiscovery;
@@ -27,7 +28,7 @@ export function portfolioDeliveryStatus(env: NodeJS.ProcessEnv = process.env): {
 export interface UnderlyingSnapshot {
   price: number | null; dayDollarVolume: number | null; relVolume: number | null;
   velPct: number | null; accelPct: number | null; gapPct: number | null;
-  aboveVwap: boolean | null; hodBreak: boolean | null; nearResistancePct: number | null;
+  aboveVwap: boolean | null; hodBreak: boolean | null; lodBreak?: boolean | null; nearResistancePct: number | null; nearSupportPct?: number | null;
   compressionPct: number | null; realizedVolExpanding: boolean | null; openingRange: boolean | null; premarketLevelTest: boolean | null;
 }
 export interface OptionsMonitorDeps {
@@ -227,13 +228,18 @@ export async function runOptionsMonitorCycle(tier: 0 | 1 | 2, symbols: string[],
       // STAGE 1.5 gate — a chain is fetched only when a strategy is plausible OR (options-activity
       // discovery on) to let abnormal chain activity INDEPENDENTLY escalate the symbol.
       let escalatedBy: string | null = null;
+      let legacyBearishEscalation: any | null = null;
+      if (getDb && bearishPipelineEnabled(env)) {
+        try { legacyBearishEscalation = latestPendingBearishEscalationForSymbol(getDb(), symbol, n0); }
+        catch { legacyBearishEscalation = null; }
+      }
       const plausible = scoreStrategies(input).some((x) => x.applicable);
       // FORMING, not yet plausible: re-check at the scan cadence (symbolFormingRecheckMs, default 0)
       // instead of freezing 60s, so the callout can fire as soon as the setup validates — while it is
       // still forming, not after the expansion. NOT a quality change: no gate loosened, no extra alert
       // (actual callouts are still deduped by the per-strategy cooldown + delivery alertId bucket).
-      if (!plausible && !flags.optionsActivityDiscovery) { rejected += 1; s.metrics.candidatesRejected += 1; s.metrics.stage15Forming += 1; s.cooldownSymbol.set(symbol, n0 + cfg.symbolFormingRecheckMs); return; }
-      if (!plausible) escalatedBy = "options_activity_probe";
+      if (!plausible && !flags.optionsActivityDiscovery && !legacyBearishEscalation) { rejected += 1; s.metrics.candidatesRejected += 1; s.metrics.stage15Forming += 1; s.cooldownSymbol.set(symbol, n0 + cfg.symbolFormingRecheckMs); return; }
+      if (!plausible) escalatedBy = legacyBearishEscalation ? "legacy_bearish_escalation" : "options_activity_probe";
 
       if (breakerOpen(s, now())) { s.metrics.throttles += 1; return; }
       if (!tryConsume(s, cfg, now(), tier)) { s.metrics.throttles += 1; return; }
@@ -242,9 +248,9 @@ export async function runOptionsMonitorCycle(tier: 0 | 1 | 2, symbols: string[],
       s.metrics.providerChain += 1; s.metrics.stage2Chain += 1; s.metrics.chainsFetched += 1; chains += 1; breakerSuccess(s);
       const chainF = summarizeChainFeatures({ symbol, underlyingPrice: input.underlying.price, underlyingDollarVolume: input.underlying.dayDollarVolume, contracts: chain as unknown as OptionContract[], chainAvailable: chain.length > 0, nowMs: now() });
       input = { ...input, optionsActivity: chainFeaturesToActivity(chainF) };
-      featureSnapshot = { ...featureSnapshot, chain: chainF };
+      featureSnapshot = { ...featureSnapshot, chain: chainF, legacyBearishEscalation };
       // If we only reached here via escalation, require the chain to actually be abnormal.
-      if (escalatedBy) { if (!chainF.abnormal || chainF.direction === "ambiguous") { rejected += 1; s.metrics.candidatesRejected += 1; s.cooldownSymbol.set(symbol, n0 + cfg.symbolCooldownMs); return; } s.metrics.optionsActivityEscalations += 1; }
+      if (escalatedBy === "options_activity_probe") { if (!chainF.abnormal || chainF.direction === "ambiguous") { rejected += 1; s.metrics.candidatesRejected += 1; s.cooldownSymbol.set(symbol, n0 + cfg.symbolCooldownMs); return; } s.metrics.optionsActivityEscalations += 1; }
 
       const earlinessPhase = fractionMove == null ? null : fractionMove >= 0.75 ? "late" : fractionMove <= 0.4 ? "early" : "during";
       if (earlinessPhase === "early") s.metrics.phaseEarly += 1; else if (earlinessPhase === "during") s.metrics.phaseDuring += 1; else if (earlinessPhase === "late") s.metrics.phaseLate += 1;

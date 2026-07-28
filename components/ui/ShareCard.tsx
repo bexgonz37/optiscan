@@ -70,6 +70,10 @@ export function ShareCard({ alert }: { alert: any | null | undefined }) {
 
         {alert.discord_sent ? <span className="axiom-share-discord">Discord ✓</span> : null}
 
+        <a className="pill btn btn-xs axiom-share-copy detail-link" href={`/alerts/${alert.id}`} title="View Alert Details">
+          Details
+        </a>
+
         <button type="button" className="pill btn btn-xs axiom-share-copy" onClick={onCopy}>
 
           {copied ? "Copied!" : "Copy tweet"}

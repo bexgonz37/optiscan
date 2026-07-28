@@ -24,7 +24,8 @@ test("paper page defaults to delivered and reads diagnostic.rows", () => {
   assert.match(src, /useState<"delivered" \| "0dte" \| "stock" \| "shadow">\("delivered"\)/);
   assert.match(src, /d\.diagnostic \?\? d/);
   assert.match(src, /pnlUsd/);
-  assert.match(src, /sumPnlUsd/);
+  assert.match(src, /verifiedSumPnlUsd/);
+  assert.match(src, /subscriberDelivered/);
 });
 
 test("subscriber report exposes sumPnlUsd as primary money metric", () => {

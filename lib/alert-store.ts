@@ -14,6 +14,14 @@ import {
   EARLY_MOVE_WIN_PCT,
   EARLY_ON_TRACK_MIN_PCT,
 } from "./early-accuracy";
+import {
+  deliveryAlertIdSql,
+  deliveryDiscordMessageIdSql,
+  deliveryOpportunityCaseIdSql,
+  deliveryPaperTradeIdSql,
+  verifiedSubscriberDeliverySql,
+} from "./alert-delivery-proof";
+import { classifyAlertDossier, type AlertDossierProofItem } from "./alert-detail-classification";
 
 const SQL_MOVE_1M = `(SELECT p.percent_move_from_alert FROM alert_performance p WHERE p.alert_id = a.id AND p.checkpoint = '1m')`;
 const SQL_MOVE_3M = `(SELECT p.percent_move_from_alert FROM alert_performance p WHERE p.alert_id = a.id AND p.checkpoint = '3m')`;
@@ -33,6 +41,12 @@ const SQL_WINNER = `(
   OR COALESCE(${SQL_MOVE_5M}, -999) >= ${EARLY_MOVE_WIN_PCT}
   OR a.option_outcome_win = 1
 )`;
+
+const SQL_VERIFIED_SUBSCRIBER_DELIVERY = verifiedSubscriberDeliverySql("a");
+const SQL_DELIVERY_ALERT_ID = deliveryAlertIdSql("a");
+const SQL_DELIVERY_DISCORD_MESSAGE_ID = deliveryDiscordMessageIdSql("a");
+const SQL_DELIVERY_OPPORTUNITY_CASE_ID = deliveryOpportunityCaseIdSql("a");
+const SQL_DELIVERY_PAPER_TRADE_ID = deliveryPaperTradeIdSql("a");
 
 export interface NewAlert {
   ticker: string;
@@ -316,6 +330,11 @@ export function listAlerts(f: AlertFilters = {}) {
       (SELECT MAX(s.mid) FROM options_snapshots s WHERE s.alert_id=a.id AND s.checkpoint IN ('live','eod') AND s.mid>0) AS best_mid,
       (SELECT max_percent_move_after_alert FROM alert_performance p WHERE p.alert_id=a.id ORDER BY p.checked_at DESC LIMIT 1) AS latest_max_move,
       (SELECT percent_move_from_alert FROM alert_performance p WHERE p.alert_id=a.id AND p.checkpoint='eod') AS eod_move,
+      CASE WHEN coalesce(a.asset_class,'options') = 'options' AND ${SQL_VERIFIED_SUBSCRIBER_DELIVERY} THEN 1 ELSE 0 END AS subscriber_delivered,
+      ${SQL_DELIVERY_ALERT_ID} AS delivery_alert_id,
+      ${SQL_DELIVERY_DISCORD_MESSAGE_ID} AS discord_message_id,
+      ${SQL_DELIVERY_OPPORTUNITY_CASE_ID} AS opportunity_case_id,
+      ${SQL_DELIVERY_PAPER_TRADE_ID} AS delivered_paper_trade_id,
       EXISTS (SELECT 1 FROM trade_journal j WHERE j.alert_id = a.id) AS trade_taken
     FROM alerts a
     ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
@@ -325,21 +344,441 @@ export function listAlerts(f: AlertFilters = {}) {
   return getDb().prepare(sql).all(...params);
 }
 
-export function getAlertDetail(id: number) {
-  const db = getDb();
-  const alert = db.prepare("SELECT * FROM alerts WHERE id = ?").get(id);
+type DbReader = {
+  prepare(sql: string): {
+    get?: (...args: any[]) => any;
+    all?: (...args: any[]) => any[];
+  };
+};
+
+function tableExistsOnDb(db: DbReader, table: string): boolean {
+  try {
+    const row = db.prepare("SELECT name FROM sqlite_master WHERE type IN ('table','view') AND name=?").get?.(table);
+    return Boolean(row);
+  } catch {
+    return false;
+  }
+}
+
+function columnSetOnDb(db: DbReader, table: string): Set<string> {
+  try {
+    return new Set((db.prepare(`PRAGMA table_info(${table})`).all?.() ?? []).map((r: any) => String(r.name)));
+  } catch {
+    return new Set();
+  }
+}
+
+function safeAll(db: DbReader, table: string, sql: string, params: any[] = []): any[] {
+  if (!tableExistsOnDb(db, table)) return [];
+  try {
+    return db.prepare(sql).all?.(...params) ?? [];
+  } catch {
+    return [];
+  }
+}
+
+function safeGet(db: DbReader, table: string, sql: string, params: any[] = []): any | null {
+  if (!tableExistsOnDb(db, table)) return null;
+  try {
+    return db.prepare(sql).get?.(...params) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function parseJsonSafe(value: unknown): any | null {
+  if (!value || typeof value !== "string") return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function toNum(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function timeMs(value: unknown): number | null {
+  if (value == null) return null;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const n = Number(value);
+  if (Number.isFinite(n) && n > 1_000_000_000) return n;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isoTime(value: unknown): string | null {
+  const ms = timeMs(value);
+  return ms == null ? null : new Date(ms).toISOString();
+}
+
+function pctReturn(entry: number | null, exit: number | null): number | null {
+  if (entry == null || exit == null || entry <= 0) return null;
+  return ((exit - entry) / entry) * 100;
+}
+
+function money(value: number | null): number | null {
+  return value == null ? null : Number((value * 100).toFixed(2));
+}
+
+function nearestRowsByTime(rows: any[], timestamp: string | null, limit = 5): any[] {
+  const target = timeMs(timestamp) ?? 0;
+  return [...rows]
+    .sort((a, b) => Math.abs((timeMs(a.created_at_ms ?? a.alert_time ?? a.taken_at) ?? 0) - target)
+      - Math.abs((timeMs(b.created_at_ms ?? b.alert_time ?? b.taken_at) ?? 0) - target))
+    .slice(0, limit);
+}
+
+function pickSnapshot(snapshots: any[], checkpoints: string[]): any | null {
+  for (const checkpoint of checkpoints) {
+    const rows = snapshots.filter((s) => String(s.checkpoint ?? "").toLowerCase() === checkpoint);
+    if (rows.length) return rows[0];
+  }
+  return null;
+}
+
+function latestSnapshot(snapshots: any[]): any | null {
+  return [...snapshots]
+    .filter((s) => toNum(s.mid) != null || toNum(s.bid) != null || toNum(s.ask) != null)
+    .sort((a, b) => (timeMs(b.taken_at) ?? 0) - (timeMs(a.taken_at) ?? 0))[0] ?? null;
+}
+
+function maxSnapshotBy(snapshots: any[], field: "bid" | "mid" | "ask"): any | null {
+  return [...snapshots]
+    .filter((s) => toNum(s[field]) != null)
+    .sort((a, b) => (toNum(b[field]) ?? -Infinity) - (toNum(a[field]) ?? -Infinity))[0] ?? null;
+}
+
+function minSnapshotBy(snapshots: any[], field: "bid" | "mid" | "ask"): any | null {
+  return [...snapshots]
+    .filter((s) => toNum(s[field]) != null)
+    .sort((a, b) => (toNum(a[field]) ?? Infinity) - (toNum(b[field]) ?? Infinity))[0] ?? null;
+}
+
+function messageIdFromNotification(row: any): string | null {
+  const payload = parseJsonSafe(row?.payload_json);
+  return payload?.messageId ?? payload?.message_id ?? payload?.id ?? payload?.discordMessageId ?? null;
+}
+
+function payloadText(payload: any): string | null {
+  if (!payload) return null;
+  if (typeof payload.content === "string") return payload.content;
+  if (typeof payload.message === "string") return payload.message;
+  if (typeof payload.payload?.content === "string") return payload.payload.content;
+  if (typeof payload.body?.content === "string") return payload.body.content;
+  return null;
+}
+
+function proofRow(label: string, pass: boolean | null, source: string, detail: string): AlertDossierProofItem & { source: string; detail: string } {
+  return {
+    label,
+    status: pass == null ? "MISSING" : pass ? "PASS" : "FAIL",
+    pass,
+    source,
+    detail,
+  };
+}
+
+function returnRow(label: string, entry: number | null, exit: number | null, entryAt: unknown, exitAt: unknown, convention: string) {
+  const pct = pctReturn(entry, exit);
+  return {
+    label,
+    convention,
+    entry,
+    exit,
+    returnPct: pct == null ? null : Number(pct.toFixed(2)),
+    formula: entry != null && exit != null ? `(${exit} - ${entry}) / ${entry} * 100` : null,
+    oneContractEntryDebit: money(entry),
+    oneContractExitValue: money(exit),
+    oneContractPnl: entry != null && exit != null ? Number(((exit - entry) * 100).toFixed(2)) : null,
+    entryAt: isoTime(entryAt),
+    exitAt: isoTime(exitAt),
+  };
+}
+
+function makeTimelineEvent(timestamp: unknown, source: string, label: string, detail: string, payload?: any) {
+  return {
+    timestamp: isoTime(timestamp),
+    timestampMs: timeMs(timestamp),
+    source,
+    label,
+    detail,
+    payload: payload ?? null,
+  };
+}
+
+export function getAlertDetailOnDb(db: DbReader, id: number) {
+  const alert = db.prepare("SELECT * FROM alerts WHERE id = ?").get?.(id);
   if (!alert) return null;
+  const occ = alert.option_symbol ?? null;
+  const side = String(alert.option_side ?? alert.direction ?? "").toLowerCase().startsWith("p") ? "put"
+    : String(alert.option_side ?? "").toLowerCase().startsWith("c") ? "call"
+    : null;
+  const alertMs = timeMs(alert.alert_time);
+  const fromMs = alertMs == null ? 0 : alertMs - 20 * 60_000;
+  const toMs = alertMs == null ? Number.MAX_SAFE_INTEGER : alertMs + 20 * 60_000;
+
+  const performance = safeAll(db, "alert_performance", "SELECT * FROM alert_performance WHERE alert_id=? ORDER BY checked_at", [id]);
+  const snapshots = safeAll(db, "options_snapshots", "SELECT * FROM options_snapshots WHERE alert_id=? ORDER BY taken_at", [id]);
+  const catalysts = safeAll(db, "catalyst_records", "SELECT * FROM catalyst_records WHERE alert_id=? ORDER BY published_at DESC", [id]);
+  const journal = safeAll(db, "trade_journal", "SELECT * FROM trade_journal WHERE alert_id=? ORDER BY created_at", [id]);
+  const breakdowns = safeAll(db, "score_breakdowns", "SELECT * FROM score_breakdowns WHERE alert_id=?", [id]);
+  const feedback = safeAll(db, "alert_feedback", "SELECT * FROM alert_feedback WHERE alert_id=? ORDER BY submitted_at DESC", [id]);
+  const notifications = safeAll(db, "notification_events", "SELECT * FROM notification_events WHERE alert_id=? ORDER BY created_at DESC", [id]);
+  const discordDeliveries = safeAll(db, "discord_deliveries", "SELECT * FROM discord_deliveries WHERE alert_id=? ORDER BY created_at DESC", [id]);
+
+  const optionsAlertsCols = columnSetOnDb(db, "options_alerts");
+  const optionAlerts = optionsAlertsCols.size
+    ? safeAll(
+      db,
+      "options_alerts",
+      `SELECT * FROM options_alerts
+       WHERE candidate_symbol=?
+         AND (? IS NULL OR option_symbol=?)
+         AND (? IS NULL OR side=?)
+         AND created_at_ms BETWEEN ? AND ?
+       ORDER BY CASE WHEN state='SENT' THEN 0 ELSE 1 END, ABS(created_at_ms - ?) ASC
+       LIMIT 10`,
+      [String(alert.ticker).toUpperCase(), occ, occ, side, side, fromMs, toMs, alertMs ?? 0],
+    )
+    : [];
+  const primaryOptionAlert = optionAlerts[0] ?? null;
+  const optionAlertId = primaryOptionAlert?.alert_id ?? null;
+  const opportunityCaseId = primaryOptionAlert?.opportunity_case_id ?? null;
+  const opportunityFingerprint = primaryOptionAlert?.opportunity_fingerprint ?? null;
+
+  const paperTrades = safeAll(
+    db,
+    "options_paper_trades",
+    `SELECT * FROM options_paper_trades
+     WHERE (? IS NULL OR option_symbol=?)
+       AND (? IS NULL OR alert_id=?)
+       AND entered_at_ms BETWEEN ? AND ?
+     ORDER BY CASE WHEN paper_kind='DELIVERED_ALERT_PAPER' THEN 0 ELSE 1 END, entered_at_ms ASC
+     LIMIT 20`,
+    [occ, occ, optionAlertId, optionAlertId, fromMs, toMs + 8 * 60 * 60_000],
+  );
+  const paperMirror = paperTrades.find((p) => p.paper_kind === "DELIVERED_ALERT_PAPER" && (!occ || p.option_symbol === occ)) ?? null;
+  const paperTradeId = paperMirror?.id ?? primaryOptionAlert?.paper_trade_id ?? null;
+  const paperMarks = paperTradeId
+    ? safeAll(db, "options_paper_marks", "SELECT * FROM options_paper_marks WHERE trade_id=? ORDER BY marked_at_ms", [paperTradeId])
+    : [];
+
+  const candidates = safeAll(
+    db,
+    "options_candidates",
+    `SELECT * FROM options_candidates
+     WHERE symbol=? AND (? IS NULL OR option_symbol=?)
+       AND created_at_ms BETWEEN ? AND ?
+     ORDER BY ABS(created_at_ms - ?) ASC LIMIT 20`,
+    [String(alert.ticker).toUpperCase(), occ, occ, fromMs, toMs, alertMs ?? 0],
+  );
+  const deliveryDecisions = safeAll(
+    db,
+    "options_delivery_decisions",
+    `SELECT * FROM options_delivery_decisions
+     WHERE symbol=? AND (? IS NULL OR side=?)
+       AND created_at_ms BETWEEN ? AND ?
+     ORDER BY created_at_ms ASC LIMIT 20`,
+    [String(alert.ticker).toUpperCase(), side, side, fromMs, toMs],
+  );
+  const bearishEscalations = safeAll(
+    db,
+    "options_bearish_escalations",
+    `SELECT * FROM options_bearish_escalations
+     WHERE legacy_alert_id=? OR (? IS NOT NULL AND occ=?)
+     ORDER BY created_at_ms DESC`,
+    [id, occ, occ],
+  );
+
+  const opportunityCase = opportunityCaseId
+    ? safeGet(db, "opportunity_cases", "SELECT * FROM opportunity_cases WHERE opportunity_id=? OR case_id=? OR id=? LIMIT 1", [opportunityCaseId, opportunityCaseId, opportunityCaseId])
+    : null;
+  const opportunityRows = opportunityCaseId
+    ? {
+      milestones: safeAll(db, "opportunity_milestones", "SELECT * FROM opportunity_milestones WHERE opportunity_id=? OR case_id=? ORDER BY created_at_ms", [opportunityCaseId, opportunityCaseId]),
+      evidence: safeAll(db, "opportunity_evidence_events", "SELECT * FROM opportunity_evidence_events WHERE opportunity_id=? OR case_id=? ORDER BY created_at_ms", [opportunityCaseId, opportunityCaseId]),
+      content: safeAll(db, "opportunity_content_events", "SELECT * FROM opportunity_content_events WHERE opportunity_id=? OR case_id=? ORDER BY created_at_ms", [opportunityCaseId, opportunityCaseId]),
+    }
+    : { milestones: [], evidence: [], content: [] };
+
+  const sentNotification = notifications.find((n) => String(n.status).toLowerCase() === "sent" && messageIdFromNotification(n));
+  const sentDelivery = discordDeliveries.find((d) => String(d.status).toUpperCase() === "SENT");
+  const discordMessageId = primaryOptionAlert?.discord_message_id ?? messageIdFromNotification(sentNotification) ?? sentDelivery?.discord_message_id ?? null;
+  const discordHttpStatus = primaryOptionAlert?.discord_status ?? sentDelivery?.http_status ?? null;
+  const notificationPayload = sentNotification ? parseJsonSafe(sentNotification.payload_json) : null;
+  const deliveryPayload = sentDelivery ? parseJsonSafe(sentDelivery.payload_json) : null;
+  const exactDiscordPayload = notificationPayload ?? deliveryPayload ?? (primaryOptionAlert?.state === "SENT" ? primaryOptionAlert.message : null);
+
+  const entrySnapshot = pickSnapshot(snapshots, ["alert", "entry"]) ?? snapshots[0] ?? null;
+  const eodSnapshot = pickSnapshot(snapshots, ["eod", "close"]) ?? latestSnapshot(snapshots);
+  const bestMidSnapshot = maxSnapshotBy(snapshots, "mid");
+  const bestBidSnapshot = maxSnapshotBy(snapshots, "bid");
+  const worstMidSnapshot = minSnapshotBy(snapshots, "mid");
+  const frozenEntry = toNum(primaryOptionAlert?.entry_mid) ?? toNum(entrySnapshot?.mid) ?? toNum(alert.entry_mid);
+  const frozenBid = toNum(entrySnapshot?.bid) ?? toNum(primaryOptionAlert?.delivered_bid);
+  const frozenAsk = toNum(entrySnapshot?.ask) ?? toNum(primaryOptionAlert?.delivered_ask);
+  const exitMid = toNum(eodSnapshot?.mid) ?? toNum(bestMidSnapshot?.mid);
+  const exitBid = toNum(eodSnapshot?.bid) ?? toNum(bestBidSnapshot?.bid);
+
+  const proof = [
+    proofRow("Independent options alert row", primaryOptionAlert ? true : null, "options_alerts", primaryOptionAlert ? String(optionAlertId) : "No matching independent row in alert window"),
+    proofRow("Subscriber SEND state", primaryOptionAlert ? primaryOptionAlert.state === "SENT" : null, "options_alerts.state", primaryOptionAlert?.state ?? "Missing"),
+    proofRow("Discord message ID", discordMessageId ? true : null, "discord", discordMessageId ?? "Missing"),
+    proofRow("Discord HTTP success", discordHttpStatus == null ? null : Number(discordHttpStatus) >= 200 && Number(discordHttpStatus) < 300, "discord", discordHttpStatus == null ? "Missing" : String(discordHttpStatus)),
+    proofRow("Opportunity case ID", opportunityCaseId ? true : null, "options_alerts/opportunity_cases", opportunityCaseId ?? "Missing"),
+    proofRow("Paper mirror linkage", primaryOptionAlert ? (primaryOptionAlert.paper_linked === 1 || primaryOptionAlert.paper_linked === true) && Boolean(paperMirror) : null, "options_paper_trades", paperMirror ? `paper trade ${paperMirror.id}` : "Missing delivered-alert paper mirror"),
+    proofRow("Matching OCC contract", primaryOptionAlert ? primaryOptionAlert.option_symbol === occ : null, "alerts/options_alerts", primaryOptionAlert?.option_symbol ?? "Missing"),
+    proofRow("Frozen entry", frozenEntry != null && frozenEntry > 0, "options_snapshots/options_alerts", frozenEntry == null ? "Missing" : String(frozenEntry)),
+    proofRow("Valid grading marks", exitMid != null || exitBid != null || paperMarks.length > 0, "options_snapshots/options_paper_marks", exitMid != null ? `mid ${exitMid}` : exitBid != null ? `bid ${exitBid}` : "Missing"),
+  ];
+  const hasOwnerOnly = notifications.some((n) => String(n.channel ?? "").includes("owner") || String(n.payload_json ?? "").toLowerCase().includes("owner"));
+  const researchOnly = Boolean(primaryOptionAlert?.research_only || deliveryDecisions.some((d) => String(d.outcome ?? d.final_delivery_outcome ?? "").toUpperCase().includes("RESEARCH")));
+  const shadow = deliveryDecisions.some((d) => String(d.reason ?? "").toLowerCase().includes("shadow"));
+  const auditOnly = Boolean(bearishEscalations.length || notifications.some((n) => String(n.status).toLowerCase() === "skipped"));
+  const classification = classifyAlertDossier({
+    proof,
+    paperTradeCount: paperTrades.length,
+    hasOwnerOnly,
+    researchOnly,
+    shadow,
+    auditOnly,
+  });
+  const verifiedDelivered = classification.verifiedDelivered;
+  const badge = classification.badge;
+
+  const firstSuppression =
+    primaryOptionAlert?.failure_reason ??
+    deliveryDecisions.find((d) => d.reason || d.final_delivery_reason)?.reason ??
+    deliveryDecisions.find((d) => d.final_delivery_reason)?.final_delivery_reason ??
+    notifications.find((n) => String(n.status).toLowerCase() !== "sent")?.error ??
+    bearishEscalations[0]?.suppression_reason ??
+    null;
+
+  const timeline = [
+    makeTimelineEvent(alert.alert_time, "legacy scanner", "Scanner detected setup", `${alert.ticker} ${String(alert.option_side ?? side ?? "").toUpperCase()} score ${alert.signal_score ?? "n/a"}`),
+    ...snapshots.map((s) => makeTimelineEvent(s.taken_at, "options snapshots", `${s.checkpoint ?? "snapshot"} mark`, `bid ${s.bid ?? "n/a"} ask ${s.ask ?? "n/a"} mid ${s.mid ?? "n/a"}`)),
+    ...candidates.map((c) => makeTimelineEvent(c.created_at_ms, "options candidates", "Candidate created", `${c.selected_strategy ?? c.strategy ?? "unknown"} ${c.state ?? ""} ${c.why ?? ""}`.trim(), parseJsonSafe(c.feature_snapshot_json))),
+    ...deliveryDecisions.map((d) => makeTimelineEvent(d.created_at_ms, "delivery decision", d.outcome ?? d.final_delivery_outcome ?? "decision", d.reason ?? d.final_delivery_reason ?? "No reason recorded", parseJsonSafe(d.components_json))),
+    ...optionAlerts.map((oa) => makeTimelineEvent(oa.created_at_ms ?? oa.attempted_at_ms, "independent options alert", oa.state ?? "alert row", oa.failure_reason ?? oa.message_hash ?? oa.alert_id ?? "No detail", oa)),
+    ...notifications.map((n) => makeTimelineEvent(n.created_at ?? n.sent_at, "notification event", n.status ?? "notification", n.error ?? n.channel ?? "No detail", parseJsonSafe(n.payload_json))),
+    ...discordDeliveries.map((d) => makeTimelineEvent(d.created_at ?? d.sent_at ?? d.attempted_at, "discord delivery", d.status ?? "delivery", d.failure_reason ?? d.response_body_safe ?? d.delivery_id ?? "No detail", parseJsonSafe(d.payload_json))),
+    ...paperTrades.map((p) => makeTimelineEvent(p.entered_at_ms ?? p.created_at_ms, "paper mirror", p.paper_kind ?? p.status ?? "paper trade", `entry ${p.entry_fill ?? "n/a"} exit ${p.exit_fill ?? "open"} return ${p.return_pct ?? "n/a"}`, p)),
+    ...paperMarks.map((m) => makeTimelineEvent(m.marked_at_ms, "paper mark", m.mark_type ?? "paper mark", `bid ${m.bid ?? "n/a"} ask ${m.ask ?? "n/a"} mid ${m.mid ?? "n/a"}`)),
+    ...performance.map((p) => makeTimelineEvent(p.checked_at, "legacy grading", p.checkpoint ?? "checkpoint", `move ${p.percent_move_from_alert ?? "n/a"} max ${p.max_percent_move_after_alert ?? "n/a"}`)),
+    ...opportunityRows.milestones.map((m) => makeTimelineEvent(m.created_at_ms, "opportunity lifecycle", m.kind ?? m.type ?? "milestone", m.note ?? m.reason ?? "")),
+    ...opportunityRows.evidence.map((e) => makeTimelineEvent(e.created_at_ms, "opportunity evidence", e.kind ?? e.type ?? "evidence", e.summary ?? e.reason ?? "")),
+    ...opportunityRows.content.map((c) => makeTimelineEvent(c.created_at_ms, "opportunity content", c.kind ?? c.type ?? "content", c.summary ?? c.reason ?? "")),
+  ].filter((e) => e.timestamp || e.timestampMs != null)
+    .sort((a, b) => (a.timestampMs ?? 0) - (b.timestampMs ?? 0));
+
+  const returnCalculations = [
+    returnRow("Legacy mid-to-mid", frozenEntry, exitMid, entrySnapshot?.taken_at ?? alert.alert_time, eodSnapshot?.taken_at ?? bestMidSnapshot?.taken_at, "Displayed research grading convention"),
+    returnRow("Conservative ask-to-bid", frozenAsk, exitBid, entrySnapshot?.taken_at ?? alert.alert_time, eodSnapshot?.taken_at ?? bestBidSnapshot?.taken_at, "Subscriber realistic buy ask, sell bid"),
+    returnRow("Best mid MFE", frozenEntry, toNum(bestMidSnapshot?.mid), entrySnapshot?.taken_at ?? alert.alert_time, bestMidSnapshot?.taken_at, "Maximum favorable mid after detection"),
+    returnRow("Worst mid MAE", frozenEntry, toNum(worstMidSnapshot?.mid), entrySnapshot?.taken_at ?? alert.alert_time, worstMidSnapshot?.taken_at, "Worst marked mid after detection"),
+    returnRow("Paper mirror", toNum(paperMirror?.entry_fill), toNum(paperMirror?.exit_fill), paperMirror?.entered_at_ms, paperMirror?.exit_at_ms, "Actual delivered-alert paper trade, when present"),
+  ];
+
   return {
     alert,
-    performance: db.prepare("SELECT * FROM alert_performance WHERE alert_id=? ORDER BY checked_at").all(id),
-    snapshots: db.prepare("SELECT * FROM options_snapshots WHERE alert_id=? ORDER BY taken_at").all(id),
-    catalysts: db.prepare("SELECT * FROM catalyst_records WHERE alert_id=? ORDER BY published_at DESC").all(id),
-    journal: db.prepare("SELECT * FROM trade_journal WHERE alert_id=? ORDER BY created_at").all(id),
-    breakdowns: db.prepare("SELECT * FROM score_breakdowns WHERE alert_id=?").all(id),
-    feedback: db.prepare("SELECT * FROM alert_feedback WHERE alert_id=? ORDER BY submitted_at DESC").all(id),
-    notifications: db.prepare("SELECT * FROM notification_events WHERE alert_id=? ORDER BY created_at DESC").all(id),
-    discordDeliveries: db.prepare("SELECT * FROM discord_deliveries WHERE alert_id=? ORDER BY created_at DESC").all(id),
+    metadata: {
+      alertId: id,
+      detailRoute: `/alerts/${id}`,
+      symbol: alert.ticker,
+      side,
+      optionSymbol: occ,
+      strike: alert.strike ?? null,
+      expiration: alert.expiration ?? null,
+      dte: alert.dte ?? null,
+      setupFamily: primaryOptionAlert?.strategy ?? alert.source ?? null,
+      direction: alert.direction ?? null,
+      finalStatus: classification.finalStatus,
+      lane: verifiedDelivered ? "Delivered performance" : badge,
+      confidence: alert.capture_confidence ?? alert.signal_score ?? null,
+      opportunityCaseId,
+      opportunityFingerprint,
+      independentAlertId: optionAlertId,
+      paperTradeId,
+      discordMessageId,
+    },
+    classification: {
+      badge,
+      verifiedDelivered,
+      finalStatus: classification.finalStatus,
+      lane: classification.lane,
+      suppressionReason: firstSuppression,
+    },
+    proofSummary: {
+      verifiedDelivered,
+      status: classification.finalStatus,
+      missing: classification.missing,
+      failed: classification.failed,
+    },
+    deliveryProof: proof,
+    timeline,
+    entryDetails: {
+      frozenEntry,
+      frozenBid,
+      frozenAsk,
+      entrySnapshot,
+      optionAlertEntryMid: primaryOptionAlert?.entry_mid ?? null,
+      entrySource: primaryOptionAlert?.entry_source ?? paperMirror?.entry_source ?? "legacy_snapshot_or_independent_alert",
+    },
+    pricePath: {
+      snapshots,
+      paperMarks,
+      bestMid: bestMidSnapshot,
+      bestBid: bestBidSnapshot,
+      worstMid: worstMidSnapshot,
+      eod: eodSnapshot,
+    },
+    returnCalculations,
+    realisticValues: returnCalculations.filter((r) => r.label === "Conservative ask-to-bid" || r.label === "Paper mirror"),
+    discord: {
+      sent: verifiedDelivered,
+      note: verifiedDelivered ? "Verified Discord delivery proof present." : "NO VERIFIED DISCORD DELIVERY",
+      messageId: discordMessageId,
+      httpStatus: discordHttpStatus,
+      payload: verifiedDelivered ? exactDiscordPayload : null,
+      payloadText: verifiedDelivered ? payloadText(exactDiscordPayload) ?? (typeof exactDiscordPayload === "string" ? exactDiscordPayload : null) : null,
+      suppressionReason: firstSuppression,
+    },
+    suppression: {
+      reason: firstSuppression,
+      deliveryDecision: primaryOptionAlert?.state ?? deliveryDecisions[0]?.outcome ?? null,
+      actionableReason: deliveryDecisions[0]?.reason ?? deliveryDecisions[0]?.final_delivery_reason ?? null,
+      invalidation: primaryOptionAlert?.failure_reason ?? null,
+    },
+    missedOpportunity: {
+      isMissed: !verifiedDelivered && Boolean(snapshots.length || alert.option_return_pct != null || bearishEscalations.length),
+      explanation: verifiedDelivered
+        ? "This row has hard subscriber Discord delivery proof."
+        : "This row is preserved for audit/research because it lacks hard subscriber Discord delivery proof.",
+    },
+    performance,
+    snapshots,
+    catalysts,
+    journal,
+    breakdowns,
+    feedback,
+    notifications,
+    discordDeliveries,
+    optionAlerts,
+    deliveryDecisions,
+    candidates: nearestRowsByTime(candidates, alert.alert_time, 20),
+    paperTrades,
+    paperMirror,
+    opportunityCase,
+    opportunityRows,
+    bearishEscalations,
   };
+}
+
+export function getAlertDetail(id: number) {
+  return getAlertDetailOnDb(getDb(), id);
 }
 
 export function insertAlertFeedback(e: {
@@ -540,10 +979,17 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number; asset
     opts.asset === "stock" ? " AND coalesce(a.asset_class,'options') = 'stock'"
     : opts.asset === "options" ? " AND coalesce(a.asset_class,'options') = 'options'"
     : "";
+  const deliveryProofClause = opts.asset === "stock" ? "" : ` AND ${SQL_VERIFIED_SUBSCRIBER_DELIVERY}`;
   const days = Math.max(1, Number(opts.days ?? 14));
   const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
   const today = tradingDay();
   const limit = Math.min(Number(opts.limit ?? 50), 200);
+  const discordSentCountSql = opts.asset === "stock"
+    ? `SUM(CASE WHEN EXISTS (
+              SELECT 1 FROM notification_events n
+              WHERE n.alert_id = a.id AND n.channel = 'discord_webhook' AND n.status = 'sent'
+            ) THEN 1 ELSE 0 END)`
+    : "COUNT(*)";
 
   const summary: any = db.prepare(
     `SELECT COUNT(*) AS total,
@@ -566,13 +1012,10 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number; asset
             SUM(CASE WHEN a.option_outcome_win = 1 THEN 1 ELSE 0 END) AS option_wins,
             SUM(CASE WHEN a.option_outcome_win = 0 THEN 1 ELSE 0 END) AS option_losses,
             AVG(a.option_return_pct) AS avg_option_return,
-            SUM(CASE WHEN EXISTS (
-              SELECT 1 FROM notification_events n
-              WHERE n.alert_id = a.id AND n.channel = 'discord_webhook' AND n.status = 'sent'
-            ) THEN 1 ELSE 0 END) AS discord_sent_count
+            ${discordSentCountSql} AS discord_sent_count
      FROM alerts a
      LEFT JOIN alert_performance p ON p.alert_id = a.id AND p.checkpoint = 'eod'
-     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'${assetClause}`,
+     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'${assetClause}${deliveryProofClause}`,
   ).get(today, today, since);
 
   const completed = (summary?.wins ?? 0) + (summary?.losses ?? 0);
@@ -585,7 +1028,7 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number; asset
             SUM(CASE WHEN a.is_false_positive = 0 THEN 1 ELSE 0 END) AS wins,
             SUM(CASE WHEN a.is_false_positive = 1 THEN 1 ELSE 0 END) AS losses
      FROM alerts a
-     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'${assetClause} AND a.status = 'complete'
+     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'${assetClause}${deliveryProofClause} AND a.status = 'complete'
      GROUP BY a.option_side`,
   ).all(since);
 
@@ -612,10 +1055,14 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number; asset
             (SELECT n.error FROM notification_events n
              WHERE n.alert_id = a.id AND n.channel = 'discord_webhook'
              ORDER BY n.id DESC LIMIT 1) AS discord_note,
-            EXISTS (SELECT 1 FROM notification_events n
-                    WHERE n.alert_id = a.id AND n.channel = 'discord_webhook' AND n.status = 'sent') AS discord_sent
+            1 AS discord_sent,
+            1 AS subscriber_delivered,
+            ${SQL_DELIVERY_ALERT_ID} AS delivery_alert_id,
+            ${SQL_DELIVERY_DISCORD_MESSAGE_ID} AS discord_message_id,
+            ${SQL_DELIVERY_OPPORTUNITY_CASE_ID} AS opportunity_case_id,
+            ${SQL_DELIVERY_PAPER_TRADE_ID} AS delivered_paper_trade_id
      FROM alerts a
-     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'${assetClause}
+     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'${assetClause}${deliveryProofClause}
      ORDER BY a.id DESC LIMIT ?`,
   ).all(since, limit);
 
@@ -629,13 +1076,13 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number; asset
             (SELECT p.percent_move_from_alert FROM alert_performance p
              WHERE p.alert_id = a.id AND p.checkpoint = 'eod') AS eod_move
      FROM alerts a
-     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'${assetClause} AND ${SQL_WINNER}
+     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'${assetClause}${deliveryProofClause} AND ${SQL_WINNER}
      ORDER BY COALESCE(${SQL_MOVE_5M}, latest_max_move, eod_move, 0) DESC, a.id DESC LIMIT 25`,
   ).all(since);
 
   const winnersToday: any = db.prepare(
     `SELECT COUNT(*) AS cnt FROM alerts a
-     WHERE a.trading_day = ? AND a.alert_tier = 'trade'${assetClause} AND ${SQL_WINNER}`,
+     WHERE a.trading_day = ? AND a.alert_tier = 'trade'${assetClause}${deliveryProofClause} AND ${SQL_WINNER}`,
   ).get(today);
 
   const onTrackNow = db.prepare(
@@ -651,23 +1098,27 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number; asset
             ${SQL_MOVE_1M} AS move_1m,
             ${SQL_MOVE_3M} AS move_3m,
             ${SQL_MOVE_5M} AS move_5m,
-            EXISTS (SELECT 1 FROM notification_events n
-                    WHERE n.alert_id = a.id AND n.channel = 'discord_webhook' AND n.status = 'sent') AS discord_sent
+            1 AS discord_sent,
+            1 AS subscriber_delivered,
+            ${SQL_DELIVERY_ALERT_ID} AS delivery_alert_id,
+            ${SQL_DELIVERY_DISCORD_MESSAGE_ID} AS discord_message_id,
+            ${SQL_DELIVERY_OPPORTUNITY_CASE_ID} AS opportunity_case_id,
+            ${SQL_DELIVERY_PAPER_TRADE_ID} AS delivered_paper_trade_id
      FROM alerts a
-     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'${assetClause} AND a.status = 'tracking'
+     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'${assetClause}${deliveryProofClause} AND a.status = 'tracking'
        AND ${sqlEarlyOnTrack()}
      ORDER BY ${SQL_MOVE_5M} DESC, ${SQL_MOVE_1M} DESC LIMIT 50`,
   ).all(since);
 
   const todayOnTrack: any = db.prepare(
     `SELECT COUNT(*) AS cnt FROM alerts a
-     WHERE a.trading_day = ? AND a.alert_tier = 'trade'${assetClause} AND a.status = 'tracking'
+     WHERE a.trading_day = ? AND a.alert_tier = 'trade'${assetClause}${deliveryProofClause} AND a.status = 'tracking'
        AND ${sqlEarlyOnTrack()}`,
   ).get(today);
 
   const completedToday: any = db.prepare(
     `SELECT COUNT(*) AS cnt FROM alerts a
-     WHERE a.trading_day = ? AND a.alert_tier = 'trade'${assetClause} AND a.status = 'complete'`,
+     WHERE a.trading_day = ? AND a.alert_tier = 'trade'${assetClause}${deliveryProofClause} AND a.status = 'complete'`,
   ).get(today);
 
   const dailyTrend = db.prepare(
@@ -686,7 +1137,7 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number; asset
             AVG(CASE WHEN p.checkpoint = 'eod' THEN p.max_percent_move_after_alert END) AS avg_max_move
      FROM alerts a
      LEFT JOIN alert_performance p ON p.alert_id = a.id AND p.checkpoint = 'eod'
-     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'${assetClause}
+     WHERE a.trading_day >= ? AND a.alert_tier = 'trade'${assetClause}${deliveryProofClause}
      GROUP BY a.trading_day
      ORDER BY a.trading_day ASC`,
   ).all(since).map((row: any) => mapDailyTrendRow(row));

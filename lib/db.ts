@@ -1516,6 +1516,32 @@ CREATE TABLE IF NOT EXISTS options_delivery_decisions (
 CREATE INDEX IF NOT EXISTS idx_options_delivery_decisions ON options_delivery_decisions(outcome, created_at_ms);
 -- idx_options_delivery_final_outcome is created after additive column migrations (legacy DBs may lack final_delivery_outcome until then).
 
+-- Legacy bearish detections that were suppressed by the legacy Discord owner are kept as audit/escalation
+-- evidence for the independent bearish authority. These rows never authorize subscriber SEND by themselves.
+CREATE TABLE IF NOT EXISTS options_bearish_escalations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  legacy_alert_id INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  occ TEXT,
+  side TEXT,
+  strategy_family TEXT,
+  signal_score REAL,
+  liquidity_score REAL,
+  bid REAL,
+  ask REAL,
+  mid REAL,
+  spread_pct REAL,
+  volume REAL,
+  open_interest REAL,
+  delta REAL,
+  alert_time TEXT NOT NULL,
+  suppression_reason TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'PENDING',
+  created_at_ms INTEGER NOT NULL,
+  UNIQUE(legacy_alert_id, occ)
+);
+CREATE INDEX IF NOT EXISTS idx_options_bearish_escalations_pending ON options_bearish_escalations(symbol, status, created_at_ms);
+
 -- Shadow-mode comparison: proposed gates vs actual paths (never sends Discord).
 CREATE TABLE IF NOT EXISTS options_shadow_decisions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

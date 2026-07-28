@@ -183,10 +183,10 @@ export function revalidateBeforeDiscordSend(
   const oPre = movePct(d.optionAtFirstDetection, optMid)
     ?? (eq.metrics.option_pre_move_30m_pct as number | null);
   const upsideT1 = d.entry?.t1 != null
-    ? upsideToTargetPct(optMid, d.entry.t1, side)
+    ? upsideToTargetPct(optMid, d.entry.t1, "call")
     : null;
   const upsideT2 = d.entry?.t2 != null
-    ? upsideToTargetPct(optMid, d.entry.t2, side)
+    ? upsideToTargetPct(optMid, d.entry.t2, "call")
     : null;
   const detectionLatencyMs = d.firstDetectedAtMs ? nowMs - d.firstDetectedAtMs : null;
 

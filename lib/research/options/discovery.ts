@@ -40,8 +40,9 @@ export interface OptionsCandidateInput {
   underlying: {
     price: number | null; dayDollarVolume: number | null; relVolume: number | null;
     velPct: number | null; accelPct: number | null; gapPct: number | null;
-    aboveVwap: boolean | null; hodBreak: boolean | null;
-    nearResistancePct: number | null;   // distance to a key level (small = close)
+    aboveVwap: boolean | null; hodBreak: boolean | null; lodBreak?: boolean | null;
+    nearResistancePct: number | null;   // distance to a key level above (small = close)
+    nearSupportPct?: number | null;     // distance to a key level below (small = close)
     compressionPct: number | null;      // range compression (small = tight)
     realizedVolExpanding: boolean | null;
     openingRange: boolean | null;       // early regular session ORB context
@@ -57,10 +58,14 @@ export function activeSignals(c: OptionsCandidateInput): Set<string> {
   const s = new Set<string>();
   if ((u.relVolume ?? 0) >= 2) s.add("rel_volume");
   if ((u.accelPct ?? 0) > 0) { s.add("price_acceleration"); s.add("volume_acceleration"); }
+  if ((u.accelPct ?? 0) < 0 || (u.velPct ?? 0) < 0) { s.add("downside_acceleration"); s.add("downside_momentum"); }
   if (u.nearResistancePct != null && u.nearResistancePct <= 0.5) s.add("breakout_proximity");
+  if (u.nearSupportPct != null && u.nearSupportPct <= 0.5) s.add("support_break_proximity");
   if (u.compressionPct != null && u.compressionPct <= 1.0) s.add("compression_near_level");
   if (u.hodBreak) s.add("hod_break");
+  if (u.lodBreak) s.add("lod_break");
   if (u.aboveVwap) s.add("above_vwap");
+  if (u.aboveVwap === false) s.add("below_vwap");
   if (u.openingRange) s.add("opening_range_development");
   if (u.premarketLevelTest) s.add("premarket_level_testing");
   if (u.realizedVolExpanding) s.add("volatility_expansion");
@@ -69,7 +74,11 @@ export function activeSignals(c: OptionsCandidateInput): Set<string> {
     if ((o.volVsBaseline ?? 0) >= 2) s.add("option_vol_vs_baseline");
     if (o.multiStrike) s.add("multi_strike_activity");
     if (o.multiExpiration) s.add("multi_expiration_activity");
-    if (o.direction && o.direction !== "ambiguous") s.add("call_put_concentration");
+    if (o.direction && o.direction !== "ambiguous") {
+      s.add("call_put_concentration");
+      if (String(o.direction).includes("put")) s.add("put_flow_skew");
+      if (String(o.direction).includes("call")) s.add("call_flow_skew");
+    }
     if (o.ivChange != null && Math.abs(o.ivChange) >= 0.02) s.add("iv_change");
   }
   if (e) {

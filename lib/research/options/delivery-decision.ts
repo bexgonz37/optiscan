@@ -13,6 +13,11 @@ import { assertSubscriberDeliveryAllowed, evaluateMarketSessionGuard, isSameTrad
 import { evaluateEntryQuality, entryQualityFromDelivery } from "../../entry-quality-gate.ts";
 import { markCandidatesBatchEntered } from "./instrumentation.ts";
 import { recordProposedShadowFromDelivery } from "./shadow-runner.ts";
+import {
+  evaluateBearishAuthority,
+  formatBearishOwnerReview,
+  type BearishAuthorityDecision,
+} from "./bearish-authority.ts";
 
 export interface DeliverySubmission {
   deliveryInput: DeliveryInput;
@@ -174,6 +179,43 @@ function skipped(reason: string): Pick<DeliveryDecision, "deliveryAttempted" | "
   return { deliveryAttempted: false, deliverySent: false, deliveryState: null, finalDeliveryOutcome: "SKIPPED", deliveryFailureCategory: null, finalDeliveryReason: reason };
 }
 
+async function maybeSendBearishOwnerReview(
+  db: DDb | null,
+  s: DeliverySubmission,
+  decision: BearishAuthorityDecision,
+  quality: number,
+  threshold: number,
+  nowMs: number,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  if (!db || decision.state !== "BEARISH_READY" || env.BEARISH_OWNER_ALERTS_ENABLED !== "1") return;
+  try {
+    const { sendOwnerResearchNotify } = await import("../../notifications/owner-research-notify.ts");
+    const content = formatBearishOwnerReview({
+      symbol: s.symbol,
+      side: "put",
+      strategy: s.strategy,
+      researchOnly: s.researchOnly,
+      quality,
+      threshold,
+      matchedSignals: s.matchedSignals,
+      requiredSignals: s.requiredSignals,
+      strategyScore: s.strategyScore,
+      fractionMove: s.fractionMove,
+      deliveryInput: s.deliveryInput,
+      nowMs,
+    }, decision);
+    await sendOwnerResearchNotify({
+      db: db as any,
+      kind: "intraday_actionable",
+      content,
+      symbol: `bearish:${s.symbol}:${s.deliveryInput.contract.optionSymbol}`,
+      env: { ...env, OWNER_RESEARCH_DISCORD_ENABLED: "1", OWNER_RESEARCH_INTRADAY_ENABLED: "1" } as NodeJS.ProcessEnv,
+      nowMs,
+    });
+  } catch { /* owner review must never affect subscriber decisions */ }
+}
+
 function classifyDeliveryResult(r: { state: string; sent: boolean; reason?: string | null }) {
   const state = String(r.state ?? "");
   const reason = r.reason == null ? null : String(r.reason);
@@ -313,7 +355,34 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
       ...skipped("not_selected"),
     };
 
-    if (x.s.researchOnly || x.s.side === "put") { base.reason = "research_only_put"; base.finalDeliveryReason = base.reason; decisions.push(base); continue; }
+    if (x.s.side === "put") {
+      const auth = evaluateBearishAuthority({
+        symbol: x.s.symbol,
+        side: "put",
+        strategy: x.s.strategy,
+        researchOnly: x.s.researchOnly,
+        quality: x.quality,
+        threshold: deliverBar,
+        matchedSignals: x.s.matchedSignals,
+        requiredSignals: x.s.requiredSignals,
+        strategyScore: x.s.strategyScore,
+        fractionMove: x.s.fractionMove,
+        deliveryInput: x.s.deliveryInput,
+        nowMs,
+      }, env);
+      void maybeSendBearishOwnerReview(db, x.s, auth, x.quality, deliverBar, nowMs, env);
+      if (!auth.maySubscriberSend) {
+        base.reason = auth.reasonCode;
+        base.finalDeliveryReason = `${auth.state}: ${auth.blockers.join("; ") || auth.reasons.join("; ") || auth.reasonCode}`;
+        if (auth.state === "BEARISH_BLOCK") {
+          base.outcome = "REJECT";
+          base.finalDeliveryOutcome = "REJECTED";
+          base.deliveryFailureCategory = "bearish_authority";
+        }
+        decisions.push(base);
+        continue;
+      }
+    } else if (x.s.researchOnly) { base.reason = "research_only"; base.finalDeliveryReason = base.reason; decisions.push(base); continue; }
     if (x.quality < cfg.researchFloor) {
       base.outcome = "REJECT";
       base.reason = `below_research_floor (${x.quality} < ${cfg.researchFloor})`;

@@ -136,6 +136,11 @@ function AlertsPageInner() {
     openLiveChart(symbol);
   }, []);
 
+  const openAlertDetail = useCallback((alertId: number | string | null | undefined) => {
+    const id = Number(alertId);
+    if (Number.isFinite(id) && id > 0) router.push(`/alerts/${id}`);
+  }, [router]);
+
   const query = useMemo(() => {
     const q = new URLSearchParams();
     if (ticker.trim()) q.set("ticker", ticker.trim().toUpperCase());
@@ -413,7 +418,7 @@ function AlertsPageInner() {
 
       {tab === "history" ? (
         <>
-        <OptiscanAlertsDashboard accuracy={accuracy} onOnTrackClick={toggleOnTrackFilter} />
+        <OptiscanAlertsDashboard accuracy={accuracy} onOnTrackClick={toggleOnTrackFilter} onOpenAlertDetail={openAlertDetail} />
 
         <DailyPostPack alerts={alerts} tradingDay={today} />
 
@@ -432,9 +437,9 @@ function AlertsPageInner() {
                 className="on-track-row"
                 role="button"
                 tabIndex={0}
-                onClick={() => openChart(r.ticker)}
-                onKeyDown={(e) => e.key === "Enter" && openChart(r.ticker)}
-                title={`Open ${r.ticker} chart`}
+                onClick={() => openAlertDetail(r.id)}
+                onKeyDown={(e) => e.key === "Enter" && openAlertDetail(r.id)}
+                title="View Alert Details"
               >
                 <span className={`ttag ${String(r.option_side ?? "").toLowerCase().startsWith("p") ? "bear" : "bull"}`}>
                   {formatCalloutHeadline(r)}
@@ -519,8 +524,10 @@ function AlertsPageInner() {
                         <tr
                           key={a.id}
                           className="clickable"
-                          onClick={() => openChart(a.ticker)}
-                          title="Click row to open chart"
+                          onClick={() => openAlertDetail(a.id)}
+                          onKeyDown={(e) => e.key === "Enter" && openAlertDetail(a.id)}
+                          tabIndex={0}
+                          title="View Alert Details"
                         >
                           <td className="num muted">{a.trading_day}<br />{fmtTime(a.alert_time)}</td>
                           <td>
@@ -565,7 +572,15 @@ function AlertsPageInner() {
                               : a.status === "complete" ? <GradeChip grade="GOOD" />
                               : <span className="tag t-vol">TRACKING</span>}
                           </td>
-                          <td onClick={(e) => e.stopPropagation()}>
+                      <td onClick={(e) => e.stopPropagation()}>
+                            <button
+                              className="pill btn"
+                              style={{ fontSize: 11, padding: "4px 8px", marginRight: 4 }}
+                              onClick={() => openAlertDetail(a.id)}
+                              title="View Alert Details"
+                            >
+                              Details
+                            </button>
                             <button
                               className="pill btn btn-primary"
                               style={{ fontSize: 11, padding: "4px 10px", marginRight: 4 }}
@@ -653,7 +668,14 @@ function AlertsPageInner() {
                 </thead>
                 <tbody>
                   {journal.map((j) => (
-                    <tr key={j.id}>
+                    <tr
+                      key={j.id}
+                      className={j.alert_id ? "clickable" : undefined}
+                      onClick={() => j.alert_id && openAlertDetail(j.alert_id)}
+                      onKeyDown={(e) => e.key === "Enter" && j.alert_id && openAlertDetail(j.alert_id)}
+                      tabIndex={j.alert_id ? 0 : undefined}
+                      title={j.alert_id ? "View Alert Details" : undefined}
+                    >
                       <td><div className="tkr"><TickerIcon symbol={j.ticker} /><div><div className="tname">{j.ticker}</div><div className="tsub">{fmtTime(j.created_at)}</div></div></div></td>
                       <td>{j.side ? <span className={`badge ${j.side === "put" ? "t-put" : "t-call"}`}>{String(j.side).toUpperCase()}</span> : "—"}</td>
                       <td className="num muted text-xs">{j.contract ?? "—"}</td>
@@ -670,7 +692,14 @@ function AlertsPageInner() {
                           value={edits[j.id]?.notes ?? ""}
                           onChange={(ev) => setEdits((p) => ({ ...p, [j.id]: { ...p[j.id], notes: ev.target.value } }))} />
                       </td>
-                      <td><button className="pill btn" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => saveJournal(j)}>Save</button></td>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        {j.alert_id ? (
+                          <button className="pill btn" style={{ fontSize: 11, padding: "4px 8px", marginRight: 4 }} onClick={() => openAlertDetail(j.alert_id)}>
+                            Details
+                          </button>
+                        ) : null}
+                        <button className="pill btn" style={{ fontSize: 11, padding: "4px 8px" }} onClick={() => saveJournal(j)}>Save</button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>

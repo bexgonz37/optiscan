@@ -11,9 +11,11 @@ import { useLanguageMode } from "@/hooks/useLanguageMode";
 export function OptiscanAlertsDashboard({
   accuracy,
   onOnTrackClick,
+  onOpenAlertDetail,
 }: {
   accuracy: any;
   onOnTrackClick?: () => void;
+  onOpenAlertDetail?: (alertId: number | string | null | undefined) => void;
 }) {
   const isPublic = useLanguageMode() === "public";
   if (!accuracy) return <div className="empty">Loading accuracy…</div>;
@@ -102,7 +104,15 @@ export function OptiscanAlertsDashboard({
         </Panel>
         <Panel title="Recent">
           {recent.slice(0, 4).map((r: any) => (
-            <div key={r.id} className="acc-breakdown-row">
+            <div
+              key={r.id}
+              className="acc-breakdown-row clickable"
+              role="button"
+              tabIndex={0}
+              title="View Alert Details"
+              onClick={() => onOpenAlertDetail?.(r.id)}
+              onKeyDown={(e) => e.key === "Enter" && onOpenAlertDetail?.(r.id)}
+            >
               <span>{r.ticker}</span>
               <span className="muted">{r.option_side ?? "—"}</span>
               <span className={`num ${(r.option_return_pct ?? 0) >= 0 ? "pos" : "neg"}`}>{fmtPct(r.option_return_pct)}</span>
@@ -111,13 +121,21 @@ export function OptiscanAlertsDashboard({
         </Panel>
       </div>
 
-      <Panel title="Every call this week" meta={`Wins = contract gained ${EARLY_MOVE_WIN_PCT}%+ from called price`}>
+      <Panel title="Every verified callout this week" meta={`Wins = contract gained ${EARLY_MOVE_WIN_PCT}%+ from called price`}>
         <ul className="axiom-ledger">
           {recent.slice(0, 10).map((r: any) => (
-            <li key={r.id}>
+            <li
+              key={r.id}
+              className="clickable"
+              role="button"
+              tabIndex={0}
+              title="View Alert Details"
+              onClick={() => onOpenAlertDetail?.(r.id)}
+              onKeyDown={(e) => e.key === "Enter" && onOpenAlertDetail?.(r.id)}
+            >
               <span className="t num">{r.trading_day?.slice(5) ?? "—"}</span>
               <span className="what">
-                {r.ticker} ${r.strike}{String(r.option_side ?? "c")[0].toUpperCase()}
+                {r.ticker} ${r.strike}{String(r.option_side ?? "c")[0].toUpperCase()}{" "}
                 <small>called · graded on order mid</small>
               </span>
               <span className={`res num ${(r.option_return_pct ?? 0) >= 0 ? "pos" : "neg"}`}>

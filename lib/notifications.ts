@@ -272,6 +272,40 @@ export async function postScoreboardEmbed(
 function legacyOptionsDiscordBlocked(): boolean {
   return legacyOptionsSuppressed() || legacyOptionsSubscriberDiscordBlocked();
 }
+
+async function recordLegacyBearishEscalation(alertId: number, alertLike: any, suppressionReason: string): Promise<void> {
+  try {
+    const side = String(alertLike?.optionSide ?? alertLike?.option_side ?? "").toLowerCase();
+    if (side !== "put") return;
+    const [{ getDb }, { recordBearishLegacyEscalationOnDb }] = await Promise.all([
+      import("@/lib/db"),
+      import("@/lib/research/options/bearish-authority"),
+    ]);
+    const toNum = (v: unknown): number | null => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    recordBearishLegacyEscalationOnDb(getDb() as any, {
+      legacyAlertId: alertId,
+      symbol: String(alertLike?.ticker ?? "").toUpperCase(),
+      occ: alertLike?.optionSymbol ?? alertLike?.option_symbol ?? null,
+      side,
+      strategyFamily: alertLike?.tradeBias ?? alertLike?.trade_bias ?? null,
+      signalScore: toNum(alertLike?.setupScore ?? alertLike?.signalScore ?? alertLike?.signal_score),
+      liquidityScore: toNum(alertLike?.liquidityScore ?? alertLike?.optionsLiquidityScore ?? alertLike?.options_liquidity_score),
+      bid: toNum(alertLike?.bid),
+      ask: toNum(alertLike?.ask),
+      mid: toNum(alertLike?.optionMid ?? alertLike?.mid),
+      spreadPct: toNum(alertLike?.spreadPct ?? alertLike?.spread_pct),
+      volume: toNum(alertLike?.optionVolume ?? alertLike?.volume),
+      openInterest: toNum(alertLike?.openInterest ?? alertLike?.open_interest),
+      delta: toNum(alertLike?.delta),
+      timestamp: String(alertLike?.alertTime ?? alertLike?.alert_time ?? new Date().toISOString()),
+      suppressionReason,
+    });
+  } catch { /* escalation audit must never break notification bookkeeping */ }
+}
+
 export async function notifyWatchAlert(alertId: number, alertLike: any): Promise<void> {
   try {
     if (legacyOptionsDiscordBlocked()) {
@@ -332,11 +366,13 @@ export async function notifyNewAlert(alertId: number, alertLike: any): Promise<v
     // sent twice. Stock alerts always use the legacy stock path (the supervisor
     // does not own them), and paper/alert capture is unaffected.
     if (!isStock && legacyOptionsDiscordBlocked()) {
+      const suppressionReason = legacyOptionsSubscriberDiscordBlocked()
+        ? "superseded by independent options subscriber path (SUBSCRIBER_OPTIONS_DISCORD_OWNER=independent)"
+        : "superseded by supervisor canonical callout path (CALLOUT_CANONICAL_PATH=supervisor)";
+      await recordLegacyBearishEscalation(alertId, alertLike, suppressionReason);
       insertNotificationEvent({
         alertId, channel: "discord_webhook", status: "skipped",
-        error: legacyOptionsSubscriberDiscordBlocked()
-          ? "superseded by independent options subscriber path (SUBSCRIBER_OPTIONS_DISCORD_OWNER=independent)"
-          : "superseded by supervisor canonical callout path (CALLOUT_CANONICAL_PATH=supervisor)",
+        error: suppressionReason,
       });
       return;
     }
