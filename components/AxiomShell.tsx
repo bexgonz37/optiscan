@@ -12,37 +12,38 @@ import { getUiReviewSession, isUiReviewMode } from "@/lib/dashboard/ui-review";
 
 // Primary product navigation — decision-first.
 const PRODUCT_NAV: NavItem[] = [
-  { href: "/", label: "NOW" },
-  { href: "/alerts", label: "ALERTS" },
-  { href: "/paper", label: "PAPER" },
+  { href: "/", label: "NOW", icon: "now" },
+  { href: "/callouts", label: "AI OPTIONS", icon: "scanner" },
+  { href: "/quant", label: "QUANT", icon: "performance" },
+  { href: "/watchlist", label: "WATCHLIST", icon: "watchlist" },
+  { href: "/discord", label: "DISCORD", icon: "discord" },
+  { href: "/paper", label: "PAPER", icon: "paper" },
+  { href: "/settings", label: "SETTINGS", icon: "settings" },
 ];
 
 // Owner tools remain reachable but not in primary nav.
 const ADVANCED_NAV: NavItem[] = [
-  { href: "/research", label: "Research Hub" },
-  { href: "/callouts", label: "Live Options" },
-  { href: "/quant", label: "Quant Lab" },
-  { href: "/scanner", label: "Scanner" },
-  { href: "/intelligence", label: "Strategy Lab" },
-  { href: "/ai", label: "AI Advisory" },
-  { href: "/paper/0dte", label: "0DTE Research" },
-  { href: "/content-drafts", label: "Content Drafts" },
-  { href: "/pipeline-health", label: "Pipeline Diagnostics" },
-  { href: "/pipeline-health/research-platform", label: "Research Platform Ops" },
-  { href: "/shadow-soak", label: "Shadow Soak" },
-  { href: "/data", label: "System Health" },
-  { href: "/paper-lifecycle", label: "Paper Lifecycle" },
-  { href: "/performance", label: "Performance" },
-  { href: "/research-learning", label: "Research & Learning" },
-  { href: "/subscriptions", label: "Subscriptions" },
-  { href: "/social-drafts", label: "Social Drafts" },
-  { href: "/watchlist", label: "Watchlist" },
-  { href: "/brokerage-parity", label: "Brokerage Parity" },
-  { href: "/brokerage-v2", label: "Brokerage V2" },
-  { href: "/brokerage-readiness", label: "Brokerage Readiness" },
-  { href: "/improvement", label: "Improvement Agent" },
-  { href: "/guide", label: "Guide" },
-  { href: "/settings", label: "Settings" },
+  { href: "/alerts", label: "Alerts History", icon: "alerts" },
+  { href: "/research", label: "Research Hub", icon: "research" },
+  { href: "/scanner", label: "Scanner", icon: "scanner" },
+  { href: "/intelligence", label: "Strategy Lab", icon: "research" },
+  { href: "/ai", label: "AI Advisory", icon: "research" },
+  { href: "/paper/0dte", label: "0DTE Research", icon: "paper" },
+  { href: "/content-drafts", label: "Content Drafts", icon: "guide" },
+  { href: "/pipeline-health", label: "Pipeline Diagnostics", icon: "health" },
+  { href: "/pipeline-health/research-platform", label: "Research Platform Ops", icon: "health" },
+  { href: "/shadow-soak", label: "Shadow Soak", icon: "health" },
+  { href: "/data", label: "System Health", icon: "health" },
+  { href: "/paper-lifecycle", label: "Paper Lifecycle", icon: "paper" },
+  { href: "/performance", label: "Performance", icon: "performance" },
+  { href: "/research-learning", label: "Research & Learning", icon: "research" },
+  { href: "/subscriptions", label: "Subscriptions", icon: "settings" },
+  { href: "/social-drafts", label: "Social Drafts", icon: "guide" },
+  { href: "/brokerage-parity", label: "Brokerage Parity", icon: "health" },
+  { href: "/brokerage-v2", label: "Brokerage V2", icon: "health" },
+  { href: "/brokerage-readiness", label: "Brokerage Readiness", icon: "health" },
+  { href: "/improvement", label: "Improvement Agent", icon: "settings" },
+  { href: "/guide", label: "Guide", icon: "guide" },
 ];
 
 const PAGE_META: Record<string, { title: string; sub: string }> = {
@@ -54,6 +55,7 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
   "/content-drafts": { title: "Content Drafts", sub: "Owner-only drafts — never auto-posted" },
   "/copilot": { title: "Explain Signals", sub: "Coming soon" },
   "/callouts": { title: "Live Options", sub: "Active alerts, contracts, and open risk" },
+  "/discord": { title: "Discord", sub: "Subscriber delivery, retries, and webhook readiness" },
   "/alerts": { title: "ALERTS", sub: "Discord SENT history and track record" },
   "/watchlist": { title: "Watchlist", sub: "Symbols the scanner is monitoring" },
   "/paper": { title: "Paper Trading", sub: "Delivered mirrors first — $ P&L proof" },
@@ -184,7 +186,7 @@ export function AxiomShell({ children }: { children: ReactNode }) {
 
   const productWithMore: NavItem[] = [
     ...PRODUCT_NAV,
-    { href: "#more", label: "MORE" },
+    { href: "#more", label: "MORE", icon: "more" },
   ];
 
   return (

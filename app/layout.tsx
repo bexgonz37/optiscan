@@ -1,8 +1,9 @@
 import type { Metadata, Viewport } from "next";
-import { Chakra_Petch, JetBrains_Mono } from "next/font/google";
+import { Space_Grotesk, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import "./axiom-theme.css";
 import "./shared-ui.css";
+import "./terminal-theme.css";
 import { ToastProvider } from "@/components/Toasts";
 import { GlobalAlerts } from "@/components/GlobalAlerts";
 import { MobileBottomNav } from "@/components/MobileBottomNav";
@@ -11,7 +12,7 @@ import { AxiomShell } from "@/components/AxiomShell";
 import { UnlockGate } from "@/components/UnlockGate";
 import { UiReviewBanner } from "@/components/UiReviewBanner";
 
-const chakra = Chakra_Petch({
+const display = Space_Grotesk({
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
   variable: "--font-display",
@@ -29,7 +30,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#05080f",
+  themeColor: "#02050a",
   width: "device-width",
   initialScale: 1,
 };
@@ -38,7 +39,7 @@ const THEME_INIT = `(function(){try{var p=JSON.parse(localStorage.getItem('optis
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`axiom-terminal ${chakra.variable} ${jetbrains.variable}`}>
+    <html lang="en" className={`axiom-terminal ${display.variable} ${jetbrains.variable}`}>
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT }} />
       </head>

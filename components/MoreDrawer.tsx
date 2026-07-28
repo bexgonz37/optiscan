@@ -4,22 +4,25 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 
 const PRIMARY = [
-  { href: "/research", title: "Research Hub", sub: "Quant · Scanner · Strategy · AI" },
-  { href: "/content-drafts", title: "Content Drafts", sub: "Owner drafts — never auto-posted" },
-  { href: "/pipeline-health#readiness", title: "Paid Beta Readiness", sub: "Launch gate status" },
-  { href: "/pipeline-health", title: "Pipeline Health", sub: "Diagnostics and funnel" },
+  { href: "/callouts", title: "AI Options", sub: "Ranked live options decisions" },
+  { href: "/quant", title: "Quant", sub: "Delivered, shadow, and paper analytics" },
+  { href: "/watchlist", title: "Watchlist", sub: "Live monitored symbols" },
+  { href: "/discord", title: "Discord", sub: "Delivery health, retries, readiness" },
+  { href: "/research", title: "Research Hub", sub: "Scanner, strategy, and AI research" },
+  { href: "/content-drafts", title: "Content Drafts", sub: "Owner drafts, never auto-posted" },
   { href: "/settings", title: "Settings", sub: "Token, lock dashboard, preferences" },
 ];
 
 const ADVANCED = [
-  { href: "/callouts", title: "Live Options" },
+  { href: "/alerts", title: "Alerts History" },
+  { href: "/pipeline-health#readiness", title: "Paid Beta Readiness" },
+  { href: "/pipeline-health", title: "Pipeline Health" },
   { href: "/data", title: "System Health" },
   { href: "/shadow-soak", title: "Shadow Soak" },
   { href: "/performance", title: "Performance" },
   { href: "/research-learning", title: "Research & Learning" },
   { href: "/pipeline-health/research-platform", title: "Research Platform Ops" },
   { href: "/guide", title: "Guide" },
-  { href: "/watchlist", title: "Watchlist" },
   { href: "/improvement", title: "Improvement Agent" },
 ];
 

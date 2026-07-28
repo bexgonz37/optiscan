@@ -511,15 +511,23 @@ test("OWNER_RESEARCH_DISCORD_ENABLED defaults off in example env", () => {
 
 
 
-test("primary nav is NOW ALERTS PAPER MORE", () => {
+test("primary nav exposes redesigned desktop decision surfaces", () => {
 
   const shell = read("components/AxiomShell.tsx");
 
   assert.match(shell, /label: "NOW"/);
 
-  assert.match(shell, /label: "ALERTS"/);
+  assert.match(shell, /label: "AI OPTIONS"/);
+
+  assert.match(shell, /label: "QUANT"/);
+
+  assert.match(shell, /label: "WATCHLIST"/);
+
+  assert.match(shell, /label: "DISCORD"/);
 
   assert.match(shell, /label: "PAPER"/);
+
+  assert.match(shell, /label: "SETTINGS"/);
 
   assert.match(shell, /label: "MORE"/);
 

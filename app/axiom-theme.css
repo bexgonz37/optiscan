@@ -2,14 +2,14 @@
 @import "./axiom-deck.css";
 
 .axiom-terminal {
-  --green: #20e39a;
-  --red: #ff5162;
-  --bull: #2ff0a6;
-  --bear: #ff5162;
-  --accent: #46b4e8;
-  --cyan: #46b4e8;
-  --display-grad: linear-gradient(180deg, #eaf5fd 0%, #2ff0a6 100%);
-  --green-shine-grad: linear-gradient(180deg, #8fffd0 0%, #20e39a 40%, #0a8f5c 100%);
+  --green: #22e39a;
+  --red: #ff5f6d;
+  --bull: #22e39a;
+  --bear: #ff5f6d;
+  --accent: #22e39a;
+  --cyan: #4cc9f0;
+  --display-grad: linear-gradient(180deg, #ecf7fd 0%, #22e39a 100%);
+  --green-shine-grad: linear-gradient(180deg, #8fffd0 0%, #22e39a 40%, #0b6f58 100%);
 }
 
 .axiom-viewport {

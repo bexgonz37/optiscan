@@ -24,14 +24,15 @@ const nextConfig = {
     "/api/paper/lifecycle": ["./lib/paper-lifecycle.ts", "./lib/broker/**/*.ts"],
     "/api/research/discord-quality": ["./lib/research/options/delivery-quality-report.ts"],
   },
+  // Only retired routes belong here. A redirect declared for a route that still
+  // has a page.tsx shadows that page and makes its nav entry a dead end, so keep
+  // this list in sync with app/ (tests/nav-wiring.test.mjs enforces it).
   async redirects() {
     return [
-      { source: "/scanner", destination: "/?tab=research", permanent: true },
-      { source: "/guide", destination: "/settings#help", permanent: true },
-      { source: "/review", destination: "/alerts?tab=history#how-it-works", permanent: true },
-      { source: "/stocks", destination: "/", permanent: true },
+      { source: "/stocks", destination: "/watchlist", permanent: true },
       { source: "/now", destination: "/", permanent: true },
       { source: "/alert-lab", destination: "/alerts", permanent: true },
+      { source: "/review", destination: "/alerts?tab=history#how-it-works", permanent: true },
     ];
   },
 };

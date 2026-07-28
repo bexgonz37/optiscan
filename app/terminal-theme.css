@@ -1,0 +1,1107 @@
+/* ════════════════════════════════════════════════════════════════════════
+   OPTISCAN — DECISION-FIRST TERMINAL SKIN
+   Final override layer. Loaded after globals / axiom-theme / shared-ui.
+
+   Visual language:
+     · near-black canvas, thin blue-gray dividers
+     · neon green for active + positive
+     · purple for next-session research and intelligence
+     · amber for waiting / almost ready
+     · red for avoid / stop / risk
+     · large numbers, compact uppercase labels
+     · flat rounded cards instead of HUD brackets and glow
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* ── 1. Calm the canvas ─────────────────────────────────────────────────── */
+
+body {
+  background: var(--bg);
+  color: var(--txt);
+  letter-spacing: 0;
+}
+
+/* The HUD grid overlay and inset frame fight the flat mockup. */
+body::before,
+body::after {
+  display: none !important;
+  content: none !important;
+}
+
+.axiom-terminal .deck,
+.axiom-terminal .deck.axiom-deck {
+  background: var(--bg);
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+}
+
+/* Kill the scanline sweep + grid pseudo-elements on the deck. */
+.axiom-terminal .deck::before,
+.axiom-terminal .deck::after,
+.axiom-terminal .deck.axiom-deck::before,
+.axiom-terminal .deck.axiom-deck::after {
+  display: none !important;
+  content: none !important;
+  animation: none !important;
+}
+
+.axiom-viewport {
+  height: calc(100vh - 42px);
+  padding: 14px 16px 10px;
+}
+
+.axiom-terminal .appshell {
+  grid-template-columns: 208px 1fr;
+  gap: 16px;
+}
+
+/* ── 2. Navigation rail ─────────────────────────────────────────────────── */
+
+.rail {
+  padding: 18px 10px 14px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: none;
+  gap: 0;
+}
+
+.rail::before,
+.rail::after {
+  display: none !important;
+  content: none !important;
+}
+
+/* Brand: green diamond mark + wordmark. */
+.raillogo {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 2px 10px 6px;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--txt-bright);
+}
+
+.raillogo::before {
+  content: "";
+  width: 17px;
+  height: 17px;
+  flex: none;
+  border-radius: 5px;
+  background: linear-gradient(140deg, var(--green), var(--green-deep));
+  box-shadow: 0 0 14px rgba(34, 227, 154, 0.45);
+}
+
+.raillogo span {
+  color: var(--txt-bright);
+}
+
+.railtag {
+  font-family: var(--mono);
+  font-size: 8px;
+  letter-spacing: 0.24em;
+  color: var(--faint);
+  padding: 0 10px 16px;
+}
+
+.railnav {
+  gap: 2px;
+}
+
+.railsec {
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  color: var(--faint);
+  padding: 14px 10px 6px;
+  text-transform: uppercase;
+}
+
+.railsec-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.railsec-toggle:hover {
+  color: var(--dim);
+}
+
+.navitem {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.navitem:hover {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--txt);
+}
+
+/* Icon slot: outlined square fallback, real glyph when the item names one. */
+.navitem .ni {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  border: 1.5px solid currentColor;
+  border-radius: 4px;
+  opacity: 0.5;
+  transition: opacity 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+}
+
+.navitem .ni-icon {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 0;
+  background: none;
+  opacity: 0.72;
+}
+
+.navitem .ni-icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.navitem:hover .ni-icon {
+  opacity: 1;
+}
+
+.navitem.on {
+  background: var(--green-dim);
+  color: var(--green);
+  box-shadow: inset 2px 0 0 var(--green);
+}
+
+.navitem.on .navitem-label {
+  color: var(--green);
+}
+
+.navitem.on .ni {
+  opacity: 1;
+  background: rgba(34, 227, 154, 0.24);
+  border-color: var(--green);
+}
+
+.navitem.on .ni-icon {
+  background: none;
+  color: var(--green);
+}
+
+.navitem.dis {
+  opacity: 0.36;
+  cursor: default;
+}
+
+.navitem-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.navitem-note {
+  font-family: var(--mono);
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--amber);
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: var(--amber-dim);
+  flex: none;
+}
+
+/* Owner tools sit visually quieter than the product destinations. */
+.railnav > div + div .navitem {
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 7px 11px;
+}
+
+.railnav > div + div .navitem .ni {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+
+.railfoot {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  margin-top: 8px;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.railfoot .scanpill {
+  margin-left: 0;
+  justify-content: flex-start;
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  padding: 6px 10px;
+  border-radius: 20px;
+  border: 1px solid rgba(34, 227, 154, 0.28);
+  background: var(--green-dim);
+  color: var(--green);
+}
+
+.railfoot .scanpill .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 8px var(--green);
+  flex: none;
+}
+
+.railu {
+  font-size: 9.5px;
+  color: var(--faint);
+  letter-spacing: 0.06em;
+}
+
+/* ── 3. Page header ─────────────────────────────────────────────────────── */
+
+.maincol {
+  grid-template-rows: auto 1fr;
+  gap: 14px;
+}
+
+.pgtop {
+  align-items: baseline;
+  gap: 14px;
+  padding: 2px 2px 0;
+  flex-wrap: wrap;
+}
+
+.pgtitle {
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--txt-bright);
+}
+
+.pgsub {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--dim);
+}
+
+.pgtop-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.pgtop-actions .clk {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.header-unlock-btn {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 6px 11px;
+  border-radius: 20px;
+  border: 1px solid var(--line2);
+  background: transparent;
+  cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease;
+}
+
+.header-unlock-btn:hover {
+  border-color: rgba(34, 227, 154, 0.45);
+  color: var(--green);
+}
+
+/* ── 4. Cards and panels ────────────────────────────────────────────────── */
+
+.panel,
+.axiom-panel,
+.ui-card,
+.cc-term-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: none;
+  overflow: hidden;
+}
+
+/* HUD corner brackets do not belong in the flat card language. */
+.panel::before,
+.panel::after,
+.axiom-panel::before,
+.axiom-panel::after {
+  display: none !important;
+  content: none !important;
+}
+
+.ph,
+.ui-card-head,
+.cc-term-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+}
+
+.pht {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--txt-bright);
+  gap: 8px;
+}
+
+/* The blinking status dot in panel headers reads as noise at this density. */
+.pht i {
+  animation: none !important;
+  width: 5px;
+  height: 5px;
+  background: var(--green);
+  box-shadow: 0 0 8px var(--green);
+}
+
+.phc {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  color: var(--dim);
+  text-transform: uppercase;
+}
+
+.phc.rec {
+  color: var(--green);
+}
+
+.pb,
+.ui-card-body {
+  padding: 12px 14px;
+}
+
+/* Semantic card edges — one accent per card, top border only. */
+.ui-card-bull,
+.card-accent-green {
+  border-top: 2px solid var(--green);
+}
+
+.ui-card-bear,
+.card-accent-red {
+  border-top: 2px solid var(--red);
+}
+
+.ui-card-warn,
+.card-accent-amber {
+  border-top: 2px solid var(--amber);
+}
+
+.card-accent-violet {
+  border-top: 2px solid var(--violet);
+}
+
+/* ── 5. Numbers, labels, KPI tiles ──────────────────────────────────────── */
+
+.num,
+td.num,
+.kpi .val,
+.tname,
+.axiom-stat-v,
+.cc-term-kpi-v,
+.acc-hero-ratio-val {
+  font-family: var(--sans);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  letter-spacing: -0.01em;
+}
+
+.pos,
+.up,
+.cell-bull {
+  color: var(--green);
+}
+
+.neg,
+.dn,
+.cell-bear {
+  color: var(--red);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.dim {
+  color: var(--dim);
+}
+
+.kpis,
+.stat-strip,
+.axiom-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.kpi,
+.stat-item,
+.axiom-stat {
+  flex: 1 1 130px;
+  min-width: 0;
+  padding: 12px 16px;
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+}
+
+.kpi:first-child,
+.stat-item:first-child,
+.axiom-stat:first-child {
+  border-left: none;
+}
+
+.kpi .k,
+.kpi .label,
+.stat-label,
+.axiom-stat-k,
+.cc-term-kpi-k {
+  display: block;
+  font-family: var(--mono);
+  font-size: 8.5px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin-bottom: 5px;
+}
+
+.kpi .val,
+.kpi .v,
+.stat-val,
+.axiom-stat-v,
+.cc-term-kpi-v {
+  display: block;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.12;
+  color: var(--txt-bright);
+}
+
+.stat-hint,
+.axiom-stat-h {
+  display: block;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+  margin-top: 3px;
+}
+
+/* ── 6. Tables ──────────────────────────────────────────────────────────── */
+
+.tablewrap,
+.ui-table-scroll,
+.ui-table-wrap {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  overflow: auto;
+}
+
+table,
+.ui-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+thead th,
+.ui-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  font-family: var(--mono);
+  font-size: 8.5px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--faint);
+  text-align: left;
+  padding: 10px 12px;
+  background: var(--panel2);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+tbody td,
+.ui-table tbody td {
+  padding: 0 12px;
+  height: var(--row-h);
+  color: var(--txt);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+tbody tr:last-child td {
+  border-bottom: none;
+}
+
+tbody tr:hover td {
+  background: rgba(255, 255, 255, 0.022);
+}
+
+/* ── 7. Pills, tabs, chips, buttons ─────────────────────────────────────── */
+
+.pill,
+.chip,
+.symchip,
+.cc-term-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 6px 11px;
+  border-radius: 20px;
+  border: 1px solid var(--line2);
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+
+.pill:hover,
+.chip:hover,
+.symchip:hover {
+  border-color: var(--line-strong);
+  color: var(--txt);
+}
+
+.pill.on,
+.pill.active,
+.chip.on,
+.chip.active,
+.symchip.on,
+.cc-term-pill.on {
+  color: var(--green);
+  border-color: rgba(34, 227, 154, 0.42);
+  background: var(--green-dim);
+}
+
+.btn,
+.ui-btn {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--txt);
+  padding: 9px 15px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line2);
+  background: var(--panel2);
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+
+.btn:hover,
+.ui-btn:hover {
+  border-color: var(--line-strong);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.btn-primary,
+.ui-btn-primary {
+  color: #02140d;
+  border-color: transparent;
+  background: linear-gradient(140deg, var(--green), #17c98a);
+  font-weight: 700;
+}
+
+.btn-primary:hover,
+.ui-btn-primary:hover {
+  filter: brightness(1.08);
+  background: linear-gradient(140deg, var(--green), var(--green-deep));
+}
+
+/* Status badges keep one meaning per colour. */
+.ui-badge,
+.badge,
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 3px 7px;
+  border-radius: 4px;
+  border: 1px solid currentColor;
+  background: transparent;
+  white-space: nowrap;
+}
+
+.ui-badge-bull,
+.ui-badge-live,
+.t-call {
+  color: var(--green);
+  background: var(--green-dim);
+}
+
+.ui-badge-bear,
+.ui-badge-bad,
+.t-put {
+  color: var(--red);
+  background: var(--red-dim);
+}
+
+.ui-badge-warn {
+  color: var(--amber);
+  background: var(--amber-dim);
+}
+
+.ui-badge-info {
+  color: var(--violet);
+  background: var(--violet-dim);
+}
+
+.ui-badge-muted {
+  color: var(--dim);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* ── 7b. Decision-state semantics ───────────────────────────────────────────
+   One colour per meaning, used identically on every surface:
+   green = actionable now, amber = waiting, purple = next session, red = avoid.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.cc-term-pill {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid currentColor;
+  color: var(--dim);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.cc-term-pill.ok {
+  color: var(--green);
+  border-color: rgba(34, 227, 154, 0.42);
+  background: var(--green-dim);
+  box-shadow: none;
+}
+
+.cc-term-pill.warn {
+  color: var(--amber);
+  border-color: rgba(255, 180, 84, 0.42);
+  background: var(--amber-dim);
+}
+
+.cc-term-pill.bad {
+  color: var(--red);
+  border-color: rgba(255, 95, 109, 0.45);
+  background: var(--red-dim);
+}
+
+.cc-term-pill.info {
+  color: var(--violet);
+  border-color: rgba(167, 128, 255, 0.42);
+  background: var(--violet-dim);
+}
+
+.cc-term-pill.muted {
+  color: var(--dim);
+  border-color: var(--line2);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.cc-term-link {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--green);
+  text-decoration: none;
+}
+
+.cc-term-link:hover {
+  text-decoration: underline;
+}
+
+.cc-term-empty,
+.cc-term-footnote {
+  color: var(--dim);
+  font-size: 12px;
+}
+
+/* ── 7c. NOW page — decision-first hierarchy ────────────────────────────── */
+
+.now-page {
+  max-width: 1180px;
+}
+
+.now-mode-banner {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 11px 14px;
+  font-size: 12.5px;
+  color: var(--txt);
+}
+
+.now-mode-banner.ok { border-color: rgba(34, 227, 154, 0.35); }
+.now-mode-banner.info { border-color: rgba(167, 128, 255, 0.35); }
+.now-mode-banner.bad { border-color: rgba(255, 95, 109, 0.45); color: var(--red); }
+
+.now-hero-label,
+.now-section-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--violet);
+  margin-bottom: 9px;
+}
+
+.now-why-first {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin: 9px 0 0;
+}
+
+.now-setup-card {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 13px 15px;
+  background: var(--panel);
+  margin-bottom: 10px;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.now-setup-card:hover {
+  border-color: var(--line-strong);
+  background: var(--panel2);
+}
+
+/* The hero setup is the one thing the page is for — give it the green edge. */
+.now-setup-card.featured {
+  border-color: rgba(34, 227, 154, 0.32);
+  border-top: 2px solid var(--green);
+  background: linear-gradient(180deg, rgba(34, 227, 154, 0.05), transparent 42%), var(--panel);
+  padding: 16px 18px;
+  box-shadow: none;
+}
+
+.now-setup-card.featured:hover {
+  border-color: rgba(34, 227, 154, 0.5);
+}
+
+.now-setup-card.featured .cc-term-opp-sym {
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--txt-bright);
+}
+
+.now-rank {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--faint);
+}
+
+.now-side {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+
+/* Confidence reads as the card's headline number. */
+.now-conf {
+  margin-left: auto;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--green);
+}
+
+.now-setup-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  font-size: 12.5px;
+  padding: 10px 0;
+  margin-bottom: 9px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.now-setup-grid .muted {
+  display: block;
+  font-family: var(--mono);
+  font-size: 8.5px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin-bottom: 4px;
+}
+
+.now-reason {
+  font-size: 12.5px;
+  color: var(--txt);
+  margin: 0 0 5px;
+}
+
+.now-confirm {
+  color: var(--amber);
+  font-size: 12px;
+  margin: 5px 0;
+}
+
+.now-verify {
+  display: inline-block;
+  margin: 7px 0;
+  padding: 4px 9px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 180, 84, 0.4);
+  background: var(--amber-dim);
+  color: var(--amber);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+}
+
+.now-setup-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+  margin-top: 8px;
+}
+
+.now-next-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 11px;
+}
+
+.now-group {
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.now-group-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 14px;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.now-group-head:hover {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.now-group-count {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--txt-bright);
+}
+
+.now-group-head .muted {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.now-group-list {
+  padding: 0 14px 12px;
+}
+
+.now-group-list .now-setup-card:last-child {
+  margin-bottom: 0;
+}
+
+@media (max-width: 900px) {
+  .now-next-grid { grid-template-columns: 1fr; }
+  .now-setup-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* ── 8. Empty / loading / error states ──────────────────────────────────── */
+
+.ui-empty,
+.ui-loading,
+.empty {
+  color: var(--dim);
+  font-size: 12.5px;
+  text-align: center;
+  padding: 26px 16px;
+}
+
+.ui-error {
+  color: var(--red);
+  font-size: 12.5px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 95, 109, 0.32);
+  border-radius: var(--radius-sm);
+  background: var(--red-dim);
+}
+
+.ui-skel {
+  background: linear-gradient(90deg, var(--panel2), rgba(255, 255, 255, 0.05), var(--panel2));
+  background-size: 200% 100%;
+  border-radius: 4px;
+  animation: term-shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes term-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── 9. Scroll surfaces ─────────────────────────────────────────────────── */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line2) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--line2);
+  border-radius: 20px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--dim);
+  background-clip: content-box;
+}
+
+/* ── 10. Mobile ─────────────────────────────────────────────────────────── */
+
+@media (max-width: 768px) {
+  .axiom-viewport {
+    height: auto;
+    padding: 10px 10px 84px;
+  }
+
+  .axiom-terminal .appshell {
+    grid-template-columns: 1fr;
+  }
+
+  .rail {
+    display: none;
+  }
+
+  .pgtitle {
+    font-size: 18px;
+  }
+
+  .kpi,
+  .stat-item,
+  .axiom-stat {
+    flex-basis: 45%;
+  }
+}
+
+.mobile-bottom-nav {
+  background: rgba(2, 5, 10, 0.94);
+  backdrop-filter: blur(12px);
+  border-top: 1px solid var(--line);
+}
+
+.mobile-bottom-link {
+  color: var(--dim);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.mobile-bottom-link.active {
+  color: var(--green);
+}

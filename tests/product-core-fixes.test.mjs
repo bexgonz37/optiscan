@@ -246,9 +246,10 @@ test("stale quote after refresh blocks deliverOptionsCallout before Discord", as
   assert.equal(out.reason, "QUOTE_STALE");
 });
 
-test("nav is NOW ALERTS PAPER with OWNER TOOLS", () => {
+test("nav exposes redesigned decision surfaces with OWNER TOOLS", () => {
   const shell = read("components/AxiomShell.tsx");
-  assert.match(shell, /label: "ALERTS"/);
+  assert.match(shell, /label: "AI OPTIONS"/);
+  assert.match(shell, /label: "DISCORD"/);
   assert.match(shell, /title: "OWNER TOOLS"/);
   assert.match(read("components/NowPage.tsx"), /Sent today/);
   assert.match(read("components/MobileBottomNav.tsx"), /"\/alerts"/);

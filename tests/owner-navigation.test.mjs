@@ -26,20 +26,20 @@ test("all routes still have a page (nothing removed)", () => {
 });
 
 // ── owner mode is the default: PRODUCT vs OWNER TOOLS ──────────────
-test("PRODUCT nav holds NOW ALERTS PAPER primary destinations", () => {
+test("PRODUCT nav holds redesigned primary destinations", () => {
   const product = shell.match(/const PRODUCT_NAV[\s\S]*?\];/)[0];
-  for (const href of ['"/"', '"/alerts"', '"/paper"']) {
+  for (const href of ['"/"', '"/callouts"', '"/quant"', '"/watchlist"', '"/discord"', '"/paper"', '"/settings"']) {
     assert.ok(product.includes(href), `PRODUCT missing ${href}`);
   }
-  for (const href of ['"/callouts"', '"/quant"', '"/watchlist"', '"/improvement"', '"/data"', '"/guide"', '"/settings"', '"/research"']) {
+  for (const href of ['"/alerts"', '"/improvement"', '"/data"', '"/guide"', '"/research"']) {
     assert.ok(!product.includes(href), `PRODUCT should not contain ${href}`);
   }
   assert.match(shell, /label: "MORE"/);
 });
 
-test("ADVANCED nav holds deep tools previously in PRODUCT", () => {
+test("ADVANCED nav holds history and deep owner tools", () => {
   const adv = shell.match(/const ADVANCED_NAV[\s\S]*?\];/)[0];
-  for (const href of ['"/watchlist"', '"/research-learning"', '"/improvement"', '"/data"', '"/guide"', '"/settings"', '"/quant"', '"/callouts"', '"/research"']) {
+  for (const href of ['"/alerts"', '"/research-learning"', '"/improvement"', '"/data"', '"/guide"', '"/research"']) {
     assert.ok(adv.includes(href), `ADVANCED missing ${href}`);
   }
   assert.ok(adv.includes('"/pipeline-health"'), "Pipeline diagnostics belong in ADVANCED");
@@ -74,10 +74,10 @@ test("mobile bottom nav points at NOW ALERTS PAPER MORE", () => {
 });
 
 // ── consolidation: /swing still works; /alerts is product track-record ───────
-test("legacy /swing maps to Live Options; /alerts is primary ALERTS nav", () => {
+test("legacy /swing maps to AI Options; /alerts remains history", () => {
   const activeCallouts = shell.match(/if \(href === "\/callouts"\)[\s\S]*?\}/)[0];
   assert.ok(activeCallouts.includes('"/swing"'), "callouts active-state must cover /swing");
-  assert.ok(!activeCallouts.includes('"/alerts"'), "/alerts is its own PRODUCT destination");
+  assert.ok(!activeCallouts.includes('"/alerts"'), "/alerts stays a separate history destination");
   const activeAlerts = shell.match(/if \(href === "\/alerts"\)[\s\S]*?\}/)[0];
   assert.ok(activeAlerts.includes('"/alerts"'));
   assert.match(read("app/swing/page.tsx"), /SwingResearchPanel/);

@@ -153,12 +153,15 @@ test("command-center route passes DB handle to buildWhyNoAlertsDiagnostic", () =
 test("PRODUCT nav matches decision-first destinations", () => {
   const shell = readFileSync(join(root, "components/AxiomShell.tsx"), "utf8");
   assert.ok(/label: "NOW"/.test(shell));
-  assert.ok(/label: "ALERTS"/.test(shell));
+  assert.ok(/label: "AI OPTIONS"/.test(shell));
+  assert.ok(/label: "QUANT"/.test(shell));
+  assert.ok(/label: "WATCHLIST"/.test(shell));
+  assert.ok(/label: "DISCORD"/.test(shell));
   assert.ok(/label: "PAPER"/.test(shell));
+  assert.ok(/label: "SETTINGS"/.test(shell));
   assert.ok(/label: "MORE"/.test(shell));
-  assert.ok(/Live Options/.test(shell));
+  assert.ok(/Alerts History/.test(shell));
   assert.ok(/0DTE Research/.test(shell));
-  assert.ok(/Quant Lab/.test(shell));
   assert.ok(/OWNER TOOLS/.test(shell));
 });
 

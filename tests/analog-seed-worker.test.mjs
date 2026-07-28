@@ -127,8 +127,14 @@ test("client disconnect (no poller) does not stop the worker", async () => {
   try {
     const { runId } = createSeedRun(db, { symbols: ["AAA", "BBB"], from: "2024-01-02", to: "2024-03-31", rateLimitMs: 0, universeSource: "x", survivorshipBias: true }, ENABLED);
     child = spawnWorker(dbFile);
-    await sleep(3000); // never poll — model a disconnected client
-    assert.equal(getSeedRunProgress(db, runId).status, "COMPLETED");
+    // Never poll from the API side; wait for terminal status so slower full-suite
+    // machines do not turn this into a timing assertion.
+    let status = getSeedRunProgress(db, runId).status;
+    for (let i = 0; i < 40 && !["COMPLETED", "FAILED", "CANCELED"].includes(status); i++) {
+      await sleep(250);
+      status = getSeedRunProgress(db, runId).status;
+    }
+    assert.equal(status, "COMPLETED");
   } finally { child?.kill("SIGTERM"); cleanup(); }
 });
 
