@@ -454,6 +454,24 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
     } else if (env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0" && lifecycleReady && !livingCaseId) {
       console.error(`[options-delivery] SENT without opportunity case for ${alertId} — grader/readiness will be incomplete`);
     }
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { mirrorOwnerIntradayOnSent } = require("@/lib/notifications/owner-intraday-mirror");
+      void mirrorOwnerIntradayOnSent({
+        db,
+        delivery: input,
+        alertId,
+        opportunityCaseId: livingCaseId,
+        opportunityFingerprint: livingFingerprint,
+        actionableReason: finalGate.actionableReason,
+        invalidation: finalGate.invalidation,
+        setupFamily: input.strategy,
+        nowMs: now(),
+        env,
+      }).catch((err: any) => {
+        console.warn(`[owner-intraday-mirror] ${String(err?.message ?? err).slice(0, 120)}`);
+      });
+    } catch { /* isolated — owner recap must never affect subscriber SENT */ }
     return base("SENT", true, "delivered", linked, { opportunityCaseId: livingCaseId });
   }
   const paperLinked = Boolean(input.paperOptionSymbol && input.paperOptionSymbol === input.contract.optionSymbol);

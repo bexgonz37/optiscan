@@ -27,6 +27,10 @@ function enabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.OWNER_RESEARCH_DISCORD_ENABLED === "1";
 }
 
+export function ownerResearchIntradayEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.OWNER_RESEARCH_DISCORD_ENABLED === "1" && env.OWNER_RESEARCH_INTRADAY_ENABLED === "1";
+}
+
 function formatRec(r: OvernightRecommendation): string {
   const bias = r.bias.toUpperCase();
   const trigger = r.triggerLevel != null ? String(r.triggerLevel) : "TBD at open";
@@ -85,20 +89,48 @@ export function formatMarketOpenConfirm(plan: OvernightPlan): string {
   ].join("\n");
 }
 
-export function formatIntradayActionable(input: {
+export function formatIntradayActionable(input: IntradayActionableInput): string {
+  const side = String(input.side).toUpperCase();
+  const labelPrefix = input.label === "TEST" ? "🧪 TEST · " : "⚡ LIVE · ";
+  const lines = [
+    `${labelPrefix}**TRADE NOW CANDIDATE** · ${input.symbol} ${side}`,
+    input.contract ? `Contract: \`${input.contract}\`` : "Contract: pending fresh selection",
+    input.expiration ? `Expiration: ${input.expiration} · Strike: ${input.strike}` : null,
+    input.entryZone ? `Entry zone: ${input.entryZone}` : null,
+    input.bid != null && input.ask != null ? `Bid/Ask: $${input.bid.toFixed(2)} / $${input.ask.toFixed(2)}` : null,
+    input.t1 != null ? `T1: $${input.t1.toFixed(2)}${input.t2 != null ? ` · T2: $${input.t2.toFixed(2)}` : ""}${input.stop != null ? ` · Stop: $${input.stop.toFixed(2)}` : ""}` : null,
+    input.setupFamily ? `Setup: ${input.setupFamily}` : null,
+    input.triggerConfirmed ? `Trigger confirmed: ${input.triggerConfirmed}` : null,
+    input.actionableReason ? `Why actionable now: ${input.actionableReason}` : null,
+    input.mainRisk ? `Main risk: ${input.mainRisk}` : null,
+    input.confidence != null ? `Confidence: ${input.confidence}` : null,
+    input.quoteFreshness ? `Quote: ${input.quoteFreshness}` : null,
+    input.detailUrl ? `Detail: ${input.detailUrl}` : null,
+    "_Owner research mirror — not guaranteed profit. Subscriber delivery uses the independent options path._",
+  ].filter(Boolean);
+  return lines.join("\n");
+}
+
+export interface IntradayActionableInput {
+  label?: "LIVE" | "TEST";
   symbol: string;
   side: string;
-  reason: string;
   contract?: string | null;
+  expiration?: string;
+  strike?: number;
+  entryZone?: string | null;
+  bid?: number | null;
+  ask?: number | null;
+  t1?: number | null;
+  t2?: number | null;
+  stop?: number | null;
   confidence?: number | null;
-}): string {
-  return [
-    `⚡ **TRADE NOW candidate** · ${input.symbol} ${String(input.side).toUpperCase()}`,
-    input.contract ? `Contract: ${input.contract}` : "Contract: pending fresh selection",
-    input.confidence != null ? `Confidence: ${input.confidence}` : null,
-    input.reason,
-    `_Owner research mirror — subscriber delivery uses the independent options path._`,
-  ].filter(Boolean).join("\n");
+  setupFamily?: string | null;
+  triggerConfirmed?: string | null;
+  actionableReason: string;
+  mainRisk?: string | null;
+  quoteFreshness?: string | null;
+  detailUrl?: string | null;
 }
 
 type NotifyDb = {
@@ -155,12 +187,17 @@ export async function sendOwnerResearchNotify(opts: {
   symbol?: string;
   env?: NodeJS.ProcessEnv;
   nowMs?: number;
+  /** Test hook — bypass default recap post. */
+  postOverride?: (content: string) => Promise<{ ok: boolean; reason?: string }>;
 }): Promise<OwnerNotifyResult> {
   const env = opts.env ?? process.env;
   const day = tradingDay(opts.nowMs ?? Date.now());
   const symbol = opts.symbol ?? "";
   if (!enabled(env)) {
     return { sent: false, skipped: true, reason: "OWNER_RESEARCH_DISCORD_ENABLED!=1", kind: opts.kind, content: opts.content };
+  }
+  if (opts.kind === "intraday_actionable" && !ownerResearchIntradayEnabled(env)) {
+    return { sent: false, skipped: true, reason: "OWNER_RESEARCH_INTRADAY_ENABLED!=1", kind: opts.kind };
   }
   if (alreadySent(opts.db, day, opts.kind, symbol)) {
     return { sent: false, skipped: true, reason: "already sent (idempotent)", kind: opts.kind };
@@ -169,7 +206,9 @@ export async function sendOwnerResearchNotify(opts: {
   if (/buy now/i.test(opts.content) && (opts.kind === "eod_watchlist" || opts.kind === "evening_delta" || opts.kind === "premarket_plan")) {
     return { sent: false, skipped: true, reason: "blocked buy-now language", kind: opts.kind };
   }
-  const res = await postOwner(opts.content, env);
+  const res = opts.postOverride
+    ? await opts.postOverride(opts.content).then((r) => ({ ok: r.ok, reason: r.reason ?? (r.ok ? "sent" : "post_failed") }))
+    : await postOwner(opts.content, env);
   if (!res.ok) return { sent: false, skipped: false, reason: res.reason, kind: opts.kind };
   markSent(opts.db, day, opts.kind, symbol);
   return { sent: true, skipped: false, reason: "ok", kind: opts.kind };
@@ -283,11 +322,25 @@ export function demoDiscordMessages(plan: OvernightPlan): Record<string, string>
     premarket_plan: formatPremarketPlan(plan),
     market_open_confirm: formatMarketOpenConfirm(plan),
     intraday_actionable: formatIntradayActionable({
+      label: "LIVE",
       symbol: "SPY",
       side: "call",
       contract: "O:SPY260727C00635000",
+      expiration: "2026-07-27",
+      strike: 635,
+      entryZone: "$1.20–$1.30",
+      bid: 1.2,
+      ask: 1.3,
+      t1: 1.66,
+      t2: 2.1,
+      stop: 0.89,
       confidence: 88,
-      reason: "Fresh bid/ask, READY contract, ORB breakout held.",
+      setupFamily: "opening_range_breakout",
+      triggerConfirmed: "Hold above ORB high with volume",
+      actionableReason: "Fresh bid/ask, READY contract, ORB breakout held.",
+      mainRisk: "Do not chase if mid exceeds planned entry without new high.",
+      quoteFreshness: "fresh · 8s",
+      detailUrl: "/intelligence/demo-case",
     }),
   };
 }

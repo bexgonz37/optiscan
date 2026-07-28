@@ -503,6 +503,7 @@ test("OWNER_RESEARCH_DISCORD_ENABLED defaults off in example env", () => {
   const env = read(".env.railway.example");
 
   assert.match(env, /OWNER_RESEARCH_DISCORD_ENABLED=0/);
+  assert.match(env, /OWNER_RESEARCH_INTRADAY_ENABLED=0/);
 
   assert.match(env, /PAPER_0DTE_RESEARCH_ENABLED=0/);
 
