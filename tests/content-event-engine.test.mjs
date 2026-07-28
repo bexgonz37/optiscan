@@ -105,7 +105,7 @@ test("notifications content webhook has no RECAP fallback in source", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const src = readFileSync(join(here, "../lib/notifications.ts"), "utf8");
   assert.doesNotMatch(src, /DISCORD_WEBHOOK_CONTENT\s*\?\?\s*process\.env\.DISCORD_WEBHOOK_RECAP/);
-  assert.match(src, /kind === "content"\) return process\.env\.DISCORD_WEBHOOK_CONTENT/);
+  assert.match(src, /kind === "content"\) return env\.DISCORD_WEBHOOK_CONTENT/);
 });
 
 test("no Twitter auto-post path exists in runtime exports", () => {

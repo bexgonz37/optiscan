@@ -37,6 +37,14 @@ function intradayMirrorEnabled(env: NodeJS.ProcessEnv): boolean {
   return env.OWNER_RESEARCH_DISCORD_ENABLED === "1" && env.OWNER_RESEARCH_INTRADAY_ENABLED === "1";
 }
 
+function ownerActionableWebhook(env: NodeJS.ProcessEnv): string {
+  return String(env.DISCORD_WEBHOOK_OWNER_ACTIONABLE ?? "").trim();
+}
+
+function optionsWebhook(env: NodeJS.ProcessEnv): string {
+  return String(env.DISCORD_WEBHOOK_OPTIONS ?? env.DISCORD_WEBHOOK_URL ?? "").trim();
+}
+
 export function intradayMirrorDedupKey(
   fingerprint: string,
   optionSymbol: string,
@@ -152,6 +160,12 @@ export async function mirrorOwnerIntradayOnSent(opts: IntradayMirrorInput): Prom
     const gate = shouldMirrorIntradayActionable(opts);
     if (!gate.ok || !gate.fingerprint) {
       return { mirrored: false, skipped: true, reason: gate.reason };
+    }
+    if (!ownerActionableWebhook(env)) {
+      return { mirrored: false, skipped: true, reason: "DISCORD_WEBHOOK_OWNER_ACTIONABLE not configured" };
+    }
+    if (ownerActionableWebhook(env) === optionsWebhook(env)) {
+      return { mirrored: false, skipped: true, reason: "owner_actionable_same_as_options" };
     }
 
     const dedupKey = intradayMirrorDedupKey(gate.fingerprint, opts.delivery.contract.optionSymbol, "send");

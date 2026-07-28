@@ -4,6 +4,7 @@ import { discordDeliverySummary, discordDeliveryWindowMetrics, listDiscordDelive
 import { buildSubscriberDiscordReadiness } from "@/lib/discord-readiness";
 import { discordWebhookConfigured } from "@/lib/notifications";
 import { subscriberDiscordOwnershipSummary } from "@/lib/subscriber-discord-owner";
+import { buildDiscordRoutingRows } from "@/lib/discord-routing";
 
 export const dynamic = "force-dynamic";
 
@@ -14,9 +15,17 @@ export async function GET(req: Request) {
     options: discordWebhookConfigured("options"),
     stocks: discordWebhookConfigured("stocks"),
     recap: discordWebhookConfigured("recap"),
+    ownerResearch: discordWebhookConfigured("owner_research"),
+    ownerActionable: discordWebhookConfigured("owner_actionable"),
+    lifecycle: discordWebhookConfigured("lifecycle"),
+    content: discordWebhookConfigured("content"),
     default: discordWebhookConfigured("default"),
   };
   const metrics = discordDeliveryWindowMetrics(24);
+  const routing = buildDiscordRoutingRows({
+    webhooks,
+    lastOptionsSendAt: metrics.lastSentAt ?? null,
+  });
   const readiness = buildSubscriberDiscordReadiness({
     webhooks,
     metrics,

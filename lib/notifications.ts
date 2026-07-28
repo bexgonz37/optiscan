@@ -40,7 +40,15 @@ import { actionableFreshness, type DataKind } from "@/lib/data-freshness";
 import { legacyOptionsSuppressed, legacyWatchDiscordEnabled } from "@/lib/callouts/routing";
 import { legacyOptionsSubscriberDiscordBlocked } from "./subscriber-discord-owner.ts";
 
-export type DiscordWebhookKind = "options" | "stocks" | "recap" | "content" | "default";
+export type DiscordWebhookKind =
+  | "options"
+  | "stocks"
+  | "recap"
+  | "owner_research"
+  | "owner_actionable"
+  | "lifecycle"
+  | "content"
+  | "default";
 
 const WATCH_DEDUP_MS = 30 * 60_000;
 const LIVE_OPTIONS_MAX_AGE_MS = Number(process.env.DISCORD_OPTIONS_MAX_ALERT_AGE_MS ?? 90_000);
@@ -50,17 +58,26 @@ export function extendedStockNotifyEnabled(): boolean {
   return getSetting("extended_stock_notify") === "1";
 }
 
-function webhookEnv(kind: DiscordWebhookKind): string | undefined {
-  if (kind === "options") return process.env.DISCORD_WEBHOOK_OPTIONS ?? process.env.DISCORD_WEBHOOK_URL;
-  if (kind === "stocks") return process.env.DISCORD_WEBHOOK_STOCKS;
-  if (kind === "recap") return process.env.DISCORD_WEBHOOK_RECAP;
+function webhookEnv(kind: DiscordWebhookKind, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (kind === "options") return env.DISCORD_WEBHOOK_OPTIONS ?? env.DISCORD_WEBHOOK_URL;
+  if (kind === "stocks") return env.DISCORD_WEBHOOK_STOCKS;
+  if (kind === "recap") return env.DISCORD_WEBHOOK_RECAP;
+  if (kind === "owner_research") return env.DISCORD_WEBHOOK_OWNER_RESEARCH;
+  if (kind === "owner_actionable") return env.DISCORD_WEBHOOK_OWNER_ACTIONABLE;
+  if (kind === "lifecycle") return env.DISCORD_WEBHOOK_LIFECYCLE ?? env.DISCORD_WEBHOOK_OPTIONS ?? env.DISCORD_WEBHOOK_URL;
   // Private content-drafts channel ONLY — never fall back to recap/subscriber webhooks.
-  if (kind === "content") return process.env.DISCORD_WEBHOOK_CONTENT;
-  return process.env.DISCORD_WEBHOOK_URL;
+  if (kind === "content") return env.DISCORD_WEBHOOK_CONTENT;
+  return env.DISCORD_WEBHOOK_URL;
 }
 
-export function discordWebhookConfigured(kind: DiscordWebhookKind): boolean {
-  return Boolean(String(webhookEnv(kind) ?? "").trim());
+export function discordWebhookConfigured(kind: DiscordWebhookKind, env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(String(webhookEnv(kind, env) ?? "").trim());
+}
+
+export function discordWebhookSame(a: DiscordWebhookKind, b: DiscordWebhookKind, env: NodeJS.ProcessEnv = process.env): boolean {
+  const av = String(webhookEnv(a, env) ?? "").trim();
+  const bv = String(webhookEnv(b, env) ?? "").trim();
+  return Boolean(av && bv && av === bv);
 }
 
 /** True when any Discord webhook URL is set in env. */
@@ -69,7 +86,11 @@ export function discordConfigured(): boolean {
     String(process.env.DISCORD_WEBHOOK_URL ?? "").trim()
     || String(process.env.DISCORD_WEBHOOK_OPTIONS ?? "").trim()
     || String(process.env.DISCORD_WEBHOOK_STOCKS ?? "").trim()
-    || String(process.env.DISCORD_WEBHOOK_RECAP ?? "").trim(),
+    || String(process.env.DISCORD_WEBHOOK_RECAP ?? "").trim()
+    || String(process.env.DISCORD_WEBHOOK_OWNER_RESEARCH ?? "").trim()
+    || String(process.env.DISCORD_WEBHOOK_OWNER_ACTIONABLE ?? "").trim()
+    || String(process.env.DISCORD_WEBHOOK_LIFECYCLE ?? "").trim()
+    || String(process.env.DISCORD_WEBHOOK_CONTENT ?? "").trim()
   );
 }
 
@@ -251,7 +272,7 @@ export async function postScoreboardEmbed(
   rows: { emoji?: string; label: string; value: string }[],
   { weekly = false }: { weekly?: boolean } = {},
 ): Promise<{ ok: boolean; error?: string }> {
-  if (!discordConfigured()) return { ok: false, error: "no webhook configured" };
+  if (!discordWebhookConfigured("recap")) return { ok: false, error: "DISCORD_WEBHOOK_RECAP not configured" };
   const { payload, safe } = buildScoreboardEmbed(stats, rows, { weekly, dashboardUrl: dashboardUrl() });
   if (!safe) return { ok: false, error: "scoreboard failed language guard" };
   try {

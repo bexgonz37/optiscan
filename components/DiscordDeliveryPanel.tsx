@@ -33,6 +33,14 @@ type Delivery = {
 
 type Health = {
   webhooks?: Record<string, boolean>;
+  routing?: {
+    messageType: string;
+    destination: string;
+    enabled: boolean;
+    lastSend: string | null;
+    status: "READY" | "OPTIONAL" | "BLOCKED" | "DISABLED";
+    error: string | null;
+  }[];
   summary?: { status: string; count: number }[];
   metrics?: {
     total24h?: number;
@@ -66,6 +74,10 @@ const STATUS_TONE: Record<string, BadgeTone> = {
   FAILED: "bad",
   SUPPRESSED: "muted",
   NOT_CONFIGURED: "muted",
+  OPTIONAL: "warn",
+  BLOCKED: "bad",
+  READY: "live",
+  DISABLED: "muted",
 };
 
 function tone(status: string): BadgeTone {
@@ -182,6 +194,19 @@ export function DiscordDeliveryPanel() {
     },
   ];
 
+  const routingColumns: Column<NonNullable<Health["routing"]>[number]>[] = [
+    { key: "messageType", header: "Message type", render: (r) => r.messageType },
+    { key: "destination", header: "Destination", render: (r) => r.destination },
+    { key: "enabled", header: "Enabled", render: (r) => (r.enabled ? "yes" : "no") },
+    { key: "lastSend", header: "Last send", render: (r) => timeShort(r.lastSend) },
+    { key: "status", header: "Status", render: (r) => <StatusBadge tone={tone(r.status)}>{r.status}</StatusBadge> },
+    {
+      key: "error",
+      header: "Error",
+      render: (r) => r.error ? <span title={r.error} style={{ color: r.status === "BLOCKED" ? "var(--bear)" : "var(--warn)" }}>{r.error}</span> : "-",
+    },
+  ];
+
   const actions = (
     <>
       <button type="button" className="ui-btn ui-btn-sm" disabled={busy === "test-options"} onClick={() => sendTest("options")}>
@@ -230,7 +255,7 @@ export function DiscordDeliveryPanel() {
       </div>
 
       <div className="ui-statusbar" style={{ marginBottom: 4 }}>
-        {(["options", "stocks", "recap"] as const).map((kind) => {
+        {(["options", "stocks", "recap", "ownerResearch", "ownerActionable", "lifecycle", "content"] as const).map((kind) => {
           const on = health?.webhooks?.[kind] ?? false;
           const isRecap = kind === "recap";
           return (
@@ -251,6 +276,22 @@ export function DiscordDeliveryPanel() {
       ) : null}
 
       {flash ? <div className="ui-section-hint" style={{ color: "var(--accent)" }}>{flash}</div> : null}
+
+      {health?.routing?.length ? (
+        <>
+          <div className="ui-section-head" style={{ marginTop: 10 }}>
+            <span className="ui-section-title" style={{ fontSize: "0.82rem" }}>Message routing</span>
+            <span className="ui-section-count">live alerts stay out of recap</span>
+          </div>
+          <SimpleTable
+            columns={routingColumns}
+            rows={health.routing}
+            rowKey={(r) => r.messageType}
+            emptyTitle="No routing diagnostics"
+            emptyReason="The Discord health endpoint did not return routing diagnostics."
+          />
+        </>
+      ) : null}
 
       {error ? (
         <ErrorState detail={error} onRetry={load} />

@@ -52,7 +52,7 @@ test("SPEC: discord notifications use embed builders and session guards", () => 
   assert.ok(notif.includes("isOptionsSession"), "options notify guarded");
   assert.ok(notif.includes("wait=true"), "message id persistence");
   assert.ok(notif.includes("editDiscordMessage"), "result PATCH support");
-  assert.ok(/kind === "stocks"\) return process\.env\.DISCORD_WEBHOOK_STOCKS;/.test(notif), "stocks use the dedicated webhook only");
+  assert.ok(/kind === "stocks"\) return env\.DISCORD_WEBHOOK_STOCKS;/.test(notif), "stocks use the dedicated webhook only");
 });
 
 test("SPEC: AlertPopup is options-only", () => {

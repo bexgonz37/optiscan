@@ -1,11 +1,12 @@
 /**
- * Owner-only Discord research notifications (recap webhook).
- * Never posts to subscriber options webhook or Twitter/X content webhook.
+ * Owner-only Discord research notifications.
+ * Research, actionable mirrors, recap plans, and content drafts have distinct webhook routes.
  * Gated by OWNER_RESEARCH_DISCORD_ENABLED=1 (default off).
  */
 import { tradingDay } from "../trading-session.ts";
 import type { OvernightPlan, OvernightRecommendation } from "../research/overnight/next-session-plan.ts";
 import { resolveOperatingMode } from "../dashboard/operating-mode.ts";
+import type { DiscordWebhookKind } from "../notifications.ts";
 
 export type OwnerResearchNotifyKind =
   | "eod_watchlist"
@@ -13,7 +14,12 @@ export type OwnerResearchNotifyKind =
   | "premarket_plan"
   | "market_open_confirm"
   | "intraday_actionable"
-  | "watchlist_followup";
+  | "watchlist_followup"
+  | "almost_ready"
+  | "blocked_candidate"
+  | "research_only_bearish"
+  | "missed_opportunity"
+  | "shadow_insight";
 
 export interface OwnerNotifyResult {
   sent: boolean;
@@ -29,6 +35,34 @@ function enabled(env: NodeJS.ProcessEnv = process.env): boolean {
 
 export function ownerResearchIntradayEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.OWNER_RESEARCH_DISCORD_ENABLED === "1" && env.OWNER_RESEARCH_INTRADAY_ENABLED === "1";
+}
+
+export function ownerNotifyDestinationForKind(kind: OwnerResearchNotifyKind): {
+  webhook: DiscordWebhookKind;
+  requiredEnv: string;
+  label: string;
+} {
+  if (kind === "intraday_actionable") {
+    return { webhook: "owner_actionable", requiredEnv: "DISCORD_WEBHOOK_OWNER_ACTIONABLE", label: "owner actionable" };
+  }
+  if (
+    kind === "eod_watchlist"
+    || kind === "evening_delta"
+    || kind === "premarket_plan"
+    || kind === "market_open_confirm"
+    || kind === "watchlist_followup"
+  ) {
+    return { webhook: "recap", requiredEnv: "DISCORD_WEBHOOK_RECAP", label: "recap" };
+  }
+  return { webhook: "owner_research", requiredEnv: "DISCORD_WEBHOOK_OWNER_RESEARCH", label: "owner research" };
+}
+
+function webhookConfiguredForDestination(kind: OwnerResearchNotifyKind, env: NodeJS.ProcessEnv): boolean {
+  const destination = ownerNotifyDestinationForKind(kind);
+  if (destination.webhook === "recap") return Boolean(String(env.DISCORD_WEBHOOK_RECAP ?? "").trim());
+  if (destination.webhook === "owner_actionable") return Boolean(String(env.DISCORD_WEBHOOK_OWNER_ACTIONABLE ?? "").trim());
+  if (destination.webhook === "owner_research") return Boolean(String(env.DISCORD_WEBHOOK_OWNER_RESEARCH ?? "").trim());
+  return false;
 }
 
 function formatRec(r: OvernightRecommendation): string {
@@ -164,15 +198,21 @@ function markSent(db: NotifyDb, day: string, kind: string, symbol = ""): void {
   ).run(day, kind, symbol, Date.now());
 }
 
-async function postOwner(content: string, env: NodeJS.ProcessEnv = process.env): Promise<{ ok: boolean; reason: string }> {
+async function postOwner(
+  kind: OwnerResearchNotifyKind,
+  content: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ ok: boolean; reason: string }> {
   // Dynamic import keeps this module usable in unit tests without loading Next server bits.
-  const { postToDiscord } = await import("../notifications.ts");
-  const webhook = env.DISCORD_WEBHOOK_RECAP || env.DISCORD_WEBHOOK_URL;
-  if (!webhook) return { ok: false, reason: "DISCORD_WEBHOOK_RECAP unset" };
+  const { discordWebhookConfigured, postToDiscord } = await import("../notifications.ts");
+  const destination = ownerNotifyDestinationForKind(kind);
+  if (!discordWebhookConfigured(destination.webhook, env)) {
+    return { ok: false, reason: `${destination.requiredEnv} not configured` };
+  }
   try {
     await postToDiscord(
       { content: content.slice(0, 1900) },
-      { webhook: "recap", skipPublicCheck: true },
+      { webhook: destination.webhook, skipPublicCheck: true },
     );
     return { ok: true, reason: "sent" };
   } catch (e: any) {
@@ -206,9 +246,15 @@ export async function sendOwnerResearchNotify(opts: {
   if (/buy now/i.test(opts.content) && (opts.kind === "eod_watchlist" || opts.kind === "evening_delta" || opts.kind === "premarket_plan")) {
     return { sent: false, skipped: true, reason: "blocked buy-now language", kind: opts.kind };
   }
+  const destination = ownerNotifyDestinationForKind(opts.kind);
+  if (opts.postOverride) {
+    if (!webhookConfiguredForDestination(opts.kind, env)) {
+      return { sent: false, skipped: true, reason: `${destination.requiredEnv} not configured`, kind: opts.kind };
+    }
+  }
   const res = opts.postOverride
     ? await opts.postOverride(opts.content).then((r) => ({ ok: r.ok, reason: r.reason ?? (r.ok ? "sent" : "post_failed") }))
-    : await postOwner(opts.content, env);
+    : await postOwner(opts.kind, opts.content, env);
   if (!res.ok) return { sent: false, skipped: false, reason: res.reason, kind: opts.kind };
   markSent(opts.db, day, opts.kind, symbol);
   return { sent: true, skipped: false, reason: "ok", kind: opts.kind };
@@ -232,13 +278,13 @@ export async function sendOwnerResearchTestNotification(
   env: NodeJS.ProcessEnv = process.env,
   nowMs: number = Date.now(),
 ): Promise<OwnerResearchTestResult> {
-  const webhook = String(env.DISCORD_WEBHOOK_RECAP ?? "").trim();
+  const webhook = String(env.DISCORD_WEBHOOK_OWNER_RESEARCH ?? "").trim();
   if (!webhook) {
     return {
       ok: false,
       configured: false,
       sent: false,
-      reason: "DISCORD_WEBHOOK_RECAP not configured",
+      reason: "DISCORD_WEBHOOK_OWNER_RESEARCH not configured",
       messageId: null,
       operatingMode: "",
       operatingLabel: "",
@@ -292,7 +338,7 @@ export async function sendOwnerResearchTestNotification(
 
   const { postToDiscord } = await import("../notifications.ts");
   try {
-    const res = await postToDiscord({ content: content.slice(0, 1900) }, { webhook: "recap", skipPublicCheck: true });
+    const res = await postToDiscord({ content: content.slice(0, 1900) }, { webhook: "owner_research", skipPublicCheck: true });
     return {
       ok: true,
       configured: true,

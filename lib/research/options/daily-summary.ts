@@ -1,7 +1,7 @@
 /**
  * lib/research/options/daily-summary.ts — AUTOMATIC private daily summary for the options scanner.
  * Built from the DB (candidates / alerts / paper trades / heartbeat) and delivered ONCE per day to a
- * private webhook (recap, falling back to the options webhook). It is idempotent per day (deduped via
+ * private recap webhook. It is idempotent per day (deduped via
  * the options_runtime 'last_summary_day' key) and carries the PAPER/BETA label.
  *
  * HARD RULE: do NOT send a summary when the system was disabled for the day (flag off AND no activity).
@@ -107,10 +107,9 @@ export interface SummaryDeps { getDb: () => any; send?: (content: string) => Pro
 async function defaultSend(content: string): Promise<{ ok: boolean; error: string | null }> {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { postToDiscord } = require("@/lib/notifications");
-    // Prefer the private recap webhook; postToDiscord falls back internally when recap is unset.
-    const webhook = String(process.env.DISCORD_WEBHOOK_RECAP ?? "").trim() ? "recap" : "options";
-    await postToDiscord({ content }, { webhook, skipPublicCheck: true });
+    const { discordWebhookConfigured, postToDiscord } = require("@/lib/notifications");
+    if (!discordWebhookConfigured("recap")) return { ok: false, error: "DISCORD_WEBHOOK_RECAP not configured" };
+    await postToDiscord({ content }, { webhook: "recap", skipPublicCheck: true });
     return { ok: true, error: null };
   } catch (e: any) { return { ok: false, error: String(e?.message ?? e).slice(0, 160) }; }
 }

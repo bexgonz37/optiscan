@@ -18,6 +18,8 @@ const AFTERHOURS_MS = Date.parse("2026-07-27T18:00:00-04:00");
 const OWNER_ON = {
   OWNER_RESEARCH_DISCORD_ENABLED: "1",
   OWNER_RESEARCH_INTRADAY_ENABLED: "1",
+  DISCORD_WEBHOOK_OPTIONS: "https://discord.com/api/webhooks/options-secret",
+  DISCORD_WEBHOOK_OWNER_ACTIONABLE: "https://discord.com/api/webhooks/owner-actionable-secret",
   DISCORD_WEBHOOK_RECAP: "https://discord.com/api/webhooks/recap-secret",
 };
 
@@ -116,9 +118,9 @@ test("formatIntradayActionable includes TRADE NOW CANDIDATE and contract details
   assert.match(msg, /not guaranteed profit/i);
 });
 
-test("regular-session SEND mirror creates one owner recap post", async () => {
+test("regular-session SEND mirror creates one owner actionable post", async () => {
   const db = notifyDb();
-  const recapCalls = [];
+  const ownerCalls = [];
   const fp = "fp_spy_send";
   const r1 = await mirrorOwnerIntradayOnSent({
     db,
@@ -130,13 +132,13 @@ test("regular-session SEND mirror creates one owner recap post", async () => {
     nowMs: REGULAR_MS,
     env: OWNER_ON,
     postRecap: async (content) => {
-      recapCalls.push(content);
+      ownerCalls.push(content);
       return { ok: true };
     },
   });
   assert.equal(r1.mirrored, true);
-  assert.equal(recapCalls.length, 1);
-  assert.match(recapCalls[0], /LIVE · \*\*TRADE NOW CANDIDATE\*\*/);
+  assert.equal(ownerCalls.length, 1);
+  assert.match(ownerCalls[0], /TRADE NOW CANDIDATE/);
 
   const r2 = await mirrorOwnerIntradayOnSent({
     db,
@@ -148,13 +150,13 @@ test("regular-session SEND mirror creates one owner recap post", async () => {
     nowMs: REGULAR_MS,
     env: OWNER_ON,
     postRecap: async (content) => {
-      recapCalls.push(content);
+      ownerCalls.push(content);
       return { ok: true };
     },
   });
   assert.equal(r2.skipped, true);
   assert.match(r2.reason, /already sent/);
-  assert.equal(recapCalls.length, 1, "duplicate SEND suppressed");
+  assert.equal(ownerCalls.length, 1, "duplicate SEND suppressed");
 });
 
 test("after-hours state does not mirror as TRADE NOW", async () => {
@@ -221,7 +223,7 @@ test("stale quote and missing bid/ask are rejected", () => {
   assert.match(noBid.reason, /missing_fresh_bid_ask/);
 });
 
-test("recap webhook failure does not throw", async () => {
+test("owner actionable webhook failure does not throw", async () => {
   const db = notifyDb();
   const mirror = await mirrorOwnerIntradayOnSent({
     db,
@@ -232,32 +234,58 @@ test("recap webhook failure does not throw", async () => {
     invalidation: "test",
     nowMs: REGULAR_MS,
     env: OWNER_ON,
-    postRecap: async () => ({ ok: false, reason: "recap down" }),
+    postRecap: async () => ({ ok: false, reason: "owner actionable down" }),
   });
   assert.equal(mirror.mirrored, false);
-  assert.match(mirror.reason, /recap down/);
+  assert.match(mirror.reason, /owner actionable down/);
 });
 
-test("missing recap webhook skips mirror without throwing", async () => {
+test("missing owner actionable webhook skips mirror without recap fallback", async () => {
+  const calls = [];
   const r = await mirrorOwnerIntradayOnSent({
     db: notifyDb(),
     delivery: deliveryInput(),
-    alertId: "oa_norecap",
-    opportunityFingerprint: "fp_norecap",
+    alertId: "oa_no_owner_actionable",
+    opportunityFingerprint: "fp_no_owner_actionable",
     actionableReason: "test",
     invalidation: "test",
     nowMs: REGULAR_MS,
-    env: { ...OWNER_ON, DISCORD_WEBHOOK_RECAP: "" },
+    env: { ...OWNER_ON, DISCORD_WEBHOOK_OWNER_ACTIONABLE: "" },
+    postRecap: async (content) => { calls.push(content); return { ok: true }; },
   });
   assert.equal(r.mirrored, false);
-  assert.ok(r.reason, "expected a failure reason when recap webhook is missing");
+  assert.equal(r.skipped, true);
+  assert.match(r.reason, /DISCORD_WEBHOOK_OWNER_ACTIONABLE not configured/);
+  assert.equal(calls.length, 0, "recap fallback must not fire");
 });
 
-test("owner mirror module never posts to subscriber options webhook", () => {
+test("owner actionable mirror skips when it shares subscriber options webhook", async () => {
+  const calls = [];
+  const r = await mirrorOwnerIntradayOnSent({
+    db: notifyDb(),
+    delivery: deliveryInput(),
+    alertId: "oa_same_webhook",
+    opportunityFingerprint: "fp_same_webhook",
+    actionableReason: "test",
+    invalidation: "test",
+    nowMs: REGULAR_MS,
+    env: {
+      ...OWNER_ON,
+      DISCORD_WEBHOOK_OWNER_ACTIONABLE: OWNER_ON.DISCORD_WEBHOOK_OPTIONS,
+    },
+    postRecap: async (content) => { calls.push(content); return { ok: true }; },
+  });
+  assert.equal(r.mirrored, false);
+  assert.equal(r.skipped, true);
+  assert.match(r.reason, /owner_actionable_same_as_options/);
+  assert.equal(calls.length, 0, "same webhook would duplicate the subscriber alert");
+});
+
+test("owner mirror module never posts to recap or subscriber content webhook", () => {
   const mirror = read("lib/notifications/owner-intraday-mirror.ts");
   const notify = read("lib/notifications/owner-research-notify.ts");
-  assert.match(notify, /webhook: "recap"/);
-  assert.ok(!/webhook: "options"/.test(mirror));
+  assert.match(notify, /webhook: "owner_actionable"/);
+  assert.ok(!/webhook: "recap"/.test(mirror));
   assert.ok(!/postToTwitter|CONTENT_EVENTS|content-drafts/i.test(mirror));
 });
 
