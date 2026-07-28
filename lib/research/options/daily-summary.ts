@@ -91,7 +91,7 @@ export function buildDailySummaryOnDb(db: SumDb, nowMs: number, env: NodeJS.Proc
 export function formatDailySummaryMessage(s: DailySummary): string {
   const rej = Object.entries(s.rejectionReasons).slice(0, 4).map(([k, v]) => `${k}×${v}`).join(", ") || "none";
   return [
-    `📊 **OptiScan Options — daily summary ${s.day}**`,
+    `📊 **DAILY RECAP — OptiScan Options ${s.day}**`,
     `Scanned ${s.symbolsScanned} sym's · candidates ${s.candidatesFound} · calls ${s.callsEvaluated}/puts ${s.putsEvaluated} evaluated`,
     `Callouts: sent ${s.calloutsSent}, failed ${s.calloutsFailed}, too-late ${s.tooLate}, rejected ${s.rejected}`,
     `Paper: opened ${s.paperOpened}, closed ${s.paperClosed} (W ${s.wins} / L ${s.losses}), open now ${s.openPositions}`,

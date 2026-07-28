@@ -44,10 +44,6 @@ export type DiscordWebhookKind =
   | "options"
   | "stocks"
   | "recap"
-  | "owner_research"
-  | "owner_actionable"
-  | "lifecycle"
-  | "content"
   | "default";
 
 const WATCH_DEDUP_MS = 30 * 60_000;
@@ -62,11 +58,6 @@ function webhookEnv(kind: DiscordWebhookKind, env: NodeJS.ProcessEnv = process.e
   if (kind === "options") return env.DISCORD_WEBHOOK_OPTIONS ?? env.DISCORD_WEBHOOK_URL;
   if (kind === "stocks") return env.DISCORD_WEBHOOK_STOCKS;
   if (kind === "recap") return env.DISCORD_WEBHOOK_RECAP;
-  if (kind === "owner_research") return env.DISCORD_WEBHOOK_OWNER_RESEARCH;
-  if (kind === "owner_actionable") return env.DISCORD_WEBHOOK_OWNER_ACTIONABLE;
-  if (kind === "lifecycle") return env.DISCORD_WEBHOOK_LIFECYCLE ?? env.DISCORD_WEBHOOK_OPTIONS ?? env.DISCORD_WEBHOOK_URL;
-  // Private content-drafts channel ONLY — never fall back to recap/subscriber webhooks.
-  if (kind === "content") return env.DISCORD_WEBHOOK_CONTENT;
   return env.DISCORD_WEBHOOK_URL;
 }
 
@@ -87,10 +78,6 @@ export function discordConfigured(): boolean {
     || String(process.env.DISCORD_WEBHOOK_OPTIONS ?? "").trim()
     || String(process.env.DISCORD_WEBHOOK_STOCKS ?? "").trim()
     || String(process.env.DISCORD_WEBHOOK_RECAP ?? "").trim()
-    || String(process.env.DISCORD_WEBHOOK_OWNER_RESEARCH ?? "").trim()
-    || String(process.env.DISCORD_WEBHOOK_OWNER_ACTIONABLE ?? "").trim()
-    || String(process.env.DISCORD_WEBHOOK_LIFECYCLE ?? "").trim()
-    || String(process.env.DISCORD_WEBHOOK_CONTENT ?? "").trim()
   );
 }
 

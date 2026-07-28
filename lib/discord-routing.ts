@@ -1,11 +1,7 @@
 export type DiscordRoutingWebhookStatus = {
   options: boolean;
-  stocks?: boolean;
   recap: boolean;
-  ownerResearch: boolean;
-  ownerActionable: boolean;
-  lifecycle: boolean;
-  content: boolean;
+  stocks?: boolean;
   default?: boolean;
 };
 
@@ -27,85 +23,61 @@ function ready(enabled: boolean, missing: string): Pick<DiscordRoutingRow, "stat
 export function buildDiscordRoutingRows(input: {
   webhooks: DiscordRoutingWebhookStatus;
   lastOptionsSendAt?: string | null;
-  lastLifecycleSendAt?: string | null;
   lastRecapSendAt?: string | null;
-  lastContentSendAt?: string | null;
 }): DiscordRoutingRow[] {
   const w = input.webhooks;
   const options = ready(w.options, "DISCORD_WEBHOOK_OPTIONS");
-  const ownerActionable = w.ownerActionable
-    ? { status: "READY" as const, error: null }
-    : { status: "OPTIONAL" as const, error: "DISCORD_WEBHOOK_OWNER_ACTIONABLE not configured; owner mirror skips without recap fallback" };
-  const ownerResearch = ready(w.ownerResearch, "DISCORD_WEBHOOK_OWNER_RESEARCH");
   const recap = ready(w.recap, "DISCORD_WEBHOOK_RECAP");
-  const lifecycle = w.lifecycle || w.options
-    ? { status: "READY" as const, error: null }
-    : { status: "BLOCKED" as const, error: "DISCORD_WEBHOOK_LIFECYCLE or DISCORD_WEBHOOK_OPTIONS not configured" };
-  const content = ready(w.content, "DISCORD_WEBHOOK_CONTENT");
 
   return [
     {
-      messageType: "TRADE NOW CANDIDATE",
-      destination: "Options alert webhook",
+      messageType: "Alerts: actionable calls / TRADE NOW CANDIDATE",
+      destination: "Alerts webhook (DISCORD_WEBHOOK_OPTIONS)",
       enabled: w.options,
       lastSend: input.lastOptionsSendAt ?? null,
       ...options,
     },
     {
-      messageType: "BEARISH TRADE CANDIDATE",
-      destination: "Options alert webhook",
+      messageType: "Alerts: actionable puts / BEARISH TRADE CANDIDATE",
+      destination: "Alerts webhook (DISCORD_WEBHOOK_OPTIONS)",
       enabled: w.options,
       lastSend: input.lastOptionsSendAt ?? null,
       ...options,
     },
     {
-      messageType: "Owner actionable mirror",
-      destination: "Owner actionable webhook",
-      enabled: w.ownerActionable,
-      lastSend: null,
-      ...ownerActionable,
-    },
-    {
-      messageType: "Verified subscriber call alert",
-      destination: "Options alert webhook",
+      messageType: "Alerts: verified call and put alerts",
+      destination: "Alerts webhook (DISCORD_WEBHOOK_OPTIONS)",
       enabled: w.options,
       lastSend: input.lastOptionsSendAt ?? null,
       ...options,
     },
     {
-      messageType: "Verified subscriber put alert",
-      destination: "Options alert webhook",
+      messageType: "Alerts: lifecycle updates (T1, T2, high, thesis, stop, exit, closed)",
+      destination: "Alerts webhook (DISCORD_WEBHOOK_OPTIONS)",
       enabled: w.options,
       lastSend: input.lastOptionsSendAt ?? null,
       ...options,
     },
     {
-      messageType: "Almost ready / blocked / missed / shadow research",
-      destination: "Owner research webhook",
-      enabled: w.ownerResearch,
-      lastSend: null,
-      ...ownerResearch,
-    },
-    {
-      messageType: "EOD recap / watchlist / premarket / AI recap",
-      destination: "Recap webhook",
+      messageType: "Recaps: AI / research / watchlists / planning",
+      destination: "Recap webhook (DISCORD_WEBHOOK_RECAP)",
       enabled: w.recap,
       lastSend: input.lastRecapSendAt ?? null,
       ...recap,
     },
     {
-      messageType: "Lifecycle milestone / stop / exit",
-      destination: w.lifecycle ? "Lifecycle webhook" : "Options alert webhook fallback",
-      enabled: w.lifecycle || w.options,
-      lastSend: input.lastLifecycleSendAt ?? null,
-      ...lifecycle,
+      messageType: "Recaps: almost-ready / blocked / missed opportunities",
+      destination: "Recap webhook (DISCORD_WEBHOOK_RECAP)",
+      enabled: w.recap,
+      lastSend: input.lastRecapSendAt ?? null,
+      ...recap,
     },
     {
-      messageType: "Content draft / Twitter post suggestion",
-      destination: "Content webhook",
-      enabled: w.content,
-      lastSend: input.lastContentSendAt ?? null,
-      ...content,
+      messageType: "Recaps: content ideas / daily summaries",
+      destination: "Recap webhook (DISCORD_WEBHOOK_RECAP)",
+      enabled: w.recap,
+      lastSend: input.lastRecapSendAt ?? null,
+      ...recap,
     },
   ];
 }

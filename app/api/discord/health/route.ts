@@ -15,10 +15,6 @@ export async function GET(req: Request) {
     options: discordWebhookConfigured("options"),
     stocks: discordWebhookConfigured("stocks"),
     recap: discordWebhookConfigured("recap"),
-    ownerResearch: discordWebhookConfigured("owner_research"),
-    ownerActionable: discordWebhookConfigured("owner_actionable"),
-    lifecycle: discordWebhookConfigured("lifecycle"),
-    content: discordWebhookConfigured("content"),
     default: discordWebhookConfigured("default"),
   };
   const metrics = discordDeliveryWindowMetrics(24);

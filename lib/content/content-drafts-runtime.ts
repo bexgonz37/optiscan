@@ -1,11 +1,11 @@
 /**
  * lib/content/content-drafts-runtime.ts — consume PENDING opportunity_content_events,
- * generate deterministic template drafts, persist each draft, then deliver to the PRIVATE
- * DISCORD_WEBHOOK_CONTENT channel for manual review.
+ * generate deterministic template drafts, persist each draft, then deliver to the Recaps
+ * channel for manual review.
  *
  * Guarantees:
  *  - NEVER auto-posts to Twitter/X
- *  - NEVER falls back to DISCORD_WEBHOOK_RECAP or subscriber channels
+ *  - NEVER sends to subscriber/actionable alert delivery paths
  *  - Persists drafts BEFORE Discord delivery (and when webhook is missing)
  *  - Idempotent per-draft fingerprint — scheduler retries / restarts do not duplicate
  *  - Partial Discord failure retries only unsent drafts
@@ -66,9 +66,9 @@ export function contentEventsEnabled(env: NodeJS.ProcessEnv = process.env): bool
   return env.CONTENT_EVENTS_ENABLED === "1";
 }
 
-/** Dedicated content webhook only — no recap fallback. */
+/** Content drafts route to Recaps in the two-channel Discord setup. */
 export function contentWebhookConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
-  return Boolean(String(env.DISCORD_WEBHOOK_CONTENT ?? "").trim());
+  return Boolean(String(env.DISCORD_WEBHOOK_RECAP ?? "").trim());
 }
 
 export function draftFingerprint(input: {
@@ -95,10 +95,10 @@ function defaultSend(): (content: string) => Promise<ContentDeliverResult> {
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { postToDiscord, discordWebhookConfigured } = require("@/lib/notifications");
-      if (!discordWebhookConfigured("content")) {
-        return { ok: false, messageId: null, error: "DISCORD_WEBHOOK_CONTENT not configured" };
+      if (!discordWebhookConfigured("recap")) {
+        return { ok: false, messageId: null, error: "DISCORD_WEBHOOK_RECAP not configured" };
       }
-      const r = await postToDiscord({ content }, { webhook: "content", skipPublicCheck: true });
+      const r = await postToDiscord({ content }, { webhook: "recap", skipPublicCheck: true });
       return { ok: true, messageId: r.messageId ?? null, error: null };
     } catch (e: any) {
       return { ok: false, messageId: null, error: String(e?.message ?? e).slice(0, 300) };
@@ -311,7 +311,7 @@ export interface ContentScanResult {
  * Scan PENDING content events:
  * 1. Claim-check performance categories
  * 2. Persist individual drafts (idempotent)
- * 3. Deliver to DISCORD_WEBHOOK_CONTENT only (or SKIPPED_NO_WEBHOOK)
+ * 3. Deliver to DISCORD_WEBHOOK_RECAP only (or SKIPPED_NO_WEBHOOK)
  * 4. Mark source event PROCESSED after persistence
  */
 export async function runContentDraftsScan(

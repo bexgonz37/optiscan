@@ -1,6 +1,6 @@
 /**
  * Owner-only Discord research notifications.
- * Research, actionable mirrors, recap plans, and content drafts have distinct webhook routes.
+ * Research, planning, and content summaries route to Recaps; actionable candidates route to Alerts.
  * Gated by OWNER_RESEARCH_DISCORD_ENABLED=1 (default off).
  */
 import { tradingDay } from "../trading-session.ts";
@@ -43,26 +43,42 @@ export function ownerNotifyDestinationForKind(kind: OwnerResearchNotifyKind): {
   label: string;
 } {
   if (kind === "intraday_actionable") {
-    return { webhook: "owner_actionable", requiredEnv: "DISCORD_WEBHOOK_OWNER_ACTIONABLE", label: "owner actionable" };
+    return { webhook: "options", requiredEnv: "DISCORD_WEBHOOK_OPTIONS", label: "alerts" };
   }
-  if (
-    kind === "eod_watchlist"
-    || kind === "evening_delta"
-    || kind === "premarket_plan"
-    || kind === "market_open_confirm"
-    || kind === "watchlist_followup"
-  ) {
-    return { webhook: "recap", requiredEnv: "DISCORD_WEBHOOK_RECAP", label: "recap" };
-  }
-  return { webhook: "owner_research", requiredEnv: "DISCORD_WEBHOOK_OWNER_RESEARCH", label: "owner research" };
+  return { webhook: "recap", requiredEnv: "DISCORD_WEBHOOK_RECAP", label: "recap" };
 }
 
 function webhookConfiguredForDestination(kind: OwnerResearchNotifyKind, env: NodeJS.ProcessEnv): boolean {
   const destination = ownerNotifyDestinationForKind(kind);
+  if (destination.webhook === "options") return Boolean(String(env.DISCORD_WEBHOOK_OPTIONS ?? env.DISCORD_WEBHOOK_URL ?? "").trim());
   if (destination.webhook === "recap") return Boolean(String(env.DISCORD_WEBHOOK_RECAP ?? "").trim());
-  if (destination.webhook === "owner_actionable") return Boolean(String(env.DISCORD_WEBHOOK_OWNER_ACTIONABLE ?? "").trim());
-  if (destination.webhook === "owner_research") return Boolean(String(env.DISCORD_WEBHOOK_OWNER_RESEARCH ?? "").trim());
   return false;
+}
+
+function recapClassification(kind: OwnerResearchNotifyKind): string {
+  if (kind === "almost_ready") return "ALMOST READY";
+  if (kind === "blocked_candidate") return "BLOCKED";
+  if (kind === "missed_opportunity") return "MISSED OPPORTUNITY";
+  if (kind === "research_only_bearish" || kind === "shadow_insight") return "RESEARCH";
+  return "WATCHLIST";
+}
+
+function normalizeRecapContent(kind: OwnerResearchNotifyKind, content: string): { ok: true; content: string } | { ok: false; reason: string } {
+  if (kind === "intraday_actionable") return { ok: true, content };
+  if (/\b(TRADE NOW|BEARISH TRADE CANDIDATE|VERIFIED OPTIONS ALERT)\b|live entry/i.test(content)) {
+    return { ok: false, reason: "blocked live-alert language in recap message" };
+  }
+  const label = recapClassification(kind);
+  const head = content.slice(0, 240).toUpperCase();
+  const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const hasExplicitHeader = new RegExp(`^(?:\\*\\*${escapedLabel}\\*\\*|${escapedLabel}(?:\\s+—|\\s+-|:))`).test(head);
+  if (hasExplicitHeader || head.includes("CONTENT DRAFT") || head.includes("DAILY RECAP")) {
+    return { ok: true, content };
+  }
+  return {
+    ok: true,
+    content: `**${label}**\n_Not executable. Verify at open before any live options SEND path._\n\n${content}`,
+  };
 }
 
 function formatRec(r: OvernightRecommendation): string {
@@ -81,7 +97,7 @@ function formatRec(r: OvernightRecommendation): string {
 
 export function formatEodWatchlist(plan: OvernightPlan): string {
   const lines = [
-    `📋 **Next-session watchlist** · ${plan.tradingDay}`,
+    `📋 **WATCHLIST — next session** · ${plan.tradingDay}`,
     `_Research only — not executable. Do not buy after hours._`,
     plan.marketContext.spyNote,
     plan.marketContext.qqqNote,
@@ -95,7 +111,7 @@ export function formatEodWatchlist(plan: OvernightPlan): string {
 
 export function formatEveningDelta(plan: OvernightPlan, reasons: string[]): string {
   return [
-    `🔄 **Evening watchlist update** · ${plan.tradingDay}`,
+    `🔄 **WATCHLIST — evening delta** · ${plan.tradingDay}`,
     `_Plan changed: ${reasons.slice(0, 6).join("; ")}_`,
     `_Research only — not a buy signal._`,
     "",
@@ -105,8 +121,8 @@ export function formatEveningDelta(plan: OvernightPlan, reasons: string[]): stri
 
 export function formatPremarketPlan(plan: OvernightPlan): string {
   return [
-    `🌅 **Premarket plan** · ${plan.tradingDay}`,
-    `_Refreshed levels — VERIFY CONTRACT AFTER OPTIONS OPEN_`,
+    `🌅 **WATCHLIST — premarket plan** · ${plan.tradingDay}`,
+    `_Not executable — VERIFY CONTRACT AFTER OPTIONS OPEN_`,
     "",
     ...plan.recommendations.slice(0, 8).map(formatRec),
   ].join("\n");
@@ -114,8 +130,8 @@ export function formatPremarketPlan(plan: OvernightPlan): string {
 
 export function formatMarketOpenConfirm(plan: OvernightPlan): string {
   return [
-    `🔔 **Market open — revalidate contracts** · ${plan.tradingDay}`,
-    `_Do not use prior-session quotes. Confirm fresh bid/ask before any TRADE NOW._`,
+    `🔔 **WATCHLIST — market-open revalidation** · ${plan.tradingDay}`,
+    `_Not executable. Do not use prior-session quotes. Confirm fresh bid/ask before any live options SEND path._`,
     "",
     ...plan.recommendations.slice(0, 8).map((r) =>
       `#${r.rank} ${r.symbol} · ${r.bias} · trigger ${r.triggerLevel ?? "TBD"} · ${r.preferredDteRange} ${r.preferredMoneyness}`
@@ -247,14 +263,20 @@ export async function sendOwnerResearchNotify(opts: {
     return { sent: false, skipped: true, reason: "blocked buy-now language", kind: opts.kind };
   }
   const destination = ownerNotifyDestinationForKind(opts.kind);
+  const normalized = destination.webhook === "recap"
+    ? normalizeRecapContent(opts.kind, opts.content)
+    : { ok: true as const, content: opts.content };
+  if (!normalized.ok) {
+    return { sent: false, skipped: true, reason: normalized.reason, kind: opts.kind };
+  }
   if (opts.postOverride) {
     if (!webhookConfiguredForDestination(opts.kind, env)) {
       return { sent: false, skipped: true, reason: `${destination.requiredEnv} not configured`, kind: opts.kind };
     }
   }
   const res = opts.postOverride
-    ? await opts.postOverride(opts.content).then((r) => ({ ok: r.ok, reason: r.reason ?? (r.ok ? "sent" : "post_failed") }))
-    : await postOwner(opts.kind, opts.content, env);
+    ? await opts.postOverride(normalized.content).then((r) => ({ ok: r.ok, reason: r.reason ?? (r.ok ? "sent" : "post_failed") }))
+    : await postOwner(opts.kind, normalized.content, env);
   if (!res.ok) return { sent: false, skipped: false, reason: res.reason, kind: opts.kind };
   markSent(opts.db, day, opts.kind, symbol);
   return { sent: true, skipped: false, reason: "ok", kind: opts.kind };
@@ -278,13 +300,13 @@ export async function sendOwnerResearchTestNotification(
   env: NodeJS.ProcessEnv = process.env,
   nowMs: number = Date.now(),
 ): Promise<OwnerResearchTestResult> {
-  const webhook = String(env.DISCORD_WEBHOOK_OWNER_RESEARCH ?? "").trim();
+  const webhook = String(env.DISCORD_WEBHOOK_RECAP ?? "").trim();
   if (!webhook) {
     return {
       ok: false,
       configured: false,
       sent: false,
-      reason: "DISCORD_WEBHOOK_OWNER_RESEARCH not configured",
+      reason: "DISCORD_WEBHOOK_RECAP not configured",
       messageId: null,
       operatingMode: "",
       operatingLabel: "",
@@ -338,7 +360,7 @@ export async function sendOwnerResearchTestNotification(
 
   const { postToDiscord } = await import("../notifications.ts");
   try {
-    const res = await postToDiscord({ content: content.slice(0, 1900) }, { webhook: "owner_research", skipPublicCheck: true });
+    const res = await postToDiscord({ content: content.slice(0, 1900) }, { webhook: "recap", skipPublicCheck: true });
     return {
       ok: true,
       configured: true,

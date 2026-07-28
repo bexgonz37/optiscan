@@ -95,17 +95,20 @@ test("after-hours language blocks live-setup phrases", () => {
   assert.equal(validateSocialDraftLanguage("Recap from the regular session on AMD").ok, true);
 });
 
-test("contentWebhookConfigured never treats RECAP as sufficient", () => {
-  assert.equal(contentWebhookConfigured({ DISCORD_WEBHOOK_RECAP: "https://discord.com/api/webhooks/x" }), false);
-  assert.equal(contentWebhookConfigured({ DISCORD_WEBHOOK_CONTENT: "https://discord.com/api/webhooks/y" }), true);
+test("contentWebhookConfigured uses recap in the two-channel Discord model", () => {
+  assert.equal(contentWebhookConfigured({ DISCORD_WEBHOOK_RECAP: "https://discord.com/api/webhooks/x" }), true);
+  assert.equal(contentWebhookConfigured({ DISCORD_WEBHOOK_CONTENT: "https://discord.com/api/webhooks/y" }), false);
   assert.equal(contentWebhookConfigured({}), false);
 });
 
-test("notifications content webhook has no RECAP fallback in source", () => {
+test("content drafts route to recap, not Alerts", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const src = readFileSync(join(here, "../lib/notifications.ts"), "utf8");
-  assert.doesNotMatch(src, /DISCORD_WEBHOOK_CONTENT\s*\?\?\s*process\.env\.DISCORD_WEBHOOK_RECAP/);
-  assert.match(src, /kind === "content"\) return env\.DISCORD_WEBHOOK_CONTENT/);
+  const runtime = readFileSync(join(here, "../lib/content/content-drafts-runtime.ts"), "utf8");
+  assert.doesNotMatch(src, /DISCORD_WEBHOOK_CONTENT|owner_actionable|owner_research|lifecycle/);
+  assert.match(runtime, /discordWebhookConfigured\("recap"\)/);
+  assert.match(runtime, /webhook:\s*"recap"/);
+  assert.doesNotMatch(runtime, /webhook:\s*"options"/);
 });
 
 test("no Twitter auto-post path exists in runtime exports", () => {
@@ -163,7 +166,7 @@ function seedEvent(db, over = {}) {
   return row;
 }
 
-const ENV = { CONTENT_EVENTS_ENABLED: "1", DISCORD_WEBHOOK_CONTENT: "https://discord.com/api/webhooks/test" };
+const ENV = { CONTENT_EVENTS_ENABLED: "1", DISCORD_WEBHOOK_RECAP: "https://discord.com/api/webhooks/test" };
 
 function captureDeps() {
   const sent = [];

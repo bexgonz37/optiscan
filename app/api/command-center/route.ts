@@ -159,7 +159,7 @@ export async function GET(req: Request) {
 
   const content = safe("content", () => {
     const enabled = process.env.CONTENT_EVENTS_ENABLED === "1";
-    const webhook = discordWebhookConfigured("content") || Boolean(String(process.env.DISCORD_WEBHOOK_CONTENT ?? "").trim());
+    const webhook = discordWebhookConfigured("recap");
     let pending = 0;
     let drafts = { total: 0, delivered: 0, skipped: 0, pending: 0 };
     if (db) {

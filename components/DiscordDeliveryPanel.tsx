@@ -125,7 +125,7 @@ export function DiscordDeliveryPanel() {
     return () => clearInterval(id);
   }, [load]);
 
-  const sendTest = useCallback(async (kind: "options" | "stocks") => {
+  const sendTest = useCallback(async (kind: "options") => {
     setBusy(`test-${kind}`);
     setFlash(null);
     try {
@@ -208,14 +208,9 @@ export function DiscordDeliveryPanel() {
   ];
 
   const actions = (
-    <>
-      <button type="button" className="ui-btn ui-btn-sm" disabled={busy === "test-options"} onClick={() => sendTest("options")}>
-        Test options
-      </button>
-      <button type="button" className="ui-btn ui-btn-sm" disabled={busy === "test-stocks"} onClick={() => sendTest("stocks")}>
-        Test stocks
-      </button>
-    </>
+    <button type="button" className="ui-btn ui-btn-sm" disabled={busy === "test-options"} onClick={() => sendTest("options")}>
+      Test alerts
+    </button>
   );
 
   const recent = deliveries ?? [];
@@ -255,12 +250,15 @@ export function DiscordDeliveryPanel() {
       </div>
 
       <div className="ui-statusbar" style={{ marginBottom: 4 }}>
-        {(["options", "stocks", "recap", "ownerResearch", "ownerActionable", "lifecycle", "content"] as const).map((kind) => {
+        {([
+          ["options", "Alerts"],
+          ["recap", "Recaps"],
+        ] as const).map(([kind, label]) => {
           const on = health?.webhooks?.[kind] ?? false;
           const isRecap = kind === "recap";
           return (
             <div className="ui-statuscell" key={kind}>
-              <span className="ui-statuscell-k">{kind} webhook</span>
+              <span className="ui-statuscell-k">{label}</span>
               <span className="ui-statuscell-v">
                 <span className={`ui-statusdot ${on ? "ok" : isRecap ? "" : "warn"}`} />
                 {on ? "Configured" : "NOT CONFIGURED"}

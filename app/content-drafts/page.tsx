@@ -102,7 +102,7 @@ export default function ContentDraftsPage() {
     <PageContainer>
       <PageHeader
         title="Content Drafts"
-        subtitle="Owner-only Twitter/X suggestions — deterministic, never auto-posted. Uses DISCORD_WEBHOOK_CONTENT only."
+        subtitle="Owner-only Twitter/X suggestions — deterministic, never auto-posted. Discord copies route to Recaps."
       />
 
       <Card title="Filters">
@@ -150,7 +150,7 @@ export default function ContentDraftsPage() {
                 </div>
               </button>
             ))}
-            {drafts.length === 0 && <p style={{ opacity: 0.7 }}>No drafts yet. Enable CONTENT_EVENTS_ENABLED=1 with DISCORD_WEBHOOK_CONTENT set.</p>}
+            {drafts.length === 0 && <p style={{ opacity: 0.7 }}>No drafts yet. Enable CONTENT_EVENTS_ENABLED=1 with DISCORD_WEBHOOK_RECAP set.</p>}
           </div>
         </Card>
 

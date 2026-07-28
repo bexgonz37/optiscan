@@ -166,7 +166,7 @@ async function sendLifecycleDiscordUpdate(
     }
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { postToDiscord } = require("@/lib/notifications");
-    const r = await postToDiscord(body, { webhook: "lifecycle" });
+    const r = await postToDiscord(body, { webhook: "options" });
     return { ok: true, messageId: r.messageId ?? null };
   };
   try {

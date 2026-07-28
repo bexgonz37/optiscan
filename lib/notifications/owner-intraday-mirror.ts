@@ -6,9 +6,7 @@ import { tradingDay } from "../trading-session.ts";
 import { resolveOperatingMode } from "../dashboard/operating-mode.ts";
 import { buildOpportunityIdentity, opportunityFingerprint } from "../opportunity-case/identity.ts";
 import {
-  formatIntradayActionable,
   type IntradayActionableInput,
-  sendOwnerResearchNotify,
 } from "./owner-research-notify.ts";
 import type { DeliveryInput } from "../research/options/delivery.ts";
 
@@ -35,14 +33,6 @@ export interface IntradayMirrorResult {
 
 function intradayMirrorEnabled(env: NodeJS.ProcessEnv): boolean {
   return env.OWNER_RESEARCH_DISCORD_ENABLED === "1" && env.OWNER_RESEARCH_INTRADAY_ENABLED === "1";
-}
-
-function ownerActionableWebhook(env: NodeJS.ProcessEnv): string {
-  return String(env.DISCORD_WEBHOOK_OWNER_ACTIONABLE ?? "").trim();
-}
-
-function optionsWebhook(env: NodeJS.ProcessEnv): string {
-  return String(env.DISCORD_WEBHOOK_OPTIONS ?? env.DISCORD_WEBHOOK_URL ?? "").trim();
 }
 
 export function intradayMirrorDedupKey(
@@ -155,48 +145,11 @@ export function shouldMirrorIntradayActionable(
  */
 export async function mirrorOwnerIntradayOnSent(opts: IntradayMirrorInput): Promise<IntradayMirrorResult> {
   try {
-    const env = opts.env ?? process.env;
-    const nowMs = opts.nowMs ?? Date.now();
     const gate = shouldMirrorIntradayActionable(opts);
     if (!gate.ok || !gate.fingerprint) {
       return { mirrored: false, skipped: true, reason: gate.reason };
     }
-    if (!ownerActionableWebhook(env)) {
-      return { mirrored: false, skipped: true, reason: "DISCORD_WEBHOOK_OWNER_ACTIONABLE not configured" };
-    }
-    if (ownerActionableWebhook(env) === optionsWebhook(env)) {
-      return { mirrored: false, skipped: true, reason: "owner_actionable_same_as_options" };
-    }
-
-    const dedupKey = intradayMirrorDedupKey(gate.fingerprint, opts.delivery.contract.optionSymbol, "send");
-    const content = formatIntradayActionable(buildIntradayActionablePayload({
-      delivery: opts.delivery,
-      actionableReason: opts.actionableReason,
-      invalidation: opts.invalidation,
-      setupFamily: opts.setupFamily ?? opts.delivery.strategy,
-      opportunityCaseId: opts.opportunityCaseId,
-      label: "LIVE",
-    }));
-
-    const notify = await sendOwnerResearchNotify({
-      db: opts.db,
-      kind: "intraday_actionable",
-      content,
-      symbol: dedupKey,
-      env,
-      nowMs,
-      postOverride: opts.postRecap
-        ? async (body) => {
-            const res = await opts.postRecap!(body);
-            return { ok: res.ok, reason: res.reason };
-          }
-        : undefined,
-    });
-    return {
-      mirrored: notify.sent,
-      skipped: notify.skipped,
-      reason: notify.reason,
-    };
+    return { mirrored: false, skipped: true, reason: "canonical_options_alert_already_sent" };
   } catch (err: any) {
     return { mirrored: false, skipped: false, reason: String(err?.message ?? err).slice(0, 160) };
   }

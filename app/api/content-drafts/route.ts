@@ -52,7 +52,7 @@ export async function GET(req: Request) {
     return NextResponse.json({
       ok: true,
       drafts,
-      note: "Owner-only drafts — never auto-posted to X/Twitter. Uses DISCORD_WEBHOOK_CONTENT only.",
+      note: "Owner-only drafts — never auto-posted to X/Twitter. Discord copies route to DISCORD_WEBHOOK_RECAP.",
     });
   } catch (err) {
     return jsonFromRouteError(err);

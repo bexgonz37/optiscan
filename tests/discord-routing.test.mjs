@@ -6,6 +6,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildDiscordRoutingRows } from "../lib/discord-routing.ts";
 import {
+  formatMarketOpenConfirm,
   ownerNotifyDestinationForKind,
   sendOwnerResearchNotify,
 } from "../lib/notifications/owner-research-notify.ts";
@@ -27,17 +28,17 @@ function notifyDb() {
   return db;
 }
 
-test("routing taxonomy keeps actionable, research, recap, lifecycle, and content separate", () => {
-  assert.equal(ownerNotifyDestinationForKind("intraday_actionable").webhook, "owner_actionable");
-  assert.equal(ownerNotifyDestinationForKind("research_only_bearish").webhook, "owner_research");
-  assert.equal(ownerNotifyDestinationForKind("blocked_candidate").webhook, "owner_research");
-  assert.equal(ownerNotifyDestinationForKind("missed_opportunity").webhook, "owner_research");
-  assert.equal(ownerNotifyDestinationForKind("shadow_insight").webhook, "owner_research");
+test("routing taxonomy uses only Alerts and Recaps channels", () => {
+  assert.equal(ownerNotifyDestinationForKind("intraday_actionable").webhook, "options");
+  assert.equal(ownerNotifyDestinationForKind("research_only_bearish").webhook, "recap");
+  assert.equal(ownerNotifyDestinationForKind("blocked_candidate").webhook, "recap");
+  assert.equal(ownerNotifyDestinationForKind("missed_opportunity").webhook, "recap");
+  assert.equal(ownerNotifyDestinationForKind("shadow_insight").webhook, "recap");
   assert.equal(ownerNotifyDestinationForKind("eod_watchlist").webhook, "recap");
   assert.equal(ownerNotifyDestinationForKind("premarket_plan").webhook, "recap");
 });
 
-test("missing owner research webhook does not fall back to recap", async () => {
+test("research and missed opportunity messages require recap", async () => {
   let posted = 0;
   const result = await sendOwnerResearchNotify({
     db: notifyDb(),
@@ -45,8 +46,7 @@ test("missing owner research webhook does not fall back to recap", async () => {
     content: "Research-only bearish setup",
     env: {
       OWNER_RESEARCH_DISCORD_ENABLED: "1",
-      DISCORD_WEBHOOK_RECAP: "https://discord.com/api/webhooks/recap-secret",
-      DISCORD_WEBHOOK_OWNER_RESEARCH: "",
+      DISCORD_WEBHOOK_RECAP: "",
     },
     postOverride: async () => {
       posted += 1;
@@ -55,27 +55,89 @@ test("missing owner research webhook does not fall back to recap", async () => {
   });
   assert.equal(result.sent, false);
   assert.equal(result.skipped, true);
-  assert.match(result.reason, /DISCORD_WEBHOOK_OWNER_RESEARCH not configured/);
+  assert.match(result.reason, /DISCORD_WEBHOOK_RECAP not configured/);
   assert.equal(posted, 0);
 });
 
-test("owner research webhook sends research-only bearish candidate when configured", async () => {
+test("recap webhook sends research-only bearish candidate when configured", async () => {
   let posted = 0;
+  let postedContent = "";
   const result = await sendOwnerResearchNotify({
     db: notifyDb(),
     kind: "research_only_bearish",
     content: "Research-only bearish setup",
     env: {
       OWNER_RESEARCH_DISCORD_ENABLED: "1",
-      DISCORD_WEBHOOK_OWNER_RESEARCH: "https://discord.com/api/webhooks/research-secret",
+      DISCORD_WEBHOOK_RECAP: "https://discord.com/api/webhooks/recap-secret",
+    },
+    postOverride: async (content) => {
+      posted += 1;
+      postedContent = content;
+      return { ok: true };
+    },
+  });
+  assert.equal(result.sent, true);
+  assert.equal(posted, 1);
+  assert.match(postedContent, /RESEARCH/);
+  assert.match(postedContent, /Not executable/i);
+});
+
+test("recap notifications reject live alert wording", async () => {
+  let posted = 0;
+  const result = await sendOwnerResearchNotify({
+    db: notifyDb(),
+    kind: "market_open_confirm",
+    content: "TRADE NOW CANDIDATE on SPY",
+    env: {
+      OWNER_RESEARCH_DISCORD_ENABLED: "1",
+      DISCORD_WEBHOOK_RECAP: "https://discord.com/api/webhooks/recap-secret",
     },
     postOverride: async () => {
       posted += 1;
       return { ok: true };
     },
   });
-  assert.equal(result.sent, true);
-  assert.equal(posted, 1);
+  assert.equal(result.sent, false);
+  assert.equal(result.skipped, true);
+  assert.match(result.reason, /live-alert language/);
+  assert.equal(posted, 0);
+});
+
+test("market-open revalidation recap does not use TRADE NOW wording", () => {
+  const plan = {
+    tradingDay: "2026-07-27",
+    planVersion: "test",
+    marketContext: { spyNote: "SPY note", qqqNote: "QQQ note" },
+    recommendations: [],
+  };
+  const msg = formatMarketOpenConfirm(plan);
+  assert.match(msg, /WATCHLIST/);
+  assert.match(msg, /Not executable/);
+  assert.doesNotMatch(msg, /TRADE NOW/);
+});
+
+test("actionable owner notifications require alerts webhook and never use recap only", async () => {
+  let posted = 0;
+  const result = await sendOwnerResearchNotify({
+    db: notifyDb(),
+    kind: "intraday_actionable",
+    content: "TRADE NOW CANDIDATE",
+    symbol: "SPY",
+    env: {
+      OWNER_RESEARCH_DISCORD_ENABLED: "1",
+      OWNER_RESEARCH_INTRADAY_ENABLED: "1",
+      DISCORD_WEBHOOK_OPTIONS: "",
+      DISCORD_WEBHOOK_RECAP: "https://discord.com/api/webhooks/recap-secret",
+    },
+    postOverride: async () => {
+      posted += 1;
+      return { ok: true };
+    },
+  });
+  assert.equal(result.sent, false);
+  assert.equal(result.skipped, true);
+  assert.match(result.reason, /DISCORD_WEBHOOK_OPTIONS not configured/);
+  assert.equal(posted, 0);
 });
 
 test("recap messages require recap and do not use options fallback", async () => {
@@ -100,50 +162,45 @@ test("recap messages require recap and do not use options fallback", async () =>
   assert.equal(posted, 0);
 });
 
-test("webhook resolver source supports lifecycle fallback and same-webhook duplicate checks", () => {
+test("webhook resolver source exposes only options stocks recap and default kinds", () => {
   const notifications = read("lib/notifications.ts");
   const mirror = read("lib/notifications/owner-intraday-mirror.ts");
-  assert.match(notifications, /kind === "lifecycle"\) return env\.DISCORD_WEBHOOK_LIFECYCLE \?\? env\.DISCORD_WEBHOOK_OPTIONS/);
-  assert.match(notifications, /kind === "owner_research"\) return env\.DISCORD_WEBHOOK_OWNER_RESEARCH/);
-  assert.match(mirror, /ownerActionableWebhook\(env\) === optionsWebhook\(env\)/);
+  assert.doesNotMatch(notifications, /owner_research|owner_actionable|DISCORD_WEBHOOK_OWNER|DISCORD_WEBHOOK_LIFECYCLE|DISCORD_WEBHOOK_CONTENT/);
+  assert.match(mirror, /canonical_options_alert_already_sent/);
 });
 
-test("health routing table marks live actionables outside recap and research to owner research", () => {
+test("health routing table marks live actionables and lifecycle to Alerts, research/content to Recaps", () => {
   const rows = buildDiscordRoutingRows({
     webhooks: {
       options: true,
       recap: true,
-      ownerResearch: false,
-      ownerActionable: false,
-      lifecycle: false,
-      content: true,
     },
     lastOptionsSendAt: "2026-07-27T14:22:10.777Z",
   });
-  const tradeNow = rows.find((r) => r.messageType === "TRADE NOW CANDIDATE");
-  const ownerMirror = rows.find((r) => r.messageType === "Owner actionable mirror");
-  const research = rows.find((r) => r.messageType.startsWith("Almost ready"));
-  const recap = rows.find((r) => r.messageType.startsWith("EOD recap"));
-  const content = rows.find((r) => r.messageType.startsWith("Content draft"));
+  const tradeNow = rows.find((r) => r.messageType.includes("TRADE NOW"));
+  const bearish = rows.find((r) => r.messageType.includes("BEARISH"));
+  const lifecycle = rows.find((r) => r.messageType.includes("lifecycle"));
+  const research = rows.find((r) => r.messageType.includes("blocked / missed"));
+  const content = rows.find((r) => r.messageType.includes("content ideas"));
   assert.ok(tradeNow);
-  assert.equal(tradeNow.destination, "Options alert webhook");
+  assert.equal(tradeNow.destination, "Alerts webhook (DISCORD_WEBHOOK_OPTIONS)");
   assert.equal(tradeNow.status, "READY");
   assert.doesNotMatch(tradeNow.destination, /recap/i);
-  assert.match(ownerMirror?.error ?? "", /OWNER_ACTIONABLE/);
-  assert.equal(research?.destination, "Owner research webhook");
-  assert.equal(research?.status, "BLOCKED");
-  assert.equal(recap?.destination, "Recap webhook");
-  assert.equal(content?.destination, "Content webhook");
+  assert.equal(bearish?.destination, "Alerts webhook (DISCORD_WEBHOOK_OPTIONS)");
+  assert.equal(lifecycle?.destination, "Alerts webhook (DISCORD_WEBHOOK_OPTIONS)");
+  assert.equal(research?.destination, "Recap webhook (DISCORD_WEBHOOK_RECAP)");
+  assert.equal(content?.destination, "Recap webhook (DISCORD_WEBHOOK_RECAP)");
+  assert.equal(rows.some((r) => /owner|lifecycle webhook|content webhook/i.test(`${r.messageType} ${r.destination} ${r.error ?? ""}`)), false);
 });
 
-test("production code has no recap fallback for owner research or content drafts", () => {
+test("production code routes content drafts to recap and keeps daily summary off Alerts", () => {
   const ownerNotify = read("lib/notifications/owner-research-notify.ts");
   const contentRuntime = read("lib/content/content-drafts-runtime.ts");
   const daily = read("lib/research/options/daily-summary.ts");
-  assert.doesNotMatch(ownerNotify, /DISCORD_WEBHOOK_RECAP\s*\|\|\s*env\.DISCORD_WEBHOOK_URL/);
-  assert.doesNotMatch(ownerNotify, /if\s*\(kind\s*===\s*"intraday_actionable"\)[\s\S]{0,160}webhook:\s*"recap"/);
-  assert.match(contentRuntime, /webhook:\s*"content"/);
-  assert.doesNotMatch(contentRuntime, /webhook:\s*"recap"/);
+  assert.match(ownerNotify, /requiredEnv: "DISCORD_WEBHOOK_OPTIONS"/);
+  assert.match(ownerNotify, /requiredEnv: "DISCORD_WEBHOOK_RECAP"/);
+  assert.match(contentRuntime, /webhook:\s*"recap"/);
+  assert.doesNotMatch(contentRuntime, /webhook:\s*"content"/);
   assert.doesNotMatch(daily, /:\s*"options"/, "daily summary must not fallback to options");
 });
 
@@ -153,7 +210,7 @@ test("verified subscriber call and put delivery remain on options webhook", () =
   assert.match(delivery, /formatPrivateLiveAlert/);
 });
 
-test("lifecycle delivery uses lifecycle route with options fallback in resolver", () => {
+test("lifecycle delivery uses Alerts route", () => {
   const grade = read("lib/research/options/grade.ts");
-  assert.match(grade, /webhook:\s*"lifecycle"/);
+  assert.match(grade, /webhook:\s*"options"/);
 });

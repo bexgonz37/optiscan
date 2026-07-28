@@ -209,7 +209,7 @@ test("daily summary: content from DB, sent once/day, suppressed when the system 
   d.prepare("INSERT INTO options_candidates (symbol, side, selected_strategy, state, why, earliness_phase, created_at_ms) VALUES (?,?,?,?,?,?,?)").run("NVDA", "call", "momentum_acceleration", "READY", "ok", "early", dayStart);
   const s = buildDailySummaryOnDb(d, NOW, ON);
   assert.ok(s && s.candidatesFound === 1 && s.callsEvaluated === 1);
-  assert.match(formatDailySummaryMessage(s), /daily summary/);
+  assert.match(formatDailySummaryMessage(s), /DAILY RECAP/);
   let sends = 0;
   const send = async () => { sends += 1; return { ok: true, error: null }; };
   const now = () => Date.parse(`${day}T21:00:00Z`); // after 16:00 ET
