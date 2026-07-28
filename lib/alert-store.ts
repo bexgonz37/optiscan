@@ -303,6 +303,7 @@ export function listAlerts(f: AlertFilters = {}) {
   const db = getDb();
   ensureAlertQueryCompatColumns(db);
   const deliverySql = alertDeliveryProofSqlForDb(db, "a");
+  const compatSelects = alertCompatSelectsForDb(db, "a");
   const where: string[] = [];
   const params: unknown[] = [];
   if (f.ticker) { where.push("a.ticker = ?"); params.push(String(f.ticker).toUpperCase()); }
@@ -319,6 +320,7 @@ export function listAlerts(f: AlertFilters = {}) {
 
   const sql = `
     SELECT a.*,
+      ${compatSelects}
       (SELECT p.percent_move_from_alert FROM alert_performance p WHERE p.alert_id=a.id AND p.checkpoint='5m') AS move_5m,
       (SELECT s.mid FROM options_snapshots s WHERE s.alert_id=a.id AND s.checkpoint='alert' AND s.mid>0 LIMIT 1) AS entry_mid,
       (SELECT s.spread_pct FROM options_snapshots s WHERE s.alert_id=a.id AND s.checkpoint='alert' LIMIT 1) AS entry_spread_pct,
@@ -365,6 +367,29 @@ function columnSetOnDb(db: DbReader, table: string): Set<string> {
   }
 }
 
+function canSelectAlertColumnOnDb(db: DbReader, column: string): boolean {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(column)) return false;
+  try {
+    db.prepare(`SELECT a.${column} FROM alerts a LIMIT 0`).all?.();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function alertColumnSqlForDb(db: DbReader, column: string, fallback = "NULL", alias = "a"): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(column) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(alias)) return fallback;
+  return canSelectAlertColumnOnDb(db, column) ? `${alias}.${column}` : fallback;
+}
+
+function alertCompatSelectsForDb(db: DbReader, alias = "a"): string {
+  const cols = ["alert_time", "trading_day"];
+  const select = cols
+    .filter((col) => !canSelectAlertColumnOnDb(db, col))
+    .map((col) => `NULL AS ${col}`);
+  return select.length ? `${select.join(",\n      ")},` : "";
+}
+
 function ensureAlertQueryCompatColumns(db: DbReader): void {
   if (!tableExistsOnDb(db, "alerts")) return;
   const cols = columnSetOnDb(db, "alerts");
@@ -402,7 +427,7 @@ function alertDeliveryProofSqlForDb(db: DbReader, alias = "a"): {
 } {
   const cols = columnSetOnDb(db, "alerts");
   const required = ["id", "ticker", "option_symbol", "option_side", "alert_time"];
-  if (!required.every((col) => cols.has(col))) {
+  if (!required.every((col) => cols.has(col) && canSelectAlertColumnOnDb(db, col))) {
     return {
       verified: "0",
       deliveryAlertId: "NULL",
@@ -1027,6 +1052,7 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number; asset
   const db = getDb();
   ensureAlertQueryCompatColumns(db);
   const deliverySql = alertDeliveryProofSqlForDb(db, "a");
+  const alertTimeSql = alertColumnSqlForDb(db, "alert_time", "NULL", "a");
   // Validated literal (never user text) — appended to every per-tier WHERE so
   // options and stock callouts grade separately when asked.
   const assetClause =
@@ -1087,7 +1113,7 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number; asset
   ).all(since);
 
   const recent = db.prepare(
-    `SELECT a.id, a.ticker, a.option_side, a.strike, a.dte, a.alert_time, a.trading_day,
+    `SELECT a.id, a.ticker, a.option_side, a.strike, a.dte, ${alertTimeSql} AS alert_time, a.trading_day,
             a.direction, a.signal_score, a.short_rate_at_alert, a.percent_move_at_alert,
             coalesce(a.asset_class,'options') AS asset_class, a.session,
             a.status, a.is_false_positive, a.option_return_pct, a.option_outcome_win,
@@ -1121,7 +1147,7 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number; asset
   ).all(since, limit);
 
   const recentWinners = db.prepare(
-    `SELECT a.id, a.ticker, a.option_side, a.strike, a.dte, a.alert_time, a.trading_day,
+    `SELECT a.id, a.ticker, a.option_side, a.strike, a.dte, ${alertTimeSql} AS alert_time, a.trading_day,
             a.direction, a.signal_score, a.capture_action,
             a.status, a.is_false_positive, a.option_return_pct, a.option_outcome_win,
             (SELECT p.max_percent_move_after_alert FROM alert_performance p
@@ -1140,7 +1166,7 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number; asset
   ).get(today);
 
   const onTrackNow = db.prepare(
-    `SELECT a.id, a.ticker, a.option_side, a.strike, a.dte, a.alert_time, a.trading_day,
+    `SELECT a.id, a.ticker, a.option_side, a.strike, a.dte, ${alertTimeSql} AS alert_time, a.trading_day,
             a.direction, coalesce(a.asset_class,'options') AS asset_class, a.session,
             a.status, a.option_return_pct, a.option_outcome_win,
             (SELECT s.mid FROM options_snapshots s
