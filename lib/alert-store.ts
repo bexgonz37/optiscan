@@ -42,12 +42,6 @@ const SQL_WINNER = `(
   OR a.option_outcome_win = 1
 )`;
 
-const SQL_VERIFIED_SUBSCRIBER_DELIVERY = verifiedSubscriberDeliverySql("a");
-const SQL_DELIVERY_ALERT_ID = deliveryAlertIdSql("a");
-const SQL_DELIVERY_DISCORD_MESSAGE_ID = deliveryDiscordMessageIdSql("a");
-const SQL_DELIVERY_OPPORTUNITY_CASE_ID = deliveryOpportunityCaseIdSql("a");
-const SQL_DELIVERY_PAPER_TRADE_ID = deliveryPaperTradeIdSql("a");
-
 export interface NewAlert {
   ticker: string;
   source: "momentum" | "unusual" | "manual";
@@ -308,6 +302,7 @@ export function getLatestAlertCapture(ticker: string) {
 export function listAlerts(f: AlertFilters = {}) {
   const db = getDb();
   ensureAlertQueryCompatColumns(db);
+  const deliverySql = alertDeliveryProofSqlForDb(db, "a");
   const where: string[] = [];
   const params: unknown[] = [];
   if (f.ticker) { where.push("a.ticker = ?"); params.push(String(f.ticker).toUpperCase()); }
@@ -332,11 +327,11 @@ export function listAlerts(f: AlertFilters = {}) {
       (SELECT MAX(s.mid) FROM options_snapshots s WHERE s.alert_id=a.id AND s.checkpoint IN ('live','eod') AND s.mid>0) AS best_mid,
       (SELECT max_percent_move_after_alert FROM alert_performance p WHERE p.alert_id=a.id ORDER BY p.checked_at DESC LIMIT 1) AS latest_max_move,
       (SELECT percent_move_from_alert FROM alert_performance p WHERE p.alert_id=a.id AND p.checkpoint='eod') AS eod_move,
-      CASE WHEN coalesce(a.asset_class,'options') = 'options' AND ${SQL_VERIFIED_SUBSCRIBER_DELIVERY} THEN 1 ELSE 0 END AS subscriber_delivered,
-      ${SQL_DELIVERY_ALERT_ID} AS delivery_alert_id,
-      ${SQL_DELIVERY_DISCORD_MESSAGE_ID} AS discord_message_id,
-      ${SQL_DELIVERY_OPPORTUNITY_CASE_ID} AS opportunity_case_id,
-      ${SQL_DELIVERY_PAPER_TRADE_ID} AS delivered_paper_trade_id,
+      CASE WHEN coalesce(a.asset_class,'options') = 'options' AND ${deliverySql.verified} THEN 1 ELSE 0 END AS subscriber_delivered,
+      ${deliverySql.deliveryAlertId} AS delivery_alert_id,
+      ${deliverySql.discordMessageId} AS discord_message_id,
+      ${deliverySql.opportunityCaseId} AS opportunity_case_id,
+      ${deliverySql.paperTradeId} AS delivered_paper_trade_id,
       EXISTS (SELECT 1 FROM trade_journal j WHERE j.alert_id = a.id) AS trade_taken
     FROM alerts a
     ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
@@ -391,6 +386,33 @@ function ensureAlertQueryCompatColumns(db: DbReader): void {
     }
     cols.add(col);
   }
+}
+
+function alertDeliveryProofSqlForDb(db: DbReader, alias = "a"): {
+  verified: string;
+  deliveryAlertId: string;
+  discordMessageId: string;
+  opportunityCaseId: string;
+  paperTradeId: string;
+} {
+  const cols = columnSetOnDb(db, "alerts");
+  const required = ["id", "ticker", "option_symbol", "option_side", "alert_time"];
+  if (!required.every((col) => cols.has(col))) {
+    return {
+      verified: "0",
+      deliveryAlertId: "NULL",
+      discordMessageId: "NULL",
+      opportunityCaseId: "NULL",
+      paperTradeId: "NULL",
+    };
+  }
+  return {
+    verified: verifiedSubscriberDeliverySql(alias),
+    deliveryAlertId: deliveryAlertIdSql(alias),
+    discordMessageId: deliveryDiscordMessageIdSql(alias),
+    opportunityCaseId: deliveryOpportunityCaseIdSql(alias),
+    paperTradeId: deliveryPaperTradeIdSql(alias),
+  };
 }
 
 function safeAll(db: DbReader, table: string, sql: string, params: any[] = []): any[] {
@@ -999,13 +1021,14 @@ export function statsSummary(day?: string) {
 export function tradeSignalAccuracy(opts: { days?: number; limit?: number; asset?: "options" | "stock" } = {}) {
   const db = getDb();
   ensureAlertQueryCompatColumns(db);
+  const deliverySql = alertDeliveryProofSqlForDb(db, "a");
   // Validated literal (never user text) — appended to every per-tier WHERE so
   // options and stock callouts grade separately when asked.
   const assetClause =
     opts.asset === "stock" ? " AND coalesce(a.asset_class,'options') = 'stock'"
     : opts.asset === "options" ? " AND coalesce(a.asset_class,'options') = 'options'"
     : "";
-  const deliveryProofClause = opts.asset === "stock" ? "" : ` AND ${SQL_VERIFIED_SUBSCRIBER_DELIVERY}`;
+  const deliveryProofClause = opts.asset === "stock" ? "" : ` AND ${deliverySql.verified}`;
   const days = Math.max(1, Number(opts.days ?? 14));
   const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
   const today = tradingDay();
@@ -1083,10 +1106,10 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number; asset
              ORDER BY n.id DESC LIMIT 1) AS discord_note,
             1 AS discord_sent,
             1 AS subscriber_delivered,
-            ${SQL_DELIVERY_ALERT_ID} AS delivery_alert_id,
-            ${SQL_DELIVERY_DISCORD_MESSAGE_ID} AS discord_message_id,
-            ${SQL_DELIVERY_OPPORTUNITY_CASE_ID} AS opportunity_case_id,
-            ${SQL_DELIVERY_PAPER_TRADE_ID} AS delivered_paper_trade_id
+            ${deliverySql.deliveryAlertId} AS delivery_alert_id,
+            ${deliverySql.discordMessageId} AS discord_message_id,
+            ${deliverySql.opportunityCaseId} AS opportunity_case_id,
+            ${deliverySql.paperTradeId} AS delivered_paper_trade_id
      FROM alerts a
      WHERE a.trading_day >= ? AND a.alert_tier = 'trade'${assetClause}${deliveryProofClause}
      ORDER BY a.id DESC LIMIT ?`,
@@ -1126,10 +1149,10 @@ export function tradeSignalAccuracy(opts: { days?: number; limit?: number; asset
             ${SQL_MOVE_5M} AS move_5m,
             1 AS discord_sent,
             1 AS subscriber_delivered,
-            ${SQL_DELIVERY_ALERT_ID} AS delivery_alert_id,
-            ${SQL_DELIVERY_DISCORD_MESSAGE_ID} AS discord_message_id,
-            ${SQL_DELIVERY_OPPORTUNITY_CASE_ID} AS opportunity_case_id,
-            ${SQL_DELIVERY_PAPER_TRADE_ID} AS delivered_paper_trade_id
+            ${deliverySql.deliveryAlertId} AS delivery_alert_id,
+            ${deliverySql.discordMessageId} AS discord_message_id,
+            ${deliverySql.opportunityCaseId} AS opportunity_case_id,
+            ${deliverySql.paperTradeId} AS delivered_paper_trade_id
      FROM alerts a
      WHERE a.trading_day >= ? AND a.alert_tier = 'trade'${assetClause}${deliveryProofClause} AND a.status = 'tracking'
        AND ${sqlEarlyOnTrack()}

@@ -69,8 +69,13 @@ test("alerts base-column migrations cover old production SQLite files", () => {
 test("alert list and accuracy queries repair legacy alert columns before proof SQL", () => {
   const store = read("lib/alert-store.ts");
   assert.match(store, /function ensureAlertQueryCompatColumns/);
+  assert.match(store, /function alertDeliveryProofSqlForDb/);
   assert.match(store, /export function listAlerts[\s\S]*?ensureAlertQueryCompatColumns\(db\)/);
+  assert.match(store, /export function listAlerts[\s\S]*?alertDeliveryProofSqlForDb\(db, "a"\)/);
   assert.match(store, /export function tradeSignalAccuracy[\s\S]*?ensureAlertQueryCompatColumns\(db\)/);
+  assert.match(store, /export function tradeSignalAccuracy[\s\S]*?alertDeliveryProofSqlForDb\(db, "a"\)/);
+  assert.match(store, /verified: "0"/);
+  assert.match(store, /deliveryAlertId: "NULL"/);
   assert.match(store, /"alert_time", "ALTER TABLE alerts ADD COLUMN alert_time TEXT"/);
 });
 
