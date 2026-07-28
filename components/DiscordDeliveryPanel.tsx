@@ -38,6 +38,10 @@ type Health = {
     destination: string;
     enabled: boolean;
     lastSend: string | null;
+    lastFailure: string | null;
+    categories: string;
+    nextScheduledWindow: string | null;
+    schedulerStatus: string;
     status: "READY" | "OPTIONAL" | "BLOCKED" | "DISABLED";
     error: string | null;
   }[];
@@ -160,6 +164,7 @@ export function DiscordDeliveryPanel() {
   }, [load]);
 
   const recapConfigured = health?.webhooks?.recap ?? false;
+  const watchlistConfigured = health?.webhooks?.watchlist ?? false;
 
   const columns: Column<Delivery>[] = [
     { key: "status", header: "Status", render: (d: Delivery) => <StatusBadge tone={tone(d.status)}>{d.status.replace("_", " ")}</StatusBadge> },
@@ -197,8 +202,12 @@ export function DiscordDeliveryPanel() {
   const routingColumns: Column<NonNullable<Health["routing"]>[number]>[] = [
     { key: "messageType", header: "Message type", render: (r) => r.messageType },
     { key: "destination", header: "Destination", render: (r) => r.destination },
+    { key: "categories", header: "Categories", render: (r) => r.categories },
     { key: "enabled", header: "Enabled", render: (r) => (r.enabled ? "yes" : "no") },
     { key: "lastSend", header: "Last send", render: (r) => timeShort(r.lastSend) },
+    { key: "lastFailure", header: "Last failure", render: (r) => timeShort(r.lastFailure) },
+    { key: "nextScheduledWindow", header: "Next window", render: (r) => r.nextScheduledWindow ?? "-" },
+    { key: "schedulerStatus", header: "Scheduler", render: (r) => r.schedulerStatus },
     { key: "status", header: "Status", render: (r) => <StatusBadge tone={tone(r.status)}>{r.status}</StatusBadge> },
     {
       key: "error",
@@ -252,6 +261,7 @@ export function DiscordDeliveryPanel() {
       <div className="ui-statusbar" style={{ marginBottom: 4 }}>
         {([
           ["options", "Alerts"],
+          ["watchlist", "Watchlist"],
           ["recap", "Recaps"],
         ] as const).map(([kind, label]) => {
           const on = health?.webhooks?.[kind] ?? false;
@@ -270,6 +280,11 @@ export function DiscordDeliveryPanel() {
       {!recapConfigured ? (
         <div className="ui-section-hint">
           Recap webhook is <b>NOT CONFIGURED</b> — daily/weekly scoreboards are skipped. This does not affect options or stock alert delivery.
+        </div>
+      ) : null}
+      {!watchlistConfigured ? (
+        <div className="ui-section-hint">
+          Watchlist webhook is <b>NOT CONFIGURED</b> - next-session, premarket, and market-open watchlist messages are skipped with no Alerts or Recaps fallback.
         </div>
       ) : null}
 

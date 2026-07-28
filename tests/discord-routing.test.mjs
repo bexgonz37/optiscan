@@ -28,14 +28,15 @@ function notifyDb() {
   return db;
 }
 
-test("routing taxonomy uses only Alerts and Recaps channels", () => {
+test("routing taxonomy uses Alerts Watchlist and Recaps channels", () => {
   assert.equal(ownerNotifyDestinationForKind("intraday_actionable").webhook, "options");
   assert.equal(ownerNotifyDestinationForKind("research_only_bearish").webhook, "recap");
   assert.equal(ownerNotifyDestinationForKind("blocked_candidate").webhook, "recap");
   assert.equal(ownerNotifyDestinationForKind("missed_opportunity").webhook, "recap");
   assert.equal(ownerNotifyDestinationForKind("shadow_insight").webhook, "recap");
-  assert.equal(ownerNotifyDestinationForKind("eod_watchlist").webhook, "recap");
-  assert.equal(ownerNotifyDestinationForKind("premarket_plan").webhook, "recap");
+  assert.equal(ownerNotifyDestinationForKind("next_session_watchlist").webhook, "watchlist");
+  assert.equal(ownerNotifyDestinationForKind("premarket_watchlist_update").webhook, "watchlist");
+  assert.equal(ownerNotifyDestinationForKind("market_open_revalidation").webhook, "watchlist");
 });
 
 test("research and missed opportunity messages require recap", async () => {
@@ -82,15 +83,15 @@ test("recap webhook sends research-only bearish candidate when configured", asyn
   assert.match(postedContent, /Not executable/i);
 });
 
-test("recap notifications reject live alert wording", async () => {
+test("watchlist notifications reject live alert wording", async () => {
   let posted = 0;
   const result = await sendOwnerResearchNotify({
     db: notifyDb(),
-    kind: "market_open_confirm",
+    kind: "market_open_revalidation",
     content: "TRADE NOW CANDIDATE on SPY",
     env: {
       OWNER_RESEARCH_DISCORD_ENABLED: "1",
-      DISCORD_WEBHOOK_RECAP: "https://discord.com/api/webhooks/recap-secret",
+      DISCORD_WEBHOOK_WATCHLIST: "https://discord.com/api/webhooks/watchlist-secret",
     },
     postOverride: async () => {
       posted += 1;
@@ -103,7 +104,7 @@ test("recap notifications reject live alert wording", async () => {
   assert.equal(posted, 0);
 });
 
-test("market-open revalidation recap does not use TRADE NOW wording", () => {
+test("market-open revalidation watchlist does not use TRADE NOW wording", () => {
   const plan = {
     tradingDay: "2026-07-27",
     planVersion: "test",
@@ -144,7 +145,7 @@ test("recap messages require recap and do not use options fallback", async () =>
   let posted = 0;
   const result = await sendOwnerResearchNotify({
     db: notifyDb(),
-    kind: "eod_watchlist",
+    kind: "missed_opportunity",
     content: "EOD recap",
     env: {
       OWNER_RESEARCH_DISCORD_ENABLED: "1",
@@ -162,34 +163,59 @@ test("recap messages require recap and do not use options fallback", async () =>
   assert.equal(posted, 0);
 });
 
-test("webhook resolver source exposes only options stocks recap and default kinds", () => {
+test("watchlist messages require watchlist and do not fallback to alerts or recaps", async () => {
+  let posted = 0;
+  const result = await sendOwnerResearchNotify({
+    db: notifyDb(),
+    kind: "next_session_watchlist",
+    content: "NEXT SESSION WATCHLIST\nWATCH only",
+    env: {
+      OWNER_RESEARCH_DISCORD_ENABLED: "1",
+      DISCORD_WEBHOOK_OPTIONS: "https://discord.com/api/webhooks/options-secret",
+      DISCORD_WEBHOOK_RECAP: "https://discord.com/api/webhooks/recap-secret",
+      DISCORD_WEBHOOK_WATCHLIST: "",
+    },
+    postOverride: async () => {
+      posted += 1;
+      return { ok: true };
+    },
+  });
+  assert.equal(result.sent, false);
+  assert.equal(result.skipped, true);
+  assert.match(result.reason, /DISCORD_WEBHOOK_WATCHLIST not configured/);
+  assert.equal(posted, 0);
+});
+
+test("webhook resolver source exposes options stocks watchlist recap and default kinds", () => {
   const notifications = read("lib/notifications.ts");
   const mirror = read("lib/notifications/owner-intraday-mirror.ts");
   assert.doesNotMatch(notifications, /owner_research|owner_actionable|DISCORD_WEBHOOK_OWNER|DISCORD_WEBHOOK_LIFECYCLE|DISCORD_WEBHOOK_CONTENT/);
   assert.match(mirror, /canonical_options_alert_already_sent/);
 });
 
-test("health routing table marks live actionables and lifecycle to Alerts, research/content to Recaps", () => {
+test("health routing table marks Alerts Watchlist and Recaps", () => {
   const rows = buildDiscordRoutingRows({
     webhooks: {
       options: true,
+      watchlist: true,
       recap: true,
     },
     lastOptionsSendAt: "2026-07-27T14:22:10.777Z",
+    lastWatchlistSendAt: "2026-07-27T22:00:00.000Z",
+    nextWatchlistWindow: "NEXT SESSION WATCHLIST at 2026-07-28T22:00:00.000Z",
   });
-  const tradeNow = rows.find((r) => r.messageType.includes("TRADE NOW"));
-  const bearish = rows.find((r) => r.messageType.includes("BEARISH"));
-  const lifecycle = rows.find((r) => r.messageType.includes("lifecycle"));
-  const research = rows.find((r) => r.messageType.includes("blocked / missed"));
-  const content = rows.find((r) => r.messageType.includes("content ideas"));
-  assert.ok(tradeNow);
-  assert.equal(tradeNow.destination, "Alerts webhook (DISCORD_WEBHOOK_OPTIONS)");
-  assert.equal(tradeNow.status, "READY");
-  assert.doesNotMatch(tradeNow.destination, /recap/i);
-  assert.equal(bearish?.destination, "Alerts webhook (DISCORD_WEBHOOK_OPTIONS)");
-  assert.equal(lifecycle?.destination, "Alerts webhook (DISCORD_WEBHOOK_OPTIONS)");
-  assert.equal(research?.destination, "Recap webhook (DISCORD_WEBHOOK_RECAP)");
-  assert.equal(content?.destination, "Recap webhook (DISCORD_WEBHOOK_RECAP)");
+  const alerts = rows.find((r) => r.messageType === "Alerts");
+  const watchlist = rows.find((r) => r.messageType === "Watchlist");
+  const recaps = rows.find((r) => r.messageType === "Recaps");
+  assert.equal(rows.length, 3);
+  assert.equal(alerts?.destination, "Alerts webhook (DISCORD_WEBHOOK_OPTIONS)");
+  assert.match(alerts?.categories ?? "", /TRADE NOW/);
+  assert.match(alerts?.categories ?? "", /BEARISH TRADE CANDIDATE/);
+  assert.equal(watchlist?.destination, "Watchlist webhook (DISCORD_WEBHOOK_WATCHLIST)");
+  assert.match(watchlist?.categories ?? "", /premarket refresh/);
+  assert.equal(watchlist?.nextScheduledWindow, "NEXT SESSION WATCHLIST at 2026-07-28T22:00:00.000Z");
+  assert.equal(recaps?.destination, "Recap webhook (DISCORD_WEBHOOK_RECAP)");
+  assert.match(recaps?.categories ?? "", /content drafts/);
   assert.equal(rows.some((r) => /owner|lifecycle webhook|content webhook/i.test(`${r.messageType} ${r.destination} ${r.error ?? ""}`)), false);
 });
 
@@ -198,6 +224,7 @@ test("production code routes content drafts to recap and keeps daily summary off
   const contentRuntime = read("lib/content/content-drafts-runtime.ts");
   const daily = read("lib/research/options/daily-summary.ts");
   assert.match(ownerNotify, /requiredEnv: "DISCORD_WEBHOOK_OPTIONS"/);
+  assert.match(ownerNotify, /requiredEnv: "DISCORD_WEBHOOK_WATCHLIST"/);
   assert.match(ownerNotify, /requiredEnv: "DISCORD_WEBHOOK_RECAP"/);
   assert.match(contentRuntime, /webhook:\s*"recap"/);
   assert.doesNotMatch(contentRuntime, /webhook:\s*"content"/);

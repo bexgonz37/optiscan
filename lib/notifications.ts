@@ -43,6 +43,7 @@ import { legacyOptionsSubscriberDiscordBlocked } from "./subscriber-discord-owne
 export type DiscordWebhookKind =
   | "options"
   | "stocks"
+  | "watchlist"
   | "recap"
   | "default";
 
@@ -57,6 +58,7 @@ export function extendedStockNotifyEnabled(): boolean {
 function webhookEnv(kind: DiscordWebhookKind, env: NodeJS.ProcessEnv = process.env): string | undefined {
   if (kind === "options") return env.DISCORD_WEBHOOK_OPTIONS ?? env.DISCORD_WEBHOOK_URL;
   if (kind === "stocks") return env.DISCORD_WEBHOOK_STOCKS;
+  if (kind === "watchlist") return env.DISCORD_WEBHOOK_WATCHLIST;
   if (kind === "recap") return env.DISCORD_WEBHOOK_RECAP;
   return env.DISCORD_WEBHOOK_URL;
 }
@@ -77,6 +79,7 @@ export function discordConfigured(): boolean {
     String(process.env.DISCORD_WEBHOOK_URL ?? "").trim()
     || String(process.env.DISCORD_WEBHOOK_OPTIONS ?? "").trim()
     || String(process.env.DISCORD_WEBHOOK_STOCKS ?? "").trim()
+    || String(process.env.DISCORD_WEBHOOK_WATCHLIST ?? "").trim()
     || String(process.env.DISCORD_WEBHOOK_RECAP ?? "").trim()
   );
 }

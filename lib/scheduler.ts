@@ -16,6 +16,8 @@
  * supervisor cycle stays behind the canonical-path + auto-send gates.
  */
 import { schedulerIntervals, jobDue } from "@/lib/scheduler-policy";
+import { isMarketHoliday, tradingDay } from "@/lib/trading-session";
+import { isEarlyCloseDay } from "@/lib/market-session-guard";
 
 const LEASE_NAME = "scheduler";
 const BASE_TICK_MS = 15_000;
@@ -172,18 +174,72 @@ async function contentDraftsJob(): Promise<void> {
   await runContentDraftsScan(db(), {}, process.env);
 }
 
-/** ET minutes since midnight for schedule windows. */
-function etMinutesNow(nowMs: number): number {
+type EtClock = { weekday: string; minutes: number };
+
+function etClockNow(nowMs: number): EtClock {
   const fmt = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
+    weekday: "short",
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
   });
   const parts = fmt.formatToParts(new Date(nowMs));
+  const weekday = parts.find((p) => p.type === "weekday")?.value ?? "";
   const h = Number(parts.find((p) => p.type === "hour")?.value ?? 0) % 24;
   const m = Number(parts.find((p) => p.type === "minute")?.value ?? 0);
-  return h * 60 + m;
+  return { weekday, minutes: h * 60 + m };
+}
+
+export type WatchlistScheduleKind = "next_session_watchlist" | "premarket_watchlist_update" | "market_open_revalidation";
+
+export type WatchlistScheduleWindow = {
+  kind: WatchlistScheduleKind;
+  label: string;
+  sourceWindow: string;
+  compareAnyKind: boolean;
+};
+
+export function watchlistScheduleWindow(nowMs: number, env: NodeJS.ProcessEnv = process.env): WatchlistScheduleWindow | null {
+  const clock = etClockNow(nowMs);
+  const day = tradingDay(nowMs);
+  if (clock.weekday === "Sat" || clock.weekday === "Sun" || isMarketHoliday(day)) return null;
+  const early = isEarlyCloseDay(day, env);
+  if (clock.minutes >= 18 * 60 && clock.minutes < 18 * 60 + 10) {
+    return {
+      kind: "next_session_watchlist",
+      label: "NEXT SESSION WATCHLIST",
+      sourceWindow: early ? "1800_et_after_early_close" : "1800_et",
+      compareAnyKind: false,
+    };
+  }
+  if (clock.minutes >= 8 * 60 + 30 && clock.minutes < 8 * 60 + 40) {
+    return {
+      kind: "premarket_watchlist_update",
+      label: "PREMARKET WATCHLIST UPDATE",
+      sourceWindow: "0830_et",
+      compareAnyKind: true,
+    };
+  }
+  if (clock.minutes >= 9 * 60 + 35 && clock.minutes < 9 * 60 + 40) {
+    return {
+      kind: "market_open_revalidation",
+      label: "MARKET-OPEN REVALIDATION",
+      sourceWindow: "0935_0940_et",
+      compareAnyKind: true,
+    };
+  }
+  return null;
+}
+
+export function nextWatchlistWindowSummary(nowMs: number = Date.now(), env: NodeJS.ProcessEnv = process.env): string | null {
+  const stepMs = 5 * 60_000;
+  const limitMs = nowMs + 8 * 24 * 60 * 60_000;
+  for (let t = nowMs; t <= limitMs; t += stepMs) {
+    const w = watchlistScheduleWindow(t, env);
+    if (w) return `${w.label} at ${new Date(t).toISOString()}`;
+  }
+  return null;
 }
 
 /**
@@ -195,56 +251,50 @@ async function overnightResearchJob(nowMs: number): Promise<void> {
   const {
     buildNextSessionPlan,
     persistOvernightPlan,
-    loadOvernightPlan,
-    overnightPlanDelta,
+    persistWatchlistVersionOnDb,
+    markWatchlistVersionOnDb,
   } = require("@/lib/research/overnight/next-session-plan");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const {
     formatEodWatchlist,
-    formatEveningDelta,
     formatPremarketPlan,
     formatMarketOpenConfirm,
     sendOwnerResearchNotify,
   } = require("@/lib/notifications/owner-research-notify");
 
-  const minutes = etMinutesNow(nowMs);
+  const window = watchlistScheduleWindow(nowMs);
+  if (!window) return;
   const database = db();
-  const prev = loadOvernightPlan(database);
   const plan = buildNextSessionPlan(database, nowMs);
   persistOvernightPlan(database, plan);
 
-  // Windows (ET): post-close 16:15–16:45, evening 20:30–21:00, premarket 08:00–08:30, open 09:35–10:00
-  if (minutes >= 16 * 60 + 15 && minutes < 16 * 60 + 45) {
-    await sendOwnerResearchNotify({
-      db: database,
-      kind: "eod_watchlist",
-      content: formatEodWatchlist(plan),
-      nowMs,
-    });
-  } else if (minutes >= 20 * 60 + 30 && minutes < 21 * 60) {
-    const delta = overnightPlanDelta(prev, plan);
-    if (delta.changed) {
-      await sendOwnerResearchNotify({
-        db: database,
-        kind: "evening_delta",
-        content: formatEveningDelta(plan, delta.reasons),
-        nowMs,
-      });
-    }
-  } else if (minutes >= 8 * 60 && minutes < 8 * 60 + 30) {
-    await sendOwnerResearchNotify({
-      db: database,
-      kind: "premarket_plan",
-      content: formatPremarketPlan(plan),
-      nowMs,
-    });
-  } else if (minutes >= 9 * 60 + 35 && minutes < 10 * 60) {
-    await sendOwnerResearchNotify({
-      db: database,
-      kind: "market_open_confirm",
-      content: formatMarketOpenConfirm(plan),
-      nowMs,
-    });
+  // Windows (ET): 18:00 next-session, 08:30 premarket, 09:35-09:40 open revalidation.
+  const version = persistWatchlistVersionOnDb(database, plan, {
+    kind: window.kind,
+    sourceWindow: window.sourceWindow,
+    compareAnyKind: window.compareAnyKind,
+  });
+  if (!version.changed) {
+    markWatchlistVersionOnDb(database, version.versionId, "SUPPRESSED_UNCHANGED", nowMs);
+    return;
+  }
+  const content = window.kind === "next_session_watchlist"
+    ? formatEodWatchlist(plan)
+    : window.kind === "premarket_watchlist_update"
+      ? formatPremarketPlan(plan)
+      : formatMarketOpenConfirm(plan, version.reasons);
+  const res = await sendOwnerResearchNotify({
+    db: database,
+    kind: window.kind,
+    content,
+    symbol: version.versionId,
+    nowMs,
+  });
+  if (res.sent) markWatchlistVersionOnDb(database, version.versionId, "SENT", nowMs);
+  else if (res.skipped && /DISCORD_WEBHOOK_WATCHLIST not configured/.test(res.reason)) {
+    markWatchlistVersionOnDb(database, version.versionId, "SKIPPED_NO_WEBHOOK", nowMs, res.reason);
+  } else {
+    markWatchlistVersionOnDb(database, version.versionId, res.skipped ? "SUPPRESSED_UNCHANGED" : "FAILED", nowMs, res.reason);
   }
 }
 

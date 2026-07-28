@@ -38,6 +38,40 @@ export interface OvernightPlan {
   };
 }
 
+export type WatchlistVersionKind =
+  | "next_session_watchlist"
+  | "premarket_watchlist_update"
+  | "market_open_revalidation"
+  | "watchlist_delta";
+
+export type WatchlistRowStatus =
+  | "WATCH"
+  | "ALMOST READY"
+  | "VERIFY AT OPEN"
+  | "REMOVED"
+  | "INVALIDATED";
+
+export interface NormalizedWatchlistRow {
+  rank: number;
+  symbol: string;
+  direction: "CALL" | "PUT";
+  setupFamily: string;
+  trigger: string;
+  invalidation: string;
+  confidenceBand: "LOW" | "MEDIUM" | "HIGH";
+  catalyst: string;
+  status: WatchlistRowStatus;
+  preferredDte: string;
+  preferredMoneyness: PreferredMoneyness;
+}
+
+export interface WatchlistVersionResult {
+  versionId: string;
+  payloadHash: string;
+  changed: boolean;
+  reasons: string[];
+}
+
 type PlanDb = {
   prepare: (sql: string) => {
     get: (...a: unknown[]) => unknown;
@@ -68,6 +102,39 @@ export function ensureOvernightWatchlistSchema(db: PlanDb): void {
       PRIMARY KEY (trading_day, symbol)
     );
     CREATE INDEX IF NOT EXISTS idx_overnight_watchlist_day ON overnight_watchlist(trading_day, rank);
+    CREATE TABLE IF NOT EXISTS watchlist_versions (
+      version_id TEXT PRIMARY KEY,
+      trading_day TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      built_at_ms INTEGER NOT NULL,
+      payload_hash TEXT NOT NULL,
+      source_window TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'BUILT',
+      sent_at_ms INTEGER,
+      failure_reason TEXT,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_watchlist_versions_day_kind ON watchlist_versions(trading_day, kind, built_at_ms);
+    CREATE TABLE IF NOT EXISTS watchlist_version_symbols (
+      version_id TEXT NOT NULL,
+      trading_day TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      rank INTEGER NOT NULL,
+      symbol TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      setup_family TEXT,
+      trigger TEXT,
+      invalidation TEXT,
+      confidence_band TEXT,
+      catalyst TEXT,
+      status TEXT,
+      preferred_dte TEXT,
+      preferred_moneyness TEXT,
+      payload_json TEXT NOT NULL,
+      PRIMARY KEY (version_id, symbol)
+    );
   `);
 }
 
@@ -234,4 +301,147 @@ export function overnightPlanDelta(
     }
   }
   return { changed: reasons.length > 0, reasons };
+}
+
+function djb2(s: string): string {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = (((h << 5) + h) ^ s.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+
+function confidenceBand(confidence: number): "LOW" | "MEDIUM" | "HIGH" {
+  if (confidence >= 80) return "HIGH";
+  if (confidence >= 60) return "MEDIUM";
+  return "LOW";
+}
+
+function numericTrigger(v: number | null): string {
+  return v == null ? "VERIFY AT OPEN" : String(v);
+}
+
+export function normalizeWatchlistPlan(plan: OvernightPlan): NormalizedWatchlistRow[] {
+  return plan.recommendations.map((r) => ({
+    rank: r.rank,
+    symbol: r.symbol.toUpperCase(),
+    direction: r.bias === "bearish" ? "PUT" : "CALL",
+    setupFamily: r.setupFamily,
+    trigger: numericTrigger(r.triggerLevel),
+    invalidation: numericTrigger(r.invalidationLevel),
+    confidenceBand: confidenceBand(r.confidence),
+    catalyst: plan.marketContext.newsNote || "not stored",
+    status: r.triggerLevel == null ? "VERIFY AT OPEN" : "WATCH",
+    preferredDte: r.preferredDteRange,
+    preferredMoneyness: r.preferredMoneyness,
+  }));
+}
+
+function stableRows(rows: NormalizedWatchlistRow[]): NormalizedWatchlistRow[] {
+  return rows
+    .map((r) => ({ ...r }))
+    .sort((a, b) => a.rank - b.rank || a.symbol.localeCompare(b.symbol));
+}
+
+function materialChangeReasons(prev: NormalizedWatchlistRow[] | null, next: NormalizedWatchlistRow[]): string[] {
+  if (!prev) return ["initial watchlist version"];
+  const reasons: string[] = [];
+  const prevBySymbol = new Map(prev.map((r) => [r.symbol, r]));
+  const nextBySymbol = new Map(next.map((r) => [r.symbol, r]));
+  for (const s of nextBySymbol.keys()) if (!prevBySymbol.has(s)) reasons.push(`symbol added ${s}`);
+  for (const s of prevBySymbol.keys()) if (!nextBySymbol.has(s)) reasons.push(`symbol removed ${s}`);
+  for (const [symbol, n] of nextBySymbol.entries()) {
+    const p = prevBySymbol.get(symbol);
+    if (!p) continue;
+    if (p.direction !== n.direction) reasons.push(`${symbol} direction ${p.direction}->${n.direction}`);
+    if (Math.abs(p.rank - n.rank) >= 2) reasons.push(`${symbol} rank ${p.rank}->${n.rank}`);
+    if (p.confidenceBand !== n.confidenceBand) reasons.push(`${symbol} confidence ${p.confidenceBand}->${n.confidenceBand}`);
+    if (p.catalyst !== n.catalyst) reasons.push(`${symbol} catalyst changed`);
+    if (p.status !== n.status) reasons.push(`${symbol} status ${p.status}->${n.status}`);
+    if (p.status !== "ALMOST READY" && n.status === "ALMOST READY") reasons.push(`${symbol} almost ready`);
+    if (p.status !== "INVALIDATED" && n.status === "INVALIDATED") reasons.push(`${symbol} invalidated`);
+    if (p.trigger !== n.trigger && p.trigger !== "VERIFY AT OPEN" && n.trigger !== "VERIFY AT OPEN") reasons.push(`${symbol} trigger changed`);
+    if (p.invalidation !== n.invalidation && p.invalidation !== "VERIFY AT OPEN" && n.invalidation !== "VERIFY AT OPEN") reasons.push(`${symbol} invalidation changed`);
+  }
+  return reasons;
+}
+
+function latestRowsForComparison(db: PlanDb, tradingDay: string, kind: WatchlistVersionKind, compareAnyKind: boolean): NormalizedWatchlistRow[] | null {
+  ensureOvernightWatchlistSchema(db);
+  const where = compareAnyKind ? "trading_day=?" : "trading_day=? AND kind=?";
+  const args = compareAnyKind ? [tradingDay] : [tradingDay, kind];
+  const version = db.prepare(
+    `SELECT version_id FROM watchlist_versions WHERE ${where} ORDER BY built_at_ms DESC LIMIT 1`,
+  ).get(...args) as { version_id?: string } | undefined;
+  if (!version?.version_id) return null;
+  const rows = db.prepare(
+    `SELECT payload_json FROM watchlist_version_symbols WHERE version_id=? ORDER BY rank ASC`,
+  ).all(version.version_id) as { payload_json: string }[];
+  return rows.map((r) => JSON.parse(r.payload_json) as NormalizedWatchlistRow);
+}
+
+export function persistWatchlistVersionOnDb(
+  db: PlanDb,
+  plan: OvernightPlan,
+  opts: { kind: WatchlistVersionKind; sourceWindow: string; compareAnyKind?: boolean },
+): WatchlistVersionResult {
+  ensureOvernightWatchlistSchema(db);
+  const rows = stableRows(normalizeWatchlistPlan(plan));
+  const payload = {
+    tradingDay: plan.tradingDay,
+    kind: opts.kind,
+    sourceWindow: opts.sourceWindow,
+    marketContext: plan.marketContext,
+    rows,
+  };
+  const payloadHash = djb2(JSON.stringify(payload));
+  const versionId = `wl_${plan.tradingDay}_${opts.kind}_${payloadHash}`.replace(/[^A-Za-z0-9_]/g, "_");
+  const prevRows = latestRowsForComparison(db, plan.tradingDay, opts.kind, Boolean(opts.compareAnyKind));
+  const reasons = materialChangeReasons(prevRows, rows);
+  const changed = reasons.length > 0;
+  db.prepare(
+    `INSERT OR IGNORE INTO watchlist_versions
+      (version_id, trading_day, kind, built_at_ms, payload_hash, source_window, payload_json, status, created_at_ms, updated_at_ms)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+  ).run(versionId, plan.tradingDay, opts.kind, plan.builtAtMs, payloadHash, opts.sourceWindow, JSON.stringify(payload), "BUILT", plan.builtAtMs, plan.builtAtMs);
+  const insertSymbol = db.prepare(
+    `INSERT OR IGNORE INTO watchlist_version_symbols
+      (version_id, trading_day, kind, rank, symbol, direction, setup_family, trigger, invalidation,
+       confidence_band, catalyst, status, preferred_dte, preferred_moneyness, payload_json)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  );
+  for (const r of rows) {
+    insertSymbol.run(
+      versionId,
+      plan.tradingDay,
+      opts.kind,
+      r.rank,
+      r.symbol,
+      r.direction,
+      r.setupFamily,
+      r.trigger,
+      r.invalidation,
+      r.confidenceBand,
+      r.catalyst,
+      r.status,
+      r.preferredDte,
+      r.preferredMoneyness,
+      JSON.stringify(r),
+    );
+  }
+  return { versionId, payloadHash, changed, reasons };
+}
+
+export function markWatchlistVersionOnDb(
+  db: PlanDb,
+  versionId: string,
+  status: "SENT" | "SUPPRESSED_UNCHANGED" | "SKIPPED_NO_WEBHOOK" | "FAILED",
+  nowMs: number,
+  failureReason: string | null = null,
+): void {
+  ensureOvernightWatchlistSchema(db);
+  db.prepare(
+    `UPDATE watchlist_versions
+       SET status=?, sent_at_ms=CASE WHEN ?='SENT' THEN ? ELSE sent_at_ms END,
+           failure_reason=?, updated_at_ms=?
+     WHERE version_id=?`,
+  ).run(status, status, nowMs, failureReason, nowMs, versionId);
 }

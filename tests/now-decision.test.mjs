@@ -487,14 +487,13 @@ test("owner research test route exists and test sender skips idempotency log", (
   assert.ok(!/markSent\(/.test(notify.slice(notify.indexOf("sendOwnerResearchTestNotification"))));
 });
 
-test("overnight scheduler windows cover eod evening premarket market-open", () => {
+test("overnight scheduler windows cover next-session premarket market-open watchlists", () => {
   const sched = read("lib/scheduler.ts");
   const notify = read("lib/notifications/owner-research-notify.ts");
-  assert.match(sched, /eod_watchlist/);
-  assert.match(sched, /evening_delta/);
-  assert.match(sched, /premarket_plan/);
-  assert.match(sched, /market_open_confirm/);
-  assert.match(sched, /overnightPlanDelta/);
+  assert.match(sched, /next_session_watchlist/);
+  assert.match(sched, /premarket_watchlist_update/);
+  assert.match(sched, /market_open_revalidation/);
+  assert.match(sched, /persistWatchlistVersionOnDb/);
   assert.match(notify, /owner_research_notify_log/);
 });
 

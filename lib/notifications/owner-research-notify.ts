@@ -9,6 +9,9 @@ import { resolveOperatingMode } from "../dashboard/operating-mode.ts";
 import type { DiscordWebhookKind } from "../notifications.ts";
 
 export type OwnerResearchNotifyKind =
+  | "next_session_watchlist"
+  | "premarket_watchlist_update"
+  | "market_open_revalidation"
   | "eod_watchlist"
   | "evening_delta"
   | "premarket_plan"
@@ -45,12 +48,25 @@ export function ownerNotifyDestinationForKind(kind: OwnerResearchNotifyKind): {
   if (kind === "intraday_actionable") {
     return { webhook: "options", requiredEnv: "DISCORD_WEBHOOK_OPTIONS", label: "alerts" };
   }
+  if (
+    kind === "next_session_watchlist"
+    || kind === "premarket_watchlist_update"
+    || kind === "market_open_revalidation"
+    || kind === "eod_watchlist"
+    || kind === "evening_delta"
+    || kind === "premarket_plan"
+    || kind === "market_open_confirm"
+    || kind === "watchlist_followup"
+  ) {
+    return { webhook: "watchlist", requiredEnv: "DISCORD_WEBHOOK_WATCHLIST", label: "watchlist" };
+  }
   return { webhook: "recap", requiredEnv: "DISCORD_WEBHOOK_RECAP", label: "recap" };
 }
 
 function webhookConfiguredForDestination(kind: OwnerResearchNotifyKind, env: NodeJS.ProcessEnv): boolean {
   const destination = ownerNotifyDestinationForKind(kind);
   if (destination.webhook === "options") return Boolean(String(env.DISCORD_WEBHOOK_OPTIONS ?? env.DISCORD_WEBHOOK_URL ?? "").trim());
+  if (destination.webhook === "watchlist") return Boolean(String(env.DISCORD_WEBHOOK_WATCHLIST ?? "").trim());
   if (destination.webhook === "recap") return Boolean(String(env.DISCORD_WEBHOOK_RECAP ?? "").trim());
   return false;
 }
@@ -81,7 +97,14 @@ function normalizeRecapContent(kind: OwnerResearchNotifyKind, content: string): 
   };
 }
 
-function formatRec(r: OvernightRecommendation): string {
+function normalizeWatchlistContent(content: string): { ok: true; content: string } | { ok: false; reason: string } {
+  if (/\b(TRADE NOW|BEARISH TRADE CANDIDATE|VERIFIED OPTIONS ALERT)\b|live entry/i.test(content)) {
+    return { ok: false, reason: "blocked live-alert language in watchlist message" };
+  }
+  return { ok: true, content };
+}
+
+function formatRecLegacy(r: OvernightRecommendation): string {
   const bias = r.bias.toUpperCase();
   const trigger = r.triggerLevel != null ? String(r.triggerLevel) : "TBD at open";
   const inv = r.invalidationLevel != null ? String(r.invalidationLevel) : "TBD";
@@ -95,7 +118,7 @@ function formatRec(r: OvernightRecommendation): string {
   ].join("\n");
 }
 
-export function formatEodWatchlist(plan: OvernightPlan): string {
+function formatEodWatchlistLegacy(plan: OvernightPlan): string {
   const lines = [
     `📋 **WATCHLIST — next session** · ${plan.tradingDay}`,
     `_Research only — not executable. Do not buy after hours._`,
@@ -109,7 +132,7 @@ export function formatEodWatchlist(plan: OvernightPlan): string {
   return lines.join("\n");
 }
 
-export function formatEveningDelta(plan: OvernightPlan, reasons: string[]): string {
+function formatEveningDeltaLegacy(plan: OvernightPlan, reasons: string[]): string {
   return [
     `🔄 **WATCHLIST — evening delta** · ${plan.tradingDay}`,
     `_Plan changed: ${reasons.slice(0, 6).join("; ")}_`,
@@ -119,7 +142,7 @@ export function formatEveningDelta(plan: OvernightPlan, reasons: string[]): stri
   ].join("\n");
 }
 
-export function formatPremarketPlan(plan: OvernightPlan): string {
+function formatPremarketPlanLegacy(plan: OvernightPlan): string {
   return [
     `🌅 **WATCHLIST — premarket plan** · ${plan.tradingDay}`,
     `_Not executable — VERIFY CONTRACT AFTER OPTIONS OPEN_`,
@@ -128,7 +151,7 @@ export function formatPremarketPlan(plan: OvernightPlan): string {
   ].join("\n");
 }
 
-export function formatMarketOpenConfirm(plan: OvernightPlan): string {
+function formatMarketOpenConfirmLegacy(plan: OvernightPlan): string {
   return [
     `🔔 **WATCHLIST — market-open revalidation** · ${plan.tradingDay}`,
     `_Not executable. Do not use prior-session quotes. Confirm fresh bid/ask before any live options SEND path._`,
@@ -137,6 +160,73 @@ export function formatMarketOpenConfirm(plan: OvernightPlan): string {
       `#${r.rank} ${r.symbol} · ${r.bias} · trigger ${r.triggerLevel ?? "TBD"} · ${r.preferredDteRange} ${r.preferredMoneyness}`
     ),
   ].join("\n");
+}
+
+function formatRec(r: OvernightRecommendation): string {
+  const direction = r.bias === "bearish" ? "PUT" : "CALL";
+  const trigger = r.triggerLevel != null ? String(r.triggerLevel) : "VERIFY AT OPEN";
+  const invalidation = r.invalidationLevel != null ? String(r.invalidationLevel) : "VERIFY AT OPEN";
+  const evidence = Array.isArray(r.supportingEvidence) ? r.supportingEvidence : [];
+  return [
+    `#${r.rank} ${r.symbol} - ${direction} bias - ${r.setupFamily}`,
+    `Status: ${r.triggerLevel == null ? "VERIFY AT OPEN" : "WATCH"}`,
+    `Trigger: ${trigger}`,
+    `Invalidation: ${invalidation}`,
+    `Preferred DTE: ${r.preferredDteRange}`,
+    `Preferred moneyness: ${r.preferredMoneyness}`,
+    `Confidence: ${r.confidence}`,
+    `Catalyst: ${evidence.find((item) => /earnings|news|catalyst/i.test(item)) ?? "none flagged"}`,
+    `Main reason: ${evidence[0] ?? "ranked by deterministic watchlist evidence"}`,
+    `Main risk: ${r.mainRisk}`,
+  ].join("\n");
+}
+
+export function formatEodWatchlist(plan: OvernightPlan): string {
+  return [
+    `**NEXT SESSION WATCHLIST** - ${plan.tradingDay}`,
+    "_WATCH only. Not executable after hours. VERIFY CONTRACT AFTER OPTIONS OPEN._",
+    "",
+    `SPY context: ${plan.marketContext.spyNote}`,
+    `QQQ context: ${plan.marketContext.qqqNote}`,
+    plan.marketContext.newsNote ? `Catalyst context: ${plan.marketContext.newsNote}` : null,
+    "",
+    ...plan.recommendations.slice(0, 8).map(formatRec),
+    "",
+    `Plan version: ${plan.planVersion}`,
+  ].filter(Boolean).join("\n");
+}
+
+export function formatEveningDelta(plan: OvernightPlan, reasons: string[]): string {
+  return [
+    `**NEXT SESSION WATCHLIST DELTA** - ${plan.tradingDay}`,
+    "_WATCH only. Not executable after hours._",
+    `Meaningful changes: ${reasons.slice(0, 8).join("; ") || "updated ranking evidence"}`,
+    "",
+    ...plan.recommendations.slice(0, 8).map(formatRec),
+  ].join("\n");
+}
+
+export function formatPremarketPlan(plan: OvernightPlan): string {
+  return [
+    `**PREMARKET WATCHLIST UPDATE** - ${plan.tradingDay}`,
+    "_WATCH only. VERIFY EXACT CONTRACT AFTER OPTIONS OPEN. VERIFY CONTRACT AFTER OPTIONS OPEN before any live options SEND path._",
+    "",
+    `SPY context: ${plan.marketContext.spyNote}`,
+    `QQQ context: ${plan.marketContext.qqqNote}`,
+    "",
+    ...plan.recommendations.slice(0, 8).map(formatRec),
+  ].join("\n");
+}
+
+export function formatMarketOpenConfirm(plan: OvernightPlan, reasons: string[] = []): string {
+  return [
+    `**MARKET-OPEN REVALIDATION** - ${plan.tradingDay}`,
+    "_WATCHLIST status only. Not executable. Send a live alert only after the canonical options SEND path passes._",
+    "_Confirm fresh bid/ask, acceptable spread, liquidity, and exact OCC contract. Do not use prior-session quotes._",
+    reasons.length ? `Material changes: ${reasons.slice(0, 8).join("; ")}` : null,
+    "",
+    ...plan.recommendations.slice(0, 8).map(formatRec),
+  ].filter(Boolean).join("\n");
 }
 
 export function formatIntradayActionable(input: IntradayActionableInput): string {
@@ -220,16 +310,19 @@ async function postOwner(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<{ ok: boolean; reason: string }> {
   // Dynamic import keeps this module usable in unit tests without loading Next server bits.
-  const { discordWebhookConfigured, postToDiscord } = await import("../notifications.ts");
+  const { discordWebhookConfigured, sendTrackedDiscord } = await import("../notifications.ts");
   const destination = ownerNotifyDestinationForKind(kind);
   if (!discordWebhookConfigured(destination.webhook, env)) {
     return { ok: false, reason: `${destination.requiredEnv} not configured` };
   }
   try {
-    await postToDiscord(
-      { content: content.slice(0, 1900) },
-      { webhook: destination.webhook, skipPublicCheck: true },
-    );
+    await sendTrackedDiscord({
+      alertId: null,
+      payload: { content: content.slice(0, 1900) },
+      webhook: destination.webhook,
+      payloadType: `owner_${kind}`,
+      idempotencyKey: `owner:${destination.webhook}:${kind}:${content.slice(0, 500)}`,
+    });
     return { ok: true, reason: "sent" };
   } catch (e: any) {
     return { ok: false, reason: String(e?.message ?? e) };
@@ -259,13 +352,15 @@ export async function sendOwnerResearchNotify(opts: {
     return { sent: false, skipped: true, reason: "already sent (idempotent)", kind: opts.kind };
   }
   // Safety: never allow "buy now" language in after-hours templates.
-  if (/buy now/i.test(opts.content) && (opts.kind === "eod_watchlist" || opts.kind === "evening_delta" || opts.kind === "premarket_plan")) {
+  if (/buy now/i.test(opts.content) && ownerNotifyDestinationForKind(opts.kind).webhook === "watchlist") {
     return { sent: false, skipped: true, reason: "blocked buy-now language", kind: opts.kind };
   }
   const destination = ownerNotifyDestinationForKind(opts.kind);
   const normalized = destination.webhook === "recap"
     ? normalizeRecapContent(opts.kind, opts.content)
-    : { ok: true as const, content: opts.content };
+    : destination.webhook === "watchlist"
+      ? normalizeWatchlistContent(opts.content)
+      : { ok: true as const, content: opts.content };
   if (!normalized.ok) {
     return { sent: false, skipped: true, reason: normalized.reason, kind: opts.kind };
   }
@@ -386,9 +481,9 @@ export async function sendOwnerResearchTestNotification(
 /** Pure fixtures for screenshot / review HTML (no network). */
 export function demoDiscordMessages(plan: OvernightPlan): Record<string, string> {
   return {
-    eod_watchlist: formatEodWatchlist(plan),
-    premarket_plan: formatPremarketPlan(plan),
-    market_open_confirm: formatMarketOpenConfirm(plan),
+    next_session_watchlist: formatEodWatchlist(plan),
+    premarket_watchlist_update: formatPremarketPlan(plan),
+    market_open_revalidation: formatMarketOpenConfirm(plan),
     intraday_actionable: formatIntradayActionable({
       label: "LIVE",
       symbol: "SPY",

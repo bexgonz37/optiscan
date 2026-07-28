@@ -33,6 +33,7 @@ export function alertDiagnostics(nowMs = Date.now()) {
     webhooks: {
       options: discordWebhookConfigured("options"),
       stocks: discordWebhookConfigured("stocks"),
+      watchlist: discordWebhookConfigured("watchlist"),
       recap: discordWebhookConfigured("recap"),
     },
     extendedStockNotify: extendedStockNotifyEnabled(),

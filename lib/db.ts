@@ -2460,6 +2460,41 @@ CREATE INDEX IF NOT EXISTS idx_journal_dedup ON trade_journal(dedup_key);
   `);
   db.prepare("CREATE INDEX IF NOT EXISTS idx_overnight_watchlist_day ON overnight_watchlist(trading_day, rank)").run();
   db.exec(`
+    CREATE TABLE IF NOT EXISTS watchlist_versions (
+      version_id TEXT PRIMARY KEY,
+      trading_day TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      built_at_ms INTEGER NOT NULL,
+      payload_hash TEXT NOT NULL,
+      source_window TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'BUILT',
+      sent_at_ms INTEGER,
+      failure_reason TEXT,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_watchlist_versions_day_kind ON watchlist_versions(trading_day, kind, built_at_ms);
+    CREATE TABLE IF NOT EXISTS watchlist_version_symbols (
+      version_id TEXT NOT NULL,
+      trading_day TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      rank INTEGER NOT NULL,
+      symbol TEXT NOT NULL,
+      direction TEXT NOT NULL,
+      setup_family TEXT,
+      trigger TEXT,
+      invalidation TEXT,
+      confidence_band TEXT,
+      catalyst TEXT,
+      status TEXT,
+      preferred_dte TEXT,
+      preferred_moneyness TEXT,
+      payload_json TEXT NOT NULL,
+      PRIMARY KEY (version_id, symbol)
+    );
+  `);
+  db.exec(`
     CREATE TABLE IF NOT EXISTS owner_research_notify_log (
       trading_day TEXT NOT NULL,
       kind TEXT NOT NULL,

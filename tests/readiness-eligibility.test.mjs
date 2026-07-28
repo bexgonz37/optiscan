@@ -40,7 +40,7 @@ test("duplicate classification separates all-time fingerprints from post-cutoff 
   db.prepare(`INSERT INTO options_alerts (alert_id,candidate_symbol,strategy,option_symbol,side,research_only,state,paper_linked,entry_quality_verdict,opportunity_fingerprint,trading_session_date,sent_at_ms,discord_message_id,opportunity_case_id,entry_mid,created_at_ms,updated_at_ms) VALUES ('oa_h2','SPY','s','O:2','call',0,'SENT',1,'EARLY','fp_old','2026-07-01',?,NULL,NULL,NULL,?,?)`).run(pre + 1, pre + 1, pre + 1);
   db.prepare(`INSERT INTO options_alerts (alert_id,candidate_symbol,strategy,option_symbol,side,research_only,state,paper_linked,entry_quality_verdict,opportunity_fingerprint,trading_session_date,sent_at_ms,discord_message_id,opportunity_case_id,entry_mid,created_at_ms,updated_at_ms) VALUES ('oa_aapl','AAPL','s','O:3','call',0,'SENT',1,'TIMELY','fp_aapl','2026-07-27',?,?,?,?,?,?)`).run(post, "dm1", "oc1", 1.0, post, post);
   db.prepare(`INSERT INTO opportunity_cases VALUES ('oc1','independent')`).run();
-  db.prepare(`INSERT INTO options_paper_trades (alert_id, paper_kind, status) VALUES ('oa_aapl','DELIVERED_ALERT_PAPER','ENTERED')`).run();
+  db.prepare(`INSERT INTO options_paper_trades (alert_id, paper_kind, status) VALUES ('oa_aapl','DELIVERED_ALERT_PAPER','CLOSED')`).run();
 
   const dup = classifyReadinessDuplicatesOnDb(db, ENV);
   assert.equal(dup.fingerprintExtrasAllTime, 1, "one extra historical fingerprint row");

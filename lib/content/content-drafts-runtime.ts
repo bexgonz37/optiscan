@@ -66,7 +66,7 @@ export function contentEventsEnabled(env: NodeJS.ProcessEnv = process.env): bool
   return env.CONTENT_EVENTS_ENABLED === "1";
 }
 
-/** Content drafts route to Recaps in the two-channel Discord setup. */
+/** Content drafts route to Recaps in the three-channel Discord setup. */
 export function contentWebhookConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
   return Boolean(String(env.DISCORD_WEBHOOK_RECAP ?? "").trim());
 }
