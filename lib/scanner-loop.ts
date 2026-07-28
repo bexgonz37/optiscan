@@ -27,6 +27,7 @@
 import { toMs } from "@/lib/timestamps";
 import { fetchBulkQuotes, fetchCandles, fetchMarketSnapshot, fetchOptionChain, fetchTopMovers, isRecapNoiseSymbol } from "@/lib/polygon-provider";
 import { vwap as sessionVwap, sessionBars, relativeVolume } from "@/lib/momentum-signals";
+import { realizedVolSnapshot } from "@/lib/realized-vol";
 import {
   acceleration, volumeSurge, pathEfficiency, detectLevels, directionRead,
   shouldTrigger, rankZeroDteContracts, expectedRemainingMovePct,
@@ -101,6 +102,8 @@ interface SymState {
   vwap: number | null;
   vwapAt: number;
   relVol: number | null;
+  /** Annualized realized vol from the same 1-min candles as vwap/relVol. */
+  realizedVol: number | null;
   lastAlertAt: number;
   lastOptionsAlertAt: number;
   lastNearMissAt: number;
@@ -364,7 +367,7 @@ function sym(s: LoopState, ticker: string): SymState {
     st = {
       ring: [], recentRates: [], cooldownUntil: 0, optionsCooldownUntil: 0, stockCooldownUntil: 0, lastChainFetch: 0,
       prefetchedChain: null, prefetchAt: 0,
-      vwap: null, vwapAt: 0, relVol: null, lastAlertAt: 0, lastOptionsAlertAt: 0, lastNearMissAt: 0, lastMajorMoveAt: 0,
+      vwap: null, vwapAt: 0, relVol: null, realizedVol: null, lastAlertAt: 0, lastOptionsAlertAt: 0, lastNearMissAt: 0, lastMajorMoveAt: 0,
       moveBeganAt: 0, lastConfirmedAt: 0, lastTriggerEventAt: 0, lastMoveDirection: null,
       momentumLatch: { ...EMPTY_STOCK_MOMENTUM_LATCH }, momentumFirstDetectedAt: 0,
       firstSeenAt: 0, firstSeenMovePct: null, firstRankedAt: 0, firstRankedMovePct: null,
@@ -421,14 +424,16 @@ function volumeRate(ring: Tick[], nowMs: number, windowMs: number): number | nul
   return +(((last.v - base.v) / seconds)).toFixed(2);
 }
 
-/** VWAP + relVol from 1-min candles, cached 60s, near-trigger symbols only. */
+/** VWAP + relVol + realized vol from 1-min candles, cached 60s, near-trigger symbols only. */
 async function ensureVwap(ticker: string, st: SymState, nowMs: number) {
   if (nowMs - st.vwapAt < 60_000) return;
   st.vwapAt = nowMs; // set first so failures don't hot-loop
   const res: any = await fetchCandles(ticker, { resolution: "1", timespan: "minute", days: 1 });
   if (res?.available && res.bars?.length) {
-    st.vwap = sessionVwap(sessionBars(res.bars));
+    const session = sessionBars(res.bars);
+    st.vwap = sessionVwap(session);
     st.relVol = relativeVolume(res.bars, nowMs);
+    st.realizedVol = realizedVolSnapshot(session).realizedVol;
   }
 }
 
@@ -624,6 +629,7 @@ async function handleTrigger(ticker: string, st: SymState, read: any, quote: any
     direction: read.dir.direction, directionConfidence: read.dir.confidence,
     shareVolume: quote.volume ?? null, bestCall, bestPut,
     chainContracts: chain.contracts,
+    realizedVol: st.realizedVol,
     source: "momentum", alertType: "0dte_momentum", nowMs,
   });
   if (id != null) {

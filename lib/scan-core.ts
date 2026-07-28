@@ -23,6 +23,7 @@ import { detectUnusualContracts, unusualConfigFromEnv } from "@/lib/unusual-acti
 import { getScanUniverse } from "@/lib/universe";
 import { companyName } from "@/lib/company-names";
 import { cached, cachedMaxAge, mapLimit } from "@/lib/scan-cache";
+import { realizedVolSnapshot } from "@/lib/realized-vol";
 
 const NAME_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -115,6 +116,9 @@ async function enrichSymbol(symbol: string, quote: any, maxAgeMs: number): Promi
       if (candlesRes?.available === false) problems.push(`candles: ${candlesRes.note ?? "unavailable"}`);
       const bars = candlesRes?.bars ?? [];
       const mom: any = buildMomentumSignal(quote || { symbol }, bars, momCfg);
+      // Interval is inferred from the bar timestamps, so annualization tracks the
+      // requested resolution instead of assuming 1-minute bars.
+      const rv = realizedVolSnapshot(bars);
 
       const chainRes: any = await fetchOptionChain(symbol, {
         dteMin: optCfg.dteMin,
@@ -163,6 +167,8 @@ async function enrichSymbol(symbol: string, quote: any, maxAgeMs: number): Promi
         reason: opt.reason ?? mom.reason ?? "",
         reasons: opt.reasons ?? [],
         warnings: opt.warnings ?? mom.warnings ?? [],
+        realizedVol: rv.realizedVol,
+        dailyRangeFrac: rv.dailyRangeFrac,
       };
       momentumRow.verdictPreview = buildVerdictPreview({
         symbol,
@@ -293,8 +299,8 @@ export async function runScan(maxAgeMs?: number): Promise<ScanResult> {
           premium,
           tickSize: 0.01,
           openInterest: c?.openInterest ?? null,
-          dailyRangeFrac: null,
-          realizedVol: null,
+          dailyRangeFrac: m.dailyRangeFrac ?? null,
+          realizedVol: m.realizedVol ?? null,
           ageDays: null,
         };
       });

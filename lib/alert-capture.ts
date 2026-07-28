@@ -35,6 +35,7 @@ import {
 } from "@/lib/zero-dte";
 import { privateLabel0dte, publicLabel0dte, riskLabel } from "@/lib/language-modes";
 import { optionsPressure } from "@/lib/options-pressure";
+import { ivPremium } from "@/lib/realized-vol";
 import { buildExplanation } from "@/lib/explain";
 import { cached } from "@/lib/scan-cache";
 import { computeTradeVerdict, hasLiveSpeedProof, isClearTradeSignal, MIN_SPEED_PCT_PER_MIN, passesQualityGates, resolveAlertTier } from "@/lib/trade-verdict";
@@ -128,6 +129,8 @@ export interface ZeroDteSignal {
   bestCall: any | null; // ranked 0DTE contracts (normalized shape)
   bestPut: any | null;
   scannerScore?: number | null;
+  /** Annualized realized vol of the underlying — denominator of the IV premium. */
+  realizedVol?: number | null;
   source?: "momentum" | "unusual";
   alertType?: string;
   nowMs?: number;
@@ -205,9 +208,13 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     efficiency: sig.efficiency, callContract: sig.bestCall, putContract: sig.bestPut,
     minsToClose, expRemainPct,
   });
+  // ivToPct normalizes either convention to percent; IV premium needs both legs as decimals.
+  const ivPct = ivToPct(sideContract?.iv);
+  const ivPrem = ivPremium(ivPct == null ? null : ivPct / 100, sig.realizedVol);
   const worth = optionStillWorthIt({
     status, contractScore: contractRes.score, minsToClose,
     spreadPct: sideContract?.spreadPct, efficiency: sig.efficiency,
+    ivPremium: ivPrem,
   });
   const bias = tradeBias({
     direction: sig.direction, status, callWatch: watch.callWatch, putWatch: watch.putWatch,
@@ -415,6 +422,7 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
       mid: sideContract.mid ?? null, spreadPct: sideContract.spreadPct ?? null,
       volume: sideContract.volume ?? null, openInterest: sideContract.openInterest ?? null,
       iv: sideContract.iv ?? null, delta: sideContract.delta ?? null,
+      realizedVol: sig.realizedVol ?? null, ivPremium: ivPrem,
     } : null,
     catalystRecords: [],
   });
@@ -517,6 +525,7 @@ export async function captureAlerts(input: {
       shareVolume: quote?.volume ?? null,
       bestCall: dirUp ? r.contract : null,
       bestPut: dirUp ? null : r.contract,
+      realizedVol: r.realizedVol ?? null,
       scannerScore: r.score, source: "momentum", alertType: "intraday_momentum", nowMs,
     });
     if (id != null) inserted++; else skipped++;
@@ -537,6 +546,7 @@ export async function captureAlerts(input: {
       directionConfidence: Math.min(100, u.score),
       shareVolume: quote?.volume ?? null,
       bestCall: dirUp ? u : null, bestPut: dirUp ? null : (u.side === "put" ? u : null),
+      realizedVol: momPeer?.realizedVol ?? null,
       scannerScore: u.score, source: "unusual", alertType: "options_volume_spike", nowMs,
     });
     if (id != null) inserted++; else skipped++;

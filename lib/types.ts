@@ -40,6 +40,10 @@ export interface MomentumRow {
   reason: string;
   reasons: string[];
   warnings: string[];
+  /** Annualized realized vol from the scan's candles (universe filters + IV premium). */
+  realizedVol?: number | null;
+  /** (high-low)/low across the scanned bars. */
+  dailyRangeFrac?: number | null;
   verdictPreview?: import("./verdict-preview").VerdictPreviewResult | null;
 }
 

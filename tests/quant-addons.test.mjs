@@ -24,7 +24,14 @@ import {
   getActiveLockOnDb,
 } from "../lib/protections.ts";
 import { timeToExpiryYears, impliedVol, bsGreeks, bsPrice } from "../lib/greeks.ts";
-import { parkinsonRv, closeToCloseRv, ivPremium, ivPremiumRiskLabel } from "../lib/realized-vol.ts";
+import {
+  parkinsonRv,
+  closeToCloseRv,
+  ivPremium,
+  ivPremiumRiskLabel,
+  realizedVolSnapshot,
+  barsPerYearForIntervalMs,
+} from "../lib/realized-vol.ts";
 import { parseEdgarSubmissions, mergeDilutionRiskFlag, padCik } from "../lib/edgar.ts";
 import { buildTearsheet } from "../lib/trade-tearsheet.ts";
 import { optionStillWorthIt } from "../lib/zero-dte.js";
@@ -208,6 +215,44 @@ test("parkinson RV and IV premium labels", () => {
   const prem = ivPremium(0.6, 0.3);
   assert.equal(prem, 2);
   assert.equal(ivPremiumRiskLabel(prem), "extreme");
+});
+
+test("realized vol annualization tracks the bar interval", () => {
+  // 390 one-minute bars per session; a 5-minute bar is 78 per session.
+  assert.equal(barsPerYearForIntervalMs(60_000), 252 * 390);
+  assert.equal(barsPerYearForIntervalMs(5 * 60_000), 252 * 78);
+
+  const mk = (intervalMs) => {
+    const bars = [];
+    let c = 100;
+    for (let i = 0; i < 40; i++) {
+      bars.push({ t: i * intervalMs, o: c, h: c * 1.01, l: c * 0.99, c });
+      c *= 1 + ((i % 5) - 2) * 0.002;
+    }
+    return bars;
+  };
+  const oneMin = realizedVolSnapshot(mk(60_000));
+  const fiveMin = realizedVolSnapshot(mk(5 * 60_000));
+  assert.equal(oneMin.intervalMs, 60_000);
+  assert.equal(fiveMin.intervalMs, 5 * 60_000);
+  // Same per-bar ranges annualize lower when each bar covers more time.
+  assert.ok(oneMin.realizedVol > fiveMin.realizedVol);
+  assert.ok(Math.abs(oneMin.realizedVol / fiveMin.realizedVol - Math.sqrt(5)) < 0.01);
+  assert.ok(fiveMin.dailyRangeFrac > 0);
+  assert.equal(realizedVolSnapshot([]).realizedVol, null);
+});
+
+test("realized vol reaches the capture path and the filter chain", () => {
+  const loop = read("lib/scanner-loop.ts");
+  assert.match(loop, /realizedVolSnapshot/);
+  assert.match(loop, /realizedVol: st\.realizedVol/);
+  const capture = read("lib/alert-capture.ts");
+  assert.match(capture, /ivPremium: ivPrem/);
+  assert.match(capture, /realizedVol\?: number \| null/);
+  const scan = read("lib/scan-core.ts");
+  assert.match(scan, /realizedVol: m\.realizedVol/);
+  assert.match(scan, /dailyRangeFrac: m\.dailyRangeFrac/);
+  assert.match(read("lib/alert-store.ts"), /realized_vol, iv_premium/);
 });
 
 test("EDGAR parse dilution forms", () => {

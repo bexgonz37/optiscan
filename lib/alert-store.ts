@@ -108,6 +108,7 @@ export interface NewAlert {
     bid: number | null; ask: number | null; mid: number | null;
     spreadPct: number | null; volume: number | null;
     openInterest: number | null; iv: number | null; delta: number | null;
+    realizedVol?: number | null; ivPremium?: number | null;
   } | null;
   catalystRecords?: Array<{
     headline: string; publisher: string | null; publishedAt: string | null;
@@ -205,12 +206,13 @@ export function insertAlert(a: NewAlert): number | null {
     }
     if (alert.snapshot) {
       db.prepare(
-        `INSERT INTO options_snapshots (alert_id, taken_at, checkpoint, option_symbol, bid, ask, mid, spread_pct, volume, open_interest, iv, delta)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO options_snapshots (alert_id, taken_at, checkpoint, option_symbol, bid, ask, mid, spread_pct, volume, open_interest, iv, delta, realized_vol, iv_premium)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       ).run(
         id, alert.alertTime, "alert", alert.snapshot.optionSymbol, alert.snapshot.bid, alert.snapshot.ask,
         alert.snapshot.mid, alert.snapshot.spreadPct, alert.snapshot.volume, alert.snapshot.openInterest,
         alert.snapshot.iv, alert.snapshot.delta,
+        alert.snapshot.realizedVol ?? null, alert.snapshot.ivPremium ?? null,
       );
     }
     for (const c of alert.catalystRecords ?? []) {
