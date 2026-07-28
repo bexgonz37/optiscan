@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { verifiedSubscriberDeliverySql } from "../lib/alert-delivery-proof.ts";
+import { deliveryAlertIdSql, verifiedSubscriberDeliverySql } from "../lib/alert-delivery-proof.ts";
 import { postableOptionsAlerts, premiumDiscordCallouts } from "../lib/social-post.ts";
 
 function makeDb() {
@@ -158,4 +158,32 @@ test("delivered accuracy requires Discord message, opportunity case, mirror, OCC
   assert.ok(row);
   assert.equal(row.subscriber_delivered, 1);
   assert.equal(deliveredRows.length, 1);
+});
+
+test("delivery metadata lookup compiles with SQLite outer alert aliases", () => {
+  const db = makeDb();
+  const alertId = insertLegacyAlert(db, {
+    ticker: "AAPL",
+    option_symbol: "O:AAPL260727C00220000",
+    option_side: "call",
+    direction: "bullish",
+  });
+  const sentAt = Date.parse("2026-07-27T14:23:00.000Z");
+  db.prepare(
+    `INSERT INTO options_alerts (
+      alert_id, candidate_symbol, strategy, option_symbol, side, research_only, state,
+      paper_linked, sent_at_ms, discord_status, discord_message_id, opportunity_case_id,
+      entry_mid, created_at_ms, updated_at_ms
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(
+    "oa_verified_aapl", "AAPL", "momentum_acceleration", "O:AAPL260727C00220000", "call",
+    0, "SENT", 1, sentAt, 200, "discord-msg-1", "oc_verified_aapl", 0.495, sentAt, sentAt,
+  );
+
+  const row = db.prepare(
+    `SELECT ${deliveryAlertIdSql("a")} AS delivery_alert_id
+     FROM alerts a
+     WHERE a.id=?`,
+  ).get(alertId);
+  assert.equal(row.delivery_alert_id, "oa_verified_aapl");
 });
