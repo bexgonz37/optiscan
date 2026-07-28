@@ -379,12 +379,17 @@ function ensureAlertQueryCompatColumns(db: DbReader): void {
   ];
   for (const [col, sql] of migrations) {
     if (cols.has(col)) continue;
+    let added = false;
     try {
       db.prepare(sql).get?.();
+      added = true;
     } catch {
-      try { (db as any).exec?.(sql); } catch { /* best-effort compatibility guard */ }
+      try {
+        (db as any).exec?.(sql);
+        added = true;
+      } catch { /* best-effort compatibility guard */ }
     }
-    cols.add(col);
+    if (added) cols.add(col);
   }
 }
 
