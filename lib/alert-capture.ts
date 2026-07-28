@@ -62,6 +62,53 @@ function attachCatalystLater(alertId: number, ticker: string, relVol: number | n
   })();
 }
 
+/**
+ * Fire-and-forget EDGAR dilution context — never blocks capture.
+ * Requires EDGAR_CIK_MAP_JSON={"AAPL":"320193",...} or EDGAR_ENABLED=1 with future ticker→CIK resolver.
+ */
+function attachEdgarDilutionLater(alertId: number, ticker: string) {
+  if (process.env.EDGAR_ENABLED !== "1") return;
+  void (async () => {
+    try {
+      let map: Record<string, string> = {};
+      try { map = JSON.parse(process.env.EDGAR_CIK_MAP_JSON ?? "{}"); } catch { map = {}; }
+      const cik = map[ticker.toUpperCase()];
+      if (!cik) return;
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { fetchEdgarFilingsForCik, mergeDilutionRiskFlag } = require("@/lib/edgar");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { getDb } = require("@/lib/db");
+      const result = await fetchEdgarFilingsForCik(cik, process.env);
+      if (!result.ok || !result.dilutionRisk) return;
+      const db = getDb();
+      const row = db.prepare("SELECT risk_flags FROM alerts WHERE id=?").get(alertId) as { risk_flags?: string } | undefined;
+      const next = mergeDilutionRiskFlag(row?.risk_flags ?? null, true);
+      db.prepare("UPDATE alerts SET risk_flags=? WHERE id=?").run(next, alertId);
+      const top = result.filings.find((f: any) => f.dilutionRisk);
+      if (top) {
+        try {
+          db.prepare(
+            `INSERT INTO catalyst_records (alert_id, ticker, headline, publisher, published_at, url, catalyst_type, quality, matched_keywords)
+             VALUES (?,?,?,?,?,?,?,?,?)`,
+          ).run(
+            alertId,
+            ticker,
+            `${top.form} filed ${top.filingDate}`,
+            "SEC EDGAR",
+            top.filingDate,
+            top.filingUrl,
+            "sec_filing",
+            "high",
+            "dilution_risk",
+          );
+        } catch { /* optional columns */ }
+      }
+    } catch (err: any) {
+      console.warn(`[alert-lab] edgar attach skipped for ${ticker}:`, err?.message);
+    }
+  })();
+}
+
 export interface ZeroDteSignal {
   ticker: string;
   price: number | null;
@@ -97,6 +144,17 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
   // (1s loop, swing radar, manual) so options can never fire premarket/AH.
   if (!isOptionsSession(nowMs)) return null;
   const day = tradingDay(nowMs);
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { checkAlertProtections } = require("@/lib/protections");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getDb } = require("@/lib/db");
+    const prot = checkAlertProtections(getDb(), sig.ticker, day, nowMs, process.env);
+    if (!prot.allowed) {
+      console.warn(`[alert-capture] protection blocked ${sig.ticker}: ${prot.reason}`);
+      return null;
+    }
+  } catch { /* protections optional */ }
   const minsToClose = minutesToClose(nowMs);
   const dirUp = sig.direction !== "bearish";
   const sideContract = sig.direction === "bearish" ? sig.bestPut : sig.bestCall;
@@ -362,7 +420,15 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
   });
 
   if (id != null) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { applyCooldownLock } = require("@/lib/protections");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { getDb } = require("@/lib/db");
+      applyCooldownLock(getDb(), sig.ticker, nowMs, process.env);
+    } catch { /* isolated */ }
     attachCatalystLater(id, sig.ticker, sig.relVol);
+    attachEdgarDilutionLater(id, sig.ticker);
     const verdictInputWithTier = { ...verdictInput, alert_tier: tier };
     if (isClearTradeSignal(verdictInputWithTier, liveCtx)) {
       void notifyNewAlert(id, {

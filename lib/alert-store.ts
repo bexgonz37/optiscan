@@ -415,7 +415,18 @@ export function updateAlertCatalyst(alertId: number, cat: {
 }
 
 export function finalizeAlert(alertId: number, isFalsePositive: boolean) {
-  getDb().prepare("UPDATE alerts SET status='complete', is_false_positive=? WHERE id=?").run(isFalsePositive ? 1 : 0, alertId);
+  const db = getDb();
+  db.prepare("UPDATE alerts SET status='complete', is_false_positive=? WHERE id=?").run(isFalsePositive ? 1 : 0, alertId);
+  if (!isFalsePositive) return;
+  try {
+    const row = db.prepare("SELECT ticker FROM alerts WHERE id=?").get(alertId) as { ticker?: string } | undefined;
+    if (!row?.ticker) return;
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { maybeApplyStreakLock, maybeApplyLowQualityLock } = require("@/lib/protections");
+    const now = Date.now();
+    maybeApplyStreakLock(db, row.ticker, now, process.env);
+    maybeApplyLowQualityLock(db, row.ticker, now, process.env);
+  } catch { /* protections optional */ }
 }
 
 /**

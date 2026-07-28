@@ -2414,6 +2414,50 @@ CREATE INDEX IF NOT EXISTS idx_journal_dedup ON trade_journal(dedup_key);
       PRIMARY KEY (trading_day, kind, symbol)
     );
   `);
+  // Quant add-ons (Freqtrade/Alphalens-inspired): protections + research trial log.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS alert_locks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticker TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      locked_until_ms INTEGER NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      meta_json TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_alert_locks_ticker_until ON alert_locks(ticker, locked_until_ms);
+    CREATE TABLE IF NOT EXISTS research_trials (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      trial_key TEXT NOT NULL,
+      hypothesis TEXT NOT NULL,
+      factor TEXT,
+      horizon TEXT,
+      metric_name TEXT NOT NULL,
+      metric_value REAL,
+      p_raw REAL,
+      p_adj REAL,
+      n_trials_family INTEGER NOT NULL DEFAULT 1,
+      sample_days INTEGER NOT NULL DEFAULT 0,
+      sample_alerts INTEGER NOT NULL DEFAULT 0,
+      split_method TEXT NOT NULL DEFAULT 'trading_day',
+      train_days_json TEXT,
+      test_days_json TEXT,
+      notes TEXT,
+      created_at_ms INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_research_trials_key ON research_trials(trial_key, created_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_research_trials_factor ON research_trials(factor, horizon, created_at_ms);
+  `);
+  // EDGAR context columns on catalyst_records (additive; never gate signals).
+  try { db.exec("ALTER TABLE catalyst_records ADD COLUMN filing_type TEXT"); } catch { /* exists */ }
+  try { db.exec("ALTER TABLE catalyst_records ADD COLUMN filing_url TEXT"); } catch { /* exists */ }
+  // Local greeks / IV premium on options_snapshots for divergence alarms.
+  try { db.exec("ALTER TABLE options_snapshots ADD COLUMN local_iv REAL"); } catch { /* exists */ }
+  try { db.exec("ALTER TABLE options_snapshots ADD COLUMN local_delta REAL"); } catch { /* exists */ }
+  try { db.exec("ALTER TABLE options_snapshots ADD COLUMN local_gamma REAL"); } catch { /* exists */ }
+  try { db.exec("ALTER TABLE options_snapshots ADD COLUMN local_theta REAL"); } catch { /* exists */ }
+  try { db.exec("ALTER TABLE options_snapshots ADD COLUMN local_vega REAL"); } catch { /* exists */ }
+  try { db.exec("ALTER TABLE options_snapshots ADD COLUMN realized_vol REAL"); } catch { /* exists */ }
+  try { db.exec("ALTER TABLE options_snapshots ADD COLUMN iv_premium REAL"); } catch { /* exists */ }
   const readiness = inspectSchemaReadiness(db);
   if (!readiness.ok) {
     const parts = [

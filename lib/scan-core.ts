@@ -274,6 +274,35 @@ export async function runScan(maxAgeMs?: number): Promise<ScanResult> {
     momentum.sort((a, b) => b.score - a.score);
     unusual.sort((a, b) => b.score - a.score);
 
+    // Declarative universe-filter attrition (diagnostic only — does not change SEND).
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { recordUniverseFilterSnapshot } = require("@/lib/universe-filter-runtime");
+      const filterCandidates = momentum
+        .filter((m) => m.symbol)
+        .map((m) => {
+        const c: any = m.contract;
+        const price = m.underlyingPrice ?? quotes.get(m.symbol!)?.price ?? null;
+        const premium = c?.mid ?? ((c?.bid != null && c?.ask != null) ? (c.bid + c.ask) / 2 : null);
+        return {
+          symbol: m.symbol as string,
+          price,
+          bid: c?.bid ?? null,
+          ask: c?.ask ?? null,
+          spreadPct: c?.spreadPct ?? null,
+          premium,
+          tickSize: 0.01,
+          openInterest: c?.openInterest ?? null,
+          dailyRangeFrac: null,
+          realizedVol: null,
+          ageDays: null,
+        };
+      });
+      recordUniverseFilterSnapshot(filterCandidates, process.env);
+    } catch (err: any) {
+      console.warn("[universe-filter] snapshot skipped:", err?.message);
+    }
+
     // Alert Lab capture: fire-and-forget so persistence/news lookups never add
     // latency to (or break) the scan itself. Dynamic import keeps the scanner
     // fully functional if better-sqlite3 isn't installed. 0DTE capture is RTH-only.

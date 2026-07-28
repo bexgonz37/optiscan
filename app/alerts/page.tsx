@@ -39,6 +39,10 @@ const EquityCurve = dynamic(
   () => import("@/components/ui/EquityCurve").then((m) => m.EquityCurve),
   { ssr: false, loading: () => <div className="muted text-sm">Loading chart…</div> },
 );
+const ResearchLabPanels = dynamic(
+  () => import("@/components/ResearchLabPanels").then((m) => ({ default: m.ResearchLabPanels })),
+  { ssr: false, loading: () => <div className="muted text-sm">Loading research lab…</div> },
+);
 import { Panel } from "@/components/ui/Panel";
 import { ShareCard } from "@/components/ui/ShareCard";
 const DailyPostPack = dynamic(
@@ -82,7 +86,7 @@ interface JournalRow {
   outcome_pct: number | null; notes: string | null; created_at: string; source?: string | null;
 }
 
-type Tab = "now" | "history" | "journal";
+type Tab = "now" | "history" | "journal" | "research";
 type AccFilter = "all" | "on_track" | "open" | "discord";
 
 const CATALYSTS = [
@@ -99,7 +103,7 @@ function AlertsPageInner() {
   const searchParams = useSearchParams();
   const paramTab = searchParams.get("tab");
   const [tab, setTab] = useState<Tab>(
-    paramTab === "history" || paramTab === "journal" ? paramTab : "now",
+    paramTab === "history" || paramTab === "journal" || paramTab === "research" ? paramTab : "now",
   );
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
   const [stats, setStats] = useState<any>(null);
@@ -201,7 +205,8 @@ function AlertsPageInner() {
   const refresh = useCallback(async (opts?: { silent?: boolean }) => {
     if (tab === "now") await refreshNow(opts);
     else if (tab === "history") await Promise.all([refreshHistoryBundle(opts), refreshHistory()]);
-    else await refreshJournal();
+    else if (tab === "journal") await refreshJournal();
+    // research tab self-loads via ResearchLabPanels
   }, [tab, refreshNow, refreshHistoryBundle, refreshHistory, refreshJournal]);
 
   const refreshAccuracy = useCallback(async () => {
@@ -212,7 +217,8 @@ function AlertsPageInner() {
   }, [asset]);
 
   useEffect(() => {
-    const t = paramTab === "history" || paramTab === "journal" ? paramTab : "now";
+    const t =
+      paramTab === "history" || paramTab === "journal" || paramTab === "research" ? paramTab : "now";
     setTab(t);
   }, [paramTab]);
 
@@ -227,7 +233,7 @@ function AlertsPageInner() {
       refreshHistory();
       return;
     }
-    refreshJournal();
+    if (tab === "journal") refreshJournal();
   }, [tab, refreshNow, refreshHistoryBundle, refreshHistory, refreshJournal]);
 
   useEffect(() => {
@@ -389,6 +395,7 @@ function AlertsPageInner() {
         {tabBtn("now", "Live callouts")}
         {tabBtn("history", "Accuracy")}
         {tabBtn("journal", "Journal")}
+        {tabBtn("research", "Research")}
       </div>
 
       {tab === "now" ? (
@@ -583,6 +590,8 @@ function AlertsPageInner() {
           <SystemExplanationSection />
         </>
       ) : null}
+
+      {tab === "research" ? <ResearchLabPanels /> : null}
 
       {tab === "journal" ? (
         <>
