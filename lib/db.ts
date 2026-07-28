@@ -1960,6 +1960,34 @@ CREATE INDEX IF NOT EXISTS idx_options_replay_candidates ON options_replay_candi
 
 /** Columns added after the first Alert Lab release — guarded ALTERs. */
 const ALERT_COLUMN_MIGRATIONS: [string, string][] = [
+  // Base-column backfill for long-lived production SQLite files created before
+  // the current alerts schema. Nullable additions preserve audit rows; proof SQL
+  // still fails closed when required delivery fields are missing.
+  ["source", "ALTER TABLE alerts ADD COLUMN source TEXT NOT NULL DEFAULT 'scanner'"],
+  ["direction", "ALTER TABLE alerts ADD COLUMN direction TEXT NOT NULL DEFAULT 'neutral'"],
+  ["option_symbol", "ALTER TABLE alerts ADD COLUMN option_symbol TEXT"],
+  ["option_side", "ALTER TABLE alerts ADD COLUMN option_side TEXT"],
+  ["strike", "ALTER TABLE alerts ADD COLUMN strike REAL"],
+  ["expiration", "ALTER TABLE alerts ADD COLUMN expiration TEXT"],
+  ["dte", "ALTER TABLE alerts ADD COLUMN dte INTEGER"],
+  ["alert_time", "ALTER TABLE alerts ADD COLUMN alert_time TEXT"],
+  ["trading_day", "ALTER TABLE alerts ADD COLUMN trading_day TEXT"],
+  ["price_at_alert", "ALTER TABLE alerts ADD COLUMN price_at_alert REAL"],
+  ["percent_move_at_alert", "ALTER TABLE alerts ADD COLUMN percent_move_at_alert REAL"],
+  ["volume", "ALTER TABLE alerts ADD COLUMN volume INTEGER"],
+  ["relative_volume", "ALTER TABLE alerts ADD COLUMN relative_volume REAL"],
+  ["catalyst_type", "ALTER TABLE alerts ADD COLUMN catalyst_type TEXT"],
+  ["catalyst_quality", "ALTER TABLE alerts ADD COLUMN catalyst_quality REAL"],
+  ["catalyst_summary", "ALTER TABLE alerts ADD COLUMN catalyst_summary TEXT"],
+  ["catalyst_source", "ALTER TABLE alerts ADD COLUMN catalyst_source TEXT"],
+  ["signal_score", "ALTER TABLE alerts ADD COLUMN signal_score INTEGER"],
+  ["risk_score", "ALTER TABLE alerts ADD COLUMN risk_score INTEGER"],
+  ["options_liquidity_score", "ALTER TABLE alerts ADD COLUMN options_liquidity_score INTEGER"],
+  ["scanner_score", "ALTER TABLE alerts ADD COLUMN scanner_score REAL"],
+  ["status", "ALTER TABLE alerts ADD COLUMN status TEXT NOT NULL DEFAULT 'tracking'"],
+  ["is_false_positive", "ALTER TABLE alerts ADD COLUMN is_false_positive INTEGER"],
+  ["false_positive_reason", "ALTER TABLE alerts ADD COLUMN false_positive_reason TEXT"],
+  ["created_at", "ALTER TABLE alerts ADD COLUMN created_at TEXT"],
   ["alert_type", "ALTER TABLE alerts ADD COLUMN alert_type TEXT"],
   ["score_breakdown_json", "ALTER TABLE alerts ADD COLUMN score_breakdown_json TEXT"],
   ["ai_explanation", "ALTER TABLE alerts ADD COLUMN ai_explanation TEXT"],

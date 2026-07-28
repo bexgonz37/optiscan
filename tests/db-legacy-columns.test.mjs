@@ -59,6 +59,13 @@ test("SCHEMA no longer creates final_delivery_outcome index before column migrat
   );
 });
 
+test("alerts base-column migrations cover old production SQLite files", () => {
+  const dbSrc = read("lib/db.ts");
+  for (const col of ["source", "direction", "option_symbol", "option_side", "alert_time", "trading_day", "status"]) {
+    assert.match(dbSrc, new RegExp(`\\["${col}", "ALTER TABLE alerts ADD COLUMN`), `missing guarded alert migration for ${col}`);
+  }
+});
+
 test("legacy DB missing final_delivery_outcome: column migration runs before SCHEMA can succeed", { skip: !Database }, () => {
   const db = legacyProductionDb();
   assert.equal(hasSqliteColumn(db, "options_delivery_decisions", "final_delivery_outcome"), false);
