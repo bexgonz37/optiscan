@@ -38,6 +38,7 @@ export async function GET(req: Request) {
     ownership: subscriberDiscordOwnershipSummary(),
     webhooks,
     metrics,
+    routing,
     readiness,
     summary: discordDeliverySummary(),
     recentFailures: listDiscordDeliveries(10).filter((d) => ["FAILED", "RETRYING", "SUPPRESSED", "NOT_CONFIGURED"].includes(d.status)),
