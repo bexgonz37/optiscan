@@ -66,6 +66,14 @@ test("alerts base-column migrations cover old production SQLite files", () => {
   }
 });
 
+test("alert list and accuracy queries repair legacy alert columns before proof SQL", () => {
+  const store = read("lib/alert-store.ts");
+  assert.match(store, /function ensureAlertQueryCompatColumns/);
+  assert.match(store, /export function listAlerts[\s\S]*?ensureAlertQueryCompatColumns\(db\)/);
+  assert.match(store, /export function tradeSignalAccuracy[\s\S]*?ensureAlertQueryCompatColumns\(db\)/);
+  assert.match(store, /"alert_time", "ALTER TABLE alerts ADD COLUMN alert_time TEXT"/);
+});
+
 test("legacy DB missing final_delivery_outcome: column migration runs before SCHEMA can succeed", { skip: !Database }, () => {
   const db = legacyProductionDb();
   assert.equal(hasSqliteColumn(db, "options_delivery_decisions", "final_delivery_outcome"), false);

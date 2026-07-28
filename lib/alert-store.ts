@@ -306,6 +306,8 @@ export function getLatestAlertCapture(ticker: string) {
 }
 
 export function listAlerts(f: AlertFilters = {}) {
+  const db = getDb();
+  ensureAlertQueryCompatColumns(db);
   const where: string[] = [];
   const params: unknown[] = [];
   if (f.ticker) { where.push("a.ticker = ?"); params.push(String(f.ticker).toUpperCase()); }
@@ -341,7 +343,7 @@ export function listAlerts(f: AlertFilters = {}) {
     ORDER BY a.id DESC
     LIMIT ? OFFSET ?`;
   params.push(Math.min(Number(f.limit ?? 200), 1000), Number(f.offset ?? 0));
-  return getDb().prepare(sql).all(...params);
+  return db.prepare(sql).all(...params);
 }
 
 type DbReader = {
@@ -365,6 +367,29 @@ function columnSetOnDb(db: DbReader, table: string): Set<string> {
     return new Set((db.prepare(`PRAGMA table_info(${table})`).all?.() ?? []).map((r: any) => String(r.name)));
   } catch {
     return new Set();
+  }
+}
+
+function ensureAlertQueryCompatColumns(db: DbReader): void {
+  if (!tableExistsOnDb(db, "alerts")) return;
+  const cols = columnSetOnDb(db, "alerts");
+  const migrations: [string, string][] = [
+    ["source", "ALTER TABLE alerts ADD COLUMN source TEXT NOT NULL DEFAULT 'scanner'"],
+    ["direction", "ALTER TABLE alerts ADD COLUMN direction TEXT NOT NULL DEFAULT 'neutral'"],
+    ["option_symbol", "ALTER TABLE alerts ADD COLUMN option_symbol TEXT"],
+    ["option_side", "ALTER TABLE alerts ADD COLUMN option_side TEXT"],
+    ["alert_time", "ALTER TABLE alerts ADD COLUMN alert_time TEXT"],
+    ["trading_day", "ALTER TABLE alerts ADD COLUMN trading_day TEXT"],
+    ["status", "ALTER TABLE alerts ADD COLUMN status TEXT NOT NULL DEFAULT 'tracking'"],
+  ];
+  for (const [col, sql] of migrations) {
+    if (cols.has(col)) continue;
+    try {
+      db.prepare(sql).get?.();
+    } catch {
+      try { (db as any).exec?.(sql); } catch { /* best-effort compatibility guard */ }
+    }
+    cols.add(col);
   }
 }
 
@@ -973,6 +998,7 @@ export function statsSummary(day?: string) {
 /** BUY CALL/PUT signal accuracy — trade-tier alerts with measured outcomes. */
 export function tradeSignalAccuracy(opts: { days?: number; limit?: number; asset?: "options" | "stock" } = {}) {
   const db = getDb();
+  ensureAlertQueryCompatColumns(db);
   // Validated literal (never user text) — appended to every per-tier WHERE so
   // options and stock callouts grade separately when asked.
   const assetClause =
