@@ -9,6 +9,7 @@ import { optionsTier1, scoreStrategies, selectOptionsStrategy, type OptionsCandi
 import { OPTIONS_STRATEGIES } from "./strategy-catalog.ts";
 import { computeOptionsFeatures, featuresToUnderlying, type Bar, type FeatureContext } from "./features.ts";
 import { optionsCooldownRemainingMs } from "./monitor.ts";
+import { bearishPipelineEnabled } from "./bearish-authority.ts";
 
 export interface OptionsDiagDeps {
   getUnderlyingBatch: (symbols: string[]) => Promise<Map<string, { price: number | null; dayDollarVolume: number | null }>>;
@@ -69,7 +70,7 @@ export async function optionsTier1Diagnostic(deps: OptionsDiagDeps, env: NodeJS.
     const input: OptionsCandidateInput = { symbol, nowMs, session, tier: 1, underlying: u, optionsActivity: null, earnings: null };
     const scored = scoreStrategies(input, MIN_MATCH);
     const anyApplicable = scored.some((x) => x.applicable);
-    const sel = selectOptionsStrategy(input, { bearishActionable: env.BEARISH_ACTIONABLE === "1" });
+    const sel = selectOptionsStrategy(input, { bearishActionable: bearishPipelineEnabled(env) });
 
     const strategies: StrategyDiag[] = scored.map((sc) => {
       const def = OPTIONS_STRATEGIES.find((d) => d.key === sc.key)!;

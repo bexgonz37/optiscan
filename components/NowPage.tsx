@@ -127,7 +127,7 @@ export function NowPage() {
       const res = await fetch("/api/research/options/paper-chain?limit=3", { cache: "no-store", headers: scanHeaders() });
       const d = await res.json();
       const rows = d?.diagnostic?.rows ?? d?.rows ?? [];
-      setSentToday(Array.isArray(rows) ? rows.slice(0, 3) : []);
+      setSentToday(Array.isArray(rows) ? rows.filter((r: any) => r?.subscriberDelivered === true).slice(0, 3) : []);
     } catch {
       setSentToday([]);
     }
@@ -249,7 +249,7 @@ export function NowPage() {
         action={<Link href="/alerts" className="cc-term-link">ALERTS →</Link>}
       >
         {sentToday.length === 0 ? (
-          <p className="cc-term-empty">No Discord SENT options alerts in the recent sample</p>
+          <p className="cc-term-empty">No verified Discord-delivered options alerts in the recent sample</p>
         ) : (
           <div className="cc-term-opp-list">
             {sentToday.map((r: any) => (
@@ -257,7 +257,7 @@ export function NowPage() {
                 <div className="cc-term-opp-top">
                   <span className="cc-term-opp-sym">{r.symbol}</span>
                   <span className={`cc-term-pill ${actionTone("SEND")}`}>{String(r.side ?? "—").toUpperCase()}</span>
-                  <span className="cc-term-pill muted">{r.paperStatus ?? "SENT"}</span>
+                  <span className="cc-term-pill muted">VERIFIED</span>
                 </div>
                 <div className="cc-term-opp-meta">
                   <span className="cc-term-mono">{r.optionSymbol ?? "—"}</span>

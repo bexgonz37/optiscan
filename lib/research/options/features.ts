@@ -128,15 +128,16 @@ export function computeOptionsFeatures(barsIn: Bar[], ctx: FeatureContext): Opti
 /** Map enriched features → the monitor's UnderlyingSnapshot shape used by activeSignals/scoreStrategies. */
 export function featuresToUnderlying(f: OptionsFeatures): {
   price: number | null; dayDollarVolume: number | null; relVolume: number | null; velPct: number | null; accelPct: number | null; gapPct: number | null;
-  aboveVwap: boolean | null; hodBreak: boolean | null; nearResistancePct: number | null; compressionPct: number | null; realizedVolExpanding: boolean | null; openingRange: boolean | null; premarketLevelTest: boolean | null;
+  aboveVwap: boolean | null; hodBreak: boolean | null; lodBreak: boolean | null; nearResistancePct: number | null; nearSupportPct: number | null; compressionPct: number | null; realizedVolExpanding: boolean | null; openingRange: boolean | null; premarketLevelTest: boolean | null;
 } {
   // relVolume prefers a real time-of-day baseline; absent that, a bar-based volume-surge PROXY (only
   // when volume is clearly accelerating) so the rel_volume signal can fire without fabricating a baseline.
   const relVolume = f.relVolume ?? (f.volumeAccel != null && f.volumeAccel > 0.5 ? +(2 + f.volumeAccel).toFixed(2) : null);
   return {
     price: f.price, dayDollarVolume: f.dollarVolume, relVolume, velPct: f.velPct, accelPct: f.accelPct, gapPct: f.gapPct,
-    aboveVwap: f.aboveVwap, hodBreak: f.hodBreak,
-    nearResistancePct: f.nearestResistanceDistPct, compressionPct: f.compressionScore, realizedVolExpanding: f.realizedVolExpanding,
+    aboveVwap: f.aboveVwap, hodBreak: f.hodBreak, lodBreak: f.price != null && f.lod != null ? f.price <= f.lod + 1e-9 : null,
+    nearResistancePct: f.nearestResistanceDistPct, nearSupportPct: f.nearestSupportDistPct,
+    compressionPct: f.compressionScore, realizedVolExpanding: f.realizedVolExpanding,
     openingRange: f.openingRange, premarketLevelTest: f.premarketLevelTest,
   };
 }

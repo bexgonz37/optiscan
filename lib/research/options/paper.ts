@@ -1,7 +1,7 @@
 /**
  * lib/research/options/paper.ts — REAL-OPTION paper execution for the independent Options scanner.
  * PURE builders + OnDb persist. Separate from equity paper (paper_trades). Calls and puts are BOTH
- * paper-traded and graded; puts stay RESEARCH_ONLY for public actionable output. Fills are executable
+ * paper-traded and graded; public PUT delivery is controlled by bearish authority flags. Fills are executable
  * and CONSERVATIVE (never a naive mid when the spread/liquidity doesn't support it). P&L is computed
  * from the OPTION contract price, never the underlying. HARD no-op unless REAL_OPTION_PAPER_ENABLED=1.
  */

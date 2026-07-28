@@ -343,15 +343,14 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     }
   }
 
-  // Bearish safety gate (2026-07-10): put-side TRADEs are research-only until
-  // the short strategy is rebuilt — see lib/bearish-gate.ts for the traced
-  // root cause. Bullish flow is untouched.
+  // Bearish safety gate: stock shorts stay gated, while verified option puts
+  // can continue into the independent options authority path when rollout flags allow it.
   const bearGate = gateBearishAction({ direction: sig.direction, optionSide: sideContract?.side ?? null }, finalCaptureAction);
   if (bearGate.gated) {
     finalCaptureAction = "WAIT";
     finalVerdict = { ...finalVerdict, action: "WAIT" as const, reason: bearGate.reason ?? finalVerdict.reason };
     flags.push("Bearish Strategy Disabled");
-    console.log(`[bearish-gate] ${sig.ticker} put TRADE demoted to WATCH (research-only)`);
+    console.log(`[bearish-gate] ${sig.ticker} bearish TRADE demoted to WATCH (${bearGate.reason ?? "bearish gate"})`);
   }
 
   const qualityGates = passesQualityGates(verdictInput) && tradeBlockers.length === 0;
@@ -454,6 +453,7 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
         zeroDteContractScore: contractRes.score,
         riskFlags: JSON.stringify(flags),
         optionSide: sideContract?.side ?? null,
+        optionSymbol: sideContract?.optionSymbol ?? null,
         strike: sideContract?.strike ?? null,
         expiration: sideContract?.expiration ?? null,
         dte: sideContract?.dte ?? null,
@@ -463,8 +463,12 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
         longPutScore: watch.putWatch,
         shortRate: sig.shortRate,
         volumeSurge: sig.surge,
+        bid: sideContract?.bid ?? null,
+        ask: sideContract?.ask ?? null,
         optionMid: sideContract?.mid ?? null,
         spreadPct: sideContract?.spreadPct ?? null,
+        optionVolume: sideContract?.volume ?? null,
+        openInterest: sideContract?.openInterest ?? null,
         delta: sideContract?.delta ?? null,
         alertTime: new Date(nowMs).toISOString(),
         captureAction: "TRADE",

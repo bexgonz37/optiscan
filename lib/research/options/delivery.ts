@@ -2,8 +2,9 @@
  * lib/research/options/delivery.ts — GATED private-beta options Discord delivery. One message per
  * play, honest send states, idempotent, isolated. HARD no-op unless BOTH
  * INDEPENDENT_OPTIONS_DISCOVERY_ENABLED=1 AND EARLY_OPTIONS_CALLOUTS_ENABLED=1 (and no kill switch).
- * A Discord failure NEVER blocks the monitor. Puts are RESEARCH_ONLY and are NOT sent as actionable
- * callouts. Nothing here executes real money; the message carries a PAPER/BETA label.
+ * A Discord failure NEVER blocks the monitor. Qualified puts can become actionable only after
+ * bearish authority, final delivery validation, and explicit subscriber rollout flags pass.
+ * Nothing here executes real money; the message carries a PAPER/BETA label.
  */
 import { researchFlags } from "../flags.ts";
 import { buildRealOptionEntry, persistDeliveredMirrorOnDb, type OptionQuote } from "./paper.ts";
@@ -202,7 +203,7 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
     const cfgVal = validateSubscriberConfig(env);
     if (shouldBlockIndependentDelivery(cfgVal, env)) return base("REJECTED", false, `subscriber_config:${cfgVal.fatal.join("; ")}`);
   } catch { /* validator optional in tests */ }
-  // Puts are RESEARCH_ONLY → never sent as actionable callouts (suppressed, reported).
+  // Puts require the bearish authority path before any actionable subscriber delivery.
   if (input.contract.side === "put") {
     const auth = evaluateBearishAuthority({
       symbol: input.candidateSymbol,
@@ -450,6 +451,21 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
       timingClass: finalGate.timingClass === "EARLY" ? "EARLY" : "TIMELY",
       actionableReason: finalGate.actionableReason,
       invalidation: finalGate.invalidation,
+      bid: finalInput.contract.bid,
+      ask: finalInput.contract.ask,
+      spreadPct: finalInput.contract.spreadPct,
+      volume: finalInput.contract.volume,
+      openInterest: finalInput.contract.openInterest,
+      delta: finalInput.contract.delta,
+      quoteAgeMs: finalInput.contract.quoteAgeMs,
+      confidence: Math.min(
+        finalGate.entryQuality.dimensions.setupQuality.score,
+        finalGate.entryQuality.dimensions.contractQuality.score,
+        finalGate.entryQuality.dimensions.marketAlignment.score,
+        finalGate.entryQuality.dimensions.entryEarliness.score,
+        finalGate.entryQuality.dimensions.remainingOpportunity.score,
+        finalGate.entryQuality.dimensions.sessionRisk.score,
+      ),
     })
     : finalInput.message;
 

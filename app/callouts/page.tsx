@@ -126,7 +126,7 @@ function mapRow(c: Callout, rank: number): RowView {
   else entryState = "WAIT";
 
   let systemAction: RowView["systemAction"] = "WATCH";
-  if (c.direction === "bearish" || c.researchOnlyWarning) systemAction = "RESEARCH";
+  if (c.researchOnlyWarning) systemAction = "RESEARCH";
   if (entryState === "BLOCK" || c.primaryBlockingReason) systemAction = "BLOCK";
   else if (entryState === "ACTIONABLE" && contractState === "READY") systemAction = "SEND";
   else if (contractState === "UNAVAILABLE") systemAction = "WAIT";

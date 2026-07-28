@@ -197,6 +197,33 @@ test("decision and final delivery can send a PUT only when bearish subscriber de
   assert.equal(d.prepare("SELECT state FROM options_alerts").get().state, "SENT");
 });
 
+test("subscriber PUT message uses bearish decision-first copy", async () => {
+  const d = db();
+  const payloads = [];
+  await deliverOptionsCallout(nvdaDeliveryInput(), {
+    getDb: () => d,
+    now: () => NOW,
+    send: async (payload) => {
+      payloads.push(payload);
+      return { ok: true, status: 204, messageId: "m_put", latencyMs: 10, ambiguous: false, error: null };
+    },
+  }, { ...ENV_ON, BEARISH_PIPELINE_ENABLED: "1", BEARISH_SUBSCRIBER_DELIVERY_ENABLED: "1" });
+  const content = String(payloads[0]?.content ?? "");
+  assert.match(content, /BEARISH TRADE CANDIDATE/);
+  assert.match(content, /Contract: NVDA 07\/27 \$200P/);
+  assert.match(content, /Entry: \$0\.49-\$0\.50/);
+  assert.match(content, /Target 1:/);
+  assert.match(content, /Target 2:/);
+  assert.match(content, /Stop:/);
+  assert.match(content, /Trigger:/);
+  assert.match(content, /Main risk:/);
+  assert.match(content, /Spread 2\.0%/);
+  assert.match(content, /Volume 112,193/);
+  assert.match(content, /OI 20,139/);
+  assert.match(content, /Delta -0\.43/);
+  assert.match(content, /Freshness 1s/);
+});
+
 test("bearish strategy families and active signals are explicit", () => {
   const families = bearishStrategyFamilies();
   for (const key of ["momentum_breakdown", "failed_breakout_reversal", "vwap_rejection", "support_break_retest", "lower_high_continuation", "bearish_opening_range_break", "gap_failure", "relative_weakness_continuation", "downside_catalyst_continuation"]) {

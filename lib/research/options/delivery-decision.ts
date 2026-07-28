@@ -188,7 +188,8 @@ async function maybeSendBearishOwnerReview(
   nowMs: number,
   env: NodeJS.ProcessEnv,
 ): Promise<void> {
-  if (!db || decision.state !== "BEARISH_READY" || env.BEARISH_OWNER_ALERTS_ENABLED !== "1") return;
+  if (!db || env.BEARISH_OWNER_ALERTS_ENABLED !== "1") return;
+  if (!["BEARISH_READY", "BEARISH_SEND"].includes(decision.state)) return;
   try {
     const { sendOwnerResearchNotify } = await import("../../notifications/owner-research-notify.ts");
     const content = formatBearishOwnerReview({
@@ -370,7 +371,7 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
         deliveryInput: x.s.deliveryInput,
         nowMs,
       }, env);
-      void maybeSendBearishOwnerReview(db, x.s, auth, x.quality, deliverBar, nowMs, env);
+      await maybeSendBearishOwnerReview(db, x.s, auth, x.quality, deliverBar, nowMs, env);
       if (!auth.maySubscriberSend) {
         base.reason = auth.reasonCode;
         base.finalDeliveryReason = `${auth.state}: ${auth.blockers.join("; ") || auth.reasons.join("; ") || auth.reasonCode}`;

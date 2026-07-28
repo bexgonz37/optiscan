@@ -320,7 +320,9 @@ export function formatBearishOwnerReview(input: BearishAuthorityInput, decision:
     `Passed: ${decision.passed.length ? decision.passed.join(", ") : "none"}`,
     `Remaining blockers: ${decision.blockers.length ? decision.blockers.join("; ") : "none"}`,
     `Subscriber SEND under proposed rules: ${decision.maySubscriberSend ? "YES" : "NO"}`,
-    `_Owner review only - not a delivered subscriber alert._`,
+    decision.maySubscriberSend
+      ? `_Owner notification - subscriber delivery may also proceed after final proof gates._`
+      : `_Owner review only - not a delivered subscriber alert._`,
   ].join("\n");
 }
 

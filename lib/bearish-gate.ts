@@ -26,7 +26,7 @@ export function bearishActionable(): boolean {
 }
 
 export function verifiedOptionsPutsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.OPTIONS_PUTS_ENABLED !== "0" && env.OPTIONS_PUT_CALLOUTS !== "0";
+  return env.BEARISH_PIPELINE_ENABLED === "1" || (env.OPTIONS_PUTS_ENABLED !== "0" && env.OPTIONS_PUT_CALLOUTS !== "0");
 }
 
 export interface BearishGateResult {
@@ -64,6 +64,6 @@ export function gateBearishAction(
   return {
     action: "WAIT",
     gated: true,
-    reason: `${BEARISH_DISABLED_REASON}: bearish stock/short ideas are research-only until bearish trading is enabled (set BEARISH_ACTIONABLE=1). Verified option puts use OPTIONS_PUTS_ENABLED and still pass the normal options gates.`,
+    reason: `${BEARISH_DISABLED_REASON}: bearish stock/short ideas are research-only until bearish trading is enabled (set BEARISH_ACTIONABLE=1). Verified option puts use BEARISH_PIPELINE_ENABLED/OPTIONS_PUTS_ENABLED and still pass the normal options gates.`,
   };
 }

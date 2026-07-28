@@ -49,6 +49,8 @@ export interface PaperChainRow {
   t2Hit: boolean;
   stopHit: boolean;
   latestMarkReturnPct: number | null;
+  deliveryProofStatus: "verified_delivered" | "app_sent_unverified" | "missing_mirror" | "not_sent" | "unknown";
+  subscriberDelivered: boolean;
   graderHealth: "healthy" | "stuck_open" | "missing_mirror" | "missing_case" | "historical_pre_lifecycle" | "unknown";
   missingDataWarnings: string[];
   lifecycleBlocked: boolean;
@@ -63,6 +65,8 @@ export interface PaperChainDiagnostic {
   linked24h: number;
   /** Sum of closed delivered `pnl` dollars in the sampled rows. */
   sumPnlUsd: number | null;
+  /** Sum of closed rows with Discord message + Opportunity Case proof. */
+  verifiedSumPnlUsd: number | null;
   rows: PaperChainRow[];
   gradingBacklog: ReturnType<typeof readGradingBacklogOnDb>;
 }
@@ -95,6 +99,29 @@ function graderHealthForRow(
   return "healthy";
 }
 
+function deliveryProofForRow(
+  alert: Record<string, unknown> | null,
+  paper: Record<string, unknown> | null,
+  caseId: string | null,
+): { status: PaperChainRow["deliveryProofStatus"]; subscriberDelivered: boolean; warnings: string[] } {
+  const warnings: string[] = [];
+  if (!alert) return { status: "unknown", subscriberDelivered: false, warnings: ["missing_alert"] };
+  if (alert.state !== "SENT" || Number(alert.research_only ?? 0) !== 0) {
+    return { status: "not_sent", subscriberDelivered: false, warnings: ["alert_not_subscriber_sent"] };
+  }
+  if (Number(alert.paper_linked) !== 1 || !paper) warnings.push("paper_not_linked");
+  if (!caseId) warnings.push("missing_opportunity_case");
+  if (!alert.discord_message_id) warnings.push("missing_opening_discord_message_id");
+  if (paper?.status === "ENTERED" && paper.last_mark_return_pct == null) warnings.push("no_recent_marks");
+
+  const verified = !warnings.some((w) => w !== "no_recent_marks");
+  return {
+    status: verified ? "verified_delivered" : (paper ? "app_sent_unverified" : "missing_mirror"),
+    subscriberDelivered: verified,
+    warnings,
+  };
+}
+
 export function buildPaperChainDiagnostic(
   db: ChainDb,
   env: NodeJS.ProcessEnv = process.env,
@@ -109,6 +136,7 @@ export function buildPaperChainDiagnostic(
     sent24h: 0,
     linked24h: 0,
     sumPnlUsd: null,
+    verifiedSumPnlUsd: null,
     rows: [],
     gradingBacklog: readGradingBacklogOnDb(db as any),
   };
@@ -152,11 +180,7 @@ export function buildPaperChainDiagnostic(
       ? Number(paper.entry_fill) * (1 + Number(paper.last_mark_return_pct) / 100)
       : (paper?.entry_fill != null ? Number(paper.entry_fill) : null);
     const hits = t1T2StopHit({ ...alert, ...paper }, mark);
-    const warnings: string[] = [];
-    if (Number(alert.paper_linked) !== 1) warnings.push("paper_not_linked");
-    if (!caseId) warnings.push("missing_opportunity_case");
-    if (!alert.discord_message_id) warnings.push("missing_opening_discord_message_id");
-    if (paper?.status === "ENTERED" && paper.last_mark_return_pct == null) warnings.push("no_recent_marks");
+    const proof = deliveryProofForRow(alert, paper ?? null, caseId);
 
     const sentAtMs = alert.sent_at_ms != null ? Number(alert.sent_at_ms) : null;
     const frozenEntry = alert.entry_mid != null ? Number(alert.entry_mid) : (paper?.entry_fill != null ? Number(paper.entry_fill) : null);
@@ -193,8 +217,10 @@ export function buildPaperChainDiagnostic(
       t2Hit: hits.t2,
       stopHit: hits.stop,
       latestMarkReturnPct: paper?.last_mark_return_pct != null ? Number(paper.last_mark_return_pct) : null,
+      deliveryProofStatus: proof.status,
+      subscriberDelivered: proof.subscriberDelivered,
       graderHealth: graderHealthForRow(alert, paper ?? null, caseId),
-      missingDataWarnings: warnings,
+      missingDataWarnings: proof.warnings,
       lifecycleBlocked: lifecycle?.blocked ?? false,
       blockingReason: lifecycle?.blockingReason ?? null,
       currentStage: lifecycle?.currentStage ?? null,
@@ -206,6 +232,12 @@ export function buildPaperChainDiagnostic(
     .map((r) => r.pnlUsd as number);
   out.sumPnlUsd = closedPnls.length
     ? +closedPnls.reduce((a, x) => a + x, 0).toFixed(2)
+    : null;
+  const verifiedClosedPnls = out.rows
+    .filter((r) => r.subscriberDelivered && r.paperStatus === "EXITED" && r.pnlUsd != null)
+    .map((r) => r.pnlUsd as number);
+  out.verifiedSumPnlUsd = verifiedClosedPnls.length
+    ? +verifiedClosedPnls.reduce((a, x) => a + x, 0).toFixed(2)
     : null;
 
   return out;

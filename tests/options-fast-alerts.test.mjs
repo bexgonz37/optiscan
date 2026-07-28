@@ -57,27 +57,27 @@ test("targets are deterministic, ordered, and never missing", () => {
   assert.deepEqual(computeOptionTargets(1.21, "momentum_acceleration"), t);
 });
 
-// ── 4/5. compact message: no range, no n/a, mobile-friendly ──
-test("compact alert format: exact midpoint, T1/T2/Stop, one setup line, no range, short", () => {
+// compact message: no n/a, mobile-friendly, no published stop.
+test("compact alert format: exact midpoint, targets, one setup line, no n/a, short", () => {
   const msg = formatCompactAlert({ symbol: "SPY", side: "call", strike: 640, expiration: "2026-07-24", entryMid: 1.21, t1: 1.45, t2: 1.7, stop: 0.98, strategyKey: "sr_reclaim", underlyingPrice: 639.4, keyLevel: 640.5, dte: 2 });
-  assert.match(msg, /^🟢 \*\*BUYING SPY \$640 CALL\*\* · exp 07\/24$/m, "educational BUYING header");
-  assert.match(msg, /^SPY @ \$639\.40 · watching \$640\.50$/m, "underlying price + chart level shown");
-  assert.match(msg, /^Entry ~ \*\*\$1\.21\*\* · Targets \*\*\$1\.45 \/ \$1\.70\*\*$/m, "approx entry + aspirational targets");
+  assert.match(msg, /^\*\*WATCHING SPY \$640 CALL\*\* - exp 07\/24$/m, "decision-first WATCHING header");
+  assert.match(msg, /^SPY @ \$639\.40 \| watching \$640\.50$/m, "underlying price + chart level shown");
+  assert.match(msg, /^Entry around \$1\.21 \| Targets \$1\.45 \/ \$1\.70$/m, "approx entry + targets");
   assert.match(msg, /Short-dated/, "short-dated risk note");
-  assert.doesNotMatch(msg, /Stop:|Stop \$|n\/a|Why:/, "no published stop — tracked in the backend, not shown as advice");
+  assert.doesNotMatch(msg, /Stop:|Stop \$|n\/a|Why:/, "no published stop; tracked in the backend, not shown as advice");
   assert.ok(msg.length < 300, "concise / mobile-friendly");
 });
 
-test("educational callout: puts render red BUYING PUT; 0DTE risk note; degrades without level/underlying", () => {
+test("compact callout: puts render as watched contracts; 0DTE risk note; degrades without level/underlying", () => {
   const put = formatCompactAlert({ symbol: "QQQ", side: "put", strike: 500, expiration: "2026-07-22", entryMid: 0.88, t1: 1.06, t2: 1.32, stop: 0.57, strategyKey: "failed_breakout", underlyingPrice: 501.2, keyLevel: null, dte: 0 });
-  assert.match(put, /^🔴 \*\*BUYING QQQ \$500 PUT\*\* · exp 07\/22$/m, "puts render as BUYING PUT (delivery still gates them separately)");
-  assert.match(put, /^QQQ @ \$501\.20$/m, "no chart level → 'watching' omitted, not fabricated");
-  assert.match(put, /0DTE — high risk, small size/, "0DTE risk note");
-  // fully degraded: no underlying, no level, longer dated → still a valid, honest message
+  assert.match(put, /^\*\*WATCHING QQQ \$500 PUT\*\* - exp 07\/22$/m, "puts render as PUT contracts");
+  assert.match(put, /^QQQ @ \$501\.20$/m, "no chart level means 'watching' is omitted, not fabricated");
+  assert.match(put, /0DTE: high risk, small size\./, "0DTE risk note");
+  // fully degraded: no underlying, no level, longer dated still gives a valid, honest message
   const bare = formatCompactAlert({ symbol: "AAPL", side: "call", strike: 230, expiration: "2026-08-15", entryMid: 2.5, t1: 3.0, t2: 3.75, stop: 1.9, strategyKey: "trend_continuation" });
-  assert.match(bare, /^🟢 \*\*BUYING AAPL \$230 CALL\*\*/m);
+  assert.match(bare, /^\*\*WATCHING AAPL \$230 CALL\*\*/m);
   assert.doesNotMatch(bare, /watching|@ \$|0DTE|Short-dated/, "context lines omitted cleanly when data is absent");
-  assert.match(bare, /Entry ~ \*\*\$2\.50\*\* · Targets \*\*\$3\.00 \/ \$3\.75\*\*/);
+  assert.match(bare, /Entry around \$2\.50 \| Targets \$3\.00 \/ \$3\.75/);
 });
 
 // ── 6. session states ──

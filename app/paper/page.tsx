@@ -45,6 +45,13 @@ function dollars(v: number | null | undefined): string {
   return `${v < 0 ? "-" : ""}$${Math.abs(v).toFixed(0)}`;
 }
 
+function proofLabel(row: any): string {
+  if (row?.subscriberDelivered === true) return "Verified";
+  if (row?.deliveryProofStatus === "app_sent_unverified") return "Audit only";
+  if (row?.deliveryProofStatus === "missing_mirror") return "Missing mirror";
+  return "Unverified";
+}
+
 function timeAgo(ms: number | null | undefined): string {
   if (!ms) return "never";
   const mins = Math.max(0, Math.round((Date.now() - ms) / 60_000));
@@ -274,37 +281,38 @@ function PaperPageInner() {
           <section className="panel main">
             <h2 className="section-title">Delivered Options</h2>
             <p className="muted text-sm">
-              Authoritative subscriber lane: private Discord SENT alerts and their DELIVERED_ALERT_PAPER mirrors only.
+              Verified subscriber lane: private Discord alerts with opening-message proof and their DELIVERED_ALERT_PAPER mirrors.
               $ P&amp;L assumes 1 contract × 100 multiplier.
             </p>
             <div className="axiom-strip paper-strip" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(120px,1fr))", gap: 8, marginBottom: 12 }}>
               <StatTile label="Link rate 24h" value={deliveredChain?.paperLinkRate == null ? "—" : `${Math.round(Number(deliveredChain.paperLinkRate) * 100)}%`} />
               <StatTile label="Sent 24h" value={String(deliveredChain?.sent24h ?? 0)} />
               <StatTile label="Linked 24h" value={String(deliveredChain?.linked24h ?? 0)} />
-              <StatTile label="Closed $ P&L" value={dollars(deliveredChain?.sumPnlUsd)} />
+              <StatTile label="Verified $ P&L" value={dollars(deliveredChain?.verifiedSumPnlUsd)} />
             </div>
             <table className="mini-table" style={{ width: "100%" }}>
               <thead>
                 <tr>
-                  <th>Symbol</th><th>Status</th><th>Entry</th><th>Mark</th><th>$ P&amp;L</th><th>Return</th><th>MFE</th><th>MAE</th><th>Health</th>
+                  <th>Symbol</th><th>Proof</th><th>Status</th><th>Entry</th><th>Mark</th><th>$ P&amp;L</th><th>Return</th><th>MFE</th><th>MAE</th><th>Health</th>
                 </tr>
               </thead>
               <tbody>
                 {(deliveredChain?.rows ?? []).slice(0, 40).map((r: any) => (
                   <tr key={r.alertId ?? r.id}>
                     <td>{r.symbol ?? "—"}</td>
+                    <td>{proofLabel(r)}</td>
                     <td>{r.paperStatus ?? "—"}</td>
                     <td>{r.frozenEntry != null ? `$${Number(r.frozenEntry).toFixed(2)}` : "—"}</td>
                     <td>{r.markPrice != null ? `$${Number(r.markPrice).toFixed(2)}` : "—"}</td>
-                    <td>{r.pnlUsd != null ? dollars(Number(r.pnlUsd)) : "—"}</td>
-                    <td>{num(r.latestMarkReturnPct ?? r.returnPct, "%")}</td>
-                    <td>{num(r.mfePct, "%")}</td>
-                    <td>{num(r.maePct, "%")}</td>
+                    <td>{r.subscriberDelivered ? (r.pnlUsd != null ? dollars(Number(r.pnlUsd)) : "—") : "audit only"}</td>
+                    <td>{r.subscriberDelivered ? num(r.latestMarkReturnPct ?? r.returnPct, "%") : "audit only"}</td>
+                    <td>{r.subscriberDelivered ? num(r.mfePct, "%") : "audit only"}</td>
+                    <td>{r.subscriberDelivered ? num(r.maePct, "%") : "audit only"}</td>
                     <td>{r.graderHealth ?? "—"}</td>
                   </tr>
                 ))}
                 {(deliveredChain?.rows ?? []).length === 0 ? (
-                  <tr><td colSpan={9} className="muted">No delivered mirrors in sample</td></tr>
+                  <tr><td colSpan={10} className="muted">No delivered mirrors in sample</td></tr>
                 ) : null}
               </tbody>
             </table>

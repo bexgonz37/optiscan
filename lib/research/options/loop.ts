@@ -16,6 +16,7 @@ import { buildCandidateInstrumentation, persistCandidateInstrumentation, isReady
 import { sessionState } from "./session-state.ts";
 import { assertSubscriberDeliveryAllowed, isSameTradingSession } from "../../market-session-guard.ts";
 import { incrementInstrumentationFallbackInserts } from "../../db-legacy-columns.ts";
+import { bearishPipelineEnabled } from "./bearish-authority.ts";
 
 export interface ChainContract { optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number; bid: number | null; ask: number | null; spreadPct: number | null; volume: number | null; openInterest: number | null; iv: number | null; delta: number | null; providerTimestamp: number | null }
 
@@ -88,7 +89,7 @@ export interface OptionsCandidateExtra {
  *  INDEPENDENT_OPTIONS_DISCOVERY_ENABLED=1. Never throws into the caller. */
 export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainContract[], deps: { getDb?: () => LoopDb } = {}, env: NodeJS.ProcessEnv = process.env, extra: OptionsCandidateExtra = {}): OptionsEvalResult | null {
   if (!researchFlags(env).independentOptionsDiscovery) return null;
-  const res = evaluateOptionsCandidate(input, chain, { bearishActionable: env.BEARISH_ACTIONABLE === "1" });
+  const res = evaluateOptionsCandidate(input, chain, { bearishActionable: bearishPipelineEnabled(env) });
   const snapJson = extra.featureSnapshot !== undefined ? JSON.stringify(extra.featureSnapshot) : null;
   try {
     const db = (deps.getDb ?? liveDb)();
