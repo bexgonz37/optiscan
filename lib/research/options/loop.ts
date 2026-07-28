@@ -196,10 +196,13 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
       } else {
       const strat = getStrategy(res.selection.selected!.key);
       const px = input.underlying.price ?? 0;
+      const observedPx = (inst.underlyingAtFirstDetection != null && Number.isFinite(inst.underlyingAtFirstDetection))
+        ? Number(inst.underlyingAtFirstDetection)
+        : px;
       const deliveryInput = {
         candidateSymbol: input.symbol, strategy: res.selection.selected!.key, researchOnly: res.selection.selected!.researchOnly,
         contract: { optionSymbol: res.contract.optionSymbol, side: res.contract.side, strike: res.contract.strike, expiration: res.contract.expiration, bid: res.contract.bid, ask: res.contract.ask, spreadPct: res.contract.spreadPct, quoteAgeMs: res.contract.providerTimestamp != null ? input.nowMs - res.contract.providerTimestamp : null, dte: res.contract.dte, volume: res.contract.volume, openInterest: res.contract.openInterest, iv: res.contract.iv, delta: res.contract.delta, providerTimestamp: res.contract.providerTimestamp },
-        message: res.callout.message, observedUnderlyingPrice: px, currentUnderlyingPrice: px, chaseLimitPct: strat?.chaseLimitPct ?? 0.6, underlyingPrice: px, decisionMs: input.nowMs, session: input.session, entry: res.callout.entry, tier: input.tier, paperOptionSymbol,
+        message: res.callout.message, observedUnderlyingPrice: observedPx, currentUnderlyingPrice: px, chaseLimitPct: strat?.chaseLimitPct ?? 0.6, underlyingPrice: px, decisionMs: input.nowMs, session: input.session, entry: res.callout.entry, tier: input.tier, paperOptionSymbol,
         firstDetectedAtMs: inst.firstDetectedAtMs,
         underlyingAtFirstDetection: inst.underlyingAtFirstDetection,
         optionAtFirstDetection: inst.optionAtFirstDetection,

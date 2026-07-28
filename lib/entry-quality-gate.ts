@@ -750,9 +750,9 @@ export function evaluateEntryQuality(input: EntryQualityInput, env: NodeJS.Proce
 
   let entryEarliness = dim(85, "PASS");
 
-  if (favMove > chaseLimit * 100) {
+  if (favMove > chaseLimit) {
 
-    entryEarliness = dim(0, "FAIL", [`underlying favorable move ${favMove.toFixed(2)}% > chase ${(chaseLimit * 100).toFixed(0)}%`]);
+    entryEarliness = dim(0, "FAIL", [`underlying favorable move ${favMove.toFixed(2)}% > chase ${chaseLimit.toFixed(2)}%`]);
 
   } else if (earlinessLabel === "CHASED") {
 

@@ -67,7 +67,7 @@ const STATE_CLASS: Record<string, string> = {
 };
 
 function PaperPageInner() {
-  const [tab, setTab] = useState<"delivered" | "0dte" | "stock" | "shadow">("stock");
+  const [tab, setTab] = useState<"delivered" | "0dte" | "stock" | "shadow">("delivered");
   const [data, setData] = useState<any>(null);
   const [zeroDte, setZeroDte] = useState<any>(null);
   const [deliveredChain, setDeliveredChain] = useState<any>(null);
@@ -105,7 +105,8 @@ function PaperPageInner() {
     try {
       const res = await fetch("/api/research/options/paper-chain", { cache: "no-store", headers: scanHeaders() });
       const d = await res.json();
-      if (d?.ok || d?.rows) setDeliveredChain(d);
+      if (d?.ok) setDeliveredChain(d.diagnostic ?? d);
+      else if (d?.rows) setDeliveredChain(d);
     } catch { /* best effort */ }
   }, []);
 
@@ -195,8 +196,8 @@ function PaperPageInner() {
         <div className="paper-account-tabs" style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
           {([
             ["delivered", "Delivered Options"],
-            ["0dte", "0DTE Research"],
-            ["stock", "Stock Paper"],
+            ["0dte", "0DTE Research (legacy)"],
+            ["stock", "Stock Paper (legacy)"],
             ["shadow", "Shadow / Historical"],
           ] as const).map(([id, label]) => (
             <button
@@ -272,17 +273,30 @@ function PaperPageInner() {
         {tab === "delivered" ? (
           <section className="panel main">
             <h2 className="section-title">Delivered Options</h2>
-            <p className="muted text-sm">Private Discord alerts and their DELIVERED_ALERT_PAPER mirrors only.</p>
+            <p className="muted text-sm">
+              Authoritative subscriber lane: private Discord SENT alerts and their DELIVERED_ALERT_PAPER mirrors only.
+              $ P&amp;L assumes 1 contract × 100 multiplier.
+            </p>
+            <div className="axiom-strip paper-strip" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(120px,1fr))", gap: 8, marginBottom: 12 }}>
+              <StatTile label="Link rate 24h" value={deliveredChain?.paperLinkRate == null ? "—" : `${Math.round(Number(deliveredChain.paperLinkRate) * 100)}%`} />
+              <StatTile label="Sent 24h" value={String(deliveredChain?.sent24h ?? 0)} />
+              <StatTile label="Linked 24h" value={String(deliveredChain?.linked24h ?? 0)} />
+              <StatTile label="Closed $ P&L" value={dollars(deliveredChain?.sumPnlUsd)} />
+            </div>
             <table className="mini-table" style={{ width: "100%" }}>
               <thead>
-                <tr><th>Symbol</th><th>Status</th><th>Entry</th><th>Return</th><th>MFE</th><th>MAE</th><th>Health</th></tr>
+                <tr>
+                  <th>Symbol</th><th>Status</th><th>Entry</th><th>Mark</th><th>$ P&amp;L</th><th>Return</th><th>MFE</th><th>MAE</th><th>Health</th>
+                </tr>
               </thead>
               <tbody>
-                {(deliveredChain?.rows ?? deliveredChain?.detail?.rows ?? []).slice(0, 40).map((r: any) => (
+                {(deliveredChain?.rows ?? []).slice(0, 40).map((r: any) => (
                   <tr key={r.alertId ?? r.id}>
                     <td>{r.symbol ?? "—"}</td>
                     <td>{r.paperStatus ?? "—"}</td>
                     <td>{r.frozenEntry != null ? `$${Number(r.frozenEntry).toFixed(2)}` : "—"}</td>
+                    <td>{r.markPrice != null ? `$${Number(r.markPrice).toFixed(2)}` : "—"}</td>
+                    <td>{r.pnlUsd != null ? dollars(Number(r.pnlUsd)) : "—"}</td>
                     <td>{num(r.latestMarkReturnPct ?? r.returnPct, "%")}</td>
                     <td>{num(r.mfePct, "%")}</td>
                     <td>{num(r.maePct, "%")}</td>
@@ -290,7 +304,7 @@ function PaperPageInner() {
                   </tr>
                 ))}
                 {(deliveredChain?.rows ?? []).length === 0 ? (
-                  <tr><td colSpan={7} className="muted">No delivered mirrors in sample</td></tr>
+                  <tr><td colSpan={9} className="muted">No delivered mirrors in sample</td></tr>
                 ) : null}
               </tbody>
             </table>

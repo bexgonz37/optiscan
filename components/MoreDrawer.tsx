@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 
 const PRIMARY = [
+  { href: "/research", title: "Research Hub", sub: "Quant · Scanner · Strategy · AI" },
   { href: "/content-drafts", title: "Content Drafts", sub: "Owner drafts — never auto-posted" },
   { href: "/pipeline-health#readiness", title: "Paid Beta Readiness", sub: "Launch gate status" },
   { href: "/pipeline-health", title: "Pipeline Health", sub: "Diagnostics and funnel" },
@@ -11,6 +12,7 @@ const PRIMARY = [
 ];
 
 const ADVANCED = [
+  { href: "/callouts", title: "Live Options" },
   { href: "/data", title: "System Health" },
   { href: "/shadow-soak", title: "Shadow Soak" },
   { href: "/performance", title: "Performance" },

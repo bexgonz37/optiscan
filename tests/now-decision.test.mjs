@@ -511,13 +511,13 @@ test("OWNER_RESEARCH_DISCORD_ENABLED defaults off in example env", () => {
 
 
 
-test("primary nav is NOW RESEARCH PAPER MORE", () => {
+test("primary nav is NOW ALERTS PAPER MORE", () => {
 
   const shell = read("components/AxiomShell.tsx");
 
   assert.match(shell, /label: "NOW"/);
 
-  assert.match(shell, /label: "RESEARCH"/);
+  assert.match(shell, /label: "ALERTS"/);
 
   assert.match(shell, /label: "PAPER"/);
 

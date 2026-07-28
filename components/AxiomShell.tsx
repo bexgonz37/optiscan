@@ -10,15 +10,16 @@ import { apiGetJson } from "@/lib/client-auth";
 import { resolveOperatingModeFromHealth } from "@/lib/dashboard/operating-mode";
 import { getUiReviewSession, isUiReviewMode } from "@/lib/dashboard/ui-review";
 
-// Primary product navigation — decision-first (4 tabs).
+// Primary product navigation — decision-first.
 const PRODUCT_NAV: NavItem[] = [
   { href: "/", label: "NOW" },
-  { href: "/research", label: "RESEARCH" },
+  { href: "/alerts", label: "ALERTS" },
   { href: "/paper", label: "PAPER" },
 ];
 
-// Deep tools remain reachable but not in primary nav.
+// Owner tools remain reachable but not in primary nav.
 const ADVANCED_NAV: NavItem[] = [
+  { href: "/research", label: "Research Hub" },
   { href: "/callouts", label: "Live Options" },
   { href: "/quant", label: "Quant Lab" },
   { href: "/scanner", label: "Scanner" },
@@ -46,16 +47,16 @@ const ADVANCED_NAV: NavItem[] = [
 
 const PAGE_META: Record<string, { title: string; sub: string }> = {
   "/": { title: "NOW", sub: "What is actionable — and what to watch next" },
-  "/research": { title: "Research", sub: "Quant · Scanner · Strategy · AI" },
+  "/research": { title: "Research", sub: "Quant · Scanner · Strategy · AI (owner)" },
   "/data": { title: "System Health", sub: "Data freshness, Discord, and reliability" },
   "/subscriptions": { title: "Subscriptions", sub: "Stripe ↔ Discord role sync health" },
   "/social-drafts": { title: "Social Drafts", sub: "Verified milestone copy — approve before posting" },
   "/content-drafts": { title: "Content Drafts", sub: "Owner-only drafts — never auto-posted" },
   "/copilot": { title: "Explain Signals", sub: "Coming soon" },
   "/callouts": { title: "Live Options", sub: "Active alerts, contracts, and open risk" },
-  "/alerts": { title: "Options Callouts", sub: "Moved into Live Options" },
+  "/alerts": { title: "ALERTS", sub: "Discord SENT history and track record" },
   "/watchlist": { title: "Watchlist", sub: "Symbols the scanner is monitoring" },
-  "/paper": { title: "Paper Trading & Research", sub: "Delivered · 0DTE Research · Stock · Shadow" },
+  "/paper": { title: "Paper Trading", sub: "Delivered mirrors first — $ P&L proof" },
   "/paper-lifecycle": {
     title: "Paper Lifecycle",
     sub: "Candidate → Entry → Exit → Graded → Broker V2 — blockers visible",
@@ -81,9 +82,11 @@ const PAGE_META: Record<string, { title: string; sub: string }> = {
 
 function isActive(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
+  if (href === "/alerts") {
+    return pathname === "/alerts" || pathname.startsWith("/alerts/");
+  }
   if (href === "/callouts") {
-    return pathname === "/callouts" || pathname === "/alerts"
-      || pathname === "/swing" || pathname.startsWith("/alert-lab");
+    return pathname === "/callouts" || pathname === "/swing" || pathname.startsWith("/alert-lab");
   }
   if (href === "/paper/0dte") {
     return pathname === "/paper/0dte" || pathname.startsWith("/paper/0dte/");
@@ -201,7 +204,7 @@ export function AxiomShell({ children }: { children: ReactNode }) {
                 items: productWithMore,
               },
               {
-                title: "DEEP LINKS",
+                title: "OWNER TOOLS",
                 items: advancedNav,
                 collapsible: true,
                 collapsedByDefault: true,

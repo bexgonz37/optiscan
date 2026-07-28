@@ -25,13 +25,13 @@ test("all routes still have a page (nothing removed)", () => {
   }
 });
 
-// ── owner mode is the default: PRODUCT vs DEEP LINKS ──────────────
-test("PRODUCT nav holds NOW RESEARCH PAPER primary destinations", () => {
+// ── owner mode is the default: PRODUCT vs OWNER TOOLS ──────────────
+test("PRODUCT nav holds NOW ALERTS PAPER primary destinations", () => {
   const product = shell.match(/const PRODUCT_NAV[\s\S]*?\];/)[0];
-  for (const href of ['"/"', '"/research"', '"/paper"']) {
+  for (const href of ['"/"', '"/alerts"', '"/paper"']) {
     assert.ok(product.includes(href), `PRODUCT missing ${href}`);
   }
-  for (const href of ['"/callouts"', '"/quant"', '"/watchlist"', '"/improvement"', '"/data"', '"/guide"', '"/settings"']) {
+  for (const href of ['"/callouts"', '"/quant"', '"/watchlist"', '"/improvement"', '"/data"', '"/guide"', '"/settings"', '"/research"']) {
     assert.ok(!product.includes(href), `PRODUCT should not contain ${href}`);
   }
   assert.match(shell, /label: "MORE"/);
@@ -39,14 +39,14 @@ test("PRODUCT nav holds NOW RESEARCH PAPER primary destinations", () => {
 
 test("ADVANCED nav holds deep tools previously in PRODUCT", () => {
   const adv = shell.match(/const ADVANCED_NAV[\s\S]*?\];/)[0];
-  for (const href of ['"/watchlist"', '"/research-learning"', '"/improvement"', '"/data"', '"/guide"', '"/settings"', '"/quant"', '"/callouts"']) {
+  for (const href of ['"/watchlist"', '"/research-learning"', '"/improvement"', '"/data"', '"/guide"', '"/settings"', '"/quant"', '"/callouts"', '"/research"']) {
     assert.ok(adv.includes(href), `ADVANCED missing ${href}`);
   }
   assert.ok(adv.includes('"/pipeline-health"'), "Pipeline diagnostics belong in ADVANCED");
 });
 
-test("DEEP LINKS section is collapsible and collapsed by default", () => {
-  assert.match(shell, /title:\s*"DEEP LINKS"/);
+test("OWNER TOOLS section is collapsible and collapsed by default", () => {
+  assert.match(shell, /title:\s*"OWNER TOOLS"/);
   assert.match(shell, /collapsedByDefault:\s*true/);
   assert.match(navrail, /useState\(!collapsedByDefault\)/);
   assert.match(navrail, /aria-expanded=\{open\}/);
@@ -65,21 +65,24 @@ test("Improvement Agent is marked inactive when automation is disabled", () => {
 });
 
 // ── mobile navigation ───────────────────────────────────────────────────────
-test("mobile bottom nav points at NOW RESEARCH PAPER MORE", () => {
-  for (const href of ['"/"', '"/research"', '"/paper"']) {
+test("mobile bottom nav points at NOW ALERTS PAPER MORE", () => {
+  for (const href of ['"/"', '"/alerts"', '"/paper"']) {
     assert.ok(mobile.includes(href), `mobile nav missing ${href}`);
   }
   assert.match(mobile, /MoreDrawer/);
   assert.match(mobile, /label: "NOW"/);
 });
 
-// ── consolidation: old URLs still work + light up Callouts ───────────────────
-test("legacy /alerts and /swing map to the consolidated Callouts destination", () => {
-  const active = shell.match(/if \(href === "\/callouts"\)[\s\S]*?\}/)[0];
-  assert.ok(active.includes('"/alerts"') && active.includes('"/swing"'), "callouts active-state must cover legacy URLs");
+// ── consolidation: /swing still works; /alerts is product track-record ───────
+test("legacy /swing maps to Live Options; /alerts is primary ALERTS nav", () => {
+  const activeCallouts = shell.match(/if \(href === "\/callouts"\)[\s\S]*?\}/)[0];
+  assert.ok(activeCallouts.includes('"/swing"'), "callouts active-state must cover /swing");
+  assert.ok(!activeCallouts.includes('"/alerts"'), "/alerts is its own PRODUCT destination");
+  const activeAlerts = shell.match(/if \(href === "\/alerts"\)[\s\S]*?\}/)[0];
+  assert.ok(activeAlerts.includes('"/alerts"'));
   assert.match(read("app/swing/page.tsx"), /SwingResearchPanel/);
   assert.match(read("app/swing/page.tsx"), /callouts\?tab=swing/);
-  assert.match(read("app/alerts/page.tsx"), /axiom-compat-note/);
+  assert.match(read("app/alerts/page.tsx"), /axiom-compat-note|ALERTS|track record/i);
 });
 
 // ── Callouts page exposes every horizon as a tab ─────────────────────────────

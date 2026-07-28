@@ -41,6 +41,8 @@ export interface PaperChainRow {
   paperStatus: string | null;
   exitReason: string | null;
   returnPct: number | null;
+  /** Closed trade $ P&L (1 contract × 100 multiplier), or open mark-to-market estimate. */
+  pnlUsd: number | null;
   mfePct: number | null;
   maePct: number | null;
   t1Hit: boolean;
@@ -59,6 +61,8 @@ export interface PaperChainDiagnostic {
   paperLinkRate: number | null;
   sent24h: number;
   linked24h: number;
+  /** Sum of closed delivered `pnl` dollars in the sampled rows. */
+  sumPnlUsd: number | null;
   rows: PaperChainRow[];
   gradingBacklog: ReturnType<typeof readGradingBacklogOnDb>;
 }
@@ -104,6 +108,7 @@ export function buildPaperChainDiagnostic(
     paperLinkRate: null,
     sent24h: 0,
     linked24h: 0,
+    sumPnlUsd: null,
     rows: [],
     gradingBacklog: readGradingBacklogOnDb(db as any),
   };
@@ -155,6 +160,12 @@ export function buildPaperChainDiagnostic(
 
     const sentAtMs = alert.sent_at_ms != null ? Number(alert.sent_at_ms) : null;
     const frozenEntry = alert.entry_mid != null ? Number(alert.entry_mid) : (paper?.entry_fill != null ? Number(paper.entry_fill) : null);
+    let pnlUsd: number | null = null;
+    if (paper?.pnl != null && Number.isFinite(Number(paper.pnl))) {
+      pnlUsd = +Number(paper.pnl).toFixed(2);
+    } else if (frozenEntry != null && mark != null && Number.isFinite(frozenEntry) && Number.isFinite(mark)) {
+      pnlUsd = +((mark - frozenEntry) * 100).toFixed(2);
+    }
     out.rows.push({
       alertId,
       symbol: String(alert.candidate_symbol ?? ""),
@@ -175,6 +186,7 @@ export function buildPaperChainDiagnostic(
       paperStatus: paper?.status != null ? String(paper.status) : null,
       exitReason: paper?.exit_reason != null ? String(paper.exit_reason) : null,
       returnPct: paper?.return_pct != null ? Number(paper.return_pct) : null,
+      pnlUsd,
       mfePct: paper?.mfe_pct != null ? Number(paper.mfe_pct) : null,
       maePct: paper?.mae_pct != null ? Number(paper.mae_pct) : null,
       t1Hit: hits.t1,
@@ -188,6 +200,13 @@ export function buildPaperChainDiagnostic(
       currentStage: lifecycle?.currentStage ?? null,
     });
   }
+
+  const closedPnls = out.rows
+    .filter((r) => r.paperStatus === "EXITED" && r.pnlUsd != null)
+    .map((r) => r.pnlUsd as number);
+  out.sumPnlUsd = closedPnls.length
+    ? +closedPnls.reduce((a, x) => a + x, 0).toFixed(2)
+    : null;
 
   return out;
 }

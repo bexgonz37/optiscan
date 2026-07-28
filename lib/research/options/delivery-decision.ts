@@ -247,7 +247,7 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
     i,
     symbol: x.s.symbol,
     tier: x.s.tier,
-    forming: x.s.fractionMove == null || x.s.fractionMove < 0.75,
+    forming: x.s.fractionMove == null || x.s.fractionMove <= 0.4,
     moveCompletedPct: x.s.fractionMove ?? 0.5,
     spreadPct: x.s.spreadPct ?? 999,
     liquidity: x.s.openInterest ?? 0,
@@ -318,6 +318,12 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
       base.outcome = "REJECT";
       base.reason = `below_research_floor (${x.quality} < ${cfg.researchFloor})`;
       base.finalDeliveryOutcome = "REJECTED";
+      base.finalDeliveryReason = base.reason;
+      decisions.push(base);
+      continue;
+    }
+    if (x.s.fractionMove != null && x.s.fractionMove >= 0.75) {
+      base.reason = `late_phase_fraction_move (${x.s.fractionMove} >= 0.75)`;
       base.finalDeliveryReason = base.reason;
       decisions.push(base);
       continue;

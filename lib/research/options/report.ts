@@ -20,9 +20,14 @@ export interface SubscriberPerformance {
   source: "DELIVERED_ALERT_PAPER";
   total: number; open: number; closed: number; byClass: Record<string, number>;
   winRate: number | null; avgReturnPct: number | null; expectancyPct: number | null; maxDrawdownPct: number | null;
+  /** Sum of closed delivered trade `pnl` dollars (1 contract × 100). Primary money metric. */
+  sumPnlUsd: number | null;
+  /** Average closed trade $ P&L. */
+  avgPnlUsd: number | null;
   // Real-trader profit tracking (peak profit / worst drawdown each call reached before its exit) —
   // measured from the per-tick option-price marks the grader records. avgMfePct = "how green did it get
   // on average", avgMaePct = "how far underwater on average", reachedTargetRate = share that hit T1.
+  // avgReturnPct / maxDrawdownPct are return-points on premium — NOT account equity dollars.
   avgMfePct: number | null; avgMaePct: number | null; reachedTargetRate: number | null;
   byStrategy: Record<string, PerfBucket>; bySide: Record<string, PerfBucket>; byDte: Record<string, PerfBucket>; byUniverse: Record<string, PerfBucket>;
 }
@@ -48,11 +53,19 @@ const symOf = (occ: string) => (occ.match(/^O:([A-Z]+)/)?.[1] ?? "");
 /** Read subscriber-facing rows — DELIVERED_ALERT_PAPER ONLY, via the enforcement view when present.
  *  Includes mfe_pct/mae_pct/exit_reason when those columns exist (older DBs degrade to nulls). */
 function deliveredRows(db: RepDb): any[] {
-  const cols = "option_symbol, side, dte, strategy, result_class, status, return_pct, mfe_pct, mae_pct, exit_reason";
-  const bare = "option_symbol, side, dte, strategy, result_class, status, return_pct";
+  const cols = "option_symbol, side, dte, strategy, result_class, status, return_pct, pnl, mfe_pct, mae_pct, exit_reason";
+  const bare = "option_symbol, side, dte, strategy, result_class, status, return_pct, pnl";
+  const bareNoPnl = "option_symbol, side, dte, strategy, result_class, status, return_pct";
   const sel = (from: string, columns: string) => { try { return db.prepare(`SELECT ${columns} FROM ${from}`).all() as any[]; } catch { return null; } };
-  if (exists(db, "options_paper_delivered")) return sel("options_paper_delivered", cols) ?? sel("options_paper_delivered", bare) ?? [];
-  if (exists(db, "options_paper_trades")) return sel("options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER'", cols) ?? sel("options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER'", bare) ?? [];
+  if (exists(db, "options_paper_delivered")) {
+    return sel("options_paper_delivered", cols) ?? sel("options_paper_delivered", bare) ?? sel("options_paper_delivered", bareNoPnl) ?? [];
+  }
+  if (exists(db, "options_paper_trades")) {
+    return sel("options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER'", cols)
+      ?? sel("options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER'", bare)
+      ?? sel("options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER'", bareNoPnl)
+      ?? [];
+  }
   return [];
 }
 function researchCount(db: RepDb): { total: number; open: number; closed: number } {
@@ -84,12 +97,16 @@ export function readOptionsReportOnDb(db: RepDb): OptionsReport {
   const maeVals = closed.map((r) => r.mae_pct).filter((x: any) => x != null) as number[];
   const avg = (xs: number[]) => (xs.length ? +(xs.reduce((a, x) => a + x, 0) / xs.length).toFixed(4) : null);
   const reachedTarget = closed.filter((r) => r.exit_reason === "target_hit").length;
+  const pnlVals = closed.map((r) => r.pnl).filter((x: any) => x != null && Number.isFinite(Number(x))).map(Number) as number[];
+  const sumPnlUsd = pnlVals.length ? +pnlVals.reduce((a, x) => a + x, 0).toFixed(2) : null;
+  const avgPnlUsd = pnlVals.length ? +(pnlVals.reduce((a, x) => a + x, 0) / pnlVals.length).toFixed(2) : null;
 
   const subscriberPerformance: SubscriberPerformance = {
     source: "DELIVERED_ALERT_PAPER",
     total: delivered.length, open: delivered.filter((r) => r.status === "ENTERED").length, closed: closed.length, byClass,
     winRate: closed.length ? +(wins / closed.length).toFixed(4) : null,
     avgReturnPct: avgReturn, expectancyPct: avgReturn, maxDrawdownPct: returns.length ? +maxDd.toFixed(4) : null,
+    sumPnlUsd, avgPnlUsd,
     avgMfePct: avg(mfeVals), avgMaePct: avg(maeVals), reachedTargetRate: closed.length ? +(reachedTarget / closed.length).toFixed(4) : null,
     byStrategy: group(delivered, (r) => r.strategy ?? "unknown"),
     bySide: group(delivered, (r) => r.side ?? "unknown"),
@@ -106,6 +123,6 @@ export function readOptionsReportOnDb(db: RepDb): OptionsReport {
     subscriberPerformance,
     researchPaper: { source: "RESEARCH_ONLY_PAPER", total: research.total, open: research.open, closed: research.closed },
     legacyQuarantined,
-    note: "OPTIONS product only — SEPARATE from the Stock Momentum Radar. Subscriber performance uses ONLY DELIVERED_ALERT_PAPER (the exact mirror of delivered alerts); RESEARCH_ONLY_PAPER is reported separately and NEVER blended. Puts RESEARCH_ONLY; no real-money execution; no profitability claim.",
+    note: "OPTIONS product only — SEPARATE from the Stock Momentum Radar. Subscriber performance uses ONLY DELIVERED_ALERT_PAPER (the exact mirror of delivered alerts); sumPnlUsd is primary $ P&L (1×100); avgReturnPct/maxDrawdownPct are premium return-points, not account equity. RESEARCH_ONLY_PAPER is reported separately and NEVER blended. Puts RESEARCH_ONLY; no real-money execution; no profitability claim.",
   };
 }

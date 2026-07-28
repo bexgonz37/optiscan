@@ -16,10 +16,11 @@ test("product nav lists the decision-first destinations", () => {
   const shell = read("components/AxiomShell.tsx");
   const product = [
     ["/", "NOW"],
-    ["/research", "RESEARCH"],
+    ["/alerts", "ALERTS"],
     ["/paper", "PAPER"],
   ];
   const advanced = [
+    ["/research", "Research Hub"],
     ["/callouts", "Live Options"],
     ["/quant", "Quant Lab"],
     ["/pipeline-health", "Pipeline Diagnostics"],
@@ -35,6 +36,7 @@ test("product nav lists the decision-first destinations", () => {
     assert.ok(shell.includes(label), `nav missing label "${label}"`);
   }
   assert.ok(shell.includes('label: "MORE"'), "MORE drawer entry required");
+  assert.ok(shell.includes('title: "OWNER TOOLS"'), "owner tools section required");
 });
 
 test("new Watchlist and Performance pages exist", () => {

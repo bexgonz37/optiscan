@@ -344,7 +344,9 @@ function AlertsPageInner() {
   return (
     <div className="page-deck">
       <div className="axiom-compat-note">
-        Live callouts moved to <a href="/callouts">Callouts</a>. This page keeps your accuracy and trade journal.
+        ALERTS is the track-record surface for Discord SENT options callouts. Live ranked setups stay on{" "}
+        <a href="/">NOW</a> and <a href="/callouts">Live Options</a>. Delivered paper P&amp;L is on{" "}
+        <a href="/paper?tab=delivered">Paper</a>.
       </div>
       <div className="page-deck-toolbar">
         <div className="alerts-tab-header muted">

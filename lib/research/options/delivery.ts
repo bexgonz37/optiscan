@@ -65,7 +65,14 @@ export interface DeliveryInput {
 }
 
 export interface SendResult { ok: boolean; status: number | null; messageId: string | null; latencyMs: number; ambiguous: boolean; error: string | null }
-export interface DeliveryDeps { getDb?: () => any; send?: (payload: Record<string, unknown>) => Promise<SendResult>; now?: () => number; maxRetries?: number }
+export interface DeliveryDeps {
+  getDb?: () => any;
+  send?: (payload: Record<string, unknown>) => Promise<SendResult>;
+  now?: () => number;
+  maxRetries?: number;
+  /** Optional pre-send refresh of underlying/option quotes. Failures must not throw into delivery. */
+  refreshBeforeSend?: (input: DeliveryInput, nowMs: number) => Promise<DeliveryInput> | DeliveryInput;
+}
 export interface DeliveryOutcome {
   state: DeliveryState;
   alertId: string;
@@ -78,6 +85,32 @@ export interface DeliveryOutcome {
 
 interface DDb { prepare(sql: string): { get: (...a: any[]) => any; all: (...a: any[]) => any[]; run: (...a: any[]) => { changes: number } } }
 const liveDb = () => require("@/lib/db").getDb(); // eslint-disable-line @typescript-eslint/no-require-imports
+
+/**
+ * Age the Stage-2 quote to wall-clock now, and optionally refresh underlying via deps.
+ * Never throws — returns the original input on failure.
+ */
+export async function refreshDeliveryQuotes(
+  input: DeliveryInput,
+  nowMs: number,
+  deps: DeliveryDeps = {},
+): Promise<DeliveryInput> {
+  try {
+    if (deps.refreshBeforeSend) {
+      const refreshed = await deps.refreshBeforeSend(input, nowMs);
+      if (refreshed) return refreshed;
+    }
+  } catch { /* isolated */ }
+  const c = input.contract;
+  // Only recompute age from an absolute provider timestamp. Do not invent aging from decisionMs —
+  // that falsely stale-rejects legitimate re-attempts that carry a fresh Stage-2 age snapshot.
+  if (c.providerTimestamp == null) return input;
+  const quoteAgeMs = Math.max(0, nowMs - Number(c.providerTimestamp));
+  return {
+    ...input,
+    contract: { ...c, quoteAgeMs },
+  };
+}
 
 /** Default sender: the existing approved options webhook. Never logs the URL. Timeout → ambiguous. */
 async function defaultSend(payload: Record<string, unknown>): Promise<SendResult> {
@@ -103,7 +136,10 @@ async function defaultSend(payload: Record<string, unknown>): Promise<SendResult
  */
 function createDeliveredMirror(db: DDb, i: DeliveryInput, alertId: string, env: NodeJS.ProcessEnv): boolean {
   try {
-    if (!researchFlags(env).realOptionPaper) return false;
+    if (!researchFlags(env).realOptionPaper) {
+      console.warn(`[options-delivery] paper mirror skipped for ${alertId}: REAL_OPTION_PAPER_ENABLED!=1`);
+      return false;
+    }
     const c = i.contract;
     const decisionMs = i.decisionMs ?? Date.now();
     const q: OptionQuote = { optionSymbol: c.optionSymbol, side: c.side, strike: c.strike, expiration: c.expiration, dte: c.dte ?? 0, bid: c.bid, ask: c.ask, volume: c.volume ?? null, openInterest: c.openInterest ?? null, iv: c.iv ?? null, delta: c.delta ?? null, quoteAgeMs: c.quoteAgeMs, providerTimestamp: c.providerTimestamp ?? null };
@@ -113,7 +149,10 @@ function createDeliveredMirror(db: DDb, i: DeliveryInput, alertId: string, env: 
     const entry = i.entry ? { ...built, entryFill: i.entry.mid, target: i.entry.t1, invalidation: i.entry.stop } : built;
     const r = persistDeliveredMirrorOnDb(db, entry, decisionMs, alertId, { session: i.session ?? null, featureSnapshotJson: i.entry ? JSON.stringify({ targetMethodology: i.entry.methodology, frozen: i.entry }) : undefined });
     return r.inserted || r.existed;
-  } catch { return false; }
+  } catch (err: any) {
+    console.warn(`[options-delivery] paper mirror failed for ${alertId}: ${String(err?.message ?? err).slice(0, 160)}`);
+    return false;
+  }
 }
 
 function persist(db: DDb, alertId: string, i: DeliveryInput, state: DeliveryState, extra: Record<string, unknown>, nowMs: number): void {
@@ -346,23 +385,24 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
     } catch { /* lifecycle helpers optional when schema not migrated */ }
   }
 
+  const finalInput = await refreshDeliveryQuotes(input, nowMs, deps);
   const finalGate = revalidateBeforeDiscordSend({
-    deliveryInput: input,
+    deliveryInput: finalInput,
     nowMs,
-    firstReadyAtMs: input.firstReadyAtMs,
-    readyExpiresAtMs: input.readyExpiresAtMs,
+    firstReadyAtMs: finalInput.firstReadyAtMs,
+    readyExpiresAtMs: finalInput.readyExpiresAtMs,
   }, env);
   if (!finalGate.allowed && finalGate.rejectionCode) {
     const inst: AlertInstrumentation = {
       entryQualityVerdict: finalGate.rejectionCode,
       entryQualityReasonsJson: JSON.stringify(finalGate.reasons),
       tradingSessionDate: tradingDay(nowMs),
-      firstDetectedAtMs: input.firstDetectedAtMs,
-      underlyingAtFirstDetection: input.underlyingAtFirstDetection,
-      optionAtFirstDetection: input.optionAtFirstDetection,
-      underlyingAtDelivery: input.currentUnderlyingPrice,
-      optionAtDelivery: input.entry?.mid ?? null,
-      deliveryLatencyMs: input.firstDetectedAtMs ? nowMs - input.firstDetectedAtMs : null,
+      firstDetectedAtMs: finalInput.firstDetectedAtMs,
+      underlyingAtFirstDetection: finalInput.underlyingAtFirstDetection,
+      optionAtFirstDetection: finalInput.optionAtFirstDetection,
+      underlyingAtDelivery: finalInput.currentUnderlyingPrice,
+      optionAtDelivery: finalInput.entry?.mid ?? null,
+      deliveryLatencyMs: finalInput.firstDetectedAtMs ? nowMs - finalInput.firstDetectedAtMs : null,
       evidenceSnapshotJson: JSON.stringify({ finalGate: finalGate.metrics, dimensions: finalGate.entryQuality.dimensions }),
     };
     try { persistAlertInstrumentation(dbEarly, alertId, inst); } catch { /* isolated */ }
@@ -372,31 +412,31 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
       } catch { /* isolated */ }
     }
     const rejectState = finalGate.rejectionCode === "QUOTE_STALE" || finalGate.rejectionCode === "STALE_READY_CANDIDATE" ? "TOO_LATE" as const : "REJECTED" as const;
-    return finalize(deps, input, alertId, rejectState, finalGate.rejectionCode, nowMs, state);
+    return finalize(deps, finalInput, alertId, rejectState, finalGate.rejectionCode, nowMs, state);
   }
 
-  const liveMessage = input.entry
+  const liveMessage = finalInput.entry
     ? formatPrivateLiveAlert({
-      symbol: input.candidateSymbol,
-      side: input.contract.side,
-      strike: input.contract.strike,
-      expiration: input.contract.expiration,
-      entryMid: input.entry.mid,
-      t1: input.entry.t1,
-      t2: input.entry.t2,
-      stop: input.entry.stop,
-      strategyKey: input.strategy,
-      underlyingPrice: input.currentUnderlyingPrice,
-      dte: input.contract.dte ?? null,
-      optionSymbol: input.contract.optionSymbol,
+      symbol: finalInput.candidateSymbol,
+      side: finalInput.contract.side,
+      strike: finalInput.contract.strike,
+      expiration: finalInput.contract.expiration,
+      entryMid: finalInput.entry.mid,
+      t1: finalInput.entry.t1,
+      t2: finalInput.entry.t2,
+      stop: finalInput.entry.stop,
+      strategyKey: finalInput.strategy,
+      underlyingPrice: finalInput.currentUnderlyingPrice,
+      dte: finalInput.contract.dte ?? null,
+      optionSymbol: finalInput.contract.optionSymbol,
       timingClass: finalGate.timingClass === "EARLY" ? "EARLY" : "TIMELY",
       actionableReason: finalGate.actionableReason,
       invalidation: finalGate.invalidation,
     })
-    : input.message;
+    : finalInput.message;
 
   // Claim the slot as SEND_ATTEMPTED BEFORE sending, so a concurrent/duplicate call dedups.
-  try { persist(db, alertId, { ...input, message: liveMessage }, "SEND_ATTEMPTED", { attemptedAtMs: nowMs, retryCount: priorRetries, sessionState: state }, nowMs); } catch { /* isolated */ }
+  try { persist(db, alertId, { ...finalInput, message: liveMessage }, "SEND_ATTEMPTED", { attemptedAtMs: nowMs, retryCount: priorRetries, sessionState: state }, nowMs); } catch { /* isolated */ }
   try {
     if (livingCaseId || livingFingerprint) {
       db.prepare("UPDATE options_alerts SET opportunity_case_id=?, opportunity_fingerprint=? WHERE alert_id=?").run(livingCaseId, livingFingerprint, alertId);
@@ -416,18 +456,18 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
     // Alert delivered → create the ONE linked DELIVERED_ALERT_PAPER mirror (idempotent, same contract/
     // quote/underlying/strategy/decision-timestamp/alert_id). Never blocks or alters the SENT outcome;
     // a mirror failure just leaves paper_linked=0 (surfaced) and can be retried idempotently later.
-    const linked = createDeliveredMirror(db, input, alertId, env);
+    const linked = createDeliveredMirror(db, finalInput, alertId, env);
     const sentAt = now();
-    const optMid = input.entry?.mid ?? ((input.contract.bid ?? 0) + (input.contract.ask ?? 0)) / 2;
-    const latencyMs = input.firstDetectedAtMs ? sentAt - input.firstDetectedAtMs : null;
+    const optMid = finalInput.entry?.mid ?? ((finalInput.contract.bid ?? 0) + (finalInput.contract.ask ?? 0)) / 2;
+    const latencyMs = finalInput.firstDetectedAtMs ? sentAt - finalInput.firstDetectedAtMs : null;
     try {
       persistAlertInstrumentation(db, alertId, {
-        firstDetectedAtMs: input.firstDetectedAtMs,
-        underlyingAtFirstDetection: input.underlyingAtFirstDetection,
-        optionAtFirstDetection: input.optionAtFirstDetection,
-        underlyingAtDelivery: input.currentUnderlyingPrice,
+        firstDetectedAtMs: finalInput.firstDetectedAtMs,
+        underlyingAtFirstDetection: finalInput.underlyingAtFirstDetection,
+        optionAtFirstDetection: finalInput.optionAtFirstDetection,
+        underlyingAtDelivery: finalInput.currentUnderlyingPrice,
         optionAtDelivery: optMid,
-        evidenceSnapshotJson: input.featureSnapshot ? JSON.stringify(input.featureSnapshot) : null,
+        evidenceSnapshotJson: finalInput.featureSnapshot ? JSON.stringify(finalInput.featureSnapshot) : null,
         sessionStateAtDelivery: state,
         deliveryLatencyMs: latencyMs,
         entryQualityVerdict: finalGate.timingClass,
@@ -436,7 +476,7 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
         deliveredAtMs: sentAt,
       });
     } catch { /* isolated */ }
-    try { persist(db, alertId, input, "SENT", { status: res.status, latencyMs: res.latencyMs, retryCount: attempt, sentAtMs: sentAt, attemptedAtMs: nowMs, paperLinked: linked, sessionState: state }, now()); } catch { /* isolated */ }
+    try { persist(db, alertId, finalInput, "SENT", { status: res.status, latencyMs: res.latencyMs, retryCount: attempt, sentAtMs: sentAt, attemptedAtMs: nowMs, paperLinked: linked, sessionState: state }, now()); } catch { /* isolated */ }
     try {
       db.prepare("UPDATE options_alerts SET discord_message_id=?, opportunity_case_id=COALESCE(opportunity_case_id, ?), opportunity_fingerprint=COALESCE(opportunity_fingerprint, ?) WHERE alert_id=?")
         .run(res.messageId ?? null, livingCaseId, livingFingerprint, alertId);
@@ -447,7 +487,7 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
           opportunityCaseId: livingCaseId,
           alertId,
           discordMessageId: res.messageId ?? null,
-          frozenEntry: input.entry?.mid ?? null,
+          frozenEntry: finalInput.entry?.mid ?? null,
           nowMs: now(),
         });
       } catch { /* content/summary failures never block SENT */ }
@@ -459,13 +499,13 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
       const { mirrorOwnerIntradayOnSent } = require("@/lib/notifications/owner-intraday-mirror");
       void mirrorOwnerIntradayOnSent({
         db,
-        delivery: input,
+        delivery: finalInput,
         alertId,
         opportunityCaseId: livingCaseId,
         opportunityFingerprint: livingFingerprint,
         actionableReason: finalGate.actionableReason,
         invalidation: finalGate.invalidation,
-        setupFamily: input.strategy,
+        setupFamily: finalInput.strategy,
         nowMs: now(),
         env,
       }).catch((err: any) => {
@@ -474,10 +514,10 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
     } catch { /* isolated — owner recap must never affect subscriber SENT */ }
     return base("SENT", true, "delivered", linked, { opportunityCaseId: livingCaseId });
   }
-  const paperLinked = Boolean(input.paperOptionSymbol && input.paperOptionSymbol === input.contract.optionSymbol);
+  const paperLinked = Boolean(finalInput.paperOptionSymbol && finalInput.paperOptionSymbol === finalInput.contract.optionSymbol);
   // An AMBIGUOUS timeout may have been delivered — exhaust retries so NO later call can resend it.
   const finalRetryCount = res.ambiguous ? maxRetries : attempt;
-  try { persist(db, alertId, input, "SEND_FAILED", { status: res.status, latencyMs: res.latencyMs, retryCount: finalRetryCount, failureReason: res.ambiguous ? `ambiguous_timeout: ${res.error}` : res.error, sessionState: state }, now()); } catch { /* isolated */ }
+  try { persist(db, alertId, finalInput, "SEND_FAILED", { status: res.status, latencyMs: res.latencyMs, retryCount: finalRetryCount, failureReason: res.ambiguous ? `ambiguous_timeout: ${res.error}` : res.error, sessionState: state }, now()); } catch { /* isolated */ }
   if (res.ambiguous) {
     try {
       db.prepare(

@@ -251,6 +251,16 @@ export function revalidateBeforeDiscordSend(
   const gateMode = String(env.ENTRY_QUALITY_GATE ?? "shadow").toLowerCase();
   const enforce = gateMode === "enforce" || gateMode === "1";
 
+  // Freshness/liquidity first — aged Stage-2 quotes must fail before earliness labeling.
+  const maxSpread = d.maxSpreadPct ?? num(env, "ENTRY_MAX_SPREAD_PCT", 10);
+  const maxAge = d.maxQuoteAgeMs ?? num(env, "ENTRY_MAX_QUOTE_AGE_MS", 15_000);
+  if (d.contract.spreadPct != null && d.contract.spreadPct > maxSpread) {
+    return { allowed: false, rejectionCode: "SPREAD_TOO_WIDE", reasons: [`spread ${d.contract.spreadPct}% > ${maxSpread}%`], timingClass, actionableReason: "", invalidation, entryQuality: eq, metrics };
+  }
+  if (d.contract.quoteAgeMs != null && d.contract.quoteAgeMs > maxAge) {
+    return { allowed: false, rejectionCode: "QUOTE_STALE", reasons: [`quote age ${d.contract.quoteAgeMs}ms > ${maxAge}ms`], timingClass, actionableReason: "", invalidation, entryQuality: eq, metrics };
+  }
+
   if (enforce && eq.composite.subscriberAction === "BLOCK") {
     const code = mapVerdictToDeliveryRejection(eq.composite.primaryVerdict)
       ?? (eq.composite.primaryVerdict === "LATE" ? "LATE_ENTRY" : "LATE_ENTRY");
@@ -279,24 +289,15 @@ export function revalidateBeforeDiscordSend(
     };
   }
 
-  const maxSpread = d.maxSpreadPct ?? num(env, "ENTRY_MAX_SPREAD_PCT", 10);
-  const maxAge = d.maxQuoteAgeMs ?? num(env, "ENTRY_MAX_QUOTE_AGE_MS", 15_000);
-  if (d.contract.spreadPct != null && d.contract.spreadPct > maxSpread) {
-    return { allowed: false, rejectionCode: "SPREAD_TOO_WIDE", reasons: [`spread ${d.contract.spreadPct}% > ${maxSpread}%`], timingClass, actionableReason: "", invalidation, entryQuality: eq, metrics };
-  }
-  if (d.contract.quoteAgeMs != null && d.contract.quoteAgeMs > maxAge) {
-    return { allowed: false, rejectionCode: "QUOTE_STALE", reasons: [`quote age ${d.contract.quoteAgeMs}ms > ${maxAge}ms`], timingClass, actionableReason: "", invalidation, entryQuality: eq, metrics };
-  }
-
   const bullish = side === "call";
   const favMovePct = d.observedUnderlyingPrice > 0
     ? ((d.currentUnderlyingPrice - d.observedUnderlyingPrice) / d.observedUnderlyingPrice) * 100 * (bullish ? 1 : -1)
     : 0;
-  if (favMovePct > d.chaseLimitPct * 100) {
+  if (favMovePct > d.chaseLimitPct) {
     return {
       allowed: false,
       rejectionCode: "CHASED_OPTION_PREMIUM",
-      reasons: [`underlying chase ${favMovePct.toFixed(2)}% > limit ${(d.chaseLimitPct * 100).toFixed(0)}%`],
+      reasons: [`underlying chase ${favMovePct.toFixed(2)}% > limit ${d.chaseLimitPct.toFixed(2)}%`],
       timingClass: "LATE",
       actionableReason: "",
       invalidation,

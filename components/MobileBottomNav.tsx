@@ -10,7 +10,7 @@ import { scanHeaders } from "@/hooks/useScanner";
 
 const ITEMS = [
   { href: "/", label: "NOW", icon: "◎" },
-  { href: "/research", label: "Research", icon: "Σ" },
+  { href: "/alerts", label: "Alerts", icon: "⚡" },
   { href: "/paper", label: "Paper", icon: "◈" },
 ] as const;
 

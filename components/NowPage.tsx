@@ -115,7 +115,23 @@ export function NowPage() {
   const [snap, setSnap] = useState<NowApi | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [sentToday, setSentToday] = useState<any[]>([]);
   const review = typeof window !== "undefined" && isUiReviewMode();
+
+  const loadSentToday = useCallback(async () => {
+    if (isUiReviewMode()) {
+      setSentToday([]);
+      return;
+    }
+    try {
+      const res = await fetch("/api/research/options/paper-chain?limit=3", { cache: "no-store", headers: scanHeaders() });
+      const d = await res.json();
+      const rows = d?.diagnostic?.rows ?? d?.rows ?? [];
+      setSentToday(Array.isArray(rows) ? rows.slice(0, 3) : []);
+    } catch {
+      setSentToday([]);
+    }
+  }, []);
 
   const load = useCallback(async () => {
     if (isUiReviewMode()) {
@@ -169,9 +185,13 @@ export function NowPage() {
 
   useEffect(() => {
     void load();
-    const id = setInterval(() => void load(), 15_000);
+    void loadSentToday();
+    const id = setInterval(() => {
+      void load();
+      void loadSentToday();
+    }, 15_000);
     return () => clearInterval(id);
-  }, [load]);
+  }, [load, loadSentToday]);
 
   const showTradeNow = Boolean(snap?.optionsExecutableWindow);
   const avoidDefaultOpen = false;
@@ -222,6 +242,39 @@ export function NowPage() {
         <strong>{snap.operatingLabel}</strong>
         <span>{snap.operatingDetail}</span>
       </div>
+
+      <TermPanel
+        title="Sent today"
+        badge={<span className="cc-term-pill muted">{sentToday.length}</span>}
+        action={<Link href="/alerts" className="cc-term-link">ALERTS →</Link>}
+      >
+        {sentToday.length === 0 ? (
+          <p className="cc-term-empty">No Discord SENT options alerts in the recent sample</p>
+        ) : (
+          <div className="cc-term-opp-list">
+            {sentToday.map((r: any) => (
+              <div key={r.alertId ?? r.optionSymbol} className="cc-term-opp">
+                <div className="cc-term-opp-top">
+                  <span className="cc-term-opp-sym">{r.symbol}</span>
+                  <span className={`cc-term-pill ${actionTone("SEND")}`}>{String(r.side ?? "—").toUpperCase()}</span>
+                  <span className="cc-term-pill muted">{r.paperStatus ?? "SENT"}</span>
+                </div>
+                <div className="cc-term-opp-meta">
+                  <span className="cc-term-mono">{r.optionSymbol ?? "—"}</span>
+                  <span>{r.ageMs != null ? `${Math.round(Number(r.ageMs) / 60_000)}m ago` : "—"}</span>
+                </div>
+                <div className="cc-term-opp-metrics">
+                  <span className={Number(r.pnlUsd ?? 0) >= 0 ? "ok" : "bad"}>
+                    {r.pnlUsd != null ? `$${Number(r.pnlUsd).toFixed(0)}` : "—"}
+                  </span>
+                  <span>{fmtPct(r.latestMarkReturnPct ?? r.returnPct)}</span>
+                  <span>MFE {fmtPct(r.mfePct)}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </TermPanel>
 
       {hero ? (
         <section className="now-hero">
