@@ -182,6 +182,122 @@ export function findActiveThesisOnDb(
   }
 }
 
+function recoverLegacyActiveThesisOnDb(
+  db: LiveDb,
+  identity: OpportunityThesisIdentity,
+  thesisFingerprint: string,
+  nowMs: number,
+): { active: ActiveThesis | null; failed: boolean } {
+  if (!opportunityThesisSchemaReady(db)) return { active: null, failed: true };
+  try {
+    const rows = db.prepare(
+      `SELECT opportunity_id, lifecycle_status, opening_source, discord_message_id,
+              opening_delivered_at_ms, created_at_ms
+       FROM opportunity_cases
+       WHERE underlying_symbol=?
+         AND LOWER(direction)=?
+         AND session_date=?
+         AND delivery_decision='delivered'
+         AND lifecycle_status IN ('CREATED','CONFIRMED','RUNNING','EXTENDED')
+         AND discord_message_id IS NOT NULL
+         AND discord_message_id<>''
+       ORDER BY COALESCE(opening_delivered_at_ms, created_at_ms) ASC`,
+    ).all(
+      identity.symbol,
+      identity.direction === "BEARISH" ? "bearish" : "bullish",
+      identity.sessionDate,
+    ) as Array<{
+      opportunity_id: string;
+      lifecycle_status: string;
+      opening_source?: ThesisOpeningSource | null;
+      discord_message_id: string;
+      opening_delivered_at_ms?: number | null;
+      created_at_ms: number;
+    }>;
+    const recovered = rows.find((row) => {
+      const opportunityCase = loadOpportunityCaseOnDb(db as any, row.opportunity_id);
+      return opportunityCase?.selectedContract?.side.toUpperCase() === identity.optionType;
+    });
+    if (!recovered) return { active: null, failed: false };
+
+    const openingSource: ThesisOpeningSource = recovered.opening_source === "owner_actionable"
+      ? "owner_actionable"
+      : "canonical";
+    const openedAtMs = Number(recovered.opening_delivered_at_ms ?? recovered.created_at_ms);
+    const adopt = () => {
+      const inserted = db.prepare(
+        `INSERT OR IGNORE INTO opportunity_thesis_active_index
+          (thesis_fingerprint, opportunity_case_id, symbol, direction, option_type, session_date,
+           lifecycle_status, opening_source, discord_message_id, opened_at_ms, updated_at_ms)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      ).run(
+        thesisFingerprint,
+        recovered.opportunity_id,
+        identity.symbol,
+        identity.direction,
+        identity.optionType,
+        identity.sessionDate,
+        recovered.lifecycle_status,
+        openingSource,
+        recovered.discord_message_id,
+        openedAtMs,
+        nowMs,
+      );
+      if (Number(inserted.changes ?? 0) <= 0) return;
+
+      const opportunityCase = loadOpportunityCaseOnDb(db as any, recovered.opportunity_id);
+      if (opportunityCase) {
+        opportunityCase.thesisFingerprint = thesisFingerprint;
+        opportunityCase.updatedAtMs = nowMs;
+        persistOpportunityCaseOnDb(db as any, opportunityCase);
+      }
+      db.prepare(
+        `UPDATE opportunity_cases
+         SET thesis_fingerprint=COALESCE(thesis_fingerprint, ?),
+             opening_source=COALESCE(opening_source, ?),
+             updated_at_ms=?
+         WHERE opportunity_id=?`,
+      ).run(thesisFingerprint, openingSource, nowMs, recovered.opportunity_id);
+      if (hasTable(db, "options_alerts")) {
+        db.prepare(
+          `UPDATE options_alerts
+           SET thesis_fingerprint=COALESCE(thesis_fingerprint, ?)
+           WHERE opportunity_case_id=?`,
+        ).run(thesisFingerprint, recovered.opportunity_id);
+
+        const alert = db.prepare(
+          `SELECT alert_id FROM options_alerts
+           WHERE opportunity_case_id=? AND state='SENT'
+           ORDER BY sent_at_ms ASC LIMIT 1`,
+        ).get(recovered.opportunity_id) as { alert_id?: string } | undefined;
+        if (!alert?.alert_id || !hasTable(db, "options_paper_trades")) return;
+        const activePaper = db.prepare(
+          `SELECT 1 FROM options_paper_trades
+           WHERE thesis_fingerprint=? AND status='ENTERED' LIMIT 1`,
+        ).get(thesisFingerprint);
+        if (!activePaper) {
+          const paper = db.prepare(
+            `SELECT id FROM options_paper_trades
+             WHERE alert_id=? AND status='ENTERED' AND thesis_fingerprint IS NULL
+             ORDER BY entered_at_ms ASC LIMIT 1`,
+          ).get(alert.alert_id) as { id?: number } | undefined;
+          if (paper?.id != null) {
+            db.prepare(
+              "UPDATE options_paper_trades SET thesis_fingerprint=? WHERE id=?",
+            ).run(thesisFingerprint, paper.id);
+          }
+        }
+      }
+    };
+    if (db.transaction) db.transaction(adopt)();
+    else adopt();
+    const active = findActiveThesisOnDb(db, thesisFingerprint);
+    return { active, failed: !active };
+  } catch {
+    return { active: null, failed: true };
+  }
+}
+
 export function claimThesisIndexOnDb(
   db: LiveDb,
   input: OpportunityThesisIdentityInput & {
@@ -197,9 +313,16 @@ export function claimThesisIndexOnDb(
 } {
   const identity = buildOpportunityThesisIdentity(input);
   const thesisFingerprint = opportunityThesisFingerprint(identity);
-  const active = findActiveThesisOnDb(db, thesisFingerprint);
+  const indexed = findActiveThesisOnDb(db, thesisFingerprint);
+  const recovery = indexed
+    ? { active: indexed, failed: false }
+    : recoverLegacyActiveThesisOnDb(db, identity, thesisFingerprint, input.nowMs);
+  const active = recovery.active;
   if (active) {
     return { claimed: false, identity, thesisFingerprint, active, reason: "MATCHING_ACTIVE_THESIS" };
+  }
+  if (recovery.failed) {
+    return { claimed: false, identity, thesisFingerprint, active: null, reason: "THESIS_RECOVERY_FAILED" };
   }
   if (!opportunityThesisSchemaReady(db)) {
     return { claimed: false, identity, thesisFingerprint, active: null, reason: "THESIS_SCHEMA_UNAVAILABLE" };

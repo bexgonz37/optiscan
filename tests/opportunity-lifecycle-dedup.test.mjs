@@ -699,6 +699,137 @@ test("exact IWM production contract roll stays one active thesis and one opening
   assert.equal(sends, 3);
 });
 
+test("post-migration IWM signal adopts the legacy active thesis instead of reopening", async () => {
+  const d = installLifecycleSchema(new Database(":memory:"));
+  const firstAt = Date.parse("2026-07-29T14:25:48.376Z");
+  const secondAt = Date.parse("2026-07-29T15:43:54.474Z");
+  let sends = 0;
+  const send = async () => ({
+    ok: true,
+    status: 200,
+    messageId: `legacy-iwm-${++sends}`,
+    latencyMs: 2,
+    ambiguous: false,
+    error: null,
+  });
+  const env = {
+    ...ENV,
+    BEARISH_PIPELINE_ENABLED: "1",
+    BEARISH_SUBSCRIBER_DELIVERY_ENABLED: "1",
+  };
+  const firstInput = mkInput({
+    candidateSymbol: "IWM",
+    strategy: "lower_high_continuation",
+    nowMs: firstAt,
+    decisionMs: firstAt,
+    observedUnderlyingPrice: 289,
+    currentUnderlyingPrice: 289,
+    underlyingPrice: 289,
+    contract: {
+      optionSymbol: "O:IWM260731P00289000",
+      side: "put",
+      strike: 289,
+      expiration: "2026-07-31",
+      bid: 2.17,
+      ask: 2.20,
+      spreadPct: 1.37,
+      quoteAgeMs: 500,
+      dte: 2,
+      volume: 281,
+      openInterest: 13_067,
+      iv: 0.3,
+      delta: -0.425,
+      providerTimestamp: firstAt - 500,
+    },
+    entry: {
+      bid: 2.17,
+      ask: 2.20,
+      mid: 2.185,
+      spreadPct: 1.37,
+      quoteAgeMs: 500,
+      t1: 3.18,
+      t2: 4.17,
+      stop: 1.20,
+      methodology: "legacy_frozen",
+    },
+    featureSnapshot: {
+      underlying: {
+        velPct: -0.4,
+        accelPct: -0.2,
+        shortMomentumPct: -0.3,
+        trendSlopePctPerBar: -0.1,
+        aboveVwap: false,
+        lodBreak: true,
+      },
+      chain: { direction: "put" },
+    },
+  });
+  const first = await deliverOptionsCallout(
+    firstInput,
+    { getDb: () => d, send, now: () => firstAt },
+    env,
+  );
+  assert.equal(first.state, "SENT");
+  const original = loadCaseJsonOnDb(d, first.opportunityCaseId);
+  original.thesisFingerprint = null;
+  d.prepare("UPDATE opportunity_cases SET thesis_fingerprint=NULL, case_json=? WHERE opportunity_id=?")
+    .run(JSON.stringify(original), first.opportunityCaseId);
+  d.prepare("UPDATE options_alerts SET thesis_fingerprint=NULL WHERE alert_id=?").run(first.alertId);
+  d.prepare("UPDATE options_paper_trades SET thesis_fingerprint=NULL WHERE alert_id=?").run(first.alertId);
+  d.prepare("DELETE FROM opportunity_thesis_active_index").run();
+
+  const second = await deliverOptionsCallout(
+    {
+      ...firstInput,
+      strategy: "vwap_rejection",
+      decisionMs: secondAt,
+      contract: {
+        ...firstInput.contract,
+        optionSymbol: "O:IWM260729P00289000",
+        expiration: "2026-07-29",
+        dte: 0,
+        bid: 1.85,
+        ask: 1.86,
+        spreadPct: 0.54,
+        providerTimestamp: secondAt - 500,
+        volume: 32_683,
+        openInterest: 6_044,
+        delta: -0.486,
+      },
+      entry: {
+        ...firstInput.entry,
+        bid: 1.85,
+        ask: 1.86,
+        mid: 1.855,
+        spreadPct: 0.54,
+        t1: 2.70,
+        t2: 3.54,
+        stop: 1.02,
+      },
+    },
+    { getDb: () => d, send, now: () => secondAt },
+    env,
+  );
+
+  assert.equal(second.state, "REJECTED");
+  assert.equal(second.reason, "matching_active_thesis");
+  assert.equal(second.opportunityCaseId, first.opportunityCaseId);
+  assert.equal(sends, 1);
+  const adopted = loadCaseJsonOnDb(d, first.opportunityCaseId);
+  assert.ok(adopted?.thesisFingerprint);
+  assert.equal(adopted?.frozenTrade?.entryMid, 2.185);
+  assert.equal(adopted?.frozenTrade?.targetT1, 3.18);
+  assert.equal(adopted?.frozenTrade?.targetT2, 4.17);
+  assert.equal(adopted?.frozenTrade?.stop, 1.20);
+  assert.equal(adopted?.discord?.messageId, "legacy-iwm-1");
+  assert.equal(adopted?.contractCandidates?.length, 2);
+  assert.equal(adopted?.contractUpdates?.length, 1);
+  assert.equal(
+    Number(d.prepare("SELECT COUNT(*) n FROM options_paper_trades WHERE thesis_fingerprint=? AND status='ENTERED'").get(adopted.thesisFingerprint).n),
+    1,
+  );
+});
+
 test("owner actionable wording and IWM contract churn share one thesis opening claim", async () => {
   const d = installLifecycleSchema(new Database(":memory:"));
   const firstAt = Date.parse("2026-07-29T14:25:48.376Z");
