@@ -68,6 +68,21 @@ test("4b. unverifiable quote freshness fails closed before Discord", async () =>
   assert.equal(spy.calls.length, 0);
 });
 
+test("4c. persisted quote timestamp is normalized to milliseconds", async () => {
+  const d = db();
+  const { send } = okSend();
+  const providerTimestampNs = (NOW - 1000) * 1_000_000;
+  const contract = { ...input().contract, providerTimestamp: providerTimestampNs };
+  const r = await deliverOptionsCallout(
+    input({ contract }),
+    { getDb: () => d, send, now: () => NOW },
+    ON,
+  );
+  assert.equal(r.state, "SENT");
+  const stored = Number(d.prepare("SELECT quote_ts_ms FROM options_alerts").get().quote_ts_ms);
+  assert.ok(Math.abs(stored - (NOW - 1000)) <= 1);
+});
+
 test("5. excessive spread sends nothing (REJECTED)", async () => {
   const { spy, send } = okSend();
   const r = await deliverOptionsCallout(input({ contract: { ...input().contract, spreadPct: 40 } }), { getDb: () => db(), send, now: () => NOW }, ON);

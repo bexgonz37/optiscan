@@ -194,6 +194,10 @@ function createDeliveredMirror(
 
 function persist(db: DDb, alertId: string, i: DeliveryInput, state: DeliveryState, extra: Record<string, unknown>, nowMs: number): void {
   const e = i.entry ?? null;
+  const freshness = quoteFreshness(i.contract.providerTimestamp, nowMs);
+  const quoteTimestampMs = freshness.valid && freshness.ageMs != null
+    ? nowMs - freshness.ageMs
+    : null;
   db.prepare(
     `INSERT INTO options_alerts (alert_id, candidate_symbol, strategy, option_symbol, side, research_only, state, message_hash, message, delivered_bid, delivered_ask, delivered_underlying, paper_linked, discord_status, latency_ms, retry_count, failure_reason, attempted_at_ms, sent_at_ms, session_state, entry_mid, delivered_spread_pct, quote_ts_ms, target_t1, target_t2, target_stop, target_method, created_at_ms, updated_at_ms)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -204,7 +208,7 @@ function persist(db: DDb, alertId: string, i: DeliveryInput, state: DeliveryStat
     extra.paperLinked != null ? (extra.paperLinked ? 1 : 0) : ((i.paperOptionSymbol && i.paperOptionSymbol === i.contract.optionSymbol) ? 1 : 0),
     extra.status ?? null, extra.latencyMs ?? null, extra.retryCount ?? 0, extra.failureReason ?? null,
     extra.attemptedAtMs ?? null, extra.sentAtMs ?? null,
-    extra.sessionState ?? null, e?.mid ?? null, e?.spreadPct ?? null, i.contract.providerTimestamp ?? null,
+    extra.sessionState ?? null, e?.mid ?? null, e?.spreadPct ?? null, quoteTimestampMs,
     e?.t1 ?? null, e?.t2 ?? null, e?.stop ?? null, e?.methodology ?? null,
     nowMs, nowMs,
   );
