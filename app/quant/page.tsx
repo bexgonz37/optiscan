@@ -7,20 +7,9 @@
 
 import Link from "next/link";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  ResponsiveContainer,
-  Scatter,
-  ScatterChart,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 import { scanHeaders } from "@/hooks/useScanner";
-import { TermHBar, TermPanel } from "@/components/terminal/TermViz";
 
 type Confidence = "LOW" | "MEDIUM" | "HIGH";
 
@@ -78,6 +67,8 @@ type Report = {
   completenessPct?: number;
   metrics: Metrics;
   breakdowns: Breakdowns;
+  insufficientEvidence?: boolean;
+  metadataCompleteness?: Record<string, number>;
 };
 
 type Snapshot = Report & {
@@ -126,12 +117,6 @@ function fmtNum(v: number | null | undefined, digits = 2): string {
   return v.toFixed(digits);
 }
 
-function fmtMs(v: number | null | undefined): string {
-  if (v == null || !Number.isFinite(v)) return "—";
-  if (v >= 1000) return `${(v / 1000).toFixed(1)}s`;
-  return `${Math.round(v)}ms`;
-}
-
 function toneForSigned(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v)) return "muted";
   if (v > 0) return "ok";
@@ -173,6 +158,63 @@ function Kpi({
   );
 }
 
+type FindingClass = "SUPPORTED FINDING" | "EARLY SIGNAL" | "DATA QUALITY ISSUE" | "HYPOTHESIS";
+
+function FindingLine({
+  classification,
+  children,
+}: {
+  classification: FindingClass;
+  children: ReactNode;
+}) {
+  const tone = classification === "SUPPORTED FINDING"
+    ? "ok"
+    : classification === "DATA QUALITY ISSUE"
+      ? "bad"
+      : "warn";
+  return (
+    <p className="quant-finding-line">
+      <span className={`cc-term-pill ${tone}`}>{classification}</span>
+      <span>{children}</span>
+    </p>
+  );
+}
+
+function FormulaRow(props: {
+  name: string;
+  purpose: string;
+  evidence: string;
+  status: string;
+  nextTest: string;
+  definition: string;
+  source: string;
+  liveUsage: string;
+  history: string;
+  alternative: string;
+  comparison: string;
+  approval: string;
+}) {
+  return (
+    <details className="quant-formula-row">
+      <summary>
+        <span><strong>{props.name}</strong><small>{props.purpose}</small></span>
+        <span>{props.evidence}</span>
+        <span className="cc-term-pill muted">{props.status}</span>
+        <span>{props.nextTest}</span>
+      </summary>
+      <div className="quant-formula-detail">
+        <div><strong>Exact definition</strong><span>{props.definition}</span></div>
+        <div><strong>Source</strong><span>{props.source}</span></div>
+        <div><strong>Current live usage</strong><span>{props.liveUsage}</span></div>
+        <div><strong>Historical performance</strong><span>{props.history}</span></div>
+        <div><strong>Proposed alternative</strong><span>{props.alternative}</span></div>
+        <div><strong>Shadow comparison</strong><span>{props.comparison}</span></div>
+        <div><strong>Approval state</strong><span>{props.approval}</span></div>
+      </div>
+    </details>
+  );
+}
+
 function BreakdownSection({
   title,
   dim,
@@ -198,23 +240,24 @@ function BreakdownSection({
           {rows.length === 0 ? (
             <p className="cc-term-empty">No sample</p>
           ) : (
-            <table className="mini-table" style={{ width: "100%" }}>
+            <div className="quant-table-wrap">
+            <table className="mini-table quant-advanced-table">
               <thead>
                 <tr>
                   <th>Key</th>
-                  <th>n</th>
-                  <th>Win%</th>
-                  <th>Expect</th>
-                  <th>Avg</th>
-                  <th>Med</th>
-                  <th>PF</th>
-                  <th>MFE</th>
-                  <th>MAE</th>
+                  <th title="Number of graded outcomes">N</th>
+                  <th title="Percentage of graded outcomes above zero">Win %</th>
+                  <th title="Mean realized option return">Expectancy</th>
+                  <th title="Average realized option return">Average</th>
+                  <th title="Middle realized return after sorting">Median</th>
+                  <th title="Gross positive return divided by absolute gross negative return">Profit factor</th>
+                  <th title="Maximum favorable excursion">MFE</th>
+                  <th title="Maximum adverse excursion">MAE</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((r) => {
-                  const href = `/quant?lane=${encodeURIComponent(lane)}&dim=${encodeURIComponent(dim)}&key=${encodeURIComponent(r.key)}`;
+                  const href = `/quant?lane=${encodeURIComponent(lane)}&view=advanced&dim=${encodeURIComponent(dim)}&key=${encodeURIComponent(r.key)}`;
                   const active = activeKey === r.key;
                   return (
                     <tr key={r.key} style={active ? { outline: "1px solid rgba(52,211,153,0.45)" } : undefined}>
@@ -234,6 +277,7 @@ function BreakdownSection({
                 })}
               </tbody>
             </table>
+            </div>
           )}
         </div>
       ) : null}
@@ -247,6 +291,7 @@ function QuantLabInner() {
   const laneParam = search.get("lane") ?? "delivered";
   const dimParam = search.get("dim");
   const keyParam = search.get("key");
+  const advanced = search.get("view") === "advanced";
 
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -303,6 +348,26 @@ function QuantLabInner() {
   };
 
   const m = report?.metrics;
+  const supportedStrategies = useMemo(
+    () => (report?.breakdowns.strategyFamily ?? [])
+      .filter((row) => row.n >= 5 && row.expectancy != null)
+      .sort((a, b) => Number(b.expectancy) - Number(a.expectancy)),
+    [report],
+  );
+  const supportedTimes = useMemo(
+    () => (report?.breakdowns.timeOfDay ?? [])
+      .filter((row) => row.n >= 5 && row.expectancy != null)
+      .sort((a, b) => Number(b.expectancy) - Number(a.expectancy)),
+    [report],
+  );
+  const completeness = report?.metadataCompleteness ?? {};
+  const biggestGap = Object.entries(completeness).sort((a, b) => a[1] - b[1])[0] ?? null;
+  const sampleSize = report?.sampleSize ?? 0;
+  const conclusionReady = sampleSize >= 5;
+  const positiveFindings = supportedStrategies.filter((row) => Number(row.expectancy) > 0);
+  const negativeFindings = supportedStrategies.filter((row) => Number(row.expectancy) < 0);
+  const earlyCaptureSignal = m?.captureEfficiency != null && m.captureEfficiency < 0.5;
+  const earlyStopSignal = m?.stopRate != null && m.stopRate > 0.4;
   const refreshLabel = snap?.generatedAtMs
     ? new Date(snap.generatedAtMs).toLocaleTimeString("en-US", {
         hour: "2-digit",
@@ -345,188 +410,188 @@ function QuantLabInner() {
 
       <section className="cc-term-panel">
         <header className="cc-term-panel-head">
-          <span className="cc-term-panel-title">Core metrics</span>
+          <span className="cc-term-panel-title">Summary</span>
           <div className="cc-term-panel-right">
-            <span className={`cc-term-pill ${confTone(report?.confidence)}`}>
-              {report?.confidence ?? "LOW"}
-            </span>
+            <span className={`cc-term-pill ${confTone(report?.confidence)}`}>{report?.confidence ?? "LOW"} confidence</span>
             <span className="cc-term-pill muted">n={report?.sampleSize ?? 0}</span>
-            <span className="cc-term-pill muted">{report?.dataLane ?? laneParam}</span>
-            <span className="cc-term-pill muted">{report?.timeWindow ?? "all_exited"}</span>
-            <span className="cc-term-pill muted">{report?.resultKind ?? "realized"}</span>
           </div>
         </header>
         <div className="cc-term-panel-body">
-          <div className="cc-term-kpi-scroll">
-            <Kpi label="Sample" value={String(report?.sampleSize ?? 0)} hint="exited" tone="info" />
-            <Kpi label="Win rate" value={fmtPct(m?.winRate)} tone={toneForRate(m?.winRate)} />
-            <Kpi label="Median ret" value={fmtRet(m?.medianReturn)} tone={toneForSigned(m?.medianReturn)} />
-            <Kpi label="Mean ret" value={fmtRet(m?.meanReturn)} tone={toneForSigned(m?.meanReturn)} />
-            <Kpi label="Expectancy" value={fmtRet(m?.expectancy)} tone={toneForSigned(m?.expectancy)} />
-            <Kpi label="Profit factor" value={fmtNum(m?.profitFactor)} tone={toneForSigned(m?.profitFactor != null && m.profitFactor >= 1 ? 1 : -1)} />
-            <Kpi label="MFE" value={fmtRet(m?.mfe)} tone={toneForSigned(m?.mfe)} />
-            <Kpi label="MAE" value={fmtRet(m?.mae)} tone={toneForSigned(m?.mae != null ? -Math.abs(m.mae) : null)} />
-            <Kpi label="Capture" value={fmtPct(m?.captureEfficiency)} hint="realized/MFE" tone={toneForRate(m?.captureEfficiency)} />
-            <Kpi label="T1 hit" value={fmtPct(m?.t1HitRate)} tone={toneForRate(m?.t1HitRate)} />
-            <Kpi label="T2 hit" value={fmtPct(m?.t2HitRate)} tone={toneForRate(m?.t2HitRate)} />
-            <Kpi label="Stop rate" value={fmtPct(m?.stopRate)} tone={m?.stopRate != null && m.stopRate > 0.4 ? "bad" : "muted"} />
-            <Kpi label="Detect→Discord" value={fmtMs(m?.detectionToDiscordLatencyMs)} hint="avg latency" />
-            <Kpi label="Pre-move" value={fmtRet(m?.preMovePercentage)} hint="if available" />
-            <Kpi label="Winners blocked" value={m?.largeWinnersBlocked != null ? String(m.largeWinnersBlocked) : "—"} hint="shadow soak" tone="warn" />
-            <Kpi label="Losses prevented" value={m?.severeLossesPrevented != null ? String(m.severeLossesPrevented) : "—"} hint="shadow soak" tone="ok" />
+          <div className="quant-summary-grid">
+            <Kpi label="Evidence quality" value={report?.insufficientEvidence ? "Insufficient" : report?.confidence ?? "LOW"} tone={confTone(report?.confidence)} />
+            <Kpi label="Sample size" value={String(report?.sampleSize ?? 0)} hint="closed outcomes" tone="info" />
+            <Kpi label="Win rate" value={fmtPct(m?.winRate)} hint={conclusionReady ? "supported sample" : `Low confidence · n=${sampleSize}`} tone={conclusionReady ? toneForRate(m?.winRate) : "muted"} />
+            <Kpi label="Average return" value={fmtRet(m?.meanReturn)} hint={conclusionReady ? "realized option return" : `Low confidence · n=${sampleSize}`} tone={conclusionReady ? toneForSigned(m?.meanReturn) : "muted"} />
+            <Kpi label="Profit factor" value={fmtNum(m?.profitFactor)} hint={conclusionReady ? "gross gains ÷ gross losses" : "Not conclusive"} />
+            <Kpi label="Best supported setup" value={supportedStrategies[0]?.key ?? "Not enough data"} />
+            <Kpi label="Worst supported setup" value={supportedStrategies.at(-1)?.key ?? "Not enough data"} />
+            <Kpi label="Best time window" value={supportedTimes[0]?.key ?? "Not enough data"} />
+            <Kpi label="Biggest data gap" value={biggestGap ? `${biggestGap[0]} ${biggestGap[1].toFixed(0)}%` : "Unavailable"} tone="warn" />
           </div>
-          <p className="cc-term-disclaimer">
-            Historical / statistical analysis — not financial advice. Sample size gates confidence.
-            {" "}
-            <Link href="/ai" className="cc-term-link">AI Advisory interprets these metrics →</Link>
-          </p>
+          <p className="cc-term-disclaimer">Deterministic research only. Nothing on this page changes production rules automatically.</p>
         </div>
       </section>
 
-      {/* Visual analytics layer */}
-      {report ? (
-        <div className="term-quant-viz-grid">
-          <TermPanel
-            title="Expectancy by strategy"
-            badge={<span className="cc-term-pill muted">n={report.sampleSize} · {report.dataLane} · {report.confidence}</span>}
-          >
-            <TermHBar
-              rows={(report.breakdowns.strategyFamily ?? []).slice(0, 8).map((r) => ({
-                key: r.key,
-                label: r.key,
-                value: Number(r.expectancy ?? 0),
-                tone: (r.expectancy ?? 0) >= 0 ? "ok" : "bad",
-              }))}
-              hrefFor={(k) => `/quant?lane=${encodeURIComponent(laneParam)}&dim=strategyFamily&key=${encodeURIComponent(k)}`}
-            />
-          </TermPanel>
-          <TermPanel title="Win rate by time of day" badge={<span className="cc-term-pill muted">realized · {report.timeWindow}</span>}>
-            <div className="cc-term-chart">
-              <ResponsiveContainer width="100%" height={140}>
-                <BarChart data={(report.breakdowns.timeOfDay ?? []).map((r) => ({
-                  key: r.key,
-                  wr: r.winRate == null ? 0 : (Math.abs(r.winRate) <= 1.5 ? r.winRate * 100 : r.winRate),
-                  n: r.n,
-                }))}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(80,120,100,0.12)" />
-                  <XAxis dataKey="key" tick={{ fontSize: 9, fill: "#6b7a72" }} />
-                  <YAxis tick={{ fontSize: 9, fill: "#6b7a72" }} width={28} />
-                  <Tooltip contentStyle={{ background: "#0a0c0b", border: "1px solid rgba(80,200,120,0.25)", fontSize: 11 }} />
-                  <Bar dataKey="wr" fill="#34d399" />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </TermPanel>
-          <TermPanel title="SPY vs QQQ" badge={<span className="cc-term-pill muted">expectancy</span>}>
-            <TermHBar
-              rows={(report.breakdowns.spyVsQqq ?? []).map((r) => ({
-                key: r.key,
-                label: `${r.key} (n=${r.n})`,
-                value: Number(r.expectancy ?? 0),
-              }))}
-            />
-          </TermPanel>
-          <TermPanel title="Calls vs puts">
-            <TermHBar
-              rows={(report.breakdowns.callsVsPuts ?? []).map((r) => ({
-                key: r.key,
-                label: `${r.key} (n=${r.n})`,
-                value: Number(r.expectancy ?? 0),
-              }))}
-            />
-          </TermPanel>
-          <TermPanel title="Moneyness ATM/ITM/OTM">
-            <TermHBar
-              rows={(report.breakdowns.contractMoneyness ?? []).map((r) => ({
-                key: r.key,
-                label: `${r.key} (n=${r.n})`,
-                value: Number(r.expectancy ?? 0),
-              }))}
-            />
-          </TermPanel>
-          <TermPanel title="DTE performance">
-            <TermHBar
-              rows={(report.breakdowns.dte ?? []).slice(0, 8).map((r) => ({
-                key: r.key,
-                label: `${r.key} (n=${r.n})`,
-                value: Number(r.expectancy ?? 0),
-              }))}
-            />
-          </TermPanel>
-          <TermPanel title="Delta-band performance">
-            <TermHBar
-              rows={(report.breakdowns.deltaBand ?? []).map((r) => ({
-                key: r.key,
-                label: `${r.key} (n=${r.n})`,
-                value: Number(r.expectancy ?? 0),
-              }))}
-            />
-          </TermPanel>
-          <TermPanel title="Exit-policy performance">
-            <TermHBar
-              rows={(report.breakdowns.exitPolicyVersion ?? []).map((r) => ({
-                key: r.key,
-                label: `${r.key} (n=${r.n})`,
-                value: Number(r.expectancy ?? 0),
-              }))}
-            />
-          </TermPanel>
-          <TermPanel title="MFE vs MAE (by family)" badge={<span className="cc-term-pill muted">scatter</span>}>
-            <div className="cc-term-chart">
-              <ResponsiveContainer width="100%" height={140}>
-                <ScatterChart>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(80,120,100,0.12)" />
-                  <XAxis type="number" dataKey="mfe" name="MFE" tick={{ fontSize: 9, fill: "#6b7a72" }} />
-                  <YAxis type="number" dataKey="mae" name="MAE" tick={{ fontSize: 9, fill: "#6b7a72" }} width={32} />
-                  <Tooltip cursor={{ strokeDasharray: "3 3" }} contentStyle={{ background: "#0a0c0b", border: "1px solid rgba(80,200,120,0.25)", fontSize: 11 }} />
-                  <Scatter
-                    data={(report.breakdowns.strategyFamily ?? []).map((r) => ({
-                      mfe: Number(r.mfe ?? 0),
-                      mae: Number(r.mae ?? 0),
-                      n: r.n,
-                      key: r.key,
-                    }))}
-                    fill="#34d399"
-                  />
-                </ScatterChart>
-              </ResponsiveContainer>
-            </div>
-          </TermPanel>
-          <TermPanel title="Allowed vs blocked / soak" badge={<span className="cc-term-pill muted">shadow</span>}>
-            <div className="cc-term-grid-2">
-              <Kpi label="Winners blocked" value={m?.largeWinnersBlocked != null ? String(m.largeWinnersBlocked) : "—"} tone="warn" />
-              <Kpi label="Losses prevented" value={m?.severeLossesPrevented != null ? String(m.severeLossesPrevented) : "—"} tone="ok" />
-              <Kpi label="Capture eff." value={fmtPct(m?.captureEfficiency)} />
-              <Kpi label="Confidence" value={String(report.confidence)} tone={confTone(report.confidence)} />
-            </div>
-          </TermPanel>
+      <div className="term-quant-viz-grid">
+        <section className="cc-term-panel">
+          <header className="cc-term-panel-head"><span className="cc-term-panel-title">What is working</span></header>
+          <div className="cc-term-panel-body">
+            {positiveFindings.slice(0, 4).map((row) => (
+              <FindingLine key={row.key} classification="SUPPORTED FINDING">
+                <strong>{row.key}</strong> · n={row.n} · expectancy {fmtRet(row.expectancy)} · {report?.confidence} confidence
+              </FindingLine>
+            ))}
+            {positiveFindings.length === 0 ? <p className="cc-term-empty">No supported positive finding yet. At least 5 graded outcomes are required.</p> : null}
+          </div>
+        </section>
+        <section className="cc-term-panel">
+          <header className="cc-term-panel-head"><span className="cc-term-panel-title">What is failing</span></header>
+          <div className="cc-term-panel-body">
+            {negativeFindings.slice(0, 4).map((row) => (
+              <FindingLine key={row.key} classification="SUPPORTED FINDING">
+                <strong>{row.key}</strong> · n={row.n} · expectancy {fmtRet(row.expectancy)} · investigate entry or exit policy
+              </FindingLine>
+            ))}
+            {earlyStopSignal ? (
+              <FindingLine classification={conclusionReady ? "SUPPORTED FINDING" : "EARLY SIGNAL"}>
+                Stop rate may be elevated · n={sampleSize} · compare entry timing and stop placement in shadow.
+              </FindingLine>
+            ) : null}
+            {earlyCaptureSignal ? (
+              <FindingLine classification={conclusionReady ? "SUPPORTED FINDING" : "EARLY SIGNAL"}>
+                Winner capture may be weak · n={sampleSize} · compare exit policies before changing entries.
+              </FindingLine>
+            ) : null}
+            {biggestGap && biggestGap[1] < 50 ? (
+              <FindingLine classification="DATA QUALITY ISSUE">
+                {biggestGap[0]} metadata is only {biggestGap[1].toFixed(0)}% complete, so related conclusions are blocked.
+              </FindingLine>
+            ) : null}
+            {negativeFindings.length === 0 && !earlyStopSignal && !earlyCaptureSignal && !(biggestGap && biggestGap[1] < 50) ? (
+              <p className="cc-term-empty">No supported failing finding yet.</p>
+            ) : null}
+          </div>
+        </section>
+      </div>
+
+      <section className="cc-term-panel">
+        <header className="cc-term-panel-head">
+          <span className="cc-term-panel-title">What to test next</span>
+          <span className="cc-term-pill muted">SHADOW ONLY</span>
+        </header>
+        <div className="cc-term-panel-body">
+          <div className="quant-table-wrap">
+            <table className="mini-table quant-test-table">
+              <thead><tr><th>Hypothesis</th><th>Evidence</th><th>Proposed shadow test</th><th>Success metric</th><th>Required sample</th><th>Status</th></tr></thead>
+              <tbody>
+                <tr><td>Entry timing may improve expectancy</td><td>Current lane · n={sampleSize}</td><td>Compare the current entry window with the adjacent ET window</td><td>Higher out-of-sample expectancy</td><td>30 per arm</td><td>HYPOTHESIS</td></tr>
+                <tr><td>Wide spreads may reduce realized capture</td><td>Capture efficiency {fmtPct(m?.captureEfficiency)}</td><td>Compare the live spread rule with a tighter shadow filter</td><td>Higher realized-to-MFE ratio</td><td>30 per arm</td><td>{earlyCaptureSignal ? "EARLY SIGNAL" : "HYPOTHESIS"}</td></tr>
+                <tr><td>Exit policy may explain weak capture</td><td>MFE {fmtRet(m?.mfe)} · mean {fmtRet(m?.meanReturn)}</td><td>Compare fixed target, runner, and time-exit policies</td><td>Higher profit factor without larger drawdown</td><td>30 per policy</td><td>{earlyCaptureSignal ? "EARLY SIGNAL" : "HYPOTHESIS"}</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
-      ) : null}
+      </section>
 
-      <p className="cc-term-footnote">Exact tables below — charts summarize the same SQLite lane metrics.</p>
-
-      {dimParam && keyParam ? (
-        <div className="cc-term-banner info" style={{ borderColor: "rgba(52,211,153,0.35)" }}>
-          Filter: {dimParam} = {keyParam}
-          {" · "}
-          <Link href={`/quant?lane=${encodeURIComponent(laneParam)}`} className="cc-term-link">Clear</Link>
+      <section className="cc-term-panel">
+        <header className="cc-term-panel-head"><span className="cc-term-panel-title">Formula Lab</span></header>
+        <div className="cc-term-panel-body">
+          <div className="quant-formula-head">
+            <span>Formula and purpose</span><span>Current evidence</span><span>Status</span><span>Next safe test</span>
+          </div>
+          <FormulaRow
+            name="Expectancy"
+            purpose="Lane performance"
+            evidence={fmtRet(m?.expectancy)}
+            status={conclusionReady ? "SUPPORTED" : "EARLY"}
+            nextTest="Accumulate 30 outcomes per arm"
+            definition="Arithmetic mean of realized option-return percentages in the selected lane."
+            source="lib/research/options/quant-lab.ts · metricsFromRows"
+            liveUsage="Reporting only. It does not alter scanner or delivery behavior."
+            history={`Selected lane contains ${sampleSize} graded outcomes.`}
+            alternative="No challenger is proposed until the evidence threshold is met."
+            comparison="A future challenger must run in shadow against the same linked cohort."
+            approval="Human review required. Nothing applies automatically."
+          />
+          <FormulaRow
+            name="Profit factor"
+            purpose="Outcome quality"
+            evidence={fmtNum(m?.profitFactor)}
+            status={conclusionReady ? "SUPPORTED" : "EARLY"}
+            nextTest="Keep the canonical formula"
+            definition="Gross positive realized return divided by the absolute gross negative realized return."
+            source="lib/research/options/quant-lab.ts · profitFactor"
+            liveUsage="Reporting only. It does not size or authorize trades."
+            history={`Current canonical value: ${fmtNum(m?.profitFactor)}.`}
+            alternative="None."
+            comparison="Required before any alternate risk metric could be reviewed."
+            approval="Human review required."
+          />
+          <FormulaRow
+            name="Capture efficiency"
+            purpose="Exit quality"
+            evidence={fmtPct(m?.captureEfficiency)}
+            status={earlyCaptureSignal ? "EARLY SIGNAL" : "HYPOTHESIS"}
+            nextTest="Shadow three exit policies"
+            definition="Realized option return divided by maximum favorable excursion for rows with positive MFE."
+            source="lib/research/options/quant-lab.ts · metricsFromRows"
+            liveUsage="Research only. Existing exits remain deterministic and unchanged."
+            history={`MFE ${fmtRet(m?.mfe)} · realized mean ${fmtRet(m?.meanReturn)}.`}
+            alternative="Compare fixed target, runner, and time-exit policies."
+            comparison="Pending sufficient matched outcomes."
+            approval="Not approved."
+          />
         </div>
-      ) : null}
+      </section>
 
-      {filteredBreakdowns
-        ? BREAKDOWN_META.map(({ dim, title }) => (
-            <BreakdownSection
-              key={dim}
-              title={title}
-              dim={dim}
-              rows={filteredBreakdowns[dim] ?? []}
-              lane={laneParam}
-              activeKey={dimParam === dim ? keyParam : null}
-            />
-          ))
-        : (
-          <p className="cc-term-empty">Loading Quant Lab…</p>
-        )}
+      <div className="term-quant-viz-grid">
+        <section className="cc-term-panel">
+          <header className="cc-term-panel-head"><span className="cc-term-panel-title">Winner discovery</span></header>
+          <div className="cc-term-panel-body">
+            <p>Delivered winners: {(report?.breakdowns.strategyFamily ?? []).filter((row) => row.n >= 5 && Number(row.expectancy) > 0).length} supported patterns</p>
+            <p>Blocked winners: {m?.largeWinnersBlocked ?? "Unavailable"}</p>
+            <p>High MFE with weak realized return: {m?.mfe != null && m?.meanReturn != null && m.mfe > m.meanReturn * 2 ? "Present" : "Not established"}</p>
+            <p className="muted">These are correlations. They do not establish causation or authorize a rule change.</p>
+          </div>
+        </section>
+        <section className="cc-term-panel">
+          <header className="cc-term-panel-head"><span className="cc-term-panel-title">Data completeness</span></header>
+          <div className="cc-term-panel-body">
+            <p><strong>Overall: {report?.completenessPct?.toFixed(1) ?? "0.0"}%</strong></p>
+            {Object.entries(completeness).map(([key, value]) => (
+              <p key={key}>{key}: {value.toFixed(1)}% {value < 50 ? "· conclusions blocked" : ""}</p>
+            ))}
+          </div>
+        </section>
+      </div>
+
+      <p className="cc-term-footnote">
+        <Link href={advanced ? `/quant?lane=${encodeURIComponent(laneParam)}` : `/quant?lane=${encodeURIComponent(laneParam)}&view=advanced`} className="cc-term-link">
+          {advanced ? "Hide advanced data" : "Open advanced data"}
+        </Link>
+      </p>
+
+      {advanced ? (
+        <>
+          {dimParam && keyParam ? (
+            <div className="cc-term-banner info">
+              Filter: {dimParam} = {keyParam} · <Link href={`/quant?lane=${encodeURIComponent(laneParam)}&view=advanced`} className="cc-term-link">Clear</Link>
+            </div>
+          ) : null}
+          {filteredBreakdowns
+            ? BREAKDOWN_META.map(({ dim, title }) => (
+                <BreakdownSection
+                  key={dim}
+                  title={title}
+                  dim={dim}
+                  rows={filteredBreakdowns[dim] ?? []}
+                  lane={laneParam}
+                  activeKey={dimParam === dim ? keyParam : null}
+                />
+              ))
+            : <p className="cc-term-empty">Loading advanced Quant data…</p>}
+        </>
+      ) : null}
     </div>
   );
 }

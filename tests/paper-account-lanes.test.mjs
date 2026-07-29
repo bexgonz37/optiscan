@@ -40,4 +40,16 @@ test("paper UI and API keep stock, legacy, 0DTE, delivered, and bearish balances
   assert.match(page, /Delivered Options Paper/);
   assert.match(page, /Stock Paper/);
   assert.match(page, /Legacy Paper start/);
+  assert.equal((page.match(/className="paper-account-tabs"/g) ?? []).length, 1, "only one primary account-navigation row");
+  for (const label of ["ALL ACCOUNTS", "DELIVERED ALERTS", "RESEARCH", "STOCKS", "HISTORY"]) {
+    assert.match(page, new RegExp(label));
+  }
+  assert.match(page, /verifiedPnlBreakdown/);
+  assert.match(page, /verifiedPnlEligible/);
+  assert.match(page, /Simulated same-day options research\. Separate \$100,000 account\./);
+  assert.match(page, /Simulated qualified PUT setups not necessarily sent to subscribers\./);
+  assert.match(page, /Counterfactual signals only\. No paper position or subscriber alert\./);
+  assert.doesNotMatch(page, /PAPER_0DTE_RESEARCH_ENABLED/);
+  assert.match(page, /Current \/ Exit/);
+  assert.match(page, /paperStatusLabel/);
 });

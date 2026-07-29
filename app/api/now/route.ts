@@ -3,9 +3,17 @@ import { requireApiToken } from "@/lib/api-route-auth";
 import { ensureServerBoot } from "@/lib/server-boot";
 import { resolveOperatingMode, heroTitleForMode } from "@/lib/dashboard/operating-mode";
 import { classifySetupDecision, DECISION_LABEL, type DecisionState } from "@/lib/dashboard/setup-decision";
+import { plainEnglishAlertReason } from "@/lib/research/options/format";
+import { formatOccContract, parseOccContract } from "@/lib/format-contract";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+function humanContractLabel(symbol: string, occ: string | null, fallbackSide: string): string | null {
+  const parsed = parseOccContract(occ);
+  if (!parsed || parsed.symbol !== symbol.toUpperCase() || parsed.side !== fallbackSide) return null;
+  return formatOccContract(occ);
+}
 
 /**
  * GET /api/now — decision-first homepage snapshot.
@@ -133,13 +141,20 @@ export async function GET(req: Request) {
       side: s.side,
       state: decision.state,
       label: decision.label,
-      trigger: s.reason?.slice(0, 80) ?? "See evidence",
+      trigger: decision.confirmationNeeded ?? "Setup conditions confirmed",
       entryZone: decision.executable ? s.entryZone : null,
-      preferredStructure: s.contract ? String(s.contract).slice(0, 24) : `${s.side} structure TBD`,
+      preferredStructure: decision.executable
+        ? humanContractLabel(s.symbol, s.contract, s.side) ?? "Contract pending verification"
+        : "Contract pending verification",
       t1: decision.executable ? s.target : null,
       stop: decision.executable ? s.stop : null,
       confidence: s.actionScore ?? s.signalScore ?? s.confidenceScore,
-      reason: s.reason ?? "—",
+      reason: plainEnglishAlertReason({
+        symbol: s.symbol,
+        side: s.side,
+        strategyKey: s.strategy,
+        sourceReason: s.reason,
+      }),
       mainRisk: s.mainRisk ?? "—",
       freshness: decision.quoteLabel === "STALE · PRIOR SESSION" ? decision.quoteLabel : (s.freshnessLabel ?? "—"),
       quantSampleSize: null,
@@ -169,7 +184,7 @@ export async function GET(req: Request) {
         label: decision.label,
         trigger: r.triggerLevel != null ? `Trigger ${r.triggerLevel}` : "Confirm levels at open",
         entryZone: null,
-        preferredStructure: `${r.preferredDteRange} DTE ${r.preferredMoneyness}`,
+        preferredStructure: "Contract pending verification",
         t1: null,
         stop: null,
         confidence: r.confidence,

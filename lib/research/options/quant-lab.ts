@@ -70,6 +70,10 @@ export interface QuantLabReport {
   metrics: QuantLabMetrics;
   breakdowns: QuantLabBreakdowns;
   insufficientEvidence: boolean;
+  metadataCompleteness: Record<
+    "mfeMae" | "moneyness" | "deltaBand" | "marketRegime" | "exitPolicy" | "qualityScore",
+    number
+  >;
 }
 
 export interface QuantLabSnapshot extends QuantLabReport {
@@ -201,6 +205,14 @@ function emptyReport(dataLane: QuantLabLaneKey | string): QuantLabReport {
     metrics: emptyMetrics(),
     breakdowns: emptyBreakdowns(),
     insufficientEvidence: true,
+    metadataCompleteness: {
+      mfeMae: 0,
+      moneyness: 0,
+      deltaBand: 0,
+      marketRegime: 0,
+      exitPolicy: 0,
+      qualityScore: 0,
+    },
   };
 }
 
@@ -328,13 +340,31 @@ function buildBreakdowns(rows: TradeRow[]): QuantLabBreakdowns {
 function metricsFromRows(
   rows: TradeRow[],
   extras: Partial<QuantLabMetrics> = {},
-): { metrics: QuantLabMetrics; completenessPct: number; confidence: QuantLabConfidence } {
+): {
+  metrics: QuantLabMetrics;
+  completenessPct: number;
+  confidence: QuantLabConfidence;
+  metadataCompleteness: QuantLabReport["metadataCompleteness"];
+} {
   const returns = rows.map((r) => Number(r.return_pct)).filter(Number.isFinite);
   const wins = returns.filter((x) => x > 0);
   const losses = returns.filter((x) => x <= 0);
   const graded = returns.length;
-  const withMfe = rows.filter((r) => r.mfe_pct != null && Number.isFinite(Number(r.mfe_pct))).length;
-  const completenessPct = graded ? Math.round((withMfe / graded) * 1000) / 10 : 0;
+  const pct = (count: number) => graded ? Math.round((count / graded) * 1000) / 10 : 0;
+  const present = (value: unknown) => value != null && String(value).trim() !== "" && String(value).toLowerCase() !== "unknown";
+  const metadataCompleteness: QuantLabReport["metadataCompleteness"] = {
+    mfeMae: pct(rows.filter((r) => r.mfe_pct != null && r.mae_pct != null).length),
+    moneyness: pct(rows.filter((r) => present(r.contract_moneyness)).length),
+    deltaBand: pct(rows.filter((r) => present(r.delta_band)).length),
+    marketRegime: pct(rows.filter((r) => present(r.market_regime)).length),
+    exitPolicy: pct(rows.filter((r) => present(r.exit_policy_version)).length),
+    qualityScore: pct(rows.filter((r) => parseFeatureSnapshot(r.feature_snapshot_json).qualityScore != null).length),
+  };
+  const completenessPct = Math.round(
+    Object.values(metadataCompleteness).reduce((sum, value) => sum + value, 0)
+      / Object.keys(metadataCompleteness).length
+      * 10,
+  ) / 10;
 
   const mfeVals = rows.map((r) => r.mfe_pct).filter((x): x is number => x != null && Number.isFinite(x));
   const maeVals = rows.map((r) => r.mae_pct).filter((x): x is number => x != null && Number.isFinite(x));
@@ -376,6 +406,7 @@ function metricsFromRows(
   return {
     completenessPct,
     confidence: confidenceFor(graded, completenessPct),
+    metadataCompleteness,
     metrics: {
       winRate: graded ? wins.length / graded : null,
       medianReturn: round4(median(returns)),
@@ -408,7 +439,7 @@ function reportFromRows(
     empty.metrics = { ...empty.metrics, ...extras };
     return empty;
   }
-  const { metrics, completenessPct, confidence } = metricsFromRows(rows, extras);
+  const { metrics, completenessPct, confidence, metadataCompleteness } = metricsFromRows(rows, extras);
   return {
     sampleSize: rows.length,
     dataLane,
@@ -419,6 +450,7 @@ function reportFromRows(
     metrics,
     breakdowns: buildBreakdowns(rows),
     insufficientEvidence: rows.length < MIN_SAMPLE,
+    metadataCompleteness,
   };
 }
 
@@ -613,6 +645,7 @@ export function buildQuantLabSnapshot(
     metrics: top.metrics,
     breakdowns: top.breakdowns,
     insufficientEvidence: top.insufficientEvidence,
+    metadataCompleteness: top.metadataCompleteness,
     lanes,
   };
 }

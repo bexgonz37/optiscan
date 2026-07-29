@@ -997,9 +997,231 @@ tbody tr:hover td {
   margin-bottom: 0;
 }
 
+/* Paper / Quant / NOW review pass: readable wrapping without changing data behavior. */
+.paper-account-tabs,
+.paper-research-tabs {
+  align-items: stretch;
+}
+
+.paper-account-tabs .ui-btn,
+.paper-research-tabs .ui-btn {
+  white-space: normal;
+  line-height: 1.2;
+}
+
+.paper-research-tabs {
+  flex-wrap: wrap;
+}
+
+.axiom-utility .panel.main {
+  padding: 14px;
+}
+
+.paper-window-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 12px 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.paper-window-controls label {
+  color: var(--txt-bright);
+  font-weight: 600;
+}
+
+.paper-window-controls select {
+  min-width: 160px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel2);
+  color: var(--txt);
+}
+
+.paper-strip .axiom-stat {
+  min-width: 150px;
+}
+
+.paper-strip .axiom-stat-v {
+  font-size: 16px;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.paper-table-wrap,
+.quant-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.paper-research-table,
+.quant-test-table,
+.quant-advanced-table {
+  width: 100%;
+}
+
+.paper-research-table th,
+.paper-research-table td,
+.quant-test-table th,
+.quant-test-table td,
+.quant-advanced-table th,
+.quant-advanced-table td {
+  white-space: normal;
+  vertical-align: top;
+}
+
+.paper-research-table th:nth-child(-n+3),
+.paper-research-table td:nth-child(-n+3) {
+  text-align: left;
+}
+
+.paper-research-table th:nth-child(n+4),
+.paper-research-table td:nth-child(n+4) {
+  text-align: right;
+}
+
+.paper-contract {
+  min-width: 155px;
+  color: var(--txt-bright);
+  font-weight: 600;
+}
+
+.paper-empty-cell {
+  padding: 24px 16px !important;
+  text-align: center;
+}
+
+.paper-empty-cell strong,
+.paper-empty-cell span {
+  display: block;
+}
+
+.paper-empty-cell span {
+  margin-top: 5px;
+  color: var(--muted);
+}
+
+.paper-table-meta {
+  margin: 9px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.quant-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.quant-summary-grid .cc-term-kpi {
+  min-width: 0;
+}
+
+.quant-summary-grid .cc-term-kpi-value {
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+
+.quant-finding-line {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  margin: 0 0 10px;
+  line-height: 1.45;
+}
+
+.quant-test-table {
+  table-layout: fixed;
+  min-width: 880px;
+}
+
+.quant-test-table th,
+.quant-test-table td {
+  overflow-wrap: anywhere;
+}
+
+.quant-formula-head,
+.quant-formula-row summary {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) minmax(120px, 0.8fr) minmax(100px, 0.7fr) minmax(180px, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.quant-formula-head {
+  padding: 0 12px 8px;
+  color: var(--faint);
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.quant-formula-row {
+  border-top: 1px solid var(--line);
+}
+
+.quant-formula-row summary {
+  padding: 12px;
+  cursor: pointer;
+}
+
+.quant-formula-row summary > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.quant-formula-row summary small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+}
+
+.quant-formula-detail {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0 12px 14px;
+}
+
+.quant-formula-detail > div {
+  padding: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel2);
+}
+
+.quant-formula-detail strong,
+.quant-formula-detail span {
+  display: block;
+}
+
+.quant-formula-detail strong {
+  margin-bottom: 4px;
+  color: var(--txt-bright);
+}
+
+.quant-formula-detail span {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.now-contract {
+  margin: 0 0 8px;
+  color: var(--txt-bright);
+  font-size: 15px;
+  font-weight: 700;
+}
+
 @media (max-width: 900px) {
   .now-next-grid { grid-template-columns: 1fr; }
   .now-setup-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .quant-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .quant-formula-head { display: none; }
+  .quant-formula-row summary { grid-template-columns: 1fr 1fr; }
+  .quant-formula-detail { grid-template-columns: 1fr; }
 }
 
 /* ── 8. Empty / loading / error states ──────────────────────────────────── */

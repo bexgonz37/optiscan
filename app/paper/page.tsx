@@ -13,6 +13,7 @@ import { CardTip } from "@/components/CardTip";
 import { Panel } from "@/components/ui/Panel";
 import { StatTile } from "@/components/ui/StatTile";
 import { fmtPrice } from "@/lib/format";
+import { formatOccContract, parseOccContract } from "@/lib/format-contract";
 
 interface Summary {
   openCount: number; closedCount: number; gradedCount: number;
@@ -45,13 +46,6 @@ function dollars(v: number | null | undefined): string {
   return `${v < 0 ? "-" : ""}$${Math.abs(v).toFixed(0)}`;
 }
 
-function proofLabel(row: any): string {
-  if (row?.subscriberDelivered === true) return "Verified";
-  if (row?.deliveryProofStatus === "app_sent_unverified") return "Audit only";
-  if (row?.deliveryProofStatus === "missing_mirror") return "Missing mirror";
-  return "Unverified";
-}
-
 function timeAgo(ms: number | null | undefined): string {
   if (!ms) return "never";
   const mins = Math.max(0, Math.round((Date.now() - ms) / 60_000));
@@ -73,8 +67,55 @@ const STATE_CLASS: Record<string, string> = {
   STOPPED_OUT: "dn", EXITED: "", CANCELLED: "muted", EXPIRED: "muted",
 };
 
+type PaperView = "all" | "delivered" | "0dte" | "bearish" | "stock" | "shadow" | "history";
+type DeliveredWindow = "7" | "30" | "90" | "all";
+
+function readableContract(optionSymbol: string | null | undefined): string {
+  return formatOccContract(optionSymbol) ?? "Contract unavailable";
+}
+
+function paperStatusLabel(status: string | null | undefined, auditOnly = false): string {
+  if (auditOnly) return "Audit-only row";
+  switch (String(status ?? "").toUpperCase()) {
+    case "ENTERED": return "Open position";
+    case "EXITED": return "Closed trade";
+    case "PENDING_DELIVERY": return "Pending delivery";
+    case "ABORTED": return "Aborted reservation";
+    default: return status ? String(status).replaceAll("_", " ") : "Historical grade";
+  }
+}
+
+function AccountSummaryCard(props: {
+  name: string;
+  purpose: string;
+  starting: number | null | undefined;
+  equity: number | null | undefined;
+  todayPnl: number | null | undefined;
+  verifiedPnl: number | null | undefined;
+  open: number;
+  closed: number;
+  quality: string;
+}) {
+  return (
+    <section className="panel main">
+      <h2 className="section-title">{props.name}</h2>
+      <p className="muted text-sm">{props.purpose}</p>
+      <div className="axiom-strip paper-strip" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 8 }}>
+        <StatTile label="Starting balance" value={dollars(props.starting)} />
+        <StatTile label="Current equity" value={dollars(props.equity)} />
+        <StatTile label="Today's P&L" value={dollars(props.todayPnl)} />
+        <StatTile label="Total verified P&L" value={dollars(props.verifiedPnl)} />
+        <StatTile label="Open positions" value={String(props.open)} />
+        <StatTile label="Closed trades" value={String(props.closed)} />
+        <StatTile label="Data quality" value={props.quality} />
+      </div>
+    </section>
+  );
+}
+
 function PaperPageInner() {
-  const [tab, setTab] = useState<"delivered" | "0dte" | "bearish" | "stock" | "shadow">("delivered");
+  const [tab, setTab] = useState<PaperView>("all");
+  const [researchTab, setResearchTab] = useState<"0dte" | "bearish" | "shadow">("0dte");
   const [data, setData] = useState<any>(null);
   const [zeroDte, setZeroDte] = useState<any>(null);
   const [deliveredChain, setDeliveredChain] = useState<any>(null);
@@ -83,11 +124,17 @@ function PaperPageInner() {
   const [busyId, setBusyId] = useState<number | null>(null);
   const [recentAlerts, setRecentAlerts] = useState<any[]>([]);
   const [createNote, setCreateNote] = useState<string | null>(null);
+  const [deliveredWindow, setDeliveredWindow] = useState<DeliveredWindow>("30");
 
   useEffect(() => {
     try {
       const q = new URLSearchParams(window.location.search).get("tab");
-      if (q === "0dte" || q === "delivered" || q === "bearish" || q === "stock" || q === "shadow") setTab(q);
+      if (q === "0dte" || q === "bearish" || q === "shadow") {
+        setTab(q);
+        setResearchTab(q);
+      } else if (q === "all" || q === "delivered" || q === "stock" || q === "history") {
+        setTab(q);
+      }
     } catch { /* ignore */ }
   }, []);
 
@@ -111,12 +158,12 @@ function PaperPageInner() {
 
   const loadDelivered = useCallback(async () => {
     try {
-      const res = await fetch("/api/research/options/paper-chain", { cache: "no-store", headers: scanHeaders() });
+      const res = await fetch(`/api/research/options/paper-chain?limit=100&days=${deliveredWindow}`, { cache: "no-store", headers: scanHeaders() });
       const d = await res.json();
       if (d?.ok) setDeliveredChain(d.diagnostic ?? d);
       else if (d?.rows) setDeliveredChain(d);
     } catch { /* best effort */ }
-  }, []);
+  }, [deliveredWindow]);
 
   const loadBearishResearch = useCallback(async () => {
     try {
@@ -149,8 +196,9 @@ function PaperPageInner() {
     return () => clearInterval(t);
   }, [load, loadAlerts, loadZeroDte, loadDelivered, loadBearishResearch, tab]);
 
-  const switchTab = (next: typeof tab) => {
+  const switchTab = (next: PaperView) => {
     setTab(next);
+    if (next === "0dte" || next === "bearish" || next === "shadow") setResearchTab(next);
     try {
       const u = new URL(window.location.href);
       u.searchParams.set("tab", next);
@@ -207,34 +255,106 @@ function PaperPageInner() {
     <div className="page axiom-utility">
       <main className="main-col axiom-live">
         <div className="paper-account-tabs" style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
-          <a href="/paper?tab=delivered" className="ui-btn ui-btn-sm" style={{ textDecoration: "none" }}>Delivered Options</a>
-          <a href="/paper/0dte" className="ui-btn ui-btn-sm" style={{ textDecoration: "none" }}>Aggressive 0DTE</a>
-          <a href="/paper?tab=bearish" className="ui-btn ui-btn-sm" style={{ textDecoration: "none" }}>Bearish Research</a>
-          <a href="/paper?tab=stock" className="ui-btn ui-btn-sm" style={{ textDecoration: "none" }}>Stock Paper</a>
-        </div>
-        <div className="paper-account-tabs" style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
           {([
-            ["delivered", "Delivered Options"],
-            ["0dte", "Aggressive 0DTE Research"],
-            ["bearish", "Bearish Research Paper"],
-            ["stock", "Stock Paper"],
-            ["shadow", "Shadow / Historical"],
+            ["all", "ALL ACCOUNTS"],
+            ["delivered", "DELIVERED ALERTS"],
+            ["research", "RESEARCH"],
+            ["stock", "STOCKS"],
+            ["history", "HISTORY"],
           ] as const).map(([id, label]) => (
             <button
               key={id}
               type="button"
-              className={`ui-btn ui-btn-sm${tab === id ? " ui-btn-primary" : ""}`}
-              onClick={() => switchTab(id)}
+              className={`ui-btn ui-btn-sm${(id === "research" ? ["0dte", "bearish", "shadow"].includes(tab) : tab === id) ? " ui-btn-primary" : ""}`}
+              onClick={() => switchTab(id === "research" ? researchTab : id)}
             >
               {label}
             </button>
           ))}
         </div>
+        {["0dte", "bearish", "shadow"].includes(tab) ? (
+          <div className="paper-research-tabs" style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            {([
+              ["0dte", "Aggressive 0DTE"],
+              ["bearish", "Bearish Research"],
+              ["shadow", "Shadow Testing"],
+            ] as const).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                className={`ui-btn ui-btn-sm${tab === id ? " ui-btn-primary" : ""}`}
+                onClick={() => switchTab(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        {tab === "all" ? (
+          <div style={{ display: "grid", gap: 12 }}>
+            <AccountSummaryCard
+              name="Delivered Alerts"
+              purpose="Paper mirror of subscriber alerts that have verified Discord delivery proof."
+              starting={deliveredChain?.account?.startingBalanceUsd}
+              equity={deliveredChain?.account?.currentEquityUsd}
+              todayPnl={null}
+              verifiedPnl={deliveredChain?.verifiedPnlBreakdown?.verifiedTotalPnlUsd}
+              open={(deliveredChain?.rows ?? []).filter((r: any) => r.paperStatus === "ENTERED" && r.verifiedPnlEligible).length}
+              closed={(deliveredChain?.rows ?? []).filter((r: any) => r.paperStatus === "EXITED" && r.verifiedPnlEligible).length}
+              quality={(deliveredChain?.verifiedPnlBreakdown?.invalidOrStaleMarkRowsExcluded ?? 0) > 0 ? "Warnings" : "Verified"}
+            />
+            <AccountSummaryCard
+              name="Aggressive 0DTE Research"
+              purpose="Simulated same-day options research. Separate $100,000 account."
+              starting={zeroDte?.config?.startingBalanceUsd}
+              equity={zeroDte?.snapshot?.account?.equityUsd}
+              todayPnl={zeroDte?.snapshot?.account?.dailyPnlUsd}
+              verifiedPnl={zeroDte?.snapshot?.account?.realizedPnlUsd}
+              open={zeroDte?.snapshot?.openPositions?.length ?? 0}
+              closed={zeroDte?.snapshot?.performance?.gradedSample ?? 0}
+              quality="Research only"
+            />
+            <AccountSummaryCard
+              name="Bearish Research Paper"
+              purpose="Simulated qualified PUT setups not necessarily sent to subscribers."
+              starting={bearishResearch?.snapshot?.account?.startingBalanceUsd}
+              equity={bearishResearch?.snapshot?.account?.currentEquityUsd}
+              todayPnl={null}
+              verifiedPnl={bearishResearch?.snapshot?.realizedPnlUsd}
+              open={bearishResearch?.snapshot?.open?.length ?? 0}
+              closed={(bearishResearch?.snapshot?.recent ?? []).filter((r: any) => r.status === "EXITED").length}
+              quality="Research only"
+            />
+            <AccountSummaryCard
+              name="Stock Paper"
+              purpose="Separate stock-only simulation."
+              starting={account?.startingBalance}
+              equity={account?.equity}
+              todayPnl={daily?.pnlDollars}
+              verifiedPnl={account?.realizedPnl}
+              open={open.length}
+              closed={filledClosed.length}
+              quality="Stock lane"
+            />
+            <AccountSummaryCard
+              name="Shadow Testing"
+              purpose="Counterfactual signals only. No paper position or subscriber alert."
+              starting={null}
+              equity={null}
+              todayPnl={null}
+              verifiedPnl={null}
+              open={0}
+              closed={data?.legacyLane?.trades?.length ?? 0}
+              quality="Audit only"
+            />
+          </div>
+        ) : null}
 
         {tab === "0dte" ? (
           <section className="panel main">
-            <h2 className="section-title">Aggressive 0DTE Research — simulated only</h2>
-            <p className="muted text-sm">Separate $100k ledger. Never mixes with Discord-delivered alert performance or subscriber readiness.</p>
+            <h2 className="section-title">Aggressive 0DTE Research</h2>
+            <p className="muted text-sm">Simulated same-day options research. Separate $100,000 account.</p>
             <p style={{ margin: "10px 0 14px" }}>
               <a href="/paper/0dte" className="ui-btn ui-btn-primary" style={{ textDecoration: "none" }}>
                 Open full 0DTE Research terminal →
@@ -258,34 +378,41 @@ function PaperPageInner() {
                   <StatTile label="Worst family" value={String(zeroDte.snapshot?.performance?.worstFamily ?? "—")} />
                 </div>
                 <p className="muted text-sm" style={{ marginTop: 8 }}>
-                  Lane {zeroDte.config?.enabled ? "ARMED" : "IDLE (PAPER_0DTE_RESEARCH_ENABLED≠1)"} · graded {zeroDte.snapshot?.performance?.gradedSample ?? 0}
+                  Research account {zeroDte.config?.enabled ? "active" : "paused"} · {zeroDte.snapshot?.performance?.gradedSample ?? 0} graded outcomes
                 </p>
-                <table className="mini-table" style={{ marginTop: 12, width: "100%" }}>
-                  <thead>
-                    <tr>
-                      <th>Symbol</th><th>Side</th><th>Family</th><th>Entry</th><th>Unreal</th><th>MFE</th><th>MAE</th><th>Policy</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(zeroDte.snapshot?.openPositions ?? []).map((r: any) => (
-                      <tr key={r.id}>
-                        <td>
-                          <a href={`/paper/0dte/${r.id}`}>{r.symbol ?? "—"}</a>
-                        </td>
-                        <td>{r.side}</td>
-                        <td>{r.family}</td>
-                        <td>{r.entry != null ? `$${Number(r.entry).toFixed(2)}` : "—"}</td>
-                        <td>{num(r.unrealizedPct, "%")}</td>
-                        <td>{num(r.mfePct, "%")}</td>
-                        <td>{num(r.maePct, "%")}</td>
-                        <td>{r.exitPolicy ?? "—"}</td>
+                <div className="paper-table-wrap">
+                  <table className="mini-table paper-research-table">
+                    <thead>
+                      <tr>
+                        <th>Symbol</th><th>Contract</th><th>Status</th><th>Entry</th><th>Current / Exit</th><th>P&amp;L</th><th>Return</th>
                       </tr>
-                    ))}
-                    {(zeroDte.snapshot?.openPositions ?? []).length === 0 ? (
-                      <tr><td colSpan={8} className="muted">No open 0DTE research positions</td></tr>
-                    ) : null}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {(zeroDte.snapshot?.recentFills ?? []).map((r: any) => {
+                        const returnPct = r.returnPct;
+                        const currentOrExit = r.exit != null
+                          ? Number(r.exit)
+                          : r.entry != null && returnPct != null
+                            ? Number(r.entry) * (1 + Number(returnPct) / 100)
+                            : null;
+                        return (
+                          <tr key={r.id}>
+                            <td><a href={`/paper/0dte/${r.id}`}>{r.symbol ?? "—"}</a></td>
+                            <td className="paper-contract" title={r.optionSymbol}>{readableContract(r.optionSymbol)}</td>
+                            <td>{paperStatusLabel(r.status)}</td>
+                            <td>{r.entry != null ? `$${Number(r.entry).toFixed(2)}` : "Unavailable"}</td>
+                            <td>{currentOrExit != null ? `$${currentOrExit.toFixed(2)}` : "Unavailable"}</td>
+                            <td>{dollars(r.pnl)}</td>
+                            <td>{num(returnPct, "%")}</td>
+                          </tr>
+                        );
+                      })}
+                      {(zeroDte.snapshot?.recentFills ?? []).length === 0 ? (
+                        <tr><td colSpan={7} className="muted">No 0DTE research positions or closed trades in this account.</td></tr>
+                      ) : null}
+                    </tbody>
+                  </table>
+                </div>
               </>
             )}
           </section>
@@ -295,43 +422,79 @@ function PaperPageInner() {
           <section className="panel main">
             <h2 className="section-title">Delivered Options Paper</h2>
             <p className="muted text-sm">
-              Verified subscriber lane: private Discord alerts with opening-message proof and their DELIVERED_ALERT_PAPER mirrors.
-              $ P&amp;L assumes 1 contract × 100 multiplier.
+              Paper mirrors for subscriber alerts with verified Discord delivery. P&amp;L uses one contract and conservative option marks.
             </p>
+            <div className="paper-window-controls">
+              <label htmlFor="delivered-window">Date window</label>
+              <select
+                id="delivered-window"
+                value={deliveredWindow}
+                onChange={(event) => setDeliveredWindow(event.target.value as DeliveredWindow)}
+              >
+                <option value="7">Last 7 days</option>
+                <option value="30">Last 30 days</option>
+                <option value="90">Last 90 days</option>
+                <option value="all">All available history</option>
+              </select>
+              <span>{deliveredChain?.dataSourceLabel ?? "Production database"}</span>
+            </div>
             <div className="axiom-strip paper-strip" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(120px,1fr))", gap: 8, marginBottom: 12 }}>
               <StatTile label="Link rate 24h" value={deliveredChain?.paperLinkRate == null ? "—" : `${Math.round(Number(deliveredChain.paperLinkRate) * 100)}%`} />
               <StatTile label="Starting balance" value={dollars(deliveredChain?.account?.startingBalanceUsd)} />
               <StatTile label="Current equity" value={dollars(deliveredChain?.account?.currentEquityUsd)} />
-              <StatTile label="Sent 24h" value={String(deliveredChain?.sent24h ?? 0)} />
-              <StatTile label="Linked 24h" value={String(deliveredChain?.linked24h ?? 0)} />
-              <StatTile label="Verified $ P&L" value={dollars(deliveredChain?.verifiedSumPnlUsd)} />
+              <StatTile label="Realized verified P&L" value={dollars(deliveredChain?.verifiedPnlBreakdown?.realizedClosedPnlUsd)} />
+              <StatTile label="Open verified P&L" value={dollars(deliveredChain?.verifiedPnlBreakdown?.openMarkToMarketPnlUsd)} />
+              <StatTile label="Total verified P&L" value={dollars(deliveredChain?.verifiedPnlBreakdown?.verifiedTotalPnlUsd)} />
+              <StatTile label="Excluded rows" value={String(
+                (deliveredChain?.verifiedPnlBreakdown?.auditOnlyRowsExcluded ?? 0)
+                + (deliveredChain?.verifiedPnlBreakdown?.invalidOrStaleMarkRowsExcluded ?? 0)
+              )} />
             </div>
-            <table className="mini-table" style={{ width: "100%" }}>
-              <thead>
-                <tr>
-                  <th>Symbol</th><th>Proof</th><th>Status</th><th>Entry</th><th>Mark</th><th>$ P&amp;L</th><th>Return</th><th>MFE</th><th>MAE</th><th>Health</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(deliveredChain?.rows ?? []).slice(0, 40).map((r: any) => (
-                  <tr key={r.alertId ?? r.id}>
-                    <td>{r.symbol ?? "—"}</td>
-                    <td>{proofLabel(r)}</td>
-                    <td>{r.paperStatus ?? "—"}</td>
-                    <td>{r.frozenEntry != null ? `$${Number(r.frozenEntry).toFixed(2)}` : "—"}</td>
-                    <td>{r.markPrice != null ? `$${Number(r.markPrice).toFixed(2)}` : "—"}</td>
-                    <td>{r.subscriberDelivered ? (r.pnlUsd != null ? dollars(Number(r.pnlUsd)) : "—") : "audit only"}</td>
-                    <td>{r.subscriberDelivered ? num(r.latestMarkReturnPct ?? r.returnPct, "%") : "audit only"}</td>
-                    <td>{r.subscriberDelivered ? num(r.mfePct, "%") : "audit only"}</td>
-                    <td>{r.subscriberDelivered ? num(r.maePct, "%") : "audit only"}</td>
-                    <td>{r.graderHealth ?? "—"}</td>
+            <div className="paper-table-wrap">
+              <table className="mini-table paper-research-table">
+                <thead>
+                  <tr>
+                    <th>Symbol</th><th>Contract</th><th>Status</th><th>Entry</th><th>Current / Exit</th><th>P&amp;L</th><th>Return</th>
                   </tr>
-                ))}
-                {(deliveredChain?.rows ?? []).length === 0 ? (
-                  <tr><td colSpan={10} className="muted">No delivered mirrors in sample</td></tr>
-                ) : null}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {(deliveredChain?.rows ?? []).slice(0, 100).map((r: any) => (
+                    <tr key={r.alertId ?? r.id}>
+                      <td><a href={`/alerts/${encodeURIComponent(r.alertId)}`}>{r.symbol ?? "—"}</a></td>
+                      <td className="paper-contract" title={r.optionSymbol}>{readableContract(r.optionSymbol)}</td>
+                      <td>{paperStatusLabel(r.paperStatus, !r.subscriberDelivered)}</td>
+                      <td>{r.frozenEntry != null ? `$${Number(r.frozenEntry).toFixed(2)}` : "Unavailable"}</td>
+                      <td>{r.markPrice != null ? `$${Number(r.markPrice).toFixed(2)}` : "Unavailable"}</td>
+                      <td>{r.verifiedPnlEligible ? (r.pnlUsd != null ? dollars(Number(r.pnlUsd)) : "Unavailable") : "Excluded"}</td>
+                      <td>{r.verifiedPnlEligible ? num(r.latestMarkReturnPct ?? r.returnPct, "%") : "Audit only"}</td>
+                    </tr>
+                  ))}
+                  {(deliveredChain?.rows ?? []).length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="paper-empty-cell">
+                        <strong>No verified delivered-paper positions are available for this selected window.</strong>
+                        <span>Window: {deliveredChain?.selectedWindow?.label ?? (deliveredWindow === "all" ? "All available history" : `Last ${deliveredWindow} days`)}</span>
+                        <span>Excluded rows: {
+                          (deliveredChain?.verifiedPnlBreakdown?.auditOnlyRowsExcluded ?? 0)
+                          + (deliveredChain?.verifiedPnlBreakdown?.invalidOrStaleMarkRowsExcluded ?? 0)
+                        }</span>
+                        <span>Source: {deliveredChain?.dataSourceLabel ?? "Production database"}</span>
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+            {(deliveredChain?.rows ?? []).length > 0 ? (
+              <p className="paper-table-meta">
+                Window: {deliveredChain?.selectedWindow?.label ?? (deliveredWindow === "all" ? "All available history" : `Last ${deliveredWindow} days`)}
+                {" · "}Excluded rows: {
+                  (deliveredChain?.verifiedPnlBreakdown?.auditOnlyRowsExcluded ?? 0)
+                  + (deliveredChain?.verifiedPnlBreakdown?.invalidOrStaleMarkRowsExcluded ?? 0)
+                }
+                {" · "}Source: {deliveredChain?.dataSourceLabel ?? "Production database"}
+              </p>
+            ) : null}
           </section>
         ) : null}
 
@@ -339,7 +502,7 @@ function PaperPageInner() {
           <section className="panel main">
             <h2 className="section-title">Bearish Research Paper</h2>
             <p className="muted text-sm">
-              Qualified PUT setups that passed bearish authority but remain research paper. This account never contributes to delivered performance.
+              Simulated qualified PUT setups not necessarily sent to subscribers. This account never contributes to delivered performance.
             </p>
             <div className="axiom-strip paper-strip" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(120px,1fr))", gap: 8, marginBottom: 12 }}>
               <StatTile label="Starting balance" value={dollars(bearishResearch?.snapshot?.account?.startingBalanceUsd)} />
@@ -347,26 +510,37 @@ function PaperPageInner() {
               <StatTile label="Realized P&L" value={dollars(bearishResearch?.snapshot?.realizedPnlUsd)} />
               <StatTile label="Unrealized P&L" value={dollars(bearishResearch?.snapshot?.unrealizedPnlUsd)} />
               <StatTile label="Open trades" value={String(bearishResearch?.snapshot?.open?.length ?? 0)} />
-              <StatTile label="Lane status" value={bearishResearch?.config?.enabled ? "ARMED" : "IDLE"} />
+              <StatTile label="Account status" value={bearishResearch?.config?.enabled ? "Active" : "Paused"} />
             </div>
-            <table className="mini-table" style={{ width: "100%" }}>
-              <thead><tr><th>Contract</th><th>Strategy</th><th>Status</th><th>Entry</th><th>Return</th><th>P&L</th></tr></thead>
-              <tbody>
-                {(bearishResearch?.snapshot?.recent ?? []).map((row: any) => (
-                  <tr key={row.id}>
-                    <td>{row.option_symbol}</td>
-                    <td>{row.strategy}</td>
-                    <td>{row.status}</td>
-                    <td>{row.entry_fill == null ? "—" : `$${Number(row.entry_fill).toFixed(2)}`}</td>
-                    <td>{num(row.last_mark_return_pct ?? row.return_pct, "%")}</td>
-                    <td>{dollars(row.pnl)}</td>
-                  </tr>
-                ))}
-                {(bearishResearch?.snapshot?.recent ?? []).length === 0 ? (
-                  <tr><td colSpan={6} className="muted">No qualified bearish research-paper entries yet</td></tr>
-                ) : null}
-              </tbody>
-            </table>
+            <div className="paper-table-wrap">
+              <table className="mini-table paper-research-table">
+                <thead><tr><th>Symbol</th><th>Contract</th><th>Status</th><th>Entry</th><th>Current / Exit</th><th>P&amp;L</th><th>Return</th></tr></thead>
+                <tbody>
+                  {(bearishResearch?.snapshot?.recent ?? []).map((row: any) => {
+                    const returnPct = row.last_mark_return_pct ?? row.return_pct;
+                    const currentOrExit = row.exit_fill != null
+                      ? Number(row.exit_fill)
+                      : row.entry_fill != null && returnPct != null
+                        ? Number(row.entry_fill) * (1 + Number(returnPct) / 100)
+                        : null;
+                    return (
+                      <tr key={row.id}>
+                        <td>{parseOccContract(row.option_symbol)?.symbol ?? "—"}</td>
+                        <td className="paper-contract" title={row.option_symbol}>{readableContract(row.option_symbol)}</td>
+                        <td>{paperStatusLabel(row.status)}</td>
+                        <td>{row.entry_fill == null ? "Unavailable" : `$${Number(row.entry_fill).toFixed(2)}`}</td>
+                        <td>{currentOrExit == null ? "Unavailable" : `$${currentOrExit.toFixed(2)}`}</td>
+                        <td>{dollars(row.pnl)}</td>
+                        <td>{num(returnPct, "%")}</td>
+                      </tr>
+                    );
+                  })}
+                  {(bearishResearch?.snapshot?.recent ?? []).length === 0 ? (
+                    <tr><td colSpan={7} className="muted">No qualified bearish research-paper positions or closed trades yet.</td></tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
           </section>
         ) : null}
 
@@ -374,9 +548,8 @@ function PaperPageInner() {
           <section className="panel main">
             <h2 className="section-title">Shadow / Historical</h2>
             <p className="muted text-sm">
-              Replay, modeled, blocked, and research-only historical analysis. See{" "}
-              <a href="/shadow-soak">Shadow Soak</a> and Pipeline Health for deep diagnostics.
-              Legacy RESEARCH_ONLY_PAPER rows stay here — never in Delivered or 0DTE Research tabs.
+              Counterfactual signals only. No paper position or subscriber alert.{" "}
+              <a href="/shadow-soak">Open Shadow Testing details</a>.
             </p>
             <div className="axiom-strip paper-strip" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(140px,1fr))", gap: 8, marginTop: 12 }}>
               <StatTile label="Legacy Paper start" value={dollars(data?.legacyLane?.account?.startingBalance)} />
@@ -384,6 +557,36 @@ function PaperPageInner() {
               <StatTile label="Legacy Paper P&L" value={dollars(data?.legacyLane?.account?.realizedPnl)} />
               <StatTile label="Legacy audit rows" value={String(data?.legacyLane?.trades?.length ?? 0)} />
             </div>
+          </section>
+        ) : null}
+
+        {tab === "history" ? (
+          <section className="panel main">
+            <h2 className="section-title">Paper History</h2>
+            <p className="muted text-sm">
+              Delivered, research, and audit lanes remain separate. Open a delivered row for proof and lifecycle details.
+            </p>
+            <div className="paper-table-wrap"><table className="mini-table paper-research-table">
+              <thead>
+                <tr><th>Symbol</th><th>Contract</th><th>Status</th><th>Entry</th><th>Current / Exit</th><th>P&amp;L</th><th>Return</th></tr>
+              </thead>
+              <tbody>
+                {(deliveredChain?.rows ?? []).map((row: any) => (
+                  <tr key={`history-${row.alertId}`}>
+                    <td><a href={`/alerts/${encodeURIComponent(row.alertId)}`}>{row.symbol ?? "—"}</a></td>
+                    <td className="paper-contract" title={row.optionSymbol}>{readableContract(row.optionSymbol)}</td>
+                    <td>{paperStatusLabel(row.paperStatus, !row.subscriberDelivered)}</td>
+                    <td>{row.frozenEntry == null ? "—" : `$${Number(row.frozenEntry).toFixed(2)}`}</td>
+                    <td>{row.markPrice == null ? "—" : `$${Number(row.markPrice).toFixed(2)}`}</td>
+                    <td>{row.verifiedPnlEligible ? dollars(row.pnlUsd) : "Excluded"}</td>
+                    <td>{row.verifiedPnlEligible ? num(row.latestMarkReturnPct ?? row.returnPct, "%") : "Audit only"}</td>
+                  </tr>
+                ))}
+                {(deliveredChain?.rows ?? []).length === 0 ? (
+                  <tr><td colSpan={7} className="muted">No paper history available</td></tr>
+                ) : null}
+              </tbody>
+            </table></div>
           </section>
         ) : null}
 
@@ -599,7 +802,7 @@ function PaperPageInner() {
               <strong className="text-xs">Last challenge execution</strong>
               {challenge.lastExecution ? (
                 <div className="muted text-xs" style={{ marginTop: 4 }}>
-                  {new Date(challenge.lastExecution.atMs).toLocaleTimeString()} · {challenge.lastExecution.ticker ?? "—"} {challenge.lastExecution.side ?? ""} {challenge.lastExecution.optionSymbol ?? ""} ·{" "}
+                  {new Date(challenge.lastExecution.atMs).toLocaleTimeString()} · {challenge.lastExecution.optionSymbol ? readableContract(challenge.lastExecution.optionSymbol) : challenge.lastExecution.ticker ?? "—"} ·{" "}
                   <span className={`pill badge${challenge.lastExecution.result === "filled" ? " badge-live" : challenge.lastExecution.result === "rejected" ? " badge-warn" : ""}`}>{challenge.lastExecution.result}</span>
                   {challenge.lastExecution.bindingConstraint ? <> · binding: {challenge.lastExecution.bindingConstraint}</> : null}
                   {challenge.lastExecution.reason ? <> · {challenge.lastExecution.reason}</> : null}

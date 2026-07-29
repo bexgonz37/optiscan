@@ -1,4 +1,48 @@
-/** UI-only contract line — ticker, side, spread (not signal math). */
+/** UI-only contract lines — ticker, side, expiration, and strike (not signal math). */
+
+export interface ParsedOccContract {
+  symbol: string;
+  expiration: string;
+  expirationLabel: string;
+  side: "call" | "put";
+  strike: number;
+}
+
+export function parseOccContract(optionSymbol: string | null | undefined): ParsedOccContract | null {
+  const raw = String(optionSymbol ?? "").trim().replace(/\s+/g, "");
+  const match = /^(?:O:)?([A-Z]{1,6})(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/i.exec(raw);
+  if (!match) return null;
+  const year = 2000 + Number(match[2]);
+  const month = Number(match[3]);
+  const day = Number(match[4]);
+  const strike = Number(match[6]) / 1000;
+  if (
+    !Number.isFinite(strike)
+    || strike <= 0
+    || month < 1
+    || month > 12
+    || day < 1
+    || day > 31
+  ) return null;
+  return {
+    symbol: match[1]!.toUpperCase(),
+    expiration: `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
+    expirationLabel: `${String(month).padStart(2, "0")}/${String(day).padStart(2, "0")}`,
+    side: match[5]!.toUpperCase() === "P" ? "put" : "call",
+    strike,
+  };
+}
+
+function strikeLabel(strike: number): string {
+  return Number(strike.toFixed(3)).toString();
+}
+
+export function formatOccContract(optionSymbol: string | null | undefined): string | null {
+  const parsed = parseOccContract(optionSymbol);
+  if (!parsed) return null;
+  const side = parsed.side === "put" ? "Put" : "Call";
+  return `${parsed.symbol} ${parsed.expirationLabel} $${strikeLabel(parsed.strike)} ${side}`;
+}
 
 export function formatOptionsContract(a: {
   ticker?: string | null;

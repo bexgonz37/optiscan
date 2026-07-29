@@ -149,4 +149,31 @@ test("quant-lab snapshot keeps delivered and 0DTE lanes separate", () => {
 
   assert.ok(snap.lanes.delivered.breakdowns.callsVsPuts.length >= 1);
   assert.ok(snap.lanes.zero_dte_research.breakdowns.zeroDteOnly.some((s) => s.key === "dte=0" && s.n === 3));
+  assert.equal(snap.lanes.delivered.metadataCompleteness.moneyness, 100);
+  assert.equal(snap.lanes.delivered.metadataCompleteness.deltaBand, 100);
+});
+
+test("missing Quant metadata lowers completeness and cannot support default conclusions", () => {
+  const db = new Database(":memory:");
+  migrateMinimal(db);
+  for (let i = 0; i < 6; i += 1) {
+    insertPaper(db, {
+      paperKind: "DELIVERED_ALERT_PAPER",
+      optionSymbol: `O:SPY260727C${String(500000 + i * 1000).padStart(8, "0")}`,
+      returnPct: i % 2 ? -5 : 8,
+    });
+  }
+  db.prepare(
+    `UPDATE options_paper_trades
+     SET market_regime=NULL, contract_moneyness=NULL, delta_band=NULL,
+         exit_policy_version=NULL, feature_snapshot_json=NULL`,
+  ).run();
+  const report = buildQuantLabSnapshot(db, {}).lanes.delivered;
+  assert.equal(report.sampleSize, 6);
+  assert.equal(report.metadataCompleteness.marketRegime, 0);
+  assert.equal(report.metadataCompleteness.moneyness, 0);
+  assert.equal(report.metadataCompleteness.deltaBand, 0);
+  assert.equal(report.metadataCompleteness.exitPolicy, 0);
+  assert.equal(report.metadataCompleteness.qualityScore, 0);
+  assert.equal(report.confidence, "LOW");
 });

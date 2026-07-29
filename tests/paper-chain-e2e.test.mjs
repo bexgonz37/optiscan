@@ -46,6 +46,11 @@ function install(d) {
     CREATE UNIQUE INDEX options_paper_one_live_thesis_idx
       ON options_paper_trades(thesis_fingerprint)
       WHERE status IN ('PENDING_DELIVERY','ENTERED') AND thesis_fingerprint IS NOT NULL;
+    CREATE TABLE options_paper_marks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, trade_id INTEGER NOT NULL, option_symbol TEXT,
+      mark_at_ms INTEGER NOT NULL, bid REAL, ask REAL, exit_fill REAL, return_pct REAL,
+      quote_age_ms INTEGER, created_at_ms INTEGER NOT NULL
+    );
     CREATE TABLE opportunity_cases (
       opportunity_id TEXT PRIMARY KEY, underlying_symbol TEXT NOT NULL, direction TEXT, setup_family TEXT,
       detected_at_ms INTEGER NOT NULL, market_session TEXT, source_path TEXT NOT NULL,
@@ -125,6 +130,8 @@ test("paper chain E2E: SENT → paper_linked → diagnostic row", async () => {
   assert.equal(diag.rows[0].deliveryProofStatus, "verified_delivered");
   assert.equal(diag.rows[0].subscriberDelivered, true);
   assert.equal(diag.rows[0].graderHealth, "healthy");
+  assert.equal(diag.rows[0].verifiedPnlEligible, false, "missing grading mark is excluded from verified P&L");
+  assert.ok(diag.rows[0].pnlExclusionReasons.includes("missing_or_invalid_grading_mark"));
 });
 
 test("paper chain marks HTTP-accepted rows without Discord message proof as audit-only", async () => {
@@ -146,4 +153,43 @@ test("paper chain marks HTTP-accepted rows without Discord message proof as audi
   assert.deepEqual(diag.rows[0].missingDataWarnings, ["missing_opening_discord_message_id"]);
   assert.equal(diag.sumPnlUsd, 500, "raw operational audit still sees the closed mirror");
   assert.equal(diag.verifiedSumPnlUsd, null, "unverified row cannot become subscriber-delivered performance");
+});
+
+test("verified P&L includes only proof-complete rows with valid conservative grading marks", async () => {
+  const d = new Database(":memory:");
+  install(d);
+  const now = Date.UTC(2026, 6, 22, 14, 40);
+  const out = await deliverOptionsCallout(input(now), {
+    getDb: () => d,
+    now: () => now,
+    send: async () => ({ ok: true, status: 200, latencyMs: 12, messageId: "discord-proof" }),
+  }, ENV);
+  const paper = d.prepare("SELECT id, entry_fill FROM options_paper_trades WHERE alert_id=?").get(out.alertId);
+  d.prepare(
+    `UPDATE options_paper_trades
+     SET status='EXITED', exit_fill=1.50, pnl=?, return_pct=?, last_mark_return_pct=?, exit_reason='target_hit'
+     WHERE id=?`,
+  ).run((1.5 - paper.entry_fill) * 100, ((1.5 - paper.entry_fill) / paper.entry_fill) * 100, ((1.5 - paper.entry_fill) / paper.entry_fill) * 100, paper.id);
+  d.prepare(
+    `INSERT INTO options_paper_marks
+      (trade_id,option_symbol,mark_at_ms,bid,ask,exit_fill,return_pct,quote_age_ms,created_at_ms)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+  ).run(paper.id, input(now).contract.optionSymbol, now + 60_000, 1.48, 1.52, 1.5, ((1.5 - paper.entry_fill) / paper.entry_fill) * 100, 1_000, now + 60_000);
+
+  const diag = buildPaperChainDiagnostic(d, ENV, 5);
+  assert.equal(diag.rows[0].verifiedPnlEligible, true);
+  assert.equal(diag.verifiedPnlBreakdown.invalidOrStaleMarkRowsExcluded, 0);
+  assert.equal(diag.verifiedPnlBreakdown.realizedClosedPnlUsd, diag.verifiedSumPnlUsd);
+  assert.equal(diag.account.currentEquityUsd, 100_000 + diag.verifiedSumPnlUsd);
+});
+
+test("paper chain exposes deterministic production source and selected date window", () => {
+  const d = new Database(":memory:");
+  install(d);
+  const now = Date.now();
+  const diag = buildPaperChainDiagnostic(d, ENV, 40, now - 30 * 86_400_000);
+  assert.equal(diag.dataSourceLabel, "Production database");
+  assert.equal(diag.selectedWindow.label, "Last 30 days");
+  assert.equal(diag.selectedWindow.days, 30);
+  assert.equal(diag.selectedWindow.minSentAtMs, now - 30 * 86_400_000);
 });

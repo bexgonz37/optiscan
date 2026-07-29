@@ -12,6 +12,7 @@ import { decideDeliveryBatch } from "../lib/research/options/delivery-decision.t
 import { refreshDeliveryQuotes, deliverOptionsCallout } from "../lib/research/options/delivery.ts";
 import { readOptionsReportOnDb } from "../lib/research/options/report.ts";
 import { tradingDay } from "../lib/trading-session.ts";
+import { formatOccContract, parseOccContract } from "../lib/format-contract.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => readFileSync(join(root, p), "utf8");
@@ -19,13 +20,31 @@ const read = (p) => readFileSync(join(root, p), "utf8");
 const MON = Date.parse("2026-07-21T10:30:00-04:00");
 const SESSION = tradingDay(MON);
 
-test("paper page defaults to delivered and reads diagnostic.rows", () => {
+test("paper page defaults to all accounts and reads verified diagnostic rows", () => {
   const src = read("app/paper/page.tsx");
-  assert.match(src, /useState<"delivered" \| "0dte" \| "bearish" \| "stock" \| "shadow">\("delivered"\)/);
+  assert.match(src, /useState<PaperView>\("all"\)/);
   assert.match(src, /d\.diagnostic \?\? d/);
   assert.match(src, /pnlUsd/);
-  assert.match(src, /verifiedSumPnlUsd/);
+  assert.match(src, /verifiedPnlBreakdown/);
   assert.match(src, /subscriberDelivered/);
+  assert.match(src, /verifiedPnlEligible/);
+  assert.match(src, /No verified delivered-paper positions are available for this selected window/);
+  assert.match(src, /dataSourceLabel/);
+  assert.match(src, /formatOccContract/);
+});
+
+test("OCC contracts render as readable expiration, strike, and side labels", () => {
+  assert.equal(formatOccContract("O:SPY260727C00636000"), "SPY 07/27 $636 Call");
+  assert.equal(formatOccContract("O:QQQ260727P00568000"), "QQQ 07/27 $568 Put");
+  assert.equal(formatOccContract("O:NVDA260731C00180500"), "NVDA 07/31 $180.5 Call");
+  assert.equal(formatOccContract("not-an-occ"), null);
+  assert.deepEqual(parseOccContract("O:IWM260729P00289000"), {
+    symbol: "IWM",
+    expiration: "2026-07-29",
+    expirationLabel: "07/29",
+    side: "put",
+    strike: 289,
+  });
 });
 
 test("subscriber report exposes sumPnlUsd as primary money metric", () => {
@@ -252,7 +271,21 @@ test("nav exposes redesigned decision surfaces with OWNER TOOLS", () => {
   assert.match(shell, /label: "DISCORD"/);
   assert.match(shell, /title: "OWNER TOOLS"/);
   assert.match(read("components/NowPage.tsx"), /Sent today/);
+  assert.match(read("components/NowPage.tsx"), /Trade Ready/);
+  assert.match(read("components/NowPage.tsx"), /Contract pending verification/);
+  assert.match(read("app\/api\/now\/route.ts"), /formatOccContract/);
   assert.match(read("components/MobileBottomNav.tsx"), /"\/alerts"/);
+});
+
+test("Quant UI classifies evidence and keeps formulas advisory-only", () => {
+  const src = read("app/quant/page.tsx");
+  for (const label of ["SUPPORTED FINDING", "EARLY SIGNAL", "DATA QUALITY ISSUE", "HYPOTHESIS"]) {
+    assert.match(src, new RegExp(label));
+  }
+  assert.match(src, /quant-formula-row/);
+  assert.match(src, /Nothing applies automatically/);
+  assert.match(src, /Required sample/);
+  assert.doesNotMatch(src, /Winner capture is weak\.<\/strong>.*No negative finding/s);
 });
 
 test("loop uses first-detection price as observed for chase", () => {

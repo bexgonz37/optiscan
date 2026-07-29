@@ -6,8 +6,9 @@ import { LoadingState, ErrorState } from "@/components/ui/Shell";
 import { scanHeaders } from "@/hooks/useScanner";
 import { isUiReviewMode, getUiReviewSession } from "@/lib/dashboard/ui-review";
 import { buildNowReviewSnapshot, modeFromReviewSession, type NowSetupCard } from "@/lib/dashboard/demo-now-fixtures";
-import { DECISION_LABEL, decisionTone, type DecisionState } from "@/lib/dashboard/setup-decision";
+import { decisionTone, type DecisionState } from "@/lib/dashboard/setup-decision";
 import { TermPanel, TermSpark, actionTone, fmtPct } from "@/components/terminal/TermViz";
+import { formatOccContract } from "@/lib/format-contract";
 
 type NowApi = {
   ok?: boolean;
@@ -38,43 +39,42 @@ function stateClass(state: DecisionState): string {
   return "muted";
 }
 
+const NOW_STATUS: Record<DecisionState, string> = {
+  TRADE_NOW: "Trade Ready",
+  ALMOST_READY: "Almost Ready",
+  TOMORROW: "Watch for Tomorrow",
+  AVOID: "Invalidated",
+};
+
 function SetupCard({
   card,
   featured,
+  compact,
 }: {
   card: NowSetupCard & { label?: string; quoteLabel?: string };
   featured?: boolean;
+  compact?: boolean;
 }) {
+  const status = NOW_STATUS[card.state];
+  const contractLabel = card.contract ? formatOccContract(card.contract) : null;
+  const displayContract = contractLabel ?? (
+    card.verifyContractAfterOpen ? "Contract pending verification" : card.preferredStructure
+  );
   return (
     <Link href={card.href || "/callouts"} className={`now-setup-card${featured ? " featured" : ""}`}>
       <div className="now-setup-top">
-        <span className="now-rank">#{card.rank}</span>
-        <span className="cc-term-opp-sym">{card.symbol}</span>
-        <span className="now-side">{String(card.side).toUpperCase()}</span>
+        <span className="cc-term-opp-sym">{card.symbol} {String(card.side).toUpperCase()}</span>
         <span className={`cc-term-pill ${stateClass(card.state)}`}>
-          {card.label ?? DECISION_LABEL[card.state]}
+          {status}
         </span>
-        <span className="now-conf">{card.confidence ?? "—"}</span>
       </div>
-      <div className="now-setup-grid">
-        <div><span className="muted">Trigger</span><div>{card.trigger}</div></div>
-        <div><span className="muted">Entry</span><div>{card.entryZone != null ? money(card.entryZone) : "—"}</div></div>
-        <div><span className="muted">Structure</span><div>{card.preferredStructure}</div></div>
-        <div><span className="muted">T1 / Stop</span><div>{money(card.t1)} / {money(card.stop)}</div></div>
-      </div>
-      <p className="now-reason">{card.reason}</p>
-      <p className="muted">Risk: {card.mainRisk}</p>
-      {card.confirmationNeeded ? (
-        <p className="now-confirm">Needs: {card.confirmationNeeded}</p>
+      <p className="now-contract">{displayContract || "Contract pending verification"}</p>
+      {card.entryZone != null && !card.verifyContractAfterOpen ? <p>Entry: {money(card.entryZone)}</p> : null}
+      {compact ? <p><strong>Trigger:</strong> {card.trigger}</p> : null}
+      {!compact && card.state !== "TRADE_NOW" ? (
+        <p><strong>Waiting for:</strong> {card.confirmationNeeded ?? card.trigger}</p>
       ) : null}
-      {card.verifyContractAfterOpen ? (
-        <p className="now-verify">VERIFY CONTRACT AFTER OPTIONS OPEN</p>
-      ) : null}
-      <div className="now-setup-meta">
-        <span>{card.freshness}</span>
-        <span>n={card.quantSampleSize ?? "—"}</span>
-        {card.contract ? <span className="cc-term-mono">{card.contract}</span> : null}
-      </div>
+      <p className="now-reason"><strong>Why:</strong> {card.reason}</p>
     </Link>
   );
 }
@@ -92,7 +92,7 @@ function GroupSection({
   return (
     <section className="now-group">
       <button type="button" className="now-group-head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        <span className={`cc-term-pill ${stateClass(state)}`}>{DECISION_LABEL[state]}</span>
+        <span className={`cc-term-pill ${stateClass(state)}`}>{NOW_STATUS[state]}</span>
         <span className="now-group-count">{cards.length}</span>
         <span className="muted">{open ? "Hide" : "Show"}</span>
       </button>
@@ -260,7 +260,7 @@ export function NowPage() {
                   <span className="cc-term-pill muted">VERIFIED</span>
                 </div>
                 <div className="cc-term-opp-meta">
-                  <span className="cc-term-mono">{r.optionSymbol ?? "—"}</span>
+                  <span>{formatOccContract(r.optionSymbol) ?? "Contract unavailable"}</span>
                   <span>{r.ageMs != null ? `${Math.round(Number(r.ageMs) / 60_000)}m ago` : "—"}</span>
                 </div>
                 <div className="cc-term-opp-metrics">
@@ -291,7 +291,7 @@ export function NowPage() {
           <div className="now-section-label">Next three</div>
           <div className="now-next-grid">
             {snap.nextThree!.map((c) => (
-              <SetupCard key={`n-${c.key}`} card={c} />
+              <SetupCard key={`n-${c.key}`} card={c} compact />
             ))}
           </div>
         </section>
@@ -318,7 +318,7 @@ export function NowPage() {
                 </div>
                 <div className="cc-term-opp-meta">
                   <span>{String(p.side ?? "—").toUpperCase()}</span>
-                  <span className="cc-term-mono">{p.optionSymbol ?? "—"}</span>
+                  <span>{formatOccContract(p.optionSymbol) ?? "Contract unavailable"}</span>
                   <span>{p.ageLabel ?? "—"}</span>
                 </div>
                 <div className="cc-term-opp-metrics">

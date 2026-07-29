@@ -14,6 +14,11 @@ export async function GET(req: Request) {
     const url = new URL(req.url);
     const alertId = url.searchParams.get("alertId");
     const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") ?? 40) || 40));
+    const daysRaw = url.searchParams.get("days");
+    const days = daysRaw == null || daysRaw === "all"
+      ? null
+      : Math.min(365, Math.max(1, Number(daysRaw) || 30));
+    const minSentAtMs = days == null ? null : Date.now() - days * 86_400_000;
     const { getDb } = await import("@/lib/db");
     const { buildPaperChainDiagnostic, getPaperChainDetail } = await import("@/lib/research/options/paper-chain");
     const db = getDb();
@@ -22,7 +27,7 @@ export async function GET(req: Request) {
       if (!detail) return NextResponse.json({ ok: false, error: "alert_not_found" }, { status: 404 });
       return NextResponse.json({ ok: true, detail }, { status: 200 });
     }
-    const diagnostic = buildPaperChainDiagnostic(db as any, process.env, limit);
+    const diagnostic = buildPaperChainDiagnostic(db as any, process.env, limit, minSentAtMs);
     return NextResponse.json({ ok: true, diagnostic }, { status: 200 });
   } catch (err) {
     return jsonFromRouteError(err);

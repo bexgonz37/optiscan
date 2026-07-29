@@ -49,6 +49,9 @@ export interface PaperChainRow {
   t2Hit: boolean;
   stopHit: boolean;
   latestMarkReturnPct: number | null;
+  markQuoteAgeMs: number | null;
+  verifiedPnlEligible: boolean;
+  pnlExclusionReasons: string[];
   deliveryProofStatus: "verified_delivered" | "app_sent_unverified" | "missing_mirror" | "not_sent" | "unknown";
   subscriberDelivered: boolean;
   graderHealth: "healthy" | "stuck_open" | "missing_mirror" | "missing_case" | "historical_pre_lifecycle" | "unknown";
@@ -60,6 +63,12 @@ export interface PaperChainRow {
 
 export interface PaperChainDiagnostic {
   generatedAtMs: number;
+  dataSourceLabel: "Production database";
+  selectedWindow: {
+    label: string;
+    days: number | null;
+    minSentAtMs: number | null;
+  };
   paperLinkRate: number | null;
   sent24h: number;
   linked24h: number;
@@ -67,6 +76,17 @@ export interface PaperChainDiagnostic {
   sumPnlUsd: number | null;
   /** Sum of closed rows with Discord message + Opportunity Case proof. */
   verifiedSumPnlUsd: number | null;
+  verifiedPnlBreakdown: {
+    realizedClosedPnlUsd: number;
+    openMarkToMarketPnlUsd: number;
+    feesAndSlippageUsd: number;
+    verifiedTotalPnlUsd: number;
+    auditOnlyRowsExcluded: number;
+    missingMirrorRowsExcluded: number;
+    invalidOrStaleMarkRowsExcluded: number;
+    duplicatePositionsExcluded: number;
+    unverifiedEntryOrExitRowsExcluded: number;
+  };
   rows: PaperChainRow[];
   gradingBacklog: ReturnType<typeof readGradingBacklogOnDb>;
   account: {
@@ -138,13 +158,33 @@ export function buildPaperChainDiagnostic(
   const since = nowMs - 24 * 3600_000;
   const configuredStart = Number(env.PAPER_DELIVERED_OPTIONS_STARTING_BALANCE_USD ?? "100000");
   const startingBalanceUsd = Number.isFinite(configuredStart) && configuredStart > 0 ? configuredStart : 100_000;
+  const selectedDays = minSentAtMs == null
+    ? null
+    : Math.max(1, Math.round((nowMs - minSentAtMs) / 86_400_000));
   const out: PaperChainDiagnostic = {
     generatedAtMs: nowMs,
+    dataSourceLabel: "Production database",
+    selectedWindow: {
+      label: selectedDays == null ? "All available history" : `Last ${selectedDays} days`,
+      days: selectedDays,
+      minSentAtMs,
+    },
     paperLinkRate: null,
     sent24h: 0,
     linked24h: 0,
     sumPnlUsd: null,
     verifiedSumPnlUsd: null,
+    verifiedPnlBreakdown: {
+      realizedClosedPnlUsd: 0,
+      openMarkToMarketPnlUsd: 0,
+      feesAndSlippageUsd: 0,
+      verifiedTotalPnlUsd: 0,
+      auditOnlyRowsExcluded: 0,
+      missingMirrorRowsExcluded: 0,
+      invalidOrStaleMarkRowsExcluded: 0,
+      duplicatePositionsExcluded: 0,
+      unverifiedEntryOrExitRowsExcluded: 0,
+    },
     rows: [],
     gradingBacklog: readGradingBacklogOnDb(db as any),
     account: {
@@ -186,15 +226,47 @@ export function buildPaperChainDiagnostic(
         "SELECT * FROM options_paper_trades WHERE alert_id=? AND paper_kind='DELIVERED_ALERT_PAPER' LIMIT 1",
       ).get(alertId) as Record<string, unknown> | undefined)
       : undefined;
+    const latestMark = paper?.id != null && hasTable(db, "options_paper_marks")
+      ? (db.prepare(
+        `SELECT exit_fill, return_pct, quote_age_ms, mark_at_ms
+         FROM options_paper_marks WHERE trade_id=? ORDER BY mark_at_ms DESC LIMIT 1`,
+      ).get(paper.id) as Record<string, unknown> | undefined)
+      : undefined;
     const caseId = alert.opportunity_case_id
       ? String(alert.opportunity_case_id)
       : findOpportunityCaseIdByAlertOnDb(db as any, alertId);
     const lifecycle = buildOptionsPaperLifecycle(db as any, { alertId });
-    const mark = paper?.last_mark_return_pct != null
-      ? Number(paper.entry_fill) * (1 + Number(paper.last_mark_return_pct) / 100)
-      : (paper?.entry_fill != null ? Number(paper.entry_fill) : null);
+    const mark = latestMark?.exit_fill != null && Number.isFinite(Number(latestMark.exit_fill))
+      ? Number(latestMark.exit_fill)
+      : paper?.last_mark_return_pct != null
+        ? Number(paper.entry_fill) * (1 + Number(paper.last_mark_return_pct) / 100)
+        : (paper?.entry_fill != null ? Number(paper.entry_fill) : null);
     const hits = t1T2StopHit({ ...alert, ...paper }, mark);
     const proof = deliveryProofForRow(alert, paper ?? null, caseId);
+    const maxMarkAgeMs = Math.max(1_000, Number(env.OPTIONS_GRADE_MAX_QUOTE_AGE_MS ?? 900_000));
+    const markQuoteAgeMs = latestMark?.quote_age_ms != null ? Number(latestMark.quote_age_ms) : null;
+    const markValid = Boolean(
+      latestMark
+      && latestMark.exit_fill != null
+      && Number.isFinite(Number(latestMark.exit_fill))
+      && latestMark.return_pct != null
+      && Number.isFinite(Number(latestMark.return_pct))
+      && markQuoteAgeMs != null
+      && Number.isFinite(markQuoteAgeMs)
+      && markQuoteAgeMs >= 0
+      && markQuoteAgeMs <= maxMarkAgeMs,
+    );
+    const pnlExclusionReasons: string[] = [];
+    if (!proof.subscriberDelivered) pnlExclusionReasons.push("delivery_proof_incomplete");
+    if (!paper) pnlExclusionReasons.push("missing_paper_mirror");
+    if (paper && !markValid) pnlExclusionReasons.push("missing_or_invalid_grading_mark");
+    if (paper?.status === "EXITED" && (paper.exit_fill == null || !Number.isFinite(Number(paper.exit_fill)))) {
+      pnlExclusionReasons.push("missing_exit_proof");
+    }
+    const verifiedPnlEligible = proof.subscriberDelivered
+      && Boolean(paper)
+      && markValid
+      && (paper?.status !== "EXITED" || (paper.exit_fill != null && Number.isFinite(Number(paper.exit_fill))));
 
     const sentAtMs = alert.sent_at_ms != null ? Number(alert.sent_at_ms) : null;
     const frozenEntry = alert.entry_mid != null ? Number(alert.entry_mid) : (paper?.entry_fill != null ? Number(paper.entry_fill) : null);
@@ -231,6 +303,9 @@ export function buildPaperChainDiagnostic(
       t2Hit: hits.t2,
       stopHit: hits.stop,
       latestMarkReturnPct: paper?.last_mark_return_pct != null ? Number(paper.last_mark_return_pct) : null,
+      markQuoteAgeMs,
+      verifiedPnlEligible,
+      pnlExclusionReasons,
       deliveryProofStatus: proof.status,
       subscriberDelivered: proof.subscriberDelivered,
       graderHealth: graderHealthForRow(alert, paper ?? null, caseId),
@@ -241,6 +316,20 @@ export function buildPaperChainDiagnostic(
     });
   }
 
+  const activeKeys = new Set<string>();
+  let duplicatePositionsExcluded = 0;
+  for (const row of out.rows) {
+    if (row.paperStatus !== "ENTERED") continue;
+    const key = `${row.opportunityCaseId ?? ""}|${row.optionSymbol ?? ""}`;
+    if (activeKeys.has(key)) {
+      duplicatePositionsExcluded += 1;
+      row.verifiedPnlEligible = false;
+      row.pnlExclusionReasons.push("duplicate_active_position");
+    } else {
+      activeKeys.add(key);
+    }
+  }
+
   const closedPnls = out.rows
     .filter((r) => r.paperStatus === "EXITED" && r.pnlUsd != null)
     .map((r) => r.pnlUsd as number);
@@ -248,14 +337,28 @@ export function buildPaperChainDiagnostic(
     ? +closedPnls.reduce((a, x) => a + x, 0).toFixed(2)
     : null;
   const verifiedClosedPnls = out.rows
-    .filter((r) => r.subscriberDelivered && r.paperStatus === "EXITED" && r.pnlUsd != null)
+    .filter((r) => r.verifiedPnlEligible && r.paperStatus === "EXITED" && r.pnlUsd != null)
     .map((r) => r.pnlUsd as number);
   out.verifiedSumPnlUsd = verifiedClosedPnls.length
     ? +verifiedClosedPnls.reduce((a, x) => a + x, 0).toFixed(2)
     : null;
   const verifiedOpenPnl = out.rows
-    .filter((r) => r.subscriberDelivered && r.paperStatus === "ENTERED" && r.pnlUsd != null)
+    .filter((r) => r.verifiedPnlEligible && r.paperStatus === "ENTERED" && r.pnlUsd != null)
     .reduce((sum, row) => sum + Number(row.pnlUsd), 0);
+  out.verifiedPnlBreakdown = {
+    realizedClosedPnlUsd: +(out.verifiedSumPnlUsd ?? 0).toFixed(2),
+    openMarkToMarketPnlUsd: +verifiedOpenPnl.toFixed(2),
+    feesAndSlippageUsd: 0,
+    verifiedTotalPnlUsd: +((out.verifiedSumPnlUsd ?? 0) + verifiedOpenPnl).toFixed(2),
+    auditOnlyRowsExcluded: out.rows.filter((r) => !r.subscriberDelivered).length,
+    missingMirrorRowsExcluded: out.rows.filter((r) => r.deliveryProofStatus === "missing_mirror").length,
+    invalidOrStaleMarkRowsExcluded: out.rows.filter((r) => r.pnlExclusionReasons.includes("missing_or_invalid_grading_mark")).length,
+    duplicatePositionsExcluded,
+    unverifiedEntryOrExitRowsExcluded: out.rows.filter((r) =>
+      r.pnlExclusionReasons.includes("delivery_proof_incomplete")
+      || r.pnlExclusionReasons.includes("missing_exit_proof")
+    ).length,
+  };
   out.account.currentEquityUsd = +(startingBalanceUsd + (out.verifiedSumPnlUsd ?? 0) + verifiedOpenPnl).toFixed(2);
 
   return out;
