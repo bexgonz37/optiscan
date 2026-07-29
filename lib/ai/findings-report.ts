@@ -874,7 +874,7 @@ export function buildCanonicalFindingsReport(input: FindingsReportInput): Canoni
     evidenceWindow: tradingDay ?? "latest nightly report",
     sampleSize: metrics.find((m) => f.metricIds.includes(m.id))?.sampleSize ?? null,
     currentBehavior: "AI Advisory displays or derives the finding from raw deterministic tables.",
-    proposedBehavior: "Use canonical, pipeline-labeled, quality-scored findings before UI or chatbot presentation.",
+    proposedBehavior: "Use canonical, pipeline-labeled, quality-scored findings before advisory UI presentation.",
     affectedCodeAreas: ["lib/ai/findings-report.ts", "app/ai/page.tsx"],
     testPlan: "Add focused AI findings tests and keep full suite green.",
     rollbackPlan: "Revert AI Advisory read-model/UI changes only; live scanner and delivery paths are untouched.",
