@@ -102,19 +102,13 @@ test("buildQuantDashboard shows per-runner missed runner examples only from mome
   assert.match(q.missedRunners[0].aiExplanation, /No trade decision/);
 });
 
-test("AI page exposes the Quant Research Dashboard without live scanner authority", () => {
+test("AI page exposes simplified canonical AI Advisory without live scanner authority", () => {
   const src = readFileSync(join(process.cwd(), "app/ai/page.tsx"), "utf8");
-  assert.match(src, /Scanner Health/);
-  assert.match(src, /Today's Scanner Report Card/);
-  assert.match(src, /Why Setups Were Rejected/);
-  assert.match(src, /Missed Runners/);
-  assert.match(src, /Strategy Scorecard/);
-  assert.match(src, /Copy Trading Readiness/);
-  assert.match(src, /AI Research/);
-  assert.match(src, /Recommended Experiments/);
-  assert.match(src, /Portfolio Comparison/);
-  assert.match(src, /Daily AI Summary/);
-  assert.match(src, /Visualizations/);
-  assert.match(src, /AI Guardrails/);
+  assert.match(src, /\/api\/ai\/findings\/latest/);
+  assert.match(src, /Top Findings/);
+  assert.match(src, /Fix Queue/);
+  assert.match(src, /Metric Registry/);
+  assert.match(src, /Research Question Registry/);
+  assert.doesNotMatch(src, /Today's Scanner Report Card/);
   assert.doesNotMatch(src, /runScanner|placeOrder/i);
 });

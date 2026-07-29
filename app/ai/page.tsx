@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import {
   PageContainer, ResponsiveGrid, Card, KeyValue, StatusBadge, LoadingState, ErrorState, EmptyState, DetailsDisclosure,
 } from "@/components/ui/Shell";
@@ -8,227 +9,318 @@ import { SimpleTable, type Column } from "@/components/ui/Table";
 import { scanHeaders } from "@/hooks/useScanner";
 import { apiFetchJson, describeApiLoadFailure, parseApiJsonResponse } from "@/lib/client-auth";
 
-type Overview = {
-  flags?: Record<string, any>;
-  schedule?: Record<string, any>;
-  runs?: Record<string, any>;
-  cost?: {
-    spendUsd: number;
-    softLimitUsd: number;
-    hardLimitUsd: number;
-    atSoftLimit: boolean;
-    atHardLimit: boolean;
-    monthKey: string;
-    inputTokens?: number;
-    outputTokens?: number;
-  };
-  latestNightly?: any;
-  nightlyHistory?: any[];
-  weeklyHistory?: any[];
-  lessons?: any[];
-  proposals?: { pending: any[]; accepted: any[]; rejected: any[] };
-  jobFailures?: any[];
-  quantDashboard?: any;
-  evidenceLearning?: any;
-};
+type Tab = "OVERVIEW" | "FINDINGS" | "EXPERIMENTS" | "REPORTS" | "ADVANCED";
 
+type FindingsResponse = { report?: any };
+type OverviewResponse = { overview?: any };
+
+const tabs: Tab[] = ["OVERVIEW", "FINDINGS", "EXPERIMENTS", "REPORTS", "ADVANCED"];
 const RETRYABLE_NIGHTLY_STATUSES = new Set(["VALIDATION_FAILED", "ERROR", "SKIPPED"]);
-
 const dash = "-";
+
+const fmtNum = (n: any, unit = "") => {
+  if (n == null || n === "") return "n/a";
+  if (typeof n === "number") return `${Number.isInteger(n) ? n.toLocaleString() : n.toFixed(1)}${unit ? ` ${unit}` : ""}`;
+  return String(n);
+};
+
 const fmtTime = (ms?: number | null) =>
-  ms ? new Date(ms).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) + " ET" : dash;
-const fmtNum = (n?: number | null) => (typeof n === "number" ? n.toLocaleString() : dash);
-const fmtMetric = (v: any, unit?: string) => {
-  if (v == null || v === "") return "n/a";
-  if (typeof v === "number") return `${Number.isInteger(v) ? v.toLocaleString() : v.toFixed(1)}${unit ? ` ${unit}` : ""}`;
-  return String(v);
-};
-const fmtTrend = (t: any) => t?.value == null ? (t?.label ?? "n/a") : `${t.value >= 0 ? "+" : ""}${t.value}`;
-const fmtMs = (ms?: number | null) => typeof ms === "number" ? `${Math.round(ms / 1000)}s` : "n/a";
+  ms ? `${new Date(ms).toLocaleString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} ET` : dash;
 
-const fmtDiag = (v: any) => {
-  if (v == null || v === "") return "n/a";
-  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return String(v);
-  try { return JSON.stringify(v); } catch { return String(v); }
-};
+function toneForConfidence(c: string): "bull" | "warn" | "bear" | "muted" {
+  if (c === "HIGH") return "bull";
+  if (c === "MEDIUM") return "warn";
+  if (c === "LOW") return "bear";
+  return "muted";
+}
 
-function toneForScore(score: any): "bull" | "warn" | "bear" | "muted" {
-  return typeof score === "number" ? score >= 80 ? "bull" : score >= 60 ? "warn" : "bear" : "muted";
+function toneForQuality(q: string): "bull" | "warn" | "bear" | "muted" {
+  if (q === "VALID") return "bull";
+  if (q === "MISSING_DATA") return "muted";
+  if (["TIMESTAMP_ERROR", "BROKEN_QUERY", "PIPELINE_MIXED", "UNIT_ERROR"].includes(q)) return "bear";
+  return "warn";
+}
+
+function pipelineLabel(p: string): string {
+  const labels: Record<string, string> = {
+    INDEPENDENT_OPTIONS: "Active options scanner",
+    DELIVERED_ALERT_PAPER: "Verified delivered options",
+    STOCK_MOMENTUM: "Stock momentum scanner",
+    SUPERVISOR_OPTIONS: "Inactive legacy options pipeline",
+    ZERO_DTE_RESEARCH: "0DTE research lane",
+    SHADOW_REPLAY: "Shadow replay",
+    LEGACY_AUDIT: "Legacy audit",
+  };
+  return labels[p] ?? p ?? "Unknown pipeline";
+}
+
+function plainText(s: any): string {
+  return String(s ?? "")
+    .replace(/INDEPENDENT_OPTIONS/g, "Active options scanner")
+    .replace(/DELIVERED_ALERT_PAPER/g, "Verified delivered options")
+    .replace(/STOCK_MOMENTUM/g, "Stock momentum scanner")
+    .replace(/SUPERVISOR_OPTIONS/g, "Inactive legacy options pipeline")
+    .replace(/READY -> SENT linked cohort/g, "Qualified setups that became alerts")
+    .replace(/Independent READY -> SENT cohort is linked/g, "Qualified setups that became alerts are linked")
+    .replace(/midday_1100_1400/g, "11:00 a.m.-2:00 p.m. ET");
+}
+
+function issueType(f: any): string {
+  const text = `${f?.findingId ?? f?.id ?? ""} ${f?.title ?? ""} ${f?.explanation ?? ""}`.toLowerCase();
+  if (/latency|timestamp|duplicate|profit|no data|source|quality/.test(text)) return "Data bug";
+  if (/stop|t1|exit|return/.test(text)) return "Exit issue";
+  if (/late|timing|session|midday/.test(text)) return "Timing issue";
+  return "Strategy issue";
+}
+
+function unsafeMetric(m: any): boolean {
+  return ["TIMESTAMP_ERROR", "BROKEN_QUERY", "PIPELINE_MIXED", "UNIT_ERROR", "MISSING_DATA", "DUPLICATED"].includes(String(m?.qualityStatus ?? ""));
+}
+
+function metricDisplayValue(metric: any): string {
+  if (!metric) return "n/a";
+  if (unsafeMetric(metric)) return metric.qualityStatus === "TIMESTAMP_ERROR" ? "Unavailable" : fmtNum(metric.value, metric.unit);
+  return fmtNum(metric.value, metric.unit);
+}
+
+function invalidMetricReason(metric: any): string | null {
+  if (!metric) return null;
+  if (metric.qualityStatus === "TIMESTAMP_ERROR") return `${metric.sampleSize ?? "Some"} records include invalid timestamps; excluded from top-line decisions.`;
+  if (metric.qualityStatus === "DUPLICATED") return "Diagnostic raw count only; repeated observations are not unique opportunities.";
+  if (metric.qualityStatus === "MISSING_DATA") return "Canonical data is unavailable for this lane/window.";
+  if (metric.qualityStatus === "VALID_BUT_MISLEADING") return "Useful for investigation, but not safe as a top-line decision metric.";
+  if (!metric.safeForTopLine) return "Not safe for top-line use at this sample size or quality level.";
+  return null;
+}
+
+function sourceText(metric: any): string {
+  return `${metric?.source?.table ?? "n/a"} / ${metric?.source?.function ?? "n/a"} / ${metric?.source?.field ?? "n/a"}`;
+}
+
+function createFixPrompt(item: any, finding?: any): string {
+  return [
+    "Codex fix prompt - advisory export only",
+    "",
+    `Finding: ${plainText(item?.title ?? finding?.title ?? "n/a")}`,
+    `Type: ${issueType(item ?? finding)}`,
+    `Evidence window: ${item?.evidenceWindow ?? "n/a"}`,
+    `Sample size: ${item?.sampleSize ?? "n/a"}`,
+    `Current behavior: ${item?.currentBehavior ?? finding?.summary ?? "n/a"}`,
+    `Proposed investigation: ${item?.proposedBehavior ?? finding?.recommendedNextStep ?? "n/a"}`,
+    `Risk: ${item?.rollbackPlan ?? "Keep advisory-only until reviewed."}`,
+    "Boundary: Do not change live scanner formulas, thresholds, delivery rules, or Railway variables without human approval.",
+  ].join("\n");
+}
+
+function FindingList({ rows, empty, metrics = [], dateWindow }: { rows: any[]; empty: string; metrics?: any[]; dateWindow?: string | null }) {
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  if (!rows?.length) return <EmptyState title={empty} reason="No canonical finding in this section yet." />;
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      {rows.map((f) => (
+        <div key={f.id} style={{ border: "1px solid rgba(148,163,184,.22)", borderRadius: 8, padding: 12, display: "grid", gap: 6 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <strong>{plainText(f.title)}</strong>
+            <StatusBadge tone={f.severity === "critical" ? "bear" : f.severity === "warning" ? "warn" : f.severity === "positive" ? "bull" : "muted"}>{f.classification}</StatusBadge>
+            <StatusBadge tone={toneForConfidence(f.confidence)}>{f.confidence}</StatusBadge>
+            <span style={{ fontSize: 11, opacity: 0.7 }}>{pipelineLabel(f.pipeline)}</span>
+          </div>
+          <p style={{ margin: 0, fontSize: 13, opacity: 0.9 }}>{plainText(f.summary)}</p>
+          {f.recommendedNextStep && <p style={{ margin: 0, fontSize: 12, opacity: 0.72 }}>Next: {plainText(f.recommendedNextStep)}</p>}
+          <button
+            type="button"
+            onClick={() => setOpen((prev) => ({ ...prev, [f.id]: !prev[f.id] }))}
+            style={{ justifySelf: "start", fontSize: 12, padding: "4px 9px", fontWeight: 800 }}
+          >
+            View evidence
+          </button>
+          {open[f.id] ? (
+            <div style={{ borderTop: "1px solid rgba(148,163,184,.18)", paddingTop: 8, display: "grid", gap: 8 }}>
+              <ResponsiveGrid min={230}>
+                <KeyValue k="Classification" v={f.classification} />
+                <KeyValue k="Pipeline" v={pipelineLabel(f.pipeline)} />
+                <KeyValue k="Pipeline ID" v={f.pipeline} />
+                <KeyValue k="Date/window" v={dateWindow ?? metrics.find((m) => f.metricIds?.includes(m.id))?.timeWindow ?? "n/a"} />
+                <KeyValue k="Confidence" v={f.confidence} tone={toneForConfidence(f.confidence)} />
+              </ResponsiveGrid>
+              <SimpleTable
+                columns={[
+                  { key: "metric", header: "Affected metric", render: (m: any) => m.label },
+                  { key: "lane", header: "Lane", render: (m: any) => plainText(m.lane) },
+                  { key: "sample", header: "Sample", render: (m: any) => fmtNum(m.sampleSize) },
+                  { key: "quality", header: "Quality", render: (m: any) => <StatusBadge tone={toneForQuality(m.qualityStatus)}>{m.qualityStatus}</StatusBadge> },
+                  { key: "source", header: "Source", render: (m: any) => <span style={{ whiteSpace: "normal", fontSize: 12 }}>{sourceText(m)}</span> },
+                ]}
+                rows={metrics.filter((m) => f.metricIds?.includes(m.id))}
+                rowKey={(m: any) => m.id}
+                emptyTitle="No affected metrics"
+                emptyReason="This finding is supported by source records rather than a single metric."
+              />
+              <ResponsiveGrid min={220}>
+                <KeyValue k="Supporting records" v={(f.sourceRefs ?? []).join(", ") || "n/a"} />
+                <KeyValue k="Investigation" v={plainText(f.recommendedNextStep ?? "No investigation recorded")} />
+                <KeyValue k="Limitations" v={metrics.filter((m) => f.metricIds?.includes(m.id)).map(invalidMetricReason).filter(Boolean).join(" ") || "No additional limitations recorded."} />
+              </ResponsiveGrid>
+            </div>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MetricCard({ metric }: { metric: any }) {
+  const reason = invalidMetricReason(metric);
+  return (
+    <div style={{ border: "1px solid rgba(148,163,184,.22)", borderRadius: 8, padding: 12, display: "grid", gap: 7 }}>
+      <div style={{ display: "flex", gap: 8, justifyContent: "space-between", alignItems: "center" }}>
+        <strong style={{ fontSize: 13 }}>{metric.label}</strong>
+        <StatusBadge tone={toneForQuality(metric.qualityStatus)}>{metric.qualityStatus}</StatusBadge>
+      </div>
+      <div style={{ fontSize: unsafeMetric(metric) ? 18 : 24, fontWeight: 850, opacity: unsafeMetric(metric) ? 0.72 : 1 }}>
+        {metricDisplayValue(metric)}
+      </div>
+      {reason ? <p style={{ margin: 0, fontSize: 12, opacity: 0.86 }}>{reason}</p> : <p style={{ margin: 0, fontSize: 12, opacity: 0.86 }}>{metric.meaning}</p>}
+      <p style={{ margin: 0, fontSize: 11, opacity: 0.62 }}>
+        {pipelineLabel(metric.pipeline)} / sample {metric.sampleSize ?? "n/a"} / confidence {metric.confidence} / safe to use: {metric.safeForTopLine ? "yes" : "no"}
+      </p>
+    </div>
+  );
+}
+
+function MetricsGrid({ metrics, ids }: { metrics: any[]; ids: string[] }) {
+  const selected = ids.map((id) => metrics.find((m) => m.id === id)).filter(Boolean);
+  return <ResponsiveGrid min={230}>{selected.map((m) => <MetricCard key={m.id} metric={m} />)}</ResponsiveGrid>;
+}
+
+function MetricRegistry({ rows }: { rows: any[] }) {
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [copied, setCopied] = useState<string | null>(null);
+  if (!rows.length) return <EmptyState title="No metrics" reason="No canonical findings report is available." />;
+  const copySource = async (m: any) => {
+    const text = sourceText(m);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(m.id);
+      setTimeout(() => setCopied(null), 1400);
+    } catch {
+      setCopied(null);
+    }
+  };
+  return (
+    <div className="ui-table-scroll" style={{ overflowX: "auto" }}>
+      <table className="ui-table" style={{ minWidth: 1180 }}>
+        <thead>
+          <tr>
+            <th>Metric</th>
+            <th>Value</th>
+            <th>Quality</th>
+            <th>Sample</th>
+            <th>Safe?</th>
+            <th>Source</th>
+            <th>Detail</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((m) => (
+            <Fragment key={m.id}>
+              <tr key={m.id}>
+                <td>{m.label}</td>
+                <td>{metricDisplayValue(m)}</td>
+                <td><StatusBadge tone={toneForQuality(m.qualityStatus)}>{m.qualityStatus}</StatusBadge></td>
+                <td>{fmtNum(m.sampleSize)}</td>
+                <td>{m.safeForTopLine ? "yes" : "no"}</td>
+                <td><span style={{ display: "inline-block", maxWidth: 420, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sourceText(m)}</span></td>
+                <td>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <button type="button" onClick={() => setOpen((prev) => ({ ...prev, [m.id]: !prev[m.id] }))} style={{ fontSize: 12, padding: "3px 8px" }}>
+                      {open[m.id] ? "Hide" : "Expand"}
+                    </button>
+                    <button type="button" onClick={() => copySource(m)} style={{ fontSize: 12, padding: "3px 8px" }}>
+                      {copied === m.id ? "Copied" : "Copy source"}
+                    </button>
+                  </div>
+                </td>
+              </tr>
+              {open[m.id] ? (
+                <tr key={`${m.id}:detail`}>
+                  <td colSpan={7}>
+                    <div style={{ whiteSpace: "normal", display: "grid", gap: 8 }}>
+                      <ResponsiveGrid min={190}>
+                        <KeyValue k="Pipeline" v={pipelineLabel(m.pipeline)} />
+                        <KeyValue k="Pipeline ID" v={m.pipeline} />
+                        <KeyValue k="Lane" v={plainText(m.lane)} />
+                        <KeyValue k="Window" v={m.timeWindow} />
+                        <KeyValue k="Confidence" v={m.confidence} tone={toneForConfidence(m.confidence)} />
+                        <KeyValue k="Freshness" v={m.freshness} />
+                      </ResponsiveGrid>
+                      <p style={{ margin: 0, fontSize: 12 }}>{m.meaning}</p>
+                      <p style={{ margin: 0, fontSize: 12, opacity: 0.78 }}>{m.whyItMatters}</p>
+                      <p style={{ margin: 0, fontSize: 12, opacity: 0.72 }}>Source: {sourceText(m)}</p>
+                      {invalidMetricReason(m) ? <p style={{ margin: 0, fontSize: 12, color: "var(--warn)" }}>Limit: {invalidMetricReason(m)}</p> : null}
+                    </div>
+                  </td>
+                </tr>
+              ) : null}
+            </Fragment>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 function ValidationDetails({ diagnostic, summary }: { diagnostic: any; summary: string }) {
   if (!diagnostic) return null;
-  const violations = Array.isArray(diagnostic.schemaViolations) ? diagnostic.schemaViolations : [];
   return (
     <DetailsDisclosure summary={summary}>
       <ResponsiveGrid min={180}>
         <KeyValue k="Stage" v={diagnostic.validationStage ?? "n/a"} />
         <KeyValue k="Validator" v={diagnostic.validatorName ?? "n/a"} />
         <KeyValue k="Field" v={diagnostic.failingField ?? "n/a"} />
-        <KeyValue k="Expected" v={diagnostic.expectedValue ?? "n/a"} />
-        <KeyValue k="Received" v={fmtDiag(diagnostic.receivedValue)} />
-        <KeyValue k="Response length" v={diagnostic.aiResponseLength ?? "n/a"} />
         <KeyValue k="Retries" v={diagnostic.retryCount ?? diagnostic.attempts ?? "n/a"} />
-        <KeyValue k="Model" v={diagnostic.providerModel ?? diagnostic.model ?? "n/a"} />
-        <KeyValue k="Prompt" v={diagnostic.promptVersion ?? "n/a"} />
-        <KeyValue k="Response type" v={diagnostic.responseType ?? "n/a"} />
-        <KeyValue k="Attempts" v={diagnostic.attempts ?? "n/a"} />
-        <KeyValue k="Stopped early" v={diagnostic.stoppedEarly ? "yes" : "no"} tone={diagnostic.stoppedEarly ? "warn" : "muted"} />
       </ResponsiveGrid>
-      {diagnostic.parserOutput && (
-        <div style={{ marginTop: 8 }}>
-          <p style={{ fontSize: 12, opacity: 0.7, margin: "4px 0" }}>Parser output</p>
-          <pre style={{ whiteSpace: "pre-wrap", fontSize: 11, margin: 0 }}>{fmtDiag(diagnostic.parserOutput)}</pre>
-        </div>
-      )}
-      {violations.length > 0 && (
-        <div style={{ marginTop: 8 }}>
-          <p style={{ fontSize: 12, opacity: 0.7, margin: "4px 0" }}>Schema violations</p>
-          {violations.map((v: any, i: number) => <pre key={i} style={{ whiteSpace: "pre-wrap", fontSize: 11, margin: "2px 0" }}>{fmtDiag(v)}</pre>)}
-        </div>
-      )}
-      {Array.isArray(diagnostic.validationErrors) && diagnostic.validationErrors.length > 0 && (
-        <div style={{ marginTop: 8 }}>
-          {diagnostic.validationErrors.map((s: string, i: number) => <p key={i} style={{ fontSize: 12, margin: "2px 0" }}>{s}</p>)}
-        </div>
-      )}
-      {diagnostic.parseError && <p style={{ fontSize: 12, margin: "6px 0 0" }}>{diagnostic.parseError}</p>}
+      <pre style={{ whiteSpace: "pre-wrap", fontSize: 11, maxHeight: 220, overflow: "auto" }}>
+        {JSON.stringify(diagnostic, null, 2)}
+      </pre>
     </DetailsDisclosure>
   );
 }
 
-function ProgressBar({ value }: { value: number | null | undefined }) {
-  const pct = typeof value === "number" ? Math.max(0, Math.min(100, value)) : 0;
-  return (
-    <div style={{ height: 6, background: "rgba(148,163,184,.18)", borderRadius: 999, overflow: "hidden" }}>
-      <div style={{ width: `${pct}%`, height: "100%", background: pct >= 80 ? "var(--bull)" : pct >= 60 ? "var(--warn)" : "var(--bear)" }} />
-    </div>
-  );
-}
-
-function MetricTiles({ items }: { items: any[] }) {
-  return (
-    <ResponsiveGrid min={170}>
-      {items.map((m, i) => (
-        <div key={`${m.label}-${i}`} style={{ border: "1px solid rgba(148,163,184,.22)", borderRadius: 8, padding: 10, display: "grid", gap: 7 }}>
-          <div style={{ fontSize: 11, opacity: 0.7 }}>{m.label}</div>
-          <div style={{ fontSize: 20, fontWeight: 800 }}>{fmtMetric(m.value, m.unit)}</div>
-          {m.score != null && <ProgressBar value={m.score} />}
-          <div style={{ fontSize: 10, opacity: 0.55 }}>{m.source}</div>
-        </div>
-      ))}
-    </ResponsiveGrid>
-  );
-}
-
-function Sparkline({ points }: { points: any[] }) {
-  const vals = (points ?? []).map((p) => typeof p.value === "number" ? p.value : null).filter((v): v is number => v != null);
-  if (!vals.length) return <span style={{ fontSize: 12, opacity: 0.6 }}>not enough data</span>;
-  const min = Math.min(...vals);
-  const max = Math.max(...vals);
-  const span = max - min || 1;
-  return (
-    <div style={{ display: "flex", alignItems: "end", gap: 3, height: 44 }}>
-      {(points ?? []).map((p, i) => {
-        const v = typeof p.value === "number" ? p.value : null;
-        const h = v == null ? 4 : 8 + ((v - min) / span) * 34;
-        return <div key={`${p.periodKey}-${i}`} title={`${p.periodKey}: ${v ?? "n/a"}`} style={{ width: 10, height: h, borderRadius: 3, background: v == null ? "rgba(148,163,184,.25)" : "var(--accent)" }} />;
-      })}
-    </div>
-  );
-}
-
-function BarRows({ rows }: { rows: any[] }) {
-  const max = Math.max(1, ...rows.map((r) => Number(r.value ?? r.count ?? 0)));
-  return (
-    <div style={{ display: "grid", gap: 7 }}>
-      {rows.slice(0, 10).map((r, i) => {
-        const v = Number(r.value ?? r.count ?? 0);
-        return (
-          <div key={`${r.periodKey ?? r.gate}-${i}`} style={{ display: "grid", gridTemplateColumns: "120px 1fr 44px", gap: 8, alignItems: "center" }}>
-            <span style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.periodKey ?? r.gate}</span>
-            <div style={{ height: 8, background: "rgba(148,163,184,.18)", borderRadius: 999, overflow: "hidden" }}>
-              <div style={{ width: `${(v / max) * 100}%`, height: "100%", background: "var(--accent)" }} />
-            </div>
-            <span style={{ fontSize: 12, textAlign: "right" }}>{v}</span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-export default function AiLabPage() {
-  const [ov, setOv] = useState<Overview | null>(null);
+export default function AiAdvisoryPage() {
+  const [tab, setTab] = useState<Tab>("OVERVIEW");
+  const [report, setReport] = useState<any>(null);
+  const [overview, setOverview] = useState<any>(null);
+  const [recommendations, setRecommendations] = useState<any[]>([]);
+  const [cursorPrompt, setCursorPrompt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const [retryingKey, setRetryingKey] = useState<string | null>(null);
   const [retryMessage, setRetryMessage] = useState<{ key: string; text: string; ok: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
-  const [obs, setObs] = useState<any>(null);
-  const [obsError, setObsError] = useState<string | null>(null);
-  const [trace, setTrace] = useState<any>(null);
-  const [selectedId, setSelectedId] = useState<string>("");
-  const [recommendations, setRecommendations] = useState<any[]>([]);
-  const [cursorPrompt, setCursorPrompt] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const result = await apiFetchJson<{ overview?: Overview }>("/api/ai");
-    if (!result.ok) {
-      const { title, detail } = describeApiLoadFailure(result);
+    const findings = await apiFetchJson<FindingsResponse>("/api/ai/findings/latest");
+    if (!findings.ok) {
+      const { title, detail } = describeApiLoadFailure(findings);
       setError(`${title}: ${detail}`);
-      setOv(null);
-    } else {
-      setOv(result.data?.overview ?? {});
-      setError(null);
+      setLoading(false);
+      return;
     }
+    setReport(findings.data?.report ?? null);
+    setError(null);
     setLoading(false);
-  }, []);
 
-  const loadRecs = useCallback(async () => {
-    const result = await apiFetchJson<{ recommendations?: any[] }>("/api/ai/recommendations");
-    if (result.ok) setRecommendations(result.data?.recommendations ?? []);
+    const ov = await apiFetchJson<OverviewResponse>("/api/ai");
+    if (ov.ok) setOverview(ov.data?.overview ?? null);
+    const recs = await apiFetchJson<{ recommendations?: any[] }>("/api/ai/recommendations");
+    if (recs.ok) setRecommendations(recs.data?.recommendations ?? []);
   }, []);
 
   const exportCursorPrompt = useCallback(async (id: number) => {
     const result = await apiFetchJson<{ cursorPrompt?: string }>(`/api/ai/recommendations?id=${id}&export=cursor`);
     if (result.ok) setCursorPrompt(result.data?.cursorPrompt ?? null);
   }, []);
-
-  const loadObs = useCallback(async () => {
-    const result = await apiFetchJson<{ report?: any }>("/api/ai/funnel-explorer");
-    if (!result.ok) {
-      const { title, detail } = describeApiLoadFailure(result);
-      setObsError(`${title}: ${detail}`);
-      setObs(null);
-      return;
-    }
-    setObs(result.data?.report ?? null);
-    setObsError(null);
-  }, []);
-
-  const loadTrace = useCallback(async (id: string) => {
-    if (!id) {
-      setTrace(null);
-      return;
-    }
-    setSelectedId(id);
-    const result = await apiFetchJson<{ trace?: any }>(`/api/ai/funnel-explorer?id=${encodeURIComponent(id)}`);
-    if (!result.ok) {
-      setTrace({ error: describeApiLoadFailure(result).detail });
-      return;
-    }
-    setTrace(result.data?.trace ?? null);
-  }, []);
-
-  const decide = useCallback(async (action: string, id: number, status: string) => {
-    setBusy(true);
-    try {
-      await fetch("/api/ai", { method: "POST", headers: { ...scanHeaders(), "content-type": "application/json" }, body: JSON.stringify({ action, id, status }) });
-      await load();
-    } finally { setBusy(false); }
-  }, [load]);
 
   const retryNightly = useCallback(async (report: any) => {
     const hasReportId = Number.isFinite(Number(report?.id));
@@ -248,553 +340,333 @@ export default function AiLabPage() {
       }
       setRetryMessage({ key, text: "Retry started successfully.", ok: true });
       await load();
-    } finally { setRetryingKey(null); }
+    } finally {
+      setRetryingKey(null);
+    }
   }, [load]);
 
   useEffect(() => {
     load();
-    loadObs();
-    loadRecs();
-    const id = setInterval(() => { load(); loadObs(); loadRecs(); }, 60000);
+    const id = setInterval(load, 60000);
     return () => clearInterval(id);
-  }, [load, loadObs, loadRecs]);
+  }, [load]);
 
-  if (error && !ov) return <PageContainer><ErrorState title="AI Lab unavailable" detail={error} onRetry={load} /></PageContainer>;
-  if (loading && !ov) return <PageContainer><Card title="Loading AI Lab"><LoadingState rows={5} /></Card></PageContainer>;
+  const rows = report?.metrics ?? [];
+  const nightlyHistory = overview?.nightlyHistory ?? [];
+  const weeklyHistory = overview?.weeklyHistory ?? [];
+  const failures = overview?.jobFailures ?? [];
+  const cost = overview?.cost;
 
-  const flags = ov?.flags ?? {};
-  const schedule = ov?.schedule ?? {};
-  const runs = ov?.runs ?? {};
-  const cost = ov?.cost;
-  const nightly = ov?.latestNightly;
-  const narrative = nightly?.narrative;
-  const diagnostic = nightly?.diagnostic;
-  const pending = ov?.proposals?.pending ?? [];
-  const accepted = ov?.proposals?.accepted ?? [];
-  const rejected = ov?.proposals?.rejected ?? [];
-  const lessons = ov?.lessons ?? [];
-  const failures = ov?.jobFailures ?? [];
-  const nightlyHistory = ov?.nightlyHistory ?? [];
-  const weeklyHistory = ov?.weeklyHistory ?? [];
-  const latestWeekly = weeklyHistory[0] ?? null;
-  const quant = ov?.quantDashboard;
-  const evidenceLearning = ov?.evidenceLearning;
-  const disabled = !flags.enabled;
+  const findingCols: Column<any>[] = [
+    { key: "title", header: "Finding", render: (f) => f.title },
+    { key: "kind", header: "Kind", render: (f) => <StatusBadge tone="muted">{f.classification}</StatusBadge> },
+    { key: "pipe", header: "Pipeline", render: (f) => f.pipeline },
+    { key: "conf", header: "Confidence", render: (f) => <StatusBadge tone={toneForConfidence(f.confidence)}>{f.confidence}</StatusBadge> },
+    { key: "summary", header: "Plain English", render: (f) => <span style={{ fontSize: 12 }}>{f.summary}</span> },
+  ];
+  const fixCols: Column<any>[] = [
+    { key: "status", header: "Status", render: (f) => <StatusBadge tone={f.status === "DATA_BUG" ? "bear" : "warn"}>{f.status}</StatusBadge> },
+    { key: "finding", header: "Finding", render: (f) => plainText(f.title) },
+    { key: "evidence", header: "Evidence", render: (f) => <span style={{ fontSize: 12 }}>{f.evidenceWindow}; sample {fmtNum(f.sampleSize)}</span> },
+    { key: "experiment", header: "Proposed experiment", render: (f) => <span style={{ fontSize: 12 }}>{plainText(f.proposedBehavior)}</span> },
+    { key: "risk", header: "Risk", render: (f) => <span style={{ fontSize: 12 }}>{f.rollbackPlan}</span> },
+    { key: "approval", header: "Human approval", render: (f) => <StatusBadge tone="warn">{f.humanApprovalStatus}</StatusBadge> },
+  ];
+  const metricCols: Column<any>[] = [
+    { key: "metric", header: "Metric", render: (m) => m.label },
+    { key: "value", header: "Value", render: (m) => fmtNum(m.value, m.unit) },
+    { key: "quality", header: "Quality", render: (m) => <StatusBadge tone={toneForQuality(m.qualityStatus)}>{m.qualityStatus}</StatusBadge> },
+    { key: "sample", header: "Sample", render: (m) => fmtNum(m.sampleSize) },
+    { key: "top", header: "Top-line", render: (m) => m.safeForTopLine ? "yes" : "no" },
+    { key: "source", header: "Source", render: (m) => <span style={{ fontSize: 12 }}>{m.source?.table} / {m.source?.field}</span> },
+  ];
+  const priorityFix = (report?.fixQueue ?? []).find((f: any) => f.status === "DATA_BUG" || /latency|timestamp/i.test(f.findingId + f.title))
+    ?? report?.fixQueue?.[0]
+    ?? null;
+  const priorityFinding = priorityFix
+    ? [...(report?.dataQualityFindings ?? []), ...(report?.failingFindings ?? []), ...(report?.topFindings ?? [])].find((f: any) => f.id === priorityFix.findingId)
+    : report?.recommendedInvestigations?.[0] ?? null;
+  const priorityEvidenceSize = priorityFix?.sampleSize
+    ?? rows.find((m: any) => priorityFinding?.metricIds?.includes(m.id))?.sampleSize
+    ?? "n/a";
 
-  const proposalCols: Column<any>[] = [
-    { key: "title", header: "Proposal", render: (p) => p.title },
-    { key: "strat", header: "Strategy", render: (p) => p.affectedStrategy ?? dash },
-    { key: "conf", header: "Confidence", render: (p) => <StatusBadge tone={p.confidence === "HIGH" ? "bull" : p.confidence === "MEDIUM" ? "warn" : "muted"}>{p.confidence}</StatusBadge> },
-    { key: "level", header: "Change", render: (p) => p.changeLevel ?? dash },
-    {
-      key: "act", header: "Decision", render: (p) => (
-        <span style={{ display: "flex", gap: 6 }}>
-          <button disabled={busy} onClick={() => decide("decide_proposal", p.id, "ACCEPTED")} style={{ fontSize: 12, padding: "3px 8px" }}>Accept</button>
-          <button disabled={busy} onClick={() => decide("decide_proposal", p.id, "REJECTED")} style={{ fontSize: 12, padding: "3px 8px" }}>Reject</button>
-        </span>
-      ),
-    },
-  ];
-  const historyCols: Column<any>[] = [
-    { key: "day", header: "Period", render: (r) => r.periodKey },
-    { key: "status", header: "Narrative", render: (r) => <StatusBadge tone={r.narrativeStatus === "OK" ? "bull" : r.narrativeStatus === "SKIPPED" ? "muted" : "warn"}>{r.narrativeStatus}</StatusBadge> },
-    { key: "issue", header: "Top issue", render: (r) => r.summary?.prioritizedIssue ?? dash },
-    {
-      key: "retry", header: "Action", render: (r) => {
-        const retryable = RETRYABLE_NIGHTLY_STATUSES.has(String(r.narrativeStatus));
-        if (!retryable) return <span style={{ fontSize: 12, opacity: 0.55 }}>{dash}</span>;
-        const hasReportId = Number.isFinite(Number(r.id));
-        const key = hasReportId ? `id:${Number(r.id)}` : `period:${String(r.periodKey ?? "")}`;
-        const active = retryingKey === key;
-        return (
-          <div style={{ display: "grid", gap: 6, minWidth: 150 }}>
-            <button disabled={Boolean(retryingKey)} onClick={() => retryNightly(r)} style={{ fontSize: 12, padding: "4px 9px", fontWeight: 700 }}>
-              {active ? "Retrying..." : "Retry Narrative"}
-            </button>
-            {retryMessage?.key === key && (
-              <span style={{ fontSize: 12, color: retryMessage.ok ? "var(--bull)" : "var(--bear)" }}>{retryMessage.text}</span>
-            )}
-          </div>
-        );
-      },
-    },
-    {
-      key: "diagnostic", header: "Diagnostics", render: (r) =>
-        RETRYABLE_NIGHTLY_STATUSES.has(String(r.narrativeStatus))
-          ? <ValidationDetails diagnostic={r.diagnostic} summary="Structured validation diagnostic" />
-          : null,
-    },
-    { key: "at", header: "Created", render: (r) => fmtTime(r.createdAtMs) },
-  ];
-  const lessonCols: Column<any>[] = [
-    { key: "title", header: "Lesson", render: (l) => l.title },
-    { key: "type", header: "Type", render: (l) => l.findingType },
-    { key: "n", header: "Sample", render: (l) => l.sampleSize },
-    { key: "conf", header: "Confidence", render: (l) => l.confidence },
-    { key: "status", header: "Status", render: (l) => <StatusBadge tone={l.status === "ACCEPTED" ? "bull" : l.status === "REJECTED" ? "bear" : "muted"}>{l.status}</StatusBadge> },
-  ];
-  const failureCols: Column<any>[] = [
-    { key: "job", header: "Job", render: (f) => f.job_type },
-    { key: "status", header: "Status", render: (f) => <StatusBadge tone="bear">{f.status}</StatusBadge> },
-    { key: "cat", header: "Category", render: (f) => f.error_category ?? dash },
-    { key: "err", header: "Error", render: (f) => <span style={{ fontSize: 12, opacity: 0.85 }}>{f.error ?? dash}</span> },
-    { key: "validator", header: "Validator", render: (f) => f.diagnostic?.validatorName ?? "n/a" },
-    { key: "field", header: "Field", render: (f) => f.diagnostic?.failingField ?? "n/a" },
-    { key: "details", header: "Details", render: (f) => <ValidationDetails diagnostic={f.diagnostic} summary="Validation diagnostic" /> },
-    { key: "at", header: "When", render: (f) => fmtTime(f.created_at_ms) },
-  ];
-  const gateCols: Column<any>[] = [
-    { key: "gate", header: "Gate", render: (g) => g.gate },
-    { key: "count", header: "Count", render: (g) => g.count },
-    { key: "pct", header: "%", render: (g) => fmtMetric(g.pct, "%") },
-    { key: "trend", header: "Trend", render: (g) => fmtTrend(g.trend) },
-    { key: "examples", header: "Samples", render: (g) => (g.sampleExamples ?? []).slice(0, 2).join(" | ") || "n/a" },
-    { key: "why", header: "AI explanation", render: (g) => <span style={{ fontSize: 12 }}>{g.aiExplanation}</span> },
-  ];
-  const missedCols: Column<any>[] = [
-    { key: "ticker", header: "Ticker", render: (r) => r.ticker },
-    { key: "time", header: "Time", render: (r) => fmtTime(r.timeMs) },
-    { key: "move", header: "Current move", render: (r) => fmtMetric(r.currentMovePct, "%") },
-    { key: "peak", header: "Peak move", render: (r) => fmtMetric(r.peakMovePct, "%") },
-    { key: "delay", header: "Delay", render: (r) => fmtMs(r.delayMs) },
-    { key: "reason", header: "Reason not alerted", render: (r) => r.reasonNotAlerted },
-    { key: "gate", header: "Responsible gate", render: (r) => r.responsibleGate },
-    { key: "fixable", header: "Fixable?", render: (r) => r.fixable },
-  ];
-  const strategyCols: Column<any>[] = [
-    { key: "strategy", header: "Strategy", render: (s) => s.strategy },
-    { key: "wr", header: "Win rate", render: (s) => fmtMetric(s.winRate, "%") },
-    { key: "pf", header: "Profit factor", render: (s) => fmtMetric(s.profitFactor) },
-    { key: "avg", header: "Avg return", render: (s) => fmtMetric(s.averageReturnPct, "%") },
-    { key: "opp", header: "Opportunity grade", render: (s) => fmtMetric(s.opportunityGradeSuccess, "%") },
-    { key: "fp", header: "False positive", render: (s) => fmtMetric(s.falsePositivePct, "%") },
-    { key: "miss", header: "Miss rate", render: (s) => fmtMetric(s.missRate, "%") },
-    { key: "trend", header: "Trend", render: (s) => fmtTrend(s.trend) },
-    { key: "grade", header: "Grade", render: (s) => <StatusBadge tone={String(s.healthGrade).startsWith("A") || String(s.healthGrade).startsWith("B") ? "bull" : s.healthGrade === "N/A" ? "muted" : "warn"}>{s.healthGrade}</StatusBadge> },
-  ];
-  const requirementCols: Column<any>[] = [
-    { key: "label", header: "Requirement", render: (r) => r.label },
-    { key: "value", header: "Value", render: (r) => fmtMetric(r.value, "%") },
-    { key: "target", header: "Target", render: (r) => r.target },
-    { key: "status", header: "Status", render: (r) => <StatusBadge tone={r.passed == null ? "muted" : r.passed ? "bull" : "warn"}>{r.passed == null ? "not stored" : r.passed ? "met" : "not met"}</StatusBadge> },
-  ];
-  const researchCols: Column<any>[] = [
-    { key: "question", header: "Research question", render: (r) => r.question },
-    { key: "formula", header: "Current formula", render: (r) => <span style={{ fontSize: 12 }}>{r.currentFormula}</span> },
-    { key: "challenger", header: "Challenger", render: (r) => r.challengerFormula },
-    { key: "status", header: "Status", render: (r) => <StatusBadge tone="muted">{r.status}</StatusBadge> },
-  ];
-  const experimentCols: Column<any>[] = [
-    { key: "title", header: "Experiment", render: (e) => e.title },
-    { key: "reason", header: "Reason", render: (e) => e.reason },
-    { key: "expected", header: "Expected improvement", render: (e) => e.expectedImprovement ?? "n/a" },
-    { key: "confidence", header: "Confidence", render: (e) => e.confidence },
-    { key: "risk", header: "Risk", render: (e) => e.risk ?? "n/a" },
-    { key: "status", header: "Status", render: (e) => <StatusBadge tone={e.status === "Accepted" ? "bull" : e.status === "Rejected" ? "bear" : "warn"}>{e.status}</StatusBadge> },
-  ];
-  const evidenceCols: Column<any>[] = [
-    { key: "label", header: "Evidence cut", render: (e) => e.label },
-    { key: "n", header: "Sample", render: (e) => fmtNum(e.sample_size) },
-    { key: "wr", header: "Win rate", render: (e) => e.win_rate == null ? "n/a" : `${(Number(e.win_rate) * 100).toFixed(1)}%` },
-    { key: "avg", header: "Avg return", render: (e) => fmtMetric(e.avg_return_pct, "%") },
-    { key: "lift", header: "Delivered lift", render: (e) => e.delivered_vs_research_lift == null ? "n/a" : `${(Number(e.delivered_vs_research_lift) * 100).toFixed(1)} pts` },
-    { key: "confidence", header: "Confidence", render: (e) => <StatusBadge tone={e.confidence === "HIGH" ? "bull" : e.confidence === "MEDIUM" ? "warn" : "muted"}>{e.confidence}</StatusBadge> },
-    { key: "risk", header: "Overfit risk", render: (e) => <StatusBadge tone={e.overfitting_risk === "LOW" ? "bull" : e.overfitting_risk === "MEDIUM" ? "warn" : "bear"}>{e.overfitting_risk}</StatusBadge> },
-    { key: "rec", header: "Recommendation", render: (e) => <span style={{ fontSize: 12 }}>{e.recommendation}</span> },
-  ];
-  const portfolioCols: Column<any>[] = [
-    { key: "portfolio", header: "Portfolio", render: (p) => p.portfolio },
-    { key: "curve", header: "Equity curve", render: (p) => p.equityCurve },
-    { key: "returns", header: "Returns", render: (p) => fmtMetric(p.returns, "%") },
-    { key: "dd", header: "Drawdown", render: (p) => fmtMetric(p.drawdown, "%") },
-    { key: "wr", header: "Win rate", render: (p) => fmtMetric(p.winRate, "%") },
-    { key: "pf", header: "Profit factor", render: (p) => fmtMetric(p.profitFactor) },
-    { key: "opp", header: "Opportunity grade", render: (p) => fmtMetric(p.opportunityGrade, "%") },
-    { key: "mix", header: "Strategy mix", render: (p) => <span style={{ fontSize: 12 }}>{p.strategyMix}</span> },
-  ];
+  if (error && !report) return <PageContainer><ErrorState title="AI Advisory unavailable" detail={error} onRetry={load} /></PageContainer>;
+  if (loading && !report) return <PageContainer><Card title="Loading AI Advisory"><LoadingState rows={5} /></Card></PageContainer>;
 
   return (
     <PageContainer>
-      {disabled && (
-        <Card title="AI is OFF" meta="Advisory layer - safe default">
-          <p style={{ fontSize: 13, margin: "0 0 6px" }}>
-            The advisory AI is disabled. It never trades, edits code, changes callouts, or bypasses gates.
-          </p>
-          <p style={{ fontSize: 12, opacity: 0.8, margin: 0 }}>
-            To enable: set <code>AI_ENABLED=1</code>, <code>ANTHROPIC_API_KEY</code>, and <code>AI_NIGHTLY_DIAGNOSIS_ENABLED=1</code>.
-            {!flags.hasApiKey && " An Anthropic API key is currently missing."}
-          </p>
-        </Card>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+        {tabs.map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            style={{
+              padding: "7px 11px",
+              borderRadius: 8,
+              border: "1px solid rgba(148,163,184,.28)",
+              background: tab === t ? "rgba(52,211,153,.18)" : "transparent",
+              color: "inherit",
+              fontSize: 12,
+              fontWeight: 800,
+            }}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {tab === "OVERVIEW" && (
+        <>
+          <Card title="Overview" meta={`Canonical findings report ${report?.reportId ?? "n/a"}`}>
+            <ResponsiveGrid min={180}>
+              <KeyValue k="State" v={report?.overallState ?? "n/a"} tone={report?.overallState?.includes("DATA") ? "bear" : "warn"} />
+              <KeyValue k="Confidence" v={report?.overallConfidence ?? "LOW"} tone={toneForConfidence(report?.overallConfidence)} />
+              <KeyValue k="Active pipeline" v={pipelineLabel(report?.activeProductionPipeline)} />
+              <KeyValue k="Trading day" v={report?.tradingDay ?? "n/a"} />
+              <KeyValue k="Generated" v={fmtTime(report?.generatedAtMs)} />
+              <KeyValue k="AI narrative" v={report?.narrative?.status ?? "n/a"} tone={report?.narrative?.status === "OK" ? "bull" : "warn"} />
+              <KeyValue k="Production behavior changed" v={report?.safety?.productionBehaviorChanged ? "YES" : "NO"} tone="bull" />
+              <KeyValue k="AI authority" v={report?.safety?.aiAuthority === "ADVISORY_ONLY" ? "ADVISORY ONLY" : report?.safety?.aiAuthority ?? "n/a"} tone="bull" />
+            </ResponsiveGrid>
+            <p style={{ fontSize: 12, marginTop: 10, opacity: 0.78 }}>{report?.narrative?.message}</p>
+          </Card>
+
+          <Card
+            title="NEXT BEST INVESTIGATION"
+            meta="Prioritized before strategy changes"
+            tone={issueType(priorityFix ?? priorityFinding) === "Data bug" ? "warn" : "neutral"}
+          >
+            {priorityFix || priorityFinding ? (
+              <div style={{ display: "grid", gap: 10 }}>
+                <ResponsiveGrid min={190}>
+                  <KeyValue k="Issue" v={plainText(priorityFix?.title ?? priorityFinding?.title)} />
+                  <KeyValue k="Type" v={issueType(priorityFix ?? priorityFinding)} />
+                  <KeyValue k="Confidence" v={priorityFinding?.confidence ?? "n/a"} tone={toneForConfidence(priorityFinding?.confidence)} />
+                  <KeyValue k="Evidence size" v={fmtNum(priorityEvidenceSize)} />
+                </ResponsiveGrid>
+                <p style={{ margin: 0, fontSize: 13 }}>{plainText(priorityFix?.explanation ?? priorityFinding?.summary)}</p>
+                <p style={{ margin: 0, fontSize: 12, opacity: 0.76 }}>Safe next step: {plainText(priorityFix?.proposedBehavior ?? priorityFinding?.recommendedNextStep ?? "Review evidence; do not change production rules automatically.")}</p>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button type="button" onClick={() => setTab("FINDINGS")} style={{ fontSize: 12, padding: "5px 10px", fontWeight: 800 }}>View evidence</button>
+                  <button type="button" onClick={() => setCursorPrompt(createFixPrompt(priorityFix, priorityFinding))} style={{ fontSize: 12, padding: "5px 10px", fontWeight: 800 }}>Create fix prompt</button>
+                </div>
+                {cursorPrompt ? (
+                  <DetailsDisclosure summary="Fix prompt preview (text only - does not modify code)">
+                    <pre style={{ whiteSpace: "pre-wrap", fontSize: 12 }}>{cursorPrompt}</pre>
+                  </DetailsDisclosure>
+                ) : null}
+              </div>
+            ) : <EmptyState title="No priority investigation" reason="No canonical findings require investigation." />}
+          </Card>
+
+          <ResponsiveGrid min={320}>
+            <Card title="Top Findings" meta="Highest priority facts and data warnings">
+              <FindingList rows={(report?.topFindings ?? []).slice(0, 3)} metrics={rows} dateWindow={report?.tradingDay} empty="No top findings" />
+            </Card>
+            <Card title="Recommended Investigation" meta="Human-reviewed, no automatic changes">
+              <FindingList rows={(report?.recommendedInvestigations ?? []).slice(0, 1)} metrics={rows} dateWindow={report?.tradingDay} empty="No recommended investigation" />
+            </Card>
+          </ResponsiveGrid>
+
+          <Card title="Top-Line Metrics" meta="Canonical, source-labeled, quality scored">
+            <MetricsGrid
+              metrics={rows}
+              ids={["paper.win_rate", "paper.avg_return_pct", "missed.unique_opportunities", "timing.discovery_delay_ms", "independent.ready_to_sent", "paper.profit_factor"]}
+            />
+          </Card>
+
+          <Card title="Data Quality Warnings" meta="Values not safe for top-line decisions">
+            <FindingList rows={(report?.dataQualityFindings ?? []).slice(0, 3)} metrics={rows} dateWindow={report?.tradingDay} empty="No data quality warnings" />
+          </Card>
+        </>
       )}
 
-      <ResponsiveGrid min={240}>
-        <Card title="Status" meta="Research only">
-          <KeyValue k="AI enabled" v={flags.enabled ? "yes" : "no"} tone={flags.enabled ? "bull" : "muted"} />
-          <KeyValue k="Anthropic API key" v={flags.hasApiKey ? "configured" : "missing"} tone={flags.hasApiKey ? "bull" : "bear"} />
-          <KeyValue k="Nightly diagnosis" v={flags.nightlyDiagnosisEnabled ? "on" : "off"} tone={flags.nightlyDiagnosisEnabled ? "bull" : "muted"} />
-          <KeyValue k="Weekly proposals" v={flags.weeklyProposalsEnabled ? "on" : "off"} tone={flags.weeklyProposalsEnabled ? "bull" : "muted"} />
-          <KeyValue k="Nightly recap" v={flags.recapEnabled ? "on" : "off"} tone={flags.recapEnabled ? "bull" : "muted"} />
-        </Card>
-
-        <Card title="Schedule & runs" meta="America/New_York">
-          <KeyValue k="Last job run" v={`${fmtTime(runs.lastRunAtMs)}${runs.lastRunType ? ` / ${runs.lastRunType} (${runs.lastRunStatus})` : ""}`} />
-          <KeyValue k="Last success" v={fmtTime(runs.lastSuccessAtMs)} tone={runs.lastSuccessAtMs ? "bull" : "muted"} />
-          <KeyValue k="Last failure" v={runs.lastFailureAtMs ? `${fmtTime(runs.lastFailureAtMs)} / ${runs.lastFailureType}` : "none"} tone={runs.lastFailureAtMs ? "bear" : "bull"} />
-          <KeyValue k="Next nightly" v={`${fmtTime(schedule.nextNightlyEligibleMs)}${schedule.nightlyDueNow ? " / DUE NOW" : ""}`} />
-          <KeyValue k="Next weekly" v={`${fmtTime(schedule.nextWeeklyEligibleMs)}${schedule.weeklyDueNow ? " / DUE NOW" : ""}`} />
-          <KeyValue k="Last nightly report" v={schedule.lastNightlyDay ? `${schedule.lastNightlyDay} (${schedule.lastNightlyStatus})` : "none yet"} />
-        </Card>
-
-        <Card title="Models & cost" meta={cost?.monthKey ?? ""}>
-          <KeyValue k="Nightly model" v={flags.nightlyModel ?? dash} />
-          <KeyValue k="Weekly model" v={flags.weeklyModel ?? dash} />
-          <KeyValue k="Input tokens (mo)" v={fmtNum(cost?.inputTokens)} />
-          <KeyValue k="Output tokens (mo)" v={fmtNum(cost?.outputTokens)} />
-          <KeyValue k="Estimated spend" v={`$${(cost?.spendUsd ?? 0).toFixed(4)}`} tone={cost?.atHardLimit ? "bear" : cost?.atSoftLimit ? "warn" : "bull"} />
-          <KeyValue k="Soft / hard limit" v={`$${cost?.softLimitUsd ?? 0} / $${cost?.hardLimitUsd ?? 0}`} />
-          <KeyValue k="Budget" v={cost?.atHardLimit ? "hard limit - optional AI skipped" : cost?.atSoftLimit ? "soft limit reached" : "within budget"} tone={cost?.atHardLimit ? "bear" : cost?.atSoftLimit ? "warn" : "bull"} />
-        </Card>
-      </ResponsiveGrid>
-
-      <Card title="Evidence Learning Engine" meta="Aggregate evidence only">
-        <ResponsiveGrid min={180}>
-          <KeyValue k="Available" v={evidenceLearning?.available ? "yes" : "no"} tone={evidenceLearning?.available ? "bull" : "muted"} />
-          <KeyValue k="Production authority" v={evidenceLearning?.productionAuthority ?? "none"} tone="muted" />
-          <KeyValue k="Completed examples" v={fmtNum(evidenceLearning?.examples?.total)} />
-          <KeyValue k="Delivered mirrors" v={fmtNum(evidenceLearning?.examples?.delivered)} />
-          <KeyValue k="Research-only mirrors" v={fmtNum(evidenceLearning?.examples?.researchOnly)} />
-          <KeyValue k="Replay labels" v={fmtNum(evidenceLearning?.examples?.replayUnderlyingForward)} />
-          <KeyValue k="Patterns" v={fmtNum(evidenceLearning?.patterns?.total)} />
-          <KeyValue k="Ranked recommendations" v={fmtNum(evidenceLearning?.patterns?.actionableRecommendations)} />
-        </ResponsiveGrid>
-        <p style={{ fontSize: 12, opacity: 0.78, margin: "10px 0" }}>
-          {evidenceLearning?.disclaimer ?? "Evidence Learning is advisory-only and never changes production logic automatically."}
-        </p>
-        <SimpleTable
-          columns={evidenceCols}
-          rows={evidenceLearning?.patterns?.top ?? []}
-          rowKey={(e, i) => `${e.pattern_key ?? e.label}-${i}`}
-          emptyTitle="No aggregate evidence yet"
-          emptyReason="Completed delivered/research mirrors and replay labels will be materialized into long-term evidence during weekly runs or manual refresh."
-        />
-      </Card>
-
-      {quant && (
+      {tab === "FINDINGS" && (
         <>
-          <Card title="Scanner Health" meta="Deterministic score from stored scanner metrics">
-            <ResponsiveGrid min={180}>
-              <KeyValue k="Overall Grade" v={quant.scannerHealth?.grade ?? "N/A"} tone={toneForScore(quant.scannerHealth?.score)} />
-              <KeyValue k="Scanner Health Score" v={fmtMetric(quant.scannerHealth?.score)} />
-              <KeyValue k="Trend vs Yesterday" v={fmtTrend(quant.scannerHealth?.trendVsYesterday)} tone={(quant.scannerHealth?.trendVsYesterday?.value ?? 0) >= 0 ? "bull" : "warn"} />
-              <KeyValue k="Trend vs Last Week" v={fmtTrend(quant.scannerHealth?.trendVsLastWeek)} tone={(quant.scannerHealth?.trendVsLastWeek?.value ?? 0) >= 0 ? "bull" : "warn"} />
-              <KeyValue k="Trend vs Last Month" v={fmtTrend(quant.scannerHealth?.trendVsLastMonth)} tone={(quant.scannerHealth?.trendVsLastMonth?.value ?? 0) >= 0 ? "bull" : "warn"} />
-            </ResponsiveGrid>
-            <div style={{ marginTop: 12 }}><MetricTiles items={quant.scannerHealth?.components ?? []} /></div>
-          </Card>
-
-          <Card title="Today's Scanner Report Card" meta="Stored deterministic fields">
-            <MetricTiles items={quant.reportCard ?? []} />
-          </Card>
-
-          <Card title="Funnel Explorer (developer)" meta="Observability only — candidate → Discord lifecycle">
-            {obsError && <p style={{ fontSize: 12, color: "var(--bear, #f87171)" }}>{obsError}</p>}
-            {!obs && !obsError && <LoadingState rows={3} />}
-            {obs && (
-              <>
-                <ResponsiveGrid min={160}>
-                  <KeyValue k="Independent capture" v={obs.independentCapture?.available ? `${obs.independentCapture.ratePct}%` : "n/a"} tone={obs.independentCapture?.available ? "bull" : "muted"} />
-                  <KeyValue k="READY → SENT" v={`${obs.independentCapture?.sent ?? 0} / ${obs.independentCapture?.ready ?? 0}`} />
-                  <KeyValue k="persistOk failures" v={fmtNum(obs.persistOk?.total)} tone={obs.persistOk?.total > 0 ? "warn" : "muted"} />
-                  <KeyValue k="Funnel traces" v={fmtNum(obs.funnel?.opportunityCount)} />
-                </ResponsiveGrid>
-                <p style={{ fontSize: 12, opacity: 0.75, margin: "8px 0" }}>
-                  Pipeline: {obs.funnel?.pipeline}. Metrics are never mixed across supervisor / independent / stock paths.
-                </p>
-                <ResponsiveGrid min={320}>
-                  <div>
-                    <p style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Canonical funnel (24h)</p>
-                    <SimpleTable
-                      columns={[
-                        { key: "stage", header: "Stage", render: (r: any) => r.stage },
-                        { key: "count", header: "Count", render: (r: any) => r.count },
-                        { key: "drop", header: "Dropped", render: (r: any) => r.droppedFromPrev },
-                        { key: "lat", header: "Avg lat", render: (r: any) => fmtMs(r.avgLatencyFromPrevMs) },
-                        { key: "p95", header: "P95", render: (r: any) => fmtMs(r.p95LatencyFromPrevMs) },
-                      ]}
-                      rows={obs.funnel?.stages ?? []}
-                      rowKey={(r: any) => r.stage}
-                      emptyTitle="No funnel stages"
-                      emptyReason="No independent options candidates in the last 24h."
-                    />
-                  </div>
-                  <div>
-                    <p style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>persistOk sub-reasons (today)</p>
-                    <SimpleTable
-                      columns={[
-                        { key: "sub", header: "Sub-reason", render: (r: any) => r.subReason },
-                        { key: "n", header: "Count", render: (r: any) => r.count },
-                        { key: "pct", header: "%", render: (r: any) => r.pct == null ? "n/a" : `${r.pct}%` },
-                      ]}
-                      rows={obs.persistOk?.buckets ?? []}
-                      rowKey={(r: any) => r.subReason}
-                      emptyTitle="No persistOk failures"
-                      emptyReason="No blocked:persistOk NEAR_MISS rows with diagnostics yet today."
-                    />
-                  </div>
-                </ResponsiveGrid>
-                <ResponsiveGrid min={320}>
-                  <div>
-                    <p style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Gate / stage latency</p>
-                    <SimpleTable
-                      columns={[
-                        { key: "gate", header: "Gate", render: (r: any) => r.gate },
-                        { key: "pipe", header: "Pipeline", render: (r: any) => r.pipeline },
-                        { key: "avg", header: "Avg", render: (r: any) => r.available ? fmtMs(r.stats?.avgMs) : "n/a" },
-                        { key: "p95", header: "P95", render: (r: any) => r.available ? fmtMs(r.stats?.p95Ms) : "n/a" },
-                        { key: "p99", header: "P99", render: (r: any) => r.available ? fmtMs(r.stats?.p99Ms) : "n/a" },
-                        { key: "q", header: "Queue", render: (r: any) => r.available ? fmtMs(r.stats?.avgQueueDelayMs) : "n/a" },
-                      ]}
-                      rows={obs.gateLatency ?? []}
-                      rowKey={(r: any) => r.gate}
-                      emptyTitle="No latency rows"
-                      emptyReason="Latency aggregates appear after diagnostics are recorded."
-                    />
-                  </div>
-                  <div>
-                    <p style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>Select opportunity</p>
-                    <select
-                      value={selectedId}
-                      onChange={(e) => loadTrace(e.target.value)}
-                      style={{ width: "100%", fontSize: 12, padding: 6, marginBottom: 8 }}
-                    >
-                      <option value="">— choose candidate —</option>
-                      {(obs.explorer?.ids ?? []).map((x: any) => (
-                        <option key={x.id} value={x.id}>{`${x.id} · ${x.symbol} · ${x.state}`}</option>
-                      ))}
-                    </select>
-                    {trace?.error && <p style={{ fontSize: 12, color: "var(--bear, #f87171)" }}>{trace.error}</p>}
-                    {trace && !trace.error && (
-                      <SimpleTable
-                        columns={[
-                          { key: "stage", header: "Stage", render: (s: any) => s.stage },
-                          { key: "ok", header: "OK", render: (s: any) => (s.ok ? "yes" : "no") },
-                          { key: "t", header: "Time", render: (s: any) => fmtTime(s.atMs) },
-                          { key: "lat", header: "Δ prev", render: (s: any) => fmtMs(s.latencyFromPrevMs) },
-                          { key: "cum", header: "Cumulative", render: (s: any) => fmtMs(s.latencyFromOriginMs) },
-                          { key: "gate", header: "Gate", render: (s: any) => s.gate ?? dash },
-                          { key: "why", header: "Rejection", render: (s: any) => s.rejectionReason ?? dash },
-                        ]}
-                        rows={trace.stages ?? []}
-                        rowKey={(s: any, i: number) => `${s.stage}-${i}`}
-                        emptyTitle="No stages"
-                        emptyReason="Trace has no stage events."
-                      />
-                    )}
-                  </div>
-                </ResponsiveGrid>
-                {Array.isArray(obs.corrections) && obs.corrections.length > 0 && (
-                  <DetailsDisclosure summary="Metric corrections applied this sprint">
-                    {obs.corrections.map((c: string, i: number) => (
-                      <p key={i} style={{ fontSize: 12, margin: "2px 0" }}>{c}</p>
-                    ))}
-                  </DetailsDisclosure>
-                )}
-              </>
-            )}
-          </Card>
-
-          <ResponsiveGrid min={360}>
-            <Card title="Why Setups Were Rejected" meta="Top gates rejecting winners and candidates">
-              <SimpleTable columns={gateCols} rows={quant.gateBreakdown ?? []} rowKey={(g, i) => `${g.gate}-${i}`} emptyTitle="No gate rejections" emptyReason="No rejection rows were recorded for the latest report." />
-            </Card>
-            <Card title="Missed Runners" meta="Per-runner stored momentum diagnostics">
-              <SimpleTable columns={missedCols} rows={quant.missedRunners ?? []} rowKey={(r, i) => `${r.ticker}-${r.timeMs}-${i}`} emptyTitle="No missed-runner rows" emptyReason="No per-runner momentum diagnostics were recorded for the latest nightly day." />
-            </Card>
+          <ResponsiveGrid min={340}>
+            <Card title="What Is Working"><FindingList rows={report?.workingFindings ?? []} metrics={rows} dateWindow={report?.tradingDay} empty="No working findings" /></Card>
+            <Card title="What Is Failing"><FindingList rows={report?.failingFindings ?? []} metrics={rows} dateWindow={report?.tradingDay} empty="No failing findings" /></Card>
           </ResponsiveGrid>
-
-          <Card title="Strategy Scorecard" meta="Strategies, calls, puts, 0DTE, weeklies, sessions">
-            <SimpleTable columns={strategyCols} rows={quant.strategyScorecards ?? []} rowKey={(s, i) => `${s.strategy}-${i}`} emptyTitle="No strategy samples" emptyReason="No deterministic paper outcomes are available yet." />
-          </Card>
-
-          <ResponsiveGrid min={360}>
-            <Card title="Copy Trading Readiness" meta="Consistency evaluator only">
-              <ResponsiveGrid min={180}>
-                <KeyValue k="Readiness" v={fmtMetric(quant.copyTradingReadiness?.score)} />
-                <KeyValue k="Grade" v={quant.copyTradingReadiness?.grade ?? "N/A"} tone={toneForScore(quant.copyTradingReadiness?.score)} />
-              </ResponsiveGrid>
-              <p style={{ fontSize: 12, opacity: 0.78 }}>{quant.copyTradingReadiness?.aiExplanation}</p>
-              <SimpleTable columns={requirementCols} rows={quant.copyTradingReadiness?.requirements ?? []} rowKey={(r, i) => `${r.label}-${i}`} emptyTitle="No readiness inputs" emptyReason="Readiness inputs appear after deterministic report data is stored." />
-            </Card>
-
-            <Card title="Daily AI Summary" meta="Compact nightly research rollup">
-              <ResponsiveGrid min={170}>
-                <KeyValue k="Today's Scanner Grade" v={quant.dailyAiSummary?.scannerGrade ?? "N/A"} />
-                <KeyValue k="Scanner Health" v={fmtMetric(quant.dailyAiSummary?.scannerHealth)} />
-                <KeyValue k="Missed Fast Movers" v={fmtMetric(quant.dailyAiSummary?.missedFastMovers)} />
-                <KeyValue k="Late Alerts" v={fmtMetric(quant.dailyAiSummary?.lateAlerts)} />
-                <KeyValue k="False Positives" v={fmtMetric(quant.dailyAiSummary?.falsePositives)} />
-                <KeyValue k="Best Strategy" v={quant.dailyAiSummary?.bestStrategy ?? "n/a"} />
-                <KeyValue k="Worst Strategy" v={quant.dailyAiSummary?.worstStrategy ?? "n/a"} />
-                <KeyValue k="Top Rejecting Gate" v={quant.dailyAiSummary?.topRejectingGate ?? "n/a"} />
-                <KeyValue k="Most Common Failure" v={quant.dailyAiSummary?.mostCommonFailure ?? "n/a"} />
-                <KeyValue k="Most Improved Metric" v={quant.dailyAiSummary?.mostImprovedMetric ?? "n/a"} />
-                <KeyValue k="Most Regressed Metric" v={quant.dailyAiSummary?.mostRegressedMetric ?? "n/a"} />
-                <KeyValue k="Recommended Experiment" v={quant.dailyAiSummary?.recommendedExperiment ?? "n/a"} />
-                <KeyValue k="Expected Impact" v={quant.dailyAiSummary?.expectedImpact ?? "n/a"} />
-                <KeyValue k="Confidence" v={quant.dailyAiSummary?.confidence ?? "LOW"} />
-              </ResponsiveGrid>
-            </Card>
-          </ResponsiveGrid>
-
-          <Card title="AI Research" meta="Weekly baseline/current/challenger research questions">
-            <SimpleTable columns={researchCols} rows={(quant.researchTopics ?? []).slice(0, 12)} rowKey={(r, i) => `${r.question}-${i}`} emptyTitle="No research topics" emptyReason="Research topics are generated from the deterministic formula inventory." />
-            <DetailsDisclosure summary="More research questions">
-              <SimpleTable columns={researchCols} rows={(quant.researchTopics ?? []).slice(12)} rowKey={(r, i) => `${r.question}-${i}`} emptyTitle="No more topics" emptyReason="All research topics are already visible above." />
+          <Card title="Missed Opportunities" meta="Unique opportunity counts lead; raw observations stay diagnostic">
+            <MetricsGrid
+              metrics={rows}
+              ids={["missed.unique_opportunities", "missed.unique_meaningful_misses", "missed.raw_observations", "missed.repeated_scans", "missed.late_discoveries"]}
+            />
+            <DetailsDisclosure summary="Example fingerprints">
+              <SimpleTable
+                columns={[
+                  { key: "symbol", header: "Symbol", render: (r: any) => r.symbol },
+                  { key: "count", header: "Raw scans", render: (r: any) => r.count },
+                  { key: "quality", header: "Quality", render: (r: any) => <StatusBadge tone={toneForQuality(r.qualityStatus)}>{r.qualityStatus}</StatusBadge> },
+                  { key: "reason", header: "Reason", render: (r: any) => r.reason },
+                ]}
+                rows={report?.missedOpportunities?.examples ?? []}
+                rowKey={(r: any) => r.fingerprint}
+                emptyTitle="No examples"
+                emptyReason="No missed opportunity rows were available."
+              />
             </DetailsDisclosure>
           </Card>
+          <ResponsiveGrid min={340}>
+            <Card title="Timing">
+              <SimpleTable columns={metricCols} rows={(report?.timingFindings ?? []).map((t: any) => t.metric)} rowKey={(m) => m.id} emptyTitle="No timing metrics" emptyReason="" />
+            </Card>
+            <Card title="Calls vs Puts">
+              <ResponsiveGrid min={160}>
+                {["call", "put"].map((side) => {
+                  const s = report?.callsVsPuts?.[side];
+                  return (
+                    <div key={side} style={{ border: "1px solid rgba(148,163,184,.22)", borderRadius: 8, padding: 10 }}>
+                      <strong>{String(side).toUpperCase()}</strong>
+                      <KeyValue k="Status" v={s?.status ?? "NO_DATA"} tone={s?.status === "VALID" ? "bull" : "muted"} />
+                      <KeyValue k="Sample" v={fmtNum(s?.sampleSize)} />
+                      <KeyValue k="Win rate" v={fmtNum(s?.winRate, "%")} />
+                      <KeyValue k="Avg return" v={fmtNum(s?.avgReturnPct, "%")} />
+                    </div>
+                  );
+                })}
+              </ResponsiveGrid>
+              <p style={{ fontSize: 12, opacity: 0.72 }}>Comparison: {report?.callsVsPuts?.comparison ?? "NO_VALID_COMPARISON"}</p>
+            </Card>
+          </ResponsiveGrid>
+          <ResponsiveGrid min={340}>
+            <Card title="Entries"><FindingList rows={report?.entryFindings ?? []} metrics={rows} dateWindow={report?.tradingDay} empty="No entry findings" /></Card>
+            <Card title="Exits"><FindingList rows={report?.exitFindings ?? []} metrics={rows} dateWindow={report?.tradingDay} empty="No exit findings" /></Card>
+            <Card title="Discord"><FindingList rows={report?.discordFindings ?? []} metrics={rows} dateWindow={report?.tradingDay} empty="No Discord findings" /></Card>
+            <Card title="Paper"><FindingList rows={report?.paperFindings ?? []} metrics={rows} dateWindow={report?.tradingDay} empty="No paper findings" /></Card>
+          </ResponsiveGrid>
+        </>
+      )}
 
-          <Card title="Recommended Experiments" meta="Pending, accepted, rejected, testing, completed">
-            <SimpleTable columns={experimentCols} rows={quant.recommendedExperiments ?? []} rowKey={(e, i) => `${e.title}-${i}`} emptyTitle="No recommended experiments" emptyReason="Weekly proposals will appear here as pending experiments." />
+      {tab === "EXPERIMENTS" && (
+        <>
+          <Card title="Fix Queue" meta="Advisory only; no live code changes are applied">
+            <SimpleTable columns={fixCols} rows={report?.fixQueue ?? []} rowKey={(r) => r.findingId} emptyTitle="No fix queue items" emptyReason="No canonical findings require a fix yet." />
           </Card>
-
-          <Card title="Portfolio Comparison" meta="Primary vs Aggressive Challenge vs Stock Day Trader">
-            <SimpleTable columns={portfolioCols} rows={quant.portfolioComparison ?? []} rowKey={(p, i) => `${p.portfolio}-${i}`} emptyTitle="No portfolio rows" emptyReason="Portfolio comparison appears when deterministic weekly context is stored." />
-          </Card>
-
-          <Card title="Visualizations" meta="Interactive deterministic chart points">
-            <ResponsiveGrid min={240}>
-              <div><p style={{ fontSize: 12, fontWeight: 700 }}>Scanner Health over time</p><Sparkline points={quant.charts?.scannerHealth ?? []} /></div>
-              <div><p style={{ fontSize: 12, fontWeight: 700 }}>Missed Runner Trend</p><Sparkline points={quant.charts?.missedRunnerTrend ?? []} /></div>
-              <div><p style={{ fontSize: 12, fontWeight: 700 }}>False Positive Trend</p><Sparkline points={quant.charts?.falsePositiveTrend ?? []} /></div>
-              <div><p style={{ fontSize: 12, fontWeight: 700 }}>Late Alert Trend</p><Sparkline points={quant.charts?.lateAlertTrend ?? []} /></div>
-              <div><p style={{ fontSize: 12, fontWeight: 700 }}>Average Delay</p><Sparkline points={quant.charts?.averageDelay ?? []} /></div>
-              <div><p style={{ fontSize: 12, fontWeight: 700 }}>Opportunity Grade Trend</p><Sparkline points={quant.charts?.opportunityGradeTrend ?? []} /></div>
-              <div><p style={{ fontSize: 12, fontWeight: 700 }}>Calls vs Puts</p><Sparkline points={quant.charts?.callsVsPuts ?? []} /></div>
-              <div><p style={{ fontSize: 12, fontWeight: 700 }}>Discovery Delay</p><Sparkline points={quant.charts?.discoveryDelay ?? []} /></div>
-              <div><p style={{ fontSize: 12, fontWeight: 700 }}>Gate Rejection Distribution</p><BarRows rows={quant.charts?.gateRejectionDistribution ?? []} /></div>
-            </ResponsiveGrid>
-          </Card>
-
-          <Card title="AI Guardrails" meta="Research portal boundaries">
-            <ResponsiveGrid min={240}>
-              {(quant.guardrails ?? []).map((g: string) => <KeyValue key={g} k="Rule" v={g} tone="muted" />)}
-            </ResponsiveGrid>
-            {Array.isArray(quant.dataGaps) && quant.dataGaps.length > 0 && (
-              <DetailsDisclosure summary="Deterministic data gaps">
-                {quant.dataGaps.map((g: string, i: number) => <p key={i} style={{ fontSize: 12, margin: "2px 0" }}>{g}</p>)}
+          <Card title="AI Recommendations Workflow" meta={`${recommendations.length} tracked; export-only prompts`}>
+            {recommendations.length === 0 ? (
+              <EmptyState
+                title="No recommendations yet"
+                reason="No live changes are active. Recommendations appear only after sufficient evidence; approved experiments still require shadow testing and nothing applies automatically."
+              />
+            ) : (
+              <SimpleTable
+                columns={[
+                  { key: "title", header: "Title", render: (r: any) => r.title },
+                  { key: "status", header: "Workflow", render: (r: any) => r.workflowStatus ?? r.status },
+                  { key: "packet", header: "Evidence", render: (r: any) => r.evidencePacketId ?? "n/a" },
+                  { key: "export", header: "Export", render: (r: any) => <button onClick={() => exportCursorPrompt(r.id)} style={{ fontSize: 12, padding: "3px 8px" }}>Export Cursor Prompt</button> },
+                ]}
+                rows={recommendations.slice(0, 20)}
+                rowKey={(r: any) => String(r.id)}
+                emptyTitle="No recommendations"
+                emptyReason=""
+              />
+            )}
+            {cursorPrompt && (
+              <DetailsDisclosure summary="Exported Cursor prompt (copy only - no repo edits)">
+                <pre style={{ whiteSpace: "pre-wrap", fontSize: 12, maxHeight: 320, overflow: "auto" }}>{cursorPrompt}</pre>
               </DetailsDisclosure>
             )}
           </Card>
         </>
       )}
 
-      <Card title="Latest nightly diagnosis" meta={nightly?.periodKey ? `${nightly.periodKey} / ${nightly.narrativeStatus}` : "no report yet"}>
-        {!nightly ? (
-          <EmptyState title="No nightly report yet" reason={disabled ? "Enable the AI layer to generate nightly diagnoses." : "The nightly job runs after 20:15 ET on trading weekdays."} />
-        ) : (
-          <>
-            <ResponsiveGrid min={180}>
-              <KeyValue k="Prioritized issue" v={nightly.summary?.prioritizedIssue ?? dash} tone={nightly.summary?.prioritizedIssue ? "warn" : "muted"} />
-              <KeyValue k="Graded outcomes" v={nightly.summary?.counts?.outcomesGraded ?? 0} />
-              <KeyValue k="Rejected" v={nightly.summary?.counts?.rejected ?? 0} />
-              <KeyValue k="Options delivery blocked" v={nightly.summary?.options?.configBlockedCycles ?? 0} tone={(nightly.summary?.options?.configBlockedCycles ?? 0) > 0 ? "bear" : "muted"} />
-              <KeyValue k="Momentum near misses" v={nightly.summary?.momentum?.nearMisses ?? nightly.summary?.counts?.nearMisses ?? "n/a"} />
-            </ResponsiveGrid>
-            {narrative ? (
-              <div style={{ marginTop: 10 }}>
-                <p style={{ fontWeight: 600, margin: "0 0 6px" }}>{narrative.headline}</p>
-                <p style={{ fontSize: 13, opacity: 0.9 }}>{narrative.whatHappened}</p>
-                {Array.isArray(narrative.repeatedPatterns) && narrative.repeatedPatterns.length > 0 && (
-                  <div style={{ marginTop: 8 }}>
-                    <p style={{ fontSize: 12, opacity: 0.7, margin: "4px 0" }}>Repeated patterns</p>
-                    {narrative.repeatedPatterns.map((s: string, i: number) => <p key={i} style={{ fontSize: 12, margin: "2px 0" }}>- {s}</p>)}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <p style={{ fontSize: 12, opacity: 0.75, marginTop: 8 }}>
-                Deterministic summary stored; narrative status: <strong>{nightly.narrativeStatus}</strong>
-                {nightly.narrativeStatus === "SKIPPED" && " (AI narration disabled or over budget; the numbers above are still real)."}
-              </p>
-            )}
-            {!narrative && ["VALIDATION_FAILED", "ERROR", "SKIPPED"].includes(String(nightly.narrativeStatus)) && (
-              <div style={{ display: "grid", gap: 6, justifyItems: "start", marginTop: 6 }}>
-                <button disabled={Boolean(retryingKey)} onClick={() => retryNightly(nightly)} style={{ fontSize: 12, padding: "4px 9px", fontWeight: 700 }}>
-                  {retryingKey ? "Retrying..." : "Retry Narrative"}
-                </button>
-                {retryMessage && <span style={{ fontSize: 12, color: retryMessage.ok ? "var(--bull)" : "var(--bear)" }}>{retryMessage.text}</span>}
-              </div>
-            )}
-            <ValidationDetails diagnostic={diagnostic} summary="Structured validation diagnostic" />
-            {Array.isArray(nightly.summary?.patterns) && nightly.summary.patterns.length > 0 && (
-              <DetailsDisclosure summary="Deterministic patterns">
-                {nightly.summary.patterns.map((s: string, i: number) => <p key={i} style={{ fontSize: 12, margin: "2px 0" }}>- {s}</p>)}
-              </DetailsDisclosure>
-            )}
-          </>
-        )}
-      </Card>
+      {tab === "REPORTS" && (
+        <ResponsiveGrid min={360}>
+          <Card title="Nightly Reports" meta={`${nightlyHistory.length} reports`}>
+            <SimpleTable
+              columns={[
+                { key: "period", header: "Period", render: (r: any) => <Link href={`/ai/reports/${r.reportType}:${r.id}`}>{r.periodKey}</Link> },
+                { key: "status", header: "Narrative", render: (r: any) => <StatusBadge tone={r.narrativeStatus === "OK" ? "bull" : "warn"}>{r.narrativeStatus}</StatusBadge> },
+                { key: "issue", header: "Prior issue", render: (r: any) => r.summary?.prioritizedIssue === "options_delivery_disabled" ? "Historical issue · inactive supervisor pipeline" : r.summary?.prioritizedIssue ?? dash },
+                {
+                  key: "retry", header: "Action", render: (r: any) => {
+                    const retryable = RETRYABLE_NIGHTLY_STATUSES.has(String(r.narrativeStatus));
+                    if (!retryable) return <span style={{ fontSize: 12, opacity: 0.55 }}>{dash}</span>;
+                    const hasReportId = Number.isFinite(Number(r.id));
+                    const key = hasReportId ? `id:${Number(r.id)}` : `period:${String(r?.periodKey ?? "")}`;
+                    const active = retryingKey === key;
+                    return (
+                      <div style={{ display: "grid", gap: 6, minWidth: 150 }}>
+                        <button disabled={Boolean(retryingKey)} onClick={() => retryNightly(r)} style={{ fontSize: 12, padding: "4px 9px", fontWeight: 700 }}>
+                          {active ? "Retrying..." : "Retry Narrative"}
+                        </button>
+                        {retryMessage?.key === key && (
+                          <span style={{ fontSize: 12, color: retryMessage.ok ? "var(--bull)" : "var(--bear)" }}>{retryMessage.text}</span>
+                        )}
+                      </div>
+                    );
+                  },
+                },
+                { key: "diagnostic", header: "Diagnostics", render: (r: any) => <ValidationDetails diagnostic={r.diagnostic} summary="Structured validation diagnostic" /> },
+                { key: "at", header: "Created", render: (r: any) => fmtTime(r.createdAtMs) },
+              ]}
+              rows={nightlyHistory.slice(0, 20)}
+              rowKey={(r: any) => String(r.id)}
+              emptyTitle="No nightly reports"
+              emptyReason="Reports appear after the nightly job runs."
+            />
+          </Card>
+          <Card title="Weekly Reports" meta={`${weeklyHistory.length} reports`}>
+            <SimpleTable
+              columns={[
+                { key: "period", header: "Period", render: (r: any) => <Link href={`/ai/reports/${r.reportType}:${r.id}`}>{r.periodKey}</Link> },
+                { key: "status", header: "Narrative", render: (r: any) => <StatusBadge tone={r.narrativeStatus === "OK" ? "bull" : "warn"}>{r.narrativeStatus}</StatusBadge> },
+                { key: "at", header: "Created", render: (r: any) => fmtTime(r.createdAtMs) },
+              ]}
+              rows={weeklyHistory.slice(0, 20)}
+              rowKey={(r: any) => String(r.id)}
+              emptyTitle="No weekly reports"
+              emptyReason="Weekly proposals run Friday night / Saturday."
+            />
+          </Card>
+        </ResponsiveGrid>
+      )}
 
-      <ResponsiveGrid min={320}>
-        <Card title="Latest weekly proposal" meta={latestWeekly?.periodKey ?? "no weekly report yet"}>
-          {!latestWeekly ? (
-            <EmptyState title="No weekly report yet" reason="The weekly job runs Friday >=21:00 ET / Saturday." />
-          ) : (
-            <>
-              <KeyValue k="Narrative" v={latestWeekly.narrativeStatus} />
-              <KeyValue k="Created" v={fmtTime(latestWeekly.createdAtMs)} />
-              {latestWeekly.narrative?.headline && <p style={{ fontSize: 13, marginTop: 6 }}>{latestWeekly.narrative.headline}</p>}
-              <ValidationDetails diagnostic={latestWeekly.diagnostic} summary="Weekly failure details" />
-            </>
-          )}
-        </Card>
-        <Card title="Nightly Report History" meta={`${nightlyHistory.length} reports`}>
-          <SimpleTable columns={historyCols} rows={nightlyHistory.slice(0, 15)} rowKey={(r) => String(r.id)} emptyTitle="No reports yet" emptyReason="Reports appear after the nightly job runs." />
-        </Card>
-      </ResponsiveGrid>
-
-      <Card title="Proposals" meta={`${pending.length} pending / ${accepted.length} accepted / ${rejected.length} rejected`}>
-        <SimpleTable columns={proposalCols} rows={pending} rowKey={(p) => String(p.id)} emptyTitle="No pending proposals" emptyReason="The weekly job proposes changes on Friday night / Saturday. Nothing is applied automatically." />
-      </Card>
-
-      <Card title="AI Recommendations workflow" meta={`${recommendations.length} tracked · export-only Cursor prompts`}>
-        {recommendations.length === 0 ? (
-          <EmptyState title="No recommendations yet" reason="Weekly proposals with evidence packets appear here after a successful weekly job." />
-        ) : (
-          <SimpleTable
-            columns={[
-              { key: "title", header: "Title", render: (r: any) => r.title },
-              { key: "status", header: "Workflow", render: (r: any) => r.workflowStatus ?? r.status },
-              { key: "packet", header: "Evidence", render: (r: any) => r.evidencePacketId ?? "n/a" },
-              {
-                key: "export", header: "Export", render: (r: any) => (
-                  <button disabled={busy} onClick={() => exportCursorPrompt(r.id)} style={{ fontSize: 12, padding: "3px 8px" }}>
-                    Export Cursor Prompt
-                  </button>
-                ),
-              },
-            ]}
-            rows={recommendations.slice(0, 20)}
-            rowKey={(r: any) => String(r.id)}
-            emptyTitle="No recommendations"
-            emptyReason=""
-          />
-        )}
-        {cursorPrompt && (
-          <DetailsDisclosure summary="Exported Cursor prompt (copy only — no repo edits)">
-            <pre style={{ whiteSpace: "pre-wrap", fontSize: 12, maxHeight: 320, overflow: "auto" }}>{cursorPrompt}</pre>
-          </DetailsDisclosure>
-        )}
-      </Card>
-
-      <ResponsiveGrid min={320}>
-        <Card title="Lessons memory" meta="Deterministic, evidence-gated findings">
-          <SimpleTable columns={lessonCols} rows={lessons} rowKey={(l) => String(l.id)} emptyTitle="No lessons yet" emptyReason="Nightly reports record lessons once evidence thresholds are met." />
-        </Card>
-        <Card title="Job failures" meta={failures.length ? `${failures.length} recent` : "none"}>
-          <SimpleTable columns={failureCols} rows={failures} rowKey={(f) => String(f.id)} emptyTitle="No failures" emptyReason="Every AI job so far either succeeded or was safely skipped." />
-        </Card>
-      </ResponsiveGrid>
+      {tab === "ADVANCED" && (
+        <>
+          <Card title="Metric Registry" meta="Every canonical metric has pipeline, source, quality, and top-line safety">
+            <MetricRegistry rows={rows} />
+          </Card>
+          <Card title="Research Question Registry" meta="Explicit question-to-rule mapping">
+            <SimpleTable
+              columns={[
+                { key: "id", header: "ID", render: (r: any) => r.id },
+                { key: "question", header: "Question", render: (r: any) => r.question },
+                { key: "pipeline", header: "Pipeline", render: (r: any) => r.pipeline },
+                { key: "rule", header: "Rule", render: (r: any) => <span style={{ fontSize: 12 }}>{r.exactRule}</span> },
+                { key: "n", header: "Min n", render: (r: any) => r.minimumSample },
+              ]}
+              rows={report?.researchQuestionRegistry ?? []}
+              rowKey={(r: any) => r.id}
+              emptyTitle="No registry rows"
+              emptyReason=""
+            />
+          </Card>
+          <ResponsiveGrid min={300}>
+            <Card title="AI Cost" meta="Advisory jobs only">
+              <KeyValue k="Month" v={cost?.monthKey ?? "n/a"} />
+              <KeyValue k="Spend" v={fmtNum(cost?.spendUsd, " USD")} />
+              <KeyValue k="Input tokens" v={fmtNum(cost?.inputTokens)} />
+              <KeyValue k="Output tokens" v={fmtNum(cost?.outputTokens)} />
+            </Card>
+            <Card title="Job Failures" meta={`${failures.length} recent`}>
+              <SimpleTable
+                columns={[
+                  { key: "job", header: "Job", render: (f: any) => f.job_type },
+                  { key: "status", header: "Status", render: (f: any) => <StatusBadge tone="bear">{f.status}</StatusBadge> },
+                  { key: "err", header: "Error", render: (f: any) => <span style={{ fontSize: 12 }}>{f.error ?? "n/a"}</span> },
+                ]}
+                rows={failures}
+                rowKey={(f: any) => String(f.id)}
+                emptyTitle="No failures"
+                emptyReason="No recent AI job failures."
+              />
+            </Card>
+          </ResponsiveGrid>
+        </>
+      )}
     </PageContainer>
   );
 }

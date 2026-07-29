@@ -7,7 +7,7 @@
  * than inferred.
  */
 import type { AiReportRow, LessonRow, ProposalRow } from "./store.ts";
-import { weeklyQuantResearchContext } from "./quant-research.ts";
+import { listResearchQuestions } from "./research-question-registry.ts";
 import type { MomentumDiagnosticRow } from "../momentum-diagnostics.ts";
 
 type Tone = "bull" | "warn" | "bear" | "muted";
@@ -579,39 +579,16 @@ function copyTradingReadiness(health: ScannerHealth, summary: any): CopyTradingR
 }
 
 function researchTopics(env: NodeJS.ProcessEnv | undefined): ResearchTopicRow[] {
-  const ctx = weeklyQuantResearchContext({ env });
-  const questions = [
-    "Was Discovery Ranking too strict?",
-    "Were acceleration thresholds too strict?",
-    "Were acceleration thresholds too loose?",
-    "Were quote freshness limits appropriate?",
-    "Was VWAP rejection appropriate?",
-    "Was liquidity filtering too strict?",
-    "Were options spreads too strict?",
-    "Were chain filters too strict?",
-    "Were large-cap options behaving differently?",
-    "Were low-float runners behaving differently?",
-    "Were calls outperforming puts?",
-    "Were puts outperforming calls?",
-    "Were premarket rules appropriate?",
-    "Were after-hours rules appropriate?",
-    "Were exits occurring too early?",
-    "Were exits occurring too late?",
-    "Would deterministic threshold X have improved results?",
-    "Would deterministic threshold Y have worsened false positives?",
-  ];
-  return questions.map((question, i) => {
-    const inv = ctx.calculationInventory[i % ctx.calculationInventory.length];
-    return {
-      question,
-      currentFormula: inv.formula,
-      historicalFormula: "current production formula over stored historical paper data",
-      challengerFormula: "pending deterministic replay/shadow calculation",
-      baseline: "baseline_current_policy",
-      status: "research only",
-      source: inv.ownerFile,
-    };
-  });
+  void env;
+  return listResearchQuestions().map((q) => ({
+    question: q.question,
+    currentFormula: q.exactRule,
+    historicalFormula: `${q.pipeline} evidence: ${q.requiredEvidence.join(", ")}`,
+    challengerFormula: `${q.experimentType} after minimum sample n=${q.minimumSample}`,
+    baseline: "baseline_current_policy",
+    status: "research only",
+    source: q.ownerFile,
+  }));
 }
 
 function recommendedExperiments(proposals: ProposalRow[]): RecommendedExperimentRow[] {
@@ -709,7 +686,12 @@ export function buildQuantDashboard(input: QuantDashboardInput): QuantDashboard 
       lateAlertTrend: chart(nightly, (s) => s?.counts?.lateCallouts ?? s?.momentum?.earliness?.counts?.LATE ?? null),
       averageDelay: chart(nightly, (s) => s?.timing?.avgTriggerToDiscordMs ?? s?.momentum?.avgLatencyMs ?? null),
       opportunityGradeTrend: chart(nightly, (s) => s?.overall?.opportunityHitRate ?? null),
-      callsVsPuts: chart(nightly, (s) => (s?.callsVsPuts?.call?.winRate ?? 0) - (s?.callsVsPuts?.put?.winRate ?? 0)),
+      callsVsPuts: chart(nightly, (s) => {
+        const callN = Number(s?.callsVsPuts?.call?.n ?? 0);
+        const putN = Number(s?.callsVsPuts?.put?.n ?? 0);
+        if (callN <= 0 || putN <= 0) return null;
+        return (s?.callsVsPuts?.call?.winRate ?? 0) - (s?.callsVsPuts?.put?.winRate ?? 0);
+      }),
       discoveryDelay: chart(nightly, (s) => s?.momentum?.medianDiscoveryLatencyMs ?? null),
       gateRejectionDistribution: gates.map((g) => ({ periodKey: g.gate, value: g.count })),
     },

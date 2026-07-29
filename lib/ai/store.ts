@@ -216,6 +216,11 @@ export function getReportOnDb(db: DbLike, reportType: string, periodKey: string)
   return r ? mapReport(r) : null;
 }
 
+export function getReportByIdOnDb(db: DbLike, id: number): AiReportRow | null {
+  const r = db.prepare("SELECT * FROM ai_reports WHERE id=?").get(id);
+  return r ? mapReport(r) : null;
+}
+
 /**
  * Insert the deterministic summary for a report period, idempotently. If a row for
  * (report_type, period_key) already exists it is returned unchanged (the job for
