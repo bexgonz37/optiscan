@@ -67,6 +67,9 @@ test("alert rows expose the canonical alert detail route", () => {
   assert.match(page, /View Alert Details/);
   assert.match(dashboard, /onOpenAlertDetail/);
   assert.match(detailPage, /NO VERIFIED DISCORD DELIVERY/);
+  assert.match(detailPage, /Thesis And Contract Tracking/);
+  assert.match(detailPage, /Original selected OCC/);
+  assert.match(detailPage, /Replacement candidate/);
 });
 
 test("production dossier code has no NVDA-specific fixture logic", () => {

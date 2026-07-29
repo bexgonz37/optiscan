@@ -8,7 +8,7 @@ import {
   recordBearishLegacyEscalationOnDb,
 } from "../lib/research/options/bearish-authority.ts";
 import { activeSignals, selectOptionsStrategy } from "../lib/research/options/discovery.ts";
-import { decideDeliveryBatch } from "../lib/research/options/delivery-decision.ts";
+import { decideDeliveryBatch, shouldSendBearishOwnerReview } from "../lib/research/options/delivery-decision.ts";
 import { deliverOptionsCallout } from "../lib/research/options/delivery.ts";
 
 const NOW = Date.parse("2026-07-27T14:22:10.777Z");
@@ -139,9 +139,11 @@ test("qualified NVDA $200 PUT becomes READY in shadow mode and SEND only with su
   assert.equal(ready.ownerReview, true);
   assert.equal(ready.maySubscriberSend, false);
   const ownerMessage = formatBearishOwnerReview(base, ready);
-  assert.match(ownerMessage, /BEARISH TRADE CANDIDATE/);
-  assert.match(ownerMessage, /Setup family: momentum_breakdown/);
-  assert.match(ownerMessage, /Delta: -0.434/);
+  assert.match(ownerMessage, /🔴 NVDA PUT ALERT/);
+  assert.match(ownerMessage, /NVDA 07\/27 \$200 Put/);
+  assert.match(ownerMessage, /Entry: \$0\.49–\$0\.50/);
+  assert.match(ownerMessage, /Why: NVDA broke support, stayed below VWAP, and bearish momentum increased\./);
+  assert.doesNotMatch(ownerMessage, /O:|DTE|Confidence|Spread|Setup|Delta|Passed|blocker|subscriber|pipeline/i);
 
   const send = evaluateBearishAuthority(base, { BEARISH_PIPELINE_ENABLED: "1", BEARISH_SUBSCRIBER_DELIVERY_ENABLED: "1" });
   assert.equal(send.state, "BEARISH_SEND");
@@ -197,7 +199,18 @@ test("decision and final delivery can send a PUT only when bearish subscriber de
   assert.equal(d.prepare("SELECT state FROM options_alerts").get().state, "SENT");
 });
 
-test("subscriber PUT message uses bearish decision-first copy", async () => {
+test("canonical bearish SEND suppresses the separate owner opening", () => {
+  assert.equal(shouldSendBearishOwnerReview(
+    { state: "BEARISH_READY" },
+    { BEARISH_OWNER_ALERTS_ENABLED: "1" },
+  ), true);
+  assert.equal(shouldSendBearishOwnerReview(
+    { state: "BEARISH_SEND" },
+    { BEARISH_OWNER_ALERTS_ENABLED: "1" },
+  ), false);
+});
+
+test("subscriber PUT message uses the compact trader-facing copy", async () => {
   const d = db();
   const payloads = [];
   await deliverOptionsCallout(nvdaDeliveryInput(), {
@@ -209,19 +222,13 @@ test("subscriber PUT message uses bearish decision-first copy", async () => {
     },
   }, { ...ENV_ON, BEARISH_PIPELINE_ENABLED: "1", BEARISH_SUBSCRIBER_DELIVERY_ENABLED: "1" });
   const content = String(payloads[0]?.content ?? "");
-  assert.match(content, /BEARISH TRADE CANDIDATE/);
-  assert.match(content, /Contract: NVDA 07\/27 \$200P/);
-  assert.match(content, /Entry: \$0\.49-\$0\.50/);
-  assert.match(content, /Target 1:/);
-  assert.match(content, /Target 2:/);
-  assert.match(content, /Stop:/);
-  assert.match(content, /Trigger:/);
-  assert.match(content, /Main risk:/);
-  assert.match(content, /Spread 2\.0%/);
-  assert.match(content, /Volume 112,193/);
-  assert.match(content, /OI 20,139/);
-  assert.match(content, /Delta -0\.43/);
-  assert.match(content, /Freshness 1s/);
+  assert.match(content, /🔴 NVDA PUT ALERT/);
+  assert.match(content, /NVDA 07\/27 \$200 Put/);
+  assert.match(content, /Entry: \$0\.49–\$0\.50/);
+  assert.match(content, /Why: NVDA broke support and bearish momentum increased\./);
+  assert.match(content, /Educational purposes only\. Options are high risk\./);
+  assert.match(content, /View details: \/alerts\?tab=history/);
+  assert.doesNotMatch(content, /O:|DTE|T1|T2|Stop|Confidence|Spread|Volume|OI|Delta|Freshness|Passed|blocker|subscriber|pipeline|Risk:/i);
 });
 
 test("bearish strategy families and active signals are explicit", () => {

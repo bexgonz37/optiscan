@@ -69,6 +69,12 @@ export interface PaperChainDiagnostic {
   verifiedSumPnlUsd: number | null;
   rows: PaperChainRow[];
   gradingBacklog: ReturnType<typeof readGradingBacklogOnDb>;
+  account: {
+    identifier: "delivered_options";
+    label: "Delivered Options Paper";
+    startingBalanceUsd: number;
+    currentEquityUsd: number;
+  };
 }
 
 function t1T2StopHit(row: Record<string, unknown> | null, mark: number | null): { t1: boolean; t2: boolean; stop: boolean } {
@@ -130,6 +136,8 @@ export function buildPaperChainDiagnostic(
 ): PaperChainDiagnostic {
   const nowMs = Date.now();
   const since = nowMs - 24 * 3600_000;
+  const configuredStart = Number(env.PAPER_DELIVERED_OPTIONS_STARTING_BALANCE_USD ?? "100000");
+  const startingBalanceUsd = Number.isFinite(configuredStart) && configuredStart > 0 ? configuredStart : 100_000;
   const out: PaperChainDiagnostic = {
     generatedAtMs: nowMs,
     paperLinkRate: null,
@@ -139,6 +147,12 @@ export function buildPaperChainDiagnostic(
     verifiedSumPnlUsd: null,
     rows: [],
     gradingBacklog: readGradingBacklogOnDb(db as any),
+    account: {
+      identifier: "delivered_options",
+      label: "Delivered Options Paper",
+      startingBalanceUsd,
+      currentEquityUsd: startingBalanceUsd,
+    },
   };
 
   if (!hasTable(db, "options_alerts")) return out;
@@ -239,6 +253,10 @@ export function buildPaperChainDiagnostic(
   out.verifiedSumPnlUsd = verifiedClosedPnls.length
     ? +verifiedClosedPnls.reduce((a, x) => a + x, 0).toFixed(2)
     : null;
+  const verifiedOpenPnl = out.rows
+    .filter((r) => r.subscriberDelivered && r.paperStatus === "ENTERED" && r.pnlUsd != null)
+    .reduce((sum, row) => sum + Number(row.pnlUsd), 0);
+  out.account.currentEquityUsd = +(startingBalanceUsd + (out.verifiedSumPnlUsd ?? 0) + verifiedOpenPnl).toFixed(2);
 
   return out;
 }

@@ -95,14 +95,14 @@ test("opening window: 20 simultaneous broad candidates produce at most the rolli
   const openingNow = ET(9, 40); // inside OPENING_DISCOVERY
   let sends = 0;
   const send = async () => { sends += 1; return { ok: true, status: 204, messageId: "m", latencyMs: 3, ambiguous: false, error: null }; };
-  const mk = (sym) => ({ candidateSymbol: sym, strategy: "momentum_acceleration", researchOnly: false, contract: { optionSymbol: `O:${sym}260724C00100000`, side: "call", strike: 100, expiration: "2026-07-24", bid: 1.0, ask: 1.1, spreadPct: 5, quoteAgeMs: 1000 }, message: "x", observedUnderlyingPrice: 100, currentUnderlyingPrice: 100, chaseLimitPct: 5, underlyingPrice: 100, decisionMs: openingNow, tier: 2 });
+  const mk = (sym, quoteNow = openingNow) => ({ candidateSymbol: sym, strategy: "momentum_acceleration", researchOnly: false, contract: { optionSymbol: `O:${sym}260724C00100000`, side: "call", strike: 100, expiration: "2026-07-24", bid: 1.0, ask: 1.1, spreadPct: 5, quoteAgeMs: 1000, providerTimestamp: quoteNow - 1000 }, message: "x", observedUnderlyingPrice: 100, currentUnderlyingPrice: 100, chaseLimitPct: 5, underlyingPrice: 100, decisionMs: quoteNow, tier: 2 });
   for (let i = 0; i < 20; i++) await deliverOptionsCallout(mk(`BB${i}`), { getDb: () => d, send, now: () => openingNow }, ENV);
   assert.equal(sends, defaultOpeningLimit(ENV).maxAlerts, "only the best limited set is delivered, not 20");
   assert.ok(Number(d.prepare("SELECT COUNT(*) n FROM options_alerts WHERE failure_reason='opening_window_rate_limited'").get().n) >= 18);
   // rolling window releases: 11 minutes later a genuinely new setup is allowed (no fixed 60-min cooldown)
   let laterSends = 0;
   const send2 = async () => { laterSends += 1; return { ok: true, status: 204, messageId: "m", latencyMs: 3, ambiguous: false, error: null }; };
-  await deliverOptionsCallout(mk("NEWSYM"), { getDb: () => d, send: send2, now: () => openingNow + 11 * 60_000 }, ENV);
+  await deliverOptionsCallout(mk("NEWSYM", openingNow + 11 * 60_000), { getDb: () => d, send: send2, now: () => openingNow + 11 * 60_000 }, ENV);
   assert.equal(laterSends, 1, "the rolling window released — later new setups are never blocked indefinitely");
 });
 
@@ -111,7 +111,7 @@ test("opening window: Tier 0 is EXEMPT from the cap so SPY beats broad opening n
   const openingNow = ET(9, 40);
   let sends = 0;
   const send = async () => { sends += 1; return { ok: true, status: 204, messageId: "m", latencyMs: 3, ambiguous: false, error: null }; };
-  const mk = (sym, tier) => ({ candidateSymbol: sym, strategy: "momentum_acceleration", researchOnly: false, contract: { optionSymbol: `O:${sym}260724C00100000`, side: "call", strike: 100, expiration: "2026-07-24", bid: 1.0, ask: 1.1, spreadPct: 5, quoteAgeMs: 1000 }, message: "x", observedUnderlyingPrice: 100, currentUnderlyingPrice: 100, chaseLimitPct: 5, underlyingPrice: 100, decisionMs: openingNow, tier });
+  const mk = (sym, tier) => ({ candidateSymbol: sym, strategy: "momentum_acceleration", researchOnly: false, contract: { optionSymbol: `O:${sym}260724C00100000`, side: "call", strike: 100, expiration: "2026-07-24", bid: 1.0, ask: 1.1, spreadPct: 5, quoteAgeMs: 1000, providerTimestamp: openingNow - 1000 }, message: "x", observedUnderlyingPrice: 100, currentUnderlyingPrice: 100, chaseLimitPct: 5, underlyingPrice: 100, decisionMs: openingNow, tier });
   for (let i = 0; i < 5; i++) await deliverOptionsCallout(mk(`BB${i}`, 2), { getDb: () => d, send, now: () => openingNow }, ENV);
   const spyOut = await deliverOptionsCallout(mk("SPY", 0), { getDb: () => d, send, now: () => openingNow }, ENV);
   assert.equal(spyOut.state, "SENT", "SPY delivered even after broad names hit the opening cap");
@@ -123,13 +123,13 @@ test("same symbol+side+strategy within the window is suppressed; a NEW strategy 
   const t = ET(11, 0); // REGULAR_SESSION
   let sends = 0;
   const send = async () => { sends += 1; return { ok: true, status: 204, messageId: "m", latencyMs: 3, ambiguous: false, error: null }; };
-  const mk = (strategy, strike) => ({ candidateSymbol: "NVDA", strategy, researchOnly: false, contract: { optionSymbol: `O:NVDA260724C00${strike}000`, side: "call", strike, expiration: "2026-07-24", bid: 1.0, ask: 1.1, spreadPct: 5, quoteAgeMs: 1000 }, message: "x", observedUnderlyingPrice: 100, currentUnderlyingPrice: 100, chaseLimitPct: 5, underlyingPrice: 100, decisionMs: t, tier: 1 });
+  const mk = (strategy, strike, quoteNow = t) => ({ candidateSymbol: "NVDA", strategy, researchOnly: false, contract: { optionSymbol: `O:NVDA260724C00${strike}000`, side: "call", strike, expiration: "2026-07-24", bid: 1.0, ask: 1.1, spreadPct: 5, quoteAgeMs: 1000, providerTimestamp: quoteNow - 1000 }, message: "x", observedUnderlyingPrice: 100, currentUnderlyingPrice: 100, chaseLimitPct: 5, underlyingPrice: 100, decisionMs: quoteNow, tier: 1 });
   await deliverOptionsCallout(mk("momentum_acceleration", 100), { getDb: () => d, send, now: () => t }, ENV);
   // same setup, different strike/expiration bucket 6 min later → suppressed (not a new setup)
-  const dup = await deliverOptionsCallout(mk("momentum_acceleration", 105), { getDb: () => d, send, now: () => t + 6 * 60_000 }, ENV);
+  const dup = await deliverOptionsCallout(mk("momentum_acceleration", 105, t + 6 * 60_000), { getDb: () => d, send, now: () => t + 6 * 60_000 }, ENV);
   assert.equal(dup.reason, "duplicate_setup");
   // a genuinely different strategy IS a new setup
-  const fresh = await deliverOptionsCallout(mk("sr_reclaim", 100), { getDb: () => d, send, now: () => t + 6 * 60_000 }, ENV);
+  const fresh = await deliverOptionsCallout(mk("sr_reclaim", 100, t + 6 * 60_000), { getDb: () => d, send, now: () => t + 6 * 60_000 }, ENV);
   assert.equal(fresh.state, "SENT");
   assert.equal(sends, 2);
 });

@@ -18,6 +18,13 @@ import {
   formatBearishOwnerReview,
   type BearishAuthorityDecision,
 } from "./bearish-authority.ts";
+import { openBearishResearchPaperOnDb } from "./bearish-research-paper.ts";
+import {
+  attachEvidenceToOpportunityOnDb,
+  claimOpportunityOpenOnDb,
+  markOwnerActionableOpeningDeliveredOnDb,
+  releaseOpportunityOpeningClaimOnDb,
+} from "../../opportunity-case/live.ts";
 
 export interface DeliverySubmission {
   deliveryInput: DeliveryInput;
@@ -173,13 +180,19 @@ function recentDeliveredClusters(db: DDb | null, nowMs: number, windowMs: number
 export interface DecisionDeps {
   getDb?: () => any; now?: () => number;
   deliver?: (input: DeliveryInput) => Promise<{ state: string; alertId: string; sent: boolean; reason?: string | null }>;
+  ownerPostOverride?: (content: string) => Promise<{
+    ok: boolean;
+    reason?: string;
+    messageId?: string | null;
+    deliveryId?: string | null;
+  }>;
 }
 
 function skipped(reason: string): Pick<DeliveryDecision, "deliveryAttempted" | "deliverySent" | "deliveryState" | "finalDeliveryOutcome" | "deliveryFailureCategory" | "finalDeliveryReason"> {
   return { deliveryAttempted: false, deliverySent: false, deliveryState: null, finalDeliveryOutcome: "SKIPPED", deliveryFailureCategory: null, finalDeliveryReason: reason };
 }
 
-async function maybeSendBearishOwnerReview(
+export async function maybeSendBearishOwnerReview(
   db: DDb | null,
   s: DeliverySubmission,
   decision: BearishAuthorityDecision,
@@ -187,11 +200,80 @@ async function maybeSendBearishOwnerReview(
   threshold: number,
   nowMs: number,
   env: NodeJS.ProcessEnv,
-): Promise<void> {
-  if (!db || env.BEARISH_OWNER_ALERTS_ENABLED !== "1") return;
-  if (!["BEARISH_READY", "BEARISH_SEND"].includes(decision.state)) return;
+  postOverride?: DecisionDeps["ownerPostOverride"],
+): Promise<{ sent: boolean; reason: string; opportunityCaseId: string | null }> {
+  if (!db || !shouldSendBearishOwnerReview(decision, env)) {
+    return { sent: false, reason: "owner_review_not_enabled", opportunityCaseId: null };
+  }
+  let claimedCaseId: string | null = null;
   try {
     const { sendOwnerResearchNotify } = await import("../../notifications/owner-research-notify.ts");
+    const d = s.deliveryInput;
+    const claim = claimOpportunityOpenOnDb(db as any, {
+      symbol: s.symbol,
+      side: "put",
+      expiration: d.contract.expiration,
+      strike: d.contract.strike,
+      strategyKey: s.strategy,
+      nowMs,
+      direction: "bearish",
+      quality,
+      frozenEntry: d.entry?.mid ?? null,
+      frozenTrade: d.entry
+        ? {
+            entryMid: d.entry.mid,
+            targetT1: d.entry.t1,
+            targetT2: d.entry.t2,
+            stop: d.entry.stop,
+            bid: d.entry.bid,
+            ask: d.entry.ask,
+            spreadPct: d.entry.spreadPct,
+            methodology: d.entry.methodology,
+          }
+        : null,
+      optionSymbol: d.contract.optionSymbol,
+      openingSource: "owner_actionable",
+      contractSnapshot: {
+        bid: d.contract.bid,
+        ask: d.contract.ask,
+        spreadPct: d.contract.spreadPct,
+        delta: d.contract.delta,
+        openInterest: d.contract.openInterest,
+        volume: d.contract.volume,
+      },
+      why: decision.reasons[0] ?? null,
+    });
+    if (!claim.claimed) {
+      if (claim.existing) {
+        attachEvidenceToOpportunityOnDb(db as any, {
+          opportunityCaseId: claim.opportunityCaseId,
+          nowMs,
+          source: "owner_intraday_actionable",
+          signalType: "thesis_repeat_owner_signal",
+          score: quality,
+          details: {
+            opportunityFingerprint: claim.fingerprint,
+            thesisFingerprint: claim.thesisFingerprint,
+            optionSymbol: d.contract.optionSymbol,
+            strategy: s.strategy,
+          },
+          strengthen: true,
+          currentMark: d.contract.bid,
+        });
+        return {
+          sent: false,
+          reason: claim.reason,
+          opportunityCaseId: claim.opportunityCaseId,
+        };
+      }
+      return {
+        sent: false,
+        reason: `owner_thesis_claim_failed:${claim.reason}`,
+        opportunityCaseId: claim.opportunityCaseId,
+      };
+    }
+    claimedCaseId = claim.opportunityCaseId;
+    const baseUrl = String(env.PUBLIC_APP_URL ?? env.NEXT_PUBLIC_APP_URL ?? "").trim().replace(/\/$/, "");
     const content = formatBearishOwnerReview({
       symbol: s.symbol,
       side: "put",
@@ -205,16 +287,50 @@ async function maybeSendBearishOwnerReview(
       fractionMove: s.fractionMove,
       deliveryInput: s.deliveryInput,
       nowMs,
-    }, decision);
-    await sendOwnerResearchNotify({
+    }, decision, `${baseUrl}/alerts?tab=history`);
+    const sent = await sendOwnerResearchNotify({
       db: db as any,
       kind: "intraday_actionable",
       content,
-      symbol: `bearish:${s.symbol}:${s.deliveryInput.contract.optionSymbol}`,
+      symbol: `${claim.thesisFingerprint}:OPENING`,
+      idempotencyKey: `owner:options:${claim.thesisFingerprint}:OPENING`,
+      opportunityCaseId: claim.opportunityCaseId,
+      thesisFingerprint: claim.thesisFingerprint,
+      lifecycleState: "OPENING",
       env: { ...env, OWNER_RESEARCH_DISCORD_ENABLED: "1", OWNER_RESEARCH_INTRADAY_ENABLED: "1" } as NodeJS.ProcessEnv,
       nowMs,
+      postOverride,
     });
-  } catch { /* owner review must never affect subscriber decisions */ }
+    if (!sent.sent) {
+      releaseOpportunityOpeningClaimOnDb(db as any, claim.opportunityCaseId);
+      return { sent: false, reason: sent.reason, opportunityCaseId: claim.opportunityCaseId };
+    }
+    markOwnerActionableOpeningDeliveredOnDb(db as any, {
+      opportunityCaseId: claim.opportunityCaseId,
+      discordMessageId: sent.messageId ?? null,
+      nowMs,
+      quality,
+    });
+    return { sent: true, reason: "sent", opportunityCaseId: claim.opportunityCaseId };
+  } catch (error: any) {
+    if (claimedCaseId) {
+      try {
+        releaseOpportunityOpeningClaimOnDb(db as any, claimedCaseId);
+      } catch { /* isolated */ }
+    }
+    return {
+      sent: false,
+      reason: `owner_review_failed:${String(error?.message ?? error).slice(0, 120)}`,
+      opportunityCaseId: claimedCaseId,
+    };
+  }
+}
+
+export function shouldSendBearishOwnerReview(
+  decision: Pick<BearishAuthorityDecision, "state">,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return env.BEARISH_OWNER_ALERTS_ENABLED === "1" && decision.state === "BEARISH_READY";
 }
 
 function classifyDeliveryResult(r: { state: string; sent: boolean; reason?: string | null }) {
@@ -371,7 +487,26 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
         deliveryInput: x.s.deliveryInput,
         nowMs,
       }, env);
-      await maybeSendBearishOwnerReview(db, x.s, auth, x.quality, deliverBar, nowMs, env);
+      if (db) {
+        try {
+          openBearishResearchPaperOnDb(db as any, {
+            deliveryInput: x.s.deliveryInput,
+            authority: auth,
+            quality: x.quality,
+            nowMs,
+          }, env);
+        } catch { /* research paper must never affect delivery */ }
+      }
+      await maybeSendBearishOwnerReview(
+        db,
+        x.s,
+        auth,
+        x.quality,
+        deliverBar,
+        nowMs,
+        env,
+        deps.ownerPostOverride,
+      );
       if (!auth.maySubscriberSend) {
         base.reason = auth.reasonCode;
         base.finalDeliveryReason = `${auth.state}: ${auth.blockers.join("; ") || auth.reasons.join("; ") || auth.reasonCode}`;

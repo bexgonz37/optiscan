@@ -25,6 +25,11 @@ const ACCOUNT_MAP: Record<string, { accountKey: string; accountType: AccountType
     accountType: "ZERO_DTE_RESEARCH",
     displayName: "Aggressive 0DTE Research",
   },
+  bearish_research: {
+    accountKey: "bearish_research",
+    accountType: "BEARISH_RESEARCH",
+    displayName: "Bearish Research Paper",
+  },
 };
 
 export function openingBalanceUsd(env: NodeJS.ProcessEnv = process.env): number {
@@ -38,9 +43,20 @@ export function zeroDteResearchOpeningBalanceUsd(env: NodeJS.ProcessEnv = proces
   return Number.isFinite(n) && n > 0 ? n : 100_000;
 }
 
+export function deliveredOptionsOpeningBalanceUsd(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.PAPER_DELIVERED_OPTIONS_STARTING_BALANCE_USD ?? "100000");
+  return Number.isFinite(n) && n > 0 ? n : 100_000;
+}
+
+export function bearishResearchOpeningBalanceUsd(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.PAPER_BEARISH_RESEARCH_STARTING_BALANCE_USD ?? "100000");
+  return Number.isFinite(n) && n > 0 ? n : 100_000;
+}
+
 export function resolveAccountKeyForOptionsPaperKind(paperKind: string | null | undefined): string {
   if (paperKind === "DELIVERED_ALERT_PAPER") return "subscriber_paper";
   if (paperKind === "ZERO_DTE_RESEARCH_PAPER") return "zero_dte_research";
+  if (paperKind === "BEARISH_RESEARCH_PAPER") return "bearish_research";
   return "research_shadow";
 }
 
@@ -54,7 +70,13 @@ export function ensureBrokerAccount(db: BrokerDb, accountKey: string, env: NodeJ
   const existing = db.prepare(`SELECT * FROM broker_accounts WHERE account_key = ?`).get(accountKey) as BrokerAccountRow | undefined;
   if (existing) return existing;
   const cfg = ACCOUNT_MAP[accountKey] ?? ACCOUNT_MAP.subscriber_paper;
-  const deposit = accountKey === "zero_dte_research" ? zeroDteResearchOpeningBalanceUsd(env) : openingBalanceUsd(env);
+  const deposit = accountKey === "zero_dte_research"
+    ? zeroDteResearchOpeningBalanceUsd(env)
+    : accountKey === "bearish_research"
+      ? bearishResearchOpeningBalanceUsd(env)
+      : accountKey === "subscriber_paper"
+        ? deliveredOptionsOpeningBalanceUsd(env)
+        : openingBalanceUsd(env);
   const { accountId } = openAccount(db, {
     accountKey: cfg.accountKey,
     accountType: cfg.accountType,

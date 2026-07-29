@@ -21,26 +21,26 @@ export function formatReturnMilestoneUpdate(input: {
   milestonePercent: number;
   summary: OpportunitySummary;
   opportunityCaseId?: string | null;
+  eventLabel?: "TARGET 1 HIT" | "TARGET 2 HIT" | "NEW HIGH" | string;
+  detailUrl?: string | null;
 }): string {
   const sym = input.symbol.toUpperCase();
-  const strike = input.strike != null ? String(input.strike) : "?";
-  const side = String(input.optionType || "").toUpperCase() === "PUT" ? "P" : "C";
+  const side = String(input.optionType || "").toUpperCase() === "PUT" ? "PUT" : "CALL";
   const entry = fmtMoney(input.summary.frozenEntry);
   const mark = fmtMoney(input.summary.currentMark);
-  const high = input.summary.maxReturnPct != null && input.summary.frozenEntry != null
-    ? fmtMoney(input.summary.frozenEntry * (1 + input.summary.maxReturnPct / 100))
-    : "n/a";
-  const thesis = (input.summary.originalThesis ?? []).slice(0, 3).map((t) => `• ${t}`).join("\n");
-  const ref = input.opportunityCaseId ? `\nRef: ${input.opportunityCaseId}` : "";
+  const label = input.eventLabel ?? `+${input.milestonePercent}% MILESTONE`;
+  const detailUrl = input.detailUrl
+    ?? (input.opportunityCaseId ? `/intelligence/${encodeURIComponent(input.opportunityCaseId)}` : "/alerts?tab=history");
   return [
-    `**${sym} UPDATE**`,
-    `The original ${sym} ${strike}${side} opportunity is now up ${input.milestonePercent}%.`,
+    `🏁 ${sym} ${side} · ${label}`,
+    "",
     `Entry: ${entry}`,
-    `Current mark: ${mark}`,
-    `High since alert: ${high}`,
-    thesis ? `Original thesis:\n${thesis}` : null,
-    ref,
-  ].filter(Boolean).join("\n");
+    `Current: ${mark}`,
+    `Move: ${fmtPct(input.summary.currentReturnPct ?? input.milestonePercent)}`,
+    "",
+    "Educational purposes only.",
+    `View details: ${detailUrl}`,
+  ].join("\n");
 }
 
 /** Discord copy when an Opportunity Case closes (exit / invalidate). Replies to the opening alert when possible. */
@@ -52,22 +52,31 @@ export function formatOpportunityClosedUpdate(input: {
   exitReason?: string | null;
   opportunityCaseId?: string | null;
   invalidated?: boolean;
+  detailUrl?: string | null;
 }): string {
   const sym = input.symbol.toUpperCase();
-  const strike = input.strike != null ? String(input.strike) : "?";
-  const side = String(input.optionType || "").toUpperCase() === "PUT" ? "P" : "C";
-  const status = input.invalidated ? "INVALIDATED" : "CLOSED";
-  const reason = input.exitReason ? String(input.exitReason).replace(/_/g, " ") : null;
-  const ref = input.opportunityCaseId ? `\nRef: ${input.opportunityCaseId}` : "";
+  const side = String(input.optionType || "").toUpperCase() === "PUT" ? "PUT" : "CALL";
+  const reason = String(input.exitReason ?? "").toLowerCase();
+  const stopped = input.invalidated || reason === "stop_hit";
+  const targetHit = reason === "target_hit";
+  const winner = !stopped && !targetHit && (input.summary.currentReturnPct ?? 0) > 0;
+  const heading = stopped
+    ? `⛔ ${sym} ${side} · STOPPED`
+    : targetHit
+      ? `🏁 ${sym} ${side} · TARGET 1 HIT`
+      : winner
+        ? `✅ ${sym} ${side} · CLOSED WINNER`
+        : `⚪ ${sym} ${side} · CLOSED`;
+  const detailUrl = input.detailUrl
+    ?? (input.opportunityCaseId ? `/intelligence/${encodeURIComponent(input.opportunityCaseId)}` : "/alerts?tab=history");
   return [
-    `**${sym} CLOSED**`,
-    `The original ${sym} ${strike}${side} opportunity is now ${status}.`,
-    reason ? `Exit: ${reason}` : null,
+    heading,
+    "",
     `Entry: ${fmtMoney(input.summary.frozenEntry)}`,
-    `Final mark: ${fmtMoney(input.summary.currentMark)}`,
-    `Final return: ${fmtPct(input.summary.currentReturnPct)}`,
-    `High since alert: ${fmtPct(input.summary.maxReturnPct)}`,
-    `Evidence attached: ${input.summary.evidenceCount}`,
-    ref,
-  ].filter(Boolean).join("\n");
+    `${stopped || winner ? "Exit" : "Current"}: ${fmtMoney(input.summary.currentMark)}`,
+    `${stopped || winner ? "Result" : "Move"}: ${fmtPct(input.summary.currentReturnPct)}`,
+    "",
+    "Educational purposes only.",
+    `View details: ${detailUrl}`,
+  ].join("\n");
 }

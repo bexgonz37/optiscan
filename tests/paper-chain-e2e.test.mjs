@@ -27,7 +27,7 @@ function install(d) {
       discord_status INTEGER, discord_message_id TEXT, latency_ms INTEGER, retry_count INTEGER NOT NULL DEFAULT 0,
       failure_reason TEXT, attempted_at_ms INTEGER, sent_at_ms INTEGER, session_state TEXT, entry_mid REAL,
       delivered_spread_pct REAL, quote_ts_ms INTEGER, target_t1 REAL, target_t2 REAL, target_stop REAL,
-      target_method TEXT, opportunity_case_id TEXT, opportunity_fingerprint TEXT,
+      target_method TEXT, opportunity_case_id TEXT, opportunity_fingerprint TEXT, thesis_fingerprint TEXT,
       created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
     );
     CREATE TABLE options_paper_trades (
@@ -38,7 +38,8 @@ function install(d) {
       exit_fill REAL, pnl REAL, return_pct REAL, mfe_pct REAL, mae_pct REAL, last_mark_return_pct REAL,
       exit_reason TEXT, entered_at_ms INTEGER, exit_at_ms INTEGER, session TEXT, core_broad TEXT,
       feature_snapshot_json TEXT, paper_kind TEXT, alert_id TEXT, entry_source TEXT,
-      experiment_id TEXT, experiment_variant TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
+      experiment_id TEXT, experiment_variant TEXT, thesis_fingerprint TEXT,
+      created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
     );
     CREATE VIEW options_paper_delivered AS SELECT * FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER';
     CREATE TABLE opportunity_cases (
@@ -47,13 +48,34 @@ function install(d) {
       acceptance_decision TEXT NOT NULL, delivery_decision TEXT NOT NULL, rejection_reason_codes_json TEXT,
       alert_id TEXT, case_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
       opportunity_fingerprint TEXT, session_date TEXT, lifecycle_status TEXT, summary_json TEXT,
-      discord_channel_id TEXT, discord_message_id TEXT, discord_thread_id TEXT, opening_delivered_at_ms INTEGER
+      discord_channel_id TEXT, discord_message_id TEXT, discord_thread_id TEXT, opening_delivered_at_ms INTEGER,
+      thesis_fingerprint TEXT, opening_source TEXT
     );
     CREATE TABLE opportunity_active_index (
       opportunity_fingerprint TEXT PRIMARY KEY, opportunity_case_id TEXT NOT NULL UNIQUE,
       symbol TEXT NOT NULL, session_date TEXT NOT NULL, strategy_key TEXT, lifecycle_status TEXT NOT NULL,
       opened_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
     );
+    CREATE TABLE opportunity_thesis_active_index (
+      thesis_fingerprint TEXT PRIMARY KEY, opportunity_case_id TEXT NOT NULL UNIQUE,
+      symbol TEXT NOT NULL, direction TEXT NOT NULL, option_type TEXT NOT NULL,
+      session_date TEXT NOT NULL, lifecycle_status TEXT NOT NULL, opening_source TEXT NOT NULL,
+      discord_message_id TEXT, opened_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
+    );
+    CREATE TABLE opportunity_contract_candidates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, thesis_fingerprint TEXT NOT NULL,
+      opportunity_case_id TEXT NOT NULL, opportunity_fingerprint TEXT NOT NULL,
+      option_symbol TEXT NOT NULL, previous_option_symbol TEXT, side TEXT NOT NULL,
+      strike REAL NOT NULL, expiration TEXT NOT NULL, strategy_key TEXT NOT NULL,
+      observed_at_ms INTEGER NOT NULL, bid REAL, ask REAL, spread_pct REAL, delta REAL,
+      open_interest REAL, volume REAL, reason TEXT NOT NULL, expiration_difference_days INTEGER,
+      strike_difference REAL, previous_liquidity_json TEXT, new_liquidity_json TEXT,
+      previous_spread_pct REAL, previous_delta REAL, original_contract_remains_valid INTEGER,
+      created_at_ms INTEGER NOT NULL, UNIQUE(opportunity_case_id, opportunity_fingerprint)
+    );
+    CREATE UNIQUE INDEX idx_paper_chain_active_thesis
+      ON options_paper_trades(paper_kind, thesis_fingerprint)
+      WHERE status='ENTERED' AND thesis_fingerprint IS NOT NULL;
     CREATE TABLE opportunity_milestones (
       id INTEGER PRIMARY KEY AUTOINCREMENT, opportunity_case_id TEXT NOT NULL, event_key TEXT NOT NULL,
       event_type TEXT NOT NULL, milestone_percent REAL, label TEXT, reached_at_ms INTEGER NOT NULL,
@@ -65,24 +87,24 @@ function install(d) {
   `);
 }
 
-const input = {
+const input = (now) => ({
   candidateSymbol: "NVDA",
   strategy: "sr_reclaim",
   researchOnly: false,
-  contract: { optionSymbol: "O:NVDA260725C00100000", side: "call", strike: 100, expiration: "2026-07-27", bid: 1, ask: 1.1, spreadPct: 4, quoteAgeMs: 500 },
+  contract: { optionSymbol: "O:NVDA260725C00100000", side: "call", strike: 100, expiration: "2026-07-27", bid: 1, ask: 1.1, spreadPct: 4, quoteAgeMs: 500, providerTimestamp: now - 500 },
   message: "test alert",
   observedUnderlyingPrice: 100,
   currentUnderlyingPrice: 100,
   chaseLimitPct: 5,
   underlyingPrice: 100,
   entry: { mid: 1.05, t1: 1.2, t2: 1.3, stop: 0.9, methodology: "test" },
-};
+});
 
 test("paper chain E2E: SENT → paper_linked → diagnostic row", async () => {
   const d = new Database(":memory:");
   install(d);
   const now = Date.UTC(2026, 6, 22, 14, 30);
-  const out = await deliverOptionsCallout(input, {
+  const out = await deliverOptionsCallout(input(now), {
     getDb: () => d,
     now: () => now,
     send: async () => ({ ok: true, status: 200, latencyMs: 12, messageId: "discord-123" }),
@@ -105,7 +127,7 @@ test("paper chain marks HTTP-accepted rows without Discord message proof as audi
   const d = new Database(":memory:");
   install(d);
   const now = Date.UTC(2026, 6, 22, 14, 35);
-  const out = await deliverOptionsCallout(input, {
+  const out = await deliverOptionsCallout(input(now), {
     getDb: () => d,
     now: () => now,
     send: async () => ({ ok: true, status: 200, latencyMs: 12, messageId: null }),

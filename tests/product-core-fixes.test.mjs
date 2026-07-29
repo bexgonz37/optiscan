@@ -21,7 +21,7 @@ const SESSION = tradingDay(MON);
 
 test("paper page defaults to delivered and reads diagnostic.rows", () => {
   const src = read("app/paper/page.tsx");
-  assert.match(src, /useState<"delivered" \| "0dte" \| "stock" \| "shadow">\("delivered"\)/);
+  assert.match(src, /useState<"delivered" \| "0dte" \| "bearish" \| "stock" \| "shadow">\("delivered"\)/);
   assert.match(src, /d\.diagnostic \?\? d/);
   assert.match(src, /pnlUsd/);
   assert.match(src, /verifiedSumPnlUsd/);

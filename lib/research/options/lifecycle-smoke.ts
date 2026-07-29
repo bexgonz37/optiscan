@@ -152,7 +152,7 @@ export async function runOpportunityLifecycleSmoke(deps: {
   base.discordOpeningMessageId = openingMessageId;
 
   const dup = await deliverOptionsCallout(mk(t0 + 30_000), { getDb: () => db, send, now: () => t0 + 30_000 }, smokeEnv);
-  base.duplicateSuppressed = dup.reason === "matching_active_opportunity" && !dup.sent;
+  base.duplicateSuppressed = ["matching_active_opportunity", "matching_active_thesis"].includes(String(dup.reason)) && !dup.sent;
   const evidence = listEvidenceForCaseOnDb(db, open.opportunityCaseId, 20);
   base.evidenceAttached = evidence.length;
   if (!base.duplicateSuppressed) {

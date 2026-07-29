@@ -4,7 +4,7 @@
 import { adaptOptionsLiveToCase } from "./adapters/options-live.ts";
 import { attachExplanationToCase } from "./explanation.ts";
 import { attachRegimeToCase, regimeFromMarketContext } from "./regime.ts";
-import { persistOpportunityCaseOnDb } from "./store.ts";
+import { loadOpportunityCaseOnDb, persistOpportunityCaseOnDb } from "./store.ts";
 import type { OpportunityCase } from "./schema.ts";
 import { evaluationFromOptionsSelection } from "../strategy/catalog-adapter.ts";
 import { runStrategyConductor } from "../strategy/conductor.ts";
@@ -60,7 +60,53 @@ export function buildOpportunityCaseFromOptionsLive(args: BuildCaseInput): Oppor
 }
 
 export function persistCaseFromOptionsLive(db: Parameters<typeof persistOpportunityCaseOnDb>[0], args: BuildCaseInput): OpportunityCase {
-  const c = buildOpportunityCaseFromOptionsLive(args);
-  persistOpportunityCaseOnDb(db, c);
-  return c;
+  const observation = buildOpportunityCaseFromOptionsLive(args);
+  let persisted = observation;
+
+  if (args.livingOpportunityCaseId) {
+    const existing = loadOpportunityCaseOnDb(db, args.livingOpportunityCaseId);
+    if (existing) {
+      // A repeat scan enriches the living case but cannot redefine the delivered trade.
+      // Opening identity, frozen prices, Discord proof, lifecycle, and summary stay immutable.
+      persisted = {
+        ...existing,
+        underlyingQuote: observation.underlyingQuote,
+        chainMetadata: observation.chainMetadata,
+        rejectedContracts: observation.rejectedContracts,
+        marketRegime: observation.marketRegime,
+        strategyEvaluations: observation.strategyEvaluations,
+        ensembleDecision: observation.ensembleDecision,
+        hardGateResults: observation.hardGateResults,
+        probabilities: observation.probabilities,
+        rank: observation.rank ?? existing.rank,
+        rankExplanation: observation.rankExplanation ?? existing.rankExplanation,
+        explanationPayload: observation.explanationPayload ?? existing.explanationPayload,
+        dataLineage: [...new Set([...existing.dataLineage, ...observation.dataLineage])],
+        configVersions: { ...existing.configVersions, ...observation.configVersions },
+        selectedContract: existing.selectedContract ?? observation.selectedContract,
+        updatedAtMs: observation.updatedAtMs,
+        opportunityId: existing.opportunityId,
+        opportunityFingerprint: existing.opportunityFingerprint,
+        thesisFingerprint: existing.thesisFingerprint,
+        sessionDate: existing.sessionDate,
+        detectedAtMs: existing.detectedAtMs,
+        createdAtMs: existing.createdAtMs,
+        frozenTrade: existing.frozenTrade,
+        acceptanceDecision: existing.acceptanceDecision,
+        deliveryDecision: existing.deliveryDecision,
+        deliveryReason: existing.deliveryReason,
+        alertId: existing.alertId,
+        discordDeliveryStatus: existing.discordDeliveryStatus,
+        lifecycleStatus: existing.lifecycleStatus,
+        summary: existing.summary,
+        originalThesis: existing.originalThesis,
+        discord: existing.discord,
+        contractCandidates: existing.contractCandidates,
+        contractUpdates: existing.contractUpdates,
+      };
+    }
+  }
+
+  persistOpportunityCaseOnDb(db, persisted);
+  return persisted;
 }

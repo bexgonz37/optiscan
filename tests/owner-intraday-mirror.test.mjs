@@ -103,18 +103,20 @@ function deliveryInput(over = {}) {
   };
 }
 
-test("formatIntradayActionable includes TRADE NOW CANDIDATE and contract details", () => {
+test("formatIntradayActionable uses compact trader-facing copy", () => {
   const msg = formatIntradayActionable(buildIntradayActionablePayload({
     delivery: deliveryInput(),
     actionableReason: "ORB held above opening range high",
     invalidation: "Lose VWAP and opening range low",
     opportunityCaseId: "oc_demo",
   }));
-  assert.match(msg, /TRADE NOW CANDIDATE/);
-  assert.match(msg, /O:SPY260727C00635000/);
-  assert.match(msg, /Bid\/Ask/);
-  assert.match(msg, /Trigger confirmed/);
-  assert.match(msg, /not guaranteed profit/i);
+  assert.match(msg, /🟢 SPY CALL ALERT/);
+  assert.match(msg, /SPY 07\/27 \$635 Call/);
+  assert.match(msg, /Entry: \$1\.20–\$1\.30/);
+  assert.match(msg, /Why:/);
+  assert.match(msg, /Educational purposes only\. Options are high risk\./);
+  assert.match(msg, /View details: \/intelligence\/oc_demo/);
+  assert.doesNotMatch(msg, /O:|Bid\/Ask|Trigger confirmed|Confidence|Spread|DTE|setup|subscriber|pipeline/i);
 });
 
 test("regular-session SEND mirror skips because canonical options alert already posted", async () => {

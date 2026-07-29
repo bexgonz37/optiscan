@@ -11,6 +11,8 @@ export * from "./report-cards.ts";
 export * from "./orchestrate.ts";
 export * from "./adapters/options-live.ts";
 export * from "./identity.ts";
+export * from "./thesis-identity.ts";
+export * from "./thesis-live.ts";
 export * from "./lifecycle.ts";
 export * from "./summary.ts";
 export * from "./milestones.ts";

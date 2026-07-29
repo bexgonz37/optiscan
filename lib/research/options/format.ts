@@ -44,7 +44,7 @@ const mmdd = (iso: string): string => {
   const m = iso.match(/(\d{4})-(\d{2})-(\d{2})/);
   return m ? `${m[2]}/${m[3]}` : iso;
 };
-const strikeStr = (n: number) => (n % 1 === 0 ? n.toFixed(0) : n.toFixed(2));
+const strikeStr = (n: number) => Number(n.toFixed(2)).toString();
 const px = (n: number) => (Math.abs(n) >= 100 ? n.toFixed(2) : n.toFixed(2));
 
 export interface CompactAlertInput {
@@ -92,49 +92,126 @@ export interface PrivateLiveAlertInput extends CompactAlertInput {
   delta?: number | null;
   quoteAgeMs?: number | null;
   confidence?: number | null;
+  detailUrl?: string | null;
+  reasonSignals?: string[] | null;
 }
 
-const etTimeFmt = new Intl.DateTimeFormat("en-US", {
-  timeZone: "America/New_York",
-  hour: "numeric",
-  minute: "2-digit",
-  hour12: true,
-});
+export interface PlainEnglishAlertReasonInput {
+  symbol: string;
+  side: "call" | "put";
+  strategyKey?: string | null;
+  conditionIds?: string[] | null;
+  sourceReason?: string | null;
+}
 
-/** Private live Discord alert with decision-first hierarchy. */
+const sentence = (value: string): string => {
+  const clean = value.replace(/\s+/g, " ").trim();
+  if (!clean) return "";
+  const first = clean.match(/^.*?[.!?](?:\s|$)/)?.[0]?.trim() ?? clean;
+  const bounded = first.length > 180 ? `${first.slice(0, 177).trimEnd()}...` : first;
+  return /[.!?]$/.test(bounded) ? bounded : `${bounded}.`;
+};
+
+/**
+ * Discord is a trader-facing surface, not an internal trace. This mapper accepts
+ * deterministic condition IDs but never emits those IDs or raw gate language.
+ */
+export function plainEnglishAlertReason(input: PlainEnglishAlertReasonInput): string {
+  const sym = input.symbol.toUpperCase();
+  const signals = new Set((input.conditionIds ?? []).map((value) => String(value).toLowerCase()));
+  const source = `${input.sourceReason ?? ""} ${input.strategyKey ?? ""}`.toLowerCase();
+  const has = (...needles: string[]) => needles.some((needle) => signals.has(needle) || source.includes(needle));
+
+  if (has("support_break") && has("failed_reclaim")) {
+    return `${sym} broke support and failed to reclaim it.`;
+  }
+  if (has("support_break") && has("below_vwap_or_rejection") && has("downside_momentum", "downside_acceleration")) {
+    return `${sym} broke support, stayed below VWAP, and bearish momentum increased.`;
+  }
+  if (has("below_vwap_or_rejection", "vwap_rejection") && has("downside_momentum", "momentum_breakdown")) {
+    return `${sym} stayed below VWAP and bearish momentum increased.`;
+  }
+  if (source.includes("reclaimed vwap") && source.includes("resistance")) {
+    return `${sym} reclaimed VWAP and broke above resistance with rising momentum.`;
+  }
+  if (source.includes("reclaimed vwap") && source.includes("momentum")) {
+    return `${sym} reclaimed VWAP and momentum accelerated.`;
+  }
+  if (has("reclaimed_vwap", "sr_reclaim") && has("momentum_acceleration")) {
+    return `${sym} reclaimed VWAP and momentum accelerated.`;
+  }
+  if (has("opening_range_breakout", "bearish_opening_range_break") && has("volume_confirmation", "volume")) {
+    return input.side === "put"
+      ? `${sym} broke below the opening range with rising volume.`
+      : `${sym} broke the opening range with rising volume.`;
+  }
+
+  const byStrategy: Record<string, string> = {
+    momentum_breakdown: `${sym} broke support and bearish momentum increased.`,
+    failed_breakout_reversal: `${sym} failed at resistance and bearish momentum increased.`,
+    failed_breakout: `${sym} failed at resistance and started moving lower.`,
+    vwap_rejection: `${sym} stayed below VWAP and sellers remained in control.`,
+    support_break_retest: `${sym} broke support and failed to reclaim it.`,
+    lower_high_continuation: `${sym} formed a lower high and bearish momentum continued.`,
+    bearish_opening_range_break: `${sym} broke below the opening range with bearish momentum.`,
+    gap_failure: `${sym} lost its gap and bearish momentum increased.`,
+    relative_weakness_continuation: `${sym} remained weaker than the broader market and continued lower.`,
+    downside_catalyst_continuation: `${sym} continued lower after a bearish catalyst.`,
+    sr_reclaim: `${sym} reclaimed a key level and held it.`,
+    opening_range_breakout: `${sym} broke the opening range with rising momentum.`,
+    confirmed_breakout: `${sym} broke above resistance and held the breakout.`,
+    breakout_forming: `${sym} pressed against resistance as momentum increased.`,
+    momentum_acceleration: input.side === "put"
+      ? `${sym} stayed weak as bearish momentum increased.`
+      : `${sym} gained momentum above a key level.`,
+    pullback_continuation: input.side === "put"
+      ? `${sym} failed to recover from a pullback and resumed lower.`
+      : `${sym} held its pullback and resumed higher.`,
+    trend_continuation: input.side === "put"
+      ? `${sym} remained in a downtrend and bearish momentum continued.`
+      : `${sym} remained in an uptrend and bullish momentum continued.`,
+  };
+  const mapped = input.strategyKey ? byStrategy[input.strategyKey] : null;
+  if (mapped) return mapped;
+
+  const candidate = sentence(String(input.sourceReason ?? ""));
+  const looksInternal = /[_=[\]{}]|\b(?:gate|subscriber|pipeline|score|threshold|condition|blocker)\b/i.test(candidate);
+  if (candidate && !looksInternal) {
+    return candidate.toUpperCase().includes(sym) ? candidate : `${sym} ${candidate.charAt(0).toLowerCase()}${candidate.slice(1)}`;
+  }
+  return input.side === "put"
+    ? `${sym} moved below a key level as bearish momentum increased.`
+    : `${sym} moved above a key level as bullish momentum increased.`;
+}
+
+/** Primary Alerts-channel opening message. Technical evidence remains in the dossier. */
 export function formatPrivateLiveAlert(i: PrivateLiveAlertInput): string {
   const call = i.side === "call";
   const sym = i.symbol.toUpperCase();
   const entryZone = i.bid != null && i.ask != null
-    ? `$${i.bid.toFixed(2)}-$${i.ask.toFixed(2)}`
+    ? Math.abs(i.ask - i.bid) < 0.005
+      ? `$${i.bid.toFixed(2)}`
+      : `$${i.bid.toFixed(2)}–$${i.ask.toFixed(2)}`
     : `$${i.entryMid.toFixed(2)}`;
-  const freshness = i.quoteAgeMs == null ? "unknown" : `${Math.round(i.quoteAgeMs / 1000)}s`;
-  const liquidity = [
-    i.spreadPct != null ? `Spread ${i.spreadPct.toFixed(1)}%` : null,
-    i.volume != null ? `Volume ${Math.round(i.volume).toLocaleString("en-US")}` : null,
-    i.openInterest != null ? `OI ${Math.round(i.openInterest).toLocaleString("en-US")}` : null,
-    i.delta != null ? `Delta ${i.delta.toFixed(2)}` : null,
-    `Freshness ${freshness}`,
-  ].filter(Boolean).join(" | ");
+  const reason = plainEnglishAlertReason({
+    symbol: sym,
+    side: i.side,
+    strategyKey: i.strategyKey,
+    conditionIds: i.reasonSignals,
+    sourceReason: i.actionableReason,
+  });
+  const detailUrl = i.detailUrl || "/alerts?tab=history";
 
-  const lines: string[] = [];
-  lines.push(`**${sym} ${call ? "CALL" : "PUT"} - ${call ? "TRADE NOW CANDIDATE" : "BEARISH TRADE CANDIDATE"}**`);
-  lines.push(`Contract: ${sym} ${mmdd(i.expiration)} $${strikeStr(i.strike)}${call ? "C" : "P"}${i.optionSymbol ? ` (${i.optionSymbol})` : ""}`);
-  lines.push(`Entry: ${entryZone}`);
-  lines.push(`Target 1: $${i.t1.toFixed(2)}`);
-  lines.push(`Target 2: $${i.t2.toFixed(2)}`);
-  lines.push(`Stop: $${i.stop.toFixed(2)}`);
-  if (i.underlyingPrice != null && i.underlyingPrice > 0) {
-    lines.push(`${sym} underlying: $${px(i.underlyingPrice)}`);
-  }
-  const alertEt = i.alertTimeEt ?? etTimeFmt.format(new Date());
-  lines.push(`Alert: ${alertEt} ET | ${i.timingClass ?? "TIMELY"} | DTE ${i.dte ?? "unknown"}`);
-  lines.push(`${call ? "Why now" : "Trigger"}: ${i.actionableReason ?? setupSentence(i.strategyKey)}`);
-  lines.push(`Main risk: ${i.invalidation ?? (i.dte != null && i.dte <= 0 ? "0DTE premium decay and reversal risk." : "Premium decay or thesis invalidation.")}`);
-  lines.push(`Confidence: ${i.confidence != null ? Math.round(i.confidence) : "n/a"}`);
-  lines.push(`Setup: ${i.strategyKey}`);
-  if (liquidity) lines.push(liquidity);
-  if (i.dte != null && i.dte <= 0) lines.push("0DTE: high risk, small size.");
-  else if (i.dte != null && i.dte <= 2) lines.push("Short-dated: manage risk.");
-  return lines.join("\n");
+  return [
+    `${call ? "🟢" : "🔴"} ${sym} ${call ? "CALL" : "PUT"} ALERT`,
+    "",
+    `${sym} ${mmdd(i.expiration)} $${strikeStr(i.strike)} ${call ? "Call" : "Put"}`,
+    `Entry: ${entryZone}`,
+    "",
+    `Why: ${reason}`,
+    "",
+    "Educational purposes only. Options are high risk.",
+    "",
+    `View details: ${detailUrl}`,
+  ].join("\n");
 }

@@ -28,7 +28,11 @@ type Stats = {
 
 type Paper = {
   account?: { startingBalance?: number; realizedPnl?: number; equity?: number };
-  summary?: { trades?: number; wins?: number; losses?: number; winRate?: number; totalPnlDollars?: number };
+  summary?: { closedCount?: number; wins?: number; losses?: number; winRatePct?: number; totalPnlDollars?: number };
+  stockLane?: {
+    account?: { startingBalance?: number; realizedPnl?: number; equity?: number };
+    summary?: { closedCount?: number; wins?: number; losses?: number; winRatePct?: number; totalPnlDollars?: number };
+  };
 };
 
 type StatBlock = {
@@ -120,8 +124,8 @@ export default function PerformancePage() {
   }
 
   const totals = stats.totals ?? {};
-  const acct = paper.account ?? {};
-  const psum = paper.summary ?? {};
+  const acct = paper.stockLane?.account ?? {};
+  const psum = paper.stockLane?.summary ?? {};
   const pnl = acct.realizedPnl ?? psum.totalPnlDollars ?? null;
 
   const catCols: Column<NonNullable<Stats["byCatalyst"]>[number]>[] = [
@@ -148,12 +152,12 @@ export default function PerformancePage() {
           <KeyValue k="Avg max move after alert" v={num(stats.avgMove?.avg_max_move, 1, "%")} />
         </Card>
 
-        <Card title="Paper account" meta="Simulated · no real money">
+        <Card title="Stock Paper" meta="Separate simulated stock account · no real money">
           <KeyValue k="Equity" v={money(acct.equity)} />
           <KeyValue k="Starting balance" v={money(acct.startingBalance)} />
           <KeyValue k="Realized P&L" v={money(pnl)} tone={pnl == null ? undefined : pnl >= 0 ? "bull" : "bear"} />
-          <KeyValue k="Trades" v={psum.trades ?? 0} />
-          <KeyValue k="Win rate" v={psum.winRate == null ? "—" : `${(psum.winRate * 100).toFixed(0)}%`} />
+          <KeyValue k="Closed trades" v={psum.closedCount ?? 0} />
+          <KeyValue k="Win rate" v={psum.winRatePct == null ? "—" : `${psum.winRatePct.toFixed(0)}%`} />
         </Card>
       </ResponsiveGrid>
 

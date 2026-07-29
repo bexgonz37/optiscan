@@ -14,6 +14,7 @@ import {
   type SelectedContract,
 } from "../schema.ts";
 import { buildOpportunityIdentity, opportunityFingerprint } from "../identity.ts";
+import { buildOpportunityThesisIdentity, opportunityThesisFingerprint } from "../thesis-identity.ts";
 import { setupSentence } from "../../research/options/format.ts";
 
 export interface OptionsLiveAdapterInput {
@@ -56,6 +57,15 @@ export function adaptOptionsLiveToCase(args: OptionsLiveAdapterInput): Opportuni
         String(Math.floor(nowMs / 60_000)),
       ]));
   oc.opportunityFingerprint = fingerprint;
+  oc.thesisFingerprint = identity
+    ? opportunityThesisFingerprint(buildOpportunityThesisIdentity({
+      symbol: input.symbol,
+      side,
+      nowMs,
+      direction: evalResult.selection.direction,
+      sessionDate: identity.sessionDate,
+    }))
+    : null;
   oc.sessionDate = identity?.sessionDate ?? null;
   oc.marketSession = input.session;
   oc.direction = evalResult.selection.direction === "bearish" ? "bearish" : evalResult.selection.direction === "bullish" ? "bullish" : "neutral";

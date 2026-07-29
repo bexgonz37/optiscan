@@ -97,6 +97,7 @@ export default async function AlertDetailPage({ params }: { params: Promise<{ al
           ["Alert ID", meta.alertId],
           ["Opportunity case ID", meta.opportunityCaseId],
           ["Opportunity fingerprint", meta.opportunityFingerprint],
+          ["Thesis fingerprint", meta.thesisFingerprint],
           ["Independent alert ID", meta.independentAlertId],
           ["Paper trade ID", meta.paperTradeId],
           ["Discord message ID", meta.discordMessageId],
@@ -163,6 +164,49 @@ export default async function AlertDetailPage({ params }: { params: Promise<{ al
           ["Spread %", pct(detail.entryDetails?.entrySnapshot?.spread_pct)],
           ["Delta", detail.entryDetails?.entrySnapshot?.delta],
         ]} />
+      </Section>
+
+      <Section title="Thesis And Contract Tracking" meta="original contract preserved">
+        <DetailGrid rows={[
+          ["Active thesis", detail.contractTracking?.thesisFingerprint],
+          ["Original selected OCC", detail.contractTracking?.selectedContract?.optionSymbol ?? meta.optionSymbol],
+          ["Contract candidates", detail.contractTracking?.candidates?.length ?? 0],
+          ["Contract replacements", detail.contractTracking?.updates?.length ?? 0],
+          ["Active paper position", detail.contractTracking?.activePaperPosition?.id ?? "none"],
+          ["Paper policy", detail.contractTracking?.paperPolicy],
+        ]} />
+        {detail.contractTracking?.candidates?.length ? (
+          <div className="alert-detail-table-wrap">
+            <table className="alert-detail-table">
+              <thead>
+                <tr>
+                  <th>Observed</th>
+                  <th>Role</th>
+                  <th>Contract</th>
+                  <th>Setup</th>
+                  <th>Spread</th>
+                  <th>Volume / OI</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {detail.contractTracking.candidates.map((c: any, i: number) => (
+                  <tr key={`${c.opportunity_fingerprint}-${i}`}>
+                    <td>{c.observed_at_ms ? fmtMarketTime(c.observed_at_ms) : "missing"}</td>
+                    <td>{i === 0 ? "Original selection" : c.previous_option_symbol !== c.option_symbol ? "Replacement candidate" : "Repeat evidence"}</td>
+                    <td>{c.option_symbol}</td>
+                    <td>{c.strategy_key ?? "missing"}</td>
+                    <td>{pct(c.spread_pct)}</td>
+                    <td>{value(c.volume)} / {value(c.open_interest)}</td>
+                    <td>{c.reason ?? "candidate observed"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="alert-detail-empty">No contract replacement history recorded.</div>
+        )}
       </Section>
 
       <Section title="Return Calculation">

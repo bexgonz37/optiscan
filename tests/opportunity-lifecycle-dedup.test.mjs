@@ -27,6 +27,12 @@ import {
   markOpportunityOpenedDeliveredOnDb,
 } from "../lib/opportunity-case/live.ts";
 import { persistContentEventOnDb, contentEventId } from "../lib/opportunity-case/content-events.ts";
+import { persistCaseFromOptionsLive } from "../lib/opportunity-case/orchestrate.ts";
+import {
+  buildOpportunityThesisIdentity,
+  opportunityThesisFingerprint,
+} from "../lib/opportunity-case/thesis-identity.ts";
+import { maybeSendBearishOwnerReview } from "../lib/research/options/delivery-decision.ts";
 import { gradeOpenOptionPositionsOnDb } from "../lib/research/options/grade.ts";
 import { decideOptionExit, defaultGradeConfig } from "../lib/research/options/grade.ts";
 import { readFileSync } from "node:fs";
@@ -53,6 +59,7 @@ function installLifecycleSchema(d) {
       attempted_at_ms INTEGER, sent_at_ms INTEGER, session_state TEXT, entry_mid REAL, delivered_spread_pct REAL,
       quote_ts_ms INTEGER, target_t1 REAL, target_t2 REAL, target_stop REAL, target_method TEXT,
       opportunity_case_id TEXT, opportunity_fingerprint TEXT, discord_message_id TEXT,
+      thesis_fingerprint TEXT,
       created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS options_paper_trades (
@@ -64,6 +71,7 @@ function installLifecycleSchema(d) {
       exit_reason TEXT, entered_at_ms INTEGER, exit_at_ms INTEGER, session TEXT, core_broad TEXT,
       feature_snapshot_json TEXT, paper_kind TEXT, alert_id TEXT, entry_source TEXT,
       experiment_id TEXT, experiment_variant TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
+      , thesis_fingerprint TEXT
     );
     CREATE VIEW IF NOT EXISTS options_paper_delivered AS SELECT * FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER';
     CREATE TABLE IF NOT EXISTS options_paper_marks (
@@ -78,12 +86,33 @@ function installLifecycleSchema(d) {
       alert_id TEXT, case_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
       opportunity_fingerprint TEXT, session_date TEXT, lifecycle_status TEXT, summary_json TEXT,
       discord_channel_id TEXT, discord_message_id TEXT, discord_thread_id TEXT, opening_delivered_at_ms INTEGER
+      , thesis_fingerprint TEXT, opening_source TEXT
     );
     CREATE TABLE IF NOT EXISTS opportunity_active_index (
       opportunity_fingerprint TEXT PRIMARY KEY, opportunity_case_id TEXT NOT NULL UNIQUE,
       symbol TEXT NOT NULL, session_date TEXT NOT NULL, strategy_key TEXT, lifecycle_status TEXT NOT NULL,
       opened_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS opportunity_thesis_active_index (
+      thesis_fingerprint TEXT PRIMARY KEY, opportunity_case_id TEXT NOT NULL UNIQUE,
+      symbol TEXT NOT NULL, direction TEXT NOT NULL, option_type TEXT NOT NULL,
+      session_date TEXT NOT NULL, lifecycle_status TEXT NOT NULL, opening_source TEXT NOT NULL,
+      discord_message_id TEXT, opened_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS opportunity_contract_candidates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, thesis_fingerprint TEXT NOT NULL,
+      opportunity_case_id TEXT NOT NULL, opportunity_fingerprint TEXT NOT NULL,
+      option_symbol TEXT NOT NULL, previous_option_symbol TEXT, side TEXT NOT NULL,
+      strike REAL NOT NULL, expiration TEXT NOT NULL, strategy_key TEXT NOT NULL,
+      observed_at_ms INTEGER NOT NULL, bid REAL, ask REAL, spread_pct REAL, delta REAL,
+      open_interest REAL, volume REAL, reason TEXT NOT NULL, expiration_difference_days INTEGER,
+      strike_difference REAL, previous_liquidity_json TEXT, new_liquidity_json TEXT,
+      previous_spread_pct REAL, previous_delta REAL, original_contract_remains_valid INTEGER,
+      created_at_ms INTEGER NOT NULL, UNIQUE(opportunity_case_id, opportunity_fingerprint)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_options_paper_active_thesis_test
+      ON options_paper_trades(thesis_fingerprint)
+      WHERE status='ENTERED' AND thesis_fingerprint IS NOT NULL;
     CREATE TABLE IF NOT EXISTS opportunity_milestones (
       id INTEGER PRIMARY KEY AUTOINCREMENT, opportunity_case_id TEXT NOT NULL, event_key TEXT NOT NULL,
       event_type TEXT NOT NULL, milestone_percent REAL, label TEXT NOT NULL, reached_at_ms INTEGER NOT NULL,
@@ -202,7 +231,7 @@ test("1-4: first open sends once; repeat suppresses, attaches evidence; survives
     getDb: () => d, send, now: () => t + 60_000,
   }, ENV);
   assert.equal(dup.state, "REJECTED");
-  assert.equal(dup.reason, "matching_active_opportunity");
+  assert.equal(dup.reason, "matching_active_thesis");
   assert.equal(dup.suppressedDuplicate, true);
   assert.equal(sends, 1, "no second opening Discord message");
 
@@ -224,7 +253,613 @@ test("1-4: first open sends once; repeat suppresses, attaches evidence; survives
   assert.ok(oc.summary.originalThesis.length >= 1);
 });
 
-test("12-15: different contract / direction / closed / new session can open again", async () => {
+test("IWM PUT one hour repeat recovers the original active case and preserves frozen trade", async () => {
+  const d = installLifecycleSchema(new Database(":memory:"));
+  const t = ET(11, 0);
+  let sends = 0;
+  const send = async () => {
+    sends += 1;
+    return { ok: true, status: 204, messageId: `iwm-msg-${sends}`, latencyMs: 2, ambiguous: false, error: null };
+  };
+  const bearishEnv = {
+    ...ENV,
+    BEARISH_PIPELINE_ENABLED: "1",
+    BEARISH_SUBSCRIBER_DELIVERY_ENABLED: "1",
+  };
+  const iwmPut = (nowMs, overrides = {}) => ({
+    candidateSymbol: "IWM",
+    strategy: "momentum_breakdown",
+    researchOnly: false,
+    contract: {
+      optionSymbol: "O:IWM260724P00225000",
+      side: "put",
+      strike: 225,
+      expiration: "2026-07-24",
+      bid: 1,
+      ask: 1.02,
+      spreadPct: 1.98,
+      quoteAgeMs: 500,
+      dte: 2,
+      volume: 5000,
+      openInterest: 12000,
+      iv: 0.32,
+      delta: -0.5,
+      providerTimestamp: nowMs - 500,
+    },
+    message: "IWM PUT alert",
+    observedUnderlyingPrice: 225,
+    currentUnderlyingPrice: 225,
+    chaseLimitPct: 5,
+    underlyingPrice: 225,
+    decisionMs: nowMs,
+    session: "regular",
+    entry: {
+      bid: 1,
+      ask: 1.02,
+      mid: 1.01,
+      spreadPct: 1.98,
+      quoteAgeMs: 500,
+      t1: 1.3,
+      t2: 1.6,
+      stop: 0.75,
+      methodology: "frozen_test",
+    },
+    tier: 0,
+    featureSnapshot: {
+      underlying: {
+        velPct: -0.4,
+        accelPct: -0.2,
+        shortMomentumPct: -0.3,
+        trendSlopePctPerBar: -0.1,
+        aboveVwap: false,
+        lodBreak: true,
+      },
+      chain: { direction: "put" },
+    },
+    ...overrides,
+  });
+
+  const first = await deliverOptionsCallout(
+    iwmPut(t),
+    { getDb: () => d, send, now: () => t },
+    bearishEnv,
+  );
+  assert.equal(first.state, "SENT", JSON.stringify(first));
+  assert.equal(sends, 1);
+  assert.ok(first.opportunityCaseId);
+
+  // A later scan may enrich the dossier, but it cannot replace the delivered trade definition.
+  persistCaseFromOptionsLive(d, {
+    input: {
+      symbol: "IWM",
+      nowMs: t + 30 * 60_000,
+      session: "regular",
+      tier: 1,
+      underlying: {
+        price: 224,
+        dayDollarVolume: 1_000_000_000,
+        relVolume: 3,
+        velPct: -0.5,
+        accelPct: -0.2,
+        gapPct: 0,
+        aboveVwap: false,
+        hodBreak: false,
+        lodBreak: true,
+        nearResistancePct: 1,
+        nearSupportPct: 0.1,
+        compressionPct: 0.8,
+        realizedVolExpanding: true,
+        openingRange: false,
+        premarketLevelTest: false,
+      },
+    },
+    evalResult: {
+      selection: {
+        symbol: "IWM",
+        selected: {
+          key: "momentum_breakdown",
+          label: "Momentum breakdown",
+          score: 1,
+          side: "put",
+          researchOnly: false,
+          preferredDte: "1-7dte",
+        },
+        direction: "bearish",
+        considered: [{
+          key: "momentum_breakdown",
+          label: "Momentum breakdown",
+          applicable: true,
+          score: 1,
+          matched: ["lod_break", "below_vwap"],
+          rejection: null,
+        }],
+        reason: "repeat signal",
+      },
+      contract: {
+        ...iwmPut(t).contract,
+        bid: 1.5,
+        ask: 1.54,
+        providerTimestamp: t + 30 * 60_000 - 500,
+      },
+      callout: {
+        state: "READY",
+        message: "repeat",
+        reason: "repeat",
+        freshness: "fresh",
+        entry: {
+          ...iwmPut(t).entry,
+          mid: 1.52,
+          t1: 2,
+          t2: 2.5,
+          stop: 1.1,
+        },
+      },
+      paperEntry: null,
+      state: "READY",
+    },
+    chainLength: 20,
+    livingOpportunityCaseId: first.opportunityCaseId,
+  });
+
+  const afterAudit = loadCaseJsonOnDb(d, first.opportunityCaseId);
+  assert.equal(afterAudit?.frozenTrade?.entryMid, 1.01);
+  assert.equal(afterAudit?.frozenTrade?.targetT1, 1.3);
+  assert.equal(afterAudit?.frozenTrade?.targetT2, 1.6);
+  assert.equal(afterAudit?.frozenTrade?.stop, 0.75);
+  assert.equal(afterAudit?.discord?.messageId, "iwm-msg-1");
+  assert.equal(afterAudit?.deliveryDecision, "delivered");
+
+  // Simulate an index drift/partial migration. Hard delivered-case proof must recover the
+  // original case, not permit a second opening alert an hour later.
+  d.prepare("DELETE FROM opportunity_active_index WHERE opportunity_case_id=?").run(first.opportunityCaseId);
+  const secondTime = t + 60 * 60_000;
+  const second = await deliverOptionsCallout(
+    iwmPut(secondTime, {
+      contract: {
+        ...iwmPut(secondTime).contract,
+        bid: 1.55,
+        ask: 1.59,
+      },
+      entry: {
+        ...iwmPut(secondTime).entry,
+        bid: 1.55,
+        ask: 1.59,
+        mid: 1.57,
+        t1: 2.05,
+        t2: 2.55,
+        stop: 1.15,
+      },
+    }),
+    { getDb: () => d, send, now: () => secondTime },
+    bearishEnv,
+  );
+
+  assert.equal(second.state, "REJECTED");
+  assert.equal(second.reason, "matching_active_thesis");
+  assert.equal(second.opportunityCaseId, first.opportunityCaseId);
+  assert.equal(sends, 1, "the one-hour repeat cannot create another opening Discord alert");
+  assert.equal(Number(d.prepare("SELECT COUNT(*) n FROM options_alerts WHERE candidate_symbol='IWM' AND state='SENT'").get().n), 1);
+
+  const living = loadCaseJsonOnDb(d, first.opportunityCaseId);
+  assert.equal(living?.frozenTrade?.entryMid, 1.01);
+  assert.equal(living?.frozenTrade?.targetT1, 1.3);
+  assert.equal(living?.frozenTrade?.targetT2, 1.6);
+  assert.equal(living?.frozenTrade?.stop, 0.75);
+  assert.equal(living?.summary?.currentMark, 1.55);
+  assert.ok((living?.summary?.currentReturnPct ?? 0) > 50);
+  assert.ok((living?.summary?.maxReturnPct ?? 0) > 50);
+  assert.ok((living?.summary?.evidenceCount ?? 0) >= 1);
+  assert.ok((living?.summary?.elapsedTimeMs ?? 0) >= 60 * 60_000);
+});
+
+test("exact IWM production contract roll stays one active thesis and one opening", async () => {
+  const d = installLifecycleSchema(new Database(":memory:"));
+  const firstAt = Date.parse("2026-07-29T14:25:48.376Z");
+  const secondAt = Date.parse("2026-07-29T15:43:54.474Z");
+  let sends = 0;
+  const send = async () => ({
+    ok: true,
+    status: 200,
+    messageId: `iwm-prod-${++sends}`,
+    latencyMs: 2,
+    ambiguous: false,
+    error: null,
+  });
+  const bearishEnv = {
+    ...ENV,
+    BEARISH_PIPELINE_ENABLED: "1",
+    BEARISH_SUBSCRIBER_DELIVERY_ENABLED: "1",
+  };
+  const firstInput = mkInput({
+    candidateSymbol: "IWM",
+    strategy: "lower_high_continuation",
+    nowMs: firstAt,
+    decisionMs: firstAt,
+    observedUnderlyingPrice: 289,
+    currentUnderlyingPrice: 289,
+    underlyingPrice: 289,
+    contract: {
+      optionSymbol: "O:IWM260731P00289000",
+      side: "put",
+      strike: 289,
+      expiration: "2026-07-31",
+      bid: 2.17,
+      ask: 2.20,
+      spreadPct: 1.37,
+      quoteAgeMs: 500,
+      dte: 2,
+      volume: 281,
+      openInterest: 13_067,
+      iv: 0.3,
+      delta: -0.4252535575,
+      providerTimestamp: firstAt - 500,
+    },
+    entry: {
+      bid: 2.17,
+      ask: 2.20,
+      mid: 2.185,
+      spreadPct: 1.37,
+      quoteAgeMs: 500,
+      t1: 3.18,
+      t2: 4.17,
+      stop: 1.20,
+      methodology: "frozen_test",
+    },
+    featureSnapshot: {
+      underlying: {
+        velPct: -0.4,
+        accelPct: -0.2,
+        shortMomentumPct: -0.3,
+        trendSlopePctPerBar: -0.1,
+        aboveVwap: false,
+        lodBreak: true,
+      },
+      chain: { direction: "put" },
+    },
+  });
+  const first = await deliverOptionsCallout(
+    firstInput,
+    { getDb: () => d, send, now: () => firstAt },
+    bearishEnv,
+  );
+  assert.equal(first.state, "SENT", JSON.stringify(first));
+  assert.ok(first.opportunityCaseId);
+
+  const secondInput = {
+    ...firstInput,
+    strategy: "vwap_rejection",
+    decisionMs: secondAt,
+    contract: {
+      ...firstInput.contract,
+      optionSymbol: "O:IWM260729P00289000",
+      expiration: "2026-07-29",
+      bid: 1.85,
+      ask: 1.86,
+      spreadPct: 0.54,
+      dte: 0,
+      volume: 32_683,
+      openInterest: 6_044,
+      delta: -0.4855441423,
+      providerTimestamp: secondAt - 500,
+    },
+    entry: {
+      ...firstInput.entry,
+      bid: 1.85,
+      ask: 1.86,
+      mid: 1.855,
+      spreadPct: 0.54,
+      t1: 2.70,
+      t2: 3.54,
+      stop: 1.02,
+    },
+  };
+  const second = await deliverOptionsCallout(
+    secondInput,
+    { getDb: () => d, send, now: () => secondAt },
+    bearishEnv,
+  );
+  assert.equal(second.state, "REJECTED");
+  assert.equal(second.reason, "matching_active_thesis");
+  assert.equal(second.opportunityCaseId, first.opportunityCaseId);
+  assert.equal(sends, 1);
+
+  const thesis = opportunityThesisFingerprint(buildOpportunityThesisIdentity({
+    symbol: "IWM",
+    side: "put",
+    direction: "bearish",
+    nowMs: firstAt,
+  }));
+  assert.equal(
+    Number(d.prepare("SELECT COUNT(*) n FROM opportunity_thesis_active_index WHERE thesis_fingerprint=?").get(thesis).n),
+    1,
+  );
+  assert.equal(
+    Number(d.prepare("SELECT COUNT(*) n FROM opportunity_contract_candidates WHERE opportunity_case_id=?").get(first.opportunityCaseId).n),
+    2,
+  );
+  assert.equal(
+    Number(d.prepare("SELECT COUNT(*) n FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER'").get().n),
+    1,
+  );
+  const dossier = loadCaseJsonOnDb(d, first.opportunityCaseId);
+  assert.equal(dossier?.selectedContract?.optionSymbol, "O:IWM260731P00289000");
+  assert.equal(dossier?.frozenTrade?.entryMid, 2.185);
+  assert.equal(dossier?.frozenTrade?.targetT1, 3.18);
+  assert.equal(dossier?.frozenTrade?.targetT2, 4.17);
+  assert.equal(dossier?.frozenTrade?.stop, 1.20);
+  assert.equal(dossier?.discord?.messageId, "iwm-prod-1");
+  assert.equal(dossier?.contractCandidates?.length, 2);
+  assert.equal(dossier?.contractUpdates?.length, 1);
+  assert.equal(dossier?.contractUpdates?.[0]?.previousOptionSymbol, "O:IWM260731P00289000");
+  assert.equal(dossier?.contractUpdates?.[0]?.newOptionSymbol, "O:IWM260729P00289000");
+  assert.match(dossier?.contractUpdates?.[0]?.reason ?? "", /tighter_spread/);
+  assert.equal(dossier?.contractUpdates?.[0]?.expirationDifferenceDays, -2);
+  assert.equal(dossier?.contractUpdates?.[0]?.strikeDifference, 0);
+  assert.equal(dossier?.contractUpdates?.[0]?.originalContractRemainsValid, null);
+
+  let ownerPosts = 0;
+  const ownerAfterCanonical = await maybeSendBearishOwnerReview(
+    d,
+    {
+      deliveryInput: firstInput,
+      symbol: "IWM",
+      side: "put",
+      strategy: firstInput.strategy,
+      researchOnly: false,
+      tier: 0,
+      matchedSignals: 4,
+      requiredSignals: 4,
+      strategyScore: 1,
+      spreadPct: firstInput.contract.spreadPct,
+      openInterest: firstInput.contract.openInterest,
+      volume: firstInput.contract.volume,
+      fractionMove: 0.2,
+      levelProximityPct: 0.1,
+      nowMs: secondAt,
+    },
+    {
+      state: "BEARISH_READY",
+      maySubscriberSend: false,
+      ownerReview: true,
+      reasonCode: "bearish_ready_owner_review_only",
+      reasons: ["Repeat owner observation."],
+      blockers: [],
+      passed: ["support_break"],
+      actionableReason: "Repeat owner observation.",
+      invalidation: "Structure reclaimed.",
+    },
+    0.86,
+    0.75,
+    secondAt,
+    {
+      ...bearishEnv,
+      BEARISH_OWNER_ALERTS_ENABLED: "1",
+      DISCORD_WEBHOOK_OPTIONS: "https://discord.invalid/test",
+    },
+    async () => {
+      ownerPosts += 1;
+      return { ok: true, messageId: "must-not-send" };
+    },
+  );
+  assert.equal(ownerAfterCanonical.sent, false);
+  assert.equal(ownerAfterCanonical.reason, "MATCHING_ACTIVE_THESIS");
+  assert.equal(ownerPosts, 0, "canonical SEND owns the thesis opening");
+
+  const flipAt = secondAt + 60_000;
+  const callFlip = await deliverOptionsCallout(
+    mkInput({
+      candidateSymbol: "IWM",
+      strategy: "momentum_acceleration",
+      nowMs: flipAt,
+      decisionMs: flipAt,
+      observedUnderlyingPrice: 289,
+      currentUnderlyingPrice: 289,
+      underlyingPrice: 289,
+      contract: {
+        ...mkInput().contract,
+        optionSymbol: "O:IWM260731C00290000",
+        side: "call",
+        strike: 290,
+        expiration: "2026-07-31",
+        providerTimestamp: flipAt - 500,
+      },
+    }),
+    { getDb: () => d, send, now: () => flipAt },
+    bearishEnv,
+  );
+  assert.equal(callFlip.state, "SENT", "CALL direction owns a separate thesis");
+  assert.equal(sends, 2);
+  assert.equal(
+    Number(d.prepare("SELECT COUNT(*) n FROM opportunity_thesis_active_index WHERE symbol='IWM'").get().n),
+    2,
+  );
+
+  closeOpportunityOnDb(d, {
+    opportunityCaseId: first.opportunityCaseId,
+    nowMs: flipAt + 60_000,
+    invalidated: true,
+    returnPct: -10,
+    currentMark: 1.96,
+  });
+  const reopenedAt = flipAt + 120_000;
+  const reopenedPut = await deliverOptionsCallout(
+    {
+      ...secondInput,
+      decisionMs: reopenedAt,
+      contract: {
+        ...secondInput.contract,
+        providerTimestamp: reopenedAt - 500,
+      },
+    },
+    { getDb: () => d, send, now: () => reopenedAt },
+    bearishEnv,
+  );
+  assert.equal(reopenedPut.state, "SENT", "closed PUT thesis permits a fresh PUT opening");
+  assert.notEqual(reopenedPut.opportunityCaseId, first.opportunityCaseId);
+  assert.equal(sends, 3);
+});
+
+test("owner actionable wording and IWM contract churn share one thesis opening claim", async () => {
+  const d = installLifecycleSchema(new Database(":memory:"));
+  const firstAt = Date.parse("2026-07-29T14:25:48.376Z");
+  const secondAt = Date.parse("2026-07-29T15:43:54.474Z");
+  let posts = 0;
+  const postOverride = async () => ({
+    ok: true,
+    messageId: `owner-iwm-${++posts}`,
+    deliveryId: `delivery-${posts}`,
+  });
+  const authority = {
+    state: "BEARISH_READY",
+    maySubscriberSend: false,
+    ownerReview: true,
+    reasonCode: "bearish_ready_owner_review_only",
+    reasons: ["Support broke and bearish momentum increased."],
+    blockers: ["BEARISH_SUBSCRIBER_DELIVERY_ENABLED!=1"],
+    passed: ["support_break", "downside_momentum"],
+    actionableReason: "Support broke and bearish momentum increased.",
+    invalidation: "Exit if bearish structure is reclaimed.",
+  };
+  const submission = (at, strategy, contract, entry) => ({
+    deliveryInput: mkInput({
+      candidateSymbol: "IWM",
+      strategy,
+      nowMs: at,
+      decisionMs: at,
+      observedUnderlyingPrice: 289,
+      currentUnderlyingPrice: 289,
+      underlyingPrice: 289,
+      contract,
+      entry,
+    }),
+    symbol: "IWM",
+    side: "put",
+    strategy,
+    researchOnly: false,
+    tier: 0,
+    matchedSignals: 4,
+    requiredSignals: 4,
+    strategyScore: 1,
+    spreadPct: contract.spreadPct,
+    openInterest: contract.openInterest,
+    volume: contract.volume,
+    fractionMove: 0.2,
+    levelProximityPct: 0.1,
+    nowMs: at,
+  });
+  const firstContract = {
+    optionSymbol: "O:IWM260731P00289000",
+    side: "put",
+    strike: 289,
+    expiration: "2026-07-31",
+    bid: 2.17,
+    ask: 2.20,
+    spreadPct: 1.37,
+    quoteAgeMs: 500,
+    dte: 2,
+    volume: 281,
+    openInterest: 13_067,
+    iv: 0.3,
+    delta: -0.425,
+    providerTimestamp: firstAt - 500,
+  };
+  const firstEntry = {
+    bid: 2.17, ask: 2.20, mid: 2.185, spreadPct: 1.37, quoteAgeMs: 500,
+    t1: 3.18, t2: 4.17, stop: 1.20, methodology: "test",
+  };
+  const env = {
+    ...ENV,
+    DISCORD_WEBHOOK_OPTIONS: "https://discord.invalid/test",
+    BEARISH_OWNER_ALERTS_ENABLED: "1",
+  };
+  const first = await maybeSendBearishOwnerReview(
+    d,
+    submission(firstAt, "lower_high_continuation", firstContract, firstEntry),
+    authority,
+    0.86,
+    0.75,
+    firstAt,
+    env,
+    postOverride,
+  );
+  assert.equal(first.sent, true);
+
+  const secondContract = {
+    ...firstContract,
+    optionSymbol: "O:IWM260729P00289000",
+    expiration: "2026-07-29",
+    bid: 1.85,
+    ask: 1.86,
+    spreadPct: 0.54,
+    dte: 0,
+    volume: 32_683,
+    openInterest: 6_044,
+    delta: -0.486,
+    providerTimestamp: secondAt - 500,
+  };
+  const second = await maybeSendBearishOwnerReview(
+    d,
+    submission(secondAt, "vwap_rejection", secondContract, {
+      ...firstEntry,
+      bid: 1.85,
+      ask: 1.86,
+      mid: 1.855,
+      spreadPct: 0.54,
+      t1: 2.70,
+      t2: 3.54,
+      stop: 1.02,
+    }),
+    { ...authority, actionableReason: "Different wording must not create a new claim." },
+    0.85,
+    0.75,
+    secondAt,
+    env,
+    postOverride,
+  );
+  assert.equal(second.sent, false);
+  assert.equal(second.reason, "MATCHING_ACTIVE_THESIS");
+  assert.equal(posts, 1);
+  assert.equal(
+    Number(d.prepare("SELECT COUNT(*) n FROM opportunity_contract_candidates").get().n),
+    2,
+  );
+});
+
+test("opening claim write failure blocks Discord instead of failing open", async () => {
+  const d = installLifecycleSchema(new Database(":memory:"));
+  const t = ET(11, 0);
+  const failingDb = {
+    prepare(sql) {
+      const statement = d.prepare(sql);
+      if (/INSERT INTO opportunity_thesis_active_index/.test(sql)) {
+        return {
+          get: (...args) => statement.get(...args),
+          all: (...args) => statement.all(...args),
+          run: () => { throw new Error("simulated claim write failure"); },
+        };
+      }
+      return statement;
+    },
+  };
+  let sends = 0;
+  const out = await deliverOptionsCallout(
+    mkInput({ nowMs: t }),
+    {
+      getDb: () => failingDb,
+      send: async () => {
+        sends += 1;
+        return { ok: true, status: 204, messageId: "must-not-send", latencyMs: 1, ambiguous: false, error: null };
+      },
+      now: () => t,
+    },
+    ENV,
+  );
+  assert.equal(out.state, "REJECTED");
+  assert.match(out.reason, /^opportunity_claim_failed:/);
+  assert.equal(sends, 0);
+});
+
+test("thesis identity suppresses contract churn but permits close and new-session openings", async () => {
   const d = installLifecycleSchema(new Database(":memory:"));
   let sends = 0;
   const send = async () => {
@@ -244,7 +879,8 @@ test("12-15: different contract / direction / closed / new session can open agai
     { getDb: () => d, send, now: () => t + 1000 },
     ENV,
   );
-  assert.equal(differentStrike.state, "SENT", "different strike is a new opportunity");
+  assert.equal(differentStrike.state, "REJECTED", "strike change remains evidence on the active thesis");
+  assert.equal(differentStrike.reason, "matching_active_thesis");
 
   // Close first opportunity → re-entry of same fingerprint allowed
   closeOpportunityOnDb(d, { opportunityCaseId: a.opportunityCaseId, nowMs: t + 2000, returnPct: 10, currentMark: 5.7 });
@@ -260,7 +896,7 @@ test("12-15: different contract / direction / closed / new session can open agai
     getDb: () => d, send, now: () => nextDay,
   }, ENV);
   assert.equal(sessionFresh.state, "SENT", "new sessionDate allows a new opportunity");
-  assert.ok(sends >= 4);
+  assert.equal(sends, 3);
 });
 
 // ── Milestones ──────────────────────────────────────────────────────────────
@@ -497,8 +1133,8 @@ test("grader path sends Closed opportunity Discord reply on exit", async () => {
   );
   assert.equal(r.graded, 1);
   assert.ok((r.closesDelivered ?? 0) >= 1, "close Discord delivered");
-  const closePayload = payloads.find((p) => String(p.content || "").includes("CLOSED"));
-  assert.ok(closePayload, "closed Discord payload present");
+  const closePayload = payloads.find((p) => String(p.content || "").includes("TARGET 1 HIT"));
+  assert.ok(closePayload, "target-hit Discord payload present");
   assert.equal(closePayload.message_reference?.message_id, "open-msg-1");
   const oc = loadCaseJsonOnDb(d, claim.opportunityCaseId);
   assert.equal(oc?.summary?.currentStatus, "CLOSED");

@@ -239,7 +239,10 @@ CREATE TABLE IF NOT EXISTS discord_deliveries (
   response_body_safe TEXT,
   failure_reason TEXT,
   retry_count INTEGER NOT NULL DEFAULT 0,
-  next_retry_at TEXT
+  next_retry_at TEXT,
+  opportunity_case_id TEXT,
+  thesis_fingerprint TEXT,
+  lifecycle_state TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_discord_deliveries_status ON discord_deliveries(status, next_retry_at);
 CREATE INDEX IF NOT EXISTS idx_discord_deliveries_alert ON discord_deliveries(alert_id);
@@ -1441,6 +1444,7 @@ CREATE TABLE IF NOT EXISTS options_paper_trades (
   -- = shadow/experimental trades subscribers never see; LEGACY_UNCLASSIFIED = pre-foundation rows (quarantined
   -- from BOTH subscriber stats and research learning). Subscriber performance reads ONLY the delivered view.
   paper_kind TEXT, alert_id TEXT, entry_source TEXT, experiment_id TEXT, experiment_variant TEXT,
+  thesis_fingerprint TEXT,
   created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_options_paper_strategy ON options_paper_trades(strategy, side, dte);
@@ -1475,6 +1479,7 @@ CREATE TABLE IF NOT EXISTS options_alerts (
   -- the session state the alert fired in. Grading uses these exact values.
   session_state TEXT, entry_mid REAL, delivered_spread_pct REAL, quote_ts_ms INTEGER,
   target_t1 REAL, target_t2 REAL, target_stop REAL, target_method TEXT,
+  thesis_fingerprint TEXT,
   created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_options_alerts_state ON options_alerts(state, created_at_ms);
@@ -1694,6 +1699,55 @@ CREATE TABLE IF NOT EXISTS opportunity_active_index (
   updated_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_opportunity_active_symbol ON opportunity_active_index(symbol, session_date, lifecycle_status);
+
+-- Session thesis owns the one opening Discord message. Exact contract identity remains separate.
+CREATE TABLE IF NOT EXISTS opportunity_thesis_active_index (
+  thesis_fingerprint TEXT PRIMARY KEY,
+  opportunity_case_id TEXT NOT NULL UNIQUE,
+  symbol TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  option_type TEXT NOT NULL,
+  session_date TEXT NOT NULL,
+  lifecycle_status TEXT NOT NULL,
+  opening_source TEXT NOT NULL,
+  discord_message_id TEXT,
+  opened_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_opportunity_thesis_symbol
+  ON opportunity_thesis_active_index(symbol, direction, option_type, session_date, lifecycle_status);
+
+CREATE TABLE IF NOT EXISTS opportunity_contract_candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  thesis_fingerprint TEXT NOT NULL,
+  opportunity_case_id TEXT NOT NULL,
+  opportunity_fingerprint TEXT NOT NULL,
+  option_symbol TEXT NOT NULL,
+  previous_option_symbol TEXT,
+  side TEXT NOT NULL,
+  strike REAL NOT NULL,
+  expiration TEXT NOT NULL,
+  strategy_key TEXT NOT NULL,
+  observed_at_ms INTEGER NOT NULL,
+  bid REAL,
+  ask REAL,
+  spread_pct REAL,
+  delta REAL,
+  open_interest REAL,
+  volume REAL,
+  reason TEXT NOT NULL,
+  expiration_difference_days INTEGER,
+  strike_difference REAL,
+  previous_liquidity_json TEXT,
+  new_liquidity_json TEXT,
+  previous_spread_pct REAL,
+  previous_delta REAL,
+  original_contract_remains_valid INTEGER,
+  created_at_ms INTEGER NOT NULL,
+  UNIQUE(opportunity_case_id, opportunity_fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_opportunity_contract_candidates_case
+  ON opportunity_contract_candidates(opportunity_case_id, observed_at_ms);
 
 CREATE TABLE IF NOT EXISTS opportunity_milestones (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2253,6 +2307,17 @@ function migrate(db: Database.Database) {
       ...OPTIONS_CANDIDATES_INSTRUMENTATION_MIGRATIONS,
     ] as [string, string][]) if (!oc.has(col)) db.exec(sql);
   }
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='discord_deliveries'").get()) {
+    const dd = cols("discord_deliveries");
+    for (const [col, sql] of [
+      ["opportunity_case_id", "ALTER TABLE discord_deliveries ADD COLUMN opportunity_case_id TEXT"],
+      ["thesis_fingerprint", "ALTER TABLE discord_deliveries ADD COLUMN thesis_fingerprint TEXT"],
+      ["lifecycle_state", "ALTER TABLE discord_deliveries ADD COLUMN lifecycle_state TEXT"],
+    ] as [string, string][]) if (!dd.has(col)) db.exec(sql);
+    db.prepare(
+      "CREATE INDEX IF NOT EXISTS idx_discord_deliveries_thesis ON discord_deliveries(thesis_fingerprint, lifecycle_state, status)",
+    ).run();
+  }
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_paper_trades'").get()) {
     const op = cols("options_paper_trades");
     for (const [col, sql] of [
@@ -2278,6 +2343,7 @@ function migrate(db: Database.Database) {
       ["account_risk_usd", "ALTER TABLE options_paper_trades ADD COLUMN account_risk_usd REAL"],
       ["fingerprint", "ALTER TABLE options_paper_trades ADD COLUMN fingerprint TEXT"],
       ["contract_alts_json", "ALTER TABLE options_paper_trades ADD COLUMN contract_alts_json TEXT"],
+      ["thesis_fingerprint", "ALTER TABLE options_paper_trades ADD COLUMN thesis_fingerprint TEXT"],
     ] as [string, string][]) if (!op.has(col)) db.exec(sql);
     // Backfill legacy rows to a QUARANTINE kind: pre-foundation trades cannot be proven as delivered
     // mirrors, so they must never count as subscriber performance — and they aren't Lab experiments
@@ -2287,12 +2353,16 @@ function migrate(db: Database.Database) {
     db.prepare("CREATE INDEX IF NOT EXISTS idx_options_paper_kind_status ON options_paper_trades(paper_kind, status)").run();
     db.prepare("CREATE INDEX IF NOT EXISTS idx_options_paper_kind_fp ON options_paper_trades(paper_kind, fingerprint)").run();
     db.prepare("CREATE INDEX IF NOT EXISTS idx_options_paper_kind_entered ON options_paper_trades(paper_kind, entered_at_ms)").run();
+    db.prepare(
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_options_paper_one_active_thesis ON options_paper_trades(thesis_fingerprint) WHERE status='ENTERED' AND thesis_fingerprint IS NOT NULL",
+    ).run();
     // STRUCTURAL separation: subscriber stats read ONLY the delivered view; the (future) Research Lab
     // reads ONLY the research view. A view physically cannot return the other kind — mixing is impossible.
     // Created here (after the ALTER) so paper_kind is guaranteed to exist. Repeat-safe.
     db.exec("CREATE VIEW IF NOT EXISTS options_paper_delivered AS SELECT * FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER'");
     db.exec("CREATE VIEW IF NOT EXISTS options_paper_research AS SELECT * FROM options_paper_trades WHERE paper_kind='RESEARCH_ONLY_PAPER'");
     db.exec("CREATE VIEW IF NOT EXISTS options_paper_zero_dte_research AS SELECT * FROM options_paper_trades WHERE paper_kind='ZERO_DTE_RESEARCH_PAPER'");
+    db.exec("CREATE VIEW IF NOT EXISTS options_paper_bearish_research AS SELECT * FROM options_paper_trades WHERE paper_kind='BEARISH_RESEARCH_PAPER'");
     db.exec(`CREATE TABLE IF NOT EXISTS paper_0dte_account_state (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       equity_usd REAL NOT NULL,
@@ -2316,11 +2386,13 @@ function migrate(db: Database.Database) {
       ["target_method", "ALTER TABLE options_alerts ADD COLUMN target_method TEXT"],
       ["opportunity_case_id", "ALTER TABLE options_alerts ADD COLUMN opportunity_case_id TEXT"],
       ["opportunity_fingerprint", "ALTER TABLE options_alerts ADD COLUMN opportunity_fingerprint TEXT"],
+      ["thesis_fingerprint", "ALTER TABLE options_alerts ADD COLUMN thesis_fingerprint TEXT"],
       ["discord_message_id", "ALTER TABLE options_alerts ADD COLUMN discord_message_id TEXT"],
       ...OPTIONS_ALERTS_INSTRUMENTATION_MIGRATIONS,
     ] as [string, string][]) if (!oa.has(col)) db.exec(sql);
     db.prepare("CREATE INDEX IF NOT EXISTS idx_options_alerts_opportunity ON options_alerts(opportunity_case_id, state)").run();
     db.prepare("CREATE INDEX IF NOT EXISTS idx_options_alerts_fingerprint ON options_alerts(opportunity_fingerprint, state)").run();
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_options_alerts_thesis ON options_alerts(thesis_fingerprint, state)").run();
   }
   // Living Opportunity Case columns (additive, repeat-safe).
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='opportunity_cases'").get()) {
@@ -2334,8 +2406,11 @@ function migrate(db: Database.Database) {
       ["discord_message_id", "ALTER TABLE opportunity_cases ADD COLUMN discord_message_id TEXT"],
       ["discord_thread_id", "ALTER TABLE opportunity_cases ADD COLUMN discord_thread_id TEXT"],
       ["opening_delivered_at_ms", "ALTER TABLE opportunity_cases ADD COLUMN opening_delivered_at_ms INTEGER"],
+      ["thesis_fingerprint", "ALTER TABLE opportunity_cases ADD COLUMN thesis_fingerprint TEXT"],
+      ["opening_source", "ALTER TABLE opportunity_cases ADD COLUMN opening_source TEXT"],
     ] as [string, string][]) if (!ocCols.has(col)) db.exec(sql);
     db.prepare("CREATE INDEX IF NOT EXISTS idx_opportunity_cases_fingerprint ON opportunity_cases(lifecycle_status, opportunity_fingerprint, session_date)").run();
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_opportunity_cases_thesis ON opportunity_cases(lifecycle_status, thesis_fingerprint, session_date)").run();
   }
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_delivery_decisions'").get()) {
     ensureOptionsDeliveryDecisionsColumns(db);

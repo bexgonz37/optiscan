@@ -62,11 +62,13 @@ interface PaperDb { prepare(sql: string): { get?: (...a: any[]) => any; run: (..
 /** Audience classification — the STRUCTURAL separator for the AI Research Lab data foundation.
  *  DELIVERED_ALERT_PAPER is the exact mirror of a delivered Discord alert; RESEARCH_ONLY_PAPER is a
  *  shadow/experiment subscribers never see; ZERO_DTE_RESEARCH_PAPER is the Aggressive 0DTE Research
- *  $100k ledger (simulated only). They are never combined in readiness or delivered stats. */
-export type PaperKind = "DELIVERED_ALERT_PAPER" | "RESEARCH_ONLY_PAPER" | "ZERO_DTE_RESEARCH_PAPER";
+ *  $100k ledger (simulated only); BEARISH_RESEARCH_PAPER is a separately funded, qualified-PUT
+ *  research lane. They are never combined in readiness or delivered stats. */
+export type PaperKind = "DELIVERED_ALERT_PAPER" | "RESEARCH_ONLY_PAPER" | "ZERO_DTE_RESEARCH_PAPER" | "BEARISH_RESEARCH_PAPER";
 export interface PaperPersistExtra {
   session?: string | null; coreBroad?: string | null; featureSnapshotJson?: string;
   paperKind?: PaperKind; alertId?: string | null; entrySource?: string; experimentId?: string | null; experimentVariant?: string | null;
+  thesisFingerprint?: string | null;
 }
 
 const PAPER_COLS = "option_symbol, side, strike, expiration, dte, result_class, bid, ask, mid, spread_pct, entry_fill, volume, open_interest, iv, delta, underlying_price, strategy, target, invalidation, provenance, status, session, core_broad, feature_snapshot_json, paper_kind, alert_id, entry_source, experiment_id, experiment_variant, entered_at_ms, created_at_ms, updated_at_ms";
@@ -78,20 +80,39 @@ const paperVals = (e: RealOptionEntry, extra: PaperPersistExtra, kind: PaperKind
 /** Persist a real-option paper entry with the decision-time context. FAIL-SAFE: defaults to
  *  RESEARCH_ONLY_PAPER — a trade is NEVER counted as a delivered subscriber mirror unless a caller
  *  explicitly says so (see persistDeliveredMirrorOnDb). Flag-gated OnDb. */
-export function persistRealOptionPaperOnDb(db: PaperDb, e: RealOptionEntry, nowMs: number = Date.now(), extra: PaperPersistExtra = {}): void {
+export function persistRealOptionPaperOnDb(
+  db: PaperDb,
+  e: RealOptionEntry,
+  nowMs: number = Date.now(),
+  extra: PaperPersistExtra = {},
+): number {
   const kind: PaperKind = extra.paperKind ?? "RESEARCH_ONLY_PAPER";
   const entrySource = extra.entrySource ?? (
     kind === "DELIVERED_ALERT_PAPER" ? "discord_delivery"
       : kind === "ZERO_DTE_RESEARCH_PAPER" ? "zero_dte_research"
+        : kind === "BEARISH_RESEARCH_PAPER" ? "bearish_research"
         : "monitor_shadow"
   );
   const r = db.prepare(`INSERT INTO options_paper_trades (${PAPER_COLS}) VALUES (${PAPER_PLACEHOLDERS})`).run(...paperVals(e, extra, kind, entrySource, nowMs));
   const tradeId = Number((r as { lastInsertRowid?: number | bigint }).lastInsertRowid ?? 0);
   if (tradeId > 0) {
+    if (extra.thesisFingerprint) {
+      try {
+        db.prepare(
+          "UPDATE options_paper_trades SET thesis_fingerprint=? WHERE id=?",
+        ).run(extra.thesisFingerprint, tradeId);
+      } catch (error) {
+        try {
+          db.prepare("DELETE FROM options_paper_trades WHERE id=?").run(tradeId);
+        } catch { /* best effort rollback */ }
+        throw error;
+      }
+    }
     try {
       dualWriteAfterOptionsPaperEntry(db as BrokerDb, tradeId);
     } catch { /* dual-write is best-effort; legacy write is authoritative */ }
   }
+  return tradeId;
 }
 
 /**
@@ -111,6 +132,18 @@ export function persistDeliveredMirrorOnDb(db: PaperDb, e: RealOptionEntry, deci
   if ((r.changes ?? 0) > 0) {
     const row = db.prepare?.("SELECT id FROM options_paper_trades WHERE alert_id=? AND paper_kind='DELIVERED_ALERT_PAPER' LIMIT 1").get?.(alertId) as { id?: number } | undefined;
     if (row?.id) {
+      if (extra.thesisFingerprint) {
+        try {
+          db.prepare(
+            "UPDATE options_paper_trades SET thesis_fingerprint=? WHERE id=?",
+          ).run(extra.thesisFingerprint, row.id);
+        } catch (error) {
+          try {
+            db.prepare("DELETE FROM options_paper_trades WHERE id=?").run(row.id);
+          } catch { /* best effort rollback */ }
+          throw error;
+        }
+      }
       try {
         dualWriteAfterOptionsPaperEntry(db as BrokerDb, row.id);
       } catch { /* best-effort */ }
@@ -129,14 +162,42 @@ const occSym = (occ: string) => occ.match(/^O:([A-Z]+)/)?.[1] ?? "";
 
 /** Guard a real-option paper entry: dedup (symbol+strategy+contract+time-bucket), max concurrent open
  *  positions, and per-symbol exposure. Pure over the DB (read-only). */
-export function canOpenRealOptionPaper(db: GateDb, i: { optionSymbol: string; strategy: string; nowMs: number }, cfg: OpenPaperGateCfg = defaultOpenPaperGate()): { ok: boolean; reason: string | null } {
+export function canOpenRealOptionPaper(
+  db: GateDb,
+  i: {
+    optionSymbol: string;
+    strategy: string;
+    nowMs: number;
+    paperKind?: PaperKind;
+    thesisFingerprint?: string | null;
+  },
+  cfg: OpenPaperGateCfg = defaultOpenPaperGate(),
+): { ok: boolean; reason: string | null } {
+  if (i.thesisFingerprint && i.paperKind) {
+    try {
+      const activeThesis = db.prepare(
+        `SELECT 1 FROM options_paper_trades
+         WHERE thesis_fingerprint=? AND status='ENTERED'
+         LIMIT 1`,
+      ).get(i.thesisFingerprint);
+      if (activeThesis) return { ok: false, reason: "active_paper_position_for_thesis" };
+    } catch {
+      return { ok: false, reason: "paper_thesis_schema_unavailable" };
+    }
+  }
   const bucketStart = i.nowMs - (i.nowMs % cfg.bucketMs);
-  const dup = db.prepare("SELECT 1 FROM options_paper_trades WHERE option_symbol=? AND strategy=? AND created_at_ms >= ? LIMIT 1").get(i.optionSymbol, i.strategy, bucketStart);
+  const dup = i.paperKind
+    ? db.prepare("SELECT 1 FROM options_paper_trades WHERE paper_kind=? AND option_symbol=? AND strategy=? AND created_at_ms >= ? LIMIT 1").get(i.paperKind, i.optionSymbol, i.strategy, bucketStart)
+    : db.prepare("SELECT 1 FROM options_paper_trades WHERE option_symbol=? AND strategy=? AND created_at_ms >= ? LIMIT 1").get(i.optionSymbol, i.strategy, bucketStart);
   if (dup) return { ok: false, reason: "duplicate_in_time_bucket" };
-  const openN = Number((db.prepare("SELECT COUNT(*) n FROM options_paper_trades WHERE status='ENTERED'").get() as any)?.n ?? 0);
+  const openN = Number((i.paperKind
+    ? db.prepare("SELECT COUNT(*) n FROM options_paper_trades WHERE paper_kind=? AND status='ENTERED'").get(i.paperKind)
+    : db.prepare("SELECT COUNT(*) n FROM options_paper_trades WHERE status='ENTERED'").get() as any)?.n ?? 0);
   if (openN >= cfg.maxConcurrent) return { ok: false, reason: "max_concurrent_positions" };
   const sym = occSym(i.optionSymbol);
-  const symN = Number((db.prepare("SELECT COUNT(*) n FROM options_paper_trades WHERE status='ENTERED' AND option_symbol LIKE ?").get(`O:${sym}%`) as any)?.n ?? 0);
+  const symN = Number((i.paperKind
+    ? db.prepare("SELECT COUNT(*) n FROM options_paper_trades WHERE paper_kind=? AND status='ENTERED' AND option_symbol LIKE ?").get(i.paperKind, `O:${sym}%`)
+    : db.prepare("SELECT COUNT(*) n FROM options_paper_trades WHERE status='ENTERED' AND option_symbol LIKE ?").get(`O:${sym}%`) as any)?.n ?? 0);
   if (symN >= cfg.maxPerSymbol) return { ok: false, reason: "per_symbol_exposure" };
   return { ok: true, reason: null };
 }

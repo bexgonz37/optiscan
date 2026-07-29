@@ -24,6 +24,7 @@ export interface OvernightRecommendation {
   executable: false;
   rank: number;
   priorContractContext: string | null;
+  status?: WatchlistRowStatus;
 }
 
 export interface OvernightPlan {
@@ -329,7 +330,7 @@ export function normalizeWatchlistPlan(plan: OvernightPlan): NormalizedWatchlist
     invalidation: numericTrigger(r.invalidationLevel),
     confidenceBand: confidenceBand(r.confidence),
     catalyst: plan.marketContext.newsNote || "not stored",
-    status: r.triggerLevel == null ? "VERIFY AT OPEN" : "WATCH",
+    status: r.status ?? (r.triggerLevel == null ? "VERIFY AT OPEN" : "WATCH"),
     preferredDte: r.preferredDteRange,
     preferredMoneyness: r.preferredMoneyness,
   }));

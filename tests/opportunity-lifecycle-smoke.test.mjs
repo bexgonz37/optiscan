@@ -12,7 +12,7 @@ function install(d) {
       discord_status INTEGER, latency_ms INTEGER, retry_count INTEGER NOT NULL DEFAULT 0, failure_reason TEXT,
       attempted_at_ms INTEGER, sent_at_ms INTEGER, session_state TEXT, entry_mid REAL, delivered_spread_pct REAL,
       quote_ts_ms INTEGER, target_t1 REAL, target_t2 REAL, target_stop REAL, target_method TEXT,
-      opportunity_case_id TEXT, opportunity_fingerprint TEXT, discord_message_id TEXT,
+      opportunity_case_id TEXT, opportunity_fingerprint TEXT, thesis_fingerprint TEXT, discord_message_id TEXT,
       created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
     );
     CREATE TABLE options_paper_trades (
@@ -22,8 +22,12 @@ function install(d) {
       strategy TEXT, target REAL, invalidation REAL, provenance TEXT, status TEXT NOT NULL,
       exit_fill REAL, pnl REAL, return_pct REAL, exit_reason TEXT, entered_at_ms INTEGER, exit_at_ms INTEGER,
       session TEXT, core_broad TEXT, feature_snapshot_json TEXT, paper_kind TEXT, alert_id TEXT, entry_source TEXT,
-      experiment_id TEXT, experiment_variant TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
+      experiment_id TEXT, experiment_variant TEXT, thesis_fingerprint TEXT,
+      created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
     );
+    CREATE UNIQUE INDEX options_paper_one_active_thesis_idx
+      ON options_paper_trades(thesis_fingerprint)
+      WHERE status='ENTERED' AND thesis_fingerprint IS NOT NULL;
     CREATE VIEW options_paper_delivered AS SELECT * FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER';
     CREATE TABLE opportunity_cases (
       opportunity_id TEXT PRIMARY KEY, underlying_symbol TEXT NOT NULL, direction TEXT, setup_family TEXT,
@@ -31,12 +35,31 @@ function install(d) {
       acceptance_decision TEXT NOT NULL, delivery_decision TEXT NOT NULL, rejection_reason_codes_json TEXT,
       alert_id TEXT, case_json TEXT NOT NULL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
       opportunity_fingerprint TEXT, session_date TEXT, lifecycle_status TEXT, summary_json TEXT,
-      discord_channel_id TEXT, discord_message_id TEXT, discord_thread_id TEXT, opening_delivered_at_ms INTEGER
+      discord_channel_id TEXT, discord_message_id TEXT, discord_thread_id TEXT, opening_delivered_at_ms INTEGER,
+      thesis_fingerprint TEXT, opening_source TEXT
     );
     CREATE TABLE opportunity_active_index (
       opportunity_fingerprint TEXT PRIMARY KEY, opportunity_case_id TEXT NOT NULL UNIQUE,
       symbol TEXT NOT NULL, session_date TEXT NOT NULL, strategy_key TEXT, lifecycle_status TEXT NOT NULL,
       opened_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
+    );
+    CREATE TABLE opportunity_thesis_active_index (
+      thesis_fingerprint TEXT PRIMARY KEY, opportunity_case_id TEXT NOT NULL UNIQUE,
+      symbol TEXT NOT NULL, direction TEXT NOT NULL, option_type TEXT NOT NULL,
+      session_date TEXT NOT NULL, lifecycle_status TEXT NOT NULL,
+      opened_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
+      discord_message_id TEXT, opening_source TEXT
+    );
+    CREATE TABLE opportunity_contract_candidates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, opportunity_case_id TEXT NOT NULL,
+      thesis_fingerprint TEXT NOT NULL, opportunity_fingerprint TEXT NOT NULL,
+      option_symbol TEXT NOT NULL, previous_option_symbol TEXT, reason TEXT NOT NULL,
+      observed_at_ms INTEGER NOT NULL, expiration TEXT, previous_expiration TEXT,
+      strike REAL, previous_strike REAL, expiration_difference_days INTEGER,
+      strike_difference REAL, liquidity_json TEXT, spread_json TEXT, delta_json TEXT,
+      original_contract_remains_valid INTEGER, details_json TEXT,
+      created_at_ms INTEGER NOT NULL,
+      UNIQUE(opportunity_case_id, opportunity_fingerprint)
     );
     CREATE TABLE opportunity_milestones (
       id INTEGER PRIMARY KEY AUTOINCREMENT, opportunity_case_id TEXT NOT NULL, event_key TEXT NOT NULL,

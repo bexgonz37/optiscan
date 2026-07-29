@@ -11,6 +11,7 @@ import type { ChainContract } from "./loop.ts";
 import { tier2Eligible, type Session } from "./discovery.ts";
 import { deriveDecisionLevels } from "./levels.ts";
 import type { Bar } from "./features.ts";
+import { quoteFreshness } from "../../quote-freshness.ts";
 
 type PrevChange = { change: number; atMs: number };
 type BarsCache = Map<string, { at: number; bars: Bar[] }>;
@@ -40,12 +41,12 @@ function toSnapshot(q: any, prev: Map<string, PrevChange>, nowMs: number): Under
   };
 }
 
-function mapOptionContracts(raw: any[], nowMs: number): ChainContract[] {
+function mapOptionContracts(raw: any[]): ChainContract[] {
   return (raw ?? []).map((c: any): ChainContract => ({
     optionSymbol: c.optionSymbol ?? c.symbol ?? c.ticker ?? "", side: String(c.side ?? c.contract_type ?? "").toLowerCase() === "put" ? "put" : "call",
     strike: Number(c.strike ?? c.strike_price), expiration: c.expiration ?? c.expiration_date ?? "", dte: Number(c.dte ?? 0),
     bid: c.bid ?? null, ask: c.ask ?? null, spreadPct: c.spreadPct ?? null, volume: c.volume ?? null, openInterest: c.openInterest ?? c.open_interest ?? null,
-    iv: c.iv ?? c.implied_volatility ?? null, delta: c.delta ?? null, providerTimestamp: c.providerTimestamp ?? nowMs,
+    iv: c.iv ?? c.implied_volatility ?? null, delta: c.delta ?? null, providerTimestamp: c.providerTimestamp ?? null,
   })).filter((c: ChainContract) => c.optionSymbol && Number.isFinite(c.strike));
 }
 
@@ -88,7 +89,7 @@ export function buildLiveOptionsDeps(): OptionsMonitorDeps {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { fetchOptionChain } = require("@/lib/polygon-provider");
       const res = await fetchOptionChain(symbol, { dteMin: 0, dteMax: 14, maxPages: 2 });
-      return res?.available ? mapOptionContracts(res.contracts, Date.now()) : [];
+      return res?.available ? mapOptionContracts(res.contracts) : [];
     },
     tier2Universe: async () => {
       const nowMs = Date.now();
@@ -116,9 +117,9 @@ export function buildLiveGradeDeps(): {
       const res = await fetchOptionChain(underlyingSymbol, { dteMin: 0, dteMax: 60, maxPages: 3 });
       if (!res?.available) return null;
       const nowMs = Date.now();
-      const c = mapOptionContracts(res.contracts, nowMs).find((x) => x.optionSymbol === optionSymbol);
+      const c = mapOptionContracts(res.contracts).find((x) => x.optionSymbol === optionSymbol);
       if (!c) return null;
-      return { bid: c.bid, ask: c.ask, quoteAgeMs: c.providerTimestamp != null ? nowMs - c.providerTimestamp : null };
+      return { bid: c.bid, ask: c.ask, quoteAgeMs: quoteFreshness(c.providerTimestamp, nowMs).ageMs };
     },
     fetchUnderlying: async (symbol: string) => {
       const quotes = await marketSnapshot(Date.now());

@@ -74,10 +74,11 @@ const STATE_CLASS: Record<string, string> = {
 };
 
 function PaperPageInner() {
-  const [tab, setTab] = useState<"delivered" | "0dte" | "stock" | "shadow">("delivered");
+  const [tab, setTab] = useState<"delivered" | "0dte" | "bearish" | "stock" | "shadow">("delivered");
   const [data, setData] = useState<any>(null);
   const [zeroDte, setZeroDte] = useState<any>(null);
   const [deliveredChain, setDeliveredChain] = useState<any>(null);
+  const [bearishResearch, setBearishResearch] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [recentAlerts, setRecentAlerts] = useState<any[]>([]);
@@ -86,7 +87,7 @@ function PaperPageInner() {
   useEffect(() => {
     try {
       const q = new URLSearchParams(window.location.search).get("tab");
-      if (q === "0dte" || q === "delivered" || q === "stock" || q === "shadow") setTab(q);
+      if (q === "0dte" || q === "delivered" || q === "bearish" || q === "stock" || q === "shadow") setTab(q);
     } catch { /* ignore */ }
   }, []);
 
@@ -117,6 +118,14 @@ function PaperPageInner() {
     } catch { /* best effort */ }
   }, []);
 
+  const loadBearishResearch = useCallback(async () => {
+    try {
+      const res = await fetch("/api/research/options/bearish-research", { cache: "no-store", headers: scanHeaders() });
+      const d = await res.json();
+      if (d?.ok) setBearishResearch(d);
+    } catch { /* best effort */ }
+  }, []);
+
   const loadAlerts = useCallback(async () => {
     try {
       const res = await fetch("/api/alerts?limit=12", { cache: "no-store", headers: scanHeaders() });
@@ -130,13 +139,15 @@ function PaperPageInner() {
     loadAlerts();
     loadZeroDte();
     loadDelivered();
+    loadBearishResearch();
     const t = setInterval(() => {
       load();
       if (tab === "0dte") loadZeroDte();
       if (tab === "delivered") loadDelivered();
+      if (tab === "bearish") loadBearishResearch();
     }, 7_000);
     return () => clearInterval(t);
-  }, [load, loadAlerts, loadZeroDte, loadDelivered, tab]);
+  }, [load, loadAlerts, loadZeroDte, loadDelivered, loadBearishResearch, tab]);
 
   const switchTab = (next: typeof tab) => {
     setTab(next);
@@ -173,16 +184,16 @@ function PaperPageInner() {
     await load();
   }, [load]);
 
-  const s: Summary | null = data?.summary ?? null;
-  const optionsPerf: any = data?.optionsPerformance ?? null;
+  const s: Summary | null = data?.stockLane?.summary ?? null;
+  const optionsPerf: any = null;
   const challenge: any = data?.challenge ?? null;
   const engine = data?.engine ?? null;
-  const account: PaperAccount | null = data?.account ?? null;
-  const trades: any[] = data?.trades ?? [];
+  const account: PaperAccount | null = data?.stockLane?.account ?? null;
+  const trades: any[] = data?.stockLane?.trades ?? [];
   const decisions: any[] = data?.decisions ?? [];
   const events: any[] = data?.events ?? [];
   const daily = data?.daily ?? null;
-  const buckets = data?.buckets ?? {};
+  const buckets = data?.stockLane?.buckets ?? {};
   const open = trades.filter((t) => ["WATCHING", "READY", "ENTERED"].includes(t.status));
   const closed = trades.filter((t) => !["WATCHING", "READY", "ENTERED"].includes(t.status));
   const filledClosed = closed.filter((t) => t.entryPrice != null && t.exitPrice != null);
@@ -198,13 +209,15 @@ function PaperPageInner() {
         <div className="paper-account-tabs" style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
           <a href="/paper?tab=delivered" className="ui-btn ui-btn-sm" style={{ textDecoration: "none" }}>Delivered Options</a>
           <a href="/paper/0dte" className="ui-btn ui-btn-sm" style={{ textDecoration: "none" }}>Aggressive 0DTE</a>
+          <a href="/paper?tab=bearish" className="ui-btn ui-btn-sm" style={{ textDecoration: "none" }}>Bearish Research</a>
           <a href="/paper?tab=stock" className="ui-btn ui-btn-sm" style={{ textDecoration: "none" }}>Stock Paper</a>
         </div>
         <div className="paper-account-tabs" style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
           {([
             ["delivered", "Delivered Options"],
-            ["0dte", "0DTE Research (legacy)"],
-            ["stock", "Stock Paper (legacy)"],
+            ["0dte", "Aggressive 0DTE Research"],
+            ["bearish", "Bearish Research Paper"],
+            ["stock", "Stock Paper"],
             ["shadow", "Shadow / Historical"],
           ] as const).map(([id, label]) => (
             <button
@@ -231,6 +244,7 @@ function PaperPageInner() {
               <>
                 <div className="axiom-strip paper-strip" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(120px,1fr))", gap: 8 }}>
                   <StatTile label="Equity" value={dollars(zeroDte.snapshot?.account?.equityUsd)} />
+                  <StatTile label="Starting balance" value={dollars(zeroDte.config?.startingBalanceUsd)} />
                   <StatTile label="Daily P&L" value={dollars(zeroDte.snapshot?.account?.dailyPnlUsd)} />
                   <StatTile label="Unrealized" value={dollars(zeroDte.snapshot?.account?.unrealizedPnlUsd)} />
                   <StatTile label="Realized" value={dollars(zeroDte.snapshot?.account?.realizedPnlUsd)} />
@@ -279,13 +293,15 @@ function PaperPageInner() {
 
         {tab === "delivered" ? (
           <section className="panel main">
-            <h2 className="section-title">Delivered Options</h2>
+            <h2 className="section-title">Delivered Options Paper</h2>
             <p className="muted text-sm">
               Verified subscriber lane: private Discord alerts with opening-message proof and their DELIVERED_ALERT_PAPER mirrors.
               $ P&amp;L assumes 1 contract × 100 multiplier.
             </p>
             <div className="axiom-strip paper-strip" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(120px,1fr))", gap: 8, marginBottom: 12 }}>
               <StatTile label="Link rate 24h" value={deliveredChain?.paperLinkRate == null ? "—" : `${Math.round(Number(deliveredChain.paperLinkRate) * 100)}%`} />
+              <StatTile label="Starting balance" value={dollars(deliveredChain?.account?.startingBalanceUsd)} />
+              <StatTile label="Current equity" value={dollars(deliveredChain?.account?.currentEquityUsd)} />
               <StatTile label="Sent 24h" value={String(deliveredChain?.sent24h ?? 0)} />
               <StatTile label="Linked 24h" value={String(deliveredChain?.linked24h ?? 0)} />
               <StatTile label="Verified $ P&L" value={dollars(deliveredChain?.verifiedSumPnlUsd)} />
@@ -319,6 +335,41 @@ function PaperPageInner() {
           </section>
         ) : null}
 
+        {tab === "bearish" ? (
+          <section className="panel main">
+            <h2 className="section-title">Bearish Research Paper</h2>
+            <p className="muted text-sm">
+              Qualified PUT setups that passed bearish authority but remain research paper. This account never contributes to delivered performance.
+            </p>
+            <div className="axiom-strip paper-strip" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(120px,1fr))", gap: 8, marginBottom: 12 }}>
+              <StatTile label="Starting balance" value={dollars(bearishResearch?.snapshot?.account?.startingBalanceUsd)} />
+              <StatTile label="Current equity" value={dollars(bearishResearch?.snapshot?.account?.currentEquityUsd)} />
+              <StatTile label="Realized P&L" value={dollars(bearishResearch?.snapshot?.realizedPnlUsd)} />
+              <StatTile label="Unrealized P&L" value={dollars(bearishResearch?.snapshot?.unrealizedPnlUsd)} />
+              <StatTile label="Open trades" value={String(bearishResearch?.snapshot?.open?.length ?? 0)} />
+              <StatTile label="Lane status" value={bearishResearch?.config?.enabled ? "ARMED" : "IDLE"} />
+            </div>
+            <table className="mini-table" style={{ width: "100%" }}>
+              <thead><tr><th>Contract</th><th>Strategy</th><th>Status</th><th>Entry</th><th>Return</th><th>P&L</th></tr></thead>
+              <tbody>
+                {(bearishResearch?.snapshot?.recent ?? []).map((row: any) => (
+                  <tr key={row.id}>
+                    <td>{row.option_symbol}</td>
+                    <td>{row.strategy}</td>
+                    <td>{row.status}</td>
+                    <td>{row.entry_fill == null ? "—" : `$${Number(row.entry_fill).toFixed(2)}`}</td>
+                    <td>{num(row.last_mark_return_pct ?? row.return_pct, "%")}</td>
+                    <td>{dollars(row.pnl)}</td>
+                  </tr>
+                ))}
+                {(bearishResearch?.snapshot?.recent ?? []).length === 0 ? (
+                  <tr><td colSpan={6} className="muted">No qualified bearish research-paper entries yet</td></tr>
+                ) : null}
+              </tbody>
+            </table>
+          </section>
+        ) : null}
+
         {tab === "shadow" ? (
           <section className="panel main">
             <h2 className="section-title">Shadow / Historical</h2>
@@ -327,6 +378,12 @@ function PaperPageInner() {
               <a href="/shadow-soak">Shadow Soak</a> and Pipeline Health for deep diagnostics.
               Legacy RESEARCH_ONLY_PAPER rows stay here — never in Delivered or 0DTE Research tabs.
             </p>
+            <div className="axiom-strip paper-strip" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(140px,1fr))", gap: 8, marginTop: 12 }}>
+              <StatTile label="Legacy Paper start" value={dollars(data?.legacyLane?.account?.startingBalance)} />
+              <StatTile label="Legacy Paper equity" value={dollars(data?.legacyLane?.account?.equity)} />
+              <StatTile label="Legacy Paper P&L" value={dollars(data?.legacyLane?.account?.realizedPnl)} />
+              <StatTile label="Legacy audit rows" value={String(data?.legacyLane?.trades?.length ?? 0)} />
+            </div>
           </section>
         ) : null}
 

@@ -88,7 +88,7 @@ test("5. dedup is DB-based → survives a restart (no duplicate alert, no duplic
   const d = db();
   let sends = 0;
   const send = async () => { sends += 1; return { ok: true, status: 204, messageId: "m1", latencyMs: 5, ambiguous: false, error: null }; };
-  const input = { candidateSymbol: "NVDA", strategy: "momentum_acceleration", researchOnly: false, contract: { optionSymbol: "O:NVDA260117C00100000", side: "call", strike: 100, expiration: "2026-01-17", bid: 1.0, ask: 1.1, spreadPct: 5, quoteAgeMs: 1000 }, message: "buy", observedUnderlyingPrice: 100, currentUnderlyingPrice: 100, chaseLimitPct: 5, underlyingPrice: 100 };
+  const input = { candidateSymbol: "NVDA", strategy: "momentum_acceleration", researchOnly: false, contract: { optionSymbol: "O:NVDA260117C00100000", side: "call", strike: 100, expiration: "2026-01-17", bid: 1.0, ask: 1.1, spreadPct: 5, quoteAgeMs: 1000, providerTimestamp: NOW - 1000 }, message: "buy", observedUnderlyingPrice: 100, currentUnderlyingPrice: 100, chaseLimitPct: 5, underlyingPrice: 100 };
   const env = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1", EARLY_OPTIONS_CALLOUTS_ENABLED: "1" };
   const first = await deliverOptionsCallout(input, { getDb: () => d, send, now: () => NOW }, env);
   assert.equal(first.state, "SENT");
@@ -140,7 +140,7 @@ test("7b. a per-contract quote failure is isolated; other positions still grade"
 // ── 8. Discord failure does not stop monitoring ──
 test("8. a Discord send failure never throws into the monitor", async () => {
   const d = db();
-  const input = { candidateSymbol: "NVDA", strategy: "momentum_acceleration", researchOnly: false, contract: { optionSymbol: "O:NVDA260117C00100000", side: "call", strike: 100, expiration: "2026-01-17", bid: 1.0, ask: 1.1, spreadPct: 5, quoteAgeMs: 1000 }, message: "buy", observedUnderlyingPrice: 100, currentUnderlyingPrice: 100, chaseLimitPct: 5, underlyingPrice: 100 };
+  const input = { candidateSymbol: "NVDA", strategy: "momentum_acceleration", researchOnly: false, contract: { optionSymbol: "O:NVDA260117C00100000", side: "call", strike: 100, expiration: "2026-01-17", bid: 1.0, ask: 1.1, spreadPct: 5, quoteAgeMs: 1000, providerTimestamp: NOW - 1000 }, message: "buy", observedUnderlyingPrice: 100, currentUnderlyingPrice: 100, chaseLimitPct: 5, underlyingPrice: 100 };
   const env = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1", EARLY_OPTIONS_CALLOUTS_ENABLED: "1" };
   const out = await deliverOptionsCallout(input, { getDb: () => d, send: async () => ({ ok: false, status: 500, messageId: null, latencyMs: 5, ambiguous: false, error: "discord 500" }), now: () => NOW, maxRetries: 0 }, env);
   assert.equal(out.state, "SEND_FAILED");

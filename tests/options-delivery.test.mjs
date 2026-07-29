@@ -11,13 +11,14 @@ function db() {
           CREATE VIEW options_paper_research AS SELECT * FROM options_paper_trades WHERE paper_kind='RESEARCH_ONLY_PAPER';`);
   return d;
 }
-const NOW = 5_000_000;
-const ON = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1", EARLY_OPTIONS_CALLOUTS_ENABLED: "1", DISCORD_WEBHOOK_OPTIONS: "https://discord.com/api/webhooks/SECRET" };
+const NOW = Date.parse("2026-07-27T14:22:10.777Z");
+const ON = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1", EARLY_OPTIONS_CALLOUTS_ENABLED: "1", DISCORD_WEBHOOK_OPTIONS: "https://discord.com/api/webhooks/SECRET", PUBLIC_APP_URL: "https://optiscan.example" };
 const input = (over = {}) => ({
   candidateSymbol: "HOOD", strategy: "breakout_forming", researchOnly: false,
-  contract: { optionSymbol: "O:HOOD260320C00101000", side: "call", strike: 101, expiration: "2026-03-20", bid: 1.2, ask: 1.3, spreadPct: 8, quoteAgeMs: 1000 },
+  contract: { optionSymbol: "O:HOOD260320C00101000", side: "call", strike: 101, expiration: "2026-03-20", bid: 1.2, ask: 1.3, spreadPct: 8, quoteAgeMs: 1000, providerTimestamp: NOW - 1000 },
   message: "HOOD CALL\n$101 — 03/20\nEntry: $1.20–$1.30\nTargets: $1.80 / $2.40\nWhy: breakout forming",
   observedUnderlyingPrice: 100, currentUnderlyingPrice: 100.1, chaseLimitPct: 0.6, underlyingPrice: 100.1,
+  entry: { bid: 1.2, ask: 1.3, mid: 1.25, spreadPct: 8, quoteAgeMs: 1000, t1: 1.8, t2: 2.4, stop: 0.95, methodology: "test" },
   paperOptionSymbol: "O:HOOD260320C00101000", ...over,
 });
 const okSend = () => { const spy = { calls: [] }; return { spy, send: async (p) => { spy.calls.push(p); return { ok: true, status: 204, messageId: "m1", latencyMs: 42, ambiguous: false, error: null }; } }; };
@@ -34,7 +35,12 @@ test("2/9. READY + valid call + flags on → ONE message; SENT only after succes
   const r = await deliverOptionsCallout(input(), { getDb: () => d, send, now: () => NOW }, ON);
   assert.equal(r.state, "SENT"); assert.equal(r.sent, true);
   assert.equal(spy.calls.length, 1);
-  assert.match(spy.calls[0].content, /PAPER\/BETA TEST — NOT FINANCIAL ADVICE/);
+  assert.match(spy.calls[0].content, /🟢 HOOD CALL ALERT/);
+  assert.match(spy.calls[0].content, /HOOD 03\/20 \$101 Call/);
+  assert.match(spy.calls[0].content, /Entry: \$1\.20–\$1\.30/);
+  assert.match(spy.calls[0].content, /Why: HOOD pressed against resistance as momentum increased\./);
+  assert.match(spy.calls[0].content, /View details: https:\/\/optiscan\.example\/alerts\?tab=history/);
+  assert.doesNotMatch(spy.calls[0].content, /O:|PAPER\/BETA|TRADE NOW|Contract:|Confidence|Spread|DTE/);
   const row = d.prepare("SELECT state, sent_at_ms, discord_status, paper_linked FROM options_alerts").get();
   assert.equal(row.state, "SENT"); assert.ok(row.sent_at_ms > 0); assert.equal(row.discord_status, 204);
 });
@@ -49,8 +55,17 @@ test("3/8. duplicate event → no second message (dedup by alertId)", async () =
 
 test("4. stale quote sends nothing (TOO_LATE)", async () => {
   const { spy, send } = okSend();
-  const r = await deliverOptionsCallout(input({ contract: { ...input().contract, quoteAgeMs: 999999 } }), { getDb: () => db(), send, now: () => NOW }, ON);
+  const r = await deliverOptionsCallout(input({ contract: { ...input().contract, quoteAgeMs: 999999, providerTimestamp: NOW - 999999 } }), { getDb: () => db(), send, now: () => NOW }, ON);
   assert.equal(r.state, "TOO_LATE"); assert.equal(spy.calls.length, 0);
+});
+
+test("4b. unverifiable quote freshness fails closed before Discord", async () => {
+  const { spy, send } = okSend();
+  const contract = { ...input().contract, providerTimestamp: null, quoteAgeMs: 1000 };
+  const r = await deliverOptionsCallout(input({ contract }), { getDb: () => db(), send, now: () => NOW }, ON);
+  assert.equal(r.state, "TOO_LATE");
+  assert.equal(r.reason, "QUOTE_STALE");
+  assert.equal(spy.calls.length, 0);
 });
 
 test("5. excessive spread sends nothing (REJECTED)", async () => {

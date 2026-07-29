@@ -257,6 +257,9 @@ export function revalidateBeforeDiscordSend(
   if (d.contract.spreadPct != null && d.contract.spreadPct > maxSpread) {
     return { allowed: false, rejectionCode: "SPREAD_TOO_WIDE", reasons: [`spread ${d.contract.spreadPct}% > ${maxSpread}%`], timingClass, actionableReason: "", invalidation, entryQuality: eq, metrics };
   }
+  if (d.contract.quoteAgeMs == null || !Number.isFinite(d.contract.quoteAgeMs) || d.contract.quoteAgeMs < 0) {
+    return { allowed: false, rejectionCode: "QUOTE_STALE", reasons: ["quote freshness unavailable or invalid"], timingClass, actionableReason: "", invalidation, entryQuality: eq, metrics };
+  }
   if (d.contract.quoteAgeMs != null && d.contract.quoteAgeMs > maxAge) {
     return { allowed: false, rejectionCode: "QUOTE_STALE", reasons: [`quote age ${d.contract.quoteAgeMs}ms > ${maxAge}ms`], timingClass, actionableReason: "", invalidation, entryQuality: eq, metrics };
   }

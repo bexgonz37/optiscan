@@ -7,6 +7,7 @@ import { tradingDay } from "../trading-session.ts";
 import type { OvernightPlan, OvernightRecommendation } from "../research/overnight/next-session-plan.ts";
 import { resolveOperatingMode } from "../dashboard/operating-mode.ts";
 import type { DiscordWebhookKind } from "../notifications.ts";
+import { formatPrivateLiveAlert } from "../research/options/format.ts";
 
 export type OwnerResearchNotifyKind =
   | "next_session_watchlist"
@@ -30,6 +31,8 @@ export interface OwnerNotifyResult {
   reason: string;
   kind: OwnerResearchNotifyKind;
   content?: string;
+  messageId?: string | null;
+  deliveryId?: string | null;
 }
 
 function enabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -169,7 +172,7 @@ function formatRec(r: OvernightRecommendation): string {
   const evidence = Array.isArray(r.supportingEvidence) ? r.supportingEvidence : [];
   return [
     `#${r.rank} ${r.symbol} - ${direction} bias - ${r.setupFamily}`,
-    `Status: ${r.triggerLevel == null ? "VERIFY AT OPEN" : "WATCH"}`,
+    `Status: ${r.status ?? (r.triggerLevel == null ? "VERIFY AT OPEN" : "WATCH")}`,
     `Trigger: ${trigger}`,
     `Invalidation: ${invalidation}`,
     `Preferred DTE: ${r.preferredDteRange}`,
@@ -230,25 +233,35 @@ export function formatMarketOpenConfirm(plan: OvernightPlan, reasons: string[] =
 }
 
 export function formatIntradayActionable(input: IntradayActionableInput): string {
-  const side = String(input.side).toUpperCase();
-  const labelPrefix = input.label === "TEST" ? "🧪 TEST · " : "⚡ LIVE · ";
-  const lines = [
-    `${labelPrefix}**TRADE NOW CANDIDATE** · ${input.symbol} ${side}`,
-    input.contract ? `Contract: \`${input.contract}\`` : "Contract: pending fresh selection",
-    input.expiration ? `Expiration: ${input.expiration} · Strike: ${input.strike}` : null,
-    input.entryZone ? `Entry zone: ${input.entryZone}` : null,
-    input.bid != null && input.ask != null ? `Bid/Ask: $${input.bid.toFixed(2)} / $${input.ask.toFixed(2)}` : null,
-    input.t1 != null ? `T1: $${input.t1.toFixed(2)}${input.t2 != null ? ` · T2: $${input.t2.toFixed(2)}` : ""}${input.stop != null ? ` · Stop: $${input.stop.toFixed(2)}` : ""}` : null,
-    input.setupFamily ? `Setup: ${input.setupFamily}` : null,
-    input.triggerConfirmed ? `Trigger confirmed: ${input.triggerConfirmed}` : null,
-    input.actionableReason ? `Why actionable now: ${input.actionableReason}` : null,
-    input.mainRisk ? `Main risk: ${input.mainRisk}` : null,
-    input.confidence != null ? `Confidence: ${input.confidence}` : null,
-    input.quoteFreshness ? `Quote: ${input.quoteFreshness}` : null,
-    input.detailUrl ? `Detail: ${input.detailUrl}` : null,
-    "_Owner research mirror — not guaranteed profit. Subscriber delivery uses the independent options path._",
-  ].filter(Boolean);
-  return lines.join("\n");
+  if (!input.expiration || input.strike == null || !Number.isFinite(input.strike)) {
+    return [
+      `⚠️ ${input.symbol.toUpperCase()} OPTIONS ALERT UNAVAILABLE`,
+      "",
+      "Required contract details were missing, so no live alert was created.",
+      "",
+      "Educational purposes only. Options are high risk.",
+    ].join("\n");
+  }
+  const side = String(input.side).toLowerCase() === "put" ? "put" : "call";
+  const entryMid = input.bid != null && input.ask != null
+    ? (input.bid + input.ask) / 2
+    : Number(String(input.entryZone ?? "").match(/\d+(?:\.\d+)?/)?.[0] ?? 0);
+  return formatPrivateLiveAlert({
+    symbol: input.symbol,
+    side,
+    strike: input.strike,
+    expiration: input.expiration,
+    entryMid,
+    t1: input.t1 ?? 0,
+    t2: input.t2 ?? 0,
+    stop: input.stop ?? 0,
+    strategyKey: input.setupFamily ?? "",
+    optionSymbol: input.contract,
+    actionableReason: input.actionableReason,
+    bid: input.bid,
+    ask: input.ask,
+    detailUrl: input.detailUrl,
+  });
 }
 
 export interface IntradayActionableInput {
@@ -308,24 +321,39 @@ async function postOwner(
   kind: OwnerResearchNotifyKind,
   content: string,
   env: NodeJS.ProcessEnv = process.env,
-): Promise<{ ok: boolean; reason: string }> {
+  metadata: {
+    idempotencyKey?: string | null;
+    opportunityCaseId?: string | null;
+    thesisFingerprint?: string | null;
+    lifecycleState?: string | null;
+  } = {},
+): Promise<{ ok: boolean; reason: string; messageId: string | null; deliveryId: string | null }> {
   // Dynamic import keeps this module usable in unit tests without loading Next server bits.
   const { discordWebhookConfigured, sendTrackedDiscord } = await import("../notifications.ts");
   const destination = ownerNotifyDestinationForKind(kind);
   if (!discordWebhookConfigured(destination.webhook, env)) {
-    return { ok: false, reason: `${destination.requiredEnv} not configured` };
+    return { ok: false, reason: `${destination.requiredEnv} not configured`, messageId: null, deliveryId: null };
   }
   try {
-    await sendTrackedDiscord({
+    const sent = await sendTrackedDiscord({
       alertId: null,
       payload: { content: content.slice(0, 1900) },
       webhook: destination.webhook,
       payloadType: `owner_${kind}`,
-      idempotencyKey: `owner:${destination.webhook}:${kind}:${content.slice(0, 500)}`,
+      idempotencyKey: metadata.idempotencyKey
+        ?? `owner:${destination.webhook}:${kind}:${content.slice(0, 500)}`,
+      opportunityCaseId: metadata.opportunityCaseId ?? null,
+      thesisFingerprint: metadata.thesisFingerprint ?? null,
+      openingState: metadata.lifecycleState ?? null,
     });
-    return { ok: true, reason: "sent" };
+    return {
+      ok: true,
+      reason: "sent",
+      messageId: sent.messageId ?? null,
+      deliveryId: sent.deliveryId ?? null,
+    };
   } catch (e: any) {
-    return { ok: false, reason: String(e?.message ?? e) };
+    return { ok: false, reason: String(e?.message ?? e), messageId: null, deliveryId: null };
   }
 }
 
@@ -336,8 +364,17 @@ export async function sendOwnerResearchNotify(opts: {
   symbol?: string;
   env?: NodeJS.ProcessEnv;
   nowMs?: number;
+  idempotencyKey?: string | null;
+  opportunityCaseId?: string | null;
+  thesisFingerprint?: string | null;
+  lifecycleState?: string | null;
   /** Test hook — bypass default recap post. */
-  postOverride?: (content: string) => Promise<{ ok: boolean; reason?: string }>;
+  postOverride?: (content: string) => Promise<{
+    ok: boolean;
+    reason?: string;
+    messageId?: string | null;
+    deliveryId?: string | null;
+  }>;
 }): Promise<OwnerNotifyResult> {
   const env = opts.env ?? process.env;
   const day = tradingDay(opts.nowMs ?? Date.now());
@@ -370,11 +407,31 @@ export async function sendOwnerResearchNotify(opts: {
     }
   }
   const res = opts.postOverride
-    ? await opts.postOverride(normalized.content).then((r) => ({ ok: r.ok, reason: r.reason ?? (r.ok ? "sent" : "post_failed") }))
-    : await postOwner(opts.kind, normalized.content, env);
+    ? await opts.postOverride(normalized.content).then((r) => ({
+        ok: r.ok,
+        reason: r.reason ?? (r.ok ? "sent" : "post_failed"),
+        messageId: r.messageId ?? null,
+        deliveryId: r.deliveryId ?? null,
+      }))
+    : await postOwner(opts.kind, normalized.content, env, {
+        idempotencyKey: opts.idempotencyKey
+          ?? (opts.kind === "intraday_actionable"
+            ? `owner:options:intraday_actionable:${symbol}:OPENING`
+            : null),
+        opportunityCaseId: opts.opportunityCaseId,
+        thesisFingerprint: opts.thesisFingerprint,
+        lifecycleState: opts.lifecycleState,
+      });
   if (!res.ok) return { sent: false, skipped: false, reason: res.reason, kind: opts.kind };
   markSent(opts.db, day, opts.kind, symbol);
-  return { sent: true, skipped: false, reason: "ok", kind: opts.kind };
+  return {
+    sent: true,
+    skipped: false,
+    reason: "ok",
+    kind: opts.kind,
+    messageId: res.messageId,
+    deliveryId: res.deliveryId,
+  };
 }
 
 export interface OwnerResearchTestResult {

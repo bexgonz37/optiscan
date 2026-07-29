@@ -154,6 +154,9 @@ export async function sendTrackedDiscord(input: {
   webhook: DiscordWebhookKind;
   payloadType: string;
   idempotencyKey?: string | null;
+  opportunityCaseId?: string | null;
+  thesisFingerprint?: string | null;
+  openingState?: string | null;
 }) {
   const deliveryId = createDiscordDelivery({
     alertId: input.alertId ?? null,
@@ -162,6 +165,9 @@ export async function sendTrackedDiscord(input: {
     payloadType: input.payloadType,
     payload: input.payload,
     idempotencyKey: input.idempotencyKey ?? null,
+    opportunityCaseId: input.opportunityCaseId ?? null,
+    thesisFingerprint: input.thesisFingerprint ?? null,
+    openingState: input.openingState ?? null,
   });
   updateDiscordDelivery(deliveryId, { status: "SENDING", attempted: true });
   try {

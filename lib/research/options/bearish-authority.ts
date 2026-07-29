@@ -7,6 +7,7 @@
  */
 import { tradingDay } from "../../trading-session.ts";
 import type { DeliveryInput } from "./delivery.ts";
+import { formatPrivateLiveAlert } from "./format.ts";
 
 export type BearishAuthorityState =
   | "BEARISH_BLOCK"
@@ -146,7 +147,8 @@ function contractBlockers(input: BearishAuthorityInput, env: NodeJS.ProcessEnv):
   if (!delta || delta < minDelta || delta > maxDelta) blockers.push(`delta_out_of_band (${delta || "na"} not ${minDelta}-${maxDelta})`);
   if (entryMid == null || entryMid <= 0) blockers.push("missing_frozen_entry");
   if (entryMid != null && entryMid > maxPremium) blockers.push(`premium_too_high (${entryMid} > ${maxPremium})`);
-  if (c.quoteAgeMs != null && c.quoteAgeMs > maxAge) blockers.push(`stale_quote (${c.quoteAgeMs} > ${maxAge})`);
+  if (c.quoteAgeMs == null || !Number.isFinite(c.quoteAgeMs) || c.quoteAgeMs < 0) blockers.push("quote_freshness_unavailable");
+  else if (c.quoteAgeMs > maxAge) blockers.push(`stale_quote (${c.quoteAgeMs} > ${maxAge})`);
   return blockers;
 }
 
@@ -297,33 +299,33 @@ export function evaluateBearishAuthority(
   };
 }
 
-export function formatBearishOwnerReview(input: BearishAuthorityInput, decision: BearishAuthorityDecision): string {
+export function formatBearishOwnerReview(
+  input: BearishAuthorityInput,
+  decision: BearishAuthorityDecision,
+  detailUrl = "/alerts?tab=history",
+): string {
   const c = input.deliveryInput.contract;
   const e = input.deliveryInput.entry;
-  const bidAsk = c.bid != null && c.ask != null ? `$${c.bid.toFixed(2)} / $${c.ask.toFixed(2)}` : "missing";
-  const freshness = c.quoteAgeMs == null ? "unknown" : `${Math.round(c.quoteAgeMs / 1000)}s`;
-  const strike = c.strike != null ? `$${Number(c.strike).toFixed(Number(c.strike) % 1 === 0 ? 0 : 2)}` : "missing";
-  const expiration = c.expiration ?? "missing";
-  const risk = decision.invalidation ?? (decision.blockers[0] ? `Main blocker: ${decision.blockers[0]}` : "Underlying reclaims bearish structure or quote quality deteriorates.");
-  return [
-    `BEARISH TRADE CANDIDATE`,
-    `${input.symbol} PUT ${c.optionSymbol}`,
-    `Strike/expiration: ${strike} exp ${expiration}`,
-    `Entry zone: ${c.bid != null && c.ask != null ? `$${c.bid.toFixed(2)}-$${c.ask.toFixed(2)}` : e?.mid != null ? `$${e.mid.toFixed(2)}` : "pending"}`,
-    `Trigger: ${decision.actionableReason ?? "bearish setup under review"}`,
-    `Stop: ${e?.stop != null ? `$${e.stop.toFixed(2)}` : "missing"} | T1: ${e?.t1 != null ? `$${e.t1.toFixed(2)}` : "missing"} | T2: ${e?.t2 != null ? `$${e.t2.toFixed(2)}` : "missing"}`,
-    `Confidence: ${input.quality != null ? input.quality.toFixed(4) : input.strategyScore ?? "n/a"}`,
-    `Setup family: ${input.strategy}`,
-    `Bid/Ask: ${bidAsk} | Spread: ${c.spreadPct ?? "n/a"}% | Vol: ${c.volume ?? "n/a"} | OI: ${c.openInterest ?? "n/a"} | Delta: ${c.delta ?? "n/a"} | Freshness: ${freshness}`,
-    `Why actionable: ${decision.actionableReason ?? (decision.passed.length ? decision.passed.join(", ") : "under review")}`,
-    `Main risk: ${risk}`,
-    `Passed: ${decision.passed.length ? decision.passed.join(", ") : "none"}`,
-    `Remaining blockers: ${decision.blockers.length ? decision.blockers.join("; ") : "none"}`,
-    `Subscriber SEND under proposed rules: ${decision.maySubscriberSend ? "YES" : "NO"}`,
-    decision.maySubscriberSend
-      ? `_Owner notification - subscriber delivery may also proceed after final proof gates._`
-      : `_Owner review only - not a delivered subscriber alert._`,
-  ].join("\n");
+  const midpoint = e?.mid
+    ?? (c.bid != null && c.ask != null ? (c.bid + c.ask) / 2 : 0);
+  return formatPrivateLiveAlert({
+    symbol: input.symbol,
+    side: "put",
+    strike: c.strike,
+    expiration: c.expiration,
+    entryMid: midpoint,
+    t1: e?.t1 ?? 0,
+    t2: e?.t2 ?? 0,
+    stop: e?.stop ?? 0,
+    strategyKey: input.strategy,
+    dte: c.dte ?? null,
+    optionSymbol: c.optionSymbol,
+    actionableReason: decision.actionableReason,
+    bid: c.bid,
+    ask: c.ask,
+    reasonSignals: decision.passed,
+    detailUrl,
+  });
 }
 
 export function ensureBearishEscalationTable(db: DbLike): void {

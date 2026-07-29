@@ -38,6 +38,20 @@ export async function GET(req: Request) {
   // account; the Challenge is the independent AGGRESSIVE_CHALLENGE portfolio.
   const trades = allTrades.filter((t) => (t.portfolio ?? "PRIMARY") === "PRIMARY");
   const challengeTrades = allTrades.filter((t) => t.portfolio === "CHALLENGE");
+  const isStockTrade = (t: typeof allTrades[number]) => {
+    const thesis = String(t.thesis ?? "").toLowerCase();
+    const strategy = String(t.strategy ?? "").toLowerCase();
+    return !t.optionSymbol && (
+      t.entryPrice != null
+      || thesis.includes("stock signal")
+      || thesis.includes("buy stock")
+      || thesis.includes("shares")
+      || strategy.includes("stock")
+      || strategy.includes("scalp")
+    );
+  };
+  const stockTrades = trades.filter(isStockTrade);
+  const legacyOtherTrades = trades.filter((t) => !isStockTrade(t));
   const toPerfRow = (t: typeof allTrades[number]) => ({
     optionSymbol: t.optionSymbol, optionType: t.optionType, status: t.status,
     dteAtEntry: t.dteAtEntry, contracts: t.contracts, entryPrice: t.entryPrice,
@@ -54,6 +68,10 @@ export async function GET(req: Request) {
   const optionsPerf = optionsPerformance(trades.map(toPerfRow), hitPct);
   const startingBalance = Number(process.env.PAPER_STARTING_BALANCE_USD ?? process.env.PAPER_STARTING_BALANCE ?? 5000);
   const equity = +(startingBalance + summary.totalPnlDollars).toFixed(2);
+  const stockSummary = summarize(stockTrades);
+  const stockStartingBalance = Number(process.env.PAPER_STOCK_DAY_STARTING_BALANCE_USD ?? 10_000);
+  const stockEquity = +(stockStartingBalance + stockSummary.totalPnlDollars).toFixed(2);
+  const legacyOtherSummary = summarize(legacyOtherTrades);
   const engine = paperEngineState();
   const legacyPayload = {
     ok: true as const,
@@ -62,10 +80,40 @@ export async function GET(req: Request) {
     optionsPerformance: optionsPerf,
     daily: dailyPaperSummary(),
     account: {
+      identifier: "legacy_primary",
+      label: "Legacy Primary Paper",
       startingBalance,
       realizedPnl: summary.totalPnlDollars,
       equity,
       buyingPowerNote: "Risk engine reserves are enforced by max risk, max ticker exposure, and max open trades.",
+    },
+    stockLane: {
+      account: {
+        identifier: "stock_paper",
+        label: "Stock Paper",
+        startingBalance: stockStartingBalance,
+        realizedPnl: stockSummary.totalPnlDollars,
+        equity: stockEquity,
+      },
+      trades: stockTrades,
+      summary: stockSummary,
+      buckets: {
+        byConfidence: byConfidence(stockTrades),
+        byExpirationLength: byExpirationLength(stockTrades),
+        bySetup: bySetup(stockTrades),
+        byExitKind: byExitKind(stockTrades),
+      },
+    },
+    legacyLane: {
+      account: {
+        identifier: "legacy_primary",
+        label: "Legacy Paper Audit",
+        startingBalance,
+        realizedPnl: legacyOtherSummary.totalPnlDollars,
+        equity: +(startingBalance + legacyOtherSummary.totalPnlDollars).toFixed(2),
+      },
+      trades: legacyOtherTrades,
+      summary: legacyOtherSummary,
     },
     // Independent AGGRESSIVE_CHALLENGE — separate rows, balance, P&L, and analytics.
     challenge: {

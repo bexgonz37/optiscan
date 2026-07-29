@@ -12,10 +12,19 @@ import { buildRealOptionEntry, persistRealOptionPaperOnDb, canOpenRealOptionPape
 import { persistCaseFromOptionsLive } from "../../opportunity-case/orchestrate.ts";
 import { buildOpportunityIdentity, opportunityFingerprint } from "../../opportunity-case/identity.ts";
 import { attachEvidenceToOpportunityOnDb, findActiveOpportunityByFingerprintOnDb } from "../../opportunity-case/live.ts";
+import {
+  findActiveThesisOnDb,
+  recordContractCandidateOnDb,
+} from "../../opportunity-case/thesis-live.ts";
+import {
+  buildOpportunityThesisIdentity,
+  opportunityThesisFingerprint,
+} from "../../opportunity-case/thesis-identity.ts";
 import { buildCandidateInstrumentation, persistCandidateInstrumentation, isReadyCandidateExpired } from "./instrumentation.ts";
 import { sessionState } from "./session-state.ts";
 import { assertSubscriberDeliveryAllowed, isSameTradingSession } from "../../market-session-guard.ts";
 import { incrementInstrumentationFallbackInserts } from "../../db-legacy-columns.ts";
+import { quoteFreshness } from "../../quote-freshness.ts";
 import { bearishPipelineEnabled } from "./bearish-authority.ts";
 
 export interface ChainContract { optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number; bid: number | null; ask: number | null; spreadPct: number | null; volume: number | null; openInterest: number | null; iv: number | null; delta: number | null; providerTimestamp: number | null }
@@ -48,7 +57,7 @@ export function evaluateOptionsCandidate(input: OptionsCandidateInput, chain: Ch
   const contract = selectContractFromChain(chain, side, selection.selected.key, input.nowMs);
   if (!contract) return { selection, contract: null, callout: { state: "REJECTED", message: null, reason: "no eligible contract in the preferred delta/DTE band", freshness: null, entry: null }, paperEntry: null, state: "REJECTED" };
 
-  const cc: CalloutContract = { optionSymbol: contract.optionSymbol, side: contract.side, strike: contract.strike, expiration: contract.expiration, dte: contract.dte, bid: contract.bid, ask: contract.ask, spreadPct: contract.spreadPct, quoteAgeMs: contract.providerTimestamp != null ? input.nowMs - contract.providerTimestamp : null, openInterest: contract.openInterest, volume: contract.volume };
+  const cc: CalloutContract = { optionSymbol: contract.optionSymbol, side: contract.side, strike: contract.strike, expiration: contract.expiration, dte: contract.dte, bid: contract.bid, ask: contract.ask, spreadPct: contract.spreadPct, quoteAgeMs: quoteFreshness(contract.providerTimestamp, input.nowMs).ageMs, openInterest: contract.openInterest, volume: contract.volume };
   const strat = getStrategy(selection.selected.key)!;
   // The chart level the setup is playing, as an ABSOLUTE underlying price (for the educational message
   // only — never a stop). nearResistancePct is the % distance to the nearest level above price; convert
@@ -129,10 +138,11 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
     // Living Opportunity Case: if an active opportunity already matches, attach evidence and do not
     // submit another opening delivery. Audit capture still runs (bound to the living case id).
     let livingOpportunityCaseId: string | null = null;
+    let livingThesisFingerprint: string | null = null;
     let suppressOpeningAsDuplicate = false;
     if (env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0" && res.contract && res.selection.selected) {
       try {
-        const fp = opportunityFingerprint(buildOpportunityIdentity({
+        const identity = buildOpportunityIdentity({
           symbol: input.symbol,
           side: res.contract.side,
           expiration: res.contract.expiration,
@@ -140,11 +150,38 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
           strategyKey: res.selection.selected.key,
           nowMs: input.nowMs,
           direction: res.selection.direction,
+        });
+        const fp = opportunityFingerprint(identity);
+        livingThesisFingerprint = opportunityThesisFingerprint(buildOpportunityThesisIdentity({
+          symbol: input.symbol,
+          side: res.contract.side,
+          nowMs: input.nowMs,
+          direction: res.selection.direction,
+          sessionDate: identity.sessionDate,
         }));
-        const active = findActiveOpportunityByFingerprintOnDb(db, fp);
+        const activeThesis = findActiveThesisOnDb(db, livingThesisFingerprint);
+        const active = activeThesis ?? findActiveOpportunityByFingerprintOnDb(db, fp);
         if (active) {
           livingOpportunityCaseId = active.opportunityCaseId;
           suppressOpeningAsDuplicate = true;
+          recordContractCandidateOnDb(db, {
+            opportunityCaseId: active.opportunityCaseId,
+            thesisFingerprint: livingThesisFingerprint,
+            opportunityFingerprint: fp,
+            optionSymbol: res.contract.optionSymbol,
+            side: res.contract.side,
+            strike: res.contract.strike,
+            expiration: res.contract.expiration,
+            strategyKey: res.selection.selected.key,
+            observedAtMs: input.nowMs,
+            bid: res.contract.bid,
+            ask: res.contract.ask,
+            spreadPct: res.contract.spreadPct,
+            delta: res.contract.delta,
+            openInterest: res.contract.openInterest,
+            volume: res.contract.volume,
+            reason: activeThesis ? "preferred_contract_reselected" : "repeat_contract_observation",
+          });
           attachEvidenceToOpportunityOnDb(db, {
             opportunityCaseId: active.opportunityCaseId,
             nowMs: input.nowMs,
@@ -156,8 +193,15 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
               optionSymbol: res.contract.optionSymbol,
               strategy: res.selection.selected.key,
               matched: res.selection.considered.find((c) => c.key === res.selection.selected!.key)?.matched ?? [],
+              blockers: [
+                res.selection.considered.find((c) => c.key === res.selection.selected!.key)?.rejection,
+              ].filter(Boolean),
+              actionableReason: res.callout?.reason ?? res.selection.reason,
+              opportunityFingerprint: fp,
+              thesisFingerprint: livingThesisFingerprint,
             },
             strengthen: res.state === "READY",
+            currentMark: res.contract.bid,
           });
         }
       } catch { /* isolated */ }
@@ -173,12 +217,29 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
     // dedup / max-concurrent / per-symbol exposure. A fresh executable quote is enforced by the
     // entry gate (quoteAgeMs) inside buildRealOptionEntry.
     let paperOptionSymbol: string | null = null;
-    if (res.state === "READY" && res.paperEntry?.ok && researchFlags(env).realOptionPaper && input.session === "regular") {
-      const gate = canOpenRealOptionPaper(db, { optionSymbol: res.paperEntry.optionSymbol, strategy: res.paperEntry.strategy, nowMs: input.nowMs });
+    const dedicatedBearishPaper = res.contract?.side === "put" && env.BEARISH_RESEARCH_PAPER_ENABLED === "1";
+    if (res.state === "READY" && res.paperEntry?.ok && researchFlags(env).realOptionPaper && input.session === "regular" && !dedicatedBearishPaper && !suppressOpeningAsDuplicate) {
+      const gate = canOpenRealOptionPaper(db, {
+        optionSymbol: res.paperEntry.optionSymbol,
+        strategy: res.paperEntry.strategy,
+        nowMs: input.nowMs,
+        paperKind: "RESEARCH_ONLY_PAPER",
+        thesisFingerprint: livingThesisFingerprint,
+      });
       // The monitor's auto-open is a RESEARCH_ONLY_PAPER shadow (subscribers never see it). The
       // subscriber MIRROR (DELIVERED_ALERT_PAPER) is created ONLY on a real Discord SEND, inside
       // deliverOptionsCallout — so it exists iff an alert was actually delivered.
-      if (gate.ok) { persistRealOptionPaperOnDb(db, res.paperEntry, input.nowMs, { session: input.session, coreBroad: extra.coreBroad ?? (input.tier === 1 ? "core" : "broad"), featureSnapshotJson: snapJson ?? undefined, paperKind: "RESEARCH_ONLY_PAPER", entrySource: "monitor_shadow" }); paperOptionSymbol = res.paperEntry.optionSymbol; }
+      if (gate.ok) {
+        persistRealOptionPaperOnDb(db, res.paperEntry, input.nowMs, {
+          session: input.session,
+          coreBroad: extra.coreBroad ?? (input.tier === 1 ? "core" : "broad"),
+          featureSnapshotJson: snapJson ?? undefined,
+          paperKind: "RESEARCH_ONLY_PAPER",
+          entrySource: "monitor_shadow",
+          thesisFingerprint: livingThesisFingerprint,
+        });
+        paperOptionSymbol = res.paperEntry.optionSymbol;
+      }
     }
     // GATED private-beta Discord delivery — fire-and-forget, fully isolated. HARD no-op unless
     // EARLY_OPTIONS_CALLOUTS_ENABLED=1 (delivery re-checks the flag + freshness/chase). The linked
@@ -202,7 +263,7 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
         : px;
       const deliveryInput = {
         candidateSymbol: input.symbol, strategy: res.selection.selected!.key, researchOnly: res.selection.selected!.researchOnly,
-        contract: { optionSymbol: res.contract.optionSymbol, side: res.contract.side, strike: res.contract.strike, expiration: res.contract.expiration, bid: res.contract.bid, ask: res.contract.ask, spreadPct: res.contract.spreadPct, quoteAgeMs: res.contract.providerTimestamp != null ? input.nowMs - res.contract.providerTimestamp : null, dte: res.contract.dte, volume: res.contract.volume, openInterest: res.contract.openInterest, iv: res.contract.iv, delta: res.contract.delta, providerTimestamp: res.contract.providerTimestamp },
+        contract: { optionSymbol: res.contract.optionSymbol, side: res.contract.side, strike: res.contract.strike, expiration: res.contract.expiration, bid: res.contract.bid, ask: res.contract.ask, spreadPct: res.contract.spreadPct, quoteAgeMs: quoteFreshness(res.contract.providerTimestamp, input.nowMs).ageMs, dte: res.contract.dte, volume: res.contract.volume, openInterest: res.contract.openInterest, iv: res.contract.iv, delta: res.contract.delta, providerTimestamp: res.contract.providerTimestamp },
         message: res.callout.message, observedUnderlyingPrice: observedPx, currentUnderlyingPrice: px, chaseLimitPct: strat?.chaseLimitPct ?? 0.6, underlyingPrice: px, decisionMs: input.nowMs, session: input.session, entry: res.callout.entry, tier: input.tier, paperOptionSymbol,
         firstDetectedAtMs: inst.firstDetectedAtMs,
         underlyingAtFirstDetection: inst.underlyingAtFirstDetection,

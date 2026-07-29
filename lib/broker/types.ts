@@ -13,6 +13,7 @@ export type AccountType =
   | "RESEARCH_SHADOW"
   | "REPLAY_LAB"
   | "ZERO_DTE_RESEARCH"
+  | "BEARISH_RESEARCH"
   | "LIVE_BROKER";
 
 export type AdapterKind = "PAPER_SIM" | "LIVE_BROKER";

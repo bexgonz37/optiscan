@@ -7,7 +7,12 @@
  * Nothing here executes real money; the message carries a PAPER/BETA label.
  */
 import { researchFlags } from "../flags.ts";
-import { buildRealOptionEntry, persistDeliveredMirrorOnDb, type OptionQuote } from "./paper.ts";
+import {
+  buildRealOptionEntry,
+  canOpenRealOptionPaper,
+  persistDeliveredMirrorOnDb,
+  type OptionQuote,
+} from "./paper.ts";
 import { sessionState, openingWindowAllows, defaultOpeningLimit } from "./session-state.ts";
 import type { FrozenEntry } from "./callout.ts";
 import { OPTIONS_TIER0 } from "./discovery.ts";
@@ -27,8 +32,18 @@ import {
   logSuppressionOnDb,
   markOpportunityOpenedDeliveredOnDb,
   opportunityLifecycleSchemaReady,
+  releaseOpportunityOpeningClaimOnDb,
 } from "../../opportunity-case/live.ts";
 import { buildOpportunityIdentity, opportunityFingerprint } from "../../opportunity-case/identity.ts";
+import {
+  findActiveThesisOnDb,
+  recordContractCandidateOnDb,
+} from "../../opportunity-case/thesis-live.ts";
+import {
+  buildOpportunityThesisIdentity,
+  opportunityThesisFingerprint,
+} from "../../opportunity-case/thesis-identity.ts";
+import { quoteFreshness } from "../../quote-freshness.ts";
 
 export type DeliveryState = "READY" | "SEND_ATTEMPTED" | "SENT" | "SEND_FAILED" | "TOO_LATE" | "REJECTED" | "EXPIRED";
 
@@ -97,20 +112,20 @@ export async function refreshDeliveryQuotes(
   nowMs: number,
   deps: DeliveryDeps = {},
 ): Promise<DeliveryInput> {
+  let current = input;
   try {
     if (deps.refreshBeforeSend) {
       const refreshed = await deps.refreshBeforeSend(input, nowMs);
-      if (refreshed) return refreshed;
+      if (refreshed) current = refreshed;
     }
   } catch { /* isolated */ }
-  const c = input.contract;
+  const c = current.contract;
   // Only recompute age from an absolute provider timestamp. Do not invent aging from decisionMs —
   // that falsely stale-rejects legitimate re-attempts that carry a fresh Stage-2 age snapshot.
-  if (c.providerTimestamp == null) return input;
-  const quoteAgeMs = Math.max(0, nowMs - Number(c.providerTimestamp));
+  const freshness = quoteFreshness(c.providerTimestamp, nowMs);
   return {
-    ...input,
-    contract: { ...c, quoteAgeMs },
+    ...current,
+    contract: { ...c, quoteAgeMs: freshness.ageMs },
   };
 }
 
@@ -136,7 +151,13 @@ async function defaultSend(payload: Record<string, unknown>): Promise<SendResult
  * mirror failure does NOT change the honest SENT state — it only leaves paper_linked=0 (surfaced),
  * and the idempotent writer allows a later retry. Returns whether the mirror now exists (linked).
  */
-function createDeliveredMirror(db: DDb, i: DeliveryInput, alertId: string, env: NodeJS.ProcessEnv): boolean {
+function createDeliveredMirror(
+  db: DDb,
+  i: DeliveryInput,
+  alertId: string,
+  thesisFingerprint: string | null,
+  env: NodeJS.ProcessEnv,
+): boolean {
   try {
     if (!researchFlags(env).realOptionPaper) {
       console.warn(`[options-delivery] paper mirror skipped for ${alertId}: REAL_OPTION_PAPER_ENABLED!=1`);
@@ -149,7 +170,21 @@ function createDeliveredMirror(db: DDb, i: DeliveryInput, alertId: string, env: 
     // The mirror uses the EXACT frozen midpoint + deterministic targets the subscriber saw — never a
     // later/improved entry. entryFill = the displayed midpoint; target = T1; invalidation = Stop.
     const entry = i.entry ? { ...built, entryFill: i.entry.mid, target: i.entry.t1, invalidation: i.entry.stop } : built;
-    const r = persistDeliveredMirrorOnDb(db, entry, decisionMs, alertId, { session: i.session ?? null, featureSnapshotJson: i.entry ? JSON.stringify({ targetMethodology: i.entry.methodology, frozen: i.entry }) : undefined });
+    if (thesisFingerprint) {
+      const paperGate = canOpenRealOptionPaper(db, {
+        optionSymbol: c.optionSymbol,
+        strategy: i.strategy,
+        nowMs: decisionMs,
+        paperKind: "DELIVERED_ALERT_PAPER",
+        thesisFingerprint,
+      });
+      if (!paperGate.ok && paperGate.reason === "active_paper_position_for_thesis") return false;
+    }
+    const r = persistDeliveredMirrorOnDb(db, entry, decisionMs, alertId, {
+      session: i.session ?? null,
+      featureSnapshotJson: i.entry ? JSON.stringify({ targetMethodology: i.entry.methodology, frozen: i.entry }) : undefined,
+      thesisFingerprint,
+    });
     return r.inserted || r.existed;
   } catch (err: any) {
     console.warn(`[options-delivery] paper mirror failed for ${alertId}: ${String(err?.message ?? err).slice(0, 160)}`);
@@ -263,8 +298,20 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
   const state = sessionState(nowMs, env);
   let livingCaseId: string | null = null;
   let livingFingerprint: string | null = null;
+  let livingThesisFingerprint: string | null = null;
 
   const lifecycleReady = env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0" && opportunityLifecycleSchemaReady(db);
+  if (env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED === "1" && !lifecycleReady) {
+    return finalize(
+      deps,
+      input,
+      alertId,
+      "REJECTED",
+      "opportunity_thesis_schema_unavailable",
+      nowMs,
+      state,
+    );
+  }
 
   // Early active-opportunity suppress (before alertId bucket short-circuit) so repeats across
   // the same 5-minute alert_id still attach evidence and never look like a fresh SENT.
@@ -279,6 +326,66 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
         nowMs,
         direction: input.contract.side === "put" ? "bearish" : "bullish",
       }));
+      livingThesisFingerprint = opportunityThesisFingerprint(buildOpportunityThesisIdentity({
+        symbol: input.candidateSymbol,
+        side: input.contract.side,
+        nowMs,
+        direction: input.contract.side === "put" ? "bearish" : "bullish",
+      }));
+      const activeThesis = findActiveThesisOnDb(db, livingThesisFingerprint);
+      if (activeThesis) {
+        livingCaseId = activeThesis.opportunityCaseId;
+        recordContractCandidateOnDb(db, {
+          opportunityCaseId: activeThesis.opportunityCaseId,
+          thesisFingerprint: livingThesisFingerprint,
+          opportunityFingerprint: livingFingerprint,
+          optionSymbol: input.contract.optionSymbol,
+          side: input.contract.side,
+          strike: input.contract.strike,
+          expiration: input.contract.expiration,
+          strategyKey: input.strategy,
+          observedAtMs: nowMs,
+          bid: input.contract.bid,
+          ask: input.contract.ask,
+          spreadPct: input.contract.spreadPct,
+          delta: input.contract.delta,
+          openInterest: input.contract.openInterest,
+          volume: input.contract.volume,
+          reason: "preferred_contract_reselected",
+        });
+        attachEvidenceToOpportunityOnDb(db, {
+          opportunityCaseId: activeThesis.opportunityCaseId,
+          nowMs,
+          source: "options_delivery",
+          signalType: "thesis_repeat_contract_candidate",
+          score: null,
+          details: {
+            strategy: input.strategy,
+            optionSymbol: input.contract.optionSymbol,
+            opportunityFingerprint: livingFingerprint,
+            thesisFingerprint: livingThesisFingerprint,
+            alertId,
+          },
+          currentMark: input.contract.bid,
+        });
+        const oc = loadCaseJsonOnDb(db, activeThesis.opportunityCaseId);
+        logSuppressionOnDb(db, {
+          symbol: input.candidateSymbol,
+          strategy: input.strategy,
+          fingerprint: livingThesisFingerprint,
+          existingOpportunityCaseId: activeThesis.opportunityCaseId,
+          reason: "MATCHING_ACTIVE_THESIS",
+          decision: "SUPPRESSED_DUPLICATE_OPENING",
+          latestReturnPercent: oc?.summary?.currentReturnPct ?? null,
+          nextUndeliveredMilestone: oc?.summary?.nextUndeliveredReturnMilestone ?? null,
+          details: { opportunityFingerprint: livingFingerprint, optionSymbol: input.contract.optionSymbol },
+          nowMs,
+        });
+        return finalize(deps, input, alertId, "REJECTED", "matching_active_thesis", nowMs, state, {
+          opportunityCaseId: activeThesis.opportunityCaseId,
+          suppressedDuplicate: true,
+        });
+      }
       const active = findActiveOpportunityByFingerprintOnDb(db, livingFingerprint);
       if (active) {
         livingCaseId = active.opportunityCaseId;
@@ -290,6 +397,7 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
             signalType: "duplicate_opening_suppressed",
             score: null,
             details: { strategy: input.strategy, optionSymbol: input.contract.optionSymbol, alertId },
+            currentMark: input.contract.bid,
           });
           const oc = loadCaseJsonOnDb(db, active.opportunityCaseId);
           logSuppressionOnDb(db, {
@@ -366,11 +474,33 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
         nowMs,
         direction: input.contract.side === "put" ? "bearish" : "bullish",
         frozenEntry: input.entry?.mid ?? null,
+        frozenTrade: input.entry
+          ? {
+              entryMid: input.entry.mid,
+              targetT1: input.entry.t1,
+              targetT2: input.entry.t2,
+              stop: input.entry.stop,
+              bid: input.entry.bid,
+              ask: input.entry.ask,
+              spreadPct: input.entry.spreadPct,
+              methodology: input.entry.methodology,
+            }
+          : null,
         optionSymbol: input.contract.optionSymbol,
         alertId,
+        openingSource: "canonical",
+        contractSnapshot: {
+          bid: input.contract.bid,
+          ask: input.contract.ask,
+          spreadPct: input.contract.spreadPct,
+          delta: input.contract.delta,
+          openInterest: input.contract.openInterest,
+          volume: input.contract.volume,
+        },
         why: input.message?.split("\n")[1] ?? null,
       });
       livingFingerprint = claim.fingerprint;
+      livingThesisFingerprint = claim.thesisFingerprint;
       if (!claim.claimed && claim.existing) {
         livingCaseId = claim.opportunityCaseId;
         try {
@@ -381,6 +511,7 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
             signalType: "duplicate_opening_suppressed",
             score: null,
             details: { strategy: input.strategy, optionSymbol: input.contract.optionSymbol, alertId },
+            currentMark: input.contract.bid,
           });
           const oc = loadCaseJsonOnDb(db, claim.opportunityCaseId);
           logSuppressionOnDb(db, {
@@ -395,10 +526,31 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
             nowMs,
           });
         } catch { /* isolated */ }
-        return finalize(deps, input, alertId, "REJECTED", "matching_active_opportunity", nowMs, state, {
+        return finalize(
+          deps,
+          input,
+          alertId,
+          "REJECTED",
+          claim.reason === "MATCHING_ACTIVE_THESIS" ? "matching_active_thesis" : "matching_active_opportunity",
+          nowMs,
+          state,
+          {
           opportunityCaseId: claim.opportunityCaseId,
           suppressedDuplicate: true,
-        });
+          },
+        );
+      }
+      if (!claim.claimed) {
+        return finalize(
+          deps,
+          input,
+          alertId,
+          "REJECTED",
+          `opportunity_claim_failed:${claim.reason}`,
+          nowMs,
+          state,
+          { opportunityCaseId: claim.opportunityCaseId },
+        );
       }
       if (claim.claimed) livingCaseId = claim.opportunityCaseId;
     } catch { /* lifecycle helpers optional when schema not migrated */ }
@@ -425,15 +577,16 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
       evidenceSnapshotJson: JSON.stringify({ finalGate: finalGate.metrics, dimensions: finalGate.entryQuality.dimensions }),
     };
     try { persistAlertInstrumentation(dbEarly, alertId, inst); } catch { /* isolated */ }
-    if (livingCaseId && livingFingerprint && env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0") {
+    if (livingCaseId && env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0") {
       try {
-        db.prepare("DELETE FROM opportunity_active_index WHERE opportunity_fingerprint=? AND opportunity_case_id=?").run(livingFingerprint, livingCaseId);
+        releaseOpportunityOpeningClaimOnDb(db, livingCaseId);
       } catch { /* isolated */ }
     }
     const rejectState = finalGate.rejectionCode === "QUOTE_STALE" || finalGate.rejectionCode === "STALE_READY_CANDIDATE" ? "TOO_LATE" as const : "REJECTED" as const;
     return finalize(deps, finalInput, alertId, rejectState, finalGate.rejectionCode, nowMs, state);
   }
 
+  const appBaseUrl = String(env.PUBLIC_APP_URL ?? env.NEXT_PUBLIC_APP_URL ?? "").trim().replace(/\/$/, "");
   const liveMessage = finalInput.entry
     ? formatPrivateLiveAlert({
       symbol: finalInput.candidateSymbol,
@@ -466,18 +619,23 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
         finalGate.entryQuality.dimensions.remainingOpportunity.score,
         finalGate.entryQuality.dimensions.sessionRisk.score,
       ),
+      detailUrl: livingCaseId
+        ? `${appBaseUrl}/intelligence/${encodeURIComponent(livingCaseId)}`
+        : `${appBaseUrl}/alerts?tab=history`,
     })
     : finalInput.message;
 
   // Claim the slot as SEND_ATTEMPTED BEFORE sending, so a concurrent/duplicate call dedups.
   try { persist(db, alertId, { ...finalInput, message: liveMessage }, "SEND_ATTEMPTED", { attemptedAtMs: nowMs, retryCount: priorRetries, sessionState: state }, nowMs); } catch { /* isolated */ }
   try {
-    if (livingCaseId || livingFingerprint) {
-      db.prepare("UPDATE options_alerts SET opportunity_case_id=?, opportunity_fingerprint=? WHERE alert_id=?").run(livingCaseId, livingFingerprint, alertId);
+    if (livingCaseId || livingFingerprint || livingThesisFingerprint) {
+      db.prepare(
+        "UPDATE options_alerts SET opportunity_case_id=?, opportunity_fingerprint=?, thesis_fingerprint=? WHERE alert_id=?",
+      ).run(livingCaseId, livingFingerprint, livingThesisFingerprint, alertId);
     }
   } catch { /* columns optional */ }
 
-  const payload = { content: `${liveMessage}\n\n${BETA_LABEL}` };
+  const payload = { content: finalInput.entry ? liveMessage : `${liveMessage}\n\n${BETA_LABEL}` };
   const send = deps.send ?? defaultSend;
   let attempt = priorRetries, res: SendResult;
   for (;;) {
@@ -490,7 +648,7 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
     // Alert delivered → create the ONE linked DELIVERED_ALERT_PAPER mirror (idempotent, same contract/
     // quote/underlying/strategy/decision-timestamp/alert_id). Never blocks or alters the SENT outcome;
     // a mirror failure just leaves paper_linked=0 (surfaced) and can be retried idempotently later.
-    const linked = createDeliveredMirror(db, finalInput, alertId, env);
+    const linked = createDeliveredMirror(db, finalInput, alertId, livingThesisFingerprint, env);
     const sentAt = now();
     const optMid = finalInput.entry?.mid ?? ((finalInput.contract.bid ?? 0) + (finalInput.contract.ask ?? 0)) / 2;
     const latencyMs = finalInput.firstDetectedAtMs ? sentAt - finalInput.firstDetectedAtMs : null;
@@ -512,8 +670,14 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
     } catch { /* isolated */ }
     try { persist(db, alertId, finalInput, "SENT", { status: res.status, latencyMs: res.latencyMs, retryCount: attempt, sentAtMs: sentAt, attemptedAtMs: nowMs, paperLinked: linked, sessionState: state }, now()); } catch { /* isolated */ }
     try {
-      db.prepare("UPDATE options_alerts SET discord_message_id=?, opportunity_case_id=COALESCE(opportunity_case_id, ?), opportunity_fingerprint=COALESCE(opportunity_fingerprint, ?) WHERE alert_id=?")
-        .run(res.messageId ?? null, livingCaseId, livingFingerprint, alertId);
+      db.prepare(
+        `UPDATE options_alerts
+         SET discord_message_id=?,
+             opportunity_case_id=COALESCE(opportunity_case_id, ?),
+             opportunity_fingerprint=COALESCE(opportunity_fingerprint, ?),
+             thesis_fingerprint=COALESCE(thesis_fingerprint, ?)
+         WHERE alert_id=?`,
+      ).run(res.messageId ?? null, livingCaseId, livingFingerprint, livingThesisFingerprint, alertId);
     } catch { /* optional columns */ }
     if (livingCaseId && env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0") {
       try {
@@ -562,9 +726,9 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
   }
   // Clear send failure (not ambiguous): release the active opportunity claim so a later retry can open.
   // Ambiguous timeouts keep the claim — Discord may already have the message.
-  if (!res.ambiguous && livingCaseId && livingFingerprint && env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0") {
+  if (!res.ambiguous && livingCaseId && env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0") {
     try {
-      db.prepare("DELETE FROM opportunity_active_index WHERE opportunity_fingerprint=? AND opportunity_case_id=?").run(livingFingerprint, livingCaseId);
+      releaseOpportunityOpeningClaimOnDb(db, livingCaseId);
     } catch { /* isolated */ }
   }
   return base("SEND_FAILED", false, res.ambiguous ? "ambiguous_timeout_no_retry" : "send_failed", paperLinked, { opportunityCaseId: livingCaseId });

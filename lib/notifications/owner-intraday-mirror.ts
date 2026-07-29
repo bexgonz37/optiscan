@@ -9,6 +9,7 @@ import {
   type IntradayActionableInput,
 } from "./owner-research-notify.ts";
 import type { DeliveryInput } from "../research/options/delivery.ts";
+import { formatQuoteFreshness } from "../quote-freshness.ts";
 
 export interface IntradayMirrorInput {
   db: { prepare: (sql: string) => { get: (...a: unknown[]) => unknown; run: (...a: unknown[]) => unknown }; exec: (sql: string) => unknown };
@@ -62,15 +63,20 @@ export function buildIntradayActionablePayload(opts: {
       : entry?.mid != null
         ? `$${entry.mid.toFixed(2)}`
         : null;
-  const quoteFreshness =
-    c.quoteAgeMs == null
-      ? "fresh"
-      : c.quoteAgeMs <= (opts.delivery.maxQuoteAgeMs ?? 15_000)
-        ? `fresh · ${Math.round(c.quoteAgeMs / 1000)}s`
-        : `stale · ${Math.round(c.quoteAgeMs / 1000)}s`;
+  const freshness = formatQuoteFreshness(c.quoteAgeMs);
+  const quoteFreshness = freshness === "Unavailable"
+    ? freshness
+    : c.quoteAgeMs! <= (opts.delivery.maxQuoteAgeMs ?? 15_000)
+      ? `fresh · ${freshness}`
+      : `stale · ${freshness}`;
   const confRaw = opts.delivery.featureSnapshot?.confidence ?? opts.delivery.featureSnapshot?.contractScore;
   const confidence = typeof confRaw === "number" && Number.isFinite(confRaw) ? Math.round(confRaw) : null;
-  const base = String(opts.baseUrl ?? process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "");
+  const base = String(
+    opts.baseUrl
+      ?? process.env.PUBLIC_APP_URL
+      ?? process.env.NEXT_PUBLIC_APP_URL
+      ?? "",
+  ).trim().replace(/\/$/, "");
   const detailUrl = opts.opportunityCaseId
     ? (base ? `${base}/intelligence/${encodeURIComponent(opts.opportunityCaseId)}` : `/intelligence/${encodeURIComponent(opts.opportunityCaseId)}`)
     : base
@@ -120,7 +126,10 @@ export function shouldMirrorIntradayActionable(
     return { ok: false, reason: "missing_fresh_bid_ask", fingerprint: null, operatingMode: operating.mode };
   }
   const maxAge = opts.delivery.maxQuoteAgeMs ?? 15_000;
-  if (c.quoteAgeMs != null && c.quoteAgeMs > maxAge) {
+  if (c.quoteAgeMs == null || !Number.isFinite(c.quoteAgeMs) || c.quoteAgeMs < 0) {
+    return { ok: false, reason: "quote_freshness_unavailable", fingerprint: null, operatingMode: operating.mode };
+  }
+  if (c.quoteAgeMs > maxAge) {
     return { ok: false, reason: "stale_quote", fingerprint: null, operatingMode: operating.mode };
   }
 

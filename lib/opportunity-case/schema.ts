@@ -50,6 +50,39 @@ export interface SelectedContract {
   selectionReason: string;
 }
 
+export interface ContractCandidateObservation {
+  opportunityFingerprint: string;
+  optionSymbol: string;
+  side: "call" | "put";
+  strike: number;
+  expiration: string;
+  strategyKey: string;
+  observedAtMs: number;
+  bid: number | null;
+  ask: number | null;
+  spreadPct: number | null;
+  delta: number | null;
+  openInterest: number | null;
+  volume: number | null;
+  reason: string;
+}
+
+export interface ContractUpdate {
+  previousOptionSymbol: string;
+  newOptionSymbol: string;
+  reason: string;
+  changedAtMs: number;
+  expirationDifferenceDays: number | null;
+  strikeDifference: number | null;
+  previousLiquidity: { volume: number | null; openInterest: number | null };
+  newLiquidity: { volume: number | null; openInterest: number | null };
+  previousSpreadPct: number | null;
+  newSpreadPct: number | null;
+  previousDelta: number | null;
+  newDelta: number | null;
+  originalContractRemainsValid: boolean | null;
+}
+
 export interface RejectedContract {
   optionSymbol: string;
   reasonCode: string;
@@ -159,6 +192,8 @@ export interface OpportunityCase {
 
   /** Stable setup identity for active-opportunity dedup (optional on legacy rows). */
   opportunityFingerprint?: string | null;
+  /** Broad session thesis identity that exclusively owns the opening Discord message. */
+  thesisFingerprint?: string | null;
   sessionDate?: string | null;
   lifecycleStatus?: OpportunityLifecycleStatus | null;
   /** Living summary — single source of truth for downstream consumers. */
@@ -170,6 +205,8 @@ export interface OpportunityCase {
     threadId: string | null;
     deliveredAt: string | null;
   } | null;
+  contractCandidates?: ContractCandidateObservation[];
+  contractUpdates?: ContractUpdate[];
 }
 
 export function deterministicOpportunityId(parts: string[]): string {
@@ -215,11 +252,14 @@ export function createEmptyCase(symbol: string, nowMs: number, sourcePath: Oppor
     createdAtMs: nowMs,
     updatedAtMs: nowMs,
     opportunityFingerprint: null,
+    thesisFingerprint: null,
     sessionDate: null,
     lifecycleStatus: null,
     summary: emptyOpportunitySummary("CREATED", nowMs),
     originalThesis: [],
     discord: { channelId: null, messageId: null, threadId: null, deliveredAt: null },
+    contractCandidates: [],
+    contractUpdates: [],
   };
 }
 
@@ -235,6 +275,8 @@ export function parseCase(json: string): OpportunityCase | null {
     if (!o.summary) o.summary = emptyOpportunitySummary((o.lifecycleStatus as OpportunityLifecycleStatus) ?? "CREATED", o.updatedAtMs ?? o.createdAtMs);
     if (!o.originalThesis) o.originalThesis = o.summary.originalThesis ?? [];
     if (!o.discord) o.discord = { channelId: null, messageId: null, threadId: null, deliveredAt: null };
+    if (!o.contractCandidates) o.contractCandidates = [];
+    if (!o.contractUpdates) o.contractUpdates = [];
     if (o.lifecycleStatus == null && o.deliveryDecision === "delivered") o.lifecycleStatus = "CREATED";
     return o;
   } catch {

@@ -127,7 +127,6 @@ export interface GradePassResult {
 }
 
 const occUnderlying = (occ: string) => occ.match(/^O:([A-Z]+)/)?.[1] ?? "";
-const BETA_LABEL = "PAPER/BETA TEST — NOT FINANCIAL ADVICE";
 function hasTable(db: GradeDb, table: string): boolean {
   try { return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)); } catch { return false; }
 }
@@ -154,7 +153,7 @@ async function sendLifecycleDiscordUpdate(
   content: string,
   replyToMessageId: string | null,
 ): Promise<{ ok: boolean; messageId: string | null; replied: boolean }> {
-  const payload: Record<string, unknown> = { content: `${content}\n\n${BETA_LABEL}` };
+  const payload: Record<string, unknown> = { content };
   if (replyToMessageId) {
     payload.message_reference = { message_id: replyToMessageId };
     payload.allowed_mentions = { parse: [] };
@@ -175,7 +174,7 @@ async function sendLifecycleDiscordUpdate(
   } catch {
     if (!replyToMessageId) return { ok: false, messageId: null, replied: false };
     try {
-      const r = await sendOnce({ content: `${content}\n\n${BETA_LABEL}` });
+      const r = await sendOnce({ content });
       return { ...r, replied: false };
     } catch {
       return { ok: false, messageId: null, replied: false };

@@ -67,6 +67,9 @@ export type { BrokerAdapter, BrokerAdapterContext, LimitFillRequest } from "./ad
 export {
   ensureBrokerAccount,
   openingBalanceUsd,
+  deliveredOptionsOpeningBalanceUsd,
+  zeroDteResearchOpeningBalanceUsd,
+  bearishResearchOpeningBalanceUsd,
   resolveAccountKeyForOptionsPaperKind,
   resolveAccountKeyForLegacyPortfolio,
   getLegacyLink,

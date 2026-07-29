@@ -673,6 +673,33 @@ export function getAlertDetailOnDb(db: DbReader, id: number) {
   const opportunityCase = opportunityCaseId
     ? safeGet(db, "opportunity_cases", "SELECT * FROM opportunity_cases WHERE opportunity_id=? OR case_id=? OR id=? LIMIT 1", [opportunityCaseId, opportunityCaseId, opportunityCaseId])
     : null;
+  const opportunityCaseJson = parseJsonSafe(opportunityCase?.case_json);
+  const thesisFingerprint =
+    primaryOptionAlert?.thesis_fingerprint ??
+    opportunityCase?.thesis_fingerprint ??
+    opportunityCaseJson?.thesisFingerprint ??
+    null;
+  const contractCandidates = opportunityCaseId
+    ? safeAll(
+      db,
+      "opportunity_contract_candidates",
+      `SELECT * FROM opportunity_contract_candidates
+       WHERE opportunity_case_id=?
+       ORDER BY observed_at_ms ASC, id ASC`,
+      [opportunityCaseId],
+    )
+    : [];
+  const contractUpdates = Array.isArray(opportunityCaseJson?.contractUpdates)
+    ? opportunityCaseJson.contractUpdates
+    : [];
+  const selectedThesisContract = opportunityCaseJson?.selectedContract ?? null;
+  const activeThesisPaper = thesisFingerprint
+    ? paperTrades.find(
+      (p) =>
+        p.thesis_fingerprint === thesisFingerprint &&
+        String(p.status).toUpperCase() === "ENTERED",
+    ) ?? null
+    : null;
   const opportunityRows = opportunityCaseId
     ? {
       milestones: safeAll(db, "opportunity_milestones", "SELECT * FROM opportunity_milestones WHERE opportunity_id=? OR case_id=? ORDER BY created_at_ms", [opportunityCaseId, opportunityCaseId]),
@@ -744,6 +771,15 @@ export function getAlertDetailOnDb(db: DbReader, id: number) {
     ...discordDeliveries.map((d) => makeTimelineEvent(d.created_at ?? d.sent_at ?? d.attempted_at, "discord delivery", d.status ?? "delivery", d.failure_reason ?? d.response_body_safe ?? d.delivery_id ?? "No detail", parseJsonSafe(d.payload_json))),
     ...paperTrades.map((p) => makeTimelineEvent(p.entered_at_ms ?? p.created_at_ms, "paper mirror", p.paper_kind ?? p.status ?? "paper trade", `entry ${p.entry_fill ?? "n/a"} exit ${p.exit_fill ?? "open"} return ${p.return_pct ?? "n/a"}`, p)),
     ...paperMarks.map((m) => makeTimelineEvent(m.marked_at_ms, "paper mark", m.mark_type ?? "paper mark", `bid ${m.bid ?? "n/a"} ask ${m.ask ?? "n/a"} mid ${m.mid ?? "n/a"}`)),
+    ...contractCandidates.map((c) => makeTimelineEvent(
+      c.observed_at_ms,
+      "contract candidate",
+      c.previous_option_symbol && c.previous_option_symbol !== c.option_symbol
+        ? "Preferred contract changed"
+        : "Contract observed",
+      `${c.option_symbol} · ${c.reason ?? "candidate"}`,
+      c,
+    )),
     ...performance.map((p) => makeTimelineEvent(p.checked_at, "legacy grading", p.checkpoint ?? "checkpoint", `move ${p.percent_move_from_alert ?? "n/a"} max ${p.max_percent_move_after_alert ?? "n/a"}`)),
     ...opportunityRows.milestones.map((m) => makeTimelineEvent(m.created_at_ms, "opportunity lifecycle", m.kind ?? m.type ?? "milestone", m.note ?? m.reason ?? "")),
     ...opportunityRows.evidence.map((e) => makeTimelineEvent(e.created_at_ms, "opportunity evidence", e.kind ?? e.type ?? "evidence", e.summary ?? e.reason ?? "")),
@@ -777,6 +813,7 @@ export function getAlertDetailOnDb(db: DbReader, id: number) {
       confidence: alert.capture_confidence ?? alert.signal_score ?? null,
       opportunityCaseId,
       opportunityFingerprint,
+      thesisFingerprint,
       independentAlertId: optionAlertId,
       paperTradeId,
       discordMessageId,
@@ -811,6 +848,14 @@ export function getAlertDetailOnDb(db: DbReader, id: number) {
       bestBid: bestBidSnapshot,
       worstMid: worstMidSnapshot,
       eod: eodSnapshot,
+    },
+    contractTracking: {
+      thesisFingerprint,
+      selectedContract: selectedThesisContract,
+      candidates: contractCandidates,
+      updates: contractUpdates,
+      activePaperPosition: activeThesisPaper,
+      paperPolicy: "One active paper position per thesis; replacements require an explicit roll or close.",
     },
     returnCalculations,
     realisticValues: returnCalculations.filter((r) => r.label === "Conservative ask-to-bid" || r.label === "Paper mirror"),
@@ -1577,6 +1622,10 @@ export function createDiscordDelivery(input: {
   status?: DiscordDeliveryStatus;
   idempotencyKey?: string | null;
   failureReason?: string | null;
+  opportunityCaseId?: string | null;
+  thesisFingerprint?: string | null;
+  openingState?: string | null;
+  lifecycleState?: string | null;
 }): string {
   const deliveryId = `dd_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
   const payloadJson = JSON.stringify(input.payload ?? {});
@@ -1587,8 +1636,8 @@ export function createDiscordDelivery(input: {
   getDb().prepare(
     `INSERT INTO discord_deliveries
        (delivery_id, alert_id, channel_type, webhook_name, payload_type, payload_preview, payload_json,
-        idempotency_key, status, failure_reason)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        idempotency_key, status, failure_reason, opportunity_case_id, thesis_fingerprint, lifecycle_state)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     deliveryId,
     input.alertId ?? null,
@@ -1600,6 +1649,9 @@ export function createDiscordDelivery(input: {
     idempotencyKey,
     input.status ?? "PENDING",
     input.failureReason ?? null,
+    input.opportunityCaseId ?? null,
+    input.thesisFingerprint ?? null,
+    input.lifecycleState ?? input.openingState ?? null,
   );
   return deliveryId;
 }

@@ -25,6 +25,7 @@ import {
 } from "./content-events.ts";
 import {
   claimMilestoneDeliveryOnDb,
+  computeReturnPercent,
   evaluateReturnMilestones,
   listMilestonesForCaseOnDb,
   markMilestoneDeliveredOnDb,
@@ -40,6 +41,14 @@ import {
 } from "./summary.ts";
 import { parseCase, serializeCase, type OpportunityCase } from "./schema.ts";
 import { persistOpportunityCaseOnDb } from "./store.ts";
+import {
+  claimThesisIndexOnDb,
+  markThesisOpeningDiscordOnDb,
+  recordContractCandidateOnDb,
+  releaseThesisClaimOnDb,
+  syncThesisLifecycleOnDb,
+  type ThesisOpeningSource,
+} from "./thesis-live.ts";
 
 export interface LiveDb {
   prepare(sql: string): {
@@ -64,7 +73,10 @@ export function opportunityLifecycleEnabled(env: NodeJS.ProcessEnv = process.env
 }
 
 export function opportunityLifecycleSchemaReady(db: LiveDb): boolean {
-  return hasTable(db, "opportunity_active_index") && hasTable(db, "opportunity_cases");
+  return hasTable(db, "opportunity_active_index")
+    && hasTable(db, "opportunity_thesis_active_index")
+    && hasTable(db, "opportunity_contract_candidates")
+    && hasTable(db, "opportunity_cases");
 }
 
 export function findActiveOpportunityByFingerprintOnDb(
@@ -76,9 +88,71 @@ export function findActiveOpportunityByFingerprintOnDb(
     const row = db.prepare(
       `SELECT opportunity_case_id, lifecycle_status FROM opportunity_active_index WHERE opportunity_fingerprint=?`,
     ).get(fingerprint) as { opportunity_case_id?: string; lifecycle_status?: string } | undefined;
-    if (!row?.opportunity_case_id) return null;
-    if (!isActiveLifecycleStatus(row.lifecycle_status)) return null;
-    return { opportunityCaseId: String(row.opportunity_case_id), lifecycleStatus: String(row.lifecycle_status) };
+    if (row?.opportunity_case_id && isActiveLifecycleStatus(row.lifecycle_status)) {
+      return { opportunityCaseId: String(row.opportunity_case_id), lifecycleStatus: String(row.lifecycle_status) };
+    }
+  } catch {
+    // Fall through to the delivered-case recovery below.
+  }
+
+  // The index is the fast atomic authority, but a prior partial write or migration must not
+  // permit a second opening alert. Recover only a case with hard Discord delivery proof.
+  if (!hasTable(db, "opportunity_cases")) return null;
+  try {
+    const recovered = db.prepare(
+      `SELECT opportunity_id, lifecycle_status, underlying_symbol, session_date, setup_family,
+              COALESCE(opening_delivered_at_ms, created_at_ms) AS opened_at_ms
+       FROM opportunity_cases
+       WHERE opportunity_fingerprint=?
+         AND lifecycle_status IN ('CREATED','CONFIRMED','RUNNING','EXTENDED')
+         AND delivery_decision='delivered'
+         AND discord_message_id IS NOT NULL
+         AND discord_message_id<>''
+       ORDER BY COALESCE(opening_delivered_at_ms, created_at_ms) ASC
+       LIMIT 1`,
+    ).get(fingerprint) as {
+      opportunity_id?: string;
+      lifecycle_status?: string;
+      underlying_symbol?: string;
+      session_date?: string;
+      setup_family?: string;
+      opened_at_ms?: number;
+    } | undefined;
+    if (!recovered?.opportunity_id || !isActiveLifecycleStatus(recovered.lifecycle_status)) return null;
+
+    try {
+      db.prepare(
+        `INSERT OR IGNORE INTO opportunity_active_index
+          (opportunity_fingerprint, opportunity_case_id, symbol, session_date, strategy_key,
+           lifecycle_status, opened_at_ms, updated_at_ms)
+         VALUES (?,?,?,?,?,?,?,?)`,
+      ).run(
+        fingerprint,
+        recovered.opportunity_id,
+        recovered.underlying_symbol ?? "",
+        recovered.session_date ?? "",
+        recovered.setup_family ?? null,
+        recovered.lifecycle_status,
+        Number(recovered.opened_at_ms ?? Date.now()),
+        Date.now(),
+      );
+    } catch { /* recovery remains read-safe if repair cannot be written */ }
+
+    const indexed = db.prepare(
+      `SELECT opportunity_case_id, lifecycle_status
+       FROM opportunity_active_index
+       WHERE opportunity_fingerprint=?`,
+    ).get(fingerprint) as { opportunity_case_id?: string; lifecycle_status?: string } | undefined;
+    if (indexed?.opportunity_case_id && isActiveLifecycleStatus(indexed.lifecycle_status)) {
+      return {
+        opportunityCaseId: String(indexed.opportunity_case_id),
+        lifecycleStatus: String(indexed.lifecycle_status),
+      };
+    }
+    return {
+      opportunityCaseId: String(recovered.opportunity_id),
+      lifecycleStatus: String(recovered.lifecycle_status),
+    };
   } catch {
     return null;
   }
@@ -158,6 +232,7 @@ export interface ClaimOpenResult {
   opportunityCaseId: string;
   fingerprint: string;
   identity: OpportunityIdentity;
+  thesisFingerprint: string;
   existing: boolean;
   reason: string;
 }
@@ -176,32 +251,84 @@ export function claimOpportunityOpenOnDb(
     quality?: number | null;
     why?: string | null;
     frozenEntry?: number | null;
+    frozenTrade?: {
+      entryMid: number;
+      targetT1: number;
+      targetT2: number;
+      stop: number;
+      bid: number;
+      ask: number;
+      spreadPct: number;
+      methodology: string;
+    } | null;
     optionSymbol?: string | null;
     alertId?: string | null;
+    openingSource?: ThesisOpeningSource;
+    contractSnapshot?: {
+      bid?: number | null;
+      ask?: number | null;
+      spreadPct?: number | null;
+      delta?: number | null;
+      openInterest?: number | null;
+      volume?: number | null;
+    } | null;
   },
 ): ClaimOpenResult {
   const identity = buildOpportunityIdentity(input);
   const fingerprint = opportunityFingerprint(identity);
   const existing = findActiveOpportunityByFingerprintOnDb(db, fingerprint);
-  if (existing) {
+  const opportunityCaseId = existing?.opportunityCaseId
+    ?? opportunityCaseIdForOpen(fingerprint, input.nowMs);
+  const thesisClaim = claimThesisIndexOnDb(db, {
+    symbol: input.symbol,
+    side: input.side,
+    nowMs: input.nowMs,
+    direction: input.direction,
+    sessionDate: identity.sessionDate,
+    opportunityCaseId,
+    openingSource: input.openingSource ?? "canonical",
+  });
+  if (!thesisClaim.claimed) {
+    const activeCaseId = thesisClaim.active?.opportunityCaseId ?? opportunityCaseId;
+    if (thesisClaim.active) {
+      recordContractCandidateOnDb(db, {
+        opportunityCaseId: activeCaseId,
+        thesisFingerprint: thesisClaim.thesisFingerprint,
+        opportunityFingerprint: fingerprint,
+        optionSymbol: input.optionSymbol ?? "UNKNOWN",
+        side: input.side,
+        strike: identity.strike,
+        expiration: identity.expiration,
+        strategyKey: identity.strategyKey,
+        observedAtMs: input.nowMs,
+        bid: input.contractSnapshot?.bid,
+        ask: input.contractSnapshot?.ask,
+        spreadPct: input.contractSnapshot?.spreadPct,
+        delta: input.contractSnapshot?.delta,
+        openInterest: input.contractSnapshot?.openInterest,
+        volume: input.contractSnapshot?.volume,
+        reason: "preferred_contract_reselected",
+      });
+    }
     return {
       claimed: false,
-      opportunityCaseId: existing.opportunityCaseId,
+      opportunityCaseId: activeCaseId,
       fingerprint,
       identity,
-      existing: true,
-      reason: "MATCHING_ACTIVE_OPPORTUNITY",
+      thesisFingerprint: thesisClaim.thesisFingerprint,
+      existing: Boolean(thesisClaim.active),
+      reason: thesisClaim.reason,
     };
   }
-
-  const opportunityCaseId = opportunityCaseIdForOpen(fingerprint, input.nowMs);
   if (!opportunityLifecycleSchemaReady(db)) {
+    releaseThesisClaimOnDb(db, opportunityCaseId);
     // Schema not migrated yet — caller must fall back to legacy alertId/setup dedup.
     return {
       claimed: false,
       opportunityCaseId,
       fingerprint,
       identity,
+      thesisFingerprint: thesisClaim.thesisFingerprint,
       existing: false,
       reason: "SCHEMA_UNAVAILABLE",
     };
@@ -230,6 +357,7 @@ export function claimOpportunityOpenOnDb(
         opportunityCaseId: again?.opportunityCaseId ?? opportunityCaseId,
         fingerprint,
         identity,
+        thesisFingerprint: thesisClaim.thesisFingerprint,
         existing: true,
         reason: "MATCHING_ACTIVE_OPPORTUNITY",
       };
@@ -242,10 +370,33 @@ export function claimOpportunityOpenOnDb(
         opportunityCaseId: again.opportunityCaseId,
         fingerprint,
         identity,
+        thesisFingerprint: thesisClaim.thesisFingerprint,
         existing: true,
         reason: "MATCHING_ACTIVE_OPPORTUNITY",
       };
     }
+    releaseThesisClaimOnDb(db, opportunityCaseId);
+    return {
+      claimed: false,
+      opportunityCaseId,
+      fingerprint,
+      identity,
+      thesisFingerprint: thesisClaim.thesisFingerprint,
+      existing: false,
+      reason: "CLAIM_WRITE_FAILED",
+    };
+  }
+
+  if (existing) {
+    return {
+      claimed: false,
+      opportunityCaseId: existing.opportunityCaseId,
+      fingerprint,
+      identity,
+      thesisFingerprint: thesisClaim.thesisFingerprint,
+      existing: true,
+      reason: "MATCHING_ACTIVE_OPPORTUNITY",
+    };
   }
 
   const summary = rebuildOpportunitySummary({
@@ -278,17 +429,23 @@ export function claimOpportunityOpenOnDb(
           strike: identity.strike,
           expiration: identity.expiration,
           dte: 0,
-          bid: null,
-          ask: null,
-          spreadPct: null,
-          delta: null,
-          openInterest: null,
-          volume: null,
+          bid: input.contractSnapshot?.bid ?? null,
+          ask: input.contractSnapshot?.ask ?? null,
+          spreadPct: input.contractSnapshot?.spreadPct ?? null,
+          delta: input.contractSnapshot?.delta ?? null,
+          openInterest: input.contractSnapshot?.openInterest ?? null,
+          volume: input.contractSnapshot?.volume ?? null,
           selectionReason: "delivered_contract",
         }
       : null,
     rejectedContracts: [],
-    frozenTrade: input.frozenEntry != null
+    frozenTrade: input.frozenTrade
+      ? {
+          ...input.frozenTrade,
+          frozenAtMs: input.nowMs,
+          immutable: true,
+        }
+      : input.frozenEntry != null
       ? {
           entryMid: input.frozenEntry,
           targetT1: 0,
@@ -323,6 +480,7 @@ export function claimOpportunityOpenOnDb(
     createdAtMs: input.nowMs,
     updatedAtMs: input.nowMs,
     opportunityFingerprint: fingerprint,
+    thesisFingerprint: thesisClaim.thesisFingerprint,
     sessionDate: identity.sessionDate,
     lifecycleStatus: "CREATED",
     summary,
@@ -333,6 +491,8 @@ export function claimOpportunityOpenOnDb(
       deliveredAt: null,
     },
     originalThesis: summary.originalThesis,
+    contractCandidates: [],
+    contractUpdates: [],
   };
 
   try {
@@ -341,14 +501,68 @@ export function claimOpportunityOpenOnDb(
     try {
       db.prepare(
         `UPDATE opportunity_cases
-         SET opportunity_fingerprint=?, session_date=?, lifecycle_status=?, summary_json=?, updated_at_ms=?
+         SET opportunity_fingerprint=?, thesis_fingerprint=?, opening_source=?,
+             session_date=?, lifecycle_status=?, summary_json=?, updated_at_ms=?
          WHERE opportunity_id=?`,
-      ).run(fingerprint, identity.sessionDate, "CREATED", JSON.stringify(summary), input.nowMs, opportunityCaseId);
+      ).run(
+        fingerprint,
+        thesisClaim.thesisFingerprint,
+        input.openingSource ?? "canonical",
+        identity.sessionDate,
+        "CREATED",
+        JSON.stringify(summary),
+        input.nowMs,
+        opportunityCaseId,
+      );
     } catch { /* columns may lag on first boot before migrate */ }
     bumpMetric(db, "lifecycle.newOpportunitiesCreated");
-  } catch { /* isolated */ }
+  } catch {
+    try {
+      db.prepare(
+        "DELETE FROM opportunity_active_index WHERE opportunity_fingerprint=? AND opportunity_case_id=?",
+      ).run(fingerprint, opportunityCaseId);
+    } catch { /* best effort rollback */ }
+    try {
+      releaseThesisClaimOnDb(db, opportunityCaseId);
+    } catch { /* best effort rollback */ }
+    return {
+      claimed: false,
+      opportunityCaseId,
+      fingerprint,
+      identity,
+      thesisFingerprint: thesisClaim.thesisFingerprint,
+      existing: false,
+      reason: "CASE_PERSIST_FAILED",
+    };
+  }
 
-  return { claimed: true, opportunityCaseId, fingerprint, identity, existing: false, reason: "opportunity_created" };
+  recordContractCandidateOnDb(db, {
+    opportunityCaseId,
+    thesisFingerprint: thesisClaim.thesisFingerprint,
+    opportunityFingerprint: fingerprint,
+    optionSymbol: input.optionSymbol ?? "UNKNOWN",
+    side: input.side,
+    strike: identity.strike,
+    expiration: identity.expiration,
+    strategyKey: identity.strategyKey,
+    observedAtMs: input.nowMs,
+    bid: input.contractSnapshot?.bid,
+    ask: input.contractSnapshot?.ask,
+    spreadPct: input.contractSnapshot?.spreadPct,
+    delta: input.contractSnapshot?.delta,
+    openInterest: input.contractSnapshot?.openInterest,
+    volume: input.contractSnapshot?.volume,
+    reason: "initial_contract",
+  });
+  return {
+    claimed: true,
+    opportunityCaseId,
+    fingerprint,
+    identity,
+    thesisFingerprint: thesisClaim.thesisFingerprint,
+    existing: false,
+    reason: "opportunity_created",
+  };
 }
 
 export function attachEvidenceToOpportunityOnDb(
@@ -362,6 +576,7 @@ export function attachEvidenceToOpportunityOnDb(
     details?: Record<string, unknown>;
     strengthen?: boolean;
     weaken?: boolean;
+    currentMark?: number | null;
   },
 ): { attached: boolean; eventType?: LifecycleEventType } {
   const ev = buildEvidenceEvent({
@@ -397,10 +612,19 @@ export function attachEvidenceToOpportunityOnDb(
         details: { signalType: input.signalType, score: input.score ?? null },
       });
     }
+    const frozenEntry = oc.summary?.frozenEntry ?? oc.frozenTrade?.entryMid ?? null;
+    const currentMark = input.currentMark != null && Number.isFinite(input.currentMark) && input.currentMark > 0
+      ? input.currentMark
+      : null;
+    const currentReturnPct = frozenEntry != null && currentMark != null
+      ? computeReturnPercent(frozenEntry, currentMark)
+      : null;
     refreshCaseSummaryOnDb(db, input.opportunityCaseId, {
       status,
       nowMs: input.nowMs,
       currentConfidence: input.score ?? oc.summary?.currentConfidence ?? null,
+      currentMark: currentMark ?? oc.summary?.currentMark ?? null,
+      currentReturnPct: currentReturnPct ?? oc.summary?.currentReturnPct ?? null,
     });
     if (eventType) {
       emitContentEventForCase(db, input.opportunityCaseId, eventType, input.nowMs);
@@ -489,7 +713,104 @@ export function markOpportunityOpenedDeliveredOnDb(
     );
   } catch { /* isolated */ }
 
+  if (oc.thesisFingerprint) {
+    try {
+      markThesisOpeningDiscordOnDb(db, {
+        opportunityCaseId: input.opportunityCaseId,
+        thesisFingerprint: oc.thesisFingerprint,
+        openingSource: "canonical",
+        discordMessageId: input.discordMessageId,
+        nowMs: input.nowMs,
+      });
+    } catch { /* isolated */ }
+  }
   emitContentEventForCase(db, input.opportunityCaseId, "OPPORTUNITY_OPENED", input.nowMs);
+}
+
+export function markOwnerActionableOpeningDeliveredOnDb(
+  db: LiveDb,
+  input: {
+    opportunityCaseId: string;
+    discordMessageId: string | null;
+    nowMs: number;
+    quality?: number | null;
+  },
+): void {
+  const oc = loadCaseJsonOnDb(db, input.opportunityCaseId);
+  if (!oc?.thesisFingerprint) return;
+  oc.deliveryDecision = "research_only";
+  oc.deliveryReason = "owner_actionable_opening";
+  oc.discordDeliveryStatus = "OWNER_ACTIONABLE_DELIVERED";
+  oc.lifecycleStatus = "CREATED";
+  oc.discord = {
+    channelId: null,
+    messageId: input.discordMessageId,
+    threadId: null,
+    deliveredAt: new Date(input.nowMs).toISOString(),
+  };
+  const frozenEntry = oc.frozenTrade?.entryMid ?? null;
+  persistReachedMilestoneOnDb(db as any, {
+    opportunityCaseId: input.opportunityCaseId,
+    eventType: "OPPORTUNITY_OPENED",
+    reachedAtMs: input.nowMs,
+    contractMark: frozenEntry,
+    returnPercent: 0,
+  });
+  markMilestoneDeliveredOnDb(
+    db as any,
+    input.opportunityCaseId,
+    "OPPORTUNITY_OPENED",
+    null,
+    input.discordMessageId,
+    input.nowMs,
+  );
+  oc.summary = refreshCaseSummaryOnDb(db, input.opportunityCaseId, {
+    status: "CREATED",
+    nowMs: input.nowMs,
+    frozenEntry,
+    currentMark: frozenEntry,
+    currentReturnPct: 0,
+    maxReturnPct: 0,
+    currentConfidence: input.quality ?? oc.summary?.currentConfidence ?? null,
+    openedAtMs: oc.detectedAtMs,
+  }) ?? oc.summary;
+  oc.updatedAtMs = input.nowMs;
+  persistOpportunityCaseOnDb(db as any, oc);
+  try {
+    db.prepare(
+      `UPDATE opportunity_cases
+       SET delivery_decision='research_only', lifecycle_status='CREATED',
+           discord_message_id=?, opening_delivered_at_ms=?, opening_source='owner_actionable',
+           summary_json=?, updated_at_ms=?
+       WHERE opportunity_id=?`,
+    ).run(
+      input.discordMessageId,
+      input.nowMs,
+      JSON.stringify(oc.summary),
+      input.nowMs,
+      input.opportunityCaseId,
+    );
+  } catch { /* optional columns */ }
+  markThesisOpeningDiscordOnDb(db, {
+    opportunityCaseId: input.opportunityCaseId,
+    thesisFingerprint: oc.thesisFingerprint,
+    openingSource: "owner_actionable",
+    discordMessageId: input.discordMessageId,
+    nowMs: input.nowMs,
+  });
+  emitContentEventForCase(db, input.opportunityCaseId, "OPPORTUNITY_OPENED", input.nowMs);
+}
+
+export function releaseOpportunityOpeningClaimOnDb(
+  db: LiveDb,
+  opportunityCaseId: string,
+): void {
+  try {
+    db.prepare("DELETE FROM opportunity_active_index WHERE opportunity_case_id=?").run(opportunityCaseId);
+  } catch { /* isolated */ }
+  try {
+    releaseThesisClaimOnDb(db, opportunityCaseId);
+  } catch { /* isolated */ }
 }
 
 export function refreshCaseSummaryOnDb(
@@ -545,6 +866,7 @@ export function refreshCaseSummaryOnDb(
         `UPDATE opportunity_active_index SET lifecycle_status=?, updated_at_ms=? WHERE opportunity_case_id=?`,
       ).run(status, patch.nowMs, opportunityCaseId);
     }
+    syncThesisLifecycleOnDb(db, opportunityCaseId, status, patch.nowMs);
   } catch { /* isolated */ }
   return summary;
 }
@@ -771,6 +1093,9 @@ export function closeOpportunityOnDb(
       db.prepare("DELETE FROM opportunity_active_index WHERE opportunity_case_id=?").run(input.opportunityCaseId);
     } catch { /* isolated */ }
   }
+  try {
+    releaseThesisClaimOnDb(db, input.opportunityCaseId);
+  } catch { /* isolated */ }
 
   emitContentEventForCase(db, input.opportunityCaseId, event, input.nowMs);
   emitContentEventForCase(db, input.opportunityCaseId, "OPPORTUNITY_CLOSED", input.nowMs);
