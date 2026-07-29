@@ -17,7 +17,35 @@ type CaseResponse = {
   replay?: Replay;
 };
 
-export default function OpportunityDossierPage() {
+type ContractCandidate = {
+  optionSymbol?: string | null;
+  strategyKey?: string | null;
+  observedAtMs?: number | null;
+  bid?: number | null;
+  ask?: number | null;
+  spreadPct?: number | null;
+  reason?: string | null;
+};
+
+type ContractUpdate = {
+  previousOptionSymbol?: string | null;
+  newOptionSymbol?: string | null;
+  changedAtMs?: number | null;
+  reason?: string | null;
+  originalContractRemainsValid?: boolean | null;
+};
+
+function money(value: unknown): string {
+  const n = Number(value);
+  return Number.isFinite(n) ? `$${n.toFixed(2)}` : "Unavailable";
+}
+
+function timestamp(value: unknown): string {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? new Date(n).toLocaleString() : "Unavailable";
+}
+
+export default function OpportunityDossierPage() {
   const params = useParams();
   const id = String(params?.id ?? "");
   const [replay, setReplay] = useState<Replay | null>(null);
@@ -42,7 +70,11 @@ export default function OpportunityDossierPage() {
     setLoading(false);
   }, [id]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { void load(); }, [load]);
+
+  const opportunity = replay?.opportunityCase as any;
+  const candidates = (opportunity?.contractCandidates ?? []) as ContractCandidate[];
+  const updates = (opportunity?.contractUpdates ?? []) as ContractUpdate[];
 
   return (
     <PageContainer>
@@ -72,7 +104,68 @@ export default function OpportunityDossierPage() {
               ))}
             </ul>
           </Card>
-          <Card title="Audit">
+          <Card title="Thesis and contract history">
+            <dl className="detail-grid">
+              <div><dt>Thesis fingerprint</dt><dd>{opportunity?.thesisFingerprint ?? "Unavailable"}</dd></div>
+              <div><dt>Session date</dt><dd>{opportunity?.sessionDate ?? "Unavailable"}</dd></div>
+              <div><dt>Original contract</dt><dd>{opportunity?.selectedContract?.optionSymbol ?? "Unavailable"}</dd></div>
+              <div><dt>Original opening</dt><dd>{timestamp(opportunity?.frozenTrade?.frozenAtMs)}</dd></div>
+              <div><dt>Frozen entry</dt><dd>{money(opportunity?.frozenTrade?.entryMid)}</dd></div>
+              <div><dt>Targets</dt><dd>{money(opportunity?.frozenTrade?.targetT1)} / {money(opportunity?.frozenTrade?.targetT2)}</dd></div>
+              <div><dt>Stop</dt><dd>{money(opportunity?.frozenTrade?.stop)}</dd></div>
+              <div><dt>Discord proof</dt><dd>{opportunity?.discord?.messageId ?? "No verified message ID"}</dd></div>
+            </dl>
+
+            <h3 style={{ marginTop: "1.25rem" }}>Contract observations</h3>
+            {candidates.length ? (
+              <div style={{ overflowX: "auto" }}>
+                <table>
+                  <thead>
+                    <tr><th>Observed</th><th>Contract</th><th>Strategy</th><th>Quote</th><th>Spread</th><th>Reason</th></tr>
+                  </thead>
+                  <tbody>
+                    {candidates.map((candidate, index) => (
+                      <tr key={`${candidate.optionSymbol ?? "contract"}-${candidate.observedAtMs ?? index}`}>
+                        <td>{timestamp(candidate.observedAtMs)}</td>
+                        <td>{candidate.optionSymbol ?? "Unavailable"}</td>
+                        <td>{candidate.strategyKey ?? "Unavailable"}</td>
+                        <td>{money(candidate.bid)} / {money(candidate.ask)}</td>
+                        <td>{candidate.spreadPct == null ? "Unavailable" : `${Number(candidate.spreadPct).toFixed(1)}%`}</td>
+                        <td>{candidate.reason ?? "Observation attached"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p>No contract observations have been attached.</p>
+            )}
+
+            <h3 style={{ marginTop: "1.25rem" }}>Contract replacements</h3>
+            {updates.length ? (
+              <ul>
+                {updates.map((update, index) => (
+                  <li key={`${update.newOptionSymbol ?? "replacement"}-${update.changedAtMs ?? index}`}>
+                    <strong>{update.previousOptionSymbol ?? "Unavailable"}</strong>
+                    {" -> "}
+                    <strong>{update.newOptionSymbol ?? "Unavailable"}</strong>
+                    {" at "}
+                    {timestamp(update.changedAtMs)}
+                    {update.reason ? ` (${update.reason})` : ""}
+                    {update.originalContractRemainsValid == null
+                      ? ""
+                      : update.originalContractRemainsValid
+                        ? " - original remains valid"
+                        : " - original no longer valid"}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p>No contract replacement has occurred. The original contract remains the tracked opening.</p>
+            )}
+          </Card>
+
+          <Card title="Audit">
             <pre style={{ whiteSpace: "pre-wrap", fontSize: "0.8rem" }}>{JSON.stringify(replay.auditAnswers, null, 2)}</pre>
           </Card>
         </>

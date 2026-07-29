@@ -72,6 +72,18 @@ test("alert rows expose the canonical alert detail route", () => {
   assert.match(detailPage, /Replacement candidate/);
 });
 
+test("canonical opportunity dossier shows thesis and append-only contract history", () => {
+  const source = readFileSync(new URL("../app/intelligence/[id]/page.tsx", import.meta.url), "utf8");
+  assert.match(source, /Thesis and contract history/);
+  assert.match(source, /Original contract/);
+  assert.match(source, /Frozen entry/);
+  assert.match(source, /Discord proof/);
+  assert.match(source, /Contract observations/);
+  assert.match(source, /Contract replacements/);
+  assert.match(source, /contractCandidates/);
+  assert.match(source, /contractUpdates/);
+});
+
 test("production dossier code has no NVDA-specific fixture logic", () => {
   const productionFiles = [
     "../lib/alert-store.ts",
