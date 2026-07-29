@@ -5,17 +5,18 @@ import { deliverOptionsCallout, optionsWebhookTransportTest, readDeliveryMetrics
 
 function db() {
   const d = new Database(":memory:");
-  d.exec(`CREATE TABLE options_alerts (alert_id TEXT PRIMARY KEY, candidate_symbol TEXT NOT NULL, strategy TEXT, option_symbol TEXT, side TEXT, research_only INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, message_hash TEXT, message TEXT, delivered_bid REAL, delivered_ask REAL, delivered_underlying REAL, paper_linked INTEGER NOT NULL DEFAULT 0, discord_status INTEGER, latency_ms INTEGER, retry_count INTEGER NOT NULL DEFAULT 0, failure_reason TEXT, attempted_at_ms INTEGER, sent_at_ms INTEGER, session_state TEXT, entry_mid REAL, delivered_spread_pct REAL, quote_ts_ms INTEGER, target_t1 REAL, target_t2 REAL, target_stop REAL, target_method TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
-          CREATE TABLE options_paper_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, option_symbol TEXT NOT NULL, side TEXT, strike REAL, expiration TEXT, dte INTEGER, result_class TEXT NOT NULL, bid REAL, ask REAL, mid REAL, spread_pct REAL, entry_fill REAL, volume REAL, open_interest REAL, iv REAL, delta REAL, underlying_price REAL, strategy TEXT, target REAL, invalidation REAL, provenance TEXT, status TEXT NOT NULL, exit_fill REAL, pnl REAL, return_pct REAL, exit_reason TEXT, entered_at_ms INTEGER, exit_at_ms INTEGER, session TEXT, core_broad TEXT, feature_snapshot_json TEXT, paper_kind TEXT, alert_id TEXT, entry_source TEXT, experiment_id TEXT, experiment_variant TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+  d.exec(`CREATE TABLE options_alerts (alert_id TEXT PRIMARY KEY, candidate_symbol TEXT NOT NULL, strategy TEXT, option_symbol TEXT, side TEXT, research_only INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, message_hash TEXT, message TEXT, delivered_bid REAL, delivered_ask REAL, delivered_underlying REAL, paper_linked INTEGER NOT NULL DEFAULT 0, paper_trade_id INTEGER, paper_reservation_state TEXT, discord_status INTEGER, latency_ms INTEGER, retry_count INTEGER NOT NULL DEFAULT 0, failure_reason TEXT, attempted_at_ms INTEGER, sent_at_ms INTEGER, session_state TEXT, entry_mid REAL, delivered_spread_pct REAL, quote_ts_ms INTEGER, target_t1 REAL, target_t2 REAL, target_stop REAL, target_method TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+          CREATE TABLE options_paper_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, option_symbol TEXT NOT NULL, side TEXT, strike REAL, expiration TEXT, dte INTEGER, result_class TEXT NOT NULL, bid REAL, ask REAL, mid REAL, spread_pct REAL, entry_fill REAL, volume REAL, open_interest REAL, iv REAL, delta REAL, underlying_price REAL, strategy TEXT, target REAL, invalidation REAL, provenance TEXT, status TEXT NOT NULL, exit_fill REAL, pnl REAL, return_pct REAL, exit_reason TEXT, entered_at_ms INTEGER, exit_at_ms INTEGER, session TEXT, core_broad TEXT, feature_snapshot_json TEXT, paper_kind TEXT, alert_id TEXT, entry_source TEXT, experiment_id TEXT, experiment_variant TEXT, thesis_fingerprint TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+          CREATE UNIQUE INDEX options_paper_one_live_thesis_idx ON options_paper_trades(thesis_fingerprint) WHERE status IN ('PENDING_DELIVERY','ENTERED') AND thesis_fingerprint IS NOT NULL;
           CREATE VIEW options_paper_delivered AS SELECT * FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER';
           CREATE VIEW options_paper_research AS SELECT * FROM options_paper_trades WHERE paper_kind='RESEARCH_ONLY_PAPER';`);
   return d;
 }
 const NOW = Date.parse("2026-07-27T14:22:10.777Z");
-const ON = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1", EARLY_OPTIONS_CALLOUTS_ENABLED: "1", DISCORD_WEBHOOK_OPTIONS: "https://discord.com/api/webhooks/SECRET", PUBLIC_APP_URL: "https://optiscan.example" };
+const ON = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1", EARLY_OPTIONS_CALLOUTS_ENABLED: "1", REAL_OPTION_PAPER_ENABLED: "1", DISCORD_WEBHOOK_OPTIONS: "https://discord.com/api/webhooks/SECRET", PUBLIC_APP_URL: "https://optiscan.example" };
 const input = (over = {}) => ({
   candidateSymbol: "HOOD", strategy: "breakout_forming", researchOnly: false,
-  contract: { optionSymbol: "O:HOOD260320C00101000", side: "call", strike: 101, expiration: "2026-03-20", bid: 1.2, ask: 1.3, spreadPct: 8, quoteAgeMs: 1000, providerTimestamp: NOW - 1000 },
+  contract: { optionSymbol: "O:HOOD260320C00101000", side: "call", strike: 101, expiration: "2026-03-20", dte: 0, bid: 1.2, ask: 1.3, spreadPct: 8, quoteAgeMs: 1000, providerTimestamp: NOW - 1000, volume: 100, openInterest: 500, delta: 0.5 },
   message: "HOOD CALL\n$101 — 03/20\nEntry: $1.20–$1.30\nTargets: $1.80 / $2.40\nWhy: breakout forming",
   observedUnderlyingPrice: 100, currentUnderlyingPrice: 100.1, chaseLimitPct: 0.6, underlyingPrice: 100.1,
   entry: { bid: 1.2, ask: 1.3, mid: 1.25, spreadPct: 8, quoteAgeMs: 1000, t1: 1.8, t2: 2.4, stop: 0.95, methodology: "test" },
@@ -100,6 +101,7 @@ test("7. webhook failure does not throw / block; state SEND_FAILED", async () =>
   const r = await deliverOptionsCallout(input(), { getDb: () => d, send: async () => ({ ok: false, status: 500, messageId: null, latencyMs: 10, ambiguous: false, error: "discord 500" }), now: () => NOW, maxRetries: 0 }, ON);
   assert.equal(r.state, "SEND_FAILED"); assert.equal(r.sent, false);
   assert.equal(d.prepare("SELECT state FROM options_alerts").get().state, "SEND_FAILED");
+  assert.equal(d.prepare("SELECT status FROM options_paper_delivered").get().status, "ABORTED");
 });
 
 test("8b. an ambiguous timeout is NOT retried and cannot be resent by a later call", async () => {
@@ -120,9 +122,18 @@ test("10. a delivered alert (paper enabled) creates ONE linked DELIVERED_ALERT_P
   assert.equal(d.prepare("SELECT option_symbol FROM options_paper_delivered").get().option_symbol, "O:HOOD260320C00101000");
   // paper subsystem OFF → no mirror is created, and the alert is honestly reported as unlinked.
   const d2 = db();
-  await deliverOptionsCallout(input(), { getDb: () => d2, send, now: () => NOW }, ON);
+  const offSend = okSend();
+  const off = await deliverOptionsCallout(
+    input(),
+    { getDb: () => d2, send: offSend.send, now: () => NOW },
+    { ...ON, REAL_OPTION_PAPER_ENABLED: "0" },
+  );
+  assert.equal(off.state, "REJECTED");
+  assert.match(off.reason, /paper_reservation_failed/);
+  assert.equal(offSend.spy.calls.length, 0);
   assert.equal(d2.prepare("SELECT paper_linked FROM options_alerts").get().paper_linked, 0);
-  assert.equal(d2.prepare("SELECT COUNT(*) n FROM options_paper_delivered").get().n, 0);
+  assert.equal(d2.prepare("SELECT COUNT(*) n FROM options_paper_delivered WHERE status='ENTERED'").get().n, 0);
+  assert.equal(d2.prepare("SELECT COUNT(*) n FROM options_paper_delivered WHERE status='ABORTED'").get().n, 0);
 });
 
 test("11. research-only puts are NOT sent as actionable callouts (suppressed)", async () => {

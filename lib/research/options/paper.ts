@@ -57,7 +57,7 @@ export function realOptionExit(entryFill: number, exitBid: number, exitAsk: numb
 
 function spreadPct(bid: number | null, ask: number | null): number | null { if (bid == null || ask == null) return null; const mid = (bid + ask) / 2; return mid > 0 ? ((ask - bid) / mid) * 100 : null; }
 
-interface PaperDb { prepare(sql: string): { get?: (...a: any[]) => any; run: (...a: any[]) => { changes: number } } }
+interface PaperDb { prepare(sql: string): { get?: (...a: any[]) => any; run: (...a: any[]) => { changes: number; lastInsertRowid?: number | bigint } } }
 
 /** Audience classification — the STRUCTURAL separator for the AI Research Lab data foundation.
  *  DELIVERED_ALERT_PAPER is the exact mirror of a delivered Discord alert; RESEARCH_ONLY_PAPER is a
@@ -73,8 +73,8 @@ export interface PaperPersistExtra {
 
 const PAPER_COLS = "option_symbol, side, strike, expiration, dte, result_class, bid, ask, mid, spread_pct, entry_fill, volume, open_interest, iv, delta, underlying_price, strategy, target, invalidation, provenance, status, session, core_broad, feature_snapshot_json, paper_kind, alert_id, entry_source, experiment_id, experiment_variant, entered_at_ms, created_at_ms, updated_at_ms";
 const PAPER_PLACEHOLDERS = PAPER_COLS.split(",").map(() => "?").join(","); // exactly one ? per column
-const paperVals = (e: RealOptionEntry, extra: PaperPersistExtra, kind: PaperKind, entrySource: string, nowMs: number): any[] => [
-  e.optionSymbol, e.side, e.strike, e.expiration, e.dte, e.class, e.bid, e.ask, e.mid, e.spreadPct, e.entryFill, e.volume, e.openInterest, e.iv, e.delta, e.underlyingPrice, e.strategy, e.target, e.invalidation, e.provenance, "ENTERED", extra.session ?? null, extra.coreBroad ?? null, extra.featureSnapshotJson ?? null, kind, extra.alertId ?? null, entrySource, extra.experimentId ?? null, extra.experimentVariant ?? null, nowMs, nowMs, nowMs,
+const paperVals = (e: RealOptionEntry, extra: PaperPersistExtra, kind: PaperKind, entrySource: string, nowMs: number, status = "ENTERED"): any[] => [
+  e.optionSymbol, e.side, e.strike, e.expiration, e.dte, e.class, e.bid, e.ask, e.mid, e.spreadPct, e.entryFill, e.volume, e.openInterest, e.iv, e.delta, e.underlyingPrice, e.strategy, e.target, e.invalidation, e.provenance, status, extra.session ?? null, extra.coreBroad ?? null, extra.featureSnapshotJson ?? null, kind, extra.alertId ?? null, entrySource, extra.experimentId ?? null, extra.experimentVariant ?? null, nowMs, nowMs, nowMs,
 ];
 
 /** Persist a real-option paper entry with the decision-time context. FAIL-SAFE: defaults to
@@ -150,6 +150,182 @@ export function persistDeliveredMirrorOnDb(db: PaperDb, e: RealOptionEntry, deci
     }
   }
   return { inserted: (r.changes ?? 0) > 0, existed: false };
+}
+
+type DeliveredReservationDb = {
+  prepare(sql: string): {
+    get: (...a: any[]) => any;
+    run: (...a: any[]) => { changes: number; lastInsertRowid?: number | bigint };
+  };
+};
+
+type DeliveredPaperRow = {
+  id: number;
+  option_symbol: string;
+  paper_kind: string | null;
+  alert_id: string | null;
+  status: string;
+  entry_fill: number | null;
+  target: number | null;
+  invalidation: number | null;
+};
+
+export type DeliveredPaperReservation = {
+  ok: boolean;
+  paperTradeId: number | null;
+  state: "PENDING_DELIVERY" | "REUSED_ENTERED" | "FAILED";
+  reason: string | null;
+};
+
+function sameFiniteNumber(a: number | null | undefined, b: number | null | undefined): boolean {
+  if (a == null && b == null) return true;
+  if (a == null || b == null || !Number.isFinite(Number(a)) || !Number.isFinite(Number(b))) return false;
+  return Math.abs(Number(a) - Number(b)) <= 0.0001;
+}
+
+function reusableDeliveredPosition(row: DeliveredPaperRow, e: RealOptionEntry, alertId: string): string | null {
+  if (row.paper_kind !== "DELIVERED_ALERT_PAPER") return `active_thesis_lane_mismatch:${row.paper_kind ?? "UNKNOWN"}`;
+  if (row.option_symbol !== e.optionSymbol) return "active_thesis_contract_mismatch";
+  if (!sameFiniteNumber(row.entry_fill, e.entryFill)) return "active_thesis_frozen_entry_mismatch";
+  if (!sameFiniteNumber(row.target, e.target)) return "active_thesis_target_mismatch";
+  if (!sameFiniteNumber(row.invalidation, e.invalidation)) return "active_thesis_stop_mismatch";
+  if (row.alert_id && row.alert_id !== alertId) return "active_delivered_position_already_linked";
+  return null;
+}
+
+/**
+ * Reserve the exact delivered-paper position before Discord. The row is not eligible for delivered
+ * performance until finalizeDeliveredPaperReservationOnDb promotes it to ENTERED after Discord proof.
+ */
+export function reserveDeliveredPaperOnDb(
+  db: DeliveredReservationDb,
+  e: RealOptionEntry,
+  decisionMs: number,
+  alertId: string,
+  extra: PaperPersistExtra = {},
+): DeliveredPaperReservation {
+  const existingForAlert = db.prepare(
+    `SELECT id, option_symbol, paper_kind, alert_id, status, entry_fill, target, invalidation
+       FROM options_paper_trades
+      WHERE alert_id=? AND paper_kind='DELIVERED_ALERT_PAPER'
+      ORDER BY id ASC LIMIT 1`,
+  ).get(alertId) as DeliveredPaperRow | undefined;
+  if (existingForAlert) {
+    const invalid = reusableDeliveredPosition(existingForAlert, e, alertId);
+    if (invalid) return { ok: false, paperTradeId: existingForAlert.id, state: "FAILED", reason: invalid };
+    if (existingForAlert.status === "ENTERED") {
+      return { ok: true, paperTradeId: existingForAlert.id, state: "REUSED_ENTERED", reason: null };
+    }
+    if (existingForAlert.status === "PENDING_DELIVERY") {
+      return { ok: true, paperTradeId: existingForAlert.id, state: "PENDING_DELIVERY", reason: null };
+    }
+    if (existingForAlert.status === "ABORTED") {
+      db.prepare(
+        `UPDATE options_paper_trades
+            SET status='PENDING_DELIVERY', exit_reason=NULL, exit_at_ms=NULL, updated_at_ms=?
+          WHERE id=? AND status='ABORTED'`,
+      ).run(decisionMs, existingForAlert.id);
+      return { ok: true, paperTradeId: existingForAlert.id, state: "PENDING_DELIVERY", reason: null };
+    }
+    return {
+      ok: false,
+      paperTradeId: existingForAlert.id,
+      state: "FAILED",
+      reason: `existing_alert_paper_state_invalid:${existingForAlert.status}`,
+    };
+  }
+
+  if (extra.thesisFingerprint) {
+    const activeThesis = db.prepare(
+      `SELECT id, option_symbol, paper_kind, alert_id, status, entry_fill, target, invalidation
+         FROM options_paper_trades
+        WHERE thesis_fingerprint=? AND status IN ('PENDING_DELIVERY','ENTERED')
+        ORDER BY CASE status WHEN 'ENTERED' THEN 0 ELSE 1 END, id ASC
+        LIMIT 1`,
+    ).get(extra.thesisFingerprint) as DeliveredPaperRow | undefined;
+    if (activeThesis) {
+      const invalid = reusableDeliveredPosition(activeThesis, e, alertId);
+      if (invalid) {
+        return { ok: false, paperTradeId: activeThesis.id, state: "FAILED", reason: invalid };
+      }
+      if (!activeThesis.alert_id) {
+        db.prepare(
+          "UPDATE options_paper_trades SET alert_id=?, updated_at_ms=? WHERE id=? AND alert_id IS NULL",
+        ).run(alertId, decisionMs, activeThesis.id);
+      }
+      return {
+        ok: true,
+        paperTradeId: activeThesis.id,
+        state: activeThesis.status === "ENTERED" ? "REUSED_ENTERED" : "PENDING_DELIVERY",
+        reason: null,
+      };
+    }
+  }
+
+  const vals = paperVals(
+    e,
+    { ...extra, alertId },
+    "DELIVERED_ALERT_PAPER",
+    "discord_delivery_reservation",
+    decisionMs,
+    "PENDING_DELIVERY",
+  );
+  try {
+    const r = db.prepare(
+      `INSERT INTO options_paper_trades (${PAPER_COLS}, thesis_fingerprint)
+       VALUES (${PAPER_PLACEHOLDERS}, ?)`,
+    ).run(...vals, extra.thesisFingerprint ?? null);
+    const paperTradeId = Number(r.lastInsertRowid ?? 0);
+    if (paperTradeId <= 0) {
+      return { ok: false, paperTradeId: null, state: "FAILED", reason: "paper_reservation_insert_failed" };
+    }
+    return { ok: true, paperTradeId, state: "PENDING_DELIVERY", reason: null };
+  } catch (error: any) {
+    const message = String(error?.message ?? error);
+    if (/UNIQUE constraint failed.*thesis_fingerprint/i.test(message)) {
+      return { ok: false, paperTradeId: null, state: "FAILED", reason: "active_paper_position_for_thesis" };
+    }
+    return { ok: false, paperTradeId: null, state: "FAILED", reason: `paper_reservation_failed:${message.slice(0, 120)}` };
+  }
+}
+
+export function finalizeDeliveredPaperReservationOnDb(
+  db: DeliveredReservationDb,
+  reservation: DeliveredPaperReservation,
+  nowMs: number,
+): boolean {
+  if (!reservation.ok || !reservation.paperTradeId) return false;
+  if (reservation.state === "REUSED_ENTERED") return true;
+  const result = db.prepare(
+    `UPDATE options_paper_trades
+        SET status='ENTERED', entry_source='discord_delivery', exit_reason=NULL, updated_at_ms=?
+      WHERE id=? AND paper_kind='DELIVERED_ALERT_PAPER' AND status='PENDING_DELIVERY'`,
+  ).run(nowMs, reservation.paperTradeId);
+  if ((result.changes ?? 0) !== 1) return false;
+  try {
+    dualWriteAfterOptionsPaperEntry(db as BrokerDb, reservation.paperTradeId);
+  } catch { /* best-effort; options paper row remains authoritative */ }
+  return true;
+}
+
+export function reconcileDeliveredPaperSendFailureOnDb(
+  db: DeliveredReservationDb,
+  reservation: DeliveredPaperReservation,
+  nowMs: number,
+  ambiguous: boolean,
+  reason: string,
+): void {
+  if (!reservation.ok || !reservation.paperTradeId || reservation.state === "REUSED_ENTERED") return;
+  db.prepare(
+    `UPDATE options_paper_trades
+        SET status=?, exit_reason=?, updated_at_ms=?
+      WHERE id=? AND paper_kind='DELIVERED_ALERT_PAPER' AND status='PENDING_DELIVERY'`,
+  ).run(
+    ambiguous ? "PENDING_DELIVERY" : "ABORTED",
+    ambiguous ? `discord_ambiguous:${reason}` : `discord_failed:${reason}`,
+    nowMs,
+    reservation.paperTradeId,
+  );
 }
 
 interface GateDb { prepare(sql: string): { get: (...a: any[]) => any } }

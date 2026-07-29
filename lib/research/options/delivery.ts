@@ -9,8 +9,10 @@
 import { researchFlags } from "../flags.ts";
 import {
   buildRealOptionEntry,
-  canOpenRealOptionPaper,
-  persistDeliveredMirrorOnDb,
+  finalizeDeliveredPaperReservationOnDb,
+  reconcileDeliveredPaperSendFailureOnDb,
+  reserveDeliveredPaperOnDb,
+  type DeliveredPaperReservation,
   type OptionQuote,
 } from "./paper.ts";
 import { sessionState, openingWindowAllows, defaultOpeningLimit } from "./session-state.ts";
@@ -45,7 +47,7 @@ import {
 } from "../../opportunity-case/thesis-identity.ts";
 import { quoteFreshness } from "../../quote-freshness.ts";
 
-export type DeliveryState = "READY" | "SEND_ATTEMPTED" | "SENT" | "SEND_FAILED" | "TOO_LATE" | "REJECTED" | "EXPIRED";
+export type DeliveryState = "READY" | "SEND_ATTEMPTED" | "SENT" | "SEND_FAILED" | "SEND_RECONCILE_REQUIRED" | "TOO_LATE" | "REJECTED" | "EXPIRED";
 
 export const BETA_LABEL = "PAPER/BETA TEST — NOT FINANCIAL ADVICE";
 
@@ -145,50 +147,47 @@ async function defaultSend(payload: Record<string, unknown>): Promise<SendResult
 }
 
 /**
- * Create the ONE DELIVERED_ALERT_PAPER mirror for an alert that actually SENT — the exact contract,
- * quote, underlying, strategy, decision timestamp, and alert_id the subscriber received. Idempotent
- * (persistDeliveredMirrorOnDb dedups by alert_id). Gated on REAL_OPTION_PAPER_ENABLED. Isolated: a
- * mirror failure does NOT change the honest SENT state — it only leaves paper_linked=0 (surfaced),
- * and the idempotent writer allows a later retry. Returns whether the mirror now exists (linked).
+ * Reserve the ONE linked subscriber mirror before Discord. The reservation cannot enter delivered
+ * performance until Discord proof exists and finalization promotes it to ENTERED.
  */
-function createDeliveredMirror(
+function reserveDeliveredMirror(
   db: DDb,
   i: DeliveryInput,
   alertId: string,
   thesisFingerprint: string | null,
   env: NodeJS.ProcessEnv,
-): boolean {
+): DeliveredPaperReservation {
   try {
     if (!researchFlags(env).realOptionPaper) {
-      console.warn(`[options-delivery] paper mirror skipped for ${alertId}: REAL_OPTION_PAPER_ENABLED!=1`);
-      return false;
+      return { ok: false, paperTradeId: null, state: "FAILED", reason: "REAL_OPTION_PAPER_ENABLED!=1" };
     }
     const c = i.contract;
     const decisionMs = i.decisionMs ?? Date.now();
     const q: OptionQuote = { optionSymbol: c.optionSymbol, side: c.side, strike: c.strike, expiration: c.expiration, dte: c.dte ?? 0, bid: c.bid, ask: c.ask, volume: c.volume ?? null, openInterest: c.openInterest ?? null, iv: c.iv ?? null, delta: c.delta ?? null, quoteAgeMs: c.quoteAgeMs, providerTimestamp: c.providerTimestamp ?? null };
     const built = buildRealOptionEntry({ quote: q, underlyingPrice: i.underlyingPrice, strategy: i.strategy }, env);
+    if (!built.ok) {
+      return {
+        ok: false,
+        paperTradeId: null,
+        state: "FAILED",
+        reason: `paper_entry_gate:${built.rejections.join(",")}`,
+      };
+    }
     // The mirror uses the EXACT frozen midpoint + deterministic targets the subscriber saw — never a
     // later/improved entry. entryFill = the displayed midpoint; target = T1; invalidation = Stop.
     const entry = i.entry ? { ...built, entryFill: i.entry.mid, target: i.entry.t1, invalidation: i.entry.stop } : built;
-    if (thesisFingerprint) {
-      const paperGate = canOpenRealOptionPaper(db, {
-        optionSymbol: c.optionSymbol,
-        strategy: i.strategy,
-        nowMs: decisionMs,
-        paperKind: "DELIVERED_ALERT_PAPER",
-        thesisFingerprint,
-      });
-      if (!paperGate.ok && paperGate.reason === "active_paper_position_for_thesis") return false;
-    }
-    const r = persistDeliveredMirrorOnDb(db, entry, decisionMs, alertId, {
+    return reserveDeliveredPaperOnDb(db, entry, decisionMs, alertId, {
       session: i.session ?? null,
       featureSnapshotJson: i.entry ? JSON.stringify({ targetMethodology: i.entry.methodology, frozen: i.entry }) : undefined,
       thesisFingerprint,
     });
-    return r.inserted || r.existed;
   } catch (err: any) {
-    console.warn(`[options-delivery] paper mirror failed for ${alertId}: ${String(err?.message ?? err).slice(0, 160)}`);
-    return false;
+    return {
+      ok: false,
+      paperTradeId: null,
+      state: "FAILED",
+      reason: `paper_reservation_failed:${String(err?.message ?? err).slice(0, 140)}`,
+    };
   }
 }
 
@@ -212,6 +211,19 @@ function persist(db: DDb, alertId: string, i: DeliveryInput, state: DeliveryStat
     e?.t1 ?? null, e?.t2 ?? null, e?.stop ?? null, e?.methodology ?? null,
     nowMs, nowMs,
   );
+}
+
+function persistPaperReservationLink(
+  db: DDb,
+  alertId: string,
+  reservation: DeliveredPaperReservation,
+  state: string,
+): void {
+  db.prepare(
+    `UPDATE options_alerts
+        SET paper_trade_id=?, paper_reservation_state=?
+      WHERE alert_id=?`,
+  ).run(reservation.paperTradeId, state, alertId);
 }
 
 /**
@@ -590,6 +602,31 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
     return finalize(deps, finalInput, alertId, rejectState, finalGate.rejectionCode, nowMs, state);
   }
 
+  const paperReservation = reserveDeliveredMirror(
+    db,
+    finalInput,
+    alertId,
+    livingThesisFingerprint,
+    env,
+  );
+  if (!paperReservation.ok || !paperReservation.paperTradeId) {
+    if (livingCaseId && env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0") {
+      try {
+        releaseOpportunityOpeningClaimOnDb(db, livingCaseId);
+      } catch { /* isolated */ }
+    }
+    return finalize(
+      deps,
+      finalInput,
+      alertId,
+      "REJECTED",
+      `paper_reservation_failed:${paperReservation.reason ?? "unknown"}`,
+      nowMs,
+      state,
+      { opportunityCaseId: livingCaseId },
+    );
+  }
+
   const appBaseUrl = String(env.PUBLIC_APP_URL ?? env.NEXT_PUBLIC_APP_URL ?? "").trim().replace(/\/$/, "");
   const liveMessage = finalInput.entry
     ? formatPrivateLiveAlert({
@@ -630,12 +667,53 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
     : finalInput.message;
 
   // Claim the slot as SEND_ATTEMPTED BEFORE sending, so a concurrent/duplicate call dedups.
-  try { persist(db, alertId, { ...finalInput, message: liveMessage }, "SEND_ATTEMPTED", { attemptedAtMs: nowMs, retryCount: priorRetries, sessionState: state }, nowMs); } catch { /* isolated */ }
+  try {
+    persist(
+      db,
+      alertId,
+      { ...finalInput, message: liveMessage },
+      "SEND_ATTEMPTED",
+      { attemptedAtMs: nowMs, retryCount: priorRetries, sessionState: state, paperLinked: false },
+      nowMs,
+    );
+    persistPaperReservationLink(db, alertId, paperReservation, paperReservation.state);
+  } catch {
+    reconcileDeliveredPaperSendFailureOnDb(
+      db,
+      paperReservation,
+      nowMs,
+      false,
+      "alert_link_persist_failed",
+    );
+    if (livingCaseId && env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0") {
+      try { releaseOpportunityOpeningClaimOnDb(db, livingCaseId); } catch { /* isolated */ }
+    }
+    return finalize(
+      deps,
+      finalInput,
+      alertId,
+      "REJECTED",
+      "paper_link_persist_failed",
+      nowMs,
+      state,
+      { opportunityCaseId: livingCaseId },
+    );
+  }
   try {
     if (livingCaseId || livingFingerprint || livingThesisFingerprint) {
       db.prepare(
-        "UPDATE options_alerts SET opportunity_case_id=?, opportunity_fingerprint=?, thesis_fingerprint=? WHERE alert_id=?",
-      ).run(livingCaseId, livingFingerprint, livingThesisFingerprint, alertId);
+        `UPDATE options_alerts
+            SET opportunity_case_id=?, opportunity_fingerprint=?, thesis_fingerprint=?,
+                paper_trade_id=?, paper_reservation_state=?
+          WHERE alert_id=?`,
+      ).run(
+        livingCaseId,
+        livingFingerprint,
+        livingThesisFingerprint,
+        paperReservation.paperTradeId,
+        paperReservation.state,
+        alertId,
+      );
     }
   } catch { /* columns optional */ }
 
@@ -649,11 +727,60 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
     await new Promise((r) => setTimeout(r, Math.min(15_000, 1000 * 2 ** attempt))); // bounded backoff
   }
   if (res.ok) {
-    // Alert delivered → create the ONE linked DELIVERED_ALERT_PAPER mirror (idempotent, same contract/
-    // quote/underlying/strategy/decision-timestamp/alert_id). Never blocks or alters the SENT outcome;
-    // a mirror failure just leaves paper_linked=0 (surfaced) and can be retried idempotently later.
-    const linked = createDeliveredMirror(db, finalInput, alertId, livingThesisFingerprint, env);
+    // Discord accepted the opening. Finalize the already-linked reservation before the alert can
+    // become SENT or enter delivered performance.
     const sentAt = now();
+    const linked = finalizeDeliveredPaperReservationOnDb(db, paperReservation, sentAt);
+    if (!linked) {
+      try {
+        persist(
+          db,
+          alertId,
+          finalInput,
+          "SEND_RECONCILE_REQUIRED",
+          {
+            status: res.status,
+            latencyMs: res.latencyMs,
+            retryCount: maxRetries,
+            attemptedAtMs: nowMs,
+            failureReason: "paper_finalize_failed_after_discord",
+            paperLinked: false,
+            sessionState: state,
+          },
+          sentAt,
+        );
+        persistPaperReservationLink(db, alertId, paperReservation, "RECONCILIATION_REQUIRED");
+        db.prepare(
+          `UPDATE options_alerts
+              SET discord_message_id=?,
+                  opportunity_case_id=COALESCE(opportunity_case_id, ?),
+                  opportunity_fingerprint=COALESCE(opportunity_fingerprint, ?),
+                  thesis_fingerprint=COALESCE(thesis_fingerprint, ?)
+            WHERE alert_id=?`,
+        ).run(res.messageId ?? null, livingCaseId, livingFingerprint, livingThesisFingerprint, alertId);
+      } catch { /* durable SEND_ATTEMPTED row and paper reservation remain for reconciliation */ }
+      try {
+        db.prepare(
+          `INSERT INTO discord_send_attempts (alert_id, opportunity_case_id, kind, ambiguous, discord_message_id, error, created_at_ms)
+           VALUES (?,?,?,?,?,?,?)`,
+        ).run(
+          alertId,
+          livingCaseId,
+          "opening",
+          0,
+          res.messageId ?? null,
+          "paper_finalize_failed_after_discord",
+          sentAt,
+        );
+      } catch { /* optional table */ }
+      return base(
+        "SEND_RECONCILE_REQUIRED",
+        true,
+        "paper_finalize_failed_after_discord",
+        false,
+        { opportunityCaseId: livingCaseId },
+      );
+    }
     const optMid = finalInput.entry?.mid ?? ((finalInput.contract.bid ?? 0) + (finalInput.contract.ask ?? 0)) / 2;
     const latencyMs = finalInput.firstDetectedAtMs ? sentAt - finalInput.firstDetectedAtMs : null;
     try {
@@ -672,7 +799,10 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
         deliveredAtMs: sentAt,
       });
     } catch { /* isolated */ }
-    try { persist(db, alertId, finalInput, "SENT", { status: res.status, latencyMs: res.latencyMs, retryCount: attempt, sentAtMs: sentAt, attemptedAtMs: nowMs, paperLinked: linked, sessionState: state }, now()); } catch { /* isolated */ }
+    try {
+      persist(db, alertId, finalInput, "SENT", { status: res.status, latencyMs: res.latencyMs, retryCount: attempt, sentAtMs: sentAt, attemptedAtMs: nowMs, paperLinked: true, sessionState: state }, now());
+      persistPaperReservationLink(db, alertId, paperReservation, "FINALIZED");
+    } catch { /* the delivered row remains linked by alert_id for reconciliation */ }
     try {
       db.prepare(
         `UPDATE options_alerts
@@ -714,12 +844,26 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
         console.warn(`[owner-intraday-mirror] ${String(err?.message ?? err).slice(0, 120)}`);
       });
     } catch { /* isolated — owner recap must never affect subscriber SENT */ }
-    return base("SENT", true, "delivered", linked, { opportunityCaseId: livingCaseId });
+    return base("SENT", true, "delivered", true, { opportunityCaseId: livingCaseId });
   }
-  const paperLinked = Boolean(finalInput.paperOptionSymbol && finalInput.paperOptionSymbol === finalInput.contract.optionSymbol);
+  reconcileDeliveredPaperSendFailureOnDb(
+    db,
+    paperReservation,
+    now(),
+    Boolean(res.ambiguous),
+    res.error ?? "send_failed",
+  );
+  try {
+    persistPaperReservationLink(
+      db,
+      alertId,
+      paperReservation,
+      res.ambiguous ? "PENDING_RECONCILIATION" : "ABORTED",
+    );
+  } catch { /* alert failure persistence below remains authoritative */ }
   // An AMBIGUOUS timeout may have been delivered — exhaust retries so NO later call can resend it.
   const finalRetryCount = res.ambiguous ? maxRetries : attempt;
-  try { persist(db, alertId, finalInput, "SEND_FAILED", { status: res.status, latencyMs: res.latencyMs, retryCount: finalRetryCount, failureReason: res.ambiguous ? `ambiguous_timeout: ${res.error}` : res.error, sessionState: state }, now()); } catch { /* isolated */ }
+  try { persist(db, alertId, finalInput, "SEND_FAILED", { status: res.status, latencyMs: res.latencyMs, retryCount: finalRetryCount, failureReason: res.ambiguous ? `ambiguous_timeout: ${res.error}` : res.error, paperLinked: false, sessionState: state }, now()); } catch { /* isolated */ }
   if (res.ambiguous) {
     try {
       db.prepare(
@@ -735,7 +879,7 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
       releaseOpportunityOpeningClaimOnDb(db, livingCaseId);
     } catch { /* isolated */ }
   }
-  return base("SEND_FAILED", false, res.ambiguous ? "ambiguous_timeout_no_retry" : "send_failed", paperLinked, { opportunityCaseId: livingCaseId });
+  return base("SEND_FAILED", false, res.ambiguous ? "ambiguous_timeout_no_retry" : "send_failed", false, { opportunityCaseId: livingCaseId });
 }
 
 function finalize(
@@ -748,7 +892,7 @@ function finalize(
   sessionSt?: string,
   extra: { opportunityCaseId?: string | null; suppressedDuplicate?: boolean } = {},
 ): DeliveryOutcome {
-  try { persist((deps.getDb ?? liveDb)(), alertId, input, state, { failureReason: reason, sessionState: sessionSt }, nowMs); } catch { /* isolated */ }
+  try { persist((deps.getDb ?? liveDb)(), alertId, input, state, { failureReason: reason, paperLinked: false, sessionState: sessionSt }, nowMs); } catch { /* isolated */ }
   return { state, alertId, sent: false, reason, paperLinked: false, ...extra };
 }
 

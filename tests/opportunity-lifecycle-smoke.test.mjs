@@ -13,6 +13,7 @@ function install(d) {
       attempted_at_ms INTEGER, sent_at_ms INTEGER, session_state TEXT, entry_mid REAL, delivered_spread_pct REAL,
       quote_ts_ms INTEGER, target_t1 REAL, target_t2 REAL, target_stop REAL, target_method TEXT,
       opportunity_case_id TEXT, opportunity_fingerprint TEXT, thesis_fingerprint TEXT, discord_message_id TEXT,
+      paper_trade_id INTEGER, paper_reservation_state TEXT,
       created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
     );
     CREATE TABLE options_paper_trades (
@@ -27,7 +28,7 @@ function install(d) {
     );
     CREATE UNIQUE INDEX options_paper_one_active_thesis_idx
       ON options_paper_trades(thesis_fingerprint)
-      WHERE status='ENTERED' AND thesis_fingerprint IS NOT NULL;
+      WHERE status IN ('PENDING_DELIVERY','ENTERED') AND thesis_fingerprint IS NOT NULL;
     CREATE VIEW options_paper_delivered AS SELECT * FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER';
     CREATE TABLE opportunity_cases (
       opportunity_id TEXT PRIMARY KEY, underlying_symbol TEXT NOT NULL, direction TEXT, setup_family TEXT,
@@ -114,6 +115,7 @@ test("lifecycle smoke: open once, suppress duplicate+evidence, milestone reply, 
       INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1",
       EARLY_OPTIONS_CALLOUTS_ENABLED: "1",
       OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1",
+      REAL_OPTION_PAPER_ENABLED: "1",
     },
     send: async (p) => {
       payloads.push(p);

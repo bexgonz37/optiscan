@@ -339,6 +339,9 @@ function classifyDeliveryResult(r: { state: string; sent: boolean; reason?: stri
   const text = `${state} ${reason ?? ""}`.toLowerCase();
   if (r.sent && state === "SENT") return { finalDeliveryOutcome: "DELIVERED" as const, category: null, reason: reason ?? "delivered" };
   if (text.includes("kill_switch")) return { finalDeliveryOutcome: "BLOCKED_KILL_SWITCH" as const, category: "kill_switch", reason };
+  if (state === "SEND_RECONCILE_REQUIRED") {
+    return { finalDeliveryOutcome: "DOWNSTREAM_ERROR" as const, category: "paper_reconciliation", reason };
+  }
   if (state === "SEND_FAILED") {
     const category = /webhook|not configured|not set|missing/i.test(reason ?? "") ? "webhook_failure" : "discord_failure";
     return { finalDeliveryOutcome: category === "webhook_failure" ? "WEBHOOK_FAILURE" as const : "DISCORD_FAILURE" as const, category, reason };
@@ -487,16 +490,6 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
         deliveryInput: x.s.deliveryInput,
         nowMs,
       }, env);
-      if (db) {
-        try {
-          openBearishResearchPaperOnDb(db as any, {
-            deliveryInput: x.s.deliveryInput,
-            authority: auth,
-            quality: x.quality,
-            nowMs,
-          }, env);
-        } catch { /* research paper must never affect delivery */ }
-      }
       await maybeSendBearishOwnerReview(
         db,
         x.s,
@@ -508,6 +501,16 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
         deps.ownerPostOverride,
       );
       if (!auth.maySubscriberSend) {
+        if (db) {
+          try {
+            openBearishResearchPaperOnDb(db as any, {
+              deliveryInput: x.s.deliveryInput,
+              authority: auth,
+              quality: x.quality,
+              nowMs,
+            }, env);
+          } catch { /* research paper must never affect delivery */ }
+        }
         base.reason = auth.reasonCode;
         base.finalDeliveryReason = `${auth.state}: ${auth.blockers.join("; ") || auth.reasons.join("; ") || auth.reasonCode}`;
         if (auth.state === "BEARISH_BLOCK") {

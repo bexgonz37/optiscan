@@ -1493,7 +1493,7 @@ CREATE TABLE IF NOT EXISTS options_alerts (
   -- the session state the alert fired in. Grading uses these exact values.
   session_state TEXT, entry_mid REAL, delivered_spread_pct REAL, quote_ts_ms INTEGER,
   target_t1 REAL, target_t2 REAL, target_stop REAL, target_method TEXT,
-  thesis_fingerprint TEXT,
+  thesis_fingerprint TEXT, paper_trade_id INTEGER, paper_reservation_state TEXT,
   created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_options_alerts_state ON options_alerts(state, created_at_ms);
@@ -2370,6 +2370,9 @@ function migrate(db: Database.Database) {
     db.prepare(
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_options_paper_one_active_thesis ON options_paper_trades(thesis_fingerprint) WHERE status='ENTERED' AND thesis_fingerprint IS NOT NULL",
     ).run();
+    db.prepare(
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_options_paper_one_live_thesis ON options_paper_trades(thesis_fingerprint) WHERE status IN ('PENDING_DELIVERY','ENTERED') AND thesis_fingerprint IS NOT NULL",
+    ).run();
     // STRUCTURAL separation: subscriber stats read ONLY the delivered view; the (future) Research Lab
     // reads ONLY the research view. A view physically cannot return the other kind — mixing is impossible.
     // Created here (after the ALTER) so paper_kind is guaranteed to exist. Repeat-safe.
@@ -2402,6 +2405,8 @@ function migrate(db: Database.Database) {
       ["opportunity_fingerprint", "ALTER TABLE options_alerts ADD COLUMN opportunity_fingerprint TEXT"],
       ["thesis_fingerprint", "ALTER TABLE options_alerts ADD COLUMN thesis_fingerprint TEXT"],
       ["discord_message_id", "ALTER TABLE options_alerts ADD COLUMN discord_message_id TEXT"],
+      ["paper_trade_id", "ALTER TABLE options_alerts ADD COLUMN paper_trade_id INTEGER"],
+      ["paper_reservation_state", "ALTER TABLE options_alerts ADD COLUMN paper_reservation_state TEXT"],
       ...OPTIONS_ALERTS_INSTRUMENTATION_MIGRATIONS,
     ] as [string, string][]) if (!oa.has(col)) db.exec(sql);
     db.prepare("CREATE INDEX IF NOT EXISTS idx_options_alerts_opportunity ON options_alerts(opportunity_case_id, state)").run();

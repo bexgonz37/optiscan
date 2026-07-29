@@ -59,7 +59,7 @@ function installLifecycleSchema(d) {
       attempted_at_ms INTEGER, sent_at_ms INTEGER, session_state TEXT, entry_mid REAL, delivered_spread_pct REAL,
       quote_ts_ms INTEGER, target_t1 REAL, target_t2 REAL, target_stop REAL, target_method TEXT,
       opportunity_case_id TEXT, opportunity_fingerprint TEXT, discord_message_id TEXT,
-      thesis_fingerprint TEXT,
+      thesis_fingerprint TEXT, paper_trade_id INTEGER, paper_reservation_state TEXT,
       created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS options_paper_trades (
@@ -113,6 +113,9 @@ function installLifecycleSchema(d) {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_options_paper_active_thesis_test
       ON options_paper_trades(thesis_fingerprint)
       WHERE status='ENTERED' AND thesis_fingerprint IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_options_paper_live_thesis_test
+      ON options_paper_trades(thesis_fingerprint)
+      WHERE status IN ('PENDING_DELIVERY','ENTERED') AND thesis_fingerprint IS NOT NULL;
     CREATE TABLE IF NOT EXISTS opportunity_milestones (
       id INTEGER PRIMARY KEY AUTOINCREMENT, opportunity_case_id TEXT NOT NULL, event_key TEXT NOT NULL,
       event_type TEXT NOT NULL, milestone_percent REAL, label TEXT NOT NULL, reached_at_ms INTEGER NOT NULL,
@@ -681,6 +684,7 @@ test("exact IWM production contract roll stays one active thesis and one opening
     returnPct: -10,
     currentMark: 1.96,
   });
+  d.prepare("UPDATE options_paper_trades SET status='EXITED' WHERE alert_id=?").run(first.alertId);
   const reopenedAt = flipAt + 120_000;
   const reopenedPut = await deliverOptionsCallout(
     {
@@ -697,6 +701,127 @@ test("exact IWM production contract roll stays one active thesis and one opening
   assert.equal(reopenedPut.state, "SENT", "closed PUT thesis permits a fresh PUT opening");
   assert.notEqual(reopenedPut.opportunityCaseId, first.opportunityCaseId);
   assert.equal(sends, 3);
+});
+
+test("AVGO oc_17814os fails closed before Discord when ot_hbldh7 has research exposure", async () => {
+  const d = installLifecycleSchema(new Database(":memory:"));
+  const nowMs = Date.parse("2026-07-29T17:56:20.394Z");
+  d.prepare(
+    `INSERT INTO options_paper_trades
+      (option_symbol, side, strike, expiration, dte, result_class, bid, ask, mid, spread_pct,
+       entry_fill, volume, open_interest, delta, underlying_price, strategy, target, invalidation,
+       provenance, status, paper_kind, alert_id, entry_source, thesis_fingerprint,
+       entered_at_ms, created_at_ms, updated_at_ms)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(
+    "O:AVGO260731P00375000",
+    "put",
+    375,
+    "2026-07-31",
+    2,
+    "REAL_OPTION_PAPER",
+    7.4,
+    7.7,
+    7.55,
+    3.97,
+    7.55,
+    900,
+    4000,
+    -0.45,
+    374,
+    "lower_high_continuation",
+    10.6,
+    5.45,
+    "avgo_regression",
+    "ENTERED",
+    "BEARISH_RESEARCH_PAPER",
+    null,
+    "bearish_research",
+    "ot_hbldh7",
+    nowMs - 60_000,
+    nowMs - 60_000,
+    nowMs - 60_000,
+  );
+  let sends = 0;
+  const out = await deliverOptionsCallout(
+    mkInput({
+      candidateSymbol: "AVGO",
+      strategy: "lower_high_continuation",
+      nowMs,
+      decisionMs: nowMs,
+      observedUnderlyingPrice: 374,
+      currentUnderlyingPrice: 374,
+      underlyingPrice: 374,
+      contract: {
+        optionSymbol: "O:AVGO260731P00375000",
+        side: "put",
+        strike: 375,
+        expiration: "2026-07-31",
+        bid: 7.4,
+        ask: 7.7,
+        spreadPct: 3.97,
+        quoteAgeMs: 500,
+        dte: 2,
+        volume: 900,
+        openInterest: 4000,
+        iv: 0.35,
+        delta: -0.45,
+        providerTimestamp: nowMs - 500,
+      },
+      entry: {
+        bid: 7.4,
+        ask: 7.7,
+        mid: 7.55,
+        spreadPct: 3.97,
+        quoteAgeMs: 500,
+        t1: 10.6,
+        t2: 13.65,
+        stop: 5.45,
+        methodology: "frozen_avgo",
+      },
+      featureSnapshot: {
+        underlying: {
+          velPct: -0.4,
+          accelPct: -0.2,
+          shortMomentumPct: -0.3,
+          trendSlopePctPerBar: -0.1,
+          aboveVwap: false,
+          lodBreak: true,
+        },
+        chain: { direction: "put" },
+      },
+    }),
+    {
+      getDb: () => d,
+      now: () => nowMs,
+      send: async () => {
+        sends += 1;
+        return { ok: true, status: 200, messageId: "must-not-send", latencyMs: 1, ambiguous: false, error: null };
+      },
+    },
+    {
+      ...ENV,
+      BEARISH_PIPELINE_ENABLED: "1",
+      BEARISH_SUBSCRIBER_DELIVERY_ENABLED: "1",
+    },
+  );
+
+  assert.equal(out.state, "REJECTED");
+  assert.equal(sends, 0);
+  assert.match(out.reason, /active_thesis_lane_mismatch:BEARISH_RESEARCH_PAPER/);
+  assert.equal(
+    Number(d.prepare("SELECT COUNT(*) n FROM options_alerts WHERE state='SENT'").get().n),
+    0,
+  );
+  assert.equal(
+    Number(d.prepare("SELECT COUNT(*) n FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER'").get().n),
+    0,
+  );
+  assert.equal(
+    Number(d.prepare("SELECT COUNT(*) n FROM opportunity_thesis_active_index").get().n),
+    0,
+    "failed paper linkage releases the opening claim",
+  );
 });
 
 test("post-migration IWM signal adopts the legacy active thesis instead of reopening", async () => {
@@ -1015,6 +1140,7 @@ test("thesis identity suppresses contract churn but permits close and new-sessio
 
   // Close first opportunity → re-entry of same fingerprint allowed
   closeOpportunityOnDb(d, { opportunityCaseId: a.opportunityCaseId, nowMs: t + 2000, returnPct: 10, currentMark: 5.7 });
+  d.prepare("UPDATE options_paper_trades SET status='EXITED' WHERE alert_id=?").run(a.alertId);
   const reentry = await deliverOptionsCallout(mkInput({ nowMs: t + 3000 }), {
     getDb: () => d, send, now: () => t + 3000,
   }, ENV);

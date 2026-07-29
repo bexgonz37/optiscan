@@ -28,6 +28,7 @@ function install(d) {
       failure_reason TEXT, attempted_at_ms INTEGER, sent_at_ms INTEGER, session_state TEXT, entry_mid REAL,
       delivered_spread_pct REAL, quote_ts_ms INTEGER, target_t1 REAL, target_t2 REAL, target_stop REAL,
       target_method TEXT, opportunity_case_id TEXT, opportunity_fingerprint TEXT, thesis_fingerprint TEXT,
+      paper_trade_id INTEGER, paper_reservation_state TEXT,
       created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
     );
     CREATE TABLE options_paper_trades (
@@ -42,6 +43,9 @@ function install(d) {
       created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
     );
     CREATE VIEW options_paper_delivered AS SELECT * FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER';
+    CREATE UNIQUE INDEX options_paper_one_live_thesis_idx
+      ON options_paper_trades(thesis_fingerprint)
+      WHERE status IN ('PENDING_DELIVERY','ENTERED') AND thesis_fingerprint IS NOT NULL;
     CREATE TABLE opportunity_cases (
       opportunity_id TEXT PRIMARY KEY, underlying_symbol TEXT NOT NULL, direction TEXT, setup_family TEXT,
       detected_at_ms INTEGER NOT NULL, market_session TEXT, source_path TEXT NOT NULL,
@@ -91,13 +95,13 @@ const input = (now) => ({
   candidateSymbol: "NVDA",
   strategy: "sr_reclaim",
   researchOnly: false,
-  contract: { optionSymbol: "O:NVDA260725C00100000", side: "call", strike: 100, expiration: "2026-07-27", bid: 1, ask: 1.1, spreadPct: 4, quoteAgeMs: 500, providerTimestamp: now - 500 },
+  contract: { optionSymbol: "O:NVDA260725C00100000", side: "call", strike: 100, expiration: "2026-07-27", dte: 5, bid: 1, ask: 1.1, spreadPct: 4, quoteAgeMs: 500, providerTimestamp: now - 500, volume: 500, openInterest: 2000, delta: 0.5 },
   message: "test alert",
   observedUnderlyingPrice: 100,
   currentUnderlyingPrice: 100,
   chaseLimitPct: 5,
   underlyingPrice: 100,
-  entry: { mid: 1.05, t1: 1.2, t2: 1.3, stop: 0.9, methodology: "test" },
+  entry: { bid: 1, ask: 1.1, mid: 1.05, spreadPct: 4, quoteAgeMs: 500, t1: 1.2, t2: 1.3, stop: 0.9, methodology: "test" },
 });
 
 test("paper chain E2E: SENT → paper_linked → diagnostic row", async () => {

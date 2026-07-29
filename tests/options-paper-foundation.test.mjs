@@ -2,7 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { deliverOptionsCallout } from "../lib/research/options/delivery.ts";
-import { persistRealOptionPaperOnDb, persistDeliveredMirrorOnDb, buildRealOptionEntry } from "../lib/research/options/paper.ts";
+import {
+  buildRealOptionEntry,
+  persistDeliveredMirrorOnDb,
+  persistRealOptionPaperOnDb,
+  reserveDeliveredPaperOnDb,
+} from "../lib/research/options/paper.ts";
 import { readOptionsReportOnDb } from "../lib/research/options/report.ts";
 
 // Data foundation for the future AI Research Lab: DELIVERED_ALERT_PAPER (subscriber mirror) and
@@ -13,10 +18,11 @@ const OCC = "O:NVDA260117C00100000";
 function db() {
   const d = new Database(":memory:");
   d.exec(`CREATE TABLE options_candidates (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, tier INTEGER, session TEXT, selected_strategy TEXT, direction TEXT, side TEXT, research_only INTEGER NOT NULL DEFAULT 0, score REAL, considered_json TEXT, state TEXT NOT NULL, why TEXT, option_symbol TEXT, chain_fetch_ms INTEGER, freshness_state TEXT, callout_message TEXT, latency_json TEXT, earliness_phase TEXT, escalated_by TEXT, feature_snapshot_json TEXT, created_at_ms INTEGER NOT NULL);
-          CREATE TABLE options_paper_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, option_symbol TEXT NOT NULL, side TEXT, strike REAL, expiration TEXT, dte INTEGER, result_class TEXT NOT NULL, bid REAL, ask REAL, mid REAL, spread_pct REAL, entry_fill REAL, volume REAL, open_interest REAL, iv REAL, delta REAL, underlying_price REAL, strategy TEXT, target REAL, invalidation REAL, provenance TEXT, status TEXT NOT NULL, exit_fill REAL, pnl REAL, return_pct REAL, exit_reason TEXT, entered_at_ms INTEGER, exit_at_ms INTEGER, session TEXT, core_broad TEXT, feature_snapshot_json TEXT, paper_kind TEXT, alert_id TEXT, entry_source TEXT, experiment_id TEXT, experiment_variant TEXT, mfe_pct REAL, mae_pct REAL, last_mark_return_pct REAL, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+          CREATE TABLE options_paper_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, option_symbol TEXT NOT NULL, side TEXT, strike REAL, expiration TEXT, dte INTEGER, result_class TEXT NOT NULL, bid REAL, ask REAL, mid REAL, spread_pct REAL, entry_fill REAL, volume REAL, open_interest REAL, iv REAL, delta REAL, underlying_price REAL, strategy TEXT, target REAL, invalidation REAL, provenance TEXT, status TEXT NOT NULL, exit_fill REAL, pnl REAL, return_pct REAL, exit_reason TEXT, entered_at_ms INTEGER, exit_at_ms INTEGER, session TEXT, core_broad TEXT, feature_snapshot_json TEXT, paper_kind TEXT, alert_id TEXT, entry_source TEXT, experiment_id TEXT, experiment_variant TEXT, mfe_pct REAL, mae_pct REAL, last_mark_return_pct REAL, thesis_fingerprint TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+          CREATE UNIQUE INDEX options_paper_one_live_thesis_idx ON options_paper_trades(thesis_fingerprint) WHERE status IN ('PENDING_DELIVERY','ENTERED') AND thesis_fingerprint IS NOT NULL;
           CREATE VIEW options_paper_delivered AS SELECT * FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER';
           CREATE VIEW options_paper_research AS SELECT * FROM options_paper_trades WHERE paper_kind='RESEARCH_ONLY_PAPER';
-          CREATE TABLE options_alerts (alert_id TEXT PRIMARY KEY, candidate_symbol TEXT NOT NULL, strategy TEXT, option_symbol TEXT, side TEXT, research_only INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, message_hash TEXT, message TEXT, delivered_bid REAL, delivered_ask REAL, delivered_underlying REAL, paper_linked INTEGER NOT NULL DEFAULT 0, discord_status INTEGER, latency_ms INTEGER, retry_count INTEGER NOT NULL DEFAULT 0, failure_reason TEXT, attempted_at_ms INTEGER, sent_at_ms INTEGER, session_state TEXT, entry_mid REAL, delivered_spread_pct REAL, quote_ts_ms INTEGER, target_t1 REAL, target_t2 REAL, target_stop REAL, target_method TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);`);
+          CREATE TABLE options_alerts (alert_id TEXT PRIMARY KEY, candidate_symbol TEXT NOT NULL, strategy TEXT, option_symbol TEXT, side TEXT, research_only INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL, message_hash TEXT, message TEXT, delivered_bid REAL, delivered_ask REAL, delivered_underlying REAL, paper_linked INTEGER NOT NULL DEFAULT 0, paper_trade_id INTEGER, paper_reservation_state TEXT, discord_status INTEGER, latency_ms INTEGER, retry_count INTEGER NOT NULL DEFAULT 0, failure_reason TEXT, attempted_at_ms INTEGER, sent_at_ms INTEGER, session_state TEXT, entry_mid REAL, delivered_spread_pct REAL, quote_ts_ms INTEGER, target_t1 REAL, target_t2 REAL, target_stop REAL, target_method TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);`);
   return d;
 }
 const ENV = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1", EARLY_OPTIONS_CALLOUTS_ENABLED: "1", REAL_OPTION_PAPER_ENABLED: "1" };
@@ -47,11 +53,50 @@ test("a delivered alert creates EXACTLY ONE linked DELIVERED_ALERT_PAPER (idempo
   assert.equal(d.prepare("SELECT COUNT(*) n FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER'").get().n, 1);
 });
 
-test("a FAILED Discord send creates NO delivered mirror (no dishonest subscriber trade)", async () => {
+test("a FAILED Discord send aborts its reservation and creates no entered delivered mirror", async () => {
   const d = db();
   const out = await deliverOptionsCallout(input(), { getDb: () => d, send: async () => ({ ok: false, status: 500, messageId: null, latencyMs: 5, ambiguous: false, error: "discord 500" }), now: () => NOW, maxRetries: 0 }, ENV);
   assert.equal(out.state, "SEND_FAILED");
-  assert.equal(d.prepare("SELECT COUNT(*) n FROM options_paper_delivered").get().n, 0, "no mirror when the alert did not deliver");
+  assert.equal(d.prepare("SELECT COUNT(*) n FROM options_paper_delivered WHERE status='ENTERED'").get().n, 0);
+  assert.equal(d.prepare("SELECT COUNT(*) n FROM options_paper_delivered WHERE status='ABORTED'").get().n, 1);
+});
+
+test("an exact unlinked delivered position is reused instead of creating a second paper position", () => {
+  const d = db();
+  const entry = buildRealOptionEntry({
+    quote: {
+      optionSymbol: OCC,
+      side: "call",
+      strike: 100,
+      expiration: "2026-01-17",
+      dte: 5,
+      bid: 1,
+      ask: 1.1,
+      volume: 500,
+      openInterest: 2000,
+      iv: 0.5,
+      delta: 0.5,
+      quoteAgeMs: 1000,
+      providerTimestamp: NOW - 1000,
+    },
+    underlyingPrice: 100,
+    strategy: "momentum_acceleration",
+    target: 1.5,
+    invalidation: 0.8,
+  }, ENV);
+  persistRealOptionPaperOnDb(d, entry, NOW, {
+    paperKind: "DELIVERED_ALERT_PAPER",
+    alertId: null,
+    entrySource: "delivery_recovery",
+    thesisFingerprint: "ot_reuse",
+  });
+  const reservation = reserveDeliveredPaperOnDb(d, entry, NOW, "oa_reused", {
+    thesisFingerprint: "ot_reuse",
+  });
+  assert.equal(reservation.ok, true);
+  assert.equal(reservation.state, "REUSED_ENTERED");
+  assert.equal(d.prepare("SELECT COUNT(*) n FROM options_paper_delivered").get().n, 1);
+  assert.equal(d.prepare("SELECT alert_id FROM options_paper_delivered").get().alert_id, "oa_reused");
 });
 
 test("a research/experiment trade can NEVER enter subscriber statistics", () => {
