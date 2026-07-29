@@ -23,24 +23,26 @@ export function formatReturnMilestoneUpdate(input: {
   opportunityCaseId?: string | null;
   eventLabel?: "TARGET 1 HIT" | "TARGET 2 HIT" | "NEW HIGH" | string;
   detailUrl?: string | null;
+  includeInternalLink?: boolean;
 }): string {
   const sym = input.symbol.toUpperCase();
   const side = String(input.optionType || "").toUpperCase() === "PUT" ? "PUT" : "CALL";
   const entry = fmtMoney(input.summary.frozenEntry);
   const mark = fmtMoney(input.summary.currentMark);
   const label = input.eventLabel ?? `+${input.milestonePercent}% MILESTONE`;
-  const detailUrl = input.detailUrl
-    ?? (input.opportunityCaseId ? `/intelligence/${encodeURIComponent(input.opportunityCaseId)}` : "/alerts?tab=history");
-  return [
+  const lines = [
     `🏁 ${sym} ${side} · ${label}`,
     "",
     `Entry: ${entry}`,
     `Current: ${mark}`,
     `Move: ${fmtPct(input.summary.currentReturnPct ?? input.milestonePercent)}`,
     "",
-    "Educational purposes only.",
-    `View details: ${detailUrl}`,
-  ].join("\n");
+    "Educational purposes only. Options are high risk.",
+  ];
+  if (input.includeInternalLink === true && input.detailUrl) {
+    lines.push(`View details: ${input.detailUrl}`);
+  }
+  return lines.join("\n");
 }
 
 /** Discord copy when an Opportunity Case closes (exit / invalidate). Replies to the opening alert when possible. */
@@ -53,6 +55,7 @@ export function formatOpportunityClosedUpdate(input: {
   opportunityCaseId?: string | null;
   invalidated?: boolean;
   detailUrl?: string | null;
+  includeInternalLink?: boolean;
 }): string {
   const sym = input.symbol.toUpperCase();
   const side = String(input.optionType || "").toUpperCase() === "PUT" ? "PUT" : "CALL";
@@ -67,16 +70,17 @@ export function formatOpportunityClosedUpdate(input: {
       : winner
         ? `✅ ${sym} ${side} · CLOSED WINNER`
         : `⚪ ${sym} ${side} · CLOSED`;
-  const detailUrl = input.detailUrl
-    ?? (input.opportunityCaseId ? `/intelligence/${encodeURIComponent(input.opportunityCaseId)}` : "/alerts?tab=history");
-  return [
+  const lines = [
     heading,
     "",
     `Entry: ${fmtMoney(input.summary.frozenEntry)}`,
     `${stopped || winner ? "Exit" : "Current"}: ${fmtMoney(input.summary.currentMark)}`,
     `${stopped || winner ? "Result" : "Move"}: ${fmtPct(input.summary.currentReturnPct)}`,
     "",
-    "Educational purposes only.",
-    `View details: ${detailUrl}`,
-  ].join("\n");
+    "Educational purposes only. Options are high risk.",
+  ];
+  if (input.includeInternalLink === true && input.detailUrl) {
+    lines.push(`View details: ${input.detailUrl}`);
+  }
+  return lines.join("\n");
 }

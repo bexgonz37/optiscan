@@ -261,6 +261,7 @@ export function formatIntradayActionable(input: IntradayActionableInput): string
     bid: input.bid,
     ask: input.ask,
     detailUrl: input.detailUrl,
+    includeInternalLink: input.includeInternalLink === true,
   });
 }
 
@@ -284,6 +285,7 @@ export interface IntradayActionableInput {
   mainRisk?: string | null;
   quoteFreshness?: string | null;
   detailUrl?: string | null;
+  includeInternalLink?: boolean;
 }
 
 type NotifyDb = {

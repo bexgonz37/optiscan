@@ -74,12 +74,13 @@ test("result edit payloads append 5m and Result fields", () => {
   assert.ok(final.embeds[0].fields.some((f) => f.name === "Result"));
 });
 
-test("scoreboard embed includes dashboard path footer", () => {
+test("scoreboard embed omits internal dashboard links", () => {
   const { payload, safe } = buildScoreboardEmbed(
     { optionWins: 5, optionLosses: 2, optionWinRate: 0.71, earlyHitRate: 0.62 },
     [{ emoji: "🟢", label: "TSLA $400P", value: "+31% · paid in 6 min" }],
     { dashboardUrl: "https://example.com/alerts" },
   );
   assert.equal(safe, true);
-  assert.ok(payload.embeds[0].footer.text.includes("example.com/alerts"));
+  assert.doesNotMatch(JSON.stringify(payload), /https?:\/\/|example\.com|\/alerts/);
+  assert.match(payload.embeds[0].footer.text, /verified callout/i);
 });

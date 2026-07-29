@@ -178,8 +178,6 @@ export function formatReadinessMessage(kind: "READY" | "REVOKED", report: Subscr
   if (report.remainingWarnings.length) lines.push(`• Remaining warnings: ${report.remainingWarnings.join("; ")}`);
   else lines.push("• Remaining warnings: none");
   lines.push("");
-  lines.push(`Readiness dashboard: ${report.dashboardUrl || "/pipeline-health"}`);
-  lines.push("");
   lines.push("_This notice does NOT enable billing, invite subscribers, change Discord permissions, publish any claim, change trading formulas, or deploy code._");
   return lines.join("\n");
 }
@@ -345,7 +343,6 @@ export async function sendReadinessTestNotificationOnDb(
     "",
     `Current computed status: ${report.status}`,
     `Blocking gates: ${report.blockingGates.length ? report.blockingGates.join(", ") : "none"}`,
-    `Readiness dashboard: ${report.dashboardUrl || "/pipeline-health"}`,
   ].join("\n");
   const res = await send(content);
   return { ok: res.ok, messageId: res.messageId, error: res.error, configured: true };

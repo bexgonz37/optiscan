@@ -39,6 +39,16 @@ import {
 import { actionableFreshness, type DataKind } from "@/lib/data-freshness";
 import { legacyOptionsSuppressed, legacyWatchDiscordEnabled } from "@/lib/callouts/routing";
 import { legacyOptionsSubscriberDiscordBlocked } from "./subscriber-discord-owner.ts";
+import { getDb } from "@/lib/db";
+import {
+  claimRecapDelivery,
+  completeRecapDelivery,
+  recapDeliveryEnabled,
+} from "@/lib/notifications/recap-delivery-guard";
+import {
+  sanitizeDiscordPayloadForAudience,
+  type DiscordAudience,
+} from "@/lib/notifications/subscriber-content";
 
 export type DiscordWebhookKind =
   | "options"
@@ -64,6 +74,7 @@ function webhookEnv(kind: DiscordWebhookKind, env: NodeJS.ProcessEnv = process.e
 }
 
 export function discordWebhookConfigured(kind: DiscordWebhookKind, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (kind === "recap" && !recapDeliveryEnabled(env)) return false;
   return Boolean(String(webhookEnv(kind, env) ?? "").trim());
 }
 
@@ -119,28 +130,109 @@ function webhookMessageUrl(webhookUrl: string, messageId: string): string {
 
 export async function postToDiscord(
   payload: Record<string, unknown>,
-  { webhook = "default", skipPublicCheck = false }: { webhook?: DiscordWebhookKind; skipPublicCheck?: boolean } = {},
-): Promise<{ messageId: string | null; webhookUrl: string; httpStatus: number; responseBodySafe: string | null }> {
+  {
+    webhook = "default",
+    skipPublicCheck = false,
+    audience = "unknown",
+    includeInternalLink = false,
+    idempotencyKey = null,
+    payloadType = "recap",
+  }: {
+    webhook?: DiscordWebhookKind;
+    skipPublicCheck?: boolean;
+    audience?: DiscordAudience;
+    includeInternalLink?: boolean;
+    idempotencyKey?: string | null;
+    payloadType?: string;
+  } = {},
+): Promise<{
+  messageId: string | null;
+  webhookUrl: string;
+  httpStatus: number;
+  responseBodySafe: string | null;
+  suppressed: boolean;
+  suppressionReason: string | null;
+}> {
   const url = webhookEnv(webhook);
   if (!url) throw new Error(`Discord webhook not set (${webhook})`);
-  const serialized = JSON.stringify(payload);
+  const safePayload = sanitizeDiscordPayloadForAudience(payload, { audience, includeInternalLink });
+  const serialized = JSON.stringify(safePayload);
   if (!skipPublicCheck && containsBannedPublicLanguage(serialized)) {
     throw new Error("blocked: payload failed public-language safety check");
   }
-  const res = await fetch(`${url}${url.includes("?") ? "&" : "?"}wait=true`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: serialized,
-    signal: AbortSignal.timeout(12_000),
-  });
+  let recapClaim: ReturnType<typeof claimRecapDelivery> | null = null;
+  if (webhook === "recap") {
+    try {
+      recapClaim = claimRecapDelivery(getDb() as any, {
+        payload: safePayload,
+        payloadType,
+        idempotencyKey,
+        env: process.env,
+      });
+    } catch {
+      return {
+        messageId: null,
+        webhookUrl: "",
+        httpStatus: 0,
+        responseBodySafe: null,
+        suppressed: true,
+        suppressionReason: "recap_claim_persistence_failed",
+      };
+    }
+    if (!recapClaim.allowed) {
+      return {
+        messageId: null,
+        webhookUrl: "",
+        httpStatus: 0,
+        responseBodySafe: null,
+        suppressed: true,
+        suppressionReason: recapClaim.reason,
+      };
+    }
+  }
+  let res: Response;
+  try {
+    res = await fetch(`${url}${url.includes("?") ? "&" : "?"}wait=true`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: serialized,
+      signal: AbortSignal.timeout(12_000),
+    });
+  } catch (error: any) {
+    if (recapClaim) {
+      completeRecapDelivery(getDb() as any, recapClaim.idempotencyKey, {
+        ok: false,
+        error: String(error?.message ?? error),
+      });
+    }
+    throw error;
+  }
   const bodyText = await res.text().catch(() => "");
-  if (!res.ok) throw new Error(`discord ${res.status}: ${bodyText.slice(0, 150)}`);
+  if (!res.ok) {
+    if (recapClaim) {
+      completeRecapDelivery(getDb() as any, recapClaim.idempotencyKey, {
+        ok: false,
+        error: `discord ${res.status}`,
+      });
+    }
+    throw new Error(`discord ${res.status}: ${bodyText.slice(0, 150)}`);
+  }
   let messageId: string | null = null;
   try {
     const body = bodyText ? JSON.parse(bodyText) : null;
     messageId = body?.id != null ? String(body.id) : null;
   } catch { /* some webhooks return empty with wait=true */ }
-  return { messageId, webhookUrl: url, httpStatus: res.status, responseBodySafe: bodyText.slice(0, 500) || null };
+  if (recapClaim) {
+    completeRecapDelivery(getDb() as any, recapClaim.idempotencyKey, { ok: true, messageId });
+  }
+  return {
+    messageId,
+    webhookUrl: url,
+    httpStatus: res.status,
+    responseBodySafe: bodyText.slice(0, 500) || null,
+    suppressed: false,
+    suppressionReason: null,
+  };
 }
 
 function nextRetryIso(retryCount: number): string {
@@ -171,7 +263,21 @@ export async function sendTrackedDiscord(input: {
   });
   updateDiscordDelivery(deliveryId, { status: "SENDING", attempted: true });
   try {
-    const res = await postToDiscord(input.payload, { webhook: input.webhook, skipPublicCheck: true });
+    const res = await postToDiscord(input.payload, {
+      webhook: input.webhook,
+      skipPublicCheck: true,
+      audience: "subscriber",
+      idempotencyKey: input.idempotencyKey ?? null,
+      payloadType: input.payloadType,
+    });
+    if (res.suppressed) {
+      updateDiscordDelivery(deliveryId, {
+        status: "SUPPRESSED",
+        failureReason: res.suppressionReason ?? "suppressed",
+        nextRetryAt: null,
+      });
+      return { ...res, deliveryId };
+    }
     updateDiscordDelivery(deliveryId, {
       status: "SENT",
       httpStatus: res.httpStatus,
@@ -272,7 +378,16 @@ export async function postScoreboardEmbed(
   const { payload, safe } = buildScoreboardEmbed(stats, rows, { weekly, dashboardUrl: dashboardUrl() });
   if (!safe) return { ok: false, error: "scoreboard failed language guard" };
   try {
-    await postToDiscord(payload, { webhook: "recap", skipPublicCheck: true });
+    const sent = await postToDiscord(payload, {
+      webhook: "recap",
+      skipPublicCheck: true,
+      audience: "subscriber",
+      payloadType: weekly ? "weekly_scoreboard" : "daily_scoreboard",
+      idempotencyKey: `scoreboard:${weekly ? "weekly" : "daily"}:${new Date().toISOString().slice(0, 10)}`,
+    });
+    if (sent.suppressed) {
+      return { ok: false, error: `recap suppressed: ${sent.suppressionReason}` };
+    }
     insertNotificationEvent({
       alertId: null,
       channel: "discord_webhook",

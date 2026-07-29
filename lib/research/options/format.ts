@@ -94,6 +94,7 @@ export interface PrivateLiveAlertInput extends CompactAlertInput {
   confidence?: number | null;
   detailUrl?: string | null;
   reasonSignals?: string[] | null;
+  includeInternalLink?: boolean;
 }
 
 export interface PlainEnglishAlertReasonInput {
@@ -200,9 +201,7 @@ export function formatPrivateLiveAlert(i: PrivateLiveAlertInput): string {
     conditionIds: i.reasonSignals,
     sourceReason: i.actionableReason,
   });
-  const detailUrl = i.detailUrl || "/alerts?tab=history";
-
-  return [
+  const lines = [
     `${call ? "🟢" : "🔴"} ${sym} ${call ? "CALL" : "PUT"} ALERT`,
     "",
     `${sym} ${mmdd(i.expiration)} $${strikeStr(i.strike)} ${call ? "Call" : "Put"}`,
@@ -211,7 +210,9 @@ export function formatPrivateLiveAlert(i: PrivateLiveAlertInput): string {
     `Why: ${reason}`,
     "",
     "Educational purposes only. Options are high risk.",
-    "",
-    `View details: ${detailUrl}`,
-  ].join("\n");
+  ];
+  if (i.includeInternalLink === true && i.detailUrl) {
+    lines.push("", `View details: ${i.detailUrl}`);
+  }
+  return lines.join("\n");
 }

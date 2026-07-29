@@ -31,6 +31,7 @@ import {
 } from "./claim-integrity.ts";
 import { tradingDay } from "../trading-session.ts";
 import { evaluateMarketSessionGuard } from "../market-session-guard.ts";
+import { recapDeliveryEnabled } from "../notifications/recap-delivery-guard.ts";
 
 interface RtDb {
   prepare(sql: string): {
@@ -40,7 +41,12 @@ interface RtDb {
   };
 }
 
-export interface ContentDeliverResult { ok: boolean; messageId: string | null; error: string | null }
+export interface ContentDeliverResult {
+  ok: boolean;
+  messageId: string | null;
+  error: string | null;
+  suppressed?: boolean;
+}
 export interface ContentDraftsDeps {
   send?: (content: string) => Promise<ContentDeliverResult>;
   webhookConfigured?: () => boolean;
@@ -68,7 +74,7 @@ export function contentEventsEnabled(env: NodeJS.ProcessEnv = process.env): bool
 
 /** Content drafts route to Recaps in the three-channel Discord setup. */
 export function contentWebhookConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
-  return Boolean(String(env.DISCORD_WEBHOOK_RECAP ?? "").trim());
+  return recapDeliveryEnabled(env) && Boolean(String(env.DISCORD_WEBHOOK_RECAP ?? "").trim());
 }
 
 export function draftFingerprint(input: {
@@ -98,8 +104,16 @@ function defaultSend(): (content: string) => Promise<ContentDeliverResult> {
       if (!discordWebhookConfigured("recap")) {
         return { ok: false, messageId: null, error: "DISCORD_WEBHOOK_RECAP not configured" };
       }
-      const r = await postToDiscord({ content }, { webhook: "recap", skipPublicCheck: true });
-      return { ok: true, messageId: r.messageId ?? null, error: null };
+      const r = await postToDiscord(
+        { content },
+        { webhook: "recap", skipPublicCheck: true, audience: "subscriber", payloadType: "content_drafts" },
+      );
+      return {
+        ok: !r.suppressed,
+        messageId: r.messageId ?? null,
+        error: r.suppressed ? `recap suppressed: ${r.suppressionReason}` : null,
+        suppressed: r.suppressed,
+      };
     } catch (e: any) {
       return { ok: false, messageId: null, error: String(e?.message ?? e).slice(0, 300) };
     }
@@ -331,7 +345,9 @@ export async function runContentDraftsScan(
   })();
   const send = deps.send ?? defaultSend();
   const now = deps.now ?? Date.now;
-  const cap = deps.maxPerScan ?? 20;
+  // A scheduled run may create several stored drafts, but it may emit at most one
+  // Recap message. Additional events remain queued for the next bounded run.
+  const cap = Math.min(deps.maxPerScan ?? 20, 1);
 
   let rows: Record<string, unknown>[] = [];
   try {
@@ -419,40 +435,32 @@ export async function runContentDraftsScan(
     if (!pending.length) { out.delivered += 1; continue; }
 
     const header = `📝 **CONTENT DRAFTS — OWNER ONLY — ${bundle.category}** · ${bundle.symbol}\n_Deterministic template drafts for MANUAL review. Never auto-posted. Not financial advice._\n_Result type: ${claim.resultType}_ · _Session: ${sessionDate}_`;
-    let anyFail = false;
-    let first = true;
+    const draftBlocks = pending.map((draft) => [
+      `**Draft** (${draft.char_count} chars) · CTA: ${draft.cta_type}`,
+      "```",
+      draft.draft_text,
+      "```",
+    ].join("\n"));
+    const body = [header, ...draftBlocks].join("\n\n").slice(0, 1900);
+    let res: ContentDeliverResult;
+    try {
+      res = await send(body);
+    } catch (e: any) {
+      res = { ok: false, messageId: null, error: String(e?.message ?? e).slice(0, 300) };
+    }
+    const nextStatus = res.ok ? "SENT" : res.suppressed ? "SUPPRESSED" : "FAILED";
     for (const draft of pending) {
-      const body = [
-        first ? header : null,
-        `**Draft** (${draft.char_count} chars) · CTA: ${draft.cta_type}`,
-        "```",
-        draft.draft_text,
-        "```",
-      ].filter(Boolean).join("\n");
-      first = false;
-      let res: ContentDeliverResult;
-      try {
-        res = await send(body);
-      } catch (e: any) {
-        res = { ok: false, messageId: null, error: String(e?.message ?? e).slice(0, 300) };
-      }
-      if (!res.ok) {
-        anyFail = true;
-        try {
-          db.prepare(
-            `UPDATE content_drafts SET discord_delivery_status='FAILED', updated_at_ms=? WHERE id=?`,
-          ).run(nowMs, draft.id);
-        } catch { /* isolated */ }
-        continue; // retry this draft next scan; do not re-send already SENT
-      }
       try {
         db.prepare(
-          `UPDATE content_drafts SET discord_delivery_status='SENT', discord_message_id=?, updated_at_ms=? WHERE id=?`,
-        ).run(res.messageId, nowMs, draft.id);
+          `UPDATE content_drafts
+           SET discord_delivery_status=?, discord_message_id=?, updated_at_ms=?
+           WHERE id=?`,
+        ).run(nextStatus, res.messageId, nowMs, draft.id);
       } catch { /* isolated */ }
     }
-    if (anyFail) out.failed += 1;
-    else out.delivered += 1;
+    if (res.ok) out.delivered += 1;
+    else if (res.suppressed) out.skipped += 1;
+    else out.failed += 1;
     } catch {
       out.failed += 1;
     }

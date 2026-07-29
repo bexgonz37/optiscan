@@ -42,14 +42,22 @@ export function buildNightlyRecapMessage(summary: NightlySummary, ctx: RecapCont
   }
   lines.push(`Top issue: ${summary.prioritizedIssue ?? "none"}`);
   if (ctx.topLesson) lines.push(`Top lesson: ${ctx.topLesson}`);
-  lines.push(`Full report: ${ctx.reportUrl ?? "AI Lab (set PUBLIC_APP_URL for a link)"}`);
   return lines.join("\n");
 }
 
 /** Injectable Discord surface — matches the relevant slice of lib/notifications. */
 export interface RecapNotif {
   discordWebhookConfigured?: (kind: string) => boolean;
-  postToDiscord: (payload: { content: string }, opts: { webhook: string; skipPublicCheck?: boolean }) => Promise<unknown>;
+  postToDiscord: (
+    payload: { content: string },
+    opts: {
+      webhook: string;
+      skipPublicCheck?: boolean;
+      audience?: "subscriber";
+      payloadType?: string;
+      idempotencyKey?: string;
+    },
+  ) => Promise<unknown>;
 }
 
 export interface DeliverRecapOptions {
@@ -94,12 +102,27 @@ export async function deliverNightlyRecapOnDb(
     return { posted: false, webhook: null, reason: "recap webhook not configured" };
   }
 
-  const base = String((opts.env ?? process.env).PUBLIC_APP_URL ?? "").trim().replace(/\/$/, "");
   const topLesson = (() => {
     try { return listLessonsOnDb(db, 1)[0]?.title ?? null; } catch { return null; }
   })();
-  const content = buildNightlyRecapMessage(summary, { topLesson, reportUrl: base ? `${base}/ai` : null });
-  await notif.postToDiscord({ content }, { webhook: "recap", skipPublicCheck: true });
+  const content = buildNightlyRecapMessage(summary, { topLesson });
+  const sent: any = await notif.postToDiscord(
+    { content },
+    {
+      webhook: "recap",
+      skipPublicCheck: true,
+      audience: "subscriber",
+      payloadType: "nightly_ai_recap",
+      idempotencyKey: `nightly_ai_recap:${summary.tradingDay}`,
+    },
+  );
+  if (sent?.suppressed) {
+    recordAiJobRunOnDb(db, {
+      jobType: "recap", model: cfg.recapModel, status: "SKIPPED_DISABLED",
+      errorCategory: "disabled", error: `recap suppressed: ${sent.suppressionReason ?? "guard"}`, nowMs,
+    });
+    return { posted: false, webhook: null, reason: sent.suppressionReason ?? "recap suppressed" };
+  }
   recordAiJobRunOnDb(db, { jobType: "recap", model: cfg.recapModel, status: "SUCCESS", errorCategory: "none", nowMs });
   return { posted: true, webhook: "recap" };
 }

@@ -39,7 +39,7 @@ test("2/9. READY + valid call + flags on → ONE message; SENT only after succes
   assert.match(spy.calls[0].content, /HOOD 03\/20 \$101 Call/);
   assert.match(spy.calls[0].content, /Entry: \$1\.20–\$1\.30/);
   assert.match(spy.calls[0].content, /Why: HOOD pressed against resistance as momentum increased\./);
-  assert.match(spy.calls[0].content, /View details: https:\/\/optiscan\.example\/alerts\?tab=history/);
+  assert.doesNotMatch(spy.calls[0].content, /View details|\/alerts|\/intelligence|https?:\/\//);
   assert.doesNotMatch(spy.calls[0].content, /O:|PAPER\/BETA|TRADE NOW|Contract:|Confidence|Spread|DTE/);
   const row = d.prepare("SELECT state, sent_at_ms, discord_status, paper_linked FROM options_alerts").get();
   assert.equal(row.state, "SENT"); assert.ok(row.sent_at_ms > 0); assert.equal(row.discord_status, 204);

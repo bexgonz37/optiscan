@@ -247,6 +247,20 @@ CREATE TABLE IF NOT EXISTS discord_deliveries (
 CREATE INDEX IF NOT EXISTS idx_discord_deliveries_status ON discord_deliveries(status, next_retry_at);
 CREATE INDEX IF NOT EXISTS idx_discord_deliveries_alert ON discord_deliveries(alert_id);
 
+CREATE TABLE IF NOT EXISTS recap_delivery_claims (
+  idempotency_key TEXT PRIMARY KEY,
+  payload_type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 1,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  next_retry_at_ms INTEGER,
+  suppression_reason TEXT,
+  discord_message_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_recap_delivery_claims_window
+  ON recap_delivery_claims(created_at_ms, status);
+
 CREATE TABLE IF NOT EXISTS momentum_diagnostics (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ticker TEXT NOT NULL,

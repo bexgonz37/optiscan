@@ -54,7 +54,7 @@ const summary = {
   openedAtMs: Date.parse("2026-07-29T14:30:00.000Z"),
 };
 
-test("canonical call and put openings stay concise and dossier-linked", () => {
+test("canonical call and put openings stay concise and hide internal links", () => {
   for (const side of ["call", "put"]) {
     const message = opening(side);
     assert.match(message, side === "put" ? /🔴 NVDA PUT ALERT/ : /🟢 SPY CALL ALERT/);
@@ -62,7 +62,7 @@ test("canonical call and put openings stay concise and dossier-linked", () => {
     assert.match(message, /Entry: \$\d+\.\d{2}–\$\d+\.\d{2}/);
     assert.match(message, /Why: .+\./);
     assert.match(message, /Educational purposes only\. Options are high risk\./);
-    assert.match(message, /View details: \/alerts\//);
+    assert.doesNotMatch(message, /https?:\/\/|View details|\/alerts|\/intelligence/);
     assert.doesNotMatch(
       message,
       /O:|Contract:|DTE|T1|T2|Stop|Confidence|Spread|Volume|Open interest|Delta|Freshness|setup|passed|blocker|pipeline|subscriber|Risk:/i,
@@ -168,8 +168,28 @@ test("almost-ready watchlist and lifecycle samples use their canonical non-openi
   assert.match(winner, /✅ NVDA CALL · CLOSED WINNER/);
   assert.match(winner, /Result: \+42\.0%/);
   for (const message of [t1, stopped, winner]) {
-    assert.match(message, /Educational purposes only\./);
-    assert.match(message, /View details: \/intelligence\//);
+    assert.match(message, /Educational purposes only\. Options are high risk\./);
+    assert.doesNotMatch(message, /https?:\/\/|View details|\/alerts|\/intelligence|oc_sample|oc_winner/);
     assert.doesNotMatch(message, /thesis|evidence|confidence|spread|delta|freshness|Ref:/i);
   }
+});
+
+test("explicit private owner formatting may include an internal dossier link", () => {
+  const message = formatPrivateLiveAlert({
+    symbol: "SPY",
+    side: "call",
+    strike: 640,
+    expiration: "2026-07-29",
+    entryMid: 1.25,
+    t1: 1.5,
+    t2: 1.8,
+    stop: 0.95,
+    strategyKey: "sr_reclaim",
+    bid: 1.2,
+    ask: 1.3,
+    actionableReason: "SPY reclaimed VWAP.",
+    detailUrl: "https://private.example/intelligence/oc_private",
+    includeInternalLink: true,
+  });
+  assert.match(message, /View details: https:\/\/private\.example\/intelligence\/oc_private/);
 });

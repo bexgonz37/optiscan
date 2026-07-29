@@ -109,7 +109,17 @@ async function defaultSend(content: string): Promise<{ ok: boolean; error: strin
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { discordWebhookConfigured, postToDiscord } = require("@/lib/notifications");
     if (!discordWebhookConfigured("recap")) return { ok: false, error: "DISCORD_WEBHOOK_RECAP not configured" };
-    await postToDiscord({ content }, { webhook: "recap", skipPublicCheck: true });
+    const sent = await postToDiscord(
+      { content },
+      {
+        webhook: "recap",
+        skipPublicCheck: true,
+        audience: "subscriber",
+        payloadType: "options_daily_summary",
+        idempotencyKey: `options_daily_summary:${content.slice(0, 80)}`,
+      },
+    );
+    if (sent.suppressed) return { ok: false, error: `recap suppressed: ${sent.suppressionReason}` };
     return { ok: true, error: null };
   } catch (e: any) { return { ok: false, error: String(e?.message ?? e).slice(0, 160) }; }
 }
@@ -138,5 +148,9 @@ export async function maybeSendDailySummary(deps: SummaryDeps, env: NodeJS.Proce
   const send = deps.send ?? defaultSend;
   const res = await send(formatDailySummaryMessage(summary));
   if (res.ok) { writeRuntimeKeyOnDb(db, "last_summary_day", day, nowMs); return { sent: true, skipped: false, reason: "sent" }; }
+  if (/recap suppressed/i.test(String(res.error ?? ""))) {
+    writeRuntimeKeyOnDb(db, "last_summary_day", day, nowMs);
+    return { sent: false, skipped: true, reason: String(res.error) };
+  }
   return { sent: false, skipped: false, reason: `send_failed: ${res.error}` }; // day not marked → retries next tick
 }

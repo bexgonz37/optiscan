@@ -202,6 +202,18 @@ test("non-performance drafts persist and deliver; idempotent on second scan", as
   assert.equal(db.prepare("SELECT COUNT(*) n FROM content_drafts").get().n, n);
 });
 
+test("one content scheduler run emits at most one controlled Recap message", async () => {
+  const db = makeDb();
+  seedEvent(db, { id: "ce_batch_1", symbol: "AMD" });
+  seedEvent(db, { id: "ce_batch_2", symbol: "NVDA" });
+  const { sent, deps } = captureDeps();
+  const result = await runContentDraftsScan(db, { ...deps, maxPerScan: 20 }, ENV);
+  assert.equal(result.examined, 1);
+  assert.equal(sent.length, 1);
+  assert.equal(result.delivered, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM opportunity_content_events WHERE content_status='PENDING'").get().n, 1);
+});
+
 test("missing webhook persists drafts as SKIPPED_NO_WEBHOOK and does not send", async () => {
   const db = makeDb();
   seedEvent(db, { id: "ce_nw" });

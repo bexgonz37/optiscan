@@ -53,14 +53,14 @@ function summary() {
   });
 }
 
-test("nightly recap message is deterministic and links to AI Lab", () => {
+test("nightly recap message is deterministic and contains no internal link", () => {
   const msg = buildNightlyRecapMessage(summary(), { topLesson: "Exit management leak", reportUrl: "https://app.example/ai" });
   assert.match(msg, /OptiScan Nightly Review/);
   assert.match(msg, /Trades: 1 \| Wins: 0 \| Losses: 1/);
   assert.match(msg, /Options candidates blocked: 1/);
   assert.match(msg, /Options delivery blocked by config: DISCORD_SUPERVISOR_SEND off/);
   assert.match(msg, /Top lesson: Exit management leak/);
-  assert.match(msg, /Full report: https:\/\/app\.example\/ai/);
+  assert.doesNotMatch(msg, /https?:\/\/|Full report:|\/ai/);
   assert.doesNotMatch(msg, /ANTHROPIC_API_KEY|DISCORD_WEBHOOK|SCAN_API_TOKEN/);
 });
 
@@ -91,7 +91,7 @@ test("nightly recap delivery uses only the private recap webhook", { skip }, asy
   assert.equal(posted.length, 1);
   assert.equal(posted[0].opts.webhook, "recap");
   assert.equal(posted[0].opts.skipPublicCheck, true);
-  assert.match(posted[0].payload.content, /https:\/\/app\.example\/ai/);
+  assert.doesNotMatch(posted[0].payload.content, /https?:\/\/|\/ai/);
   assert.equal(db.prepare("SELECT status FROM ai_job_runs WHERE job_type='recap'").get().status, "SUCCESS");
   db.close();
 });

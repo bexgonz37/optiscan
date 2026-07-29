@@ -104,12 +104,14 @@ function deliveryInput(over = {}) {
 }
 
 test("formatIntradayActionable uses compact trader-facing copy", () => {
-  const msg = formatIntradayActionable(buildIntradayActionablePayload({
+  const payload = buildIntradayActionablePayload({
     delivery: deliveryInput(),
     actionableReason: "ORB held above opening range high",
     invalidation: "Lose VWAP and opening range low",
     opportunityCaseId: "oc_demo",
-  }));
+  });
+  payload.includeInternalLink = true;
+  const msg = formatIntradayActionable(payload);
   assert.match(msg, /🟢 SPY CALL ALERT/);
   assert.match(msg, /SPY 07\/27 \$635 Call/);
   assert.match(msg, /Entry: \$1\.20–\$1\.30/);

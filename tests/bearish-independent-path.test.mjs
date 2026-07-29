@@ -227,7 +227,7 @@ test("subscriber PUT message uses the compact trader-facing copy", async () => {
   assert.match(content, /Entry: \$0\.49–\$0\.50/);
   assert.match(content, /Why: NVDA broke support and bearish momentum increased\./);
   assert.match(content, /Educational purposes only\. Options are high risk\./);
-  assert.match(content, /View details: \/alerts\?tab=history/);
+  assert.doesNotMatch(content, /View details|\/alerts|\/intelligence|https?:\/\//);
   assert.doesNotMatch(content, /O:|DTE|T1|T2|Stop|Confidence|Spread|Volume|OI|Delta|Freshness|Passed|blocker|subscriber|pipeline|Risk:/i);
 });
 
