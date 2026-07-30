@@ -942,6 +942,46 @@ CREATE TABLE IF NOT EXISTS ai_evidence_packets (
 );
 CREATE INDEX IF NOT EXISTS idx_ai_evidence_packets_created ON ai_evidence_packets(created_at_ms);
 
+-- Advisory chatbot conversations. ADVISORY ONLY: these rows are a record of an
+-- explanation, never an instruction — nothing here can influence scanning,
+-- delivery, grading, or any live behaviour.
+-- Deliberately stores NO secrets, tokens, webhook URLs, or raw market payloads;
+-- evidence is referenced by canonical metric id, not copied.
+CREATE TABLE IF NOT EXISTS ai_chat_conversations (
+  conversation_id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  report_id TEXT,
+  message_count INTEGER NOT NULL DEFAULT 0,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  deleted_at_ms INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_ai_chat_conversations_updated
+  ON ai_chat_conversations(deleted_at_ms, updated_at_ms);
+
+CREATE TABLE IF NOT EXISTS ai_chat_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id TEXT NOT NULL,
+  role TEXT NOT NULL,                    -- 'user' | 'assistant'
+  mode TEXT,
+  content TEXT NOT NULL,
+  evidence_ids_json TEXT,                -- canonical metric ids cited
+  report_id TEXT,
+  model TEXT,
+  validation_status TEXT,                -- VALID | REJECTED_UNSUPPORTED_NUMBERS | AI_UNAVAILABLE | ...
+  validation_failures_json TEXT,
+  fix_prompt TEXT,                       -- export-only investigation prompt
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  latency_ms INTEGER NOT NULL DEFAULT 0,
+  feedback TEXT,                         -- 'up' | 'down' | null
+  feedback_note TEXT,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_chat_messages_conv
+  ON ai_chat_messages(conversation_id, created_at_ms);
+
 -- AI cost + audit log. ONE row per provider job attempt-set (including skips), so
 -- monthly spend, latency, retries, and failures are fully auditable. month_key
 -- (YYYY-MM in ET) powers the soft/hard monthly limit checks.

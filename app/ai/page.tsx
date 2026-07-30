@@ -8,13 +8,14 @@ import {
 import { SimpleTable, type Column } from "@/components/ui/Table";
 import { scanHeaders } from "@/hooks/useScanner";
 import { apiFetchJson, describeApiLoadFailure, parseApiJsonResponse } from "@/lib/client-auth";
+import { AdvisoryChat } from "@/components/AdvisoryChat";
 
-type Tab = "OVERVIEW" | "FINDINGS" | "EXPERIMENTS" | "REPORTS" | "ADVANCED";
+type Tab = "OVERVIEW" | "CHAT" | "FINDINGS" | "EXPERIMENTS" | "REPORTS" | "ADVANCED";
 
 type FindingsResponse = { report?: any };
 type OverviewResponse = { overview?: any };
 
-const tabs: Tab[] = ["OVERVIEW", "FINDINGS", "EXPERIMENTS", "REPORTS", "ADVANCED"];
+const tabs: Tab[] = ["OVERVIEW", "CHAT", "FINDINGS", "EXPERIMENTS", "REPORTS", "ADVANCED"];
 const RETRYABLE_NIGHTLY_STATUSES = new Set(["VALIDATION_FAILED", "ERROR", "SKIPPED"]);
 const dash = "-";
 
@@ -479,6 +480,12 @@ export default function AiAdvisoryPage() {
             <FindingList rows={(report?.dataQualityFindings ?? []).slice(0, 3)} metrics={rows} dateWindow={report?.tradingDay} empty="No data quality warnings" />
           </Card>
         </>
+      )}
+
+      {tab === "CHAT" && (
+        <Card title="Chat" meta="Grounded in the canonical findings report">
+          <AdvisoryChat />
+        </Card>
       )}
 
       {tab === "FINDINGS" && (
