@@ -194,12 +194,11 @@ test("mixing pipelines or windows in one answer is blocked", () => {
     supplemental,
   });
   assert.equal(mixedPipeline.ok, false);
-  assert.ok(mixedPipeline.failures.some(
-    (f) => f.kind === "PIPELINE_WINDOW_MIXED" && /pipelines/.test(f.detail),
-  ));
-  assert.ok(mixedPipeline.failures.some(
-    (f) => f.kind === "PIPELINE_WINDOW_MIXED" && /time windows/.test(f.detail),
-  ));
+  // Reported as one cohort failure naming both sides (pipeline|window pairs).
+  const mix = mixedPipeline.failures.find((f) => f.kind === "PIPELINE_WINDOW_MIXED");
+  assert.ok(mix, "genuine cross-cohort mixing must still be blocked");
+  assert.match(mix.detail, /options_delivered_paper\|all_verified_history/);
+  assert.match(mix.detail, /discord_delivery\|last_24h/);
 });
 
 test("a missing metric is never rendered as zero", () => {
@@ -686,4 +685,57 @@ test("the prompt demands citations and forbids numbered lists", () => {
   assert.match(src, /citedEvidenceIds MUST contain the id of every metric/);
   assert.match(src, /Do NOT write numbered lists/);
   assert.match(src, /Never combine metrics from different pipelines or different time windows in ONE sentence/);
+});
+
+// -------------------- regression: precision of the cohort and zero-sample checks
+// Live testing showed these three false positives; each rejected a correct answer.
+
+test("an ambiguous number cannot manufacture a cohort conflict", () => {
+  // "0" legitimately matches metrics in several pipelines at once. That ambiguity
+  // is not evidence of mixing, and this correct sentence must pass.
+  const res = validateAdvisoryAnswer({
+    answer: "Watchlist: 0 of 58 considered candidates published a qualified plan.",
+    citedEvidenceIds: ["watchlist.publishedCount", "watchlist.candidatesConsidered", "watchlist.vwapUnavailable"],
+    packet: packet(),
+    supplemental,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res.failures));
+});
+
+test("reporting a zero sample size is required, not a violation", () => {
+  const res = validateAdvisoryAnswer({
+    answer: "Underlying thesis exit has 0 evaluable trades, so it cannot be compared.",
+    citedEvidenceIds: ["exit.policy.underlying_thesis_exit.sampleSize"],
+    packet: packet(),
+    supplemental,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res.failures));
+  // A performance claim on that same zero-sample policy is still blocked.
+  const perf = validateAdvisoryAnswer({
+    answer: "Underlying thesis exit — average return is the winning choice here.",
+    citedEvidenceIds: ["exit.policy.underlying_thesis_exit.avgReturnPct"],
+    packet: packet(),
+    supplemental,
+  });
+  assert.equal(perf.ok, false);
+  assert.ok(perf.failures.some((f) => f.kind === "MISSING_TREATED_AS_ZERO"));
+});
+
+test("a positive remark in a later sentence does not implicate the losing policy", () => {
+  const res = validateAdvisoryAnswer({
+    answer: "Trail 10% is less bad than the current policy at -26.2307%. Separately, delivery is working: 59 alerts sent with no failures.",
+    citedEvidenceIds: ["exit.policy.trail_10_.avgReturnPct"],
+    packet: packet(),
+    supplemental,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res.failures));
+  // Naming it profitable in its own sentence is still blocked.
+  const bad = validateAdvisoryAnswer({
+    answer: "Trail 10% is the winning policy to adopt.",
+    citedEvidenceIds: ["exit.policy.trail_10_.avgReturnPct"],
+    packet: packet(),
+    supplemental,
+  });
+  assert.equal(bad.ok, false);
+  assert.ok(bad.failures.some((f) => f.kind === "PROFIT_CLAIM_ON_LOSING_POLICY"));
 });

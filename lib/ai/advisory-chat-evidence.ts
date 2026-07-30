@@ -435,26 +435,26 @@ export function validateAdvisoryAnswer(input: {
   //    discusses entries and delivery in separate sentences, and only a single
   //    sentence carrying numbers from two cohorts is describing a cohort that
   //    never existed.
+  //    A number only implicates a cohort when the attribution is UNAMBIGUOUS. A
+  //    common value like 0 or 21 matches metrics in several pipelines at once, and
+  //    treating that as proof of mixing flagged correct single-cohort prose such as
+  //    "0 of 58 candidates published a plan".
   const cited = citedItems;
   if (cited.length > 1) {
     for (const sentence of sentences(input.answer)) {
       const numbersHere = extractNumericClaims(sentence);
       if (numbersHere.length < 2) continue;
-      const matched = cited.filter((c) =>
-        c.numericForms.some((f) => numbersHere.includes(f) || numbersHere.includes(f.replace(/,/g, ""))));
-      if (matched.length < 2) continue;
-      const pipelines = new Set(matched.map((c) => c.pipeline));
-      const windows = new Set(matched.map((c) => c.timeWindow));
-      if (pipelines.size > 1) {
-        failures.push({
-          kind: "PIPELINE_WINDOW_MIXED",
-          detail: `One claim cannot combine pipelines (${[...pipelines].join(", ")}): "${sentence.slice(0, 120)}"`,
-        });
+      const cohorts = new Set<string>();
+      for (const n of numbersHere) {
+        const matching = cited.filter((c) =>
+          c.numericForms.some((f) => f === n || f.replace(/,/g, "") === n.replace(/,/g, "")));
+        const cohortsForNumber = new Set(matching.map((c) => `${c.pipeline}|${c.timeWindow}`));
+        if (cohortsForNumber.size === 1) cohorts.add([...cohortsForNumber][0]);
       }
-      if (windows.size > 1) {
+      if (cohorts.size > 1) {
         failures.push({
           kind: "PIPELINE_WINDOW_MIXED",
-          detail: `One claim cannot combine time windows (${[...windows].join(", ")}): "${sentence.slice(0, 120)}"`,
+          detail: `One claim cannot combine cohorts (${[...cohorts].join(" vs ")}): "${sentence.slice(0, 120)}"`,
         });
       }
     }
@@ -475,12 +475,22 @@ export function validateAdvisoryAnswer(input: {
         token: c.id,
       });
     }
-    if (c.sampleSize === 0 && PROFIT_WORDS.test(input.answer) && input.answer.includes(c.label.split("—")[0].trim())) {
-      failures.push({
-        kind: "MISSING_TREATED_AS_ZERO",
-        detail: `${c.id} has a sample size of 0 and cannot support a performance claim.`,
-        token: c.id,
-      });
+    // A zero-sample metric cannot support a PERFORMANCE claim. Scoped two ways:
+    //  - only performance figures, never a ".sampleSize" metric, whose value of 0
+    //    is the correct thing to report (and which the caveats require reporting);
+    //  - only the sentence naming it, so an unrelated positive remark elsewhere in
+    //    a long answer cannot implicate it.
+    const isPerformanceMetric = /\.(avgReturnPct|winRatePct|totalPnlUsd|captureEfficiencyPct)$/.test(c.id);
+    if (c.sampleSize === 0 && isPerformanceMetric) {
+      const name = c.label.split("—")[0].trim();
+      const naming = sentences(input.answer).filter((s) => s.includes(name));
+      if (naming.some((s) => PROFIT_WORDS.test(s))) {
+        failures.push({
+          kind: "MISSING_TREATED_AS_ZERO",
+          detail: `${c.id} has a sample size of 0 and cannot support a performance claim.`,
+          token: c.id,
+        });
+      }
     }
   }
 
@@ -489,17 +499,17 @@ export function validateAdvisoryAnswer(input: {
   if (ep?.bestSupportedPolicy) {
     const best = ep.policies.find((p) => p.policy === ep.bestSupportedPolicy);
     if (best && isNum(best.averageReturnPct) && best.averageReturnPct < 0) {
+      // Scoped to the sentence naming the policy: a fixed character window spilled
+      // into later sentences, so an unrelated "what is working" remark tripped it.
       const name = ep.bestSupportedPolicy;
-      const idx = input.answer.toLowerCase().indexOf(name.toLowerCase());
-      if (idx >= 0) {
-        const window = input.answer.slice(idx, idx + 220);
-        if (PROFIT_WORDS.test(window)) {
-          failures.push({
-            kind: "PROFIT_CLAIM_ON_LOSING_POLICY",
-            detail: `${name} averages ${best.averageReturnPct}% and must not be described as profitable or winning.`,
-            token: name,
-          });
-        }
+      const naming = sentences(input.answer)
+        .filter((s) => s.toLowerCase().includes(name.toLowerCase()));
+      if (naming.some((s) => PROFIT_WORDS.test(s))) {
+        failures.push({
+          kind: "PROFIT_CLAIM_ON_LOSING_POLICY",
+          detail: `${name} averages ${best.averageReturnPct}% and must not be described as profitable or winning.`,
+          token: name,
+        });
       }
     }
   }
