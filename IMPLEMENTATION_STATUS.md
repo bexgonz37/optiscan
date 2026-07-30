@@ -1,6 +1,137 @@
 # OptiScan — Implementation Status
 
-_Last updated: 2026-07-24. Working repo: `~/Downloads/optiscan-main`, branch `main`._
+_Last updated: 2026-07-29. Working repo: `~/Downloads/optiscan-main`, branch `main`._
+
+## MARKET-CLOSE GUARD + VERIFIED PAPER + EVIDENCE-BACKED WATCHLIST (2026-07-29)
+
+**Previous production baseline:** `5f87761` — feat: simplify paper quant and now research views.
+**Deployed production commit:** `af7f886b7681f25b73f698313fe2d92fd2f3e213` (`af7f886`).
+
+### Commits created
+
+| Commit | Title |
+|---|---|
+| `c855c93` | fix: block unverified option lifecycle events outside market hours |
+| `c7d6dd3` | feat: add verified paper reconciliation and shadow exit research |
+| `af7f886` | fix: require evidence-backed next-session watchlist plans |
+
+**1 — Market-close lifecycle guard.** New `lib/research/options/lifecycle-session.ts`
+(`validateLifecycleQuote`) rejects lifecycle marks with no bid/ask, no provider timestamp, a
+future/stale timestamp, a timestamp outside the options quote session, or a timestamp from a
+different trading session. After the session, an event is accepted only if it was already
+persisted in-session; otherwise it is suppressed as
+`MARKET_CLOSED_OR_EVENT_TIME_UNVERIFIED` and audited in the new additive
+`options_lifecycle_observations` table. A proven intraday milestone may still deliver late
+carrying its ORIGINAL event time, labelled "Mark at hit" with an explicit delayed-delivery
+notice — an after-hours mark is never called "Current". Milestones now persist `reachedAtMs`
+(event time) separately from `persistedAtMs` (observation time).
+`assertOptionsOpeningSession` is a hard boundary `MARKET_SESSION_GUARD` cannot bypass, so no
+new actionable opening can publish after the close; rejected candidates route to next-session
+Watchlist research.
+
+**2 — Verified Paper reconciliation + shadow exit research.** The alert cohort is read in full
+and only the rendered row list is capped, so verified P&L, valid/excluded counts, and account
+equity always reflect the entire requested window. Marks must be proof-qualified (positive bid,
+ask ≥ bid, finite exit fill/return, quote age within bound, mark timestamp inside the options
+quote session, non-negative persistence delay), and an EXITED row is verified only when its exit
+fill and time match a stored in-session mark. Rows classify as VERIFIED_REALIZED,
+VERIFIED_OPEN_MARK, MISSING_MIRROR, AUDIT_ONLY, INVALID_ENTRY, INVALID_EXIT, STALE_MARK,
+DUPLICATE_POSITION, or UNLINKED_DELIVERY. `exit-policy-research.ts` replays partial-at-T1,
+break-even +10/15/20/25%, bid trailing 10/15/20/25%, time stops 5/10/15/30m, stricter 0DTE
+protection, underlying-thesis invalidation, and momentum-stall exits — advisory only, shadow
+only, minimum-sample gated, `productionBehaviorChanged=false`. Canonical paper outcomes are
+read-only.
+
+**3 — Evidence-backed Watchlist.** The hardcoded `["SPY","QQQ","NVDA","META"]` fallback
+(confidence 55 / `structure_watch` / "VERIFY AT OPEN" trigger + invalidation / 0–5 DTE / ATM) is
+removed outright; no generic path remains. A row publishes only with a real prior-session price
+and VWAP reference, a concrete trigger, a concrete invalidation, a plain-English thesis, a source
+timestamp, a signal score, and persisted SPY/QQQ market context. Thesis score and open-readiness
+score are separate, ranking is by open readiness then thesis, at most five rows publish, no final
+OCC is selected overnight, and persisting a plan clears that day's stored rows first so stale
+generic rows cannot survive. Unqualified rows are held back as `needsMoreData` with the specific
+missing evidence, owner-page only. Empty state on Discord is exactly: NEXT SESSION WATCHLIST /
+No qualified setups yet. / Premarket revalidation will run before options open.
+
+### Verification (2026-07-29)
+
+- **Dependencies:** `node_modules` was incomplete because a prior `npm ci` died on a transient
+  Windows file lock on `node_modules/lightningcss-win32-x64-msvc/*.node` — not a code failure.
+  Lock cleared, `npm ci` reinstalled 124 packages from the lockfile, `@next/env` resolves.
+  `package.json` and `package-lock.json` unchanged; no dependency versions modified.
+- **Tests:** 2316/2316 pass, 0 fail (`npm test`). Commit `c855c93` also verified green in an
+  isolated worktree (2299 pass / 0 fail / 1 skip — the skip is the `.next`-dependent
+  build-output test, absent in a fresh checkout).
+- **Typecheck:** `npx tsc --noEmit --incremental false` clean.
+- **Build:** `npm run build` compiled successfully, 40/40 static pages, terminates cleanly.
+- **Whitespace:** `git diff --check` clean.
+- **Migrations:** additive and repeat-safe only — `CREATE TABLE IF NOT EXISTS
+  options_lifecycle_observations` + `CREATE INDEX IF NOT EXISTS`. No backfill, no destructive
+  DDL. Not added to `ENTERPRISE_REQUIRED_TABLES`, so `schemaOk` is unaffected, and every write
+  is `hasTable`-guarded.
+- **Scanner logic:** no formula, scoring weight, threshold, target, stop, or subscriber strategy
+  file appears in the diff.
+
+### Production verification on `af7f886` (read-only; no synthetic subscriber alerts sent)
+
+- `/api/healthz`: `commit=af7f886…`, `db=true`, `schemaOk=true`, `schemaMissing=[]`,
+  `lifecycle.active=true`. `/api/runtime/schema`: `ok=true`, all missing-lists empty,
+  `error=null` — no migration errors.
+- **Market-close guard live.** At 00:36:49Z and 00:37:11Z (8:36/8:37 p.m. ET) the grader received
+  bid 4.75 / ask 4.90 carrying a 4:00 p.m. ET close-tick provider timestamp and recorded
+  `SUPPRESSED : MARKET_CLOSED_OR_EVENT_TIME_UNVERIFIED` on alert `oa_11fubre`; the trade stayed
+  `ENTERED` with `exit_at_ms=null`. No milestone, no exit, no Discord — the IREN failure mode
+  fails closed.
+- **IREN evidence case closed.** `oa_1cwm9t2` / `O:IREN260731P00031500` now classifies as
+  `STALE_MARK`, `verifiedPnlEligible=false`, reasons
+  `["missing_or_invalid_grading_mark","missing_exit_proof"]`. Its unsupported **+$90.80 is
+  excluded** from verified P&L.
+- **Full-history Paper is not capped at 100.** Cohort is **540 alerts** (73 valid + 467 excluded).
+  `limit=1` and `limit=100` return byte-identical aggregates: verified total **-$6,201.80**,
+  equity $93,798.20, validTrades 73, excludedTrades 467. `dataSourceLabel="Production database"`,
+  window "All available history" (`days=null`). Excluded P&L totals **-$68,690**.
+- **Exit research is shadow-only:** `advisoryOnly=true`, `productionBehaviorChanged=false`,
+  `minimumSupportedSample=30`.
+- **Watchlist generic fallback gone.** `planVersion=overnight-v2-2026-07-29`, **0** published
+  recommendations, no `structure_watch` / "VERIFY AT OPEN" in any published row, 58 candidates
+  held back as `needsMoreData` with specific reasons.
+- **Routing:** Alerts **READY**, Watchlist **READY**, Recaps **BLOCKED**
+  (`DISCORD_WEBHOOK_RECAP not configured`). 59 sent / 0 failed in 24h.
+- **No seeded or demo data** in production responses (no `seed_cc_alert`, `seed_batch`, or
+  `overnight-v1-demo` markers).
+
+### Known limitations
+
+- **The Watchlist currently publishes zero rows, and will keep doing so until two upstream data
+  gaps are filled.** All 58 live candidates fail on `Missing prior-session VWAP`
+  (`alerts.vwap_at_alert` is not being populated), and `market_context_snapshots` returns no
+  `spy_trend`/`qqq_trend`, so `marketContext.available=false` would independently cap rows at
+  `PARTIAL_PLAN` even once VWAP lands. Both must be populated before any row can reach
+  `QUALIFIED_PLAN`. The empty state is correct behaviour, not a regression — but it is not yet
+  producing plans.
+- **No winning exit policy is established.** The shadow sample now meets the 30-trade minimum and
+  names `Trail 10%` as `bestSupportedPolicy`, but that is best-of-losers, not a winner: every
+  supported policy is deeply negative (avg -26% to -28%). `Trail 10%` -$5,498.60 vs `Current
+  policy` -$6,242.00 — roughly $743 less bad on 73 shadow trades. 6 of 29 profitable trades gave
+  back their gain. Not actionable; needs a larger and cleaner sample.
+- `Underlying thesis exit` and `Momentum-stall exit` have **n=0** — production stores no
+  timestamped underlying/momentum observations, so those policies cannot be evaluated at all.
+  `0DTE protection` has n=21, below the minimum.
+- The Paper account summary's open/closed trade counts are still derived from the capped 100-row
+  display list, so they under-report on a 540-row cohort. The verified P&L, equity, and
+  valid/excluded totals are full-cohort and correct.
+- `options_lifecycle_observations.quote_ts_ms` stores the raw provider value (nanoseconds for the
+  current provider); validation normalizes internally, so the decision is correct but the audit
+  column is not uniformly milliseconds.
+- `/api/now` rebuilds and re-persists the overnight plan on every request outside the executable
+  window. This is what clears stale rows, but it means a GET performs writes.
+- The Discord empty state was verified from the deployed code path plus a live count of 0. It was
+  **not** confirmed by sending a message — `/api/discord/test-watchlist` has no dry-run mode and
+  sending was out of scope.
+
+### Explicit next step
+
+**Phase 2 — AI Advisory chatbot.** Not started; deliberately not begun in this session.
 
 ## ENTERPRISE PLATFORM EXTENSION — Phases 0–21 (2026-07-24)
 
