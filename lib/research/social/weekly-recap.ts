@@ -9,8 +9,10 @@
  *  - "Combined peak moves" is the SUM OF INDIVIDUAL CALLOUT PEAKS. It is not a
  *    portfolio return, an account return, or a realized result, and the labels here
  *    are the only ones callers may render.
- *  - Peak uses the maximum VERIFIED BID-based return from the frozen entry. Never a
- *    midpoint, never an ask, never an unverified or after-hours mark.
+ *  - Peak is the maximum return supported by VERIFIED EXECUTABLE evidence during the
+ *    options session, computed on the SAME realOptionExit convention as the canonical
+ *    exit so a peak can never sit below a realized exit. Never a midpoint-only, stale,
+ *    or after-hours mark. A row whose exit cannot be proven is excluded, not patched.
  *  - "Combined tracked results" is the sum of CANONICAL exit returns. Open positions
  *    are reported separately and never folded in.
  *  - One row per thesis. A repeated signal, a replaced contract, and a lifecycle
@@ -22,6 +24,11 @@
  */
 import { isMarketHoliday } from "../../trading-session.ts";
 import { parseOccContract } from "../../format-contract.ts";
+import {
+  reconcilePeakAndExit,
+  type ExitEvidenceClass,
+  type ReconMark,
+} from "./peak-reconciliation.ts";
 
 /** Labels are fixed. Callers must render these exact strings. */
 export const LABEL_COMBINED_PEAK = "Combined peak moves";
@@ -91,6 +98,14 @@ export interface RecapEvidence {
   discordMessageId: string | null;
   peakSource: string;
   trackedSource: string;
+  exitEvidence?: {
+    matchedMarkAtMs: number | null;
+    matchedBid: number | null;
+    matchedAsk: number | null;
+    matchedQuoteAgeMs: number | null;
+    withinBidAsk: boolean | null;
+    providerTimestampMs: number | null;
+  };
   markCount: number | null;
 }
 
@@ -105,7 +120,10 @@ export interface RecapCallout {
   strike: number;
   expirationLabel: string;
   frozenEntry: number;
-  /** Max verified BID-based return from the frozen entry. Not realized. */
+  /**
+   * Maximum return supported by verified executable evidence, computed on the SAME
+   * convention as the canonical exit so peak and tracked are comparable. Not realized.
+   */
   peakPct: number | null;
   /** Canonical tracked exit return. Null while OPEN. */
   trackedPct: number | null;
@@ -114,6 +132,11 @@ export interface RecapCallout {
   openedAtMs: number;
   gaveBackProfit: boolean;
   setupReason: string | null;
+  exitEvidenceClass: ExitEvidenceClass;
+  /** canonicalPeakPct >= canonicalTrackedPct on verified evidence. */
+  peakInvariantOk: boolean;
+  /** Raw-bid peak, retained so the convention change stays auditable. */
+  bidConventionPeakPct: number | null;
   evidence: RecapEvidence;
 }
 
@@ -163,6 +186,7 @@ export interface WeeklySocialRecap {
   exclusions: RecapExclusion[];
   warnings: string[];
   lowSample: boolean;
+  publishability: "PUBLISHABLE_POSITIVE" | "PUBLISHABLE_MIXED" | "TRANSPARENT_REPORT_ONLY" | "INSUFFICIENT_VERIFICATION" | "NO_ELIGIBLE_CALLOUTS";
   labels: { combinedPeak: string; combinedTracked: string };
   disclaimers: string[];
   /** Every number a wording layer is permitted to state. */
@@ -276,8 +300,12 @@ export interface RecapInputRow {
   /** Canonical exit return (%). */
   trackedPct: number | null;
   exitReason: string | null;
-  /** Verified bid-based peak (%) from exit research. */
+  /** Bid-convention peak (%) from exit research. Reconciled before publication. */
   peakPct: number | null;
+  /** Verified in-session marks, used to reconcile peak against the canonical exit. */
+  marks?: ReconMark[];
+  exitFill?: number | null;
+  exitAtMs?: number | null;
   markCount: number | null;
   gaveBackProfit: boolean;
   verifiedPnlEligible: boolean;
@@ -336,6 +364,16 @@ function toCallout(row: RecapInputRow): RecapCallout | null {
   const parsed = parseOccContract(row.optionSymbol);
   if (!parsed) return null;
   const closed = String(row.paperStatus ?? "").toUpperCase() === "EXITED";
+  // Reconcile the peak onto the executable convention so it is directly comparable
+  // to the canonical exit, and record how well the exit itself is evidenced.
+  const recon = reconcilePeakAndExit({
+    frozenEntry: row.frozenEntry as number,
+    marks: row.marks ?? [],
+    exitFill: row.exitFill ?? null,
+    exitAtMs: row.exitAtMs ?? null,
+    trackedPct: closed ? row.trackedPct : null,
+    status: closed ? "CLOSED" : "OPEN",
+  });
   return {
     lane: row.lane,
     alertId: row.alertId,
@@ -347,13 +385,16 @@ function toCallout(row: RecapInputRow): RecapCallout | null {
     strike: parsed.strike,
     expirationLabel: parsed.expirationLabel,
     frozenEntry: row.frozenEntry as number,
-    peakPct: round2(row.peakPct as number),
+    peakPct: recon.canonicalPeakPct != null ? round2(recon.canonicalPeakPct) : null,
     trackedPct: closed && isNum(row.trackedPct) ? round2(row.trackedPct) : null,
     status: closed ? "CLOSED" : "OPEN",
     exitReason: row.exitReason,
     openedAtMs: row.openedAtMs as number,
     gaveBackProfit: row.gaveBackProfit,
     setupReason: row.setupReason,
+    exitEvidenceClass: recon.exitClass,
+    peakInvariantOk: recon.invariantOk,
+    bidConventionPeakPct: recon.highestVerifiedBidReturnPct,
     evidence: {
       opportunityCaseId: row.opportunityCaseId as string,
       paperTradeId: row.paperTradeId,
@@ -362,9 +403,12 @@ function toCallout(row: RecapInputRow): RecapCallout | null {
       entryAsk: row.entryAsk,
       entryQuoteTsMs: row.entryQuoteTsMs,
       discordMessageId: row.discordMessageId,
-      peakSource: "options_paper_marks/analyzeExitPolicies/bestGainPct(bid)",
+      // Executable convention (realOptionExit over verified in-session bid/ask), the
+      // SAME convention as the canonical exit, so peak and tracked are comparable.
+      peakSource: "options_paper_marks/reconcilePeakAndExit/executableReturnPct",
       trackedSource: "options_paper_trades/return_pct",
-      markCount: row.markCount,
+      exitEvidence: recon.exitEvidence,
+      markCount: recon.validMarkCount,
     },
   };
 }
@@ -507,6 +551,18 @@ export function buildWeeklySocialRecap(
         exclusions.push({ alertId: row.alertId, symbol: row.symbol, reason: "contract could not be parsed", classification: row.pnlClassification });
         continue;
       }
+      // INVARIANT: a verified peak can never sit below a verified realized exit.
+      // When the evidence cannot satisfy it, the row is incomplete — exclude it
+      // rather than publish a mathematically impossible peak/tracked pair.
+      if (!callout.peakInvariantOk || callout.peakPct == null) {
+        exclusions.push({
+          alertId: row.alertId,
+          symbol: row.symbol,
+          reason: `peak/tracked invariant unsatisfied on verified evidence (exit evidence: ${callout.exitEvidenceClass})`,
+          classification: row.pnlClassification,
+        });
+        continue;
+      }
       laneRows[lane].push(callout);
     }
     laneRows[lane].sort((a, b) => (b.peakPct ?? 0) - (a.peakPct ?? 0));
@@ -536,6 +592,16 @@ export function buildWeeklySocialRecap(
   if (opts.window.holidaysSkipped.length) {
     warnings.push(`Market holiday skipped: ${opts.window.holidaysSkipped.join(", ")}.`);
   }
+
+  const publishability: WeeklySocialRecap["publishability"] = verifiedSubscriber.eligibleCallouts === 0
+    ? "NO_ELIGIBLE_CALLOUTS"
+    : exclusions.length > verifiedSubscriber.eligibleCallouts
+      ? "INSUFFICIENT_VERIFICATION"
+      : (verifiedSubscriber.combinedTrackedResultPct ?? 0) < 0
+        ? "TRANSPARENT_REPORT_ONLY"
+        : verifiedSubscriber.losers > 0
+          ? "PUBLISHABLE_MIXED"
+          : "PUBLISHABLE_POSITIVE";
 
   const all = [...laneRows.VERIFIED_SUBSCRIBER, ...laneRows.RESEARCH_ONLY, ...laneRows.WATCHLIST];
   const allowedNumbers = new Set<string>();
@@ -580,6 +646,7 @@ export function buildWeeklySocialRecap(
     exclusions,
     warnings,
     lowSample,
+    publishability,
     labels: { combinedPeak: LABEL_COMBINED_PEAK, combinedTracked: LABEL_COMBINED_TRACKED },
     disclaimers: [
       "Past performance does not guarantee future results.",

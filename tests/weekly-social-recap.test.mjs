@@ -31,7 +31,7 @@ const TUE = Date.parse("2026-07-28T15:00:00.000Z"); // 11:00 a.m. ET
 let seq = 0;
 function row(overrides = {}) {
   seq += 1;
-  return {
+  const base = {
     lane: "VERIFIED_SUBSCRIBER",
     alertId: `oa_${seq}`,
     opportunityCaseId: `oc_${seq}`,
@@ -56,8 +56,23 @@ function row(overrides = {}) {
     pnlExclusionReasons: [],
     openedAtMs: TUE,
     setupReason: "Reclaimed VWAP with rising relative volume.",
-    ...overrides,
   };
+  const merged = { ...base, ...overrides };
+  // Closed fixtures carry two verified, in-session executable quotes: the observed
+  // peak and the canonical exit. Individual tests may still override marks directly.
+  if (!Object.prototype.hasOwnProperty.call(overrides, "marks")) {
+    const peakFill = merged.frozenEntry * (1 + merged.peakPct / 100);
+    merged.marks = [{ markAtMs: TUE, bid: peakFill, ask: peakFill, quoteAgeMs: 0, createdAtMs: TUE }];
+    if (merged.paperStatus === "EXITED") {
+      const exitFill = merged.frozenEntry * (1 + merged.trackedPct / 100);
+      merged.marks.push({ markAtMs: TUE + 60_000, bid: exitFill, ask: exitFill, quoteAgeMs: 0, createdAtMs: TUE + 60_000 });
+    }
+  }
+  if (!Object.prototype.hasOwnProperty.call(overrides, "exitFill") && merged.paperStatus === "EXITED") {
+    merged.exitFill = merged.frozenEntry * (1 + merged.trackedPct / 100);
+    merged.exitAtMs = TUE + 60_000;
+  }
+  return merged;
 }
 
 function recapOf(rows, opts = {}) {
@@ -629,15 +644,18 @@ test("every callout carries its opportunity case and verified evidence internall
     assert.ok(Number.isFinite(Number(c.evidence.entryBid)));
     assert.ok(Number.isFinite(Number(c.evidence.entryAsk)));
     assert.ok(Number.isFinite(Number(c.evidence.entryQuoteTsMs)));
-    assert.match(c.evidence.peakSource, /bid/, "the peak source must be bid-based");
+    assert.match(c.evidence.peakSource, /reconcilePeakAndExit/, "the peak source must use executable reconciliation");
+    assert.ok(c.peakPct >= (c.trackedPct ?? -Infinity), "publishable peak cannot fall below tracked exit");
     assert.equal(c.evidence.trackedSource, "options_paper_trades/return_pct");
   }
 });
 
-test("peaks are bid-based by construction, never midpoint or ask", () => {
+test("raw bid MFE is retained while published peaks use executable quote reconciliation", () => {
   const sources = read("lib/research/social/weekly-recap-sources.ts");
   assert.match(sources, /bestGainPct/);
-  assert.match(sources, /in-session BID marks only/);
+  const reconciliation = read("lib/research/social/peak-reconciliation.ts");
+  assert.match(reconciliation, /highestVerifiedBidReturnPct/);
+  assert.match(reconciliation, /realOptionExit/);
   assert.doesNotMatch(sources, /peakPct:\s*num\(\w+\?\.(?:mid|ask)\b/);
 });
 
@@ -763,7 +781,7 @@ test("the Watchlist section reuses only verified subscriber callout evidence", (
   for (const c of recap.callouts.watchlist) {
     assert.ok(c.evidence.opportunityCaseId);
     assert.ok(c.evidence.discordMessageId, "must trace to a verified subscriber delivery");
-    assert.match(c.evidence.peakSource, /bid/);
+    assert.match(c.evidence.peakSource, /reconcilePeakAndExit/);
     assert.equal(c.evidence.trackedSource, "options_paper_trades/return_pct");
   }
   const sources = read("lib/research/social/weekly-recap-sources.ts");

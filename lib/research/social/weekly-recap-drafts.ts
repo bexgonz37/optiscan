@@ -239,12 +239,15 @@ const RENDERERS: Record<DraftStyle, (r: WeeklySocialRecap) => string[]> = {
 };
 
 export function renderDraft(recap: WeeklySocialRecap, style: DraftStyle): RecapDraft {
-  const parts = RENDERERS[style](recap);
+  const safeStyle = ["TRANSPARENT_REPORT_ONLY", "INSUFFICIENT_VERIFICATION", "NO_ELIGIBLE_CALLOUTS"].includes(recap.publishability)
+    ? "D_REPORT_CARD" as DraftStyle
+    : style;
+  const parts = RENDERERS[safeStyle](recap);
   const text = parts.join("\n\n---\n\n");
   const screen = screenRecapWording(text);
   return {
-    style,
-    label: DRAFT_STYLE_LABELS[style],
+    style: safeStyle,
+    label: DRAFT_STYLE_LABELS[safeStyle],
     text,
     parts,
     wordingOk: screen.ok,
@@ -253,6 +256,9 @@ export function renderDraft(recap: WeeklySocialRecap, style: DraftStyle): RecapD
 }
 
 export function renderAllDrafts(recap: WeeklySocialRecap): RecapDraft[] {
+  if (["TRANSPARENT_REPORT_ONLY", "INSUFFICIENT_VERIFICATION", "NO_ELIGIBLE_CALLOUTS"].includes(recap.publishability)) {
+    return [renderDraft(recap, "D_REPORT_CARD")];
+  }
   return DRAFT_STYLES.map((s) => renderDraft(recap, s));
 }
 

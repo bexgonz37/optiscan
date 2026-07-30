@@ -60,6 +60,53 @@ function entryEvidence(db: SourceDb): Map<string, EntryEvidenceRow> {
   return out;
 }
 
+/**
+ * Verified marks per paper trade, needed to reconcile the peak against the exit on
+ * the SAME executable convention. Fetched in one pass rather than per row.
+ */
+function marksByTrade(db: SourceDb): Map<number, Array<{
+  markAtMs: number; bid: number | null; ask: number | null;
+  quoteAgeMs: number | null; createdAtMs: number | null;
+}>> {
+  const out = new Map<number, Array<any>>();
+  if (!hasTable(db, "options_paper_marks")) return out;
+  try {
+    const rows = db.prepare(`
+      SELECT trade_id, mark_at_ms, bid, ask, quote_age_ms, created_at_ms
+      FROM options_paper_marks
+      ORDER BY trade_id ASC, mark_at_ms ASC
+    `).all() as any[];
+    for (const r of rows) {
+      const id = Number(r.trade_id);
+      if (!Number.isFinite(id)) continue;
+      const list = out.get(id) ?? [];
+      list.push({
+        markAtMs: Number(r.mark_at_ms),
+        bid: num(r.bid),
+        ask: num(r.ask),
+        quoteAgeMs: num(r.quote_age_ms),
+        createdAtMs: num(r.created_at_ms),
+      });
+      out.set(id, list);
+    }
+  } catch { /* no marks ⇒ rows reconcile as INSUFFICIENT_EVIDENCE, never assumed */ }
+  return out;
+}
+
+/** Canonical exit price and timestamp per paper trade. */
+function exitEvidenceByTrade(db: SourceDb): Map<number, { exit_fill: number | null; exit_at_ms: number | null }> {
+  const out = new Map<number, { exit_fill: number | null; exit_at_ms: number | null }>();
+  if (!hasTable(db, "options_paper_trades")) return out;
+  try {
+    const rows = db.prepare("SELECT id, exit_fill, exit_at_ms FROM options_paper_trades").all() as any[];
+    for (const r of rows) {
+      const id = Number(r.id);
+      if (Number.isFinite(id)) out.set(id, { exit_fill: num(r.exit_fill), exit_at_ms: num(r.exit_at_ms) });
+    }
+  } catch { /* absent ⇒ closed rows reconcile as INVALID_EXIT */ }
+  return out;
+}
+
 /** First sentence of the delivered message, used only as a setup description. */
 function setupReasonFrom(message: string | null | undefined): string | null {
   const clean = String(message ?? "").replace(/\s+/g, " ").trim();
@@ -79,10 +126,14 @@ export function loadVerifiedSubscriberRows(db: SourceDb, env: NodeJS.ProcessEnv 
   const { buildPaperChainDiagnostic } = require("@/lib/research/options/paper-chain");
   const chain = buildPaperChainDiagnostic(db, env, 100_000);
   const evidence = entryEvidence(db);
+  const marks = marksByTrade(db);
+  const paperExits = exitEvidenceByTrade(db);
   const rows: RecapInputRow[] = [];
   for (const r of chain?.rows ?? []) {
     const ev = evidence.get(String(r.alertId));
     const happened = r.whatHappened;
+    const tradeId = num(r.paperTradeId);
+    const exit = tradeId != null ? paperExits.get(tradeId) : undefined;
     rows.push({
       lane: "VERIFIED_SUBSCRIBER",
       alertId: String(r.alertId),
@@ -100,10 +151,14 @@ export function loadVerifiedSubscriberRows(db: SourceDb, env: NodeJS.ProcessEnv 
       paperTradeId: num(r.paperTradeId),
       trackedPct: num(r.returnPct),
       exitReason: r.exitReason ?? null,
-      // Peak comes from the shadow exit research, which derives it from verified
-      // in-session BID marks only. Never the stored mfe_pct, which is not bid-gated.
+      // Bid-convention peak from the shadow exit research, kept for transparency.
+      // The PUBLISHED peak is reconciled onto the executable convention downstream so
+      // it is directly comparable to the canonical exit.
       peakPct: happened != null ? num(happened.bestGainPct) : null,
-      markCount: happened?.policies != null ? null : null,
+      marks: tradeId != null ? (marks.get(tradeId) ?? []) : [],
+      exitFill: num(exit?.exit_fill),
+      exitAtMs: num(exit?.exit_at_ms),
+      markCount: tradeId != null ? (marks.get(tradeId)?.length ?? 0) : 0,
       gaveBackProfit: Boolean(happened?.gaveBackProfit),
       verifiedPnlEligible: Boolean(r.verifiedPnlEligible),
       pnlClassification: r.pnlClassification ?? null,

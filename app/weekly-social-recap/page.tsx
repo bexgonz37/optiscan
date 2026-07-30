@@ -47,6 +47,7 @@ type Recap = {
   exclusions: Array<{ alertId: string; symbol: string; reason: string }>;
   warnings: string[];
   lowSample: boolean;
+  publishability: string;
   labels: { combinedPeak: string; combinedTracked: string };
 };
 
@@ -184,6 +185,7 @@ export default function WeeklySocialRecapPage() {
       {recap && t ? (
         <>
           <Card title="Verified subscriber callouts" meta={recap.window.label}>
+            <div className="recap-warnings"><p><strong>Publishability: {recap.publishability}</strong></p></div>
             {recap.warnings.length ? (
               <div className="recap-warnings">
                 {recap.warnings.map((w) => <p key={w}>{w}</p>)}
@@ -191,6 +193,7 @@ export default function WeeklySocialRecapPage() {
             ) : null}
             <div className="recap-grid">
               <span><strong>Eligible callouts</strong>{t.eligibleCallouts}</span>
+              <span><strong>Excluded callouts</strong>{recap.exclusions.length}</span>
               <span><strong>Closed</strong>{t.closedCallouts}</span>
               <span><strong>Open</strong>{t.openCallouts}</span>
               <span><strong>Winners</strong>{t.winners}</span>
@@ -209,6 +212,7 @@ export default function WeeklySocialRecapPage() {
               account return, or realized result. OptiScan can verify what a callout did; it cannot prove
               any person entered, exited, or captured it.
             </p>
+            <p className="recap-note">Canonical peak uses verified executable bid/ask evidence and may differ from the internal raw bid-based peak. Rows without exit proof are excluded from public totals.</p>
           </Card>
 
           {recap.callouts.researchOnly.length ? (
