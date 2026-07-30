@@ -96,6 +96,31 @@ repeat-safe: six nullable `alerts` columns, `watchlist_market_context`,
 New suites: `tests/watchlist-data-plumbing.test.mjs` (26) and
 `tests/ai-advisory-chat.test.mjs` (30).
 
+### Chatbot validator: measured live, then fixed four times
+
+The grounding logic was correct from the first deploy; the claim DETECTION was not, and
+unit tests missed every defect because they were written against the same mental model as
+the code. Only measuring real answers against production data exposed them.
+
+| Commit | Live pass rate | Defect fixed |
+|---|---|---|
+| `c4a7668` | 0 of 4 | — (first deploy) |
+| `c563aa1` | 1 of 5 | List markers read as figures; entity-name numbers uncitable; cohort scope was whole-answer |
+| `a3cabe7` | 3 of 10 | Ambiguous numbers faked cohort conflicts; zero sample size treated as a violation; profit guard used a fixed character window |
+| `603a69a` | **7 of 10** | Denials read as assertions; dates contributed spurious figures |
+
+The worst of these was self-inflicted: the answer is *required* to restate the mandatory
+caveats, and restating "Trail 10% must never be described as a winning or profitable
+policy" tripped the guard that caveat exists to enforce. A fixed-distance lookbehind cannot
+see a negation five words upstream, so claim checks are now negation-aware across the
+sentence.
+
+The 3 remaining rejections at `603a69a` are **true positives** — two answers stated a
+number absent from the packet, one combined the Watchlist and delivered-paper cohorts in a
+single sentence. Those degrade to the deterministic-findings notice, which is the intended
+behaviour. No grounding rule was loosened in any of the four fixes; each has a regression
+test pairing the false positive with the true positive it must not swallow.
+
 ### Known data limitations
 
 - **VWAP evidence is still 0 of 58 in production**, so the Watchlist publishes 0 qualified
@@ -107,9 +132,12 @@ New suites: `tests/watchlist-data-plumbing.test.mjs` (26) and
   metric's label for citable numbers let an unrelated `0DTE protection` label license a bare
   `0` (now scoped to cited items only), and the missing-as-zero check was word-order
   sensitive (now direction-agnostic).
-- The advisory chat requires `AI_ENABLED=1` plus `ANTHROPIC_API_KEY`. Without them the CHAT
-  tab honestly reports explanations unavailable; all other tabs are unaffected. No Railway
-  variable was changed.
+- The advisory chat requires `AI_ENABLED=1` plus `ANTHROPIC_API_KEY`. Both are already set in
+  production (`aiEnabled: true`); no Railway variable was changed. Without them the CHAT tab
+  honestly reports explanations unavailable and all other tabs are unaffected.
+- **Live chat pass rate is 7 of 10**, not 10 of 10. Three of the ten suggested prompts still
+  degrade — correctly, on genuine model errors. Worth re-measuring after any prompt or
+  validator change rather than assuming it holds.
 - Exit research is unchanged from the previous checkpoint: still no winning policy, and
   `Underlying thesis exit` / `Momentum-stall exit` still have n=0 for lack of timestamped
   observations.
