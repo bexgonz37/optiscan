@@ -48,7 +48,7 @@ export interface WhyNoAlertsDiagnostic {
   monitor: ReturnType<typeof optionsMonitorHealth> & { metrics: ReturnType<typeof optionsMonitorMetrics> };
   session: { state: string; tradingHoursSupported: boolean };
   candidates: { observed24h: number; ready24h: number; rejected24h: number; byState: Record<string, number> };
-  delivery: { decisions24h: Record<string, number>; sent24h: number; failed24h: number; duplicate24h: number; metrics?: Record<string, unknown> };
+  delivery: { decisionsAllTime: Record<string, number>; sent24h: number; failed24h: number; duplicate24h: number; metrics?: Record<string, unknown> };
   provider: { failures: number; breakerOpen: boolean; staleBars: number };
   discord: { webhookConfigured: boolean; recentFailures: number };
   latency: { detectionToDecisionP50: number | null; detectionToDecisionP95: number | null };
@@ -137,11 +137,13 @@ export function buildWhyNoAlertsDiagnostic(
     }
   }
 
-  const decisions24h: Record<string, number> = {};
+  // deliveryDecisionMetricsOnDb intentionally reports its full persisted cohort.
+  // Keep the scope honest here; the session-audit read model supplies bounded counts.
+  const decisionsAllTime: Record<string, number> = {};
   if (db) {
     const dm = deliveryDecisionMetricsOnDb(db as any);
     if (dm.byOutcome) {
-      for (const [k, v] of Object.entries(dm.byOutcome)) decisions24h[k] = Number(v);
+      for (const [k, v] of Object.entries(dm.byOutcome)) decisionsAllTime[k] = Number(v);
     }
   }
 
@@ -197,7 +199,7 @@ export function buildWhyNoAlertsDiagnostic(
       tradingHoursSupported: metrics.sessionState !== "closed",
     },
     candidates: { observed24h, ready24h, rejected24h, byState },
-    delivery: { decisions24h, sent24h, failed24h, duplicate24h, metrics: deliveryMetrics },
+    delivery: { decisionsAllTime, sent24h, failed24h, duplicate24h, metrics: deliveryMetrics },
     provider: {
       failures: Number(metrics.providerFailures ?? 0),
       breakerOpen: monitor.breakerState === "open",

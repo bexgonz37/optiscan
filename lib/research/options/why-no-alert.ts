@@ -94,8 +94,10 @@ export function explainTickerAlertDecision(
   const rulesFailed: RuleCheck[] = [];
   if (cand.state === "READY") rulesPassed.push({ rule: "callout_ready", passed: true, detail: "Candidate reached READY" });
   else rulesFailed.push({ rule: "callout_ready", passed: false, detail: String(cand.why ?? cand.state ?? "rejected") });
-  if (Number(cand.research_only) === 1 || cand.side === "put") {
-    rulesFailed.push({ rule: "actionable_side", passed: false, detail: "Puts / research-only are not actionable Discord opens" });
+  if (Number(cand.research_only) === 1) {
+    rulesFailed.push({ rule: "actionable_side", passed: false, detail: "Candidate is marked research-only" });
+  } else if (cand.side === "put") {
+    rulesPassed.push({ rule: "actionable_side", passed: true, detail: "PUT direction is eligible when bearish authority and all delivery gates pass" });
   } else {
     rulesPassed.push({ rule: "actionable_side", passed: true, detail: "Call side actionable" });
   }

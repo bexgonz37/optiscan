@@ -2,6 +2,15 @@
 
 _Last updated: 2026-07-30. Working repo: `~/Downloads/optiscan-main`, branch `main`._
 
+## DETERMINISTIC OPTIONS SESSION AUDIT (LOCAL CHECKPOINT, 2026-07-30)
+
+- Added a read-only `GET /api/research/options/session-audit?date=YYYY-MM-DD` builder for one US/Eastern regular session.
+- Counts candidates, exact OCC availability, READY/ranked/selected rows, SENT rows, hard Discord-opening proof, matching delivered-paper linkage, deduplication, blocked/research/paper-link/delivery failures, and unverified SENDs.
+- A subscriber proof requires a Discord message ID, opportunity case, frozen entry, exact OCC, and matching `DELIVERED_ALERT_PAPER` mirror. `SENT` alone remains unverified.
+- Corrected the pipeline diagnostic field from misleading `decisions24h` to `decisionsAllTime`; session-bounded values belong to the new audit.
+- Corrected diagnostic-only PUT wording: qualified PUTs are eligible through bearish authority and delivery gates, not rejected merely because they are puts.
+- Safety: read model only; no imports into scanner, authority, delivery, Discord, paper execution, or AI apply paths. `productionBehaviorChanged=false`.
+
 ## WATCHLIST DATA PLUMBING + PHASE 2 AI ADVISORY CHATBOT (2026-07-30)
 
 **Previous production baseline:** `34ae271`.
