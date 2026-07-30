@@ -24,6 +24,10 @@ _Last updated: 2026-07-30. Working repo: `~/Downloads/optiscan-main`, branch `ma
 - Results are advisory-only and cannot overwrite canonical paper outcomes or live stops/exits.
 - Unified aggregation reuses the existing exit and loss replay engines; negative policies cannot be classified as profitable.
 
+## PROSPECTIVE OPTIONS RESEARCH EVIDENCE (LOCAL, IN PROGRESS, 2026-07-30)
+
+- Added an additive `options_research_observations` table and isolated idempotent writer. It stores null for unavailable evidence and never participates in live authority, scanner, delivery, or paper execution.
+
 ## WATCHLIST DATA PLUMBING + PHASE 2 AI ADVISORY CHATBOT (2026-07-30)
 
 **Previous production baseline:** `34ae271`.

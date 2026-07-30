@@ -26,6 +26,7 @@ import { assertSubscriberDeliveryAllowed, isSameTradingSession } from "../../mar
 import { incrementInstrumentationFallbackInserts } from "../../db-legacy-columns.ts";
 import { quoteFreshness } from "../../quote-freshness.ts";
 import { bearishPipelineEnabled } from "./bearish-authority.ts";
+import { recordOptionsResearchObservation } from "./prospective-evidence.ts";
 
 export interface ChainContract { optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number; bid: number | null; ask: number | null; spreadPct: number | null; volume: number | null; openInterest: number | null; iv: number | null; delta: number | null; providerTimestamp: number | null }
 
@@ -135,6 +136,24 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
       candidateId = Number(info.lastInsertRowid ?? 0);
     }
     if (candidateId > 0) persistCandidateInstrumentation(db, candidateId, inst);
+    // Research-only snapshot. The writer swallows schema/DB failures, so this cannot affect evaluation.
+    recordOptionsResearchObservation(db as any, {
+      observedAtMs: input.nowMs,
+      symbol: input.symbol,
+      source: "options_candidate_lifecycle",
+      direction: res.selection.direction ?? null,
+      strategyFamily: res.selection.selected?.key ?? null,
+      candidateState: res.state === "READY" ? "READY" : (res.contract ? "CONTRACT_SELECTED" : "CANDIDATE_DETECTED"),
+      readinessState: res.state === "READY" ? "READY" : null,
+      blockers: res.state === "READY" ? null : [res.callout?.reason ?? res.selection.reason].filter(Boolean) as string[],
+      underlyingPrice: input.underlying.price ?? null,
+      optionSymbol: res.contract?.optionSymbol ?? null,
+      optionBid: res.contract?.bid ?? null,
+      optionAsk: res.contract?.ask ?? null,
+      quoteTimestampMs: res.contract?.providerTimestamp ?? null,
+      quoteAgeMs: res.contract ? quoteFreshness(res.contract.providerTimestamp, input.nowMs).ageMs : null,
+      freshnessState: res.callout?.freshness ?? null,
+    });
     // Living Opportunity Case: if an active opportunity already matches, attach evidence and do not
     // submit another opening delivery. Audit capture still runs (bound to the living case id).
     let livingOpportunityCaseId: string | null = null;

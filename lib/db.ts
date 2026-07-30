@@ -1518,6 +1518,20 @@ CREATE TABLE IF NOT EXISTS options_paper_marks (
 );
 CREATE INDEX IF NOT EXISTS idx_options_paper_marks_trade ON options_paper_marks(trade_id, mark_at_ms);
 
+-- Prospective-only audit evidence. This table never authorizes a scan, delivery, paper entry, or exit.
+CREATE TABLE IF NOT EXISTS options_research_observations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  observation_key TEXT NOT NULL UNIQUE, observed_at_ms INTEGER NOT NULL, session_date TEXT NOT NULL, symbol TEXT NOT NULL,
+  direction TEXT, thesis_fingerprint TEXT, opportunity_case_id TEXT, alert_id TEXT, strategy_family TEXT,
+  scanner_lane TEXT, candidate_state TEXT, readiness_state TEXT, authority_state TEXT, blockers_json TEXT,
+  underlying_price REAL, vwap REAL, vwap_relationship TEXT, support_level REAL, resistance_level REAL, trigger_level REAL,
+  structure_state TEXT, momentum_state TEXT, relative_state TEXT, option_symbol TEXT, option_type TEXT,
+  strike REAL, expiration TEXT, option_bid REAL, option_ask REAL, spread_pct REAL, quote_timestamp_ms INTEGER,
+  quote_age_ms INTEGER, volume REAL, open_interest REAL, delta REAL, dte INTEGER, contract_quality_state TEXT,
+  source TEXT NOT NULL, freshness_state TEXT, created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_options_research_observations_session ON options_research_observations(session_date, observed_at_ms);
+
 CREATE TABLE IF NOT EXISTS options_lifecycle_observations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   paper_trade_id INTEGER,
