@@ -1,6 +1,126 @@
 # OptiScan — Implementation Status
 
-_Last updated: 2026-07-29. Working repo: `~/Downloads/optiscan-main`, branch `main`._
+_Last updated: 2026-07-30. Working repo: `~/Downloads/optiscan-main`, branch `main`._
+
+## WATCHLIST DATA PLUMBING + PHASE 2 AI ADVISORY CHATBOT (2026-07-30)
+
+**Previous production baseline:** `34ae271`.
+**Commits created:** `a7d8e9a` (Watchlist data plumbing), `c4a7668` (AI advisory chatbot).
+
+### Watchlist evidence status
+
+The gate was already correct; its three inputs were not being produced.
+
+| Input | Before | After |
+|---|---|---|
+| VWAP evidence | `vwap_at_alert` never written on the options path | Persisted with provenance from the live signal |
+| SPY/QQQ market context | table empty; live engine is UNKNOWN overnight | Deterministic snapshot from completed session candles |
+| Stale-plan clearing | performed by `GET /api/now` | Scheduler job + explicit maintenance POST |
+
+- **VWAP.** `lib/research/watchlist/vwap-evidence.ts` classifies a VWAP as LIVE,
+  PRIOR_SESSION, STALE, or UNAVAILABLE from when it was COMPUTED and which session its
+  candles belong to. `sessionBars()` keys off the last bar, so after hours it returns the
+  prior session — the scanner now records that day (`SymState.vwapDay`) so a prior-session
+  VWAP is labelled rather than implying a live one. Overnight planning accepts LIVE or
+  PRIOR_SESSION and renders the label in the invalidation text; `usableForLiveSend` is true
+  ONLY for LIVE, so live subscriber delivery still requires live evidence and **no gate was
+  loosened**. Absent input stays UNAVAILABLE, a missing VWAP yields a null distance rather
+  than 0, and **no historical row is back-filled**.
+- **Market context.** `market-context-snapshot.ts` derives prior close/high/low, session
+  VWAP, per-index BULLISH/BEARISH/NEUTRAL/UNAVAILABLE, broad direction, relative strength,
+  freshness, data source, and quality status — pure, deterministic, no AI. Persisted per
+  trading day (upsert = idempotent). One missing index degrades the broad direction to
+  UNAVAILABLE rather than speaking for the market from the other.
+- **Gate defect fixed.** A persisted `"UNKNOWN"` trend is a truthy string, so UNKNOWN
+  previously counted as usable context. Only genuinely directional states now qualify.
+- **Read-only GET.** `GET /api/now` no longer builds or persists. Writes moved to the
+  `watchlistPlanning` scheduler job and `POST /api/research/watchlist/planning`. Clearing is
+  a bounded per-trading-day delete and is idempotent (second run reports 0). The full plan —
+  withheld rows plus evidence diagnostics — is persisted to `overnight_plan_snapshots` so
+  the read-only GET can still explain WHY a plan is empty.
+- **Diagnostics.** Plans carry `evidenceCompleteness` (candidates considered, VWAP usable vs
+  missing by state, market-context quality, explicit blockers), surfaced on `/watchlist`.
+
+**Live state on `a7d8e9a`:** market context **COMPLETE and usable** — SPY bearish −1.50%,
+prior close $732.40, closed below session VWAP $734.07, source `session_candles_1m`,
+relative strength SPY_STRONGER. Scheduler ran clean, cleared 2 stale plan days / 8 rows,
+`errors: []`. Published rows 0; the single remaining blocker is VWAP (see limitations).
+
+### Chatbot routes
+
+| Route | Purpose |
+|---|---|
+| `POST /api/ai/advisory-chat` | Ask a question (creates a conversation if none given) |
+| `GET /api/ai/advisory-chat` | Suggested prompts, modes, glossary, conversation list |
+| `GET /api/ai/advisory-chat/[conversationId]` | One conversation with full history |
+| `PATCH /api/ai/advisory-chat/[conversationId]` | Rename |
+| `DELETE /api/ai/advisory-chat/[conversationId]` | Soft delete (audit trail retained) |
+| `POST /api/ai/advisory-chat/[conversationId]/feedback` | Thumbs up/down on one answer |
+
+Primary sources are the canonical findings report (same builder as
+`GET /api/ai/findings/latest`), the shadow exit-policy report, and the Watchlist evidence
+gate. `advisory-chat-sources.ts` contains no SQL — the chat never queries raw tables when a
+canonical metric exists. UI is a CHAT tab on `/ai` with modes EXPLAIN, INVESTIGATE, COMPARE,
+BUILD FIX PROMPT, ten suggested prompts, clickable evidence chips, and a plain-English
+glossary.
+
+### Safety boundaries
+
+- **AI AUTHORITY: ADVISORY ONLY** and **PRODUCTION BEHAVIOR CHANGED: NO** render
+  persistently in the panel.
+- **No APPLY mode exists.** BUILD_FIX_PROMPT output is generated deterministically in code
+  so its safety constraints cannot be softened by generation, and it is export-only —
+  copying text is the only available action. It is still produced when the model is down.
+- The chat execution path imports nothing from scanner, capture, delivery, Discord, grading,
+  or session-guard layers, and a test enforces it. Chat code may write only
+  `ai_chat_conversations` and `ai_chat_messages`.
+- Numeric validation is enforced in code, not requested in the prompt: unsupported numbers,
+  unknown evidence ids, uncited numbers, pipeline/window mixing, missing-as-zero, zero-sample
+  performance claims, profit claims on a losing policy, and "I changed production" claims are
+  all rejected. A rejected answer becomes "AI explanation unavailable. Deterministic findings
+  remain available."
+- Mandatory caveats are computed rather than trusted to the model: Trail 10% is only LESS BAD
+  than the current policy, zero-sample and below-minimum policies cannot be recommended, and a
+  zero-row Watchlist is the evidence gate working.
+- Secrets are redacted before any write; evidence is referenced by id, never copied.
+- Provider failure, timeout, disabled AI, missing evidence, and validation failure all degrade
+  without throwing. None can affect scanner, Discord, Paper, Watchlist, Quant, or scheduler.
+
+### Tests
+
+2372/2372 pass, 0 fail, 0 skipped. `npx tsc --noEmit --incremental false` clean.
+`npm run build` compiled successfully. `git diff --check` clean. Migrations additive and
+repeat-safe: six nullable `alerts` columns, `watchlist_market_context`,
+`overnight_plan_snapshots`, `ai_chat_conversations`, `ai_chat_messages`.
+
+New suites: `tests/watchlist-data-plumbing.test.mjs` (26) and
+`tests/ai-advisory-chat.test.mjs` (30).
+
+### Known data limitations
+
+- **VWAP evidence is still 0 of 58 in production**, so the Watchlist publishes 0 qualified
+  rows. This is correct and expected: the 58 candidates are pre-migration alerts and history
+  is deliberately never back-filled, and options capture only runs during market hours
+  (`isOptionsSession`). The column populates on the next live session, at which point the
+  last blocker clears. It has **not** yet been observed end-to-end with live data.
+- Two validator bugs found and fixed while testing, worth remembering: scanning every
+  metric's label for citable numbers let an unrelated `0DTE protection` label license a bare
+  `0` (now scoped to cited items only), and the missing-as-zero check was word-order
+  sensitive (now direction-agnostic).
+- The advisory chat requires `AI_ENABLED=1` plus `ANTHROPIC_API_KEY`. Without them the CHAT
+  tab honestly reports explanations unavailable; all other tabs are unaffected. No Railway
+  variable was changed.
+- Exit research is unchanged from the previous checkpoint: still no winning policy, and
+  `Underlying thesis exit` / `Momentum-stall exit` still have n=0 for lack of timestamped
+  observations.
+- The Paper account summary's open/closed counts are still derived from the capped 100-row
+  display list; the money figures remain full-cohort.
+
+### Next roadmap step
+
+Confirm VWAP evidence populates during the next live options session and the Watchlist
+publishes its first qualified rows; then capture timestamped underlying/momentum observations
+so the two n=0 shadow exit policies become evaluable.
 
 ## MARKET-CLOSE GUARD + VERIFIED PAPER + EVIDENCE-BACKED WATCHLIST (2026-07-29)
 
