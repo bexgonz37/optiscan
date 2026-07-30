@@ -1,6 +1,6 @@
 # Watchlist
 
-Status: CORE + INTEGRATION COMPLETE LOCALLY — FLAG OFF, NOT DEPLOYED
+Status: DEPLOYED AND VERIFIED INERT — FLAG OFF (2026-07-30, commit `0be1530`)
 
 ## Purpose
 
@@ -50,10 +50,34 @@ the exact price levels that decide them, before they move.
   duplicate suppression, publication outcome, failure reason, and flag state.
   No webhook, token, URL, or raw Discord config is exposed.
 
+## Production verification (2026-07-30, commit `0be1530`)
+
+Verified live, read-only, with nothing enabled and nothing sent:
+
+- `GET /api/research/watchlist/professional` → 200.
+- `enabled: false` — the flag is unset in production, as intended.
+- `lastOvernightRun: null`, `lastPremarketRun: null`, `recentPublications: []`
+  — **no professional publication has occurred.** The deploy landed at
+  ~16:42 ET, outside every planning window (18:00 / 08:30 / 09:35 ET), so
+  `professionalWatchlistJob` correctly returned before doing any work.
+- `outcomes` reports a zero cohort with `isSubscriberPerformance: false` and the
+  "NOT subscriber performance results" note intact.
+- `safety` block renders `advisoryOnly: true`,
+  `productionBehaviorChanged: false`.
+- Diagnostics carry no webhook, token, URL, or raw Discord configuration
+  (0 credential-pattern hits across every response checked).
+- **Legacy plan unaffected:** `GET /api/research/watchlist/planning` → 200 with
+  a COMPLETE market-context snapshot (SPY BULLISH +1.39%, QQQ BULLISH +3.06%,
+  source `session_candles_1m`), and `overnightResearch` shows 1 scheduler run.
+
 ## Truthful remaining limitations
 
-- **Never observed end-to-end with live data.** Every result above is from
-  tests and local builds. Nothing has been deployed or verified on Railway.
+- **The professional path has never actually built or published in production.**
+  It has only been observed correctly declining to run. Everything about its
+  live behaviour with the flag ON remains unproven.
+- **No planning window has elapsed since deploy.** The first real signal will be
+  the 18:00 ET window; until then `lastOvernightRun` staying null is expected
+  and is not evidence of health.
 - **Live trigger detection is not wired.** `processWatchlistTrigger` exists and
   is tested, but no live price feed calls it yet, so no outcome rows are
   produced in production.

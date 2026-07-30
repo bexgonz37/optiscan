@@ -3,15 +3,18 @@
 ## Current repository state
 
 - Branch: main
-- Local HEAD: professional Watchlist integration (core at 9c2d1c8)
-- Production baseline: efaf2be
-- Ten local commits are ahead of origin/main; none have been pushed or deployed
-- PROFESSIONAL_WATCHLIST_ENABLED is unset (OFF); production behaviour unchanged
+- Local HEAD, origin/main, and deployed production are all `0be1530`
+- Previous production baseline: efaf2be (superseded 2026-07-30)
+- Railway deployment 5682002117 for that SHA reached success; healthz confirms
+  the deployed commit, schemaOk true, no migration failure
+- PROFESSIONAL_WATCHLIST_ENABLED is unset (OFF); the endpoint reports
+  enabled=false and no professional publication has occurred
 
 ## Current objective
 
-Push the validated local stack and verify it on Railway. No production
-verification exists yet for any part of it.
+Observe the first 18:00 ET planning window with the flag still OFF, to prove the
+scheduler actually reaches the professional path before considering enabling it.
+The professional Watchlist has so far only been observed declining to run.
 
 ## How this brain works
 
