@@ -1737,3 +1737,151 @@ tbody tr:hover td {
     grid-template-columns: 1fr;
   }
 }
+
+/* ------------------------------------------------------ Weekly social recap (owner) */
+
+.recap-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px 16px;
+  align-items: end;
+}
+
+.recap-controls label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  min-width: 0;
+}
+
+.recap-controls label.recap-check {
+  grid-auto-flow: column;
+  justify-content: start;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+}
+
+.recap-controls input[type="date"],
+.recap-controls select {
+  background: rgba(7, 16, 23, 0.72);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font: 400 12px var(--font-mono);
+  padding: 5px 8px;
+}
+
+.recap-controls button {
+  border: 1px solid var(--green);
+  background: transparent;
+  color: var(--green);
+  cursor: pointer;
+  font-weight: 700;
+  padding: 7px 14px;
+}
+
+.recap-controls button:disabled {
+  border-color: var(--line);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.recap-note {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 10px 0 0;
+}
+
+.recap-warnings {
+  display: grid;
+  gap: 4px;
+  border-left: 2px solid var(--warn);
+  padding: 6px 10px;
+  margin-bottom: 10px;
+}
+
+.recap-warnings p {
+  color: var(--warn);
+  font-size: 11px;
+  margin: 0;
+}
+
+.recap-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px 14px;
+}
+
+.recap-grid > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.recap-grid strong {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.recap-grid .wide {
+  grid-column: 1 / -1;
+}
+
+.recap-list {
+  display: grid;
+  gap: 3px;
+}
+
+.recap-list p {
+  margin: 0;
+  color: var(--text);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.recap-draft {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.recap-draft-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.recap-draft-head span {
+  display: flex;
+  gap: 6px;
+}
+
+.recap-draft-head button {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 4px 9px;
+}
+
+.recap-draft textarea {
+  width: 100%;
+  background: rgba(7, 16, 23, 0.72);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font: 400 11px var(--font-mono);
+  resize: vertical;
+}
+
+@media (max-width: 700px) {
+  .recap-controls {
+    grid-template-columns: 1fr;
+  }
+}
