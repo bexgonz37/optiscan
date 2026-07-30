@@ -18,6 +18,11 @@ _Last updated: 2026-07-30. Working repo: `~/Downloads/optiscan-main`, branch `ma
 - Current stored production instrumentation cannot honestly reconstruct all desired earlier stages with bid/ask evidence, so missing fields remain unavailable rather than inferred from later data. No live entry policy exists.
 - The read-only loader now requires subscriber proof, exact OCC, frozen entry, delivered-paper mirror, and fresh same-session exact-OCC marks. Legacy candidate instrumentation is exposed as timeline availability only because it has no historical executable bid/ask; it cannot create a shadow entry.
 
+## SHADOW LOSS-PROTECTION CORE (LOCAL, IN PROGRESS, 2026-07-30)
+
+- Added pure hard-loss guards (-10/-15/-20/-25/-30) and early-weakness exits (-5/-10/-15/-20). Weakness exits require two consecutive timestamped weakening observations with fresh executable quotes; one negative tick is not enough.
+- Results are advisory-only and cannot overwrite canonical paper outcomes or live stops/exits.
+
 ## WATCHLIST DATA PLUMBING + PHASE 2 AI ADVISORY CHATBOT (2026-07-30)
 
 **Previous production baseline:** `34ae271`.
