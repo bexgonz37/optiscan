@@ -22,7 +22,7 @@ import { isEarlyCloseDay } from "@/lib/market-session-guard";
 const LEASE_NAME = "scheduler";
 const BASE_TICK_MS = 15_000;
 
-type JobName = "maintenance" | "learning" | "supervisor" | "improvement" | "aiJobs" | "brokerReadiness" | "subscriberReadiness" | "contentDrafts" | "overnightResearch";
+type JobName = "maintenance" | "learning" | "supervisor" | "improvement" | "aiJobs" | "brokerReadiness" | "subscriberReadiness" | "contentDrafts" | "overnightResearch" | "watchlistPlanning";
 
 export interface SchedulerState {
   started: boolean;
@@ -33,6 +33,17 @@ export interface SchedulerState {
   runs: Record<JobName, number>;
   note: string;
   lastError: string | null;
+  /** Last Watchlist planning outcome — makes context/plan failures visible. */
+  lastWatchlistPlanning?: {
+    ranAtMs: number;
+    tradingDay: string;
+    contextRecorded: boolean;
+    contextQuality: string;
+    contextUsableForPlanning: boolean;
+    stalePlanDaysCleared: number;
+    staleRowsCleared: number;
+    errors: string[];
+  } | null;
 }
 
 type G = typeof globalThis & {
@@ -45,9 +56,9 @@ function state(): SchedulerState {
   const g = globalThis as G;
   g.__optiscanScheduler ??= {
     started: false, isOwner: false, ownerPid: null, lastBeatAtMs: null,
-    lastRun: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null, brokerReadiness: null, subscriberReadiness: null, contentDrafts: null, overnightResearch: null },
-    runs: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0, subscriberReadiness: 0, contentDrafts: 0, overnightResearch: 0 },
-    note: "not started", lastError: null,
+    lastRun: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null, brokerReadiness: null, subscriberReadiness: null, contentDrafts: null, overnightResearch: null, watchlistPlanning: null },
+    runs: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0, subscriberReadiness: 0, contentDrafts: 0, overnightResearch: 0, watchlistPlanning: 0 },
+    note: "not started", lastError: null, lastWatchlistPlanning: null,
   };
   return g.__optiscanScheduler;
 }
@@ -243,6 +254,26 @@ export function nextWatchlistWindowSummary(nowMs: number = Date.now(), env: Node
 }
 
 /**
+ * Watchlist planning — the ONLY writer of market context, stale-plan clearing, and
+ * the persisted overnight plan. GET /api/now is read-only, so these writes live here
+ * where a failure lands in scheduler state instead of on a user's page refresh.
+ * Idempotent: every step is an upsert or a bounded delete.
+ */
+async function watchlistPlanningJob(nowMs: number): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { runWatchlistPlanningJobOnDb, liveWatchlistPlanningDeps } = require("@/lib/research/watchlist/market-context-job");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { buildNextSessionPlan, persistOvernightPlan } = require("@/lib/research/overnight/next-session-plan");
+  const result = await runWatchlistPlanningJobOnDb(
+    db(),
+    { ...liveWatchlistPlanningDeps(), now: () => nowMs },
+    { buildNextSessionPlan, persistOvernightPlan },
+  );
+  state().lastWatchlistPlanning = result;
+  if (result.errors.length) throw new Error(result.errors.join("; "));
+}
+
+/**
  * Overnight / next-session research — builds deterministic watchlist + optional owner Discord.
  * Never sends subscriber "buy now" after hours. Gated Discord via OWNER_RESEARCH_DISCORD_ENABLED.
  */
@@ -348,6 +379,9 @@ async function beat(): Promise<void> {
   }
   if (jobDue(s.lastRun.contentDrafts, iv.contentDraftsMs, nowMs)) {
     await runJob("contentDrafts", () => contentDraftsJob(), nowMs);
+  }
+  if (jobDue(s.lastRun.watchlistPlanning, iv.watchlistPlanningMs, nowMs)) {
+    await runJob("watchlistPlanning", () => watchlistPlanningJob(nowMs), nowMs);
   }
   if (jobDue(s.lastRun.overnightResearch, iv.overnightResearchMs, nowMs)) {
     await runJob("overnightResearch", () => overnightResearchJob(nowMs), nowMs);

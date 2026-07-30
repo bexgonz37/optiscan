@@ -21,6 +21,7 @@ import { tradingDay } from "@/lib/db";
 import { notifyNewAlert } from "@/lib/notifications";
 import { normalizeProviderTimestampMs } from "@/lib/data-freshness";
 import { classifyMoveTiming } from "@/lib/move-timing";
+import { classifyVwapEvidence } from "@/lib/research/watchlist/vwap-evidence";
 
 const NEWS_TTL_MS = 15 * 60 * 1000;
 
@@ -50,6 +51,9 @@ export interface StockSignal {
   efficiency: number | null;
   vwap: number | null;
   aboveVwap: boolean | null;
+  /** When `vwap` was computed, and the ET trading day of its candles. */
+  vwapAsOfMs?: number | null;
+  vwapSession?: string | null;
   hodBreak: boolean;
   lodBreak: boolean;
   direction: "bullish" | "bearish" | "choppy";
@@ -156,6 +160,14 @@ export async function captureStockAlert(sig: StockSignal): Promise<number | null
     typeof sig.price === "number" && typeof sig.vwap === "number" && sig.vwap > 0
       ? +(((sig.price - sig.vwap) / sig.vwap) * 100).toFixed(2)
       : null;
+  // Stock callouts run in extended hours too, so provenance matters here as much
+  // as on the options path — a premarket VWAP is not a live regular-session VWAP.
+  const stockVwapEvidence = classifyVwapEvidence({
+    vwap: sig.vwap,
+    computedAtMs: sig.vwapAsOfMs ?? null,
+    barsTradingDay: sig.vwapSession ?? null,
+    nowMs,
+  });
 
   const minScore = getSettingNum("stock_min_score", Number(process.env.STOCK_MIN_SCORE ?? STOCK_DEFAULT_MIN_SCORE));
   const dataTimestampMs = normalizeProviderTimestampMs(sig.dataTimestampMs ?? null, nowMs);
@@ -288,6 +300,12 @@ export async function captureStockAlert(sig: StockSignal): Promise<number | null
     vwapAtAlert: sig.vwap ?? null,
     vwapDistPctAtAlert: vwapDistPct,
     aboveVwap: sig.aboveVwap,
+    vwapEvidenceState: stockVwapEvidence.state,
+    vwapFreshness: stockVwapEvidence.freshness,
+    vwapSession: stockVwapEvidence.session,
+    vwapSource: stockVwapEvidence.source,
+    vwapAsOfMs: stockVwapEvidence.asOfMs,
+    underlyingPriceAtAlert: sig.price ?? null,
     snapshot: null, catalystRecords: [],
   });
 

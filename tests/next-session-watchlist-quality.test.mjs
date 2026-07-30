@@ -66,7 +66,9 @@ test("evidence-backed rows rank independently and render real levels", () => {
   assert.notEqual(plan.recommendations[0].thesisScore, plan.recommendations[1].thesisScore);
   const message = formatEodWatchlist(plan);
   assert.match(message, /Hold above \$177\.20/);
-  assert.match(message, /Lose VWAP near \$175\.80/);
+  // The VWAP reference now states its provenance, so a prior-session level can
+  // never be read as a live one.
+  assert.match(message, /Lose prior-session VWAP near \$175\.80/);
   assert.match(message, /No confirmed catalyst/);
   assert.doesNotMatch(message, /O:|exact contract/i);
 });

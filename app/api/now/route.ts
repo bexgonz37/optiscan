@@ -68,16 +68,14 @@ export async function GET(req: Request) {
     return buildRankedSetupsNow(db, now);
   }, []);
 
+  // READ-ONLY. A GET must never mutate production state, so this only loads the
+  // plan the scheduler's watchlistPlanning job already built and persisted. If no
+  // plan exists yet the answer is honestly null rather than a page-triggered write.
   const overnight = safe("overnight", () => {
     if (!db) return null;
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { loadOvernightPlan, buildNextSessionPlan, persistOvernightPlan } = require("@/lib/research/overnight/next-session-plan");
-    let plan = loadOvernightPlan(db);
-    if (!operating.optionsExecutableWindow) {
-      plan = buildNextSessionPlan(db, now);
-      persistOvernightPlan(db, plan);
-    }
-    return plan;
+    const { loadOvernightPlan } = require("@/lib/research/overnight/next-session-plan");
+    return loadOvernightPlan(db);
   }, null);
 
   const openPositions = safe("openPositions", () => {
@@ -280,6 +278,7 @@ export async function GET(req: Request) {
           recommendations: overnight.recommendations ?? [],
           needsMoreData: overnight.needsMoreData ?? [],
           omitted: overnight.omitted ?? [],
+          evidenceCompleteness: overnight.evidenceCompleteness ?? null,
         }
       : null,
   });

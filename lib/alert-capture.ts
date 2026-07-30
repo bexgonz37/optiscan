@@ -44,6 +44,7 @@ import { alertRecentDuplicate, insertAlert, getSettingNum, updateAlertCatalyst, 
 import { isCoreSymbol } from "@/lib/universe";
 import { tradingDay, minutesToClose } from "@/lib/db";
 import { isOptionsSession } from "@/lib/trading-session";
+import { classifyVwapEvidence, vwapEvidenceColumns } from "@/lib/research/watchlist/vwap-evidence";
 import { notifyNewAlert } from "@/lib/notifications";
 import type { MomentumRow, UnusualRow } from "@/lib/types";
 
@@ -121,6 +122,9 @@ export interface ZeroDteSignal {
   efficiency: number | null;
   vwap: number | null;
   aboveVwap: boolean | null;
+  /** When `vwap` was computed, and the ET trading day of its candles. */
+  vwapAsOfMs?: number | null;
+  vwapSession?: string | null;
   hodBreak: boolean;
   lodBreak: boolean;
   direction: "bullish" | "bearish" | "choppy";
@@ -380,6 +384,16 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
   const priv = buildExplanation(explainInput, "private");
   const pub = buildExplanation(explainInput, "public");
 
+  // VWAP evidence is classified, never assumed: an absent or prior-session VWAP is
+  // persisted as exactly that, so the Watchlist gate can tell them apart later.
+  const vwapEvidence = classifyVwapEvidence({
+    vwap: sig.vwap,
+    computedAtMs: sig.vwapAsOfMs ?? null,
+    barsTradingDay: sig.vwapSession ?? null,
+    nowMs,
+  });
+  const vwapCols = vwapEvidenceColumns(vwapEvidence, sig.price);
+
   const id = insertAlert({
     ticker: sig.ticker, source, alertType: sig.alertType ?? "0dte_momentum",
     direction: sig.direction,
@@ -414,6 +428,15 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
     captureAction: finalCaptureAction,
     captureConfidence: finalVerdict.confidence,
     assetClass: "options", session: "regular",
+    vwapAtAlert: vwapCols.vwapAtAlert,
+    vwapDistPctAtAlert: vwapCols.vwapDistPctAtAlert,
+    aboveVwap: vwapCols.aboveVwap,
+    vwapEvidenceState: vwapCols.vwapEvidenceState,
+    vwapFreshness: vwapCols.vwapFreshness,
+    vwapSession: vwapCols.vwapSession,
+    vwapSource: vwapCols.vwapSource,
+    vwapAsOfMs: vwapCols.vwapAsOfMs,
+    underlyingPriceAtAlert: sig.price ?? null,
     optionsPressureLabel: pressure?.label ?? null,
     optionsPressureJson: pressure ? JSON.stringify(pressure) : null,
     snapshot: sideContract ? {

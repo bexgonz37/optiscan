@@ -109,6 +109,13 @@ export interface NewAlert {
   vwapAtAlert?: number | null;
   vwapDistPctAtAlert?: number | null;
   aboveVwap?: boolean | null;
+  /** VWAP provenance — omitted leaves the columns NULL rather than implying live data. */
+  vwapEvidenceState?: string | null;
+  vwapFreshness?: string | null;
+  vwapSession?: string | null;
+  vwapSource?: string | null;
+  vwapAsOfMs?: number | null;
+  underlyingPriceAtAlert?: number | null;
   optionsPressureLabel?: string | null;
   optionsPressureJson?: string | null;
   snapshot?: {
@@ -172,8 +179,10 @@ export function insertAlert(a: NewAlert): number | null {
           options_pressure_label, options_pressure_json, short_rate_at_alert, volume_surge_at_alert, alert_tier, capture_action, capture_confidence, asset_class, session,
           move_classification, signal_detected_at, last_confirmed_at, move_began_at, data_timestamp, expires_at, last_validated_at, last_trigger_event_at, invalidation_reason,
           vwap_at_alert, vwap_dist_pct_at_alert, above_vwap,
+          vwap_evidence_state, vwap_freshness, vwap_session, vwap_source, vwap_as_of_ms,
+          underlying_price_at_alert,
           status
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'tracking')`,
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'tracking')`,
       )
       .run(
         alert.ticker, alert.source, alert.alertType ?? null, alert.direction, alert.optionSymbol, alert.optionSide,
@@ -205,6 +214,12 @@ export function insertAlert(a: NewAlert): number | null {
         alert.vwapAtAlert ?? null,
         alert.vwapDistPctAtAlert ?? null,
         alert.aboveVwap == null ? null : (alert.aboveVwap ? 1 : 0),
+        alert.vwapEvidenceState ?? null,
+        alert.vwapFreshness ?? null,
+        alert.vwapSession ?? null,
+        alert.vwapSource ?? null,
+        alert.vwapAsOfMs ?? null,
+        alert.underlyingPriceAtAlert ?? null,
       );
     if (res.changes === 0) return null;
     const id = Number(res.lastInsertRowid);

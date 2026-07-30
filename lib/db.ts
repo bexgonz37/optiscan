@@ -2124,6 +2124,13 @@ const ALERT_COLUMN_MIGRATIONS: [string, string][] = [
   ["vwap_at_alert", "ALTER TABLE alerts ADD COLUMN vwap_at_alert REAL"],
   ["vwap_dist_pct_at_alert", "ALTER TABLE alerts ADD COLUMN vwap_dist_pct_at_alert REAL"],
   ["above_vwap", "ALTER TABLE alerts ADD COLUMN above_vwap INTEGER"],
+  // VWAP provenance. Historical rows stay NULL — an unknown past VWAP is never back-filled.
+  ["vwap_evidence_state", "ALTER TABLE alerts ADD COLUMN vwap_evidence_state TEXT"],
+  ["vwap_freshness", "ALTER TABLE alerts ADD COLUMN vwap_freshness TEXT"],
+  ["vwap_session", "ALTER TABLE alerts ADD COLUMN vwap_session TEXT"],
+  ["vwap_source", "ALTER TABLE alerts ADD COLUMN vwap_source TEXT"],
+  ["vwap_as_of_ms", "ALTER TABLE alerts ADD COLUMN vwap_as_of_ms INTEGER"],
+  ["underlying_price_at_alert", "ALTER TABLE alerts ADD COLUMN underlying_price_at_alert REAL"],
 ];
 const JOURNAL_COLUMN_MIGRATIONS: [string, string][] = [
   ["contract", "ALTER TABLE trade_journal ADD COLUMN contract TEXT"],

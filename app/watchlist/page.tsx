@@ -44,10 +44,21 @@ type PlanRow = {
   openReadinessScore?: number | null;
 };
 
+type EvidenceCompleteness = {
+  candidatesConsidered?: number;
+  vwap?: {
+    total?: number; live?: number; priorSession?: number; stale?: number;
+    unavailable?: number; usableForWatchlist?: number; usablePct?: number | null;
+  };
+  marketContext?: { available?: boolean; quality?: string; broadDirection?: string; relativeStrength?: string };
+  blockers?: string[];
+};
+
 type OvernightPlan = {
   recommendations?: PlanRow[];
   needsMoreData?: PlanRow[];
   omitted?: PlanRow[];
+  evidenceCompleteness?: EvidenceCompleteness | null;
 };
 
 function dirTone(direction?: string | null): BadgeTone {
@@ -110,6 +121,7 @@ export default function WatchlistPage() {
   const planRows = plan?.recommendations ?? [];
   const needsMoreData = plan?.needsMoreData ?? [];
   const omitted = plan?.omitted ?? [];
+  const completeness = plan?.evidenceCompleteness ?? null;
 
   return (
     <PageContainer>
@@ -128,6 +140,25 @@ export default function WatchlistPage() {
           </div>
         ) : <p className="cc-term-empty">No qualified next-session plans yet. Premarket revalidation will run before options open.</p>}
       </Card>
+      {completeness ? (
+        <Card title="Evidence Completeness" meta={`${completeness.candidatesConsidered ?? 0} candidates considered`}>
+          <div className="stack-gap">
+            <p>
+              VWAP evidence: {completeness.vwap?.usableForWatchlist ?? 0} of {completeness.vwap?.total ?? 0} usable
+              {completeness.vwap?.usablePct != null ? ` (${completeness.vwap.usablePct}%)` : ""}
+              {" — "}live {completeness.vwap?.live ?? 0}, prior session {completeness.vwap?.priorSession ?? 0},
+              stale {completeness.vwap?.stale ?? 0}, unavailable {completeness.vwap?.unavailable ?? 0}
+            </p>
+            <p>
+              Market context: {completeness.marketContext?.available ? "usable" : "not usable"}
+              {" · quality "}{completeness.marketContext?.quality ?? "UNAVAILABLE"}
+              {" · direction "}{completeness.marketContext?.broadDirection ?? "UNAVAILABLE"}
+              {" · relative strength "}{completeness.marketContext?.relativeStrength ?? "UNAVAILABLE"}
+            </p>
+            {(completeness.blockers ?? []).map((b) => <p key={b} className="cc-term-empty">{b}</p>)}
+          </div>
+        </Card>
+      ) : null}
       {needsMoreData.length ? <Card title="Needs More Data" meta={`${needsMoreData.length} omitted from Discord`}>
         <div className="stack-gap">{needsMoreData.map((item) => <p key={item.symbol}><strong>{item.symbol}</strong>: {item.diagnosticReason ?? "Required structure evidence is incomplete."}</p>)}</div>
       </Card> : null}

@@ -101,6 +101,8 @@ interface SymState {
   prefetchAt: number;
   vwap: number | null;
   vwapAt: number;
+  /** ET trading day of the candles `vwap` was computed from — its provenance. */
+  vwapDay: string | null;
   relVol: number | null;
   /** Annualized realized vol from the same 1-min candles as vwap/relVol. */
   realizedVol: number | null;
@@ -367,7 +369,7 @@ function sym(s: LoopState, ticker: string): SymState {
     st = {
       ring: [], recentRates: [], cooldownUntil: 0, optionsCooldownUntil: 0, stockCooldownUntil: 0, lastChainFetch: 0,
       prefetchedChain: null, prefetchAt: 0,
-      vwap: null, vwapAt: 0, relVol: null, realizedVol: null, lastAlertAt: 0, lastOptionsAlertAt: 0, lastNearMissAt: 0, lastMajorMoveAt: 0,
+      vwap: null, vwapAt: 0, vwapDay: null, relVol: null, realizedVol: null, lastAlertAt: 0, lastOptionsAlertAt: 0, lastNearMissAt: 0, lastMajorMoveAt: 0,
       moveBeganAt: 0, lastConfirmedAt: 0, lastTriggerEventAt: 0, lastMoveDirection: null,
       momentumLatch: { ...EMPTY_STOCK_MOMENTUM_LATCH }, momentumFirstDetectedAt: 0,
       firstSeenAt: 0, firstSeenMovePct: null, firstRankedAt: 0, firstRankedMovePct: null,
@@ -432,6 +434,11 @@ async function ensureVwap(ticker: string, st: SymState, nowMs: number) {
   if (res?.available && res.bars?.length) {
     const session = sessionBars(res.bars);
     st.vwap = sessionVwap(session);
+    // sessionBars() keys off the LAST bar, so after hours these are the prior
+    // session's candles. Record which day they belong to so downstream evidence
+    // can label a prior-session VWAP instead of implying a live one.
+    const lastBarMs = Number(session[session.length - 1]?.t);
+    st.vwapDay = Number.isFinite(lastBarMs) ? tradingDay(lastBarMs) : null;
     st.relVol = relativeVolume(res.bars, nowMs);
     st.realizedVol = realizedVolSnapshot(session).realizedVol;
   }
@@ -498,6 +505,7 @@ async function handleStockTrigger(ticker: string, st: SymState, read: any, quote
     classification: opts.classification ?? null,
     surge: read.surge, relVol: st.relVol, efficiency: read.efficiency,
     vwap: st.vwap, aboveVwap: read.levels.aboveVwap,
+    vwapAsOfMs: st.vwapAt || null, vwapSession: st.vwapDay,
     hodBreak: read.levels.hodBreak, lodBreak: read.levels.lodBreak,
     direction: read.dir.direction, directionConfidence: read.dir.confidence,
     shareVolume: quote.volume ?? null, nowMs,
@@ -625,6 +633,7 @@ async function handleTrigger(ticker: string, st: SymState, read: any, quote: any
     shortRate: read.accelRead.shortRate, accel: read.accelRead.accel,
     surge: read.surge, relVol: st.relVol, efficiency: read.efficiency,
     vwap: st.vwap, aboveVwap: read.levels.aboveVwap,
+    vwapAsOfMs: st.vwapAt || null, vwapSession: st.vwapDay,
     hodBreak: read.levels.hodBreak, lodBreak: read.levels.lodBreak,
     direction: read.dir.direction, directionConfidence: read.dir.confidence,
     shareVolume: quote.volume ?? null, bestCall, bestPut,

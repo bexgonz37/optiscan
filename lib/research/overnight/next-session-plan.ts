@@ -3,6 +3,8 @@
  * Never claims option prices are executable.
  */
 import { tradingDay } from "../../trading-session.ts";
+import { loadNextSessionContextOnDb } from "../watchlist/market-context-snapshot.ts";
+import { vwapCompleteness, type VwapCompleteness } from "../watchlist/vwap-evidence.ts";
 
 export type OvernightBias = "bullish" | "bearish" | "neutral";
 export type PreferredMoneyness = "ATM" | "ITM" | "OTM" | "ATM or 1 strike ITM";
@@ -45,6 +47,18 @@ export interface OvernightPlan {
   recommendations: OvernightRecommendation[];
   needsMoreData: OvernightRecommendation[];
   omitted: OvernightRecommendation[];
+  /** Why the plan looks the way it does — surfaced so an empty plan is explainable. */
+  evidenceCompleteness?: {
+    candidatesConsidered: number;
+    vwap: VwapCompleteness;
+    marketContext: {
+      available: boolean;
+      quality: string;
+      broadDirection: string;
+      relativeStrength: string;
+    };
+    blockers: string[];
+  };
   marketContext: {
     spyNote: string;
     qqqNote: string;
@@ -105,6 +119,16 @@ function hasTable(db: PlanDb, name: string): boolean {
   }
 }
 
+/** Column presence, so a pre-migration DB degrades instead of throwing. */
+function hasColumn(db: PlanDb, table: string, column: string): boolean {
+  try {
+    const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>;
+    return rows.some((r) => String(r.name) === column);
+  } catch {
+    return false;
+  }
+}
+
 /** Ensure overnight_watchlist exists (idempotent). */
 export function ensureOvernightWatchlistSchema(db: PlanDb): void {
   db.exec(`
@@ -118,6 +142,14 @@ export function ensureOvernightWatchlistSchema(db: PlanDb): void {
       PRIMARY KEY (trading_day, symbol)
     );
     CREATE INDEX IF NOT EXISTS idx_overnight_watchlist_day ON overnight_watchlist(trading_day, rank);
+    -- Full plan payload, including the withheld rows and evidence diagnostics, so a
+    -- READ-ONLY GET can explain an empty plan without rebuilding it.
+    CREATE TABLE IF NOT EXISTS overnight_plan_snapshots (
+      trading_day TEXT PRIMARY KEY,
+      plan_version TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      built_at_ms INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS watchlist_versions (
       version_id TEXT PRIMARY KEY,
       trading_day TEXT NOT NULL,
@@ -160,6 +192,7 @@ type AlertStructureRow = {
   capture_confidence: number | null; relative_volume: number | null; percent_move_at_alert: number | null;
   catalyst_summary: string | null; catalyst_type: string | null; public_explanation: string | null;
   alert_time: string; trading_day: string; created_at: string;
+  vwap_evidence_state: string | null; vwap_freshness: string | null; vwap_session: string | null;
 };
 
 function numberOrNull(value: unknown): number | null {
@@ -179,10 +212,16 @@ function parseTimestamp(value: string | null | undefined): number | null {
 function latestAlertStructures(db: PlanDb): AlertStructureRow[] {
   if (!hasTable(db, "alerts")) return [];
   try {
+    // VWAP provenance columns are additive; a pre-migration DB selects NULL for
+    // them so an unlabelled VWAP is never silently promoted to live evidence.
+    const evidenceCols = hasColumn(db, "alerts", "vwap_evidence_state")
+      ? "vwap_evidence_state, vwap_freshness, vwap_session"
+      : "NULL AS vwap_evidence_state, NULL AS vwap_freshness, NULL AS vwap_session";
     const rows = db.prepare(`
       SELECT ticker, direction, option_side, alert_type, price_at_alert, vwap_at_alert,
              signal_score, capture_confidence, relative_volume, percent_move_at_alert,
-             catalyst_summary, catalyst_type, public_explanation, alert_time, trading_day, created_at
+             catalyst_summary, catalyst_type, public_explanation, alert_time, trading_day, created_at,
+             ${evidenceCols}
       FROM alerts
       WHERE asset_class = 'options'
         AND ticker IS NOT NULL
@@ -202,25 +241,71 @@ function latestAlertStructures(db: PlanDb): AlertStructureRow[] {
   }
 }
 
-function latestMarketContext(db: PlanDb): { spyNote: string; qqqNote: string; available: boolean } {
-  if (!hasTable(db, "market_context_snapshots")) {
-    return { spyNote: "Market context unavailable", qqqNote: "Market context unavailable", available: false };
+const UNAVAILABLE_CONTEXT = {
+  spyNote: "Market context unavailable",
+  qqqNote: "Market context unavailable",
+  available: false,
+  broadDirection: "UNAVAILABLE",
+  relativeStrength: "UNAVAILABLE",
+  quality: "UNAVAILABLE",
+} as const;
+
+export interface PlanMarketContext {
+  spyNote: string;
+  qqqNote: string;
+  available: boolean;
+  broadDirection: string;
+  relativeStrength: string;
+  quality: string;
+}
+
+/** Directional states that count as REAL context. UNKNOWN/UNAVAILABLE never do. */
+const REAL_TREND_STATES = new Set(["BULLISH", "BEARISH", "NEUTRAL", "MIXED", "UP", "DOWN", "FLAT"]);
+
+function isRealTrend(value: unknown): boolean {
+  return REAL_TREND_STATES.has(String(value ?? "").toUpperCase());
+}
+
+/**
+ * Market context for planning. Prefers the deterministic next-session snapshot
+ * (available overnight); falls back to the live context engine's last snapshot.
+ *
+ * A persisted "UNKNOWN" trend is NOT context — it is the absence of context — so
+ * it can never satisfy the evidence gate.
+ */
+function latestMarketContext(db: PlanDb): PlanMarketContext {
+  const nextSession = loadNextSessionContextOnDb(db as any);
+  if (nextSession) {
+    return {
+      spyNote: nextSession.spyNote,
+      qqqNote: nextSession.qqqNote,
+      available: nextSession.usableForPlanning,
+      broadDirection: nextSession.broadDirection,
+      relativeStrength: nextSession.relativeStrength,
+      quality: nextSession.quality,
+    };
   }
+  if (!hasTable(db, "market_context_snapshots")) return { ...UNAVAILABLE_CONTEXT };
   try {
     const row = db.prepare(`
       SELECT spy_trend, qqq_trend, freshness, created_at_ms
       FROM market_context_snapshots ORDER BY created_at_ms DESC LIMIT 1
     `).get() as { spy_trend?: string | null; qqq_trend?: string | null; freshness?: string | null } | undefined;
-    if (!row?.spy_trend && !row?.qqq_trend) {
-      return { spyNote: "Market context unavailable", qqqNote: "Market context unavailable", available: false };
-    }
+    const spyReal = isRealTrend(row?.spy_trend);
+    const qqqReal = isRealTrend(row?.qqq_trend);
+    if (!spyReal && !qqqReal) return { ...UNAVAILABLE_CONTEXT };
     return {
-      spyNote: row.spy_trend ? `SPY trend: ${row.spy_trend}` : "SPY context unavailable",
-      qqqNote: row.qqq_trend ? `QQQ trend: ${row.qqq_trend}` : "QQQ context unavailable",
-      available: Boolean(row.spy_trend && row.qqq_trend),
+      spyNote: spyReal ? `SPY trend: ${row?.spy_trend}` : "SPY context unavailable",
+      qqqNote: qqqReal ? `QQQ trend: ${row?.qqq_trend}` : "QQQ context unavailable",
+      available: spyReal && qqqReal,
+      broadDirection: spyReal && qqqReal && row?.spy_trend === row?.qqq_trend
+        ? String(row?.spy_trend).toUpperCase()
+        : spyReal && qqqReal ? "MIXED" : "UNAVAILABLE",
+      relativeStrength: "UNAVAILABLE",
+      quality: spyReal && qqqReal ? "COMPLETE" : "PARTIAL",
     };
   } catch {
-    return { spyNote: "Market context unavailable", qqqNote: "Market context unavailable", available: false };
+    return { ...UNAVAILABLE_CONTEXT };
   }
 }
 
@@ -249,9 +334,19 @@ function planFromAlert(db: PlanDb, row: AlertStructureRow, indexContextAvailable
   const sourceTimestampMs = parseTimestamp(row.alert_time) ?? parseTimestamp(row.created_at);
   const thesis = plainThesis(row, bullish);
   const score = numberOrNull(row.signal_score) ?? numberOrNull(row.capture_confidence);
+  // A stored VWAP is only a usable reference when its provenance says so. Rows
+  // captured before the provenance migration carry no state and are accepted as a
+  // prior-session reference (their value is real; only its label is unknown).
+  const vwapState = String(row.vwap_evidence_state ?? "").toUpperCase();
+  const vwapUsable = vwap != null && vwap > 0 && vwapState !== "UNAVAILABLE";
+  const vwapLabel = vwapState === "LIVE"
+    ? "session VWAP"
+    : vwapState === "PRIOR_SESSION" || vwapState === "STALE" || vwapState === ""
+      ? "prior-session VWAP"
+      : "VWAP";
   const missing: string[] = [];
   if (!price || price <= 0) missing.push("prior-session price");
-  if (!vwap || vwap <= 0) missing.push("prior-session VWAP");
+  if (!vwapUsable) missing.push("prior-session VWAP");
   if (!sourceTimestampMs) missing.push("source timestamp");
   if (!thesis) missing.push("plain-English thesis");
   if (score == null) missing.push("signal score");
@@ -260,17 +355,17 @@ function planFromAlert(db: PlanDb, row: AlertStructureRow, indexContextAvailable
   const triggerText = price == null ? null : bullish
     ? `Hold above ${money(price)} and reclaim it after the open.`
     : `Lose ${money(price)} and fail to reclaim it after the open.`;
-  const invalidationText = vwap == null ? null : bullish
-    ? `Lose VWAP near ${money(vwap)} and fail to reclaim.`
-    : `Reclaim VWAP near ${money(vwap)} and hold.`;
+  const invalidationText = !vwapUsable ? null : bullish
+    ? `Lose ${vwapLabel} near ${money(vwap as number)} and fail to reclaim.`
+    : `Reclaim ${vwapLabel} near ${money(vwap as number)} and hold.`;
   const triggerLevel = price;
-  const invalidationLevel = vwap;
+  const invalidationLevel = vwapUsable ? vwap : null;
   const status: PlanStatus = missing.length === 0 && indexContextAvailable
     ? "QUALIFIED_PLAN"
     : missing.length === 0 ? "PARTIAL_PLAN"
     : "INSUFFICIENT_DATA";
   const thesisScore = score == null ? null : Math.max(0, Math.min(100, Math.round(score)));
-  const levelClarity = price != null && vwap != null ? 25 : 0;
+  const levelClarity = price != null && vwapUsable ? 25 : 0;
   const volumeScore = Math.min(15, Math.max(0, (numberOrNull(row.relative_volume) ?? 0) * 5));
   const openReadinessScore = status === "QUALIFIED_PLAN" && thesisScore != null
     ? Math.round(Math.min(100, thesisScore * 0.55 + levelClarity + volumeScore + 5))
@@ -283,14 +378,14 @@ function planFromAlert(db: PlanDb, row: AlertStructureRow, indexContextAvailable
     supportingEvidence: [
       `Prior-session alert recorded ${row.alert_time}`,
       price != null ? `Prior close reference ${money(price)}` : "Prior close unavailable",
-      vwap != null ? `VWAP reference ${money(vwap)}` : "VWAP unavailable",
+      vwapUsable ? `${vwapLabel} reference ${money(vwap as number)} (${row.vwap_freshness ?? "provenance unrecorded"})` : "VWAP unavailable",
     ],
     mainRisk: "A premarket gap can invalidate the prior-session structure before the options market opens.",
     verifyContractAfterOpen: true, quoteContext: "STALE_PRIOR_SESSION", executable: false, rank: 0,
     priorContractContext: priorContract(db, symbol), status: "WATCH", planStatus: status,
     thesisScore, openReadinessScore, triggerText, invalidationText, thesis, catalyst, sourceTimestampMs,
     sourceFreshness: sourceTimestampMs ? "Prior-session reference" : "Unavailable",
-    rankingReason: thesisScore == null ? null : `Thesis ${thesisScore}/100; levels ${price != null && vwap != null ? "clear" : "incomplete"}; ${indexContextAvailable ? "market context aligned" : "market context unavailable"}.`,
+    rankingReason: thesisScore == null ? null : `Thesis ${thesisScore}/100; levels ${price != null && vwapUsable ? "clear" : "incomplete"}; ${indexContextAvailable ? "market context aligned" : "market context unavailable"}.`,
     diagnosticReason: missing.length ? `Missing ${missing.join(", ")}.` : indexContextAvailable ? null : "Market context unavailable.",
   };
 }
@@ -315,7 +410,8 @@ export function buildNextSessionPlan(db: PlanDb, nowMs: number = Date.now()): Ov
   // There is deliberately NO generic fallback. A symbol reaches the published plan only by
   // carrying real prior-session evidence; when nothing qualifies, the plan is empty.
   const marketContext = latestMarketContext(db);
-  const plans = latestAlertStructures(db).map((row) => planFromAlert(db, row, marketContext.available));
+  const structures = latestAlertStructures(db);
+  const plans = structures.map((row) => planFromAlert(db, row, marketContext.available));
 
   return {
     tradingDay: day,
@@ -329,6 +425,23 @@ export function buildNextSessionPlan(db: PlanDb, nowMs: number = Date.now()): Ov
     needsMoreData: plans
       .filter((row) => row.planStatus === "PARTIAL_PLAN" || row.planStatus === "INSUFFICIENT_DATA"),
     omitted: [],
+    evidenceCompleteness: {
+      candidatesConsidered: structures.length,
+      vwap: vwapCompleteness(structures as any),
+      marketContext: {
+        available: marketContext.available,
+        quality: marketContext.quality,
+        broadDirection: marketContext.broadDirection,
+        relativeStrength: marketContext.relativeStrength,
+      },
+      blockers: [
+        ...(structures.length === 0 ? ["No prior-session options alerts to plan from."] : []),
+        ...(vwapCompleteness(structures as any).usableForWatchlist === 0 && structures.length > 0
+          ? ["No candidate carries a usable VWAP reference."]
+          : []),
+        ...(marketContext.available ? [] : ["Persisted SPY/QQQ market context is not usable for planning."]),
+      ],
+    },
     marketContext: {
       spyNote: marketContext.spyNote,
       qqqNote: marketContext.qqqNote,
@@ -342,6 +455,14 @@ export function persistOvernightPlan(db: PlanDb, plan: OvernightPlan): void {
   // A clean empty plan must clear an older published version; otherwise stale
   // placeholder rows can survive after the evidence gate correctly rejects them.
   db.prepare(`DELETE FROM overnight_watchlist WHERE trading_day = ?`).run(plan.tradingDay);
+  db.prepare(`
+    INSERT INTO overnight_plan_snapshots (trading_day, plan_version, payload_json, built_at_ms)
+    VALUES (?,?,?,?)
+    ON CONFLICT(trading_day) DO UPDATE SET
+      plan_version = excluded.plan_version,
+      payload_json = excluded.payload_json,
+      built_at_ms = excluded.built_at_ms
+  `).run(plan.tradingDay, plan.planVersion, JSON.stringify(plan), plan.builtAtMs);
   for (const r of plan.recommendations) {
     db.prepare(`
       INSERT INTO overnight_watchlist (trading_day, symbol, payload_json, rank, plan_version, built_at_ms)
@@ -358,6 +479,14 @@ export function persistOvernightPlan(db: PlanDb, plan: OvernightPlan): void {
 export function loadOvernightPlan(db: PlanDb, day?: string): OvernightPlan | null {
   ensureOvernightWatchlistSchema(db);
   const trading = day ?? tradingDay();
+  // Prefer the full persisted snapshot: it carries the withheld rows and the
+  // evidence diagnostics that explain a zero-row plan.
+  try {
+    const snap = db.prepare(
+      `SELECT payload_json FROM overnight_plan_snapshots WHERE trading_day = ?`,
+    ).get(trading) as { payload_json?: string } | undefined;
+    if (snap?.payload_json) return JSON.parse(snap.payload_json) as OvernightPlan;
+  } catch { /* fall through to per-row reconstruction */ }
   const rows = db.prepare(
     `SELECT payload_json, rank, plan_version, built_at_ms FROM overnight_watchlist WHERE trading_day = ? ORDER BY rank ASC`,
   ).all(trading) as { payload_json: string; rank: number; plan_version: string; built_at_ms: number }[];

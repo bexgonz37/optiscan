@@ -23,6 +23,11 @@ export interface SchedulerIntervals {
   contentDraftsMs: number;
   /** How often to CHECK overnight research schedule windows (ET clock gates inside the job). */
   overnightResearchMs: number;
+  /**
+   * How often to record deterministic market context, clear stale Watchlist plans,
+   * and rebuild the persisted plan. Owns every write GET /api/now used to perform.
+   */
+  watchlistPlanningMs: number;
 }
 
 function clampInt(v: string | undefined, def: number, min: number, max: number): number {
@@ -57,6 +62,9 @@ export function schedulerIntervals(env: NodeJS.ProcessEnv = process.env): Schedu
     contentDraftsMs: clampInt(env.SCHED_CONTENT_DRAFTS_MS, 3 * 60_000, 60_000, 60 * 60_000),
     // 5 min default overnight research window check. Never faster than 60s.
     overnightResearchMs: clampInt(env.SCHED_OVERNIGHT_RESEARCH_MS, 5 * 60_000, 60_000, 60 * 60_000),
+    // 10 min default Watchlist planning refresh. Bounded provider use (2 index candle
+    // fetches per run) and idempotent, so a repeat run is always safe. Never faster than 60s.
+    watchlistPlanningMs: clampInt(env.SCHED_WATCHLIST_PLANNING_MS, 10 * 60_000, 60_000, 6 * 60 * 60_000),
   };
 }
 
