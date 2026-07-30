@@ -84,6 +84,24 @@ test("4c. persisted quote timestamp is normalized to milliseconds", async () => 
   assert.ok(Math.abs(stored - (NOW - 1000)) <= 1);
 });
 
+test("4d. no new subscriber opening can publish after the options market closes", async () => {
+  const afterClose = Date.parse("2026-07-29T20:12:00.000Z");
+  const { spy, send } = okSend();
+  const contract = {
+    ...input().contract,
+    expiration: "2026-07-31",
+    providerTimestamp: afterClose - 1_000,
+  };
+  const r = await deliverOptionsCallout(
+    input({ contract }),
+    { getDb: () => db(), send, now: () => afterClose },
+    { ...ON, MARKET_SESSION_GUARD: "shadow" },
+  );
+  assert.equal(r.state, "REJECTED");
+  assert.match(r.reason, /session_guard:AFTER_HOURS/);
+  assert.equal(spy.calls.length, 0);
+});
+
 test("5. excessive spread sends nothing (REJECTED)", async () => {
   const { spy, send } = okSend();
   const r = await deliverOptionsCallout(input({ contract: { ...input().contract, spreadPct: 40 } }), { getDb: () => db(), send, now: () => NOW }, ON);

@@ -108,7 +108,7 @@ test("lifecycle smoke: open once, suppress duplicate+evidence, milestone reply, 
   let n = 0;
   const r = await runOpportunityLifecycleSmoke({
     getDb: () => d,
-    now: () => 1_700_000_000_000,
+    now: () => Date.parse("2026-01-15T15:00:00.000Z"),
     env: {
       OPTIONS_LIFECYCLE_SMOKE: "1",
       OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED: "1",

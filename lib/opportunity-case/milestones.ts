@@ -90,6 +90,7 @@ export function persistReachedMilestoneOnDb(
     contractMark?: number | null;
     returnPercent?: number | null;
     details?: Record<string, unknown>;
+    persistedAtMs?: number;
   },
 ): boolean {
   if (!hasTable(db, "opportunity_milestones")) return false;
@@ -114,8 +115,8 @@ export function persistReachedMilestoneOnDb(
       null,
       null,
       row.details ? JSON.stringify(row.details) : null,
-      row.reachedAtMs,
-      row.reachedAtMs,
+      row.persistedAtMs ?? row.reachedAtMs,
+      row.persistedAtMs ?? row.reachedAtMs,
     );
     return Number(r.changes ?? 0) > 0;
   } catch {

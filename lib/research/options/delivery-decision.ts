@@ -9,7 +9,7 @@ import { rankCandidates, type RankableCandidate } from "./ranking.ts";
 import { deliverOptionsCallout, type DeliveryInput } from "./delivery.ts";
 import { sessionState, type SessionState } from "./session-state.ts";
 import { OPTIONS_TIER0 } from "./discovery.ts";
-import { assertSubscriberDeliveryAllowed, evaluateMarketSessionGuard, isSameTradingSession } from "../../market-session-guard.ts";
+import { assertOptionsOpeningSession, assertSubscriberDeliveryAllowed, evaluateMarketSessionGuard, isSameTradingSession } from "../../market-session-guard.ts";
 import { evaluateEntryQuality, entryQualityFromDelivery } from "../../entry-quality-gate.ts";
 import { markCandidatesBatchEntered } from "./instrumentation.ts";
 import { recordProposedShadowFromDelivery } from "./shadow-runner.ts";
@@ -358,6 +358,32 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
   const session = sessionState(nowMs, env);
   const deliverBar = +(cfg.deliverBar + (session === "OPENING_DISCOVERY" ? cfg.openingBump : 0)).toFixed(4);
 
+  const strictOpeningSession = assertOptionsOpeningSession(nowMs, env);
+  if (!strictOpeningSession.ok) {
+    return batch.map((s, i) => ({
+      symbol: s.symbol,
+      strategy: s.strategy,
+      side: s.side,
+      tier: s.tier,
+      outcome: "REJECT" as const,
+      reason: `session_guard:${strictOpeningSession.guard.state}`,
+      quality: 0,
+      components: {},
+      rank: i + 1,
+      batchSize: batch.length,
+      clusterKey: clusterKey(s.symbol, s.side),
+      threshold: deliverBar,
+      sessionState: session,
+      wouldDeliverSolo: false,
+      alertId: null,
+      deliveryAttempted: false,
+      deliverySent: false,
+      deliveryState: null,
+      finalDeliveryOutcome: "REJECTED" as const,
+      deliveryFailureCategory: "session_guard",
+      finalDeliveryReason: "Options market closed; candidate remains eligible for next-session Watchlist research.",
+    }));
+  }
   const sessionGuard = assertSubscriberDeliveryAllowed(nowMs, env);
   const guardMode = String(env.MARKET_SESSION_GUARD ?? "shadow").toLowerCase();
   const marketGuard = evaluateMarketSessionGuard(nowMs, env);

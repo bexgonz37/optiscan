@@ -104,7 +104,12 @@ export function buildLiveOptionsDeps(): OptionsMonitorDeps {
 export function buildLiveGradeDeps(): {
   getDb: () => any;
   now: () => number;
-  getQuote: (optionSymbol: string, underlyingSymbol: string) => Promise<{ bid: number | null; ask: number | null; quoteAgeMs: number | null } | null>;
+  getQuote: (optionSymbol: string, underlyingSymbol: string) => Promise<{
+    bid: number | null;
+    ask: number | null;
+    quoteAgeMs: number | null;
+    providerTimestamp: number | null;
+  } | null>;
   fetchUnderlying: (symbol: string) => Promise<number | null>;
 } {
   return {
@@ -119,7 +124,12 @@ export function buildLiveGradeDeps(): {
       const nowMs = Date.now();
       const c = mapOptionContracts(res.contracts).find((x) => x.optionSymbol === optionSymbol);
       if (!c) return null;
-      return { bid: c.bid, ask: c.ask, quoteAgeMs: quoteFreshness(c.providerTimestamp, nowMs).ageMs };
+      return {
+        bid: c.bid,
+        ask: c.ask,
+        quoteAgeMs: quoteFreshness(c.providerTimestamp, nowMs).ageMs,
+        providerTimestamp: c.providerTimestamp,
+      };
     },
     fetchUnderlying: async (symbol: string) => {
       const quotes = await marketSnapshot(Date.now());

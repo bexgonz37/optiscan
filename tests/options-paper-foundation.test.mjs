@@ -13,7 +13,7 @@ import { readOptionsReportOnDb } from "../lib/research/options/report.ts";
 // Data foundation for the future AI Research Lab: DELIVERED_ALERT_PAPER (subscriber mirror) and
 // RESEARCH_ONLY_PAPER (shadow/experiment) are STRUCTURALLY separated and can never mix in stats.
 
-const NOW = 1_700_000_000_000;
+const NOW = Date.parse("2026-01-15T15:00:00.000Z");
 const OCC = "O:NVDA260117C00100000";
 function db() {
   const d = new Database(":memory:");

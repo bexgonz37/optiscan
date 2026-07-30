@@ -933,9 +933,11 @@ export function applyOpportunityMarkOnDb(
     currentMark: number;
     returnPct: number;
     nowMs: number;
+    eventAtMs?: number;
     env?: NodeJS.ProcessEnv;
   },
 ): MarkUpdateResult {
+  const eventAtMs = input.eventAtMs ?? input.nowMs;
   const levels = returnMilestonesFromEnv(input.env);
   const prior = listMilestonesForCaseOnDb(db as any, input.opportunityCaseId)
     .filter((m) => m.eventType === "RETURN_MILESTONE" && m.milestonePercent != null)
@@ -951,9 +953,11 @@ export function applyOpportunityMarkOnDb(
       opportunityCaseId: input.opportunityCaseId,
       eventType: "RETURN_MILESTONE",
       milestonePercent: p,
-      reachedAtMs: input.nowMs,
+      reachedAtMs: eventAtMs,
       contractMark: input.currentMark,
       returnPercent: input.returnPct,
+      persistedAtMs: input.nowMs,
+      details: { eventTimeVerified: true, quoteTimestampMs: eventAtMs, observedAtMs: input.nowMs },
     });
     bumpMetric(db, "lifecycle.milestonesReached");
   }
@@ -965,10 +969,16 @@ export function applyOpportunityMarkOnDb(
     persistReachedMilestoneOnDb(db as any, {
       opportunityCaseId: input.opportunityCaseId,
       eventType: "NEW_HIGH",
-      reachedAtMs: input.nowMs,
+      reachedAtMs: eventAtMs,
       contractMark: input.currentMark,
       returnPercent: input.returnPct,
-      details: { previousMax: prevMax },
+      details: {
+        previousMax: prevMax,
+        eventTimeVerified: true,
+        quoteTimestampMs: eventAtMs,
+        observedAtMs: input.nowMs,
+      },
+      persistedAtMs: input.nowMs,
     });
   }
 
@@ -988,7 +998,7 @@ export function applyOpportunityMarkOnDb(
   let claimed = false;
   let claimToken: string | null = null;
   if (deliverPercent != null) {
-    claimToken = `claim_${input.opportunityCaseId}_${deliverPercent}_${input.nowMs}`;
+    claimToken = `claim_${input.opportunityCaseId}_${deliverPercent}_${eventAtMs}`;
     claimed = claimMilestoneDeliveryOnDb(
       db as any,
       input.opportunityCaseId,

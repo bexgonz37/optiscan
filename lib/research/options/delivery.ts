@@ -18,7 +18,7 @@ import {
 import { sessionState, openingWindowAllows, defaultOpeningLimit } from "./session-state.ts";
 import type { FrozenEntry } from "./callout.ts";
 import { OPTIONS_TIER0 } from "./discovery.ts";
-import { assertSubscriberDeliveryAllowed, isSameTradingSession } from "../../market-session-guard.ts";
+import { assertOptionsOpeningSession, assertSubscriberDeliveryAllowed, isSameTradingSession } from "../../market-session-guard.ts";
 import { evaluateEntryQuality, entryQualityFromDelivery } from "../../entry-quality-gate.ts";
 import { persistAlertInstrumentation, type AlertInstrumentation } from "./instrumentation.ts";
 import { recordProposedShadowFromDelivery } from "./shadow-runner.ts";
@@ -274,6 +274,18 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
     return base("REJECTED", false, "research_only_suppressed");
   }
 
+  const strictOpeningSession = assertOptionsOpeningSession(nowMs, env);
+  if (!strictOpeningSession.ok) {
+    return finalize(
+      deps,
+      input,
+      alertId,
+      "REJECTED",
+      `session_guard:${strictOpeningSession.guard.state}`,
+      nowMs,
+      strictOpeningSession.guard.optionsSessionState,
+    );
+  }
   const sessionGuard = assertSubscriberDeliveryAllowed(nowMs, env);
   if (!sessionGuard.ok) {
     return finalize(deps, input, alertId, "REJECTED", `session_guard:${sessionGuard.guard.state}`, nowMs, sessionGuard.guard.optionsSessionState);

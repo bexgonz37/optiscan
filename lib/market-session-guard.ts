@@ -225,6 +225,26 @@ export function assertSubscriberDeliveryAllowed(nowMs: number = Date.now(), env:
   return { ok: guard.subscriberDeliveryAllowed, guard };
 }
 
+/** Hard options-session boundary. Unlike rollout/shadow guards, this cannot be bypassed for a live opening. */
+export function assertOptionsOpeningSession(nowMs: number = Date.now(), env: NodeJS.ProcessEnv = process.env): { ok: boolean; guard: SessionGuardResult } {
+  const guard = evaluateMarketSessionGuard(nowMs, env);
+  const ok = guard.state === "OPENING_DISCOVERY"
+    || guard.state === "REGULAR_SESSION"
+    || guard.state === "EARLY_CLOSE"
+    || guard.state === "POWER_HOUR";
+  return { ok, guard };
+}
+
+/** Hard quote-session boundary for lifecycle marks. Closing-window quotes remain executable. */
+export function isOptionsQuoteSession(nowMs: number = Date.now(), env: NodeJS.ProcessEnv = process.env): boolean {
+  const state = evaluateMarketSessionGuard(nowMs, env).state;
+  return state === "OPENING_DISCOVERY"
+    || state === "REGULAR_SESSION"
+    || state === "EARLY_CLOSE"
+    || state === "POWER_HOUR"
+    || state === "CLOSING_WINDOW";
+}
+
 /** Fail-closed check for subscriber scanning / READY promotion. */
 export function assertSubscriberScanAllowed(nowMs: number = Date.now(), env: NodeJS.ProcessEnv = process.env): { ok: boolean; guard: SessionGuardResult } {
   const guard = evaluateMarketSessionGuard(nowMs, env);

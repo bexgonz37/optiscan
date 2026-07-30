@@ -27,6 +27,7 @@ import {
 import { formatOpportunityClosedUpdate, formatReturnMilestoneUpdate } from "./milestone-format.ts";
 import { assertSubscriberScanAllowed } from "../../market-session-guard.ts";
 import { isMilestoneDiscordEligibleOnDb } from "../../opportunity-case/milestone-eligibility.ts";
+import { validateLifecycleQuote } from "./lifecycle-session.ts";
 
 export interface OpenPosition {
   id: number; option_symbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number;
@@ -34,7 +35,12 @@ export interface OpenPosition {
   target: number | null; invalidation: number | null; entered_at_ms: number; status: string;
   paper_kind?: string | null; alert_id?: string | null;
 }
-export interface RefreshedQuote { bid: number | null; ask: number | null; quoteAgeMs: number | null }
+export interface RefreshedQuote {
+  bid: number | null;
+  ask: number | null;
+  quoteAgeMs: number | null;
+  providerTimestamp?: number | null;
+}
 
 export interface GradeConfig { takeProfitPct: number; stopLossPct: number; maxHoldMs: number; maxQuoteAgeMs: number }
 export function defaultGradeConfig(env: NodeJS.ProcessEnv = process.env): GradeConfig {
@@ -181,23 +187,56 @@ async function sendLifecycleDiscordUpdate(
     }
   }
 }
-function recordObservedMark(db: GradeDb, pos: OpenPosition, quote: RefreshedQuote | null, nowMs: number, cfg: GradeConfig): void {
-  const fresh = quote != null && quote.bid != null && quote.bid > 0 && quote.ask != null && quote.ask > 0
-    && (quote.quoteAgeMs == null || quote.quoteAgeMs <= cfg.maxQuoteAgeMs);
-  if (!fresh) return;
-  const mark = realOptionExit(pos.entry_fill, quote!.bid as number, quote!.ask as number);
+function recordLifecycleSuppression(
+  db: GradeDb,
+  pos: OpenPosition,
+  quote: RefreshedQuote | null,
+  nowMs: number,
+  reason: string,
+): void {
+  if (!hasTable(db, "options_lifecycle_observations")) return;
+  try {
+    db.prepare(
+      `INSERT INTO options_lifecycle_observations
+        (paper_trade_id, alert_id, option_symbol, event_type, decision, reason,
+         quote_ts_ms, observed_at_ms, bid, ask, created_at_ms)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      pos.id,
+      pos.alert_id ?? null,
+      pos.option_symbol,
+      "RETURN_MILESTONE",
+      "SUPPRESSED",
+      reason,
+      quote?.providerTimestamp ?? null,
+      nowMs,
+      quote?.bid ?? null,
+      quote?.ask ?? null,
+      nowMs,
+    );
+  } catch { /* audit failure never changes trade state */ }
+}
+
+function recordObservedMark(
+  db: GradeDb,
+  pos: OpenPosition,
+  quote: RefreshedQuote,
+  eventAtMs: number,
+  observedAtMs: number,
+): void {
+  const mark = realOptionExit(pos.entry_fill, quote.bid as number, quote.ask as number);
   try {
     if (hasTable(db, "options_paper_marks")) {
       db.prepare(
         `INSERT OR IGNORE INTO options_paper_marks
           (trade_id, option_symbol, mark_at_ms, bid, ask, exit_fill, return_pct, quote_age_ms, created_at_ms)
          VALUES (?,?,?,?,?,?,?,?,?)`,
-      ).run(pos.id, pos.option_symbol, nowMs, quote!.bid, quote!.ask, mark.exitFill, mark.returnPct, quote!.quoteAgeMs ?? null, nowMs);
+      ).run(pos.id, pos.option_symbol, eventAtMs, quote.bid, quote.ask, mark.exitFill, mark.returnPct, quote.quoteAgeMs ?? null, observedAtMs);
     }
     if (hasCol(db, "options_paper_trades", "mfe_pct") && hasTable(db, "options_paper_marks")) {
       const mm = db.prepare("SELECT MAX(return_pct) mfe, MIN(return_pct) mae FROM options_paper_marks WHERE trade_id=?").get(pos.id) as any;
       db.prepare("UPDATE options_paper_trades SET last_mark_return_pct=?, mfe_pct=?, mae_pct=?, updated_at_ms=? WHERE id=?")
-        .run(mark.returnPct, mm?.mfe ?? mark.returnPct, mm?.mae ?? mark.returnPct, nowMs, pos.id);
+        .run(mark.returnPct, mm?.mfe ?? mark.returnPct, mm?.mae ?? mark.returnPct, observedAtMs, pos.id);
     }
   } catch { /* mark storage is observability-only; never affect grading */ }
 }
@@ -214,9 +253,25 @@ async function maybeUpdateOpportunityLifecycle(
   if (env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED === "0") return 0;
   if (pos.paper_kind && pos.paper_kind !== "DELIVERED_ALERT_PAPER") return 0;
   if (!(pos.entry_fill > 0)) return 0;
-  const fresh = quote != null && quote.bid != null && quote.bid > 0 && quote.ask != null && quote.ask > 0
-    && (quote.quoteAgeMs == null || quote.quoteAgeMs <= cfg.maxQuoteAgeMs);
-  if (!fresh) return 0;
+  if (!quote) return 0;
+  const validatedQuote = validateLifecycleQuote({
+    bid: quote.bid,
+    ask: quote.ask,
+    providerTimestamp: quote.providerTimestamp,
+    observedAtMs: nowMs,
+    maxQuoteAgeMs: cfg.maxQuoteAgeMs,
+    env,
+  });
+  if (!validatedQuote.valid || validatedQuote.eventAtMs == null) {
+    recordLifecycleSuppression(
+      db,
+      pos,
+      quote,
+      nowMs,
+      validatedQuote.reason ?? "MARKET_CLOSED_OR_EVENT_TIME_UNVERIFIED",
+    );
+    return 0;
+  }
   try {
     let caseId = pos.alert_id ? findOpportunityCaseIdByAlertOnDb(db as any, pos.alert_id) : null;
     if (!caseId && pos.alert_id) {
@@ -242,6 +297,7 @@ async function maybeUpdateOpportunityLifecycle(
       currentMark: mark.exitFill,
       returnPct: mark.returnPct,
       nowMs,
+      eventAtMs: validatedQuote.eventAtMs,
       env,
     });
     if (!applied.claimed || applied.deliverReturnMilestone == null || !applied.summary) return 0;
@@ -253,6 +309,9 @@ async function maybeUpdateOpportunityLifecycle(
       milestonePercent: applied.deliverReturnMilestone,
       summary: applied.summary,
       opportunityCaseId: caseId,
+      eventAtMs: validatedQuote.eventAtMs,
+      deliveredAtMs: nowMs,
+      delayedDelivery: validatedQuote.delayedDelivery,
     });
     const replyToMessageId = resolveOpeningDiscordMessageId(db, caseId, pos.alert_id);
     const sent = await sendLifecycleDiscordUpdate(deps, content, replyToMessageId);
@@ -325,33 +384,54 @@ export async function gradeOpenOptionPositionsOnDb(db: GradeDb, deps: GradeDeps,
   const out: GradePassResult = { examined: rows.length, graded: 0, held: 0, errors: 0, byReason: {}, milestonesDelivered: 0, closesDelivered: 0 };
   const nowMsStart = now();
   const scanGuard = assertSubscriberScanAllowed(nowMsStart, env);
-  const allowFreshMarks = scanGuard.ok || env.MARKET_SESSION_GUARD === "shadow" || env.MARKET_SESSION_GUARD === "0";
   for (const pos of rows) {
     const nowMs = now();
     let quote: RefreshedQuote | null = null;
+    let validSessionQuote = false;
+    let validSessionEventAtMs: number | null = null;
     try { quote = await deps.getQuote(pos.option_symbol, occUnderlying(pos.option_symbol)); }
     catch { out.errors += 1; quote = null; } // provider hiccup on one contract must not stop the pass
-    if (allowFreshMarks) recordObservedMark(db, pos, quote, nowMs, cfg);
+    if (quote) {
+      const markValidation = validateLifecycleQuote({
+        bid: quote.bid,
+        ask: quote.ask,
+        providerTimestamp: quote.providerTimestamp,
+        observedAtMs: nowMs,
+        maxQuoteAgeMs: cfg.maxQuoteAgeMs,
+        env,
+      });
+      validSessionQuote = markValidation.valid;
+      validSessionEventAtMs = markValidation.valid ? markValidation.eventAtMs : null;
+      if (scanGuard.ok && markValidation.valid && markValidation.eventAtMs != null) {
+        recordObservedMark(db, pos, quote, markValidation.eventAtMs, nowMs);
+      }
+    }
     try {
       out.milestonesDelivered = (out.milestonesDelivered ?? 0) + await maybeUpdateOpportunityLifecycle(db, pos, quote, nowMs, cfg, deps, env);
     } catch { /* lifecycle never blocks grading */ }
-    const d = decideOptionExit(pos, quote, nowMs, cfg);
+    const d = decideOptionExit(pos, validSessionQuote ? quote : null, nowMs, cfg);
     if (d.action !== "exit") { out.held += 1; continue; }
     try {
       db.prepare(
         "UPDATE options_paper_trades SET status='EXITED', exit_fill=?, pnl=?, return_pct=?, exit_reason=?, exit_at_ms=?, updated_at_ms=? WHERE id=? AND status='ENTERED'",
-      ).run(d.exitFill, d.pnl, d.returnPct, d.reason, nowMs, nowMs, pos.id);
+      ).run(d.exitFill, d.pnl, d.returnPct, d.reason, validSessionEventAtMs ?? nowMs, nowMs, pos.id);
       out.graded += 1; out.byReason[d.reason as string] = (out.byReason[d.reason as string] ?? 0) + 1;
       try {
         dualWriteAfterOptionsPaperExit(db as BrokerDb, pos.id);
       } catch { /* best-effort */ }
-      if (env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0" && (!pos.paper_kind || pos.paper_kind === "DELIVERED_ALERT_PAPER") && pos.alert_id) {
+      if (
+        validSessionQuote
+        && validSessionEventAtMs != null
+        && env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0"
+        && (!pos.paper_kind || pos.paper_kind === "DELIVERED_ALERT_PAPER")
+        && pos.alert_id
+      ) {
         try {
           const caseId = findOpportunityCaseIdByAlertOnDb(db as any, pos.alert_id);
           if (caseId) {
             closeOpportunityOnDb(db as any, {
               opportunityCaseId: caseId,
-              nowMs,
+              nowMs: validSessionEventAtMs,
               exitReason: d.reason,
               returnPct: d.returnPct,
               currentMark: d.exitFill,
@@ -361,7 +441,7 @@ export async function gradeOpenOptionPositionsOnDb(db: GradeDb, deps: GradeDeps,
                 reason: d.reason,
                 returnPct: d.returnPct,
                 exitFill: d.exitFill,
-              }, nowMs, deps)) {
+              }, validSessionEventAtMs, deps)) {
                 out.closesDelivered = (out.closesDelivered ?? 0) + 1;
               }
             } catch { /* Discord close never blocks grading */ }

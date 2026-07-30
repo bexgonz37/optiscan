@@ -18,7 +18,7 @@ import { decideOptionExit, gradeOpenOptionPositionsOnDb, defaultGradeConfig } fr
 import { readOptionsReportOnDb } from "../lib/research/options/report.ts";
 import { computeOptionTargets } from "../lib/research/options/targets.ts";
 
-const NOW = 1_700_000_000_000;
+const NOW = Date.parse("2026-01-15T15:00:00.000Z");
 const ENV = { REAL_OPTION_PAPER_ENABLED: "1", INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1" };
 
 function miniDb() {
@@ -204,7 +204,7 @@ test("F8: grader persists exit values matching realOptionExit formula", async ()
   const expected = realOptionExit(2.0, 5.0, 5.2);
   const res = await gradeOpenOptionPositionsOnDb(
     d,
-    { now: () => NOW + 60_000, getQuote: async () => ({ bid: 5.0, ask: 5.2, quoteAgeMs: 1000 }) },
+    { now: () => NOW + 60_000, getQuote: async () => ({ bid: 5.0, ask: 5.2, quoteAgeMs: 1000, providerTimestamp: NOW + 59_000 }) },
     ENV,
   );
   assert.equal(res.graded, 1);

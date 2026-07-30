@@ -10,7 +10,7 @@ import { canOpenRealOptionPaper } from "../lib/research/options/paper.ts";
 import { optionsTier1 } from "../lib/research/options/discovery.ts";
 import { marketSession, isMarketHoliday } from "../lib/trading-session.ts";
 
-const NOW = 1_700_000_000_000;
+const NOW = Date.parse("2026-01-15T15:00:00.000Z");
 function db() {
   const d = new Database(":memory:");
   d.exec(`CREATE TABLE options_candidates (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, tier INTEGER, session TEXT, selected_strategy TEXT, direction TEXT, side TEXT, research_only INTEGER NOT NULL DEFAULT 0, score REAL, considered_json TEXT, state TEXT NOT NULL, why TEXT, option_symbol TEXT, chain_fetch_ms INTEGER, freshness_state TEXT, callout_message TEXT, latency_json TEXT, earliness_phase TEXT, escalated_by TEXT, feature_snapshot_json TEXT, created_at_ms INTEGER NOT NULL);
@@ -54,7 +54,7 @@ test("2. scanning and grading run in-process — no HTTP/endpoint call required"
   await runOptionsMonitorCycle(1, ["NVDA", "TSLA"], monDeps(d, async () => makeBars(40, 60_000)), ON);
   assert.ok(optionsMonitorMetrics().symbolsScanned >= 2, "cycle scanned without any endpoint call");
   const id = openPos(d);
-  const res = await gradeOpenOptionPositionsOnDb(d, { now: () => NOW + 10 * 60_000, getQuote: async () => ({ bid: 5.0, ask: 5.2, quoteAgeMs: 1000 }) }, ON);
+  const res = await gradeOpenOptionPositionsOnDb(d, { now: () => NOW + 10 * 60_000, getQuote: async () => ({ bid: 5.0, ask: 5.2, quoteAgeMs: 1000, providerTimestamp: NOW + 10 * 60_000 - 1000 }) }, ON);
   assert.equal(res.graded, 1, "grader closed the winner with no endpoint call");
   assert.equal(d.prepare("SELECT status FROM options_paper_trades WHERE id=?").get(id).status, "EXITED");
   const mark = d.prepare("SELECT mfe_pct, mae_pct, last_mark_return_pct FROM options_paper_trades WHERE id=?").get(id);
@@ -110,7 +110,7 @@ test("6. grading resumes from the DB after a grader restart (no in-memory depend
   __resetOptionsGraderForTest(); // simulate a fresh process with empty grader memory
   const d = db();
   const id = openPos(d, { entered_at_ms: NOW - 3 * 24 * 3_600_000, expiration: "2026-01-17" }); // old, past a 2-day time-stop
-  const res = await gradeOpenOptionPositionsOnDb(d, { now: () => NOW, getQuote: async () => ({ bid: 2.5, ask: 2.6, quoteAgeMs: 1000 }) }, ON);
+  const res = await gradeOpenOptionPositionsOnDb(d, { now: () => NOW, getQuote: async () => ({ bid: 2.5, ask: 2.6, quoteAgeMs: 1000, providerTimestamp: NOW - 1000 }) }, ON);
   assert.equal(res.graded, 1);
   const row = d.prepare("SELECT status, exit_reason FROM options_paper_trades WHERE id=?").get(id);
   assert.equal(row.status, "EXITED");
@@ -132,7 +132,7 @@ test("7b. a per-contract quote failure is isolated; other positions still grade"
   const d = db();
   const good = openPos(d, { option_symbol: "O:AAPL260117C00200000", expiration: "2026-01-17", entered_at_ms: NOW });
   openPos(d, { option_symbol: "O:TSLA260117C00300000", expiration: "2026-01-17", entered_at_ms: NOW });
-  const res = await gradeOpenOptionPositionsOnDb(d, { now: () => NOW + 60_000, getQuote: async (sym) => { if (sym.includes("TSLA")) throw new Error("quote 500"); return { bid: 5.0, ask: 5.2, quoteAgeMs: 1000 }; } }, ON);
+  const res = await gradeOpenOptionPositionsOnDb(d, { now: () => NOW + 60_000, getQuote: async (sym) => { if (sym.includes("TSLA")) throw new Error("quote 500"); return { bid: 5.0, ask: 5.2, quoteAgeMs: 1000, providerTimestamp: NOW + 59_000 }; } }, ON);
   assert.equal(res.errors, 1, "one contract errored");
   assert.equal(res.graded, 1, "the healthy contract still graded");
   assert.equal(d.prepare("SELECT status FROM options_paper_trades WHERE id=?").get(good).status, "EXITED");

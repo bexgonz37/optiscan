@@ -1330,7 +1330,7 @@ test("grader path delivers one milestone update for delivered paper using frozen
   const r = await gradeOpenOptionPositionsOnDb(
     d,
     {
-      getQuote: async () => ({ bid: 6.4, ask: 6.6, quoteAgeMs: 200 }), // ~+23-27% depending on exit fill
+      getQuote: async () => ({ bid: 6.4, ask: 6.6, quoteAgeMs: 200, providerTimestamp: t + 9_800 }), // ~+23-27% depending on exit fill
       now: () => t + 10_000,
       sendMilestone: async () => { milestoneSends += 1; return { ok: true, messageId: "ms1" }; },
     },
@@ -1378,7 +1378,7 @@ test("grader path sends Closed opportunity Discord reply on exit", async () => {
     d,
     {
       // ~+60% forces target_hit exit
-      getQuote: async () => ({ bid: 8.2, ask: 8.4, quoteAgeMs: 200 }),
+      getQuote: async () => ({ bid: 8.2, ask: 8.4, quoteAgeMs: 200, providerTimestamp: t + 9_800 }),
       now: () => t + 10_000,
       sendMilestone: async (p) => {
         payloads.push(p);

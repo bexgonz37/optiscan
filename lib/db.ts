@@ -1478,6 +1478,23 @@ CREATE TABLE IF NOT EXISTS options_paper_marks (
 );
 CREATE INDEX IF NOT EXISTS idx_options_paper_marks_trade ON options_paper_marks(trade_id, mark_at_ms);
 
+CREATE TABLE IF NOT EXISTS options_lifecycle_observations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  paper_trade_id INTEGER,
+  alert_id TEXT,
+  option_symbol TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  reason TEXT,
+  quote_ts_ms INTEGER,
+  observed_at_ms INTEGER NOT NULL,
+  bid REAL,
+  ask REAL,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_options_lifecycle_observations_trade
+  ON options_lifecycle_observations(paper_trade_id, observed_at_ms);
+
 -- NOTE: idx_options_paper_kind (references paper_kind) is created in the migration block AFTER the
 -- guarded ALTER adds paper_kind — never here, or it would fail on an existing pre-foundation DB.
 
