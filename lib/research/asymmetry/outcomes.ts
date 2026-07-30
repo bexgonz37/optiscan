@@ -16,6 +16,7 @@
  * nothing in this module asserts that a future candidate will repeat them.
  */
 import { round, validateExecutableQuote, type AsymmetryQuoteObservation, type QuoteRejection } from "./evidence.ts";
+import { tradingDay } from "../../trading-session.ts";
 import type { PremiumChaseAnalysis } from "./premium-chase.ts";
 
 export const ASYMMETRY_HORIZONS_MINUTES = [1, 3, 5, 10, 15, 30, 60] as const;
@@ -154,6 +155,13 @@ export function gradeAsymmetryOutcome(
     .filter((row) => {
       if (row.mark.atMs < input.entryAtMs) {
         rejectedMarks.push({ atMs: row.mark.atMs, source: row.mark.source, reason: "QUOTE_TIMESTAMP_IN_FUTURE" });
+        return false;
+      }
+      // A mark is validated against its OWN observation time, which would let a
+      // later SESSION's quote look perfectly fresh. The outcome must belong to
+      // the same trading day as the entry, so that is checked separately.
+      if (tradingDay(row.mark.atMs) !== tradingDay(input.entryAtMs)) {
+        rejectedMarks.push({ atMs: row.mark.atMs, source: row.mark.source, reason: "QUOTE_FROM_DIFFERENT_SESSION" });
         return false;
       }
       if (row.mark.atMs > evaluationAtMs) {

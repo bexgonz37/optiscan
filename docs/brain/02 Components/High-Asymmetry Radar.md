@@ -1,9 +1,38 @@
 # High-Asymmetry Radar
 
-Status: PHASE 1 RESEARCH FOUNDATION — SHADOW ONLY, NOT WIRED, NOT DEPLOYED
+Status: PHASE 2 REPLAY APPARATUS BUILT — SHADOW ONLY, NOT WIRED, NOT DEPLOYED,
+**NOT YET RUN AGAINST REAL DATA**
 
 Branch: `feature/high-asymmetry-radar` (separate worktree). Nothing in this note
 describes production behaviour on `main`.
+
+## The headline result of Phase 2
+
+**The replay could not be run against real evidence, because this worktree has
+no database.** `data/` is empty, there is no `.env.local`, and the production
+database lives on the Railway volume. No cohort numbers exist yet, and none are
+reported here or anywhere in the code.
+
+What Phase 2 did instead was build the apparatus so a single command produces
+them, and — by auditing the capture path in source — establish three structural
+findings that do not need data to be true:
+
+1. **Outcome marks only exist for contracts that became paper trades.**
+   `options_paper_marks` is keyed by `trade_id`. A research candidate that never
+   became an alert has no marks and can never be graded. So the OUTSIZED cohort
+   can currently only contain contracts the system *already alerted on* — which
+   is precisely the population the radar is supposed to be compared against.
+   This, not any missing feature, is the binding constraint.
+2. **Premium chase is structurally vacuous under the Phase 1 identity.** The
+   candidate is the first observation of a contract, so the only quotes at or
+   before it are its own; the earliest valid quote IS the candidate quote and
+   `chasePct` can only ever be 0 or UNKNOWN. Counted explicitly as
+   `candidatesWithVacuousPremiumChase`.
+3. **A mark from a later session could pass the freshness check.** Marks are
+   validated against their own observation time, so a next-day quote looked
+   perfectly fresh. Found by a Phase 2 test and **fixed** in both
+   `outcomes.ts` and `coverage-audit.ts`, which now require a mark to share the
+   entry's trading day.
 
 ## Purpose
 
@@ -31,6 +60,30 @@ against yet.
 | `lib/research/asymmetry/report.ts` | Pure replay/aggregation assembler |
 | `lib/research/asymmetry/loader.ts` | Read-only persisted-cohort loader (SELECTs only) |
 | `app/api/research/asymmetry/route.ts` | Token-gated, GET-only diagnostics |
+
+Added in Phase 2:
+
+| File | Role |
+| --- | --- |
+| `lib/research/asymmetry/db-read.ts` | The one SELECT-only read primitive per source; tolerates legacy schemas |
+| `lib/research/asymmetry/coverage-audit.ts` | Data-availability audit and single-attribution exclusion taxonomy |
+| `lib/research/asymmetry/identity.ts` | Candidate identity strategies and the duplicate-detection audit |
+| `lib/research/asymmetry/historical-examples.ts` | Import contract where a screenshot cannot carry a price |
+| `lib/research/asymmetry/source-priority.ts` | Missing-source ranking by cost to obtain, never by assumed power |
+| `lib/research/asymmetry/replay.ts` | Read-only, idempotent replay orchestrator |
+| `app/api/research/asymmetry/replay/route.ts` | Token-gated, GET-only replay diagnostics |
+| `scripts/asymmetry-replay.mjs` | Offline CLI; opens the database `readonly: true` |
+
+### How to actually get the numbers
+
+```
+node --experimental-strip-types scripts/asymmetry-replay.mjs --db <path-to-optiscan.db>
+```
+
+The file is opened `readonly: true, fileMustExist: true`, so the script cannot
+write to it even if a future edit tried. Point it at a **copy** of the
+production database. `--dates`, `--sessions`, `--identity`, `--at`, and `--json`
+are supported; `--at` pins the evidence horizon so a run is reproducible.
 
 ## Evidence model
 
@@ -152,8 +205,94 @@ and its change · gamma · relative strength vs SPY/QQQ/sector · sector alignme
 move.
 
 Until each has a real source it contributes nothing rather than a fabricated
-value. This is the single largest gap in the radar and the honest reason no
-Phase 2 threshold can be set yet.
+value.
+
+What the capture path *can* persist today, verified in source: `loop.ts` writes
+symbol, direction, strategy family, underlying price, exact OCC, option type,
+strike, expiration, DTE, bid, ask, spread, provider quote timestamp, quote age,
+option volume, open interest, delta, freshness, candidate state and blockers.
+It never writes VWAP, structure, momentum, relative state, IV, gamma, or a
+thesis fingerprint — those columns exist and stay NULL.
+
+The read tolerates a legacy schema: `db-read.ts` probes `PRAGMA table_info`
+first and selects only columns that exist, so a database predating a migration
+degrades to nulls instead of failing the whole read and looking like "no
+evidence".
+
+## Duplicate detection and candidate identity
+
+The scanner re-observes a contract on every tick while it stays a candidate, and
+`loop.ts` writes three to four observations per detection at the *same*
+millisecond (`CONTRACT_SELECTED`, `QUOTE_VALIDATED`, `READY`). One OCC therefore
+routinely carries many observations per session.
+
+`auditDetectionClusters` reports, per contract: observation count, cluster count
+at **four** probed quiet-gap widths (5 / 15 / 30 / 60 minutes), the largest
+gaps, distinct candidate states, and distinct thesis fingerprints. Reporting a
+curve rather than one number keeps this an audit and not a tuned threshold.
+
+Three identity strategies exist:
+
+- `OCC_SESSION_FIRST_OBSERVATION` — **the active default, unchanged.**
+- `OCC_SESSION_CLUSTER` — splits on a bounded quiet gap.
+- `OCC_SESSION_FINGERPRINT` — splits on the persisted `thesis_fingerprint`.
+
+`recommendIdentity` prefers fingerprint evidence when it exists, falls back to
+cluster evidence, and returns `INSUFFICIENT_EVIDENCE` with no data. **The
+default did not change**, because changing it requires real evidence and there
+is none yet.
+
+A relevant capture fact: `thesis_fingerprint` is written by `delivery.ts` only
+(`DEDUPED` / `PAPER_LINKED` / `SENT`). Candidate-lifecycle observations from
+`loop.ts` persist it as NULL, so the fingerprint identity is currently
+available only for contracts that reached delivery.
+
+## Historical example import contract
+
+A known "this went up 800%" example is a valuable lead and worthless evidence.
+The separation is structural, not a rule to remember:
+
+- `HistoricalExampleReference` (screenshot, article, post, chart, broker
+  statement) declares **no numeric price, return, or quote field at all**, so no
+  code path can read a return off one. A test asserts the interface stays that
+  way.
+- `quoteEvidence` is the only channel carrying prices, and every quote is
+  revalidated by the same `validateExecutableQuote` used everywhere else.
+- Missing exact OCC → `PENDING_EXACT_OCC`. Missing timestamp →
+  `PENDING_CANDIDATE_TIMESTAMP`. Missing independently sourced quotes →
+  `PENDING_QUOTE_EVIDENCE`. Each is retained as a lead, never as an outcome.
+- An accepted example is graded by the standard engine with no relaxed rule; a
+  stale mark is refused exactly as it would be for a persisted candidate.
+- A claimed return in a submission note is never read, parsed, or reported.
+
+## Data-source priority
+
+`source-priority.ts` ranks missing fields by **cost to obtain and reach** —
+provider support, implementation effort, ongoing API cost, and backfillability.
+It explicitly does **not** rank by predictive power: every field carries
+`discriminationEvidence: "UNMEASURED_HYPOTHESIS"`, because no outsized cohort
+exists to measure against. Each provider claim cites the repo file that proves
+it, so the table can be re-verified rather than trusted.
+
+The two recommendations, in order:
+
+1. **Forward outcome marks for non-alerted research candidates.** Without this
+   nothing else matters — the graded population stays limited to contracts
+   already alerted on, and the ordinary-versus-outsized comparison is
+   impossible in principle. Uses the present-time snapshot call that already
+   exists. Forward-only; cannot be backfilled.
+2. **Implied volatility (and gamma).** `fetchOptionChain` already records a
+   `greeks` sample and `live-deps.ts` already maps
+   `iv: c.iv ?? c.implied_volatility`. The value is in hand at scan time and is
+   simply dropped before persistence — this is a column plus a writer argument
+   at **zero additional API cost**. Gamma is one mapping line further.
+
+Relative volume, volume acceleration, prior underlying move, and relative
+strength are all computable from `/v2/aggs`, which is already entitled, and are
+**backfillable** onto candidates already captured — making them the natural
+third step. Historical option quotes are `NOT_AVAILABLE`: the integration
+provides only a present-time `/v3/snapshot/options`, so past candidates can
+never be graded retroactively and only forward capture will ever work.
 
 ## Diagnostics
 
@@ -161,6 +300,17 @@ Phase 2 threshold can be set yet.
 SELECTs only. Exposes cohort sizes, outcome counts, outsized counts, research
 state counts, premium-chase distribution, data coverage and missing-evidence
 reasons, known-unsourced fields, feature comparison, and recent candidates.
+
+`GET /api/research/asymmetry/replay?dates=&sessions=&limit=&identity=&at=` —
+token-gated, GET only, SELECTs only, `writesPerformed: 0`. Exposes the data
+availability audit, the exclusion taxonomy, gradeable counts per horizon, real
+cohort counts, the duplicate-cluster audit with its recommendation, the source
+priority ranking, and recent replay rows.
+
+No manual replay action writes anything. A dedicated research table was
+considered and **not** added: every output is deterministic from persisted
+evidence, so persistence would add a migration and a staleness risk to buy
+nothing. That keeps the additive/repeat-safe migration review trivially empty.
 
 Carries no webhook, token, URL, or Discord configuration, and no authority to
 change live behaviour. `safety` renders `advisoryOnly: true`,
@@ -186,9 +336,25 @@ change live behaviour. `safety` renders `advisoryOnly: true`,
 - `tests/high-asymmetry-loader.test.mjs` — invalid date, absent tables,
   exact-OCC mark matching, undated observation refusal, chase anchoring,
   unsourced fields declared, evaluation-time bound, and a no-writes assertion.
+- `tests/high-asymmetry-replay.test.mjs` — empty database reports absent
+  evidence rather than a zero result, evidence-horizon bound, **cross-session
+  marks refused**, exact OCC mandatory, stale and after-hours excluded with
+  distinct reasons, exclusion counts sum exactly to the ungradeable population,
+  horizon absence is false rather than 0%, replay is idempotent, and it runs
+  against a genuinely `readonly: true` sqlite handle.
+- `tests/high-asymmetry-identity.test.mjs` — repeated observations are not
+  double-counted, cluster sensitivity across gap widths, boundary-exact
+  splitting, fingerprint separation, vacuous chase surfaced, the default
+  identity does not change itself, no recommendation without evidence, and the
+  source ranking never claims measured predictive power.
+- `tests/high-asymmetry-historical-examples.test.mjs` — a screenshot is a lead
+  and never an outcome, a claimed return never reaches the report, the
+  reference interface carries no price field, wrong-contract quote evidence is
+  refused, and accepted examples get no relaxed rule.
 
-52 focused tests. Full suite 2549 pass / 0 fail / 1 pre-existing skip;
-`npx tsc --noEmit` clean; `npm run build` compiled.
+87 focused tests. Full suite 2587 pass / 0 fail / 0 skipped;
+`npx tsc --noEmit --incremental false` clean; `npm run build` compiled with both
+research routes present; `git diff --check` clean; no migration added.
 
 ## Safety boundaries
 
@@ -205,6 +371,12 @@ change live behaviour. `safety` renders `advisoryOnly: true`,
 - Outcome labels describe verified past exact-OCC option marks. They are **not
   predictions**, not subscriber performance, and imply no future gain for any
   candidate.
+- The replay writes nothing: `writesPerformed: 0`, SELECT-only, no migration.
+  The CLI opens the database `readonly: true` so it cannot write even by
+  mistake.
+- Zero gradeable candidates means the **evidence is absent**, never that a
+  strategy performed at zero. Asserted by test.
+- No screenshot, article, or social post can supply a price to the radar.
 
 ## Related notes
 
