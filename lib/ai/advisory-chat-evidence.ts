@@ -296,6 +296,10 @@ const IGNORED_NUMBER_CONTEXT = /^(19|20)\d{2}$/;
  */
 export function extractNumericClaims(text: string): string[] {
   const prose = String(text ?? "")
+    // Dates and clock times are identifiers, not quantities. Left in, the month and
+    // day of "2026-07-29" become spurious figures that also fake cohort conflicts.
+    .replace(/\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z?)?/g, " ")
+    .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:a\.m\.|p\.m\.|am|pm|ET|UTC)?/gi, " ")
     // Leading list markers: "1. ", "2) ", "- 3. "
     .replace(/(^|\n)[ \t]*[-*]?[ \t]*\d{1,2}[.)][ \t]+/g, "$1")
     // Parenthesised enumerators: "(1)"
@@ -384,7 +388,29 @@ const PRODUCTION_CHANGE_CLAIMS = [
  * "less bad rather than profitable") are accurate descriptions of a losing policy
  * and must NOT be flagged.
  */
-const PROFIT_WORDS = /(?<!\b(?:not|isn't|is not|never|no|neither|neither is|none is|rather than|instead of|far from|nowhere near|short of)\s{1,4})\b(profitable|winning|makes money|net positive|a winner)\b/i;
+const PROFIT_WORDS = /\b(profitable|winning|makes money|net positive|a winner)\b/i;
+
+/** Negation and disclaimer cues that make a following claim a denial, not an assertion. */
+const NEGATION_CUE = /\b(?:not|never|no|none|neither|cannot|can't|isn't|aren't|won't|must not|should not|rather than|instead of|far from|nowhere near|short of|less bad|least bad|unprofitable|losing|loss-making|negative|avoid|without)\b/i;
+
+/**
+ * True when `text` ASSERTS a claim matched by `claimRe`, rather than denying it.
+ *
+ * A fixed-distance lookbehind cannot see the negation in "must never be described
+ * as a winning policy" — and that phrasing matters, because it is close to the
+ * mandatory caveat the model is REQUIRED to restate. Restating the caveat was
+ * tripping the very guard the caveat exists to enforce. Instead: locate the claim,
+ * then treat it as denied when a negation cue appears anywhere before it in the
+ * same sentence.
+ */
+function assertsClaim(text: string, claimRe: RegExp): boolean {
+  const re = new RegExp(claimRe.source, claimRe.flags.includes("g") ? claimRe.flags : `${claimRe.flags}g`);
+  for (const match of text.matchAll(re)) {
+    const prefix = text.slice(0, match.index ?? 0);
+    if (!NEGATION_CUE.test(prefix)) return true;
+  }
+  return false;
+}
 
 /**
  * Validate one assistant answer against the packet.
@@ -484,7 +510,7 @@ export function validateAdvisoryAnswer(input: {
     if (c.sampleSize === 0 && isPerformanceMetric) {
       const name = c.label.split("—")[0].trim();
       const naming = sentences(input.answer).filter((s) => s.includes(name));
-      if (naming.some((s) => PROFIT_WORDS.test(s))) {
+      if (naming.some((s) => assertsClaim(s, PROFIT_WORDS))) {
         failures.push({
           kind: "MISSING_TREATED_AS_ZERO",
           detail: `${c.id} has a sample size of 0 and cannot support a performance claim.`,
@@ -504,7 +530,7 @@ export function validateAdvisoryAnswer(input: {
       const name = ep.bestSupportedPolicy;
       const naming = sentences(input.answer)
         .filter((s) => s.toLowerCase().includes(name.toLowerCase()));
-      if (naming.some((s) => PROFIT_WORDS.test(s))) {
+      if (naming.some((s) => assertsClaim(s, PROFIT_WORDS))) {
         failures.push({
           kind: "PROFIT_CLAIM_ON_LOSING_POLICY",
           detail: `${name} averages ${best.averageReturnPct}% and must not be described as profitable or winning.`,
@@ -515,14 +541,17 @@ export function validateAdvisoryAnswer(input: {
   }
 
   // 6. The assistant must never claim it altered production.
-  for (const re of PRODUCTION_CHANGE_CLAIMS) {
-    if (re.test(input.answer)) {
-      failures.push({
-        kind: "PRODUCTION_CHANGE_CLAIM",
-        detail: "The answer claims a production change was made. AI authority is advisory only.",
-      });
-      break;
-    }
+  // Sentence-scoped and negation-aware for the same reason as the profit guard: the
+  // answer is REQUIRED to say no production change was made, and denying a change
+  // must not read as claiming one.
+  const answerSentences = sentences(input.answer);
+  const claimsChange = PRODUCTION_CHANGE_CLAIMS.some((re) =>
+    answerSentences.some((s) => assertsClaim(s, re)));
+  if (claimsChange) {
+    failures.push({
+      kind: "PRODUCTION_CHANGE_CLAIM",
+      detail: "The answer claims a production change was made. AI authority is advisory only.",
+    });
   }
 
   return {

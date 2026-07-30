@@ -739,3 +739,71 @@ test("a positive remark in a later sentence does not implicate the losing policy
   assert.equal(bad.ok, false);
   assert.ok(bad.failures.some((f) => f.kind === "PROFIT_CLAIM_ON_LOSING_POLICY"));
 });
+
+// ------------------- regression: denials must not read as assertions
+// The answer is REQUIRED to restate the mandatory caveats, so a denial of a claim
+// must never trip the guard that exists to enforce that denial.
+
+test("restating the mandatory caveat does not trip the profit guard", () => {
+  for (const wording of [
+    "Trail 10% must never be described as a winning or profitable policy.",
+    "Trail 10% is only less bad than the current policy; it is not profitable.",
+    "Trail 10% cannot be called a winner on this sample.",
+    "Trail 10% is not profitable and should not be adopted.",
+  ]) {
+    const res = validateAdvisoryAnswer({
+      answer: wording,
+      citedEvidenceIds: ["exit.policy.trail_10_.avgReturnPct"],
+      packet: packet(),
+      supplemental,
+    });
+    assert.equal(res.ok, true, `${wording} -> ${JSON.stringify(res.failures)}`);
+  }
+  // A bare assertion is still blocked.
+  const bad = validateAdvisoryAnswer({
+    answer: "Trail 10% is a winning policy.",
+    citedEvidenceIds: ["exit.policy.trail_10_.avgReturnPct"],
+    packet: packet(),
+    supplemental,
+  });
+  assert.equal(bad.ok, false);
+  assert.ok(bad.failures.some((f) => f.kind === "PROFIT_CLAIM_ON_LOSING_POLICY"));
+});
+
+test("denying a production change is not claiming one", () => {
+  for (const wording of [
+    "No production change has been applied automatically.",
+    "Nothing was deployed; I have not changed any threshold.",
+    "I cannot change production behaviour — a human reviews and deploys code.",
+  ]) {
+    const res = validateAdvisoryAnswer({
+      answer: wording, citedEvidenceIds: [], packet: packet(), supplemental,
+    });
+    assert.equal(res.ok, true, `${wording} -> ${JSON.stringify(res.failures)}`);
+  }
+  // A real claim is still blocked.
+  const bad = validateAdvisoryAnswer({
+    answer: "I have updated the exit policy.",
+    citedEvidenceIds: [], packet: packet(), supplemental,
+  });
+  assert.equal(bad.ok, false);
+  assert.ok(bad.failures.some((f) => f.kind === "PRODUCTION_CHANGE_CLAIM"));
+});
+
+test("dates and clock times are not quantitative claims", () => {
+  assert.deepEqual(extractNumericClaims("On 2026-07-29 the report ran."), []);
+  assert.deepEqual(extractNumericClaims("Persisted at 2026-07-29T20:00:00.000Z."), []);
+  assert.deepEqual(extractNumericClaims("The event hit at 3:57 p.m. ET."), []);
+  // A real figure alongside a date is still checked.
+  assert.deepEqual(extractNumericClaims("On 2026-07-29 there were 49 losses."), ["49"]);
+});
+
+test("a date in prose cannot fake a cohort conflict", () => {
+  const res = validateAdvisoryAnswer({
+    answer: "In the delivered-alert paper pipeline for 2026-07-29, there were 49 verified closed losses and 37 fell 20% within five minutes.",
+    citedEvidenceIds: ["paper.verifiedClosedLosses", "paper.downTwentyByFiveMin"],
+    packet: packet(),
+    supplemental,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res.failures));
+});
