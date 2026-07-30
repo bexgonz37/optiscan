@@ -48,3 +48,9 @@ artifacts/now-review/
 scripts/railway-*.json
 scripts/env-map-*.json
 scripts/env-map-report.txt
+
+# Graphify generated knowledge graph
+/graphify-out/
+
+# Obsidian machine-local UI state (pane layout, open tabs)
+/docs/brain/.obsidian/workspace.json
