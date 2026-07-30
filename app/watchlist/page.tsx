@@ -61,6 +61,74 @@ type OvernightPlan = {
   evidenceCompleteness?: EvidenceCompleteness | null;
 };
 
+/** Professional Watchlist row — actual ticker levels, not internal diagnostics. */
+type ProTrigger = { price: number; sourceLevelName: string };
+type ProRow = {
+  symbol: string;
+  setupType: string;
+  callAbove?: ProTrigger | null;
+  putBelow?: ProTrigger | null;
+  reason: string;
+  sourceLevels?: Array<{ name: string; value: number; origin: string }>;
+  freshness: string;
+  state: string;
+  catalyst?: string | null;
+  changedSinceOvernight?: boolean;
+  changes?: string[];
+  rank: number;
+};
+type ProPlan = {
+  tradingDay?: string;
+  phase?: string;
+  rows?: ProRow[];
+  needsMoreData?: Array<{ symbol: string; missing: string[] }>;
+  marketAlignment?: string | null;
+};
+type ProResponse = {
+  enabled?: boolean;
+  overnightPlan?: ProPlan | null;
+  premarketUpdate?: ProPlan | null;
+};
+
+const STATE_LABEL: Record<string, string> = {
+  OVERNIGHT_PLAN: "Overnight Plan",
+  PREMARKET_UPDATE: "Premarket Update",
+  TRIGGERED_TODAY: "Triggered Today",
+  INVALIDATED: "Invalidated",
+  NEEDS_MORE_DATA: "Needs More Data",
+};
+
+function stateTone(state: string): BadgeTone {
+  if (state === "TRIGGERED_TODAY") return "live";
+  if (state === "INVALIDATED") return "bear";
+  if (state === "NEEDS_MORE_DATA") return "warn";
+  return "muted";
+}
+
+const money = (n: number) => `$${Number(n).toFixed(2)}`;
+
+/** One card per ticker. Levels first, diagnostics last. */
+function ProCard({ row }: { row: ProRow }) {
+  return (
+    <button type="button" className="ui-list-row" onClick={() => openLiveChart(row.symbol)}>
+      <strong>#{row.rank} {row.symbol} · {row.setupType}</strong>
+      {row.callAbove ? <span>CALLS ABOVE {money(row.callAbove.price)} ({row.callAbove.sourceLevelName})</span> : null}
+      {row.putBelow ? <span>PUTS BELOW {money(row.putBelow.price)} ({row.putBelow.sourceLevelName})</span> : null}
+      <span>{row.reason}</span>
+      {row.catalyst ? <span>Catalyst: {row.catalyst}</span> : null}
+      <span>
+        <StatusBadge tone={stateTone(row.state)}>{STATE_LABEL[row.state] ?? row.state}</StatusBadge>
+        {row.changedSinceOvernight ? " · changed since overnight" : ""}
+      </span>
+      {row.changedSinceOvernight && row.changes?.length ? <small>{row.changes.join("; ")}</small> : null}
+      <small>
+        Source levels: {(row.sourceLevels ?? []).map((l) => `${l.name} ${money(l.value)}`).join(" · ") || "—"}
+      </small>
+      <small>As of: {row.freshness}</small>
+    </button>
+  );
+}
+
 function dirTone(direction?: string | null): BadgeTone {
   const d = String(direction ?? "").toLowerCase();
   if (d === "bullish") return "bull";
@@ -78,6 +146,7 @@ export default function WatchlistPage() {
   const [running, setRunning] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [plan, setPlan] = useState<OvernightPlan | null>(null);
+  const [pro, setPro] = useState<ProResponse | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -89,6 +158,11 @@ export default function WatchlistPage() {
       setRunning(Boolean(rt.running));
       const planRes = await fetch("/api/now", { cache: "no-store", headers: scanHeaders() });
       if (planRes.ok) setPlan((await planRes.json())?.overnight ?? null);
+      // Professional Watchlist is additive: a failure here must never blank the page.
+      try {
+        const proRes = await fetch("/api/research/watchlist/professional", { cache: "no-store", headers: scanHeaders() });
+        if (proRes.ok) setPro(await proRes.json());
+      } catch { /* leave the professional cards absent */ }
       setError(null);
     } catch (err: any) {
       setError(err?.message ?? "Could not load the watchlist.");
@@ -123,8 +197,40 @@ export default function WatchlistPage() {
   const omitted = plan?.omitted ?? [];
   const completeness = plan?.evidenceCompleteness ?? null;
 
+  // Prefer the premarket update when one exists: it is the fresher product.
+  const proPlan = pro?.premarketUpdate ?? pro?.overnightPlan ?? null;
+  const proRows = proPlan?.rows ?? [];
+  const proGroups = Array.from(
+    proRows.reduce((map, r) => {
+      if (!map.has(r.setupType)) map.set(r.setupType, [] as ProRow[]);
+      map.get(r.setupType)!.push(r);
+      return map;
+    }, new Map<string, ProRow[]>()).entries(),
+  ).sort((a, b) => a[1][0].rank - b[1][0].rank);
+
   return (
     <PageContainer>
+      {proPlan ? (
+        <Card
+          title={proPlan.phase === "PREMARKET_UPDATE" ? "Premarket Update" : "Overnight Plan"}
+          meta={`${proRows.length} setups · ${proPlan.tradingDay ?? ""}`}
+          actions={proPlan.marketAlignment ? <StatusBadge tone="muted">{proPlan.marketAlignment}</StatusBadge> : undefined}
+        >
+          {proRows.length ? (
+            <div className="stack-gap">
+              {proGroups.map(([setupType, groupRows]) => (
+                <div key={setupType} className="stack-gap">
+                  <strong>{setupType}</strong>
+                  {groupRows.map((r) => <ProCard key={`${r.symbol}-${r.rank}`} row={r} />)}
+                </div>
+              ))}
+              <small>Verify exact options contracts after the market opens.</small>
+            </div>
+          ) : (
+            <p className="cc-term-empty">No setups met the evidence bar. A premarket update runs before the open.</p>
+          )}
+        </Card>
+      ) : null}
       <Card title="Qualified Plans" meta={`${planRows.length} evidence-backed next-session setups`}>
         {planRows.length ? (
           <div className="stack-gap">

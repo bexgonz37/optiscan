@@ -53,6 +53,8 @@ export interface ResearchFlags {
   independentOptionsDiscovery: boolean;
   /** Early options single-callout pipeline (message built; public delivery still gated + manual). */
   earlyOptionsCallouts: boolean;
+  /** Professional premarket Watchlist: deterministic setup-family daily plan (build + persist only). */
+  professionalWatchlist: boolean;
 }
 
 export function researchFlags(env: NodeJS.ProcessEnv = process.env): ResearchFlags {
@@ -78,5 +80,6 @@ export function researchFlags(env: NodeJS.ProcessEnv = process.env): ResearchFla
     strategyImprovementLab: on(env.STRATEGY_IMPROVEMENT_LAB_ENABLED),
     independentOptionsDiscovery: on(env.INDEPENDENT_OPTIONS_DISCOVERY_ENABLED),
     earlyOptionsCallouts: on(env.EARLY_OPTIONS_CALLOUTS_ENABLED),
+    professionalWatchlist: on(env.PROFESSIONAL_WATCHLIST_ENABLED),
   };
 }
