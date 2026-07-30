@@ -44,6 +44,33 @@ export interface SchedulerState {
     staleRowsCleared: number;
     errors: string[];
   } | null;
+  /**
+   * Last professional Watchlist publication per phase. Read-only diagnostics:
+   * a failure here is recorded and the legacy plan continues regardless.
+   */
+  lastProfessionalWatchlist?: {
+    overnight: ProfessionalWatchlistRunState | null;
+    premarket: ProfessionalWatchlistRunState | null;
+  } | null;
+}
+
+export interface ProfessionalWatchlistRunState {
+  ranAtMs: number;
+  tradingDay: string;
+  phase: string;
+  flagEnabled: boolean;
+  outcome: string;
+  reason: string | null;
+  rowsConsidered: number;
+  rowsPublished: number;
+  rowsWithheld: number;
+  rowsRejectedByCopyScreen: number;
+  copyViolations: string[];
+  duplicateSuppressed: boolean;
+  payloadHash: string | null;
+  derivedFromPlanVersion: string | null;
+  premarketEvidenceExcluded: Array<{ symbol: string; reason: string }>;
+  errors: string[];
 }
 
 type G = typeof globalThis & {
@@ -59,7 +86,10 @@ function state(): SchedulerState {
     lastRun: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null, brokerReadiness: null, subscriberReadiness: null, contentDrafts: null, overnightResearch: null, watchlistPlanning: null },
     runs: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0, subscriberReadiness: 0, contentDrafts: 0, overnightResearch: 0, watchlistPlanning: 0 },
     note: "not started", lastError: null, lastWatchlistPlanning: null,
+    lastProfessionalWatchlist: { overnight: null, premarket: null },
   };
+  // Pre-existing global state from an older build may lack the newer field.
+  g.__optiscanScheduler.lastProfessionalWatchlist ??= { overnight: null, premarket: null };
   return g.__optiscanScheduler;
 }
 
@@ -274,10 +304,11 @@ async function watchlistPlanningJob(nowMs: number): Promise<void> {
 }
 
 /**
- * Overnight / next-session research — builds deterministic watchlist + optional owner Discord.
- * Never sends subscriber "buy now" after hours. Gated Discord via OWNER_RESEARCH_DISCORD_ENABLED.
+ * Legacy alert-derived overnight/next-session research. UNCHANGED behaviour: it
+ * still owns the next_session_watchlist, premarket_watchlist_update, and
+ * market_open_revalidation windows exactly as before.
  */
-async function overnightResearchJob(nowMs: number): Promise<void> {
+async function legacyOvernightResearchJob(nowMs: number): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const {
     buildNextSessionPlan,
@@ -327,6 +358,86 @@ async function overnightResearchJob(nowMs: number): Promise<void> {
   } else {
     markWatchlistVersionOnDb(database, version.versionId, res.skipped ? "SUPPRESSED_UNCHANGED" : "FAILED", nowMs, res.reason);
   }
+}
+
+/**
+ * Professional Watchlist publication for the two planning windows. Additive and
+ * flag-gated: with PROFESSIONAL_WATCHLIST_ENABLED unset this performs no build,
+ * no provider call, no write, and no send.
+ *
+ * It runs only for next_session_watchlist and premarket_watchlist_update — the
+ * 09:35 market-open revalidation stays legacy-only, because the professional
+ * plan's live-session families are not published from a planning window.
+ *
+ * Deliberately separate from the legacy job so neither can affect the other.
+ */
+async function professionalWatchlistJob(nowMs: number): Promise<void> {
+  const window = watchlistScheduleWindow(nowMs);
+  if (!window) return;
+  const phase = window.kind === "next_session_watchlist"
+    ? "OVERNIGHT_PLAN"
+    : window.kind === "premarket_watchlist_update"
+      ? "PREMARKET_UPDATE"
+      : null;
+  if (!phase) return;
+
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { publishProfessionalWatchlist } = require("@/lib/research/watchlist/professional-publication");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { liveProfessionalWatchlistDeps } = require("@/lib/research/watchlist/professional-runner");
+
+  const result = await publishProfessionalWatchlist(
+    db(),
+    { runner: liveProfessionalWatchlistDeps(), now: () => nowMs },
+    phase,
+  );
+  const slot = phase === "OVERNIGHT_PLAN" ? "overnight" : "premarket";
+  const s = state();
+  s.lastProfessionalWatchlist ??= { overnight: null, premarket: null };
+  s.lastProfessionalWatchlist[slot] = {
+    ranAtMs: result.ranAtMs,
+    tradingDay: result.tradingDay,
+    phase: result.phase,
+    flagEnabled: result.flagEnabled,
+    outcome: result.outcome,
+    reason: result.reason,
+    rowsConsidered: result.rowsConsidered,
+    rowsPublished: result.rowsPublished,
+    rowsWithheld: result.rowsWithheld,
+    rowsRejectedByCopyScreen: result.rowsRejectedByCopyScreen,
+    copyViolations: result.copyViolations,
+    duplicateSuppressed: result.duplicateSuppressed,
+    payloadHash: result.payloadHash,
+    derivedFromPlanVersion: result.derivedFromPlanVersion,
+    premarketEvidenceExcluded: result.premarketEvidenceExcluded,
+    errors: result.errors,
+  };
+}
+
+/**
+ * The scheduled overnight-research job: the legacy plan first, then the
+ * additive professional publication. Each is contained, so a professional
+ * failure can never block, delay, or alter the legacy plan — and the legacy
+ * job's early returns can never skip the professional one.
+ */
+async function overnightResearchJob(nowMs: number): Promise<void> {
+  let legacyError: string | null = null;
+  try {
+    await legacyOvernightResearchJob(nowMs);
+  } catch (err: any) {
+    legacyError = `legacy: ${err?.message ?? String(err)}`;
+  }
+  try {
+    await professionalWatchlistJob(nowMs);
+  } catch (err: any) {
+    // Belt and braces: publishProfessionalWatchlist already contains its own
+    // failures, so reaching here means an unexpected wiring fault. Record it
+    // and let the legacy outcome stand.
+    state().lastError = `professionalWatchlist: ${err?.message ?? String(err)}`;
+  }
+  // The legacy failure is the job's failure; surfacing it preserves the
+  // existing runJob error semantics for the legacy path.
+  if (legacyError) throw new Error(legacyError);
 }
 
 async function beat(): Promise<void> {

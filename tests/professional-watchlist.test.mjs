@@ -264,7 +264,9 @@ test("the premarket update reports changed levels, new setups, and invalidations
     tradingDay: "2026-07-30", phase: "PREMARKET_UPDATE", nowMs: NOW + 1000,
     universe: [...universeRows, { symbol: "IWM", tiers: ["CORE_INDEX"], catalyst: null, optionsLiquidity: liquidity("IWM") }],
     setupsBySymbol: { SPY: [insideBarSetup("SPY", 106, 96)], QQQ: [], IWM: [insideBarSetup("IWM", 230, 220)] },
-    sessionBySymbol: { SPY: { premarketHigh: 108.5, premarketLow: 95 } },
+    sessionBySymbol: {
+      SPY: { premarketHigh: 108.5, premarketLow: 95, premarketAsOfMs: NOW, premarketSource: "extended_hours_1m" },
+    },
     previousPlan: overnight,
   });
   const spy = premarket.rows.find((r) => r.symbol === "SPY");

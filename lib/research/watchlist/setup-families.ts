@@ -106,6 +106,13 @@ export interface SessionLevels {
   /** Extended-hours premarket high/low for the upcoming session. */
   premarketHigh?: number | null;
   premarketLow?: number | null;
+  /**
+   * When the premarket extremes were observed, and where they came from.
+   * BOTH are required before a premarket level may move a published trigger —
+   * an unsourced or undated extreme is not evidence, it is a number.
+   */
+  premarketAsOfMs?: number | null;
+  premarketSource?: string | null;
   /** Live regular-session VWAP. Only supply when it is genuinely live. */
   vwap?: number | null;
   /** Regular-session opening range. */
@@ -645,44 +652,76 @@ export function detectSetups(input: DetectSetupsInput): DetectedSetup[] {
     .sort((a, b) => b.structureScore - a.structureScore || a.family.localeCompare(b.family));
 }
 
+/** How stale a premarket extreme may be before it stops counting as evidence. */
+export const PREMARKET_LEVEL_MAX_AGE_MS = 30 * 60_000;
+
+/**
+ * Is this premarket evidence usable? It must carry a named source and an
+ * observation time that is in the past and recent. Anything else is excluded
+ * with a reason rather than silently applied.
+ */
+export function premarketEvidenceVerdict(
+  session: SessionLevels | null | undefined,
+  nowMs: number,
+  maxAgeMs: number = PREMARKET_LEVEL_MAX_AGE_MS,
+): { usable: boolean; reason: string | null } {
+  if (!session) return { usable: false, reason: "No premarket evidence" };
+  const source = String(session.premarketSource ?? "").trim();
+  if (!source) return { usable: false, reason: "Premarket levels carry no source" };
+  const asOf = session.premarketAsOfMs;
+  if (!isNum(asOf) || asOf <= 0) return { usable: false, reason: "Premarket levels carry no observation time" };
+  if (asOf > nowMs) return { usable: false, reason: "Premarket levels are timestamped in the future" };
+  if (nowMs - asOf > maxAgeMs) return { usable: false, reason: "Premarket levels are stale" };
+  if (!isNum(session.premarketHigh) && !isNum(session.premarketLow)) {
+    return { usable: false, reason: "No premarket high or low observed" };
+  }
+  return { usable: true, reason: null };
+}
+
 /**
  * Apply premarket evidence to an overnight setup: a premarket extreme that has
  * already traded beyond a daily trigger REPLACES that trigger, because the daily
  * level is no longer the live decision point. Returns the setup unchanged when
- * no premarket evidence applies.
+ * no USABLE premarket evidence applies — unsourced, undated, future-dated, and
+ * stale extremes never move a published level.
  */
 export function applyPremarketLevels(
   setup: DetectedSetup,
   session: SessionLevels | null | undefined,
   observedAtMs: number,
-): { setup: DetectedSetup; changed: boolean; changes: string[] } {
-  if (!session) return { setup, changed: false, changes: [] };
+): { setup: DetectedSetup; changed: boolean; changes: string[]; excludedReason: string | null } {
+  const verdict = premarketEvidenceVerdict(session, observedAtMs);
+  if (!verdict.usable) return { setup, changed: false, changes: [], excludedReason: verdict.reason };
   const changes: string[] = [];
   let callTrigger = setup.callTrigger;
   let putTrigger = setup.putTrigger;
   const sourceLevels = setup.sourceLevels.slice();
 
-  if (callTrigger && isNum(session.premarketHigh) && session.premarketHigh > callTrigger.price) {
-    changes.push(`CALL trigger moved from ${money(callTrigger.price)} to the premarket high ${money(session.premarketHigh)}`);
-    callTrigger = call(session.premarketHigh, "Premarket high");
-    sourceLevels.push(level("Premarket high", session.premarketHigh, "Premarket session"));
+  const origin = `Premarket session (${String(session!.premarketSource).trim()})`;
+
+  if (callTrigger && isNum(session!.premarketHigh) && session!.premarketHigh > callTrigger.price) {
+    changes.push(`CALL trigger moved from ${money(callTrigger.price)} to the premarket high ${money(session!.premarketHigh)}`);
+    callTrigger = call(session!.premarketHigh, "Premarket high");
+    sourceLevels.push(level("Premarket high", session!.premarketHigh, origin));
   }
-  if (putTrigger && isNum(session.premarketLow) && session.premarketLow < putTrigger.price) {
-    changes.push(`PUT trigger moved from ${money(putTrigger.price)} to the premarket low ${money(session.premarketLow)}`);
-    putTrigger = put(session.premarketLow, "Premarket low");
-    sourceLevels.push(level("Premarket low", session.premarketLow, "Premarket session"));
+  if (putTrigger && isNum(session!.premarketLow) && session!.premarketLow < putTrigger.price) {
+    changes.push(`PUT trigger moved from ${money(putTrigger.price)} to the premarket low ${money(session!.premarketLow)}`);
+    putTrigger = put(session!.premarketLow, "Premarket low");
+    sourceLevels.push(level("Premarket low", session!.premarketLow, origin));
   }
-  if (!changes.length) return { setup, changed: false, changes: [] };
+  if (!changes.length) return { setup, changed: false, changes: [], excludedReason: null };
   return {
     setup: {
       ...setup,
       callTrigger,
       putTrigger,
       sourceLevels,
-      evidenceAsOfMs: Math.max(setup.evidenceAsOfMs, observedAtMs),
+      // The premarket observation time is the freshness anchor, never `now`.
+      evidenceAsOfMs: Math.max(setup.evidenceAsOfMs, session!.premarketAsOfMs as number),
       freshness: "Premarket update",
     },
     changed: true,
     changes,
+    excludedReason: null,
   };
 }

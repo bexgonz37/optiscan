@@ -74,6 +74,13 @@ export interface WatchlistPlan {
   phase: WatchlistPhase;
   builtAtMs: number;
   planVersion: string;
+  /**
+   * Overnight plan identity a premarket update refreshes. Null on the overnight
+   * plan itself, and null when a premarket update found no overnight plan to
+   * refresh — a premarket update is never silently presented as a continuation
+   * of a plan that does not exist.
+   */
+  derivedFromPlanVersion: string | null;
   rows: WatchlistRow[];
   needsMoreData: WithheldRow[];
   invalidated: Array<{ symbol: string; family: SetupFamily; setupType: string; reason: string }>;
@@ -85,6 +92,8 @@ export interface WatchlistPlan {
     publishedCount: number;
     maxRows: number;
     blockers: string[];
+    /** Symbols whose premarket evidence was rejected, with the reason. */
+    premarketEvidenceExcluded: Array<{ symbol: string; reason: string }>;
   };
 }
 
@@ -172,6 +181,7 @@ export function buildWatchlistPlan(input: BuildWatchlistPlanInput): WatchlistPla
 
   const rows: WatchlistRow[] = [];
   const needsMoreData: WithheldRow[] = [];
+  const premarketEvidenceExcluded: Array<{ symbol: string; reason: string }> = [];
   let setupsDetected = 0;
 
   for (const symbol of universeSymbols) {
@@ -183,6 +193,11 @@ export function buildWatchlistPlan(input: BuildWatchlistPlanInput): WatchlistPla
       const applied = applyPremarketLevels(best, input.sessionBySymbol?.[symbol] ?? null, input.nowMs);
       best = applied.setup;
       changes.push(...applied.changes);
+      // An unsourced, undated, future-dated, or stale premarket extreme leaves
+      // the daily level standing and is reported, never quietly applied.
+      if (applied.excludedReason && applied.excludedReason !== "No premarket evidence") {
+        premarketEvidenceExcluded.push({ symbol, reason: applied.excludedReason });
+      }
     }
     const missing = publishBlockers(best, input.nowMs);
     if (missing.length) {
@@ -243,6 +258,7 @@ export function buildWatchlistPlan(input: BuildWatchlistPlanInput): WatchlistPla
     phase: input.phase,
     builtAtMs: input.nowMs,
     planVersion: `watchlist-pro-${input.phase === "PREMARKET_UPDATE" ? "premarket" : "overnight"}-${input.tradingDay}`,
+    derivedFromPlanVersion: premarket ? (input.previousPlan?.planVersion ?? null) : null,
     rows: published,
     needsMoreData: needsMoreData.sort((a, b) => a.symbol.localeCompare(b.symbol)),
     invalidated: invalidated.sort((a, b) => a.symbol.localeCompare(b.symbol)),
@@ -254,6 +270,7 @@ export function buildWatchlistPlan(input: BuildWatchlistPlanInput): WatchlistPla
       publishedCount: published.length,
       maxRows,
       blockers,
+      premarketEvidenceExcluded: premarketEvidenceExcluded.sort((a, b) => a.symbol.localeCompare(b.symbol)),
     },
   };
 }

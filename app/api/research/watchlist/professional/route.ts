@@ -19,14 +19,18 @@ export async function GET(req: Request) {
     const { getDb } = await import("@/lib/db");
     const { tradingDay } = await import("@/lib/trading-session");
     const { loadProfessionalPlanOnDb, loadWatchlistOutcomesOnDb } = await import("@/lib/research/watchlist/professional-store");
+    const { loadRecentPublicationsOnDb } = await import("@/lib/research/watchlist/professional-publication");
     const { summarizeWatchlistOutcomes } = await import("@/lib/research/watchlist/outcomes");
     const { researchFlags } = await import("@/lib/research/flags");
+    const { schedulerState } = await import("@/lib/scheduler");
 
     const db = getDb() as any;
     const day = url.searchParams.get("date") || tradingDay();
     const overnight = loadProfessionalPlanOnDb(db, day, "OVERNIGHT_PLAN");
     const premarket = loadProfessionalPlanOnDb(db, day, "PREMARKET_UPDATE");
     const outcomes = loadWatchlistOutcomesOnDb(db, { tradingDay: day });
+    const sched = schedulerState();
+    const lastPro = sched.lastProfessionalWatchlist ?? { overnight: null, premarket: null };
 
     return NextResponse.json({
       ok: true,
@@ -36,6 +40,16 @@ export async function GET(req: Request) {
       overnightPlan: overnight,
       premarketUpdate: premarket,
       outcomes: summarizeWatchlistOutcomes(outcomes),
+      // Read-only diagnostics. Carries run counts, screening results, dedupe
+      // state, and failure reasons — never a webhook URL, token, or any raw
+      // Discord configuration.
+      diagnostics: {
+        lastOvernightRun: lastPro.overnight,
+        lastPremarketRun: lastPro.premarket,
+        recentPublications: loadRecentPublicationsOnDb(db, 20),
+        schedulerRuns: sched.runs.overnightResearch ?? 0,
+        schedulerLastRunAtMs: sched.lastRun.overnightResearch ?? null,
+      },
       safety: {
         advisoryOnly: true,
         productionBehaviorChanged: false,
