@@ -167,9 +167,16 @@ test("verified P&L includes only proof-complete rows with valid conservative gra
   const paper = d.prepare("SELECT id, entry_fill FROM options_paper_trades WHERE alert_id=?").get(out.alertId);
   d.prepare(
     `UPDATE options_paper_trades
-     SET status='EXITED', exit_fill=1.50, pnl=?, return_pct=?, last_mark_return_pct=?, exit_reason='target_hit'
+     SET status='EXITED', exit_fill=1.50, pnl=?, return_pct=?, last_mark_return_pct=?,
+         exit_reason='target_hit', exit_at_ms=?
      WHERE id=?`,
-  ).run((1.5 - paper.entry_fill) * 100, ((1.5 - paper.entry_fill) / paper.entry_fill) * 100, ((1.5 - paper.entry_fill) / paper.entry_fill) * 100, paper.id);
+  ).run(
+    (1.5 - paper.entry_fill) * 100,
+    ((1.5 - paper.entry_fill) / paper.entry_fill) * 100,
+    ((1.5 - paper.entry_fill) / paper.entry_fill) * 100,
+    now + 60_000,
+    paper.id,
+  );
   d.prepare(
     `INSERT INTO options_paper_marks
       (trade_id,option_symbol,mark_at_ms,bid,ask,exit_fill,return_pct,quote_age_ms,created_at_ms)
@@ -192,4 +199,118 @@ test("paper chain exposes deterministic production source and selected date wind
   assert.equal(diag.selectedWindow.label, "Last 30 days");
   assert.equal(diag.selectedWindow.days, 30);
   assert.equal(diag.selectedWindow.minSentAtMs, now - 30 * 86_400_000);
+});
+
+test("missing mirror remains audit-visible but contributes nothing to verified equity", () => {
+  const d = new Database(":memory:");
+  install(d);
+  const now = Date.UTC(2026, 6, 22, 15, 0);
+  d.prepare(
+    `INSERT INTO options_alerts
+      (alert_id,candidate_symbol,strategy,option_symbol,side,research_only,state,paper_linked,
+       discord_status,discord_message_id,sent_at_ms,entry_mid,created_at_ms,updated_at_ms)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).run(
+    "oa_missing_mirror",
+    "AVGO",
+    "lower_high_continuation",
+    "O:AVGO260731P00375000",
+    "put",
+    0,
+    "SENT",
+    0,
+    204,
+    "discord-avgo",
+    now,
+    7.55,
+    now,
+    now,
+  );
+  const diag = buildPaperChainDiagnostic(d, ENV, 40);
+  assert.equal(diag.rows[0].pnlClassification, "MISSING_MIRROR");
+  assert.equal(diag.rows[0].verifiedPnlEligible, false);
+  assert.equal(diag.verifiedPnlBreakdown.missingMirrorRowsExcluded, 1);
+  assert.equal(diag.verifiedPnlBreakdown.verifiedTotalPnlUsd, 0);
+  assert.equal(diag.account.currentEquityUsd, diag.account.startingBalanceUsd);
+});
+
+test("display row limit never changes full-cohort account equity", async () => {
+  const d = new Database(":memory:");
+  install(d);
+  const cases = [
+    {
+      now: Date.UTC(2026, 6, 22, 15, 10),
+      symbol: "NVDA",
+      optionSymbol: "O:NVDA260731C00180000",
+      strike: 180,
+      exit: 1.5,
+    },
+    {
+      now: Date.UTC(2026, 6, 22, 15, 20),
+      symbol: "AAPL",
+      optionSymbol: "O:AAPL260731C00215000",
+      strike: 215,
+      exit: 0.8,
+    },
+  ];
+  for (const item of cases) {
+    const callout = input(item.now);
+    callout.candidateSymbol = item.symbol;
+    callout.contract = {
+      ...callout.contract,
+      optionSymbol: item.optionSymbol,
+      strike: item.strike,
+    };
+    const out = await deliverOptionsCallout(callout, {
+      getDb: () => d,
+      now: () => item.now,
+      send: async () => ({
+        ok: true,
+        status: 204,
+        latencyMs: 12,
+        messageId: `discord-${item.symbol.toLowerCase()}`,
+      }),
+    }, ENV);
+    const paper = d.prepare("SELECT id, entry_fill FROM options_paper_trades WHERE alert_id=?").get(out.alertId);
+    const returnPct = ((item.exit - paper.entry_fill) / paper.entry_fill) * 100;
+    d.prepare(
+      `UPDATE options_paper_trades
+       SET status='EXITED', exit_fill=?, pnl=?, return_pct=?, last_mark_return_pct=?,
+           exit_reason='test_exit', exit_at_ms=?
+       WHERE id=?`,
+    ).run(
+      item.exit,
+      (item.exit - paper.entry_fill) * 100,
+      returnPct,
+      returnPct,
+      item.now + 60_000,
+      paper.id,
+    );
+    d.prepare(
+      `INSERT INTO options_paper_marks
+        (trade_id,option_symbol,mark_at_ms,bid,ask,exit_fill,return_pct,quote_age_ms,created_at_ms)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      paper.id,
+      item.optionSymbol,
+      item.now + 60_000,
+      item.exit - 0.02,
+      item.exit + 0.03,
+      item.exit,
+      returnPct,
+      500,
+      item.now + 60_500,
+    );
+  }
+
+  const oneVisible = buildPaperChainDiagnostic(d, ENV, 1);
+  const allVisible = buildPaperChainDiagnostic(d, ENV, 40);
+  assert.equal(oneVisible.rows.length, 1);
+  assert.equal(allVisible.rows.length, 2);
+  assert.equal(oneVisible.account.currentEquityUsd, allVisible.account.currentEquityUsd);
+  assert.equal(
+    oneVisible.verifiedPnlBreakdown.verifiedTotalPnlUsd,
+    allVisible.verifiedPnlBreakdown.verifiedTotalPnlUsd,
+  );
+  assert.equal(allVisible.verifiedPnlBreakdown.validTrades, 2);
 });

@@ -1110,6 +1110,77 @@ tbody tr:hover td {
   font-size: 11px;
 }
 
+.paper-winner-capture {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  gap: 4px 16px;
+  align-items: center;
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  background: rgba(7, 16, 23, 0.72);
+}
+
+.paper-winner-capture > span {
+  color: var(--warn);
+  font: 700 18px var(--font-mono);
+}
+
+.paper-winner-capture > small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+}
+
+.paper-what-happened-row > td {
+  padding: 0 12px 10px;
+  border-top: 0;
+}
+
+.paper-what-happened-row details {
+  border-left: 2px solid var(--line);
+  padding: 6px 10px;
+}
+
+.paper-what-happened-row summary {
+  color: var(--blue);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.paper-what-happened-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(160px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.paper-what-happened-grid > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  color: var(--text);
+}
+
+.paper-what-happened-grid strong {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.paper-what-happened-grid .wide {
+  grid-column: span 3;
+}
+
+@media (max-width: 900px) {
+  .paper-what-happened-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .paper-what-happened-grid .wide {
+    grid-column: auto;
+  }
+}
+
 .quant-summary-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));

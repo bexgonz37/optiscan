@@ -6,7 +6,7 @@
  * This does not depend on the read-only /copilot explanation page.
  */
 
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Fragment, Suspense, useCallback, useEffect, useState } from "react";
 import { scanHeaders } from "@/hooks/useScanner";
 import { InfoTip } from "@/components/InfoTip";
 import { CardTip } from "@/components/CardTip";
@@ -445,10 +445,26 @@ function PaperPageInner() {
               <StatTile label="Realized verified P&L" value={dollars(deliveredChain?.verifiedPnlBreakdown?.realizedClosedPnlUsd)} />
               <StatTile label="Open verified P&L" value={dollars(deliveredChain?.verifiedPnlBreakdown?.openMarkToMarketPnlUsd)} />
               <StatTile label="Total verified P&L" value={dollars(deliveredChain?.verifiedPnlBreakdown?.verifiedTotalPnlUsd)} />
+              <StatTile label="Excluded P&L" value={dollars(deliveredChain?.verifiedPnlBreakdown?.excludedPnlUsd)} />
+              <StatTile label="Valid trades" value={String(deliveredChain?.verifiedPnlBreakdown?.validTrades ?? 0)} />
               <StatTile label="Excluded rows" value={String(
-                (deliveredChain?.verifiedPnlBreakdown?.auditOnlyRowsExcluded ?? 0)
-                + (deliveredChain?.verifiedPnlBreakdown?.invalidOrStaleMarkRowsExcluded ?? 0)
+                deliveredChain?.verifiedPnlBreakdown?.excludedTrades
+                ?? (
+                  (deliveredChain?.verifiedPnlBreakdown?.auditOnlyRowsExcluded ?? 0)
+                  + (deliveredChain?.verifiedPnlBreakdown?.invalidOrStaleMarkRowsExcluded ?? 0)
+                )
               )} />
+            </div>
+            <div className="paper-winner-capture">
+              <strong>Profitable trades later closed as losses</strong>
+              <span>
+                {deliveredChain?.exitPolicyResearch?.profitableThenLostCount ?? 0}
+                {" of "}
+                {deliveredChain?.exitPolicyResearch?.profitableTradeCount ?? 0}
+              </span>
+              <small>
+                Shadow analysis only. No exit policy changes production automatically.
+              </small>
             </div>
             <div className="paper-table-wrap">
               <table className="mini-table paper-research-table">
@@ -458,17 +474,57 @@ function PaperPageInner() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(deliveredChain?.rows ?? []).slice(0, 100).map((r: any) => (
-                    <tr key={r.alertId ?? r.id}>
-                      <td><a href={`/alerts/${encodeURIComponent(r.alertId)}`}>{r.symbol ?? "—"}</a></td>
-                      <td className="paper-contract" title={r.optionSymbol}>{readableContract(r.optionSymbol)}</td>
-                      <td>{paperStatusLabel(r.paperStatus, !r.subscriberDelivered)}</td>
-                      <td>{r.frozenEntry != null ? `$${Number(r.frozenEntry).toFixed(2)}` : "Unavailable"}</td>
-                      <td>{r.markPrice != null ? `$${Number(r.markPrice).toFixed(2)}` : "Unavailable"}</td>
-                      <td>{r.verifiedPnlEligible ? (r.pnlUsd != null ? dollars(Number(r.pnlUsd)) : "Unavailable") : "Excluded"}</td>
-                      <td>{r.verifiedPnlEligible ? num(r.latestMarkReturnPct ?? r.returnPct, "%") : "Audit only"}</td>
-                    </tr>
-                  ))}
+                  {(deliveredChain?.rows ?? []).slice(0, 100).map((r: any) => {
+                    const happened = r.whatHappened;
+                    return (
+                      <Fragment key={r.alertId ?? r.id}>
+                        <tr>
+                          <td><a href={`/alerts/${encodeURIComponent(r.alertId)}`}>{r.symbol ?? "—"}</a></td>
+                          <td className="paper-contract" title={r.optionSymbol}>{readableContract(r.optionSymbol)}</td>
+                          <td>{paperStatusLabel(r.paperStatus, !r.subscriberDelivered)}</td>
+                          <td>{r.frozenEntry != null ? `$${Number(r.frozenEntry).toFixed(2)}` : "Unavailable"}</td>
+                          <td>{r.markPrice != null ? `$${Number(r.markPrice).toFixed(2)}` : "Unavailable"}</td>
+                          <td>{r.verifiedPnlEligible ? (r.pnlUsd != null ? dollars(Number(r.pnlUsd)) : "Unavailable") : "Excluded"}</td>
+                          <td>{r.verifiedPnlEligible ? num(r.latestMarkReturnPct ?? r.returnPct, "%") : r.pnlClassification ?? "Audit only"}</td>
+                        </tr>
+                        <tr className="paper-what-happened-row">
+                          <td colSpan={7}>
+                            <details>
+                              <summary>What happened</summary>
+                              {happened ? (
+                                <div className="paper-what-happened-grid">
+                                  <span><strong>Entry</strong>{r.frozenEntry != null ? `$${Number(r.frozenEntry).toFixed(2)}` : "Unavailable"}</span>
+                                  <span><strong>Best gain reached</strong>{num(happened.bestGainPct, "%")}</span>
+                                  <span><strong>Final result</strong>{num(happened.finalResultPct, "%")}</span>
+                                  <span><strong>Profit captured</strong>{num(happened.profitCapturedPct, "%")}</span>
+                                  <span><strong>Why it exited</strong>{r.exitReason ?? (r.paperStatus === "ENTERED" ? "Still open" : "Unavailable")}</span>
+                                  <span><strong>Did it give back a profit?</strong>{happened.gaveBackProfit ? "Yes" : "No"}</span>
+                                  <span className="wide">
+                                    <strong>Finding</strong>
+                                    {happened.gaveBackProfit
+                                      ? "The trade became a winner, but the canonical exit gave the gain back."
+                                      : happened.lossClassification.replaceAll("_", " ")}
+                                  </span>
+                                  <span className="wide">
+                                    <strong>Shadow policies</strong>
+                                    {happened.policies
+                                      .filter((policy: any) => ["Current policy", "Partial at T1", "Break-even +15%", "Trail 15%"].includes(policy.policy))
+                                      .map((policy: any) => `${policy.policy}: ${num(policy.returnPct, "%")}`)
+                                      .join(" · ")}
+                                  </span>
+                                </div>
+                              ) : (
+                                <p className="muted">
+                                  This row is {String(r.pnlClassification ?? "UNVERIFIED").replaceAll("_", " ").toLowerCase()}.
+                                  Verified mark history is unavailable, so no entry-versus-exit conclusion is shown.
+                                </p>
+                              )}
+                            </details>
+                          </td>
+                        </tr>
+                      </Fragment>
+                    );
+                  })}
                   {(deliveredChain?.rows ?? []).length === 0 ? (
                     <tr>
                       <td colSpan={7} className="paper-empty-cell">
