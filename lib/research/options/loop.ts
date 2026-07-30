@@ -136,24 +136,36 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
       candidateId = Number(info.lastInsertRowid ?? 0);
     }
     if (candidateId > 0) persistCandidateInstrumentation(db, candidateId, inst);
-    // Research-only snapshot. The writer swallows schema/DB failures, so this cannot affect evaluation.
+    // Research-only lifecycle facts. The writer swallows schema/DB failures, so this cannot affect evaluation.
     recordOptionsResearchObservation(db as any, {
       observedAtMs: input.nowMs,
       symbol: input.symbol,
       source: "options_candidate_lifecycle",
       direction: res.selection.direction ?? null,
       strategyFamily: res.selection.selected?.key ?? null,
-      candidateState: res.state === "READY" ? "READY" : (res.contract ? "CONTRACT_SELECTED" : "CANDIDATE_DETECTED"),
-      readinessState: res.state === "READY" ? "READY" : null,
-      blockers: res.state === "READY" ? null : [res.callout?.reason ?? res.selection.reason].filter(Boolean) as string[],
+      candidateState: "CANDIDATE_DETECTED",
       underlyingPrice: input.underlying.price ?? null,
-      optionSymbol: res.contract?.optionSymbol ?? null,
-      optionBid: res.contract?.bid ?? null,
-      optionAsk: res.contract?.ask ?? null,
-      quoteTimestampMs: res.contract?.providerTimestamp ?? null,
-      quoteAgeMs: res.contract ? quoteFreshness(res.contract.providerTimestamp, input.nowMs).ageMs : null,
-      freshnessState: res.callout?.freshness ?? null,
     });
+    if (res.contract) {
+      const contractObservation = {
+        observedAtMs: input.nowMs, symbol: input.symbol, source: "options_candidate_lifecycle",
+        direction: res.selection.direction ?? null, strategyFamily: res.selection.selected?.key ?? null,
+        underlyingPrice: input.underlying.price ?? null, optionSymbol: res.contract.optionSymbol, optionType: res.contract.side,
+        strike: res.contract.strike, expiration: res.contract.expiration, dte: res.contract.dte, optionBid: res.contract.bid,
+        optionAsk: res.contract.ask, spreadPct: res.contract.spreadPct, quoteTimestampMs: res.contract.providerTimestamp,
+        quoteAgeMs: quoteFreshness(res.contract.providerTimestamp, input.nowMs).ageMs, volume: res.contract.volume,
+        openInterest: res.contract.openInterest, delta: res.contract.delta, freshnessState: res.callout?.freshness ?? null,
+      };
+      recordOptionsResearchObservation(db as any, { ...contractObservation, candidateState: "CONTRACT_SELECTED" });
+      if (res.state === "READY") {
+        recordOptionsResearchObservation(db as any, { ...contractObservation, candidateState: "QUOTE_VALIDATED", contractQualityState: "VALID" });
+        recordOptionsResearchObservation(db as any, { ...contractObservation, candidateState: "READY", readinessState: "READY", contractQualityState: "VALID", frozenEntry: res.callout?.entry?.mid ?? null, targetT1: res.callout?.entry?.t1 ?? null, targetT2: res.callout?.entry?.t2 ?? null, targetStop: res.callout?.entry?.stop ?? null });
+      } else {
+        recordOptionsResearchObservation(db as any, { ...contractObservation, candidateState: "BLOCKED", readinessState: res.state, blockers: [res.callout?.reason ?? res.selection.reason].filter(Boolean) as string[] });
+      }
+    } else if (res.state !== "READY") {
+      recordOptionsResearchObservation(db as any, { observedAtMs: input.nowMs, symbol: input.symbol, source: "options_candidate_lifecycle", direction: res.selection.direction ?? null, strategyFamily: res.selection.selected?.key ?? null, candidateState: "BLOCKED", readinessState: res.state, blockers: [res.callout?.reason ?? res.selection.reason].filter(Boolean) as string[] });
+    }
     // Living Opportunity Case: if an active opportunity already matches, attach evidence and do not
     // submit another opening delivery. Audit capture still runs (bound to the living case id).
     let livingOpportunityCaseId: string | null = null;

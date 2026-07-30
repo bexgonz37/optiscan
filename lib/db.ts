@@ -1528,7 +1528,9 @@ CREATE TABLE IF NOT EXISTS options_research_observations (
   structure_state TEXT, momentum_state TEXT, relative_state TEXT, option_symbol TEXT, option_type TEXT,
   strike REAL, expiration TEXT, option_bid REAL, option_ask REAL, spread_pct REAL, quote_timestamp_ms INTEGER,
   quote_age_ms INTEGER, volume REAL, open_interest REAL, delta REAL, dte INTEGER, contract_quality_state TEXT,
-  source TEXT NOT NULL, freshness_state TEXT, created_at_ms INTEGER NOT NULL
+  source TEXT NOT NULL, freshness_state TEXT, created_at_ms INTEGER NOT NULL,
+  frozen_entry REAL, target_t1 REAL, target_t2 REAL, target_stop REAL,
+  paper_trade_id INTEGER, discord_message_id TEXT, delivery_proof_state TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_options_research_observations_session ON options_research_observations(session_date, observed_at_ms);
 
@@ -2490,6 +2492,19 @@ function migrate(db: Database.Database) {
     db.prepare("CREATE INDEX IF NOT EXISTS idx_options_alerts_opportunity ON options_alerts(opportunity_case_id, state)").run();
     db.prepare("CREATE INDEX IF NOT EXISTS idx_options_alerts_fingerprint ON options_alerts(opportunity_fingerprint, state)").run();
     db.prepare("CREATE INDEX IF NOT EXISTS idx_options_alerts_thesis ON options_alerts(thesis_fingerprint, state)").run();
+  }
+  // Prospective research observations remain additive even when the first evidence migration ran earlier.
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_research_observations'").get()) {
+    const ro = cols("options_research_observations");
+    for (const [col, sql] of [
+      ["frozen_entry", "ALTER TABLE options_research_observations ADD COLUMN frozen_entry REAL"],
+      ["target_t1", "ALTER TABLE options_research_observations ADD COLUMN target_t1 REAL"],
+      ["target_t2", "ALTER TABLE options_research_observations ADD COLUMN target_t2 REAL"],
+      ["target_stop", "ALTER TABLE options_research_observations ADD COLUMN target_stop REAL"],
+      ["paper_trade_id", "ALTER TABLE options_research_observations ADD COLUMN paper_trade_id INTEGER"],
+      ["discord_message_id", "ALTER TABLE options_research_observations ADD COLUMN discord_message_id TEXT"],
+      ["delivery_proof_state", "ALTER TABLE options_research_observations ADD COLUMN delivery_proof_state TEXT"],
+    ] as [string, string][]) if (!ro.has(col)) db.exec(sql);
   }
   // Living Opportunity Case columns (additive, repeat-safe).
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='opportunity_cases'").get()) {

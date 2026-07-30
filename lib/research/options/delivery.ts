@@ -46,6 +46,7 @@ import {
   opportunityThesisFingerprint,
 } from "../../opportunity-case/thesis-identity.ts";
 import { quoteFreshness } from "../../quote-freshness.ts";
+import { recordOptionsResearchObservation } from "./prospective-evidence.ts";
 
 export type DeliveryState = "READY" | "SEND_ATTEMPTED" | "SENT" | "SEND_FAILED" | "SEND_RECONCILE_REQUIRED" | "TOO_LATE" | "REJECTED" | "EXPIRED";
 
@@ -189,6 +190,44 @@ function reserveDeliveredMirror(
       reason: `paper_reservation_failed:${String(err?.message ?? err).slice(0, 140)}`,
     };
   }
+}
+
+/** Audit-only lifecycle capture. The writer fails closed to itself, never to delivery. */
+function captureDeliveryObservation(db: any, input: DeliveryInput, nowMs: number, candidateState: "DEDUPED" | "PAPER_LINKED" | "SENT", ids: { thesisFingerprint?: string | null; opportunityCaseId?: string | null; alertId: string; paperTradeId?: number | null; discordMessageId?: string | null }): void {
+  recordOptionsResearchObservation(db, {
+    observedAtMs: nowMs,
+    symbol: input.candidateSymbol,
+    source: "options_delivery_lifecycle",
+    direction: input.contract.side === "put" ? "bearish" : "bullish",
+    thesisFingerprint: ids.thesisFingerprint ?? null,
+    opportunityCaseId: ids.opportunityCaseId ?? null,
+    alertId: ids.alertId,
+    strategyFamily: input.strategy,
+    candidateState,
+    readinessState: candidateState === "SENT" ? "SENT" : "READY",
+    authorityState: "DELIVERY_CONFIRMED",
+    optionSymbol: input.contract.optionSymbol,
+    optionType: input.contract.side,
+    strike: input.contract.strike,
+    expiration: input.contract.expiration,
+    dte: input.contract.dte ?? null,
+    optionBid: input.contract.bid,
+    optionAsk: input.contract.ask,
+    spreadPct: input.contract.spreadPct,
+    quoteTimestampMs: input.contract.providerTimestamp ?? null,
+    quoteAgeMs: input.contract.quoteAgeMs,
+    volume: input.contract.volume ?? null,
+    openInterest: input.contract.openInterest ?? null,
+    delta: input.contract.delta ?? null,
+    frozenEntry: input.entry?.mid ?? null,
+    targetT1: input.entry?.t1 ?? null,
+    targetT2: input.entry?.t2 ?? null,
+    targetStop: input.entry?.stop ?? null,
+    paperTradeId: ids.paperTradeId ?? null,
+    discordMessageId: ids.discordMessageId ?? null,
+    deliveryProofState: candidateState === "SENT" ? (ids.discordMessageId ? "DISCORD_MESSAGE_ID_RECORDED" : "DISCORD_ACCEPTED_NO_MESSAGE_ID") : null,
+    freshnessState: input.contract.quoteAgeMs != null && input.contract.quoteAgeMs >= 0 ? "fresh" : "unavailable",
+  });
 }
 
 function persist(db: DDb, alertId: string, i: DeliveryInput, state: DeliveryState, extra: Record<string, unknown>, nowMs: number): void {
@@ -409,6 +448,7 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
           details: { opportunityFingerprint: livingFingerprint, optionSymbol: input.contract.optionSymbol },
           nowMs,
         });
+        captureDeliveryObservation(db, input, nowMs, "DEDUPED", { thesisFingerprint: livingThesisFingerprint, opportunityCaseId: activeThesis.opportunityCaseId, alertId });
         return finalize(deps, input, alertId, "REJECTED", "matching_active_thesis", nowMs, state, {
           opportunityCaseId: activeThesis.opportunityCaseId,
           suppressedDuplicate: true,
@@ -439,6 +479,7 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
             nextUndeliveredMilestone: oc?.summary?.nextUndeliveredReturnMilestone ?? null,
             nowMs,
           });
+          captureDeliveryObservation(db, input, nowMs, "DEDUPED", { thesisFingerprint: livingThesisFingerprint, opportunityCaseId: active.opportunityCaseId, alertId });
         } catch { /* isolated */ }
         return finalize(deps, input, alertId, "REJECTED", "matching_active_opportunity", nowMs, state, {
           opportunityCaseId: active.opportunityCaseId,
@@ -553,6 +594,7 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
             nextUndeliveredMilestone: oc?.summary?.nextUndeliveredReturnMilestone ?? null,
             nowMs,
           });
+          captureDeliveryObservation(db, input, nowMs, "DEDUPED", { thesisFingerprint: livingThesisFingerprint, opportunityCaseId: claim.opportunityCaseId, alertId });
         } catch { /* isolated */ }
         return finalize(
           deps,
@@ -838,6 +880,20 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
     } else if (env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED !== "0" && lifecycleReady && !livingCaseId) {
       console.error(`[options-delivery] SENT without opportunity case for ${alertId} — grader/readiness will be incomplete`);
     }
+    // Only finalized mirrors and durable SENT rows enter prospective research evidence.
+    captureDeliveryObservation(db, finalInput, sentAt, "PAPER_LINKED", {
+      thesisFingerprint: livingThesisFingerprint,
+      opportunityCaseId: livingCaseId,
+      alertId,
+      paperTradeId: paperReservation.paperTradeId,
+    });
+    captureDeliveryObservation(db, finalInput, sentAt, "SENT", {
+      thesisFingerprint: livingThesisFingerprint,
+      opportunityCaseId: livingCaseId,
+      alertId,
+      paperTradeId: paperReservation.paperTradeId,
+      discordMessageId: res.messageId ?? null,
+    });
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { mirrorOwnerIntradayOnSent } = require("@/lib/notifications/owner-intraday-mirror");
