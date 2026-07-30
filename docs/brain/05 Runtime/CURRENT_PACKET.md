@@ -1,55 +1,82 @@
 # Current Task Packet
 
-Task ID: observe-first-watchlist-window
+Task ID: high-asymmetry-radar-phase-1
 
-## Truthful current state
+Worktree: `C:\Users\bexgo\Downloads\optiscan-asymmetry`
+Branch: `feature/high-asymmetry-radar`
+
+> This is a **separate Git worktree**. Another session monitors production from
+> `optiscan-main`. Nothing here touches that checkout, `main`, or any deploy.
+
+## Feature-branch state (this branch only)
+
+- Phase 1 of the High-Asymmetry Radar is complete and committed **locally**.
+  Not pushed, not merged, not deployed.
+- Everything added is shadow-only research infrastructure:
+  evidence model, deterministic outcome labels, shadow candidate states,
+  premium-chase analysis, cohort comparison, a read-only loader, a token-gated
+  GET-only diagnostics endpoint, and 52 focused tests.
+- **No production behaviour changed.** No live path imports the new module; the
+  scheduler, scanner, delivery, callout, paper, and notification code are
+  untouched. No new environment variable, no feature flag, no Railway change.
+- Validation on this branch: focused tests 52/52; full suite 2549 pass, 0 fail,
+  1 pre-existing skip; `npx tsc --noEmit --incremental false` clean;
+  `npm run build` compiled with `/api/research/asymmetry` present;
+  `git diff --check` clean.
+- See [[../02 Components/High-Asymmetry Radar]] for the full contract.
+
+## What is still unproven on this branch
+
+- **The radar has never run against real data.** Every test uses synthetic
+  fixtures. No production or historical cohort has been replayed.
+- **No cohort exists, so no comparison means anything yet.** Cohort sizes are
+  zero until `options_research_observations` and `options_paper_marks` are
+  replayed for real sessions.
+- **The largest evidence gaps have no source at all** — stock volume, relative
+  volume versus the same time of day, volume acceleration, IV and IV change,
+  gamma, relative strength, sector/market alignment, confirmed catalysts,
+  compression, and prior underlying move. They are correctly reported as
+  missing, but a comparison over mostly-missing features cannot support a
+  conclusion. This is why no threshold was tuned.
+- Whether `options_research_observations` actually accumulates enough rows per
+  session to form cohorts is unmeasured.
+
+## Next task on this branch
+
+1. Replay real sessions read-only through `loadAsymmetryCohortOnDb` and read
+   `GET /api/research/asymmetry` for actual coverage numbers — specifically how
+   many candidates reach `evidenceComplete` and how many get any usable mark.
+2. Decide from measured coverage, not from intuition, which unsourced field is
+   worth sourcing first.
+3. Only then consider Phase 2. Phase 2 must not begin while every compared
+   cohort is under the minimum sample.
+
+## Production truth (from `main` — DO NOT overwrite, DO NOT act on here)
+
+These facts belong to the `main` branch and the deployed production system. They
+are recorded for context only; this branch neither verifies nor changes them.
 
 - Local `main`, `origin/main`, and **deployed production** are all `0be1530`.
-- Railway deployment `5682002117` for that exact SHA reached `success`.
-  Confirmed by SHA, not by assuming the newest deployment.
+  Railway deployment `5682002117` for that exact SHA reached `success`.
 - Production health verified: `schemaOk: true`, `schemaMissing: []`,
-  `missingLegacyColumns: []`, `lifecycle.active: true`. No migration failure,
-  no startup crash, no secret leakage.
-- All four research endpoints respond in production: professional Watchlist,
-  earlier-entry, loss-protection, session-audit.
+  `missingLegacyColumns: []`, `lifecycle.active: true`.
+- All four existing research endpoints respond in production: professional
+  Watchlist, earlier-entry, loss-protection, session-audit.
 - `PROFESSIONAL_WATCHLIST_ENABLED` is **unset**; the endpoint reports
   `enabled: false` and no professional publication has occurred. **No Railway
   variable was changed.**
-- The legacy Watchlist and scheduler paths are intact and running.
-
-## What is still unproven
-
-- The professional Watchlist has only been observed **declining to run**. Its
-  build, screen, dedupe, and publish behaviour in production is untested.
-- The deploy landed outside every planning window, so no window has elapsed.
-- Live trigger detection is not wired; no outcome rows exist.
-- Momentum, confirmed-catalyst, and premarket-level sources are still absent.
-
-## Next task
-
-Observe the first real planning window with the flag still OFF, then decide.
-
-1. After the next 18:00 ET window passes, re-read
-   `GET /api/research/watchlist/professional`. With the flag off, expect
-   `lastOvernightRun` to become a recorded run with `outcome: "DISABLED"` —
-   that is the proof the scheduler wiring reaches the professional path at all.
-   If it stays null, the wiring is not being reached and must be diagnosed
-   before anything is enabled.
-2. Confirm in the same window that the legacy plan still published normally.
-3. Only then consider enabling `PROFESSIONAL_WATCHLIST_ENABLED=1`. That is a
-   **Railway variable change and requires explicit owner approval.** Enable it
-   for one window and read back rows considered, rows published, copy-screen
-   result, and dedupe behaviour on the following beat.
-4. Then wire live trigger detection into `processWatchlistTrigger` and add real
-   sources for momentum, confirmed catalysts, and premarket levels. Until each
-   has a real source it must contribute nothing, never a fabricated name.
+- The professional Watchlist has only been observed **declining to run**; its
+  build/screen/dedupe/publish behaviour in production remains untested, and the
+  observation of the first 18:00 ET planning window is owned by the
+  `optiscan-main` session, not by this branch.
 
 ## Load these notes
 
+- ../02 Components/High-Asymmetry Radar.md
 - ../02 Components/safety.md
+- ../02 Components/Market Data.md
+- ../02 Components/Opportunity Lifecycle.md
 - ../02 Components/watchlist.md
-- ../02 Components/delivery.md
-- ../02 Components/deployment.md
 
 ## Do not load
 
@@ -60,9 +87,13 @@ Observe the first real planning window with the flag still OFF, then decide.
 
 ## Stop conditions
 
-- do not change a Railway variable without explicit owner approval
-- do not enable the feature flag as part of routine verification
+- do not wire live alerts, Discord publication, Twitter generation, subscriber
+  messaging, or automatic contract buying
+- do not change a Railway variable or add an environment variable
+- do not push, merge, or deploy this branch
+- do not access, modify, or switch branches in the `optiscan-main` checkout
+- do not tune a threshold from imagined examples or from a cohort under the
+  minimum sample
+- do not claim any candidate will produce a large gain
 - do not stage unrelated untracked files, graphify-out/, or workspace.json
-- do not alter live formulas, thresholds, stops, targets, or authority
-- a Watchlist trigger never delivers on its own
-- do not claim production success without direct evidence
+- research capture must never block scanner, paper linkage, or Discord delivery
