@@ -22,6 +22,7 @@ _Last updated: 2026-07-30. Working repo: `~/Downloads/optiscan-main`, branch `ma
 
 - Added pure hard-loss guards (-10/-15/-20/-25/-30) and early-weakness exits (-5/-10/-15/-20). Weakness exits require two consecutive timestamped weakening observations with fresh executable quotes; one negative tick is not enough.
 - Results are advisory-only and cannot overwrite canonical paper outcomes or live stops/exits.
+- Unified aggregation reuses the existing exit and loss replay engines; negative policies cannot be classified as profitable.
 
 ## WATCHLIST DATA PLUMBING + PHASE 2 AI ADVISORY CHATBOT (2026-07-30)
 
