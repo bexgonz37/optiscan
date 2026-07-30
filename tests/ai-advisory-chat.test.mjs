@@ -617,3 +617,73 @@ test("no chatbot file reaches into the live scanner or delivery directories", ()
     assert.doesNotMatch(src, /scanner-loop|alert-capture/, f);
   }
 });
+
+// ------------------------------------------- regression: validator over-strictness
+// These three defects made the deployed validator reject essentially every real
+// answer. Each is a genuine claim-detection bug, not a loosening of grounding.
+
+test("list markers and enumerators are not treated as quantitative claims", () => {
+  const numbered = "1. Entries are weak.\n2. Exits give back gains.\n3. Data is missing.";
+  assert.deepEqual(extractNumericClaims(numbered), [], "leading list markers are structure, not figures");
+  assert.deepEqual(extractNumericClaims("- 1. First\n- 2. Second"), []);
+  assert.deepEqual(extractNumericClaims("Consider (1) entries and (2) exits."), []);
+  // A real figure on a list line is still extracted.
+  assert.deepEqual(extractNumericClaims("1. There were 49 losses."), ["49"]);
+});
+
+test("a numbered-list answer citing real evidence is accepted", () => {
+  const res = validateAdvisoryAnswer({
+    answer: "1. Entries are the weak point: 49 verified closed losses.\n2. Of those, 37 were already down 20% by five minutes.",
+    citedEvidenceIds: ["paper.verifiedClosedLosses", "paper.downTwentyByFiveMin"],
+    packet: packet(),
+    supplemental,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res.failures));
+});
+
+test("numbers inside a quoted canonical policy name are citable", () => {
+  const res = validateAdvisoryAnswer({
+    answer: "Trail 10% and 0DTE protection are shadow policies; neither is profitable.",
+    citedEvidenceIds: ["exit.policy.trail_10_.avgReturnPct"],
+    packet: packet(),
+    supplemental,
+  });
+  assert.equal(res.ok, true, JSON.stringify(res.failures));
+  // A number NOT part of any packet entity name is still rejected.
+  const bogus = validateAdvisoryAnswer({
+    answer: "Trail 77% is a shadow policy.",
+    citedEvidenceIds: ["exit.policy.trail_10_.avgReturnPct"],
+    packet: packet(),
+    supplemental,
+  });
+  assert.equal(bogus.ok, false);
+  assert.ok(bogus.failures.some((f) => f.kind === "UNSUPPORTED_NUMBER" && f.token === "77"));
+});
+
+test("cohort mixing is judged per claim, not across a whole answer", () => {
+  // Separate sentences, separate cohorts: legitimate.
+  const separated = validateAdvisoryAnswer({
+    answer: "Delivered paper shows 49 verified closed losses over all verified history. Separately, delivery sent 59 alerts in the last 24 hours.",
+    citedEvidenceIds: ["paper.verifiedClosedLosses", "discord.sentToday"],
+    packet: packet(),
+    supplemental,
+  });
+  assert.equal(separated.ok, true, JSON.stringify(separated.failures));
+
+  // One sentence combining both cohorts: still blocked.
+  const combined = validateAdvisoryAnswer({
+    answer: "Across the system there were 49 losses out of 59 alerts.",
+    citedEvidenceIds: ["paper.verifiedClosedLosses", "discord.sentToday"],
+    packet: packet(),
+    supplemental,
+  });
+  assert.equal(combined.ok, false);
+  assert.ok(combined.failures.some((f) => f.kind === "PIPELINE_WINDOW_MIXED"));
+});
+
+test("the prompt demands citations and forbids numbered lists", () => {
+  const src = read("lib/ai/advisory-chat.ts");
+  assert.match(src, /citedEvidenceIds MUST contain the id of every metric/);
+  assert.match(src, /Do NOT write numbered lists/);
+  assert.match(src, /Never combine metrics from different pipelines or different time windows in ONE sentence/);
+});

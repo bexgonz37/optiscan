@@ -286,18 +286,57 @@ export interface ChatValidationResult {
 /** Years, list markers, and similar are not quantitative claims. */
 const IGNORED_NUMBER_CONTEXT = /^(19|20)\d{2}$/;
 
-/** Pull candidate numeric tokens out of prose. */
+/**
+ * Pull candidate numeric tokens out of prose.
+ *
+ * Structural digits are not quantitative claims and must not be validated as if
+ * they were: list markers ("2." / "3)" at the start of a line), parenthesised
+ * enumerators ("(1)"), and years. Treating these as claims made the validator
+ * reject almost every real multi-point answer.
+ */
 export function extractNumericClaims(text: string): string[] {
+  const prose = String(text ?? "")
+    // Leading list markers: "1. ", "2) ", "- 3. "
+    .replace(/(^|\n)[ \t]*[-*]?[ \t]*\d{1,2}[.)][ \t]+/g, "$1")
+    // Parenthesised enumerators: "(1)"
+    .replace(/\((\d{1,2})\)/g, " ");
   const out: string[] = [];
   // Matches 1, 1.5, 1,234, 1,234.5 — with optional $ / % handled by the caller.
   const re = /-?\d[\d,]*(?:\.\d+)?/g;
-  for (const m of text.match(re) ?? []) {
+  for (const m of prose.match(re) ?? []) {
     const cleaned = m.replace(/^-/, "");
     if (!cleaned) continue;
     if (IGNORED_NUMBER_CONTEXT.test(cleaned.replace(/,/g, ""))) continue;
     out.push(cleaned);
   }
   return out;
+}
+
+/**
+ * Numbers that are part of a canonical ENTITY NAME the answer quotes verbatim —
+ * "Trail 10%", "Break-even +15%", "Time stop 30m". These name a real thing in the
+ * packet, so quoting them is not inventing a figure.
+ */
+function entityNameNumbers(items: EvidenceItem[], answer: string): Set<string> {
+  const out = new Set<string>();
+  const lower = answer.toLowerCase();
+  for (const item of items) {
+    const name = item.label.split("—")[0].trim();
+    if (name.length < 3 || !lower.includes(name.toLowerCase())) continue;
+    for (const m of name.match(/\d[\d,]*(?:\.\d+)?/g) ?? []) {
+      out.add(m);
+      out.add(m.replace(/,/g, ""));
+    }
+  }
+  return out;
+}
+
+/** Split prose into sentences for per-claim checks. */
+function sentences(text: string): string[] {
+  return String(text ?? "")
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 /**
@@ -345,7 +384,7 @@ const PRODUCTION_CHANGE_CLAIMS = [
  * "less bad rather than profitable") are accurate descriptions of a losing policy
  * and must NOT be flagged.
  */
-const PROFIT_WORDS = /(?<!\b(?:not|isn't|is not|never|no|rather than|instead of|far from|nowhere near)\s{1,4})\b(profitable|winning|makes money|net positive|a winner)\b/i;
+const PROFIT_WORDS = /(?<!\b(?:not|isn't|is not|never|no|neither|neither is|none is|rather than|instead of|far from|nowhere near|short of)\s{1,4})\b(profitable|winning|makes money|net positive|a winner)\b/i;
 
 /**
  * Validate one assistant answer against the packet.
@@ -373,7 +412,10 @@ export function validateAdvisoryAnswer(input: {
   // 2. Every number must exist in the packet.
   const numbers = extractNumericClaims(input.answer);
   const citedItems = input.citedEvidenceIds.map((id) => byId.get(id)).filter(Boolean) as EvidenceItem[];
-  const fromText = textNumbers(citedItems);
+  const fromText = new Set<string>([
+    ...textNumbers(citedItems),
+    ...entityNameNumbers(items, input.answer),
+  ]);
   for (const token of numbers) {
     if (!isSupportedNumber(token, items, fromText)) {
       failures.push({
@@ -387,23 +429,34 @@ export function validateAdvisoryAnswer(input: {
     failures.push({ kind: "NO_CITATION", detail: "The answer states numbers but cites no evidence." });
   }
 
-  // 3. Cited metrics must share a pipeline AND a window — otherwise the answer is
-  //    describing a cohort that does not exist.
+  // 3. No SINGLE claim may silently combine pipelines or windows.
+  //
+  //    Checked per sentence, not per answer: a multi-topic reply legitimately
+  //    discusses entries and delivery in separate sentences, and only a single
+  //    sentence carrying numbers from two cohorts is describing a cohort that
+  //    never existed.
   const cited = citedItems;
   if (cited.length > 1) {
-    const pipelines = new Set(cited.map((c) => c.pipeline));
-    const windows = new Set(cited.map((c) => c.timeWindow));
-    if (pipelines.size > 1) {
-      failures.push({
-        kind: "PIPELINE_WINDOW_MIXED",
-        detail: `One answer cannot combine pipelines: ${[...pipelines].join(", ")}.`,
-      });
-    }
-    if (windows.size > 1) {
-      failures.push({
-        kind: "PIPELINE_WINDOW_MIXED",
-        detail: `One answer cannot combine time windows: ${[...windows].join(", ")}.`,
-      });
+    for (const sentence of sentences(input.answer)) {
+      const numbersHere = extractNumericClaims(sentence);
+      if (numbersHere.length < 2) continue;
+      const matched = cited.filter((c) =>
+        c.numericForms.some((f) => numbersHere.includes(f) || numbersHere.includes(f.replace(/,/g, ""))));
+      if (matched.length < 2) continue;
+      const pipelines = new Set(matched.map((c) => c.pipeline));
+      const windows = new Set(matched.map((c) => c.timeWindow));
+      if (pipelines.size > 1) {
+        failures.push({
+          kind: "PIPELINE_WINDOW_MIXED",
+          detail: `One claim cannot combine pipelines (${[...pipelines].join(", ")}): "${sentence.slice(0, 120)}"`,
+        });
+      }
+      if (windows.size > 1) {
+        failures.push({
+          kind: "PIPELINE_WINDOW_MIXED",
+          detail: `One claim cannot combine time windows (${[...windows].join(", ")}): "${sentence.slice(0, 120)}"`,
+        });
+      }
     }
   }
 
