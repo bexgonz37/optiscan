@@ -11,6 +11,12 @@ _Last updated: 2026-07-30. Working repo: `~/Downloads/optiscan-main`, branch `ma
 - Corrected diagnostic-only PUT wording: qualified PUTs are eligible through bearish authority and delivery gates, not rejected merely because they are puts.
 - Safety: read model only; no imports into scanner, authority, delivery, Discord, paper execution, or AI apply paths. `productionBehaviorChanged=false`.
 
+## SHADOW EARLIER-ENTRY RESEARCH (LOCAL, IN PROGRESS, 2026-07-30)
+
+- Added a pure deterministic replay core for historical observations. It accepts only exact-OCC, fresh, in-session bid/ask evidence observed at or before canonical SEND; entries use ask and marks use bid.
+- It records 1/3/5/10/15/30/60-minute shadow returns, premium inflation, delay, and classifications such as `PREMIUM_CHASE`, `LATE_ENTRY`, and `INSUFFICIENT_EVIDENCE`.
+- Current stored production instrumentation cannot honestly reconstruct all desired earlier stages with bid/ask evidence, so missing fields remain unavailable rather than inferred from later data. No live entry policy exists.
+
 ## WATCHLIST DATA PLUMBING + PHASE 2 AI ADVISORY CHATBOT (2026-07-30)
 
 **Previous production baseline:** `34ae271`.
