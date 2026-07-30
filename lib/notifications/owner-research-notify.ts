@@ -167,35 +167,36 @@ function formatMarketOpenConfirmLegacy(plan: OvernightPlan): string {
 
 function formatRec(r: OvernightRecommendation): string {
   const direction = r.bias === "bearish" ? "PUT" : "CALL";
-  const trigger = r.triggerLevel != null ? String(r.triggerLevel) : "VERIFY AT OPEN";
-  const invalidation = r.invalidationLevel != null ? String(r.invalidationLevel) : "VERIFY AT OPEN";
-  const evidence = Array.isArray(r.supportingEvidence) ? r.supportingEvidence : [];
+  const trigger = r.triggerText ?? (r.triggerLevel != null ? `$${r.triggerLevel.toFixed(2)}` : "Unavailable");
+  const invalidation = r.invalidationText ?? (r.invalidationLevel != null ? `$${r.invalidationLevel.toFixed(2)}` : "Unavailable");
   return [
-    `#${r.rank} ${r.symbol} - ${direction} bias - ${r.setupFamily}`,
-    `Status: ${r.status ?? (r.triggerLevel == null ? "VERIFY AT OPEN" : "WATCH")}`,
+    `#${r.rank} ${r.symbol} ${direction}`,
+    `Status: ${r.status ?? "WATCH"}`,
     `Trigger: ${trigger}`,
     `Invalidation: ${invalidation}`,
-    `Preferred DTE: ${r.preferredDteRange}`,
-    `Preferred moneyness: ${r.preferredMoneyness}`,
-    `Confidence: ${r.confidence}`,
-    `Catalyst: ${evidence.find((item) => /earnings|news|catalyst/i.test(item)) ?? "none flagged"}`,
-    `Main reason: ${evidence[0] ?? "ranked by deterministic watchlist evidence"}`,
-    `Main risk: ${r.mainRisk}`,
+    `Plan: ${r.preferredDteRange} · ${r.preferredMoneyness}`,
+    `Why: ${r.thesis ?? "Prior-session structure remains under review."}`,
+    `Catalyst: ${r.catalyst ?? "No confirmed catalyst"}`,
+    `Risk: ${r.mainRisk}`,
+    "VERIFY CONTRACT AFTER OPTIONS OPEN",
   ].join("\n");
 }
 
 export function formatEodWatchlist(plan: OvernightPlan): string {
+  if (plan.recommendations.length === 0) {
+    return [
+      "**NEXT SESSION WATCHLIST**",
+      "",
+      "No qualified setups yet.",
+      "",
+      "Premarket revalidation will run before options open.",
+    ].join("\n");
+  }
   return [
-    `**NEXT SESSION WATCHLIST** - ${plan.tradingDay}`,
-    "_WATCH only. Not executable after hours. VERIFY CONTRACT AFTER OPTIONS OPEN._",
+    "**NEXT SESSION WATCHLIST**",
+    "_WATCH only. Not executable after hours._",
     "",
-    `SPY context: ${plan.marketContext.spyNote}`,
-    `QQQ context: ${plan.marketContext.qqqNote}`,
-    plan.marketContext.newsNote ? `Catalyst context: ${plan.marketContext.newsNote}` : null,
-    "",
-    ...plan.recommendations.slice(0, 8).map(formatRec),
-    "",
-    `Plan version: ${plan.planVersion}`,
+    ...plan.recommendations.slice(0, 5).map(formatRec),
   ].filter(Boolean).join("\n");
 }
 

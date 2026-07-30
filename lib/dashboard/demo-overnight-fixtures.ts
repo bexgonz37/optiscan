@@ -7,6 +7,8 @@ export const DEMO_OVERNIGHT_PLAN: OvernightPlan = {
   tradingDay: "2026-07-28",
   builtAtMs: Date.now(),
   planVersion: "overnight-v1-demo",
+  needsMoreData: [],
+  omitted: [],
   marketContext: {
     spyNote: "SPY: prior close structure intact; AH drift mild",
     qqqNote: "QQQ: relative strength vs SPY into close",

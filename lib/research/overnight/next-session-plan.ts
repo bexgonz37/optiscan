@@ -5,7 +5,7 @@
 import { tradingDay } from "../../trading-session.ts";
 
 export type OvernightBias = "bullish" | "bearish" | "neutral";
-export type PreferredMoneyness = "ATM" | "ITM" | "OTM";
+export type PreferredMoneyness = "ATM" | "ITM" | "OTM" | "ATM or 1 strike ITM";
 
 export interface OvernightRecommendation {
   symbol: string;
@@ -25,6 +25,17 @@ export interface OvernightRecommendation {
   rank: number;
   priorContractContext: string | null;
   status?: WatchlistRowStatus;
+  planStatus?: PlanStatus;
+  thesisScore?: number | null;
+  openReadinessScore?: number | null;
+  triggerText?: string | null;
+  invalidationText?: string | null;
+  thesis?: string | null;
+  catalyst?: string | null;
+  sourceTimestampMs?: number | null;
+  sourceFreshness?: string;
+  rankingReason?: string | null;
+  diagnosticReason?: string | null;
 }
 
 export interface OvernightPlan {
@@ -32,12 +43,16 @@ export interface OvernightPlan {
   builtAtMs: number;
   planVersion: string;
   recommendations: OvernightRecommendation[];
+  needsMoreData: OvernightRecommendation[];
+  omitted: OvernightRecommendation[];
   marketContext: {
     spyNote: string;
     qqqNote: string;
     newsNote: string;
   };
 }
+
+export type PlanStatus = "QUALIFIED_PLAN" | "PARTIAL_PLAN" | "GENERIC_FALLBACK" | "INSUFFICIENT_DATA";
 
 export type WatchlistVersionKind =
   | "next_session_watchlist"
@@ -139,50 +154,145 @@ export function ensureOvernightWatchlistSchema(db: PlanDb): void {
   `);
 }
 
-function readIndexNote(db: PlanDb, symbol: string): string {
-  if (!hasTable(db, "index_intel") && !hasTable(db, "market_snapshots")) {
-    return `${symbol} context UNAVAILABLE`;
-  }
-  try {
-    if (hasTable(db, "options_alerts")) {
-      const row = db.prepare(
-        `SELECT symbol, created_at FROM options_alerts WHERE symbol = ? ORDER BY created_at DESC LIMIT 1`,
-      ).get(symbol) as { symbol?: string } | undefined;
-      if (row) return `${symbol}: prior session alert history present`;
-    }
-  } catch { /* ignore */ }
-  return `${symbol}: using prior-session structure only`;
+type AlertStructureRow = {
+  ticker: string; direction: string | null; option_side: string | null; alert_type: string | null;
+  price_at_alert: number | null; vwap_at_alert: number | null; signal_score: number | null;
+  capture_confidence: number | null; relative_volume: number | null; percent_move_at_alert: number | null;
+  catalyst_summary: string | null; catalyst_type: string | null; public_explanation: string | null;
+  alert_time: string; trading_day: string; created_at: string;
+};
+
+function numberOrNull(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
 }
 
-function candidatesFromDb(db: PlanDb): { symbol: string; side: string; strategy: string | null; quality: number | null }[] {
-  const out: { symbol: string; side: string; strategy: string | null; quality: number | null }[] = [];
+function money(value: number): string {
+  return `$${value.toFixed(2)}`;
+}
+
+function parseTimestamp(value: string | null | undefined): number | null {
+  const ms = Date.parse(String(value ?? ""));
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function latestAlertStructures(db: PlanDb): AlertStructureRow[] {
+  if (!hasTable(db, "alerts")) return [];
   try {
-    if (hasTable(db, "options_delivery_decisions")) {
-      const rows = db.prepare(`
-        SELECT symbol, side, strategy, quality_score
-        FROM options_delivery_decisions
-        ORDER BY COALESCE(decided_at_ms, 0) DESC
-        LIMIT 40
-      `).all() as { symbol: string; side: string; strategy: string | null; quality_score: number | null }[];
-      for (const r of rows) {
-        if (!r?.symbol) continue;
-        if (out.some((x) => x.symbol === r.symbol)) continue;
-        out.push({
-          symbol: String(r.symbol).toUpperCase(),
-          side: String(r.side ?? "call"),
-          strategy: r.strategy,
-          quality: r.quality_score,
-        });
-        if (out.length >= 8) break;
-      }
+    const rows = db.prepare(`
+      SELECT ticker, direction, option_side, alert_type, price_at_alert, vwap_at_alert,
+             signal_score, capture_confidence, relative_volume, percent_move_at_alert,
+             catalyst_summary, catalyst_type, public_explanation, alert_time, trading_day, created_at
+      FROM alerts
+      WHERE asset_class = 'options'
+        AND ticker IS NOT NULL
+        AND alert_time IS NOT NULL
+      ORDER BY alert_time DESC
+      LIMIT 200
+    `).all() as AlertStructureRow[];
+    const bySymbol = new Map<string, AlertStructureRow>();
+    for (const row of rows) {
+      const symbol = String(row.ticker ?? "").toUpperCase();
+      if (!symbol || bySymbol.has(symbol)) continue;
+      bySymbol.set(symbol, row);
     }
-  } catch { /* ignore */ }
-  if (out.length === 0) {
-    for (const s of ["SPY", "QQQ", "NVDA", "META"]) {
-      out.push({ symbol: s, side: "call", strategy: "structure_watch", quality: 0.55 });
-    }
+    return [...bySymbol.values()];
+  } catch {
+    return [];
   }
-  return out;
+}
+
+function latestMarketContext(db: PlanDb): { spyNote: string; qqqNote: string; available: boolean } {
+  if (!hasTable(db, "market_context_snapshots")) {
+    return { spyNote: "Market context unavailable", qqqNote: "Market context unavailable", available: false };
+  }
+  try {
+    const row = db.prepare(`
+      SELECT spy_trend, qqq_trend, freshness, created_at_ms
+      FROM market_context_snapshots ORDER BY created_at_ms DESC LIMIT 1
+    `).get() as { spy_trend?: string | null; qqq_trend?: string | null; freshness?: string | null } | undefined;
+    if (!row?.spy_trend && !row?.qqq_trend) {
+      return { spyNote: "Market context unavailable", qqqNote: "Market context unavailable", available: false };
+    }
+    return {
+      spyNote: row.spy_trend ? `SPY trend: ${row.spy_trend}` : "SPY context unavailable",
+      qqqNote: row.qqq_trend ? `QQQ trend: ${row.qqq_trend}` : "QQQ context unavailable",
+      available: Boolean(row.spy_trend && row.qqq_trend),
+    };
+  } catch {
+    return { spyNote: "Market context unavailable", qqqNote: "Market context unavailable", available: false };
+  }
+}
+
+function plainThesis(row: AlertStructureRow, bullish: boolean): string | null {
+  const explanation = String(row.public_explanation ?? "").replace(/\s+/g, " ").trim();
+  if (explanation) {
+    const sentence = explanation.split(/(?<=[.!?])\s+/)[0]?.trim();
+    if (sentence && sentence.length >= 24) return sentence;
+  }
+  const move = numberOrNull(row.percent_move_at_alert);
+  const rvol = numberOrNull(row.relative_volume);
+  if (move != null && rvol != null) {
+    return bullish
+      ? `Price showed a ${move.toFixed(1)}% prior-session move with ${rvol.toFixed(1)}x relative volume.`
+      : `Price showed a ${Math.abs(move).toFixed(1)}% prior-session decline with ${rvol.toFixed(1)}x relative volume.`;
+  }
+  return null;
+}
+
+function planFromAlert(db: PlanDb, row: AlertStructureRow, indexContextAvailable: boolean): OvernightRecommendation {
+  const symbol = String(row.ticker).toUpperCase();
+  const bearish = String(row.direction ?? row.option_side ?? "").toLowerCase().includes("bear");
+  const bullish = !bearish;
+  const price = numberOrNull(row.price_at_alert);
+  const vwap = numberOrNull(row.vwap_at_alert);
+  const sourceTimestampMs = parseTimestamp(row.alert_time) ?? parseTimestamp(row.created_at);
+  const thesis = plainThesis(row, bullish);
+  const score = numberOrNull(row.signal_score) ?? numberOrNull(row.capture_confidence);
+  const missing: string[] = [];
+  if (!price || price <= 0) missing.push("prior-session price");
+  if (!vwap || vwap <= 0) missing.push("prior-session VWAP");
+  if (!sourceTimestampMs) missing.push("source timestamp");
+  if (!thesis) missing.push("plain-English thesis");
+  if (score == null) missing.push("signal score");
+
+  const direction = bullish ? "bullish" : "bearish";
+  const triggerText = price == null ? null : bullish
+    ? `Hold above ${money(price)} and reclaim it after the open.`
+    : `Lose ${money(price)} and fail to reclaim it after the open.`;
+  const invalidationText = vwap == null ? null : bullish
+    ? `Lose VWAP near ${money(vwap)} and fail to reclaim.`
+    : `Reclaim VWAP near ${money(vwap)} and hold.`;
+  const triggerLevel = price;
+  const invalidationLevel = vwap;
+  const status: PlanStatus = missing.length === 0 && indexContextAvailable
+    ? "QUALIFIED_PLAN"
+    : missing.length === 0 ? "PARTIAL_PLAN"
+    : "INSUFFICIENT_DATA";
+  const thesisScore = score == null ? null : Math.max(0, Math.min(100, Math.round(score)));
+  const levelClarity = price != null && vwap != null ? 25 : 0;
+  const volumeScore = Math.min(15, Math.max(0, (numberOrNull(row.relative_volume) ?? 0) * 5));
+  const openReadinessScore = status === "QUALIFIED_PLAN" && thesisScore != null
+    ? Math.round(Math.min(100, thesisScore * 0.55 + levelClarity + volumeScore + 5))
+    : null;
+  const catalyst = String(row.catalyst_summary ?? "").trim() || "No confirmed catalyst";
+  return {
+    symbol, bias: direction, setupFamily: String(row.alert_type ?? "prior_session_structure"),
+    triggerLevel, invalidationLevel, preferredDteRange: "1-5 DTE", preferredMoneyness: "ATM or 1 strike ITM",
+    contractSelectionGuidance: "Verify exact contract after options open", confidence: thesisScore ?? 0,
+    supportingEvidence: [
+      `Prior-session alert recorded ${row.alert_time}`,
+      price != null ? `Prior close reference ${money(price)}` : "Prior close unavailable",
+      vwap != null ? `VWAP reference ${money(vwap)}` : "VWAP unavailable",
+    ],
+    mainRisk: "A premarket gap can invalidate the prior-session structure before the options market opens.",
+    verifyContractAfterOpen: true, quoteContext: "STALE_PRIOR_SESSION", executable: false, rank: 0,
+    priorContractContext: priorContract(db, symbol), status: "WATCH", planStatus: status,
+    thesisScore, openReadinessScore, triggerText, invalidationText, thesis, catalyst, sourceTimestampMs,
+    sourceFreshness: sourceTimestampMs ? "Prior-session reference" : "Unavailable",
+    rankingReason: thesisScore == null ? null : `Thesis ${thesisScore}/100; levels ${price != null && vwap != null ? "clear" : "incomplete"}; ${indexContextAvailable ? "market context aligned" : "market context unavailable"}.`,
+    diagnosticReason: missing.length ? `Missing ${missing.join(", ")}.` : indexContextAvailable ? null : "Market context unavailable.",
+  };
 }
 
 function priorContract(db: PlanDb, symbol: string): string | null {
@@ -202,52 +312,36 @@ function priorContract(db: PlanDb, symbol: string): string | null {
  */
 export function buildNextSessionPlan(db: PlanDb, nowMs: number = Date.now()): OvernightPlan {
   const day = tradingDay(nowMs);
-  const cands = candidatesFromDb(db);
-  const recommendations: OvernightRecommendation[] = cands.map((c, i) => {
-    const bullish = String(c.side).toLowerCase() !== "put";
-    const bias: OvernightBias = bullish ? "bullish" : "bearish";
-    const conf = Math.round(Math.max(40, Math.min(90, (c.quality ?? 0.55) * 100)));
-    return {
-      symbol: c.symbol,
-      bias,
-      setupFamily: c.strategy ?? "next_session_structure",
-      triggerLevel: null,
-      invalidationLevel: null,
-      preferredDteRange: "0–5",
-      preferredMoneyness: "ATM",
-      contractSelectionGuidance: bullish
-        ? "Prefer liquid near-ATM calls after open; re-check spread ≤10%"
-        : "Prefer liquid near-ATM puts after open; re-check spread ≤10%",
-      confidence: conf,
-      supportingEvidence: [
-        "Prior-session delivery / decision history",
-        "SPY/QQQ market context from last regular session",
-        "Historical quant lane sample (advisory)",
-      ],
-      mainRisk: "Gap through levels at open can invalidate structure before a fresh quote exists",
-      verifyContractAfterOpen: true,
-      quoteContext: "STALE_PRIOR_SESSION",
-      executable: false,
-      rank: i + 1,
-      priorContractContext: priorContract(db, c.symbol),
-    };
-  });
+  // There is deliberately NO generic fallback. A symbol reaches the published plan only by
+  // carrying real prior-session evidence; when nothing qualifies, the plan is empty.
+  const marketContext = latestMarketContext(db);
+  const plans = latestAlertStructures(db).map((row) => planFromAlert(db, row, marketContext.available));
 
   return {
     tradingDay: day,
     builtAtMs: nowMs,
-    planVersion: `overnight-v1-${day}`,
-    recommendations,
+    planVersion: `overnight-v2-${day}`,
+    recommendations: plans
+      .filter((row) => row.planStatus === "QUALIFIED_PLAN")
+      .sort((a, b) => (b.openReadinessScore ?? -1) - (a.openReadinessScore ?? -1) || (b.thesisScore ?? -1) - (a.thesisScore ?? -1))
+      .slice(0, 5)
+      .map((row, index) => ({ ...row, rank: index + 1 })),
+    needsMoreData: plans
+      .filter((row) => row.planStatus === "PARTIAL_PLAN" || row.planStatus === "INSUFFICIENT_DATA"),
+    omitted: [],
     marketContext: {
-      spyNote: readIndexNote(db, "SPY"),
-      qqqNote: readIndexNote(db, "QQQ"),
-      newsNote: "News/earnings: UNAVAILABLE unless separately sourced — never invented",
+      spyNote: marketContext.spyNote,
+      qqqNote: marketContext.qqqNote,
+      newsNote: "No confirmed catalyst",
     },
   };
 }
 
 export function persistOvernightPlan(db: PlanDb, plan: OvernightPlan): void {
   ensureOvernightWatchlistSchema(db);
+  // A clean empty plan must clear an older published version; otherwise stale
+  // placeholder rows can survive after the evidence gate correctly rejects them.
+  db.prepare(`DELETE FROM overnight_watchlist WHERE trading_day = ?`).run(plan.tradingDay);
   for (const r of plan.recommendations) {
     db.prepare(`
       INSERT INTO overnight_watchlist (trading_day, symbol, payload_json, rank, plan_version, built_at_ms)
@@ -274,6 +368,8 @@ export function loadOvernightPlan(db: PlanDb, day?: string): OvernightPlan | nul
     builtAtMs: rows[0]?.built_at_ms ?? Date.now(),
     planVersion: rows[0]?.plan_version ?? `overnight-v1-${trading}`,
     recommendations,
+    needsMoreData: [],
+    omitted: [],
     marketContext: {
       spyNote: "loaded from overnight_watchlist",
       qqqNote: "loaded from overnight_watchlist",
@@ -316,21 +412,17 @@ function confidenceBand(confidence: number): "LOW" | "MEDIUM" | "HIGH" {
   return "LOW";
 }
 
-function numericTrigger(v: number | null): string {
-  return v == null ? "VERIFY AT OPEN" : String(v);
-}
-
 export function normalizeWatchlistPlan(plan: OvernightPlan): NormalizedWatchlistRow[] {
   return plan.recommendations.map((r) => ({
     rank: r.rank,
     symbol: r.symbol.toUpperCase(),
     direction: r.bias === "bearish" ? "PUT" : "CALL",
     setupFamily: r.setupFamily,
-    trigger: numericTrigger(r.triggerLevel),
-    invalidation: numericTrigger(r.invalidationLevel),
+    trigger: r.triggerText ?? (r.triggerLevel == null ? "Unavailable" : String(r.triggerLevel)),
+    invalidation: r.invalidationText ?? (r.invalidationLevel == null ? "Unavailable" : String(r.invalidationLevel)),
     confidenceBand: confidenceBand(r.confidence),
     catalyst: plan.marketContext.newsNote || "not stored",
-    status: r.status ?? (r.triggerLevel == null ? "VERIFY AT OPEN" : "WATCH"),
+    status: r.status ?? "WATCH",
     preferredDte: r.preferredDteRange,
     preferredMoneyness: r.preferredMoneyness,
   }));

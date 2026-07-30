@@ -32,6 +32,24 @@ type Row = {
   core?: boolean;
 };
 
+type PlanRow = {
+  symbol: string;
+  bias: "bullish" | "bearish";
+  rank: number;
+  triggerText?: string | null;
+  invalidationText?: string | null;
+  thesis?: string | null;
+  diagnosticReason?: string | null;
+  thesisScore?: number | null;
+  openReadinessScore?: number | null;
+};
+
+type OvernightPlan = {
+  recommendations?: PlanRow[];
+  needsMoreData?: PlanRow[];
+  omitted?: PlanRow[];
+};
+
 function dirTone(direction?: string | null): BadgeTone {
   const d = String(direction ?? "").toLowerCase();
   if (d === "bullish") return "bull";
@@ -48,6 +66,7 @@ export default function WatchlistPage() {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [running, setRunning] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [plan, setPlan] = useState<OvernightPlan | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -57,6 +76,8 @@ export default function WatchlistPage() {
       const tape: Row[] = Array.isArray(rt.tape) ? rt.tape : Array.isArray(rt.movers) ? rt.movers : [];
       setRows(tape);
       setRunning(Boolean(rt.running));
+      const planRes = await fetch("/api/now", { cache: "no-store", headers: scanHeaders() });
+      if (planRes.ok) setPlan((await planRes.json())?.overnight ?? null);
       setError(null);
     } catch (err: any) {
       setError(err?.message ?? "Could not load the watchlist.");
@@ -86,9 +107,33 @@ export default function WatchlistPage() {
   ];
 
   const sorted = (rows ?? []).slice().sort((a, b) => Math.abs(b.movePct ?? 0) - Math.abs(a.movePct ?? 0));
+  const planRows = plan?.recommendations ?? [];
+  const needsMoreData = plan?.needsMoreData ?? [];
+  const omitted = plan?.omitted ?? [];
 
   return (
     <PageContainer>
+      <Card title="Qualified Plans" meta={`${planRows.length} evidence-backed next-session setups`}>
+        {planRows.length ? (
+          <div className="stack-gap">
+            {planRows.map((item) => (
+              <button key={`${item.symbol}-${item.rank}`} type="button" className="ui-list-row" onClick={() => openLiveChart(item.symbol)}>
+                <strong>#{item.rank} {item.symbol} {item.bias === "bearish" ? "PUT" : "CALL"}</strong>
+                <span>{item.triggerText}</span>
+                <span>{item.invalidationText}</span>
+                <span>{item.thesis}</span>
+                <small>Thesis {item.thesisScore ?? "Unavailable"} · Open readiness {item.openReadinessScore ?? "Unavailable"}</small>
+              </button>
+            ))}
+          </div>
+        ) : <p className="cc-term-empty">No qualified next-session plans yet. Premarket revalidation will run before options open.</p>}
+      </Card>
+      {needsMoreData.length ? <Card title="Needs More Data" meta={`${needsMoreData.length} omitted from Discord`}>
+        <div className="stack-gap">{needsMoreData.map((item) => <p key={item.symbol}><strong>{item.symbol}</strong>: {item.diagnosticReason ?? "Required structure evidence is incomplete."}</p>)}</div>
+      </Card> : null}
+      {omitted.length ? <Card title="Omitted" meta={`${omitted.length} not publishable`}>
+        <div className="stack-gap">{omitted.map((item) => <p key={item.symbol}><strong>{item.symbol}</strong>: {item.diagnosticReason ?? "Not publishable."}</p>)}</div>
+      </Card> : null}
       <Card
         title="Monitored symbols"
         meta={rows ? `${rows.length} tracked` : undefined}

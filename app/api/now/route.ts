@@ -73,7 +73,7 @@ export async function GET(req: Request) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { loadOvernightPlan, buildNextSessionPlan, persistOvernightPlan } = require("@/lib/research/overnight/next-session-plan");
     let plan = loadOvernightPlan(db);
-    if (!plan && !operating.optionsExecutableWindow) {
+    if (!operating.optionsExecutableWindow) {
       plan = buildNextSessionPlan(db, now);
       persistOvernightPlan(db, plan);
     }
@@ -277,6 +277,9 @@ export async function GET(req: Request) {
           planVersion: overnight.planVersion,
           count: overnight.recommendations?.length ?? 0,
           marketContext: overnight.marketContext,
+          recommendations: overnight.recommendations ?? [],
+          needsMoreData: overnight.needsMoreData ?? [],
+          omitted: overnight.omitted ?? [],
         }
       : null,
   });
