@@ -117,7 +117,64 @@ leading hypothesis, and the smallest safe fix is to align `getQuote`'s window
 with capture's rather than to raise page counts.** Do not pre-emptively change
 it: the gate must observe the real behaviour first.
 
-## Exact next bounded checkpoint — AUTOMATIC, NO HUMAN REQUIRED
+## 2026-07-31 live session — what actually happened
+
+Deployed today, in order: `be30aa0` capture telemetry, `68424d7` raw-timestamp
+probe, `a4a7f31` timestamp normalization, `7a6267a` thesis-lane authority.
+
+### The zero-case mystery, solved by measuring rather than guessing
+
+Capture telemetry showed `CAPTURE_CALLED 75`, `CAPTURE_BLOCKED 75`, dominant
+blocker `EVIDENCE_FROM_FUTURE`. The radar was being called and was refusing
+everything — which the previous diagnostics could not distinguish from never
+being called at all.
+
+The probe then recorded raw provider timestamps beside the clock they were
+compared against:
+
+    COIN raw 1785510912137034800  now 1785510921734  ratio 999999.995
+
+19 digits against 13. **Nanoseconds.** `now - ts` was hugely negative, so every
+option quote read as decades in the future.
+
+**Option freshness checking was not strict — it was INERT.** A negative age
+passes every "older than X" test, so stale option quotes were never caught on
+this field. Normalizing makes that check work for the first time.
+
+Result: cases went 0 -> 13 -> 34 in one afternoon. Rejections are now a truthful
+distribution (STALE_QUOTE, DUPLICATE_ACTIVE_CASE, UNUSABLE_LIQUIDITY).
+
+### The AAPL duplicate, root-caused and fixed
+
+Three AAPL PUT alerts on 2026-07-29 for the SAME OCC O:AAPL260729P00340000 at
+14:50, 15:02, 15:44. `alertRecentDuplicate` is an 8-minute window for core
+symbols; the repeats were 12 and 42 minutes apart. It asks "did we alert
+recently", never "is this idea still open".
+
+`lib/thesis-lane.ts` adds authority keyed on symbol + direction + optionType +
+session, deliberately EXCLUDING strike, expiration and strategy. It fails OPEN:
+if unavailable, the scanner keeps its previous behaviour, because a safety
+improvement must not become a new way to silence alerts.
+
+### The activation gate locked today — correctly
+
+The gate ran during 09:40-11:30 ET while everything was still nanosecond-broken,
+saw >= 6 attempts with zero accepted, and set `BLOCKED_QUOTE_PATH_DEFECT`. That
+is the gate catching a real defect. It is per-day and does NOT auto-unblock;
+**do not clear it manually.** It re-arms tomorrow on its own and should pass,
+because the quote path now works.
+
+### Watch on Monday
+
+Zero subscriber alerts fired after the normalization deploy. The last Discord
+send (09:37 ET) predates the deploy by two hours and alerts cluster at the open,
+so this is probably normal — but normalization now makes freshness checks
+actually reject stale quotes, so if volume stays at zero through Monday's open
+the thresholds are biting on correct data for the first time and need review.
+The thresholds themselves were NOT changed.
+
+## Exact next bounded checkpoint
+ — AUTOMATIC, NO HUMAN REQUIRED
 
 Task ID: `high-asymmetry-automatic-activation`
 
