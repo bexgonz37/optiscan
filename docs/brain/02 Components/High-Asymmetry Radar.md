@@ -644,6 +644,100 @@ research routes present; `git diff --check` clean; no migration added.
   strategy performed at zero. Asserted by test.
 - No screenshot, article, or social post can supply a price to the radar.
 
+## Paper-trading lane (added 2026-07-30) — BUILT_DISABLED
+
+Every qualifying shadow case automatically creates and manages an owner-private
+SIMULATED position. Nothing here can place a real order, create a subscriber
+SEND, or touch a subscriber paper trade.
+
+### Why a separate TABLE, not a separate column value
+
+The existing paper population lives in `options_paper_trades`, separated by
+`paper_kind` (DELIVERED_ALERT_PAPER / RESEARCH_ONLY_PAPER /
+ZERO_DTE_RESEARCH_PAPER / BEARISH_RESEARCH_PAPER). Adding a fifth kind would
+have put research P&L one forgotten `WHERE` clause away from a subscriber win
+rate. `asymmetry_paper_positions` is a different table, so no existing query
+can absorb it by accident. Asserted by test.
+
+### Runtime graph
+
+| Node | Caller | File | Trigger | Reads | Writes |
+| --- | --- | --- | --- | --- | --- |
+| capture | live options loop | `capture.ts` | CONTRACT_SELECTED | — | `asymmetry_cases` |
+| state sweep | scheduler `asymmetryTransitions` | `transition-runner.ts` | 60s | cases | `asymmetry_transitions` |
+| paper entry | scheduler `asymmetryPaper` | `paper/entry.ts` | 60s | cases | `asymmetry_paper_positions` / `_skips` |
+| management | scheduler `asymmetryPaper` | `paper/runner.ts` | 60s | positions | `asymmetry_paper_marks`, positions |
+| Quant | scheduler `asymmetryEod` | `paper/quant.ts` | hourly | positions, skips | `asymmetry_quant_reports` |
+| report delivery | scheduler `asymmetryEod` | `paper/report-delivery.ts` | hourly, once/session | review | `asymmetry_paper_report_delivery` |
+| AI advisory | scheduler `asymmetryEod` | `lib/ai/asymmetry-explain.ts` | after persistence | review | `asymmetry_ai_cache` / `_ledger` |
+
+Graphify resolves every intra-lane edge as `calls [EXTRACTED]`. The three
+scheduler -> runner edges remain unresolvable for the documented reason: the
+scheduler uses dynamic `require()` for all 26 of its jobs. Those are proven by
+source and by `tests/high-asymmetry-paper-graph.test.mjs` instead.
+
+### Decisions worth remembering
+
+- **Entry is the ask, marks and exits are the bid.** Conservative on both sides.
+  A mid fill would flatter every result in this lane by roughly a full spread,
+  and it would also disagree with `asymmetry_outcomes`, which already grades
+  from `early_ask`.
+- **An unobtainable exit is UNVERIFIED, not a loss.** When an exit rule fires
+  and no valid bid exists, the position stays OPEN with the reason recorded and
+  a bounded retry count. It is never closed at zero. Every return statistic uses
+  only VERIFIED exits; the rest is reported as `missingDataRate`.
+- **Sizing that cannot be computed is null, never zero contracts.** A zero-size
+  position would enter the cohort having risked nothing and returned nothing —
+  a fabricated data point.
+- **One position per (session, symbol, direction, exact OCC, setup).** Enforced
+  by the PRIMARY KEY, not by a read-then-write check, because the 60s sweep and
+  the live loop run in the same process.
+- **`listCasesOnDb` had to start returning `setup_family`.** It is part of the
+  position identity; inferring it would have collapsed every fingerprint to
+  `NO_SETUP` and silently merged distinct setups into one position.
+- **TIME_STOP outranks SESSION_END.** A position still open at the bell after
+  hours of going nowhere should say so; "closed at the close" would hide why it
+  was still open.
+- **Quant proposes, never activates.** Every proposal is emitted
+  PROPOSED / NOT_IMPLEMENTED and nothing reads one back into a threshold.
+  Cohorts are separated by `rules_version` and never pooled across versions.
+- **Empty cohorts are null, never 0%.** A count of zero trades is a fact; a win
+  rate over zero trades is not.
+
+### AI cost controls
+
+AI is OPTIONAL and strictly severable. The complete paper runtime — entry,
+sizing, marks, exits, grading, cohort statistics, the EOD report — has zero
+dependency on any AI module, asserted by a test that scans every file in the
+lane and by one that runs a full cycle and checks no `lib/ai` module was loaded.
+
+- ONE advisory call per trading session, after the deterministic review is
+  persisted. Never per candidate, quote, mark, transition, or paper update.
+- Cached by (trading date, review version); a duplicate run reuses the summary.
+- Daily and monthly limits; at the limit the status is `AI_BUDGET_BLOCKED` and
+  deterministic processing continues untouched.
+- Only `CALLED` consumes budget — blocked, cached, and failed do not.
+- Costs are ESTIMATED from character counts and labelled as such: the advisory
+  layer does not return provider usage, and a precise-looking fabricated number
+  would be worse than an open estimate.
+- Nothing buys credits or enables auto-reload.
+
+### Defect found and fixed while building this
+
+`notifyPrivateAsymmetry` takes an OPTIONAL injected `send`, and the scheduler
+never injected one. With capture enabled, private notifications enabled, and a
+webhook configured — the exact production state as of 2026-07-30 — every
+notification returned `NOT_CONFIGURED` ("no sender injected"). **No owner-private
+message could ever have been delivered**, while diagnostics reported
+`enabled: true, webhookConfigured: true` throughout.
+
+Fixed by `lib/notifications/asymmetry-private-send.ts`, injected by the
+scheduler. It lives outside `lib/research/asymmetry` on purpose so the radar's
+boundary rule — no file under that directory may contain a network call — stays
+absolute. That boundary test was also broadened to sweep `paper/`, which it had
+not been covering.
+
+
 ## Related notes
 
 - [[safety]]
