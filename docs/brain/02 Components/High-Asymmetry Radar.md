@@ -14,7 +14,8 @@ describes production behaviour on `main`.
 | Evidence model, states, outcomes, cohorts, replay apparatus | RESEARCH_ONLY |
 | Replay against real production data | LIVE_AND_VERIFIED (result: zero evidence, see below) |
 | Owner-private notification path (`private-notify.ts`) | BUILT_DISABLED |
-| Live candidate-stream intake | MISSING |
+| Live intake admission core (`live-intake.ts`) | BUILT_DISABLED |
+| Live intake WIRING into the candidate stream | MISSING |
 | Forward outcome tracking scheduler | MISSING |
 | End-of-day Quant evidence summary | MISSING |
 | Private diagnostics endpoint | MISSING |
@@ -64,6 +65,32 @@ findings that do not need data to be true:
    perfectly fresh. Found by a Phase 2 test and **fixed** in both
    `outcomes.ts` and `coverage-audit.ts`, which now require a mark to share the
    entry's trading day.
+
+## Live intake admission core — BUILT_DISABLED
+
+`lib/research/asymmetry/live-intake.ts`. PURE decision function. **Nothing
+calls it yet** — the wiring into the live candidate stream is still MISSING, so
+the radar observes nothing in production.
+
+Its purpose is to admit candidates EARLIER and with FEWER hard gates than the
+subscriber pipeline. The subscriber path is conservative because a bad SEND
+costs money; the radar's job is the opposite — observe before premium expands
+and record what was knowable at that moment. Applying subscriber gates here
+would reject exactly the early, incomplete candidates worth studying.
+
+**Hard blockers** (observation untrustworthy or duplicate): no exact OCC,
+contract identity mismatch, no executable quote, unusable spread (>35% of mid),
+zero open interest, future/stale/wrong-session evidence, duplicate active case,
+explicit invalidation.
+
+**Labelled and admitted anyway**: missing catalyst, market/sector alignment,
+IV, Greeks, relative volume, volume acceleration, compression state, level
+distances, prior move, VWAP relationship, OI, option volume.
+
+Two properties worth keeping: an *observed* open interest of 0 is data and is
+NOT labelled absent, whereas a null is; and `computeLeadTime` returns null —
+not zero — when the subscriber alert never fired, because "never happened" and
+"zero lead" are different facts.
 
 ## Owner-private notification path — BUILT_DISABLED
 

@@ -6,9 +6,9 @@ Task ID: high-asymmetry-live-intake
 
 - Repo: `C:\Users\bexgo\Downloads\optiscan-asymmetry` (separate worktree)
 - Branch: `feature/high-asymmetry-radar`
-- Local HEAD: the private-notify commit (this checkpoint)
-- `origin/main`: `0b67ba8` — this branch is NOT pushed and NOT merged
-- Deployed production commit: `0b67ba8` (served from `optiscan-main`; nothing
+- Local HEAD: the live-intake commit (this checkpoint)
+- `origin/main`: `49b2174` — this branch is NOT pushed and NOT merged
+- Deployed production commit: `49b2174` (served from `optiscan-main`; nothing
   on this branch is deployed)
 
 > Another workstream owns `optiscan-main`. Nothing here touches that checkout,
@@ -18,13 +18,15 @@ Task ID: high-asymmetry-live-intake
 
 - `lib/research/asymmetry/private-notify.ts` — owner-private notification path,
   code-complete and inert. Five gates: flag, dedicated webhook, subscriber-
-  collision refusal, early-states-only, noise control.
-- `tests/high-asymmetry-private-notify.test.mjs` — 17 focused tests.
+  collision refusal, early-states-only, noise control. 17 focused tests.
+- `lib/research/asymmetry/live-intake.ts` — admission core that admits EARLIER
+  and with FEWER hard gates than the subscriber pipeline; incomplete evidence is
+  labelled, not rejected. 13 focused tests. **Not wired to anything yet.**
 
 ## Verified locally
 
-- Focused: 17/17 pass
-- Full suite: **2604/2604** pass, 0 fail, 0 skipped
+- Focused: 17/17 (private notify) + 13/13 (live intake)
+- Full suite: **2617/2617** pass, 0 fail, 0 skipped
 - `npx tsc --noEmit --incremental false`: clean
 - `npm run build`: compiled successfully
 - `git diff --check`: clean
@@ -43,7 +45,8 @@ snapshot taken by the `optiscan-main` workstream.
 | Evidence / states / outcomes / cohorts / replay apparatus | RESEARCH_ONLY |
 | Replay executed against real production data | LIVE_AND_VERIFIED |
 | Owner-private notification path | BUILT_DISABLED |
-| Live candidate-stream intake | MISSING |
+| Live intake admission core | BUILT_DISABLED |
+| Live intake WIRING into candidate stream | MISSING |
 | Forward outcome tracking (1/3/5/10/15/30/60m) | MISSING |
 | End-of-day Quant evidence summary | MISSING |
 | Private diagnostics endpoint | MISSING |
@@ -89,11 +92,16 @@ Neither has been created or set. Both are required before the path can emit.
 
 ## Exact next bounded checkpoint
 
-Wire live shadow intake: call the radar from the existing candidate stream
-AFTER exact-OCC selection and BEFORE subscriber delivery, capturing the evidence
-fields already modelled. Persist via the existing additive research table.
-Intake must be flag-gated, must not alter any live SEND decision, and a capture
-failure must never block the scanner or Discord delivery.
+WIRE the admission core into the live candidate stream. `decideLiveIntake` is
+built and tested but nothing calls it, so the radar still observes nothing.
+Call it from the existing candidate flow AFTER exact-OCC selection and BEFORE
+subscriber delivery, persist admitted observations via an additive research
+table, and only then consider the private notification. The call must be
+flag-gated, must not alter any live SEND decision, and a capture failure must
+never block the scanner or Discord delivery.
+
+Still MISSING after that: forward outcome tracking (1/3/5/10/15/30/60m), the
+end-of-day Quant review, and private diagnostics.
 
 ## Stop conditions
 
