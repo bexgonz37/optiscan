@@ -1,6 +1,6 @@
 # Current Task Packet
 
-Task ID: high-asymmetry-observe-first-live-session
+Task ID: high-asymmetry-first-live-session-observation
 
 ## Active position
 
@@ -37,20 +37,25 @@ and a reader. Off by default at every stage.
 | AI advisory (injected, post-persistence) | BUILT_DISABLED |
 | Private diagnostics route | BUILT_DISABLED |
 | Verified quote provider | BUILT_DISABLED |
-| Merged to main and deployed | LIVE_AND_VERIFIED (disabled) |
-| Executed against a live candidate | MISSING |
-| Asymmetry tables on the production volume | MISSING (created lazily on first enabled write — correct) |
+| Merged to main and deployed | LIVE_AND_VERIFIED |
+| Flags activated in production | LIVE_AND_VERIFIED |
+| Runners executing (ran: true) | LIVE_AND_VERIFIED |
+| Executed against a live CANDIDATE | MISSING — market closed since activation |
+| Asymmetry tables on the production volume | MISSING until the first enabled write |
 | Subscriber SEND authority | MISSING (permanently, by design) |
 
-## Feature flags — all unset
+## Feature flags — ALL THREE NOW SET BY THE OWNER
 
-- `HIGH_ASYMMETRY_CAPTURE_ENABLED` — unset. Gates capture, transitions, marks,
-  and the EOD review. Unset means the entire radar does zero work.
-- `HIGH_ASYMMETRY_PRIVATE_ENABLED` — unset.
-- `HIGH_ASYMMETRY_PRIVATE_WEBHOOK` — unset.
+- `HIGH_ASYMMETRY_CAPTURE_ENABLED` — **enabled**
+- `HIGH_ASYMMETRY_PRIVATE_ENABLED` — **enabled**
+- `HIGH_ASYMMETRY_PRIVATE_WEBHOOK` — **configured**
 
-None has been created or set. Capture is deliberately separate from
-notification so the radar can collect silently before anything is surfaced.
+Verified by PRESENCE only; the webhook value has never been displayed,
+retrieved, or logged. The collision guard reports `refusedReason: null`, so the
+configured webhook is not the alerts, watchlist, recap, or generic webhook.
+
+I did not set these. No other Railway variable was changed;
+`DISCORD_WEBHOOK_RECAP` remains unconfigured.
 
 ## What remains unproven
 
@@ -71,15 +76,27 @@ notification so the radar can collect silently before anything is surfaced.
 
 Observe one live session with the radar DISABLED, then decide on activation.
 
-Steps 1 and 2 are DONE and verified in production at `cdfcfc7`:
+ACTIVATION IS DONE. Verified at `cdfcfc7`, pre-activation:
 - all three scheduler jobs ran and declined with the exact flag reason, errors []
 - diagnostics 200, zero cases, `canSendSubscriber false`, no webhook exposed
 - Discord byte-identical to baseline (sent24h 2, same lastSentAt); nothing sent
 - scanner `running: true`; all seven routes 200
 
-Remaining: request owner approval for the three variables, then observe ONE live
-session with capture enabled and notification still off, before surfacing
-anything.
+Activation verified after the variables were set. Market has been CLOSED
+throughout (activated ~00:50 ET Friday; next open 09:30 ET), so nothing has been
+captured.
+
+**Next: observe the first live session (Friday 2026-07-31, 09:30–16:00 ET).**
+Watch, in order:
+1. `activeCases` becomes non-zero — proves the live call site fires.
+2. The five tables get created on the first write.
+3. `markRejections` — the single most important unknown. If it fills with
+   `NO_QUOTE`, the OCC returned by `fetchOptionChain` does not match the stored
+   OCC and forward marking is inert. `PROVIDER_ERROR` instead means an outage.
+4. `recentTransitions` and `notifiedCount` — the first owner-private message.
+5. After 20:15 ET, the EOD review persists with `aiStatus: OK`.
+
+Do not tune any threshold during the first session.
 
 ## Stop conditions
 

@@ -1,9 +1,9 @@
 # High-Asymmetry Radar
 
-Status: **BUILT_DISABLED, DEPLOYED** — merged to `main` and live in production
-at `cdfcfc7` with all three flags unset. Verified inert: the scheduler jobs run
-and decline, zero cases exist, zero messages sent. It has NEVER executed against
-a live candidate.
+Status: **DEPLOYED_UNPROVEN, ACTIVATED** — merged to `main`, live in production,
+and all three flags are now SET by the owner. The runners are enabled and
+executing, but the market has been closed since activation, so the radar has
+still NEVER observed a live candidate. Zero cases exist.
 
 Merged to `main` and deployed disabled. Everything below describes code that is
 PRESENT in production but performing no work.
@@ -73,7 +73,46 @@ findings that do not need data to be true:
    `outcomes.ts` and `coverage-audit.ts`, which now require a mark to share the
    entry's trading day.
 
-## Production disabled-state proof (2026-07-31, commit `cdfcfc7`)
+## Controlled activation (2026-07-31, market closed)
+
+Owner set `HIGH_ASYMMETRY_CAPTURE_ENABLED=1`,
+`HIGH_ASYMMETRY_PRIVATE_ENABLED=1`, and `HIGH_ASYMMETRY_PRIVATE_WEBHOOK`.
+The webhook value has never been displayed, retrieved, or logged.
+
+Verified live from `/api/research/asymmetry/live`:
+
+- `privateNotification.enabled: true`
+- `privateNotification.webhookConfigured: true`
+- `refusedReason: null` — the **collision guard PASSES**, so the configured
+  webhook is not equal to the alerts, watchlist, recap, or generic webhook
+- `canSendSubscriber: false`, `automaticTrading: false`, `advisoryOnly: true`
+- Runners now report `ran: true` instead of the flag reason
+
+**Existing Discord routing is untouched:** `{options:true, watchlist:true,
+recap:false}`; Recaps still `BLOCKED / never`; `sent24h 2`,
+`lastSentAt 2026-07-30T22:01:11.886Z` — unchanged from before activation, so
+**nothing has been sent**. `DISCORD_WEBHOOK_RECAP` was not modified.
+
+### A real defect was found BY activating, and fixed
+
+The first enabled EOD run reported:
+
+    persisted:false  aiStatus:"OK"
+    errors:["persist: no such table: asymmetry_daily_reviews"]
+
+Two defects. The review wrote without calling `ensureAsymmetrySchema` (the case
+and transition writers do), so on a zero-case session nothing had created the
+tables and the measured review was silently lost — it would have started working
+by accident after the first captured case, which is worse than failing outright
+because the failure would look intermittent. And **AI ran anyway**: the ordering
+was right but the model call was never made conditional on persistence
+succeeding, so it explained a review that does not exist.
+
+Fixed in `6c15d3b`: the review ensures its own schema, and AI is skipped with an
+explicit reason when the review was not stored. Two regression tests written
+against the exact production symptom.
+
+## Production disabled-state proof (2026-07-31, commit `cdfcfc7`, pre-activation)
 
 Deployment `5686432103` reached `success`. `/api/healthz` serves `cdfcfc7` with
 `schemaOk: true`, `schemaMissing: []`, `missingLegacyColumns: []`,
