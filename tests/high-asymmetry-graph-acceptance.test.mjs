@@ -93,7 +93,7 @@ test("EDGE: transition runner reads cases, writes transitions, invokes the notif
   const res = await runAsymmetryTransitions(db, {
     // ask 2.05 vs a 2.00 entry is only a 2.5% expansion, so this is a genuine
     // TRIGGERED rather than a chase.
-    observe: () => ({ fingerprint: FP, bid: 2.00, ask: 2.05, quoteAtMs: OBSERVED, triggered: true, invalidated: false, spreadPct: 3, openInterest: 4000 }),
+    observe: async () => ({ fingerprint: FP, bid: 2.00, ask: 2.05, quoteAtMs: OBSERVED, triggered: true, invalidated: false, spreadPct: 3, openInterest: 4000 }),
     send: async (w, c) => { sends.push({ w, c }); return { ok: true }; },
     env: { ...ON, HIGH_ASYMMETRY_PRIVATE_ENABLED: "1", HIGH_ASYMMETRY_PRIVATE_WEBHOOK: "https://private/hook" },
     nowMs: OBSERVED + 60_000, sessionDate: SESSION,
@@ -107,12 +107,12 @@ test("EDGE: transition runner reads cases, writes transitions, invokes the notif
   db.close();
 });
 
-test("EDGE: mark runner writes marks; aggregator reads them and writes outcomes", () => {
+test("EDGE: mark runner writes marks; aggregator reads them and writes outcomes", async () => {
   const db = seeded();
   // 60+ minutes later: every horizon is due at once.
   const now = OBSERVED + 61 * 60_000;
-  const res = runDueAsymmetryMarks(db, {
-    quote: () => ({ optionSymbol: OCC, bid: 4.00, ask: 4.10, quoteAtMs: now - 1000 }),
+  const res = await runDueAsymmetryMarks(db, {
+    quote: async () => ({ quote: { optionSymbol: OCC, bid: 4.00, ask: 4.10, quoteAtMs: now - 1000 }, providerError: null }),
     nowMs: now, sessionDate: SESSION, env: ON,
   });
   assert.equal(res.ran, true);
@@ -132,7 +132,7 @@ test("EDGE: mark runner writes marks; aggregator reads them and writes outcomes"
 test("EDGE: EOD job reads cases/transitions/marks/outcomes, writes the review, then calls AI", async () => {
   const db = seeded();
   const now = OBSERVED + 61 * 60_000;
-  runDueAsymmetryMarks(db, { quote: () => ({ optionSymbol: OCC, bid: 4.0, ask: 4.1, quoteAtMs: now - 1000 }), nowMs: now, sessionDate: SESSION, env: ON });
+  await runDueAsymmetryMarks(db, { quote: async () => ({ quote: { optionSymbol: OCC, bid: 4.0, ask: 4.1, quoteAtMs: now - 1000 }, providerError: null }), nowMs: now, sessionDate: SESSION, env: ON });
   let aiSawReview = null;
   const res = await runAsymmetryEodReview(db, {
     nowMs: now, sessionDate: SESSION, env: ON,
@@ -181,7 +181,7 @@ test("the notifier is never reached for ineligible states", async () => {
   const db = seeded();
   const sends = [];
   const res = await runAsymmetryTransitions(db, {
-    observe: () => ({ fingerprint: FP, bid: 0.1, ask: 9.0, quoteAtMs: OBSERVED, triggered: false, invalidated: false, spreadPct: 200, openInterest: 4000 }),
+    observe: async () => ({ fingerprint: FP, bid: 0.1, ask: 9.0, quoteAtMs: OBSERVED, triggered: false, invalidated: false, spreadPct: 200, openInterest: 4000 }),
     send: async (w, c) => { sends.push({ w, c }); return { ok: true }; },
     env: { ...ON, HIGH_ASYMMETRY_PRIVATE_ENABLED: "1", HIGH_ASYMMETRY_PRIVATE_WEBHOOK: "https://private/hook" },
     nowMs: OBSERVED + 60_000, sessionDate: SESSION,
@@ -195,7 +195,7 @@ test("missing private config produces zero network calls", async () => {
   const db = seeded();
   let called = false;
   await runAsymmetryTransitions(db, {
-    observe: () => ({ fingerprint: FP, bid: 2.00, ask: 2.05, quoteAtMs: OBSERVED, triggered: true, invalidated: false, spreadPct: 3, openInterest: 4000 }),
+    observe: async () => ({ fingerprint: FP, bid: 2.00, ask: 2.05, quoteAtMs: OBSERVED, triggered: true, invalidated: false, spreadPct: 3, openInterest: 4000 }),
     send: async () => { called = true; return { ok: true }; },
     env: ON, // capture on, private notification NOT configured
     nowMs: OBSERVED + 60_000, sessionDate: SESSION,
@@ -234,14 +234,14 @@ test("due horizons are computed, not timed, and never repeat", () => {
   assert.deepEqual(dueHorizons(OBSERVED, OBSERVED + 61 * 60_000, [1, 3, 5, 10, 15, 30, 60]), []);
 });
 
-test("mark and outcome writes are repeat-safe", () => {
+test("mark and outcome writes are repeat-safe", async () => {
   const db = seeded();
   const now = OBSERVED + 61 * 60_000;
-  const deps = { quote: () => ({ optionSymbol: OCC, bid: 4.0, ask: 4.1, quoteAtMs: now - 1000 }), nowMs: now, sessionDate: SESSION, env: ON };
-  runDueAsymmetryMarks(db, deps);
+  const deps = { quote: async () => ({ quote: { optionSymbol: OCC, bid: 4.0, ask: 4.1, quoteAtMs: now - 1000 }, providerError: null }), nowMs: now, sessionDate: SESSION, env: ON };
+  await runDueAsymmetryMarks(db, deps);
   const first = db.prepare("SELECT COUNT(*) c FROM asymmetry_marks").get().c;
-  runDueAsymmetryMarks(db, deps);
-  runDueAsymmetryMarks(db, deps);
+  await runDueAsymmetryMarks(db, deps);
+  await runDueAsymmetryMarks(db, deps);
   assert.equal(db.prepare("SELECT COUNT(*) c FROM asymmetry_marks").get().c, first, "a replayed sweep must add nothing");
   assert.equal(db.prepare("SELECT COUNT(*) c FROM asymmetry_outcomes").get().c, 1, "outcomes must upsert, not duplicate");
   db.close();
@@ -257,9 +257,9 @@ test("an empty cohort yields null rates, never zero", () => {
 
 test("runner failures are isolated and never throw", async () => {
   const broken = { prepare() { throw new Error("disk full"); }, exec() { throw new Error("disk full"); } };
-  const t = await runAsymmetryTransitions(broken, { observe: () => null, env: ON, nowMs: OBSERVED, sessionDate: SESSION });
+  const t = await runAsymmetryTransitions(broken, { observe: async () => null, env: ON, nowMs: OBSERVED, sessionDate: SESSION });
   assert.ok(Array.isArray(t.errors));
-  const m = runDueAsymmetryMarks(broken, { quote: () => null, nowMs: OBSERVED, sessionDate: SESSION, env: ON });
+  const m = await runDueAsymmetryMarks(broken, { quote: async () => ({ quote: null, providerError: null }), nowMs: OBSERVED, sessionDate: SESSION, env: ON });
   assert.ok(Array.isArray(m.errors));
   const e = await runAsymmetryEodReview(broken, { nowMs: OBSERVED, sessionDate: SESSION, env: ON });
   assert.ok(Array.isArray(e.errors));
@@ -267,7 +267,7 @@ test("runner failures are isolated and never throw", async () => {
   // One bad case must not abort a sweep of many.
   const db = seeded();
   const res = await runAsymmetryTransitions(db, {
-    observe: () => { throw new Error("observer blew up"); },
+    observe: async () => { throw new Error("observer blew up"); },
     env: ON, nowMs: OBSERVED + 60_000, sessionDate: SESSION,
   });
   assert.equal(res.ran, true);
@@ -277,8 +277,8 @@ test("runner failures are isolated and never throw", async () => {
 
 test("all runners are OFF by default and do no work", async () => {
   const db = seeded();
-  const t = await runAsymmetryTransitions(db, { observe: () => null, env: {}, nowMs: OBSERVED, sessionDate: SESSION });
-  const m = runDueAsymmetryMarks(db, { quote: () => null, nowMs: OBSERVED, sessionDate: SESSION, env: {} });
+  const t = await runAsymmetryTransitions(db, { observe: async () => null, env: {}, nowMs: OBSERVED, sessionDate: SESSION });
+  const m = await runDueAsymmetryMarks(db, { quote: async () => ({ quote: null, providerError: null }), nowMs: OBSERVED, sessionDate: SESSION, env: {} });
   const e = await runAsymmetryEodReview(db, { nowMs: OBSERVED, sessionDate: SESSION, env: {} });
   for (const r of [t, m, e]) assert.equal(r.ran, false, "a disabled runner must not run");
   assert.equal(db.prepare("SELECT COUNT(*) c FROM asymmetry_marks").get().c, 0);

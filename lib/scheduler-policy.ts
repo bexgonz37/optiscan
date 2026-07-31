@@ -28,6 +28,7 @@ export interface SchedulerIntervals {
    * and rebuild the persisted plan. Owns every write GET /api/now used to perform.
    */
   watchlistPlanningMs: number;
+  asymmetryTransitionsMs: number;
   asymmetryMarksMs: number;
   asymmetryEodMs: number;
 }
@@ -69,6 +70,9 @@ export function schedulerIntervals(env: NodeJS.ProcessEnv = process.env): Schedu
     watchlistPlanningMs: clampInt(env.SCHED_WATCHLIST_PLANNING_MS, 10 * 60_000, 60_000, 6 * 60 * 60_000),
     // High-Asymmetry forward marks. 60s so the 1-minute horizon is reachable;
     // the runner itself only does due work, so a fast tick is cheap.
+    // High-Asymmetry state sweep. 60s: fast enough to catch a chase before it
+    // matters, bounded so a sweep cannot pile up on the beat.
+    asymmetryTransitionsMs: clampInt(env.SCHED_ASYMMETRY_TRANSITIONS_MS, 60_000, 30_000, 30 * 60_000),
     asymmetryMarksMs: clampInt(env.SCHED_ASYMMETRY_MARKS_MS, 60_000, 30_000, 30 * 60_000),
     // End-of-day review check. Hourly; the job itself is idempotent per day.
     asymmetryEodMs: clampInt(env.SCHED_ASYMMETRY_EOD_MS, 60 * 60_000, 5 * 60_000, 6 * 60 * 60_000),

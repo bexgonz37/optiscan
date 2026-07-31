@@ -90,8 +90,8 @@ export function nextState(
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
 export interface TransitionDeps {
-  /** Live evidence per fingerprint. Missing entry = no re-evaluation. */
-  observe: (c: ActiveCase) => CaseObservation | null;
+  /** Live evidence per fingerprint. ASYNC. Null = no re-evaluation this tick. */
+  observe: (c: ActiveCase) => Promise<CaseObservation | null> | CaseObservation | null;
   memory?: PrivateCaseMemory;
   send?: Parameters<typeof notifyPrivateAsymmetry>[1]["send"];
   env?: NodeJS.ProcessEnv;
@@ -122,7 +122,7 @@ export async function runAsymmetryTransitions(
 
     for (const c of cases) {
       try {
-        const obs = deps.observe(c);
+        const obs = await deps.observe(c);
         if (!obs) continue;
         const to = nextState(c.state, obs, c.earlyAsk);
         if (to === c.state) continue;

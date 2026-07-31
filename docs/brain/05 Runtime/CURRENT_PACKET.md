@@ -1,12 +1,12 @@
 # Current Task Packet
 
-Task ID: high-asymmetry-merge-and-observe
+Task ID: high-asymmetry-merge-disabled
 
 ## Active position
 
 - Repo: `C:\Users\bexgo\Downloads\optiscan-asymmetry` (separate worktree)
 - Branch: `feature/high-asymmetry-radar`
-- Local HEAD: the full-graph commit (this checkpoint)
+- Local HEAD: the blockers-resolved commit (this checkpoint)
 - `origin/main`: `49b2174` — this branch is NOT pushed and NOT merged
 - Deployed production commit: `49b2174` (served from `optiscan-main`; nothing
   on this branch is deployed)
@@ -25,8 +25,9 @@ Task ID: high-asymmetry-merge-and-observe
 
 ## Verified locally
 
-- Focused: 17 private-notify + 13 live-intake + 17 runtime-edge + 20 graph-acceptance
-- Full suite: **2654/2654 green, twice consecutively.** The previously flaky
+- Focused: 17 private-notify + 13 live-intake + 17 runtime-edge + 20
+  graph-acceptance + 10 quote-provider
+- Full suite: **2664/2664 green, twice consecutively.** The previously flaky
   timing test passed on both runs; no test was quarantined or weakened.
 - `tsc` clean, build clean, `git diff --check` clean, no destructive DDL.
 - `npx tsc --noEmit --incremental false`: clean
@@ -106,6 +107,9 @@ notification: the radar can collect silently without surfacing anything.
 
 Merge and deploy DISABLED, then observe. In order:
 
+0. BOTH pre-merge blockers are resolved: the quote provider is verified against
+   the real `buildLiveGradeDeps().getQuote` interface, and the transition runner
+   has a real scheduler caller (`asymmetryTransitions`, 60s).
 1. Merge current `main` into this branch, rerun full validation.
 2. Merge to `main`, push, deploy with ALL High-Asymmetry variables unset.
 3. Verify in production: health green, schema green, normal alerts unaffected,

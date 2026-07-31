@@ -30,7 +30,9 @@ export const MAX_MARK_QUOTE_AGE_MS = 120_000;
 type MarkDb = Parameters<typeof listCasesOnDb>[0];
 
 export type MarkRejection =
-  | "NO_QUOTE" | "STALE_QUOTE" | "FUTURE_QUOTE" | "WRONG_OCC" | "WRONG_SESSION";
+  | "NO_QUOTE" | "STALE_QUOTE" | "FUTURE_QUOTE" | "WRONG_OCC" | "WRONG_SESSION"
+  /** The provider itself failed. Distinct from a genuine absence of quote. */
+  | "PROVIDER_ERROR";
 
 export interface MarkQuote {
   optionSymbol: string;
@@ -85,15 +87,19 @@ export interface MarkRunResult {
 }
 
 export interface MarkDeps {
-  /** Fetch a present-time quote for an exact OCC. Injected for testability. */
-  quote: (optionSymbol: string) => MarkQuote | null;
+  /**
+   * Fetch a present-time quote for an exact OCC. ASYNC, and takes the
+   * underlying symbol too — this matches the real provider interface
+   * (`buildLiveGradeDeps().getQuote`), verified against source.
+   */
+  quote: (optionSymbol: string, underlyingSymbol: string) => Promise<{ quote: MarkQuote | null; providerError: string | null }>;
   nowMs: number;
   sessionDate: string;
   env?: NodeJS.ProcessEnv;
 }
 
 /** Sweep due marks for open cases, then re-aggregate outcomes. Never throws. */
-export function runDueAsymmetryMarks(db: MarkDb, deps: MarkDeps): MarkRunResult {
+export async function runDueAsymmetryMarks(db: MarkDb, deps: MarkDeps): Promise<MarkRunResult> {
   const out: MarkRunResult = { ran: false, reason: null, casesRead: 0, marksWritten: 0, marksRejected: 0, outcomesUpdated: 0, errors: [] };
   try {
     const env = deps.env ?? process.env;
@@ -111,8 +117,13 @@ export function runDueAsymmetryMarks(db: MarkDb, deps: MarkDeps): MarkRunResult 
         const due = dueHorizons(c.firstDetectedAtMs, deps.nowMs, marked);
         if (!due.length) continue;
         for (const horizon of due) {
-          const q = deps.quote(c.optionSymbol);
-          const rejection = q ? validateMark(q, c.optionSymbol, c.sessionDate, deps.nowMs) : "NO_QUOTE";
+          const fetched = await deps.quote(c.optionSymbol, c.symbol);
+          const q = fetched.quote;
+          // A provider outage is recorded as PROVIDER_ERROR so it can never be
+          // mistaken for a contract that genuinely had no market.
+          const rejection: MarkRejection | null = fetched.providerError
+            ? "PROVIDER_ERROR"
+            : q ? validateMark(q, c.optionSymbol, c.sessionDate, deps.nowMs) : "NO_QUOTE";
           const returnPct = !rejection && c.earlyAsk && c.earlyAsk > 0 && q?.bid != null
             ? round2(((q.bid - c.earlyAsk) / c.earlyAsk) * 100)
             : null;

@@ -78,13 +78,28 @@ Every node now has a real caller or scheduler. Verified by Graphify as 1-hop
 `calls` edges, not by documentation:
 
     runOptionsCandidate -> captureAsymmetryCandidate -> openAsymmetryCaseOnDb
-    runAsymmetryTransitions -> notifyPrivateAsymmetry
-    runDueAsymmetryMarks -> aggregateOutcomesOnDb
-    runAsymmetryEodReview -> buildDeterministicReview -> (injected AI)
+    asymmetryTransitionsJob -> runAsymmetryTransitions -> recordTransitionOnDb
+                                                       -> notifyPrivateAsymmetry
+    asymmetryMarksJob -> runDueAsymmetryMarks -> writeMarkOnDb
+                                              -> aggregateOutcomesOnDb
+    asymmetryEodJob -> runAsymmetryEodReview -> buildDeterministicReview -> (injected AI)
+    observeAsymmetryCase -> liveAsymmetryQuote -> buildLiveGradeDeps().getQuote
 
-Callers: the live options loop calls capture; the scheduler beat calls
-`asymmetryMarks` (60s due-work) and `asymmetryEod` (hourly, idempotent per
-trading day). All five tables have both a writer and a reader.
+Callers: the live options loop calls capture; the scheduler beat runs
+`asymmetryTransitions` (60s), `asymmetryMarks` (60s due-work), and
+`asymmetryEod` (hourly, idempotent per trading day). All five tables have both
+a writer and a reader.
+
+**Graphify caveat, stated honestly.** Graphify confirms 7 of the 10 edges as
+direct 1-hop `calls`. The three scheduler -> runner edges are NOT provable by
+Graphify: the scheduler uses dynamic `require()` (26 of them, the established
+convention for every job in this file), which the AST extractor cannot resolve.
+Querying those pairs returns an incidental multi-hop path through `tradingDay`,
+which is NOT proof. The pre-existing `watchlistPlanningJob` shows the identical
+artefact, so this is a tool limitation across all scheduler jobs rather than a
+weakness in this wiring. Those three edges are proven instead by source
+(`scheduler.ts:457/462`, `477/482`, `497/502`) and by assertions in
+`tests/high-asymmetry-quote-provider.test.mjs` and the graph-acceptance suite.
 
 **An architectural boundary was violated and fixed properly.** The AI explainer
 was first written inside `lib/research/asymmetry/`, which broke two existing
@@ -97,6 +112,22 @@ the radar still imports no AI.
 **AI cannot affect a measured result.** The deterministic review is persisted
 BEFORE `explain` is invoked — asserted by a test comparing source offsets. An AI
 failure yields `aiStatus: FAILED` and leaves the review row intact.
+
+**The quote provider was wrong and is now verified.** The adapter was first
+written against `getOptionQuoteSnapshot` — a function that DOES NOT EXIST
+anywhere in the repo. Every fetch would have thrown, been swallowed, and
+recorded as NO_QUOTE, so marking would have degraded to "no data" forever while
+appearing healthy. Nothing caught it because every test injected a fabricated
+quote function. It now uses `buildLiveGradeDeps().getQuote(occ, underlying)` —
+the same path live grading uses, so metered data-access boundaries are
+respected. Three real differences from the guess: it is ASYNC, it needs the
+UNDERLYING symbol as well as the OCC, and the timestamp field is
+`providerTimestamp`. A dedicated suite now binds adapter to provider and fails
+if they drift.
+
+**A provider outage is not a missing quote.** `PROVIDER_ERROR` is recorded
+distinctly from `NO_QUOTE`, so an outage can never be misread as a contract
+that genuinely had no market.
 
 **Marks are due-work, not timers.** Each sweep computes which of the seven
 horizons have elapsed and are unrecorded, so a redeploy loses no horizon and a
