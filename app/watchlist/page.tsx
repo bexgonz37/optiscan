@@ -12,6 +12,11 @@ import {
 import { SimpleTable, type Column } from "@/components/ui/Table";
 import { scanHeaders } from "@/hooks/useScanner";
 import { openLiveChart } from "@/lib/open-chart";
+import { createPollGuard, isAbortError } from "@/lib/dashboard/poll-guard";
+
+/** Live tape stays fast; plan data moves only on scheduler windows. */
+const TAPE_POLL_MS = 3_000;
+const PLAN_POLL_MS = 60_000;
 
 /**
  * Watchlist (Phase 5). The set of symbols the scanner is actively monitoring
@@ -148,32 +153,59 @@ export default function WatchlistPage() {
   const [plan, setPlan] = useState<OvernightPlan | null>(null);
   const [pro, setPro] = useState<ProResponse | null>(null);
 
-  const load = useCallback(async () => {
+  // Live tape — genuinely fast-moving, and /api/scanner/live answers in ~0.4s.
+  const loadTape = useCallback(async (signal: AbortSignal) => {
     try {
-      const res = await fetch("/api/scanner/live?realtimeOnly=1", { cache: "no-store", headers: scanHeaders() });
+      const res = await fetch("/api/scanner/live?realtimeOnly=1", { cache: "no-store", headers: scanHeaders(), signal });
       const body = await res.json();
       const rt = body?.realtime ?? {};
       const tape: Row[] = Array.isArray(rt.tape) ? rt.tape : Array.isArray(rt.movers) ? rt.movers : [];
       setRows(tape);
       setRunning(Boolean(rt.running));
-      const planRes = await fetch("/api/now", { cache: "no-store", headers: scanHeaders() });
-      if (planRes.ok) setPlan((await planRes.json())?.overnight ?? null);
-      // Professional Watchlist is additive: a failure here must never blank the page.
-      try {
-        const proRes = await fetch("/api/research/watchlist/professional", { cache: "no-store", headers: scanHeaders() });
-        if (proRes.ok) setPro(await proRes.json());
-      } catch { /* leave the professional cards absent */ }
       setError(null);
     } catch (err: any) {
+      if (isAbortError(err)) return;
       setError(err?.message ?? "Could not load the watchlist.");
     }
   }, []);
 
+  // Plan data changes only when a scheduler window runs, and /api/now is the
+  // slowest endpoint on the page — polling it on the tape cadence is what
+  // exhausted the browser connection pool. It belongs on its own slow tick.
+  const loadPlans = useCallback(async (signal: AbortSignal) => {
+    try {
+      const planRes = await fetch("/api/now", { cache: "no-store", headers: scanHeaders(), signal });
+      if (planRes.ok) setPlan((await planRes.json())?.overnight ?? null);
+    } catch (err) {
+      if (!isAbortError(err)) { /* keep the last good plan rather than blanking */ }
+    }
+    // Professional Watchlist is additive: a failure here must never blank the page.
+    try {
+      const proRes = await fetch("/api/research/watchlist/professional", { cache: "no-store", headers: scanHeaders(), signal });
+      if (proRes.ok) setPro(await proRes.json());
+    } catch { /* leave the professional cards absent */ }
+  }, []);
+
+  // Manual retry from the error state. Its own signal, so it is independent of
+  // the interval guards and cannot be aborted by an unrelated unmount.
+  const retryTape = useCallback(() => {
+    void loadTape(new AbortController().signal);
+  }, [loadTape]);
+
   useEffect(() => {
-    load();
-    const id = setInterval(load, 3000);
-    return () => clearInterval(id);
-  }, [load]);
+    const tapeGuard = createPollGuard();
+    const planGuard = createPollGuard();
+    void tapeGuard.run(loadTape);
+    void planGuard.run(loadPlans);
+    const tapeId = setInterval(() => { void tapeGuard.run(loadTape); }, TAPE_POLL_MS);
+    const planId = setInterval(() => { void planGuard.run(loadPlans); }, PLAN_POLL_MS);
+    return () => {
+      clearInterval(tapeId);
+      clearInterval(planId);
+      tapeGuard.dispose();
+      planGuard.dispose();
+    };
+  }, [loadTape, loadPlans]);
 
   const columns: Column<Row>[] = [
     { key: "symbol", header: "Symbol", render: (r: Row) => (
@@ -277,7 +309,7 @@ export default function WatchlistPage() {
         actions={running != null ? <StatusBadge tone={running ? "live" : "warn"}>{running ? "Scanner live" : "Scanner idle"}</StatusBadge> : undefined}
       >
         {error ? (
-          <ErrorState detail={error} onRetry={load} />
+          <ErrorState detail={error} onRetry={retryTape} />
         ) : rows == null ? (
           <LoadingState label="Loading watchlist…" rows={5} />
         ) : (

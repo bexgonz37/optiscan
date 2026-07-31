@@ -4,11 +4,16 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { LoadingState, ErrorState } from "@/components/ui/Shell";
 import { scanHeaders } from "@/hooks/useScanner";
+import { createPollGuard, isAbortError } from "@/lib/dashboard/poll-guard";
 import { isUiReviewMode, getUiReviewSession } from "@/lib/dashboard/ui-review";
 import { buildNowReviewSnapshot, modeFromReviewSession, type NowSetupCard } from "@/lib/dashboard/demo-now-fixtures";
 import { decisionTone, type DecisionState } from "@/lib/dashboard/setup-decision";
 import { TermPanel, TermSpark, actionTone, fmtPct } from "@/components/terminal/TermViz";
 import { formatOccContract } from "@/lib/format-contract";
+
+/** /api/now is scheduler-window data and the slowest endpoint; poll it slowly. */
+const NOW_POLL_MS = 60_000;
+const SENT_POLL_MS = 30_000;
 
 type NowApi = {
   ok?: boolean;
@@ -118,13 +123,13 @@ export function NowPage() {
   const [sentToday, setSentToday] = useState<any[]>([]);
   const review = typeof window !== "undefined" && isUiReviewMode();
 
-  const loadSentToday = useCallback(async () => {
+  const loadSentToday = useCallback(async (signal?: AbortSignal) => {
     if (isUiReviewMode()) {
       setSentToday([]);
       return;
     }
     try {
-      const res = await fetch("/api/research/options/paper-chain?limit=3", { cache: "no-store", headers: scanHeaders() });
+      const res = await fetch("/api/research/options/paper-chain?limit=3", { cache: "no-store", headers: scanHeaders(), signal });
       const d = await res.json();
       const rows = d?.diagnostic?.rows ?? d?.rows ?? [];
       setSentToday(Array.isArray(rows) ? rows.filter((r: any) => r?.subscriberDelivered === true).slice(0, 3) : []);
@@ -133,7 +138,7 @@ export function NowPage() {
     }
   }, []);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal?: AbortSignal) => {
     if (isUiReviewMode()) {
       const mode = modeFromReviewSession(getUiReviewSession());
       const demo = buildNowReviewSnapshot(mode);
@@ -167,7 +172,7 @@ export function NowPage() {
       return;
     }
     try {
-      const res = await fetch("/api/now", { cache: "no-store", headers: scanHeaders() });
+      const res = await fetch("/api/now", { cache: "no-store", headers: scanHeaders(), signal });
       if (res.status === 401) {
         setError("This dashboard needs your private OptiScan access token.");
         setLoading(false);
@@ -177,6 +182,8 @@ export function NowPage() {
       setSnap(body);
       setError(null);
     } catch (e: any) {
+      // An abort is the expected unmount path, not a failure to show the user.
+      if (isAbortError(e)) return;
       setError(e?.message ?? "Could not load NOW");
     } finally {
       setLoading(false);
@@ -184,13 +191,21 @@ export function NowPage() {
   }, []);
 
   useEffect(() => {
-    void load();
-    void loadSentToday();
-    const id = setInterval(() => {
-      void load();
-      void loadSentToday();
-    }, 15_000);
-    return () => clearInterval(id);
+    // /api/now is the slowest endpoint in the app (~14s observed in production).
+    // Polling it faster than it can answer stacks in-flight requests until the
+    // browser connection pool is exhausted, which hangs every other page.
+    const nowGuard = createPollGuard();
+    const sentGuard = createPollGuard();
+    void nowGuard.run(load);
+    void sentGuard.run(loadSentToday);
+    const nowId = setInterval(() => { void nowGuard.run(load); }, NOW_POLL_MS);
+    const sentId = setInterval(() => { void sentGuard.run(loadSentToday); }, SENT_POLL_MS);
+    return () => {
+      clearInterval(nowId);
+      clearInterval(sentId);
+      nowGuard.dispose();
+      sentGuard.dispose();
+    };
   }, [load, loadSentToday]);
 
   const showTradeNow = Boolean(snap?.optionsExecutableWindow);
