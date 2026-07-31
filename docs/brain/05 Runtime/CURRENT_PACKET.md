@@ -7,7 +7,7 @@ Task ID: high-asymmetry-paper-lane-deploy-disabled
 - Branch: `main`
 - Previous deployed commit: `6c15d3b` (docs `c9c5851` on top)
 - This work: the automatic paper-trading lane, built and **DISABLED**
-- Verified locally: `npm test` 2799/2799 twice, `tsc --noEmit` clean,
+- Verified locally: `npm test` 2802/2802, `tsc --noEmit` clean,
   `npm run build` clean, `git diff --check` clean, `graphify update .` run
 
 ## Completed — High-Asymmetry paper lane
@@ -21,7 +21,7 @@ Task ID: high-asymmetry-paper-lane-deploy-disabled
 | Scheduler job `asymmetryPaper` (60s, clamped) | BUILT_DISABLED |
 | Deterministic Quant cohorts, holdout, associations, proposals | BUILT_DISABLED |
 | Daily paper report in the EOD review | BUILT_DISABLED |
-| Report delivery via recap webhook | BLOCKED_CONFIG (recap unset, owner decision) |
+| Report delivery via recap webhook | BLOCKED_CONFIG (DISCORD_RECAP_ENABLED=0, owner) |
 | AI budget: 1 call/session, cached, daily+monthly limits | BUILT_DISABLED |
 | Private diagnostics extended | BUILT_DISABLED |
 | Owner-private send transport (defect fix) | BUILT — active as soon as a case transitions |
@@ -49,6 +49,31 @@ This is the same class of failure the acceptance gate exists to catch — a
 module that exists, type-checks, and is fully unit-tested but is not reachable
 from anything that runs. The unit tests all injected a sender, so none of them
 could see it.
+
+## Second defect — MY defect, found by deploying
+
+The daily paper report was delivered to the recap Discord channel on the first
+EOD tick after deploy, without anyone enabling the paper lane.
+
+Two mistakes compounded:
+
+1. `resolveReportDelivery` read the raw `DISCORD_WEBHOOK_RECAP` URL. Production
+   also sets `DISCORD_RECAP_ENABLED=0` — the owner's kill switch, and the
+   reason `/api/discord/health` reports `recap: false` while the URL is
+   present. Reading a webhook URL is not the same as being allowed to use it.
+2. The delivery hook hangs off the EOD job, which is gated by CAPTURE, not by
+   `HIGH_ASYMMETRY_PAPER_ENABLED`. So a deploy alone was enough to fire it.
+
+It also bypassed `postToDiscord`, so the send never reached the delivery
+ledger: `/api/discord/health` still reports `sent24h: 2` against the pre-deploy
+baseline. The message was real; the ledger simply never saw it. **Do not treat
+that ledger as proof of what this lane has sent.**
+
+Fixed in `15dff21`: both gates are checked before the URL is looked up, with
+regression tests written against the exact configuration that shipped.
+
+The lesson to keep: a new outward-facing path must be gated on its OWN feature
+flag, not merely inherit the gate of whatever job it was attached to.
 
 ## What remains unproven
 
