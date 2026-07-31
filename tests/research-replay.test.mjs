@@ -76,11 +76,14 @@ test("options replay is INACTIVE_MISSING_PROVIDER and fabricates nothing", () =>
   assert.equal(r.status, "INACTIVE_MISSING_PROVIDER");
   const row = d.prepare("SELECT status, provider_limitations FROM replay_runs WHERE run_id='o1'").get();
   assert.equal(row.status, "INACTIVE_MISSING_PROVIDER");
-  assert.match(row.provider_limitations, /historical option/i);
+  // The stated limitation must name what THIS lane cannot do. It used to claim
+  // historical option data was unentitled; a 2026-07-31 probe disproved that,
+  // so the honest limitation is now "not wired to the historical client".
+  assert.match(row.provider_limitations, /not wired to the historical client/i);
   assert.equal(d.prepare("SELECT COUNT(*) n FROM replay_outcomes WHERE run_id='o1'").get().n, 0, "no fabricated option outcomes");
 });
 
-test("capability report: stock available with a key; options never entitled (no greeks/nbbo)", () => {
+test("capability report: stock available with a key; options replay inactive on THIS lane", () => {
   const caps = replayCapabilities({ POLYGON_API_KEY: "k" });
   const stock = caps.find((c) => c.assetClass === "stock");
   const option = caps.find((c) => c.assetClass === "option");
@@ -91,7 +94,12 @@ test("capability report: stock available with a key; options never entitled (no 
   for (const f of ["historical_delta", "historical_open_interest", "historical_bid", "historical_iv"]) {
     assert.ok(option.missingFields.includes(f), `${f} must be listed as missing, never fabricated`);
   }
-  assert.match(optionsReplayBlocker(), /historical option/i);
+  // Greeks and OI are genuinely unavailable at any depth, so they stay absolute.
+  assert.match(optionsReplayBlocker(), /Greeks and open interest are unavailable at any depth/i);
+  // But the blocker must NOT claim historical NBBO is unentitled — it is, and
+  // asserting otherwise is what kept the historical cohort work from starting.
+  assert.match(optionsReplayBlocker(), /NBBO IS entitled/,
+    "the corrected claim: entitled, but not wired into this lane");
 });
 
 test("SAFETY: the replay driver is a hard no-op when HISTORICAL_REPLAY_ENABLED is off", async () => {

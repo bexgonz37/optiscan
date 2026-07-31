@@ -3,9 +3,18 @@
  * replay (Phase 7). PURE capability reporting + a thin lazy fetch for STOCK bars.
  *
  * TRUTH: the current Polygon/Massive integration supplies historical STOCK OHLCV via
- * /v2/aggs, but only a PRESENT-TIME options snapshot (/v3/snapshot/options). Historical
- * option quotes, Greeks, NBBO, open interest, and spreads are NOT integrated/entitled —
- * so options replay is reported INACTIVE_MISSING_PROVIDER and NEVER fabricates those.
+ * /v2/aggs, but only a PRESENT-TIME options snapshot (/v3/snapshot/options).
+ *
+ * CORRECTED 2026-07-31. This header previously said historical option quotes and NBBO
+ * were "NOT integrated/entitled". Those are two different claims and only the first was
+ * true. A direct probe proved /v3/quotes/{OCC} serves full historical NBBO with sizes
+ * back to at least 2023-07-31 on this plan — see
+ * lib/research/asymmetry/historical/capability-matrix.ts.
+ *
+ * THIS REPLAY PATH still reports option replay INACTIVE, because it is a distinct lane
+ * with no wiring to the new historical client, and reporting AVAILABLE here would claim a
+ * capability THIS module does not have. Historical Greeks and open interest remain
+ * genuinely unavailable at any depth. Nothing here fabricates any of it.
  */
 export interface Bar {
   t: number; // ms epoch (bar start)
@@ -35,11 +44,13 @@ export function replayCapabilities(env: NodeJS.ProcessEnv = process.env): Replay
     {
       assetClass: "option",
       status: "INACTIVE_MISSING_PROVIDER",
-      reason: "current integration provides only a present-time /v3/snapshot/options; historical option quotes/Greeks/NBBO/OI/spreads are not integrated or entitled",
+      reason: "THIS replay lane provides only a present-time /v3/snapshot/options and is not wired to the historical client. Historical NBBO IS entitled (probed 2026-07-31, /v3/quotes/{OCC}) and is served by lib/research/asymmetry/historical/massive-historical.ts on the asymmetry lane — but not here. Historical Greeks and open interest are unavailable at any depth on this plan.",
       availableFields: [],
       missingFields: [
-        "historical_bid", "historical_ask", "historical_spread", "historical_open_interest",
-        "historical_volume", "historical_iv", "historical_delta", "historical_gamma", "historical_theta", "historical_vega",
+        // Entitled but not wired into THIS lane. Use the asymmetry historical client.
+        "historical_bid", "historical_ask", "historical_spread", "historical_volume",
+        // Genuinely unavailable at any depth on this plan.
+        "historical_open_interest", "historical_iv", "historical_delta", "historical_gamma", "historical_theta", "historical_vega",
       ],
     },
   ];

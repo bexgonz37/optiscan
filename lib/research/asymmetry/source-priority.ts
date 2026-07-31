@@ -145,11 +145,30 @@ export const MISSING_SOURCE_PROFILES: MissingSourceProfile[] = [
   {
     field: "historicalOptionQuotes",
     rationale: "Would allow past candidates to be graded retroactively instead of waiting for forward capture.",
-    providerSupport: "NOT_AVAILABLE",
-    providerEvidence: "lib/research/replay-provider.ts states the integration provides only a present-time /v3/snapshot/options; historical option quotes, greeks, NBBO, OI and spreads are not integrated or entitled.",
-    effort: "HIGH",
+    // CORRECTED 2026-07-31. This row previously said NOT_AVAILABLE, citing
+    // replay-provider.ts. That citation conflated "not integrated" with "not
+    // entitled". A direct probe of the live key proved the plan DOES serve
+    // historical exact-OCC NBBO — see historical/capability-matrix.ts. The
+    // wrong entry is why no historical winner cohort was ever attempted.
+    providerSupport: "AVAILABLE_ENTITLED",
+    providerEvidence: "PROBED 2026-07-31: GET /v3/quotes/{OCC} returned 200 with bid_price, ask_price, bid_size, ask_size and nanosecond sip_timestamp for expired NVDA contracts back to 2023-07-31. Wrapped by lib/research/asymmetry/historical/massive-historical.ts; row recorded in historical/capability-matrix.ts and re-checkable via scripts/massive-capability-probe.mjs.",
+    effort: "MEDIUM",
     ongoingApiCost: "HIGH",
     backfill: "BACKFILLABLE",
+    discriminationEvidence: "UNMEASURED_HYPOTHESIS",
+  },
+  {
+    field: "historicalOpenInterest",
+    rationale: "Separates a contract that was already crowded at detection from one that was discovered.",
+    // Deliberately kept NOT_AVAILABLE: the probe found OI only on the
+    // present-time snapshot. There is no historical OI series on this plan, so
+    // cohort rows for past sessions must leave it missing rather than borrow
+    // today's value for a past date.
+    providerSupport: "NOT_AVAILABLE",
+    providerEvidence: "PROBED 2026-07-31: open_interest appears on /v3/snapshot/options (250/250 contracts) but no endpoint returned an OI series for a past session. Recorded as a hard gap in historical/capability-matrix.ts.",
+    effort: "HIGH",
+    ongoingApiCost: "NONE",
+    backfill: "FORWARD_ONLY",
     discriminationEvidence: "UNMEASURED_HYPOTHESIS",
   },
 ];
