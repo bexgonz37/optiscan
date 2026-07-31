@@ -38,8 +38,29 @@ export interface ReportDeliveryConfig {
   refusedReason: string | null;
 }
 
+/**
+ * The owner's existing kill switch for the recap channel. Production sets
+ * `DISCORD_RECAP_ENABLED=0`, which is why `/api/discord/health` reports
+ * `recap: false` even though the URL is configured.
+ *
+ * THIS GATE WAS BYPASSED ONCE. The first version of this file read the raw
+ * webhook URL and posted straight to it, so a paper report was delivered to a
+ * channel the owner had explicitly turned off. Reading the URL is not the same
+ * as being allowed to use it.
+ */
+export const RECAP_GATE_ENV = "DISCORD_RECAP_ENABLED";
+
 /** Resolve the delivery target. Never returns a value to a caller that logs. */
 export function resolveReportDelivery(env: NodeJS.ProcessEnv = process.env): ReportDeliveryConfig {
+  // 1. The lane itself must be on. An empty report from a disabled lane has
+  //    nothing to say and must never be posted anywhere.
+  if (env.HIGH_ASYMMETRY_PAPER_ENABLED !== "1") {
+    return { webhook: null, refusedReason: "HIGH_ASYMMETRY_PAPER_ENABLED is not set" };
+  }
+  // 2. The owner's recap kill switch outranks a configured URL.
+  if (env[RECAP_GATE_ENV] === "0") {
+    return { webhook: null, refusedReason: `${RECAP_GATE_ENV}=0 — recap delivery is disabled by the owner` };
+  }
   const raw = String(env[REPORT_WEBHOOK_ENV] ?? "").trim();
   const webhook = raw ? raw : null;
   if (!webhook) return { webhook: null, refusedReason: null };

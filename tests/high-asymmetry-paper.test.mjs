@@ -735,7 +735,7 @@ test("migrations are additive and repeat-safe", () => {
 // ── Report delivery ─────────────────────────────────────────────────────────
 
 test("an unavailable recap webhook is BLOCKED_CONFIG with no subscriber fallback", async () => {
-  const res = await deliverPaperReport(SESSION, emptyReport(), { env: {} });
+  const res = await deliverPaperReport(SESSION, emptyReport(), { env: { HIGH_ASYMMETRY_PAPER_ENABLED: "1" } });
   assert.equal(res.status, "BLOCKED_CONFIG");
   assert.equal(res.webhookConfigured, false);
   assert.match(res.reason, /no subscriber fallback/);
@@ -743,11 +743,48 @@ test("an unavailable recap webhook is BLOCKED_CONFIG with no subscriber fallback
 
 test("a recap webhook that collides with a subscriber channel is refused", () => {
   const cfg = resolveReportDelivery({
+    HIGH_ASYMMETRY_PAPER_ENABLED: "1",
     DISCORD_WEBHOOK_RECAP: "https://discord.com/api/webhooks/1/x",
     DISCORD_WEBHOOK_OPTIONS: "https://discord.com/api/webhooks/1/x",
   });
   assert.equal(cfg.webhook, null, "it must not be usable");
   assert.match(cfg.refusedReason, /DISCORD_WEBHOOK_OPTIONS/);
+});
+
+test("REGRESSION: a configured URL is not permission — the owner's recap gate wins", () => {
+  // This exact configuration shipped once and posted a report to a channel the
+  // owner had explicitly disabled. DISCORD_RECAP_ENABLED=0 is why
+  // /api/discord/health reports recap:false while the URL is present.
+  const cfg = resolveReportDelivery({
+    HIGH_ASYMMETRY_PAPER_ENABLED: "1",
+    DISCORD_RECAP_ENABLED: "0",
+    DISCORD_WEBHOOK_RECAP: "https://discord.com/api/webhooks/1/real",
+  });
+  assert.equal(cfg.webhook, null, "a disabled recap channel must never be posted to");
+  assert.match(cfg.refusedReason, /DISCORD_RECAP_ENABLED=0/);
+});
+
+test("REGRESSION: a disabled paper lane never delivers a report", () => {
+  // The delivery hook hangs off the EOD job, which is gated by CAPTURE — not by
+  // the paper flag. Without this check a deploy alone posts an empty report.
+  const cfg = resolveReportDelivery({
+    DISCORD_WEBHOOK_RECAP: "https://discord.com/api/webhooks/1/real",
+  });
+  assert.equal(cfg.webhook, null);
+  assert.match(cfg.refusedReason, /HIGH_ASYMMETRY_PAPER_ENABLED is not set/);
+});
+
+test("delivery is possible only when the lane AND the recap channel are both on", async () => {
+  let sent = 0;
+  const res = await deliverPaperReport(SESSION, emptyReport(), {
+    env: {
+      HIGH_ASYMMETRY_PAPER_ENABLED: "1",
+      DISCORD_WEBHOOK_RECAP: "https://discord.com/api/webhooks/1/real",
+    },
+    send: async () => { sent += 1; return { ok: true }; },
+  });
+  assert.equal(res.status, "SENT");
+  assert.equal(sent, 1);
 });
 
 test("the report message never renders an unknown as zero", () => {
