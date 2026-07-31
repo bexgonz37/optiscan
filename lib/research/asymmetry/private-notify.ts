@@ -23,6 +23,7 @@
  *     per-symbol-per-session ceiling.
  */
 import type { AsymmetryResearchState } from "./states.ts";
+import { contractDisplay, entryDisplay, contractFooter } from "./contract-format.ts";
 
 /** The only states worth an owner's attention. Everything else stays silent. */
 export const PRIVATE_NOTIFIABLE_STATES: readonly AsymmetryResearchState[] = Object.freeze([
@@ -93,6 +94,10 @@ export interface PrivateCandidate {
   /** Evidence known to be absent. Reported, never silently defaulted. */
   missingEvidence: string[];
   setupFamilyLabel: string | null;
+  /** Underlying price at detection. Optional — reported absent, never faked. */
+  underlyingPrice?: number | null;
+  /** The deterministic paper state. Never implies a trade that did not open. */
+  paperStatus?: "OPENED" | "WAITING_FOR_ENTRY" | "BLOCKED" | "DISABLED" | null;
 }
 
 export interface PrivateNotifyResult {
@@ -168,27 +173,62 @@ const pct = (n: number | null) => (n == null ? "unavailable" : `${n.toFixed(1)}%
  * not subscriber copy, and the owner needs the contract to verify the mark.
  */
 export function buildPrivateMessage(c: PrivateCandidate): string {
-  const lines = [
-    `**HIGH-ASYMMETRY RESEARCH — ${c.state.replace(/_/g, " ")}**`,
-    `${c.symbol} ${c.direction} · ${c.optionSymbol}`,
+  const lines: string[] = [
+    `**HIGH ASYMMETRY — ${c.direction}**`,
     "",
-    `Why early: ${c.whyEarly}`,
-    `Premium chase from earliest valid quote: ${pct(c.premiumChasePct)}`,
-    `Quote: bid ${money(c.bid)} / ask ${money(c.ask)} · spread ${pct(c.spreadPct)}`,
-    `Liquidity: OI ${c.openInterest ?? "unavailable"} · volume ${c.contractVolume ?? "unavailable"}`,
+    `**${contractDisplay(c.optionSymbol, c.symbol)}**`,
+    `Entry: ${entryDisplay(c.bid, c.ask)}`,
+    `Underlying: ${c.underlyingPrice != null ? money(c.underlyingPrice) : "unavailable"}`,
+    `State: ${c.state}`,
   ];
-  if (c.setupFamilyLabel) lines.push(`Setup: ${c.setupFamilyLabel}`);
-  lines.push(`Trigger: ${c.trigger ?? "unavailable"}`);
-  lines.push(`Invalidation: ${c.invalidation ?? "unavailable"}`);
-  lines.push(
-    c.missingEvidence.length
-      ? `Missing evidence: ${c.missingEvidence.join(", ")}`
-      : "Missing evidence: none recorded",
-  );
-  lines.push(`Observed: ${new Date(c.observedAtMs).toISOString()}`);
-  lines.push("");
-  lines.push("Research only. Not a subscriber alert, not a recommendation, not a prediction. No position was taken.");
-  return lines.join("\n");
+
+  // WHY — at most three bullets, each backed by a measured value. A reason we
+  // cannot support is omitted rather than padded with filler.
+  const why: string[] = [];
+  if (String(c.whyEarly ?? "").trim()) why.push(String(c.whyEarly).trim());
+  if (c.premiumChasePct != null) {
+    why.push(c.premiumChasePct <= 10
+      ? `Premium still near the earliest valid quote (+${c.premiumChasePct.toFixed(1)}%).`
+      : `Premium already expanded +${c.premiumChasePct.toFixed(1)}% from the earliest valid quote.`);
+  }
+  if (c.setupFamilyLabel) why.push(`Setup: ${c.setupFamilyLabel}.`);
+  if (why.length) {
+    lines.push("", "Why:", ...why.slice(0, 3).map((w) => `- ${w}`));
+  }
+
+  lines.push("", "Confirmation:", `- ${c.trigger ?? "no published trigger level recorded"}`);
+  lines.push("", "Invalidation:", `- ${c.invalidation ?? "no invalidation level recorded"}`);
+
+  // RISK — one concrete warning, worst first. Never a generic disclaimer.
+  lines.push("", "Risk:", `- ${riskLine(c)}`);
+
+  lines.push("", `Paper: ${c.paperStatus ?? "DISABLED"}`);
+  lines.push("", `Research only. Options are high risk. ${contractFooter(c.optionSymbol)}`);
+  return lines.join("\n").slice(0, 1900);
+}
+
+/**
+ * The single most material caveat, chosen in a fixed order so the worst problem
+ * is the one shown. Only conditions actually measured can be reported.
+ */
+export function riskLine(c: PrivateCandidate): string {
+  if (c.spreadPct != null && c.spreadPct > 20) {
+    return `Wide spread ${c.spreadPct.toFixed(1)}% — the fill will be worse than it looks.`;
+  }
+  if (c.premiumChasePct != null && c.premiumChasePct >= 25) {
+    return `Premium chase +${c.premiumChasePct.toFixed(1)}% — the early entry is already gone.`;
+  }
+  if (c.openInterest != null && c.openInterest < 100) {
+    return `Thin open interest (${c.openInterest}) — exiting may be difficult.`;
+  }
+  if (c.contractVolume != null && c.contractVolume < 50) {
+    return `Low contract volume (${c.contractVolume}) — liquidity is unproven today.`;
+  }
+  if (c.missingEvidence.length) {
+    return `Incomplete evidence: ${c.missingEvidence.slice(0, 3).join(", ")}.`;
+  }
+  if (c.spreadPct != null) return `Spread ${c.spreadPct.toFixed(1)}% at detection; verify before entry.`;
+  return "Quote quality not fully verified — confirm the contract before acting.";
 }
 
 export interface PrivateSendDeps {

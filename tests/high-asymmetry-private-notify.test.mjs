@@ -121,13 +121,21 @@ test("the shadow radar cannot produce a subscriber SEND from any state", async (
 test("the module contains no alert, contract, paper, or trade authority", () => {
   const src = readFileSync("lib/research/asymmetry/private-notify.ts", "utf8");
   const imports = [...src.matchAll(/from\s+["']([^"']+)["']/g)].map((m) => m[1]);
-  assert.deepEqual(imports, ["./states.ts"], "the private path must import only the state types");
+  // Formatting helpers and the read-only paper PERMISSION are allowed; neither
+  // can select a contract, freeze an entry, or open a position.
+  assert.deepEqual(imports.sort(), ["./contract-format.ts", "./states.ts"],
+    "the private path must import only state types and pure formatting");
   // Strip comments: the safety rationale legitimately names the things the CODE
   // must not do, and prose must not be mistaken for an authority reference.
   const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
-  for (const forbidden of ["deliverOptionsCallout", "sendTrackedDiscord", "placeOrder", "paper", "freezeEntry", "selectContract"]) {
+  for (const forbidden of ["deliverOptionsCallout", "sendTrackedDiscord", "placeOrder", "freezeEntry", "selectContract"]) {
     assert.equal(code.includes(forbidden), false, `must not reference ${forbidden}`);
   }
+  // "paper" may now appear, but ONLY as a reported status string — never as a
+  // call that could open, size, or modify a position.
+  assert.equal(/paperStatus\s*[:?]/.test(code), true, "paper status is reported");
+  assert.equal(/openPaper|PaperTrade\(|paperEntry\(|sizePaper/.test(code), false,
+    "the notifier must not reach any paper-writing function");
 });
 
 // ── Only early states are surfaced ──────────────────────────────────────────
@@ -179,18 +187,23 @@ test("a per-symbol session ceiling bounds the noise", async () => {
 
 test("the message carries every required field and never claims a prediction", () => {
   const msg = buildPrivateMessage(candidate());
-  for (const required of ["O:NVDA260807C00200000", "Why early:", "Premium chase", "spread", "Liquidity:", "Trigger:", "Invalidation:", "Missing evidence:", "Observed:", "Research only"]) {
+  // The trader-readable format: the human contract leads, the OCC is a footer.
+  for (const required of ["HIGH ASYMMETRY", "NVDA 08/07 $200 Call", "Entry:", "State:", "Why:", "Confirmation:", "Invalidation:", "Risk:", "Paper:", "Research only"]) {
     assert.ok(msg.includes(required), `message must include ${required}`);
   }
-  assert.match(msg, /EARLY ASYMMETRY/);
+  assert.ok(msg.includes("O:NVDA260807C00200000"), "the OCC stays available for verification");
+  assert.equal(msg.split("Research only")[0].includes("O:NVDA260807C00200000"), false,
+    "but must not appear in the body");
+  assert.match(msg, /EARLY_ASYMMETRY/);
   assert.equal(/guaranteed|will move|sure thing|buy now/i.test(msg), false, "no guaranteed language");
 });
 
 test("missing evidence stays missing and is never rendered as zero", () => {
   const msg = buildPrivateMessage(candidate({ premiumChasePct: null, bid: null, ask: null, spreadPct: null, openInterest: null, contractVolume: null }));
-  assert.match(msg, /Premium chase from earliest valid quote: unavailable/);
-  assert.match(msg, /bid unavailable \/ ask unavailable/);
+  assert.match(msg, /Entry: awaiting valid quote/, "no quote means no entry price, stated plainly");
   assert.equal(/\$0\.00|: 0%/.test(msg), false, "absent evidence must not become 0");
+  assert.equal(/Premium (still|already)/.test(msg), false,
+    "an unmeasured premium chase must not be described at all");
 });
 
 // ── Failure containment ─────────────────────────────────────────────────────

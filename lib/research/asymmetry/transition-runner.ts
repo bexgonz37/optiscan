@@ -18,6 +18,7 @@
 import { listCasesOnDb, recordTransitionOnDb, type ActiveCase } from "./case-store.ts";
 import { notifyPrivateAsymmetry, createPrivateCaseMemory, PRIVATE_NOTIFIABLE_STATES, type PrivateCaseMemory } from "./private-notify.ts";
 import type { AsymmetryResearchState } from "./states.ts";
+import { resolvePaperPermission } from "./paper/activation.ts";
 
 export const TRANSITIONS_ENABLED_ENV = "HIGH_ASYMMETRY_CAPTURE_ENABLED";
 
@@ -117,6 +118,12 @@ export async function runAsymmetryTransitions(
       return out;
     }
     out.ran = true;
+    // Read-only. Reported so an alert never implies a paper trade that did not
+    // open; this does not influence any paper decision.
+    const permission = resolvePaperPermission(db as any, deps.sessionDate, env);
+    const paperStatus = !permission.masterPaperAuthorized
+      ? "DISABLED" as const
+      : permission.paperEntriesAllowed ? "WAITING_FOR_ENTRY" as const : "BLOCKED" as const;
     const cases = listCasesOnDb(db, deps.sessionDate, 500);
     out.casesRead = cases.length;
 
@@ -139,7 +146,8 @@ export async function runAsymmetryTransitions(
             bid: obs.bid, ask: obs.ask, spreadPct: obs.spreadPct,
             openInterest: obs.openInterest, contractVolume: null,
             trigger: null, invalidation: null,
-            missingEvidence: c.missingEvidence, setupFamilyLabel: null,
+            missingEvidence: c.missingEvidence, setupFamilyLabel: c.setupFamily,
+            underlyingPrice: null, paperStatus,
           }, { memory: deps.memory ?? sharedMemory, send: deps.send, env });
           notifyOutcome = res.outcome;
           if (res.outcome === "SENT") out.notified += 1;

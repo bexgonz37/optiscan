@@ -51,7 +51,7 @@ test("with the sender injected the message is delivered to the private webhook",
   });
   assert.equal(res.outcome, "SENT");
   assert.equal(seen.webhook, "https://discord.com/api/webhooks/1/tok");
-  assert.match(seen.content, /HIGH-ASYMMETRY RESEARCH/);
+  assert.match(seen.content, /HIGH ASYMMETRY/);
 });
 
 test("the sender refuses anything that is not a Discord webhook URL", async () => {
