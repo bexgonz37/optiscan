@@ -1,17 +1,48 @@
 # High-Asymmetry Radar
 
-Status: PHASE 2 REPLAY APPARATUS BUILT — SHADOW ONLY, NOT WIRED, NOT DEPLOYED,
-**NOT YET RUN AGAINST REAL DATA**
+Status: **BUILT_DISABLED** — owner-private notification path is code-complete
+and inert. Shadow only, not wired to the live candidate stream, not deployed.
+The replay HAS now been run against real production data (see below).
 
 Branch: `feature/high-asymmetry-radar` (separate worktree). Nothing in this note
 describes production behaviour on `main`.
 
-## The headline result of Phase 2
+## Feature status
 
-**The replay could not be run against real evidence, because this worktree has
-no database.** `data/` is empty, there is no `.env.local`, and the production
-database lives on the Railway volume. No cohort numbers exist yet, and none are
-reported here or anywhere in the code.
+| Capability | Status |
+| --- | --- |
+| Evidence model, states, outcomes, cohorts, replay apparatus | RESEARCH_ONLY |
+| Replay against real production data | LIVE_AND_VERIFIED (result: zero evidence, see below) |
+| Owner-private notification path (`private-notify.ts`) | BUILT_DISABLED |
+| Live candidate-stream intake | MISSING |
+| Forward outcome tracking scheduler | MISSING |
+| End-of-day Quant evidence summary | MISSING |
+| Private diagnostics endpoint | MISSING |
+
+## The replay HAS now been run against real data (2026-07-30)
+
+Superseding the earlier "could not be run" note. A consistent read-only
+snapshot of the production database (1,357,881,344 bytes, `integrity_check: ok`,
+130 tables) was taken via the SQLite online-backup API and replayed.
+
+**Result: zero gradeable candidates, because `options_research_observations`
+is EMPTY in production (0 rows).** Every coverage, cohort, exclusion, and
+premium-chase count is 0 — not a measured zero, an absent one.
+
+The cause is timing, verified rather than assumed: the writer
+(`recordOptionsResearchObservation`, wired into `loop.ts` and `delivery.ts`)
+arrived in commit `1bde178`, which is an ancestor of the deployed commit but
+NOT of the prior production baseline `efaf2be`. It reached production at
+16:41 ET on 2026-07-30 — 41 minutes after the 16:00 close, and 42 minutes after
+the last candidate row was written at 15:59 ET. **No options session has yet
+run with the capture writer live.**
+
+The surrounding pipeline is healthy and full by comparison: 145,505 paper
+marks, 632 paper trades, 868 options alerts, 2,212 alerts, 35,936 candidates.
+Only the research-observation table is empty.
+
+**Nothing here is evidence of strategy performance.** An empty research table
+means evidence is absent.
 
 What Phase 2 did instead was build the apparatus so a single command produces
 them, and — by auditing the capture path in source — establish three structural
@@ -33,6 +64,35 @@ findings that do not need data to be true:
    perfectly fresh. Found by a Phase 2 test and **fixed** in both
    `outcomes.ts` and `coverage-audit.ts`, which now require a mark to share the
    entry's trading day.
+
+## Owner-private notification path — BUILT_DISABLED
+
+`lib/research/asymmetry/private-notify.ts`. Code-complete, inert by default,
+and safe to merge while disabled. It is a message formatter with gates; it is
+**not** an active radar and it surfaces nothing today.
+
+Five gates, each enforced in code and asserted by test:
+
+1. **Off by default.** Requires `HIGH_ASYMMETRY_PRIVATE_ENABLED=1` AND a
+   non-empty `HIGH_ASYMMETRY_PRIVATE_WEBHOOK`. Only the literal `"1"` enables.
+2. **No subscriber fallback.** The webhook comes from ONE dedicated variable.
+   There is no `?? DISCORD_WEBHOOK_*` anywhere, a test strips comments and
+   asserts the module reads no subscriber variable, and a configured value that
+   EQUALS any of `DISCORD_WEBHOOK_URL/OPTIONS/STOCKS/WATCHLIST/RECAP` is
+   refused outright — a copy-paste mistake cannot route research to subscribers.
+3. **No send authority.** Imports only `./states.ts`. `subscriberSendCreated` is
+   typed `false`, and every one of the 8 states returns false from
+   `canResearchStateSend`.
+4. **Only early states surface.** `EARLY_ASYMMETRY`, `CONFIRMING`,
+   `HIGH_ASYMMETRY`, `TRIGGERED`. `PREMIUM_CHASE`, `LIQUIDITY_FAILURE`,
+   `INVALIDATED`, `INSUFFICIENT_EVIDENCE` are suppressed — surfacing a chased
+   candidate as early is exactly the failure the radar exists to avoid.
+5. **Noise controlled.** One case per fingerprint, state-change only, and a
+   per-symbol-per-session ceiling (default 4).
+
+Failure is contained: a rejecting or throwing sender returns `SEND_FAILED`
+rather than propagating, and a failed send does not consume the dedupe slot.
+Missing evidence renders as `unavailable`, never as `0`.
 
 ## Purpose
 

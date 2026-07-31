@@ -1,105 +1,114 @@
 # Current Task Packet
 
-Task ID: high-asymmetry-replay-blocked-on-data
+Task ID: high-asymmetry-live-intake
 
-Worktree: `C:\Users\bexgo\Downloads\optiscan-asymmetry`
-Branch: `feature/high-asymmetry-radar`
+## Active position
 
-> This is a **separate Git worktree**. Another session monitors production from
-> `optiscan-main`. Nothing here touches that checkout, `main`, or any deploy.
+- Repo: `C:\Users\bexgo\Downloads\optiscan-asymmetry` (separate worktree)
+- Branch: `feature/high-asymmetry-radar`
+- Local HEAD: the private-notify commit (this checkpoint)
+- `origin/main`: `0b67ba8` — this branch is NOT pushed and NOT merged
+- Deployed production commit: `0b67ba8` (served from `optiscan-main`; nothing
+  on this branch is deployed)
 
-## Where this branch stands
+> Another workstream owns `optiscan-main`. Nothing here touches that checkout,
+> `main`, or any deployment.
 
-- `58cc4e9` — Phase 1 research foundation.
-- This commit — Phase 2 replay apparatus: coverage audit, duplicate-detection
-  audit, historical-example import contract, source-priority ranking, read-only
-  replay orchestrator, GET-only replay endpoint, offline CLI, 35 more tests.
-- Everything remains shadow-only. No live wiring, no Discord, no Twitter, no
-  Railway change, no environment variable, **no migration**, no writes.
+## Completed this checkpoint
 
-## The blocking fact
+- `lib/research/asymmetry/private-notify.ts` — owner-private notification path,
+  code-complete and inert. Five gates: flag, dedicated webhook, subscriber-
+  collision refusal, early-states-only, noise control.
+- `tests/high-asymmetry-private-notify.test.mjs` — 17 focused tests.
 
-**The replay has not been run against real evidence.** This worktree has no
-database: `data/` is empty and there is no `.env.local`. The production
-database lives on the Railway volume. Every cohort number is therefore
-unmeasured, and no number is reported anywhere in code or docs.
+## Verified locally
 
-The apparatus is finished and one command away from producing them:
+- Focused: 17/17 pass
+- Full suite: **2604/2604** pass, 0 fail, 0 skipped
+- `npx tsc --noEmit --incremental false`: clean
+- `npm run build`: compiled successfully
+- `git diff --check`: clean
+- No migration added, no environment variable created
 
-```
-node --experimental-strip-types scripts/asymmetry-replay.mjs --db <copy-of-optiscan.db>
-```
+## Verified in production
 
-The file is opened `readonly: true, fileMustExist: true`.
+**Nothing.** This branch is not pushed, not merged, not deployed. The only
+production-derived fact below is the replay result, measured from a read-only
+snapshot taken by the `optiscan-main` workstream.
 
-## What was established without data
+## Feature status
 
-1. **Outcome marks exist only for paper trades.** `options_paper_marks` is keyed
-   by `trade_id`, so a candidate that never became an alert can never be graded.
-   The OUTSIZED cohort can currently only contain contracts already alerted on
-   — the exact population the radar is meant to be compared against. **This is
-   the binding constraint, not any missing feature.**
-2. **Premium chase is vacuous under the Phase 1 identity.** The candidate is the
-   first observation, so the earliest valid quote is its own and `chasePct` can
-   only be 0 or UNKNOWN. Counted as `candidatesWithVacuousPremiumChase`.
-3. **A cross-session mark could pass freshness.** Marks were validated against
-   their own timestamp, so a next-day quote looked fresh. Caught by a Phase 2
-   test and fixed in `outcomes.ts` and `coverage-audit.ts`.
-4. **`thesis_fingerprint` is delivery-only.** `loop.ts` never writes it, so the
-   fingerprint identity is available only for contracts that reached delivery.
+| Feature | Status |
+| --- | --- |
+| Evidence / states / outcomes / cohorts / replay apparatus | RESEARCH_ONLY |
+| Replay executed against real production data | LIVE_AND_VERIFIED |
+| Owner-private notification path | BUILT_DISABLED |
+| Live candidate-stream intake | MISSING |
+| Forward outcome tracking (1/3/5/10/15/30/60m) | MISSING |
+| End-of-day Quant evidence summary | MISSING |
+| Private diagnostics endpoint | MISSING |
+| Subscriber SEND authority | MISSING (permanently, by design) |
 
-## Next task
+## What remains unproven
 
-1. **Run the replay against a copy of the production database** and read the
-   real coverage: how many candidates reach `evidenceComplete`, how many get any
-   usable mark, and the exclusion breakdown. Everything below depends on that.
-2. Decide from the measured exclusion counts whether the binding constraint is
-   what the source audit predicts (missing marks for non-alerted candidates).
-3. Only then source new fields, in the ranked order: forward outcome marks
-   first, then IV and gamma (already fetched, zero extra API cost), then the
-   `/v2/aggs`-derived and backfillable relative-volume family.
-4. Do not change the candidate identity until the duplicate audit has run on
-   real rows and reported a recommendation other than `INSUFFICIENT_EVIDENCE`.
+- The private path has never sent a message. It is a formatter with gates; its
+  behaviour against a real webhook is untested.
+- The radar does not observe live candidates — nothing calls it.
+- `options_research_observations` is EMPTY in production (0 rows), so no cohort,
+  premium-chase, or outcome number exists. An empty table is absent evidence,
+  not a measured result and not strategy performance.
 
-## Load these notes
+## Replay result (measured 2026-07-30, supersedes "never run")
 
-- ../02 Components/High-Asymmetry Radar.md
-- ../02 Components/safety.md
-- ../02 Components/Market Data.md
-- ../02 Components/Opportunity Lifecycle.md
+A consistent read-only snapshot (1,357,881,344 bytes, `integrity_check: ok`,
+130 tables) was replayed. Zero gradeable candidates, because the observation
+table is empty. Cause verified, not assumed: the writer arrived in `1bde178`,
+an ancestor of the deployed commit but NOT of the prior baseline `efaf2be`, and
+reached production at 16:41 ET — 41 minutes after the close and 42 minutes
+after the last candidate row at 15:59 ET. No options session has run with it
+live. Surrounding tables are full by comparison: 145,505 paper marks, 632 paper
+trades, 868 options alerts, 35,936 candidates.
 
-## Do not load
+## Feature flags
 
-- unrelated UI history
-- unrelated scripts
-- old social recap notes
-- full repository history
+- Disabled: `HIGH_ASYMMETRY_PRIVATE_ENABLED` (unset)
+- Unset: `HIGH_ASYMMETRY_PRIVATE_WEBHOOK`
 
-## Production truth (from `main` — DO NOT overwrite, DO NOT act on here)
+Neither has been created or set. Both are required before the path can emit.
 
-Recorded for context only; this branch neither verifies nor changes it.
+## Known blockers
 
-- Local `main`, `origin/main`, and **deployed production** are all `0be1530`.
-  Railway deployment `5682002117` for that exact SHA reached `success`.
-- Production health verified: `schemaOk: true`, `schemaMissing: []`,
-  `missingLegacyColumns: []`, `lifecycle.active: true`.
-- `PROFESSIONAL_WATCHLIST_ENABLED` is **unset**; the endpoint reports
-  `enabled: false` and no professional publication has occurred. **No Railway
-  variable was changed.**
-- The professional Watchlist has only been observed **declining to run**;
-  observing the first 18:00 ET planning window is owned by the `optiscan-main`
-  session, not by this branch.
+1. **No owner-private webhook exists.** The path is inert until one is
+   provisioned. That is a Railway variable change requiring explicit owner
+   approval — deliberately not done.
+2. **No captured evidence** until the first options session runs with the
+   capture writer live.
+3. Outcome marks exist only for contracts that became paper trades
+   (`options_paper_marks` is keyed by `trade_id`), so the gradeable population
+   is still limited to already-alerted contracts. Unchanged by this checkpoint.
+
+## Exact next bounded checkpoint
+
+Wire live shadow intake: call the radar from the existing candidate stream
+AFTER exact-OCC selection and BEFORE subscriber delivery, capturing the evidence
+fields already modelled. Persist via the existing additive research table.
+Intake must be flag-gated, must not alter any live SEND decision, and a capture
+failure must never block the scanner or Discord delivery.
 
 ## Stop conditions
 
-- do not wire live alerts, Discord publication, Twitter generation, subscriber
-  messaging, or automatic contract buying
-- do not change a Railway variable or add an environment variable
 - do not push, merge, or deploy this branch
-- do not access, modify, or switch branches in the `optiscan-main` checkout
-- do not tune a threshold, rank candidates, or change the candidate identity
-  before the replay has produced measured counts
+- do not create or set any Railway variable
+- do not send a Discord message from this path
+- do not promote any threshold into a production gate
+- do not access, modify, or switch branches in `optiscan-main`
+- do not tune a threshold or change candidate identity before the replay has
+  produced measured counts
 - do not report a cohort number that no replay produced
-- do not let a screenshot or claimed figure become price evidence
-- do not claim any candidate will produce a large gain
-- research capture must never block scanner, paper linkage, or Discord delivery
+- do not describe infrastructure as active behaviour: this is a built, disabled
+  path, not a running radar
+
+## Relevant notes
+
+- [[../02 Components/High-Asymmetry Radar]]
+- [[../02 Components/safety]]
