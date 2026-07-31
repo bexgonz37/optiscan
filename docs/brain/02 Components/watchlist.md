@@ -1,6 +1,37 @@
 # Watchlist
 
-Status: DEPLOYED AND VERIFIED INERT — FLAG OFF (2026-07-30, commit `0be1530`)
+Status: professional plan **DEPLOYED_UNPROVEN** (flag off, never built or
+published in production) · legacy plan **LIVE_AND_VERIFIED** · next-session
+copy **LIVE_AND_VERIFIED** as of `be68a12`
+
+## Copy correctness fix — `be68a12` (2026-07-31)
+
+The 2026-07-30 18:01 ET message published SPCX as a PUT while describing it as
+a "0.6% prior-session decline". It had closed **up** 0.61%. The direction was
+correct — price 113.09 against VWAP 115.90, i.e. 2.4% below VWAP — but
+`plainThesis()` took the bearish branch and discarded the sign with
+`Math.abs()`. Any name closing up while below VWAP was described backwards.
+
+Fixed, copy only:
+
+- Wording now follows the **sign of the move**, never the trade direction, and
+  the VWAP relationship is stated as its own separate fact. The result explains
+  the classification instead of contradicting it: *"rose 0.6% on the session …
+  closed 2.4% below prior-session VWAP $115.90"*.
+- `"Hold above X and reclaim it"` was self-contradictory. Which instruction
+  applies now depends on where price actually closed relative to the level.
+- Row restructured so today's evidence and tomorrow's requirement are never in
+  one sentence: Today / Why watched / Needs after the open / Invalid if /
+  Careful / Catalyst, one disclaimer at the end.
+- Invalidation reads as a condition, not an instruction to the reader.
+
+Direction, ranking, selection, the publication gate, and the five-row cap are
+untouched; a test asserts each still holds. Rank and lifecycle status were
+briefly dropped while restructuring and were restored — neither is internal
+vocabulary and neither was in scope to remove.
+
+Verified from a deterministic fixture. **No Discord message was sent.** The
+next real send is the 18:00 ET window.
 
 ## Purpose
 

@@ -1,73 +1,113 @@
 # Current Task Packet
 
-Task ID: decide-professional-watchlist-enablement
+Task ID: observe-watchlist-copy-and-professional-window
 
-## Truthful current state
+## Active position
 
-- Local `main`, `origin/main`, and **deployed production** are all `df9c01c`.
-- Railway deployments verified by SHA (not by recency): `5682002117` for
-  `0be1530` and `5682083394` for `df9c01c`, both `success`.
-- Health: `schemaOk: true`, `schemaMissing: []`, `missingLegacyColumns: []`,
-  `lifecycle.active: true`. No migration failure, no startup crash, no secret
-  leakage.
-- **Scheduler wiring is PROVEN.** In the 18:00 ET window on 2026-07-30 the
-  professional job ran at 18:01:10 ET and recorded `outcome: DISABLED`,
-  `reason: "PROFESSIONAL_WATCHLIST_ENABLED is not set"`, all counters zero,
-  `errors: []`. The path is reached and declines at the flag gate.
-- Nothing was published by the professional path: `recentPublications: []`,
-  `overnightPlan: null`, no copy-screen or publication failure.
-- Legacy plan ran normally in the same window: `overnight-v2-2026-07-30`,
-  5 published rows, 64 held, `lastError: null`, and its Discord message
-  delivered at 18:01:11 ET.
-- `PROFESSIONAL_WATCHLIST_ENABLED` remains unset. **No Railway variable has been
-  changed at any point.**
+- Repo: `C:\Users\bexgo\Downloads\optiscan-main`, branch `main`
+- Local HEAD: `be68a12`
+- `origin/main`: `be68a12`
+- Deployed production commit: **`be68a12`**
 
-## What is still unproven
+## Completed this session
 
-- The professional path has never **built or published** in production. Only its
-  reachability and its disabled-decline are proven.
-- The 08:30 ET premarket window has not been observed; `lastPremarketRun` is
-  null.
-- Live trigger detection is not wired; no outcome rows exist.
-- Momentum, confirmed-catalyst, and premarket-level sources are still absent, so
-  even when enabled the overnight plan draws only on the static universe plus
-  daily bars.
+Four separate commits, each one concern, each pushed and deployed:
 
-## Next task — an owner decision, not an engineering step
+| Commit | Concern | Status |
+| --- | --- | --- |
+| `08bb849` | Browser connection-pool exhaustion (poll guard) | LIVE_AND_VERIFIED |
+| `0b67ba8` | `/api/now` alert-lookup indexes | LIVE_AND_VERIFIED |
+| `cb89c03` | Discord panel authenticated reads | DEPLOYED_UNPROVEN |
+| `be68a12` | Next-session Watchlist copy sign fix | DEPLOYED_UNPROVEN |
 
-The verification ladder has one rung left before enablement, and enabling is a
-**Railway variable change requiring explicit owner approval.**
+## Verified locally
 
-1. **Optional, zero-risk:** observe the 08:30 ET premarket window to confirm
-   `lastPremarketRun` also records `DISABLED`. This proves the second window is
-   wired, symmetrically with the first. Costs nothing but a day.
-2. **The enable decision (owner only).** Setting
-   `PROFESSIONAL_WATCHLIST_ENABLED=1` turns on a path that will, in the next
-   planning window, fetch daily bars and option chains for up to 60 symbols and
-   publish a message to the owner/private Watchlist Discord channel. It cannot
-   reach subscribers. Before enabling, decide whether the missing momentum /
-   catalyst / premarket sources make a static-universe-only plan worth sending.
-3. **After enabling, verify in one window:** rows considered, rows published,
-   copy-screen result, `payloadHash`, and that a repeat beat reports
-   `SUPPRESSED_UNCHANGED`. Confirm the legacy plan still published beside it.
-4. Only then wire live trigger detection into `processWatchlistTrigger` and add
-   real momentum, catalyst, and premarket sources. Until each has a real source
-   it must contribute nothing, never a fabricated name.
+- `08bb849`: 10/10 focused, 2510/2510 full
+- `0b67ba8`: 7/7 focused, 2517/2517 full
+- `cb89c03`: 8/8 focused, 2525/2525 full
+- `be68a12`: 9/9 focused, **2534/2534** full
+- Every commit: tsc clean, build clean, `git diff --check` clean
 
-## Load these notes
+## Verified in production
 
-- ../02 Components/safety.md
-- ../02 Components/watchlist.md
-- ../02 Components/delivery.md
-- ../02 Components/deployment.md
+- `/api/healthz` serves `be68a12`, `schemaOk: true`, `schemaMissing: []`,
+  `lifecycle.active: true`
+- `/api/now` latency after the index fix: median **2.49s**, p95 **3.06s**,
+  measured over 10 requests (was 13–15s). First request after a deploy is
+  ~20s cold.
+- All seven routes return 200: `/`, `/watchlist`, `/callouts`, `/quant`,
+  `/discord`, `/paper`, `/ai`
+- Poll-guard soak: `/watchlist` held ~3.5 min produced 11 requests, all 200,
+  **zero pending** — previously multiple concurrent `/api/now` hung forever
+
+## What remains unproven
+
+- **`cb89c03`** — the Discord panel fix is deployed but I have NOT re-opened
+  `/discord` in a browser to confirm Options/Watchlist now read CONFIGURED and
+  the ledger shows real sends. Only the render contract is unit-tested.
+- **`be68a12`** — the corrected copy has NOT appeared in a real Discord
+  message. Verified from a deterministic fixture only. Next real send is the
+  18:00 ET window.
+- The professional Watchlist has still never built or published in production.
+  It has only been observed declining at the flag gate.
+
+## Feature status
+
+| Feature | Status |
+| --- | --- |
+| Poll guard / connection-pool fix | LIVE_AND_VERIFIED |
+| `/api/now` indexes | LIVE_AND_VERIFIED |
+| Discord panel authenticated reads | DEPLOYED_UNPROVEN |
+| Next-session Watchlist copy | DEPLOYED_UNPROVEN |
+| Legacy next-session Watchlist plan | LIVE_AND_VERIFIED (5 rows, sent 18:01 ET) |
+| Professional Watchlist | DEPLOYED_UNPROVEN (flag off, never published) |
+| Daily recap | MISSING (webhook never configured, zero sends ever) |
+| Earlier-entry / loss-protection research | RESEARCH_ONLY |
+| High-Asymmetry private notify (other worktree) | BUILT_DISABLED |
+
+## Feature flags
+
+- Disabled: `PROFESSIONAL_WATCHLIST_ENABLED` (unset)
+- Unset: `DISCORD_WEBHOOK_RECAP`
+- Enabled: `OWNER_RESEARCH_DISCORD_ENABLED`, `AI_ENABLED`
+
+No Railway variable has been created, changed, or removed at any point.
+
+## Known blockers
+
+1. `/api/now` still costs ~2.4s at floor — the 546-alert loop in
+   `buildPaperChainDiagnostic`. Reducing it changes what the endpoint returns,
+   so it needs an owner decision on the contract.
+2. Recap requires `DISCORD_WEBHOOK_RECAP`, an owner-only Railway change.
+3. Professional Watchlist enablement is an owner-only Railway change.
+4. `paperLinkFailure` metric name is misleading (counts pre-delivery
+   rejections, not delivered-but-unlinked). Diagnostic clarity only.
+
+## Exact next bounded checkpoint
+
+Two read-only confirmations, no code:
+
+1. Open `/discord` in a browser and confirm ALERTS + WATCHLIST read
+   **Configured**, RECAPS reads **NOT CONFIGURED**, and the ledger lists real
+   sends. This closes `cb89c03`.
+2. After the next 18:00 ET window, read the delivered
+   `owner_next_session_watchlist` payload from the ledger and confirm no
+   positive move is described as a decline. This closes `be68a12`.
 
 ## Stop conditions
 
 - do not change a Railway variable without explicit owner approval
-- do not enable the feature flag as part of routine verification
-- do not stage unrelated untracked files, graphify-out/, or workspace.json
-- do not alter live formulas, thresholds, stops, targets, or authority
-- a Watchlist trigger never delivers on its own
-- do not claim production success without direct evidence
-- when computing ET, use Node's ICU — this shell has no tzdata and silently
-  ignores `TZ`, returning UTC labelled GMT
+- do not enable a feature flag as part of verification
+- do not send a manual Discord test message
+- do not touch trading gates, ranking, or the asymmetry worktree
+- do not stage Obsidian line-ending noise, `graph.json`, `workspace.json`,
+  `graphify-out/`, or unrelated files
+- do not describe a deployed-but-unobserved change as verified
+
+## Relevant notes
+
+- [[../02 Components/Discord Alerts]]
+- [[../02 Components/watchlist]]
+- [[../02 Components/delivery]]
+- [[../02 Components/deployment]]
+- [[../02 Components/safety]]
