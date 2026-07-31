@@ -68,7 +68,9 @@ test("evidence-backed rows rank independently and render real levels", () => {
   assert.match(message, /Hold above \$177\.20/);
   // The VWAP reference now states its provenance, so a prior-session level can
   // never be read as a live one.
-  assert.match(message, /Lose prior-session VWAP near \$175\.80/);
+  // Invalidation now reads as a condition ("Loses ... and cannot reclaim it")
+  // so it cannot be misread as an instruction to the reader.
+  assert.match(message, /Loses prior-session VWAP near \$175\.80 and cannot reclaim it/);
   assert.match(message, /No confirmed catalyst/);
   assert.doesNotMatch(message, /O:|exact contract/i);
 });
