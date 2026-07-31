@@ -28,6 +28,9 @@ import { quoteFreshness } from "../../quote-freshness.ts";
 import { bearishPipelineEnabled } from "./bearish-authority.ts";
 import { recordOptionsResearchObservation } from "./prospective-evidence.ts";
 import { captureAsymmetryCandidate } from "../asymmetry/capture.ts";
+import {
+  recordCaptureStageOnDb, recordCaptureRejectionsOnDb, recordCaptureSampleOnDb,
+} from "../asymmetry/capture-telemetry.ts";
 import { tradingDay } from "../../trading-session.ts";
 
 export interface ChainContract { optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number; bid: number | null; ask: number | null; spreadPct: number | null; volume: number | null; openInterest: number | null; iv: number | null; delta: number | null; providerTimestamp: number | null }
@@ -148,6 +151,21 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
       candidateState: "CANDIDATE_DETECTED",
       underlyingPrice: input.underlying.price ?? null,
     });
+    // ── High-Asymmetry capture telemetry (diagnostics only) ──────────────
+    // Recorded BEFORE the branch so "the loop reached this point but selected
+    // no contract" is a countable fact rather than an absence of evidence.
+    // Every call is self-contained and swallowed; none can affect the scanner.
+    const asymSession = tradingDay(input.nowMs);
+    recordCaptureStageOnDb(db as any, asymSession, "LOOP_REACHED", input.nowMs);
+    if (!res.contract) {
+      recordCaptureStageOnDb(db as any, asymSession, "NO_CONTRACT_SELECTED", input.nowMs);
+      recordCaptureSampleOnDb(db as any, {
+        sessionDate: asymSession, observedAtMs: input.nowMs, stage: "NO_CONTRACT_SELECTED",
+        symbol: input.symbol, optionSymbol: null,
+        reason: res.callout?.reason ?? res.selection.reason ?? null,
+      });
+    }
+
     if (res.contract) {
       const contractObservation = {
         observedAtMs: input.nowMs, symbol: input.symbol, source: "options_candidate_lifecycle",
@@ -169,7 +187,11 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
       // captureAsymmetryCandidate never throws and returns nothing this loop
       // reads. It cannot alter `res`, the callout, the delivery decision, paper
       // linkage, or any SEND. Its result is deliberately discarded.
-      captureAsymmetryCandidate(db as any, {
+      // The result is still not acted on; it is only COUNTED. Discarding it
+      // entirely is what made a radar that refuses everything look identical to
+      // one that is never called.
+      recordCaptureStageOnDb(db as any, asymSession, "CAPTURE_CALLED", input.nowMs);
+      const asymResult = captureAsymmetryCandidate(db as any, {
         symbol: input.symbol,
         direction: res.contract.side === "put" ? "PUT" : "CALL",
         optionSymbol: res.contract.optionSymbol,
@@ -206,6 +228,25 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
         invalidated: false,
         nowMs: input.nowMs,
       });
+      // Count the outcome. Diagnostics only: nothing below branches on it, and
+      // the scanner's behaviour is byte-identical with these lines removed.
+      const asymStage = asymResult.outcome === "CAPTURED" ? "CAPTURE_ACCEPTED"
+        : asymResult.outcome === "DUPLICATE" ? "CAPTURE_DUPLICATE"
+          : asymResult.outcome === "BLOCKED" ? "CAPTURE_BLOCKED"
+            : asymResult.outcome === "PERSIST_FAILED" ? "CAPTURE_PERSIST_FAILED"
+              : asymResult.outcome === "DISABLED" ? "CAPTURE_DISABLED"
+                : "CAPTURE_ERROR";
+      recordCaptureStageOnDb(db as any, asymSession, asymStage, input.nowMs);
+      if (asymResult.blockedBy.length) {
+        recordCaptureRejectionsOnDb(db as any, asymSession, asymResult.blockedBy, input.nowMs);
+      }
+      if (asymStage !== "CAPTURE_DUPLICATE") {
+        recordCaptureSampleOnDb(db as any, {
+          sessionDate: asymSession, observedAtMs: input.nowMs, stage: asymStage,
+          symbol: input.symbol, optionSymbol: asymResult.optionSymbol,
+          reason: asymResult.reason, blockedBy: asymResult.blockedBy, labels: asymResult.labels,
+        });
+      }
       if (res.state === "READY") {
         recordOptionsResearchObservation(db as any, { ...contractObservation, candidateState: "QUOTE_VALIDATED", contractQualityState: "VALID" });
         recordOptionsResearchObservation(db as any, { ...contractObservation, candidateState: "READY", readinessState: "READY", contractQualityState: "VALID", frozenEntry: res.callout?.entry?.mid ?? null, targetT1: res.callout?.entry?.t1 ?? null, targetT2: res.callout?.entry?.t2 ?? null, targetStop: res.callout?.entry?.stop ?? null });

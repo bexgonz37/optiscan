@@ -77,14 +77,33 @@ test("the capture result carries nothing the loop can act on", () => {
   d.close();
 });
 
-test("the call site discards the result, so it cannot influence the loop", () => {
+test("the call site cannot let the capture result influence the loop", () => {
   const code = readFileSync("lib/research/options/loop.ts", "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
-  // Must be a bare statement: not assigned, not awaited into a branch.
-  assert.equal(/(?:const|let|var)\s+\w+\s*=\s*captureAsymmetryCandidate/.test(code), false,
-    "the result must not be captured into a variable");
-  assert.equal(/if\s*\(\s*captureAsymmetryCandidate/.test(code), false,
-    "the result must not be branched on");
+
+  // This assertion used to be "the result is never assigned to a variable",
+  // which was a PROXY for the real property. The result is now assigned — but
+  // only so its outcome can be COUNTED, because discarding it entirely made a
+  // radar that refuses everything indistinguishable from one never called.
+  // The real invariant is asserted directly instead, and it is stricter.
+
+  // 1. Capture is still invoked unconditionally, never inside a guard that
+  //    could skip it based on scanner state.
+  assert.equal(/if\s*\([^)]*\)\s*\{?\s*(?:const\s+\w+\s*=\s*)?captureAsymmetryCandidate/.test(code), false,
+    "capture must not be conditional on scanner state");
+
+  // 2. The result never reaches the loop's own output or control flow.
+  assert.equal(/return[^;\n]*captureAsymmetryCandidate/.test(code), false, "the result must not be returned directly");
+  assert.equal(/return[^;\n]*asymResult/.test(code), false, "and must not be returned via its variable");
+  assert.equal(/\bres\s*\.\s*\w+\s*=\s*asymResult/.test(code), false, "and must not be written onto the scanner result");
+
+  // 3. Every use of it is a telemetry call. Nothing else may read it.
+  for (const line of code.split("\n").filter((l) => l.includes("asymResult"))) {
+    assert.ok(
+      /recordCapture|const asymResult|const asymStage|asymResult\.(outcome|blockedBy|reason|optionSymbol|labels)/.test(line),
+      `asymResult may only feed telemetry, but appears in: ${line.trim()}`,
+    );
+  }
 });
 
 // ── Failure isolation ───────────────────────────────────────────────────────

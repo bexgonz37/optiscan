@@ -33,6 +33,7 @@ export async function GET(req: Request) {
     const { resolveReportDelivery } = await import("@/lib/research/asymmetry/paper/report-delivery");
     const { readActivationOnDb, resolvePaperPermission, GATE_OPEN_ET_MINUTE, GATE_CLOSE_ET_MINUTE, etMinutesOfDay } =
       await import("@/lib/research/asymmetry/paper/activation");
+    const { readCaptureTelemetryOnDb } = await import("@/lib/research/asymmetry/capture-telemetry");
 
     const db = getDb() as any;
     const sessionDate = url.searchParams.get("date") || tradingDay();
@@ -138,6 +139,10 @@ export async function GET(req: Request) {
       missingEvidenceCoverage: [...missing.entries()].map(([reason, n]) => ({ reason, count: n })).sort((a, b) => b.count - a.count),
       eodQuantReview: eod.review,
       aiAdvisory: { status: eod.aiStatus, summary: eod.aiSummary },
+      // Why there are (or are not) cases. Distinguishes "no contract selected"
+      // from "capture never called" from "called and rejected" from "persist
+      // failed" — four situations that previously looked identical.
+      captureTelemetry: readCaptureTelemetryOnDb(db, sessionDate),
       paperActivation: {
         // Both locks, reported separately so it is never ambiguous which one
         // is holding. The environment flag alone does NOT permit an entry.
