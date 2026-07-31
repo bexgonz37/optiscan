@@ -46,8 +46,11 @@ export async function GET(req: Request) {
     const stateCounts: Record<string, number> = {};
     for (const c of cases) stateCounts[c.state] = (stateCounts[c.state] ?? 0) + 1;
 
+    // fingerprint is selected deliberately. Without it a SENT row cannot be
+    // attributed to a contract, so "which NVDA alert actually went out" was
+    // unanswerable from diagnostics — the whole sweep shares one occurred_at_ms.
     const transitions = safeAll(db,
-      `SELECT from_state, to_state, occurred_at_ms, notified, notify_outcome
+      `SELECT fingerprint, from_state, to_state, occurred_at_ms, notified, notify_outcome
          FROM asymmetry_transitions WHERE session_date=? ORDER BY occurred_at_ms DESC LIMIT 50`, sessionDate);
     const markHealth = safeAll(db,
       `SELECT horizon_minutes, COUNT(*) n, SUM(CASE WHEN rejected_reason IS NULL THEN 1 ELSE 0 END) ok
