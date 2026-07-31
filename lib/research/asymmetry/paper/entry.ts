@@ -38,6 +38,8 @@ export const MAX_ENTRY_SPREAD_PCT = 35;
 
 export type PaperEntryRejection =
   | "PAPER_DISABLED"
+  /** Master authorization is present but the live gate has not proved out. */
+  | "NOT_ACTIVATED"
   | "INELIGIBLE_STATE"
   | "UPDATE_ONLY_STATE"
   | "NO_EXACT_OCC"
@@ -177,6 +179,13 @@ export interface OpenPaperTradeDeps {
   codeVersion?: string | null;
   /** The subscriber alert covering the same contract, when one already exists. */
   alertId?: string | null;
+  /**
+   * The SECOND lock. The environment flag authorizes the system to try; this
+   * says the live exact-OCC quote path has actually been proved today. Both are
+   * required, and the default is false so a caller that forgets to pass it
+   * cannot accidentally open a position.
+   */
+  activationActive?: boolean;
 }
 
 type EntryDb = Parameters<typeof hasPaperPosition>[0];
@@ -199,9 +208,27 @@ export function openAsymmetryPaperTrade(
   };
   try {
     const env = deps.env ?? process.env;
+    // Lock 1 — the owner's master authorization.
     if (env.HIGH_ASYMMETRY_PAPER_ENABLED !== "1") {
       out.rejection = "PAPER_DISABLED";
       out.detail = "HIGH_ASYMMETRY_PAPER_ENABLED is not set";
+      return out;
+    }
+    // Lock 2 — the machine's own live proof. Authorizing the system to TRY is
+    // not authorizing it to trade; the exact-OCC quote path must have proved
+    // itself today. Recorded as a skip so the refusal is visible, not silent.
+    if (deps.activationActive !== true) {
+      out.rejection = "NOT_ACTIVATED";
+      out.detail = "the live quote-path gate has not activated for this session";
+      out.skipped = true;
+      recordPaperSkipOnDb(db, {
+        sessionDate: candidate.sessionDate,
+        positionFingerprint: out.positionFingerprint,
+        reason: "NOT_ACTIVATED",
+        detail: out.detail,
+        stateAtSkip: candidate.state,
+        nowMs: deps.nowMs,
+      });
       return out;
     }
 

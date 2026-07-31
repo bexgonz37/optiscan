@@ -27,6 +27,7 @@ import { listCasesOnDb } from "../case-store.ts";
 import { regularCloseMs } from "../../../market-session-guard.ts";
 import { PAPER_ENABLED_ENV, isPaperEntryState, paperPositionFingerprint } from "./lane.ts";
 import { openAsymmetryPaperTrade, type PaperEntryQuote } from "./entry.ts";
+import { resolvePaperPermission } from "./activation.ts";
 import {
   evaluatePaperManagement, resolveManagementConfig, updateExcursions, highestMilestone,
   type ManagementConfig,
@@ -50,6 +51,9 @@ export interface PaperQuote {
 export interface PaperRunResult {
   ran: boolean;
   reason: string | null;
+  /** The persisted activation state that governed entries this sweep. */
+  activationState: string | null;
+  paperEntriesAllowed: boolean;
   casesRead: number;
   entriesOpened: number;
   entriesSkipped: number;
@@ -75,7 +79,8 @@ export interface PaperRunDeps {
 /** Sweep the paper lane: open eligible entries, then manage open positions. */
 export async function runAsymmetryPaper(db: RunnerDb, deps: PaperRunDeps): Promise<PaperRunResult> {
   const out: PaperRunResult = {
-    ran: false, reason: null, casesRead: 0, entriesOpened: 0, entriesSkipped: 0,
+    ran: false, reason: null, activationState: null, paperEntriesAllowed: false,
+    casesRead: 0, entriesOpened: 0, entriesSkipped: 0,
     positionsManaged: 0, marksWritten: 0, marksRejected: 0, positionsClosed: 0,
     positionsUnverified: 0, providerErrors: 0, errors: [],
   };
@@ -86,6 +91,13 @@ export async function runAsymmetryPaper(db: RunnerDb, deps: PaperRunDeps): Promi
       return out;
     }
     out.ran = true;
+
+    // Both locks, resolved once per sweep. Entries need ACTIVE; management of
+    // positions that are ALREADY open continues regardless, so a position can
+    // never be stranded unmanaged by a gate decision.
+    const permission = resolvePaperPermission(db as any, deps.sessionDate, env);
+    out.activationState = permission.activationState;
+    out.paperEntriesAllowed = permission.paperEntriesAllowed;
 
     const cfg = deps.management ?? resolveManagementConfig(env);
     const sizing = resolveSizingConfig(env);
@@ -118,6 +130,17 @@ export async function runAsymmetryPaper(db: RunnerDb, deps: PaperRunDeps): Promi
     for (const c of cases) {
       try {
         if (!isPaperEntryState(c.state)) continue;
+        // Not activated: refuse before spending a provider call on an entry
+        // that cannot happen. The refusal is still recorded, once per case.
+        if (!permission.paperEntriesAllowed) {
+          const res = openAsymmetryPaperTrade(db, {
+            sessionDate: c.sessionDate, caseFingerprint: c.fingerprint, symbol: c.symbol,
+            direction: c.direction, optionSymbol: c.optionSymbol, setupFamily: setupOf(c),
+            state: c.state, evidenceJson: null, missingEvidence: c.missingEvidence,
+          }, null, { nowMs: deps.nowMs, env, sizing, codeVersion: deps.codeVersion ?? null, activationActive: false });
+          if (res.skipped) out.entriesSkipped += 1;
+          continue;
+        }
         const fingerprint = paperPositionFingerprint({
           sessionDate: c.sessionDate, symbol: c.symbol, direction: c.direction,
           optionSymbol: c.optionSymbol, setupFamily: setupOf(c),
@@ -150,6 +173,7 @@ export async function runAsymmetryPaper(db: RunnerDb, deps: PaperRunDeps): Promi
           missingEvidence: c.missingEvidence,
         }, entryQuote, {
           nowMs: deps.nowMs, env, sizing, codeVersion: deps.codeVersion ?? null,
+          activationActive: permission.paperEntriesAllowed,
         });
         if (res.opened) out.entriesOpened += 1;
         else if (res.skipped) out.entriesSkipped += 1;

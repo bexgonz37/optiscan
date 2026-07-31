@@ -35,6 +35,7 @@ import { computeCohortMetrics, buildQuantReport, wilson95, holdoutSplit } from "
 import { ensureAsymmetrySchema, openAsymmetryCaseOnDb } from "../lib/research/asymmetry/case-store.ts";
 import { runAsymmetryEodReview, buildDeterministicReview } from "../lib/research/asymmetry/eod-review.ts";
 import { resolveReportDelivery, deliverPaperReport, buildPaperReportMessage } from "../lib/research/asymmetry/paper/report-delivery.ts";
+import { ensureActivationSchema, armActivationOnDb, activateOnDb } from "../lib/research/asymmetry/paper/activation.ts";
 
 const require = createRequire(import.meta.url);
 const Database = require("better-sqlite3");
@@ -45,10 +46,27 @@ const SESSION = "2026-07-30";
 const T0 = Date.parse("2026-07-30T14:00:00.000Z");
 const ON = { HIGH_ASYMMETRY_PAPER_ENABLED: "1" };
 
+/**
+ * A database with BOTH locks satisfied. Paper entry requires the environment
+ * flag AND a persisted ACTIVE activation; these tests are about what happens
+ * once entry is permitted, so the gate is pre-satisfied here. That the two
+ * locks are genuinely independent — and that the env flag alone is NOT enough —
+ * is proven in tests/high-asymmetry-paper-activation.test.mjs.
+ */
 function freshDb() {
   const db = new Database(":memory:");
   ensureAsymmetrySchema(db);
   ensureAsymmetryPaperSchema(db);
+  ensureActivationSchema(db);
+  armActivationOnDb(db, SESSION, T0);
+  activateOnDb(db, {
+    sessionDate: SESSION, nowMs: T0,
+    evidence: {
+      casesCaptured: 1, markAttempts: 1, acceptedMarks: 1, rejectionCounts: {},
+      proof: null, schedulerHealthy: true, schedulerErrors: [],
+      canSendSubscriber: false, automaticRealTrading: false,
+    },
+  });
   return db;
 }
 
@@ -77,7 +95,7 @@ const quoteFn = (q) => async () => ({ quote: q, providerError: null });
 test("a qualifying asymmetry state creates a paper trade", () => {
   for (const state of PAPER_ENTRY_STATES) {
     const db = freshDb();
-    const res = openAsymmetryPaperTrade(db, candidate({ state }), quote(), { nowMs: T0, env: ON });
+    const res = openAsymmetryPaperTrade(db, candidate({ state }), quote(), { nowMs: T0, env: ON, activationActive: true });
     assert.equal(res.opened, true, `${state} must open a position`);
     assert.equal(listPaperPositionsOnDb(db, SESSION).length, 1);
     db.close();
@@ -87,7 +105,7 @@ test("a qualifying asymmetry state creates a paper trade", () => {
 test("ineligible states never create a paper trade", () => {
   for (const state of PAPER_INELIGIBLE_STATES) {
     const db = freshDb();
-    const res = openAsymmetryPaperTrade(db, candidate({ state }), quote(), { nowMs: T0, env: ON });
+    const res = openAsymmetryPaperTrade(db, candidate({ state }), quote(), { nowMs: T0, env: ON, activationActive: true });
     assert.equal(res.opened, false, `${state} must not open a position`);
     assert.equal(listPaperPositionsOnDb(db, SESSION).length, 0);
     // The refusal is RECORDED, not silent.
@@ -98,7 +116,7 @@ test("ineligible states never create a paper trade", () => {
 
 test("TRIGGERED may update but never opens a position", () => {
   const db = freshDb();
-  const res = openAsymmetryPaperTrade(db, candidate({ state: "TRIGGERED" }), quote(), { nowMs: T0, env: ON });
+  const res = openAsymmetryPaperTrade(db, candidate({ state: "TRIGGERED" }), quote(), { nowMs: T0, env: ON, activationActive: true });
   assert.equal(res.opened, false);
   assert.equal(res.rejection, "UPDATE_ONLY_STATE");
   assert.equal(listPaperPositionsOnDb(db, SESSION).length, 0);
@@ -107,7 +125,7 @@ test("TRIGGERED may update but never opens a position", () => {
 
 test("the ASK is the entry fill — never the mid, never the bid", () => {
   const db = freshDb();
-  openAsymmetryPaperTrade(db, candidate(), quote({ bid: 1.8, ask: 2.0 }), { nowMs: T0, env: ON });
+  openAsymmetryPaperTrade(db, candidate(), quote({ bid: 1.8, ask: 2.0 }), { nowMs: T0, env: ON, activationActive: true });
   const [p] = listPaperPositionsOnDb(db, SESSION);
   assert.equal(p.entryFill, 2.0, "entry must be the ask");
   assert.notEqual(p.entryFill, 1.9, "a mid fill would flatter every result in this lane");
@@ -134,7 +152,7 @@ test("a stale, future, wrong-session, wrong-OCC, crossed, or wide quote prevents
   ];
   for (const [expected, q, nowMs] of cases) {
     const db = freshDb();
-    const res = openAsymmetryPaperTrade(db, candidate(), q, { nowMs, env: ON });
+    const res = openAsymmetryPaperTrade(db, candidate(), q, { nowMs, env: ON, activationActive: true });
     assert.equal(res.opened, false, `${expected} must not open`);
     assert.equal(res.rejection, expected);
     assert.equal(listPaperPositionsOnDb(db, SESSION).length, 0);
@@ -144,7 +162,7 @@ test("a stale, future, wrong-session, wrong-OCC, crossed, or wide quote prevents
 
 test("a rejection is never silently converted into a position with zeros", () => {
   const db = freshDb();
-  openAsymmetryPaperTrade(db, candidate(), quote({ bid: null, ask: null }), { nowMs: T0, env: ON });
+  openAsymmetryPaperTrade(db, candidate(), quote({ bid: null, ask: null }), { nowMs: T0, env: ON, activationActive: true });
   assert.equal(listPaperPositionsOnDb(db, SESSION).length, 0, "missing values must not become a zero-priced trade");
   db.close();
 });
@@ -154,7 +172,7 @@ test("a rejection is never silently converted into a position with zeros", () =>
 test("one position per fingerprint, and duplicate ticks create no duplicates", () => {
   const db = freshDb();
   for (let i = 0; i < 5; i += 1) {
-    openAsymmetryPaperTrade(db, candidate(), quote({ quoteAtMs: T0 + i - 1000 }), { nowMs: T0 + i, env: ON });
+    openAsymmetryPaperTrade(db, candidate(), quote({ quoteAtMs: T0 + i - 1000 }), { nowMs: T0 + i, env: ON, activationActive: true });
   }
   assert.equal(listPaperPositionsOnDb(db, SESSION).length, 1, "five ticks must yield exactly one position");
   const skips = listPaperSkipsOnDb(db, SESSION);
@@ -182,7 +200,7 @@ test("uniqueness is enforced by the PRIMARY KEY, not only by the read check", ()
 
 test("a subsequent subscriber alert links to the position instead of creating a second one", () => {
   const db = freshDb();
-  openAsymmetryPaperTrade(db, candidate(), quote(), { nowMs: T0, env: ON });
+  openAsymmetryPaperTrade(db, candidate(), quote(), { nowMs: T0, env: ON, activationActive: true });
   const { attachPaperAlertLinkOnDb } = require("../lib/research/asymmetry/paper/store.ts");
   attachPaperAlertLinkOnDb(db, { sessionDate: SESSION, optionSymbol: OCC, alertId: "alert-1", nowMs: T0 + 60_000 });
   const rows = listPaperPositionsOnDb(db, SESSION);
@@ -342,7 +360,7 @@ test("NO EXIT PRICE IS EVER INVENTED — a missing bid leaves the outcome unveri
 test("an unverified exit is never recorded as a loss or a zero", async () => {
   const db = freshDb();
   seedCase(db, { state: "INVALIDATED" });
-  openAsymmetryPaperTrade(db, candidate(), quote(), { nowMs: T0, env: ON });
+  openAsymmetryPaperTrade(db, candidate(), quote(), { nowMs: T0, env: ON, activationActive: true });
   // Now the provider goes dark while the case is invalidated: an exit is due
   // and cannot be priced.
   await runAsymmetryPaper(db, {
@@ -701,7 +719,7 @@ test("no subscriber SEND path is reachable from the paper lane", () => {
 test("the lane is a separate TABLE, so no subscriber query can absorb it", () => {
   const db = freshDb();
   seedCase(db);
-  openAsymmetryPaperTrade(db, candidate(), quote(), { nowMs: T0, env: ON });
+  openAsymmetryPaperTrade(db, candidate(), quote(), { nowMs: T0, env: ON, activationActive: true });
   // The subscriber population lives in options_paper_trades. It must be empty.
   db.exec("CREATE TABLE IF NOT EXISTS options_paper_trades (id INTEGER PRIMARY KEY, paper_kind TEXT, option_symbol TEXT)");
   const n = db.prepare("SELECT COUNT(*) n FROM options_paper_trades").get().n;
