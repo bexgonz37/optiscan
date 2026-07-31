@@ -1773,6 +1773,11 @@ CREATE TABLE IF NOT EXISTS opportunity_cases (
 CREATE INDEX IF NOT EXISTS idx_opportunity_cases_detected ON opportunity_cases(detected_at_ms);
 CREATE INDEX IF NOT EXISTS idx_opportunity_cases_symbol ON opportunity_cases(underlying_symbol, detected_at_ms);
 CREATE INDEX IF NOT EXISTS idx_opportunity_cases_delivery ON opportunity_cases(delivery_decision, detected_at_ms);
+-- Case lookup by alert. Measured: without this, selecting opportunity_id by
+-- alert_id is a full SCAN of ~20.6k rows plus a temp B-tree, and the paper-chain
+-- diagnostic runs it once per SENT alert (~460x per /api/now). That single
+-- statement was 23.9s of a 28.5s request.
+CREATE INDEX IF NOT EXISTS idx_opportunity_cases_alert ON opportunity_cases(alert_id);
 
 -- Living Opportunity Case lifecycle (additive). One active opportunity per fingerprint.
 CREATE TABLE IF NOT EXISTS opportunity_active_index (

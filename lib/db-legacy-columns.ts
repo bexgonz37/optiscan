@@ -293,6 +293,14 @@ export function ensureOptionsDeliveryDecisionsColumns(db: ColumnDb): string[] {
 
   ).run();
 
+  // Decision lookup by alert. Measured: without this the paper-chain diagnostic
+  // full-SCANs this table once per SENT alert (~546x per /api/now), costing 1.7s.
+  db.prepare(
+
+    "CREATE INDEX IF NOT EXISTS idx_options_delivery_decisions_alert ON options_delivery_decisions(alert_id)",
+
+  ).run();
+
   return added;
 
 }
