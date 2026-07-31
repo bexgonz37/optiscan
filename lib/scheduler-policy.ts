@@ -30,6 +30,7 @@ export interface SchedulerIntervals {
   watchlistPlanningMs: number;
   asymmetryTransitionsMs: number;
   asymmetryMarksMs: number;
+  asymmetryPaperMs: number;
   asymmetryEodMs: number;
 }
 
@@ -74,6 +75,10 @@ export function schedulerIntervals(env: NodeJS.ProcessEnv = process.env): Schedu
     // matters, bounded so a sweep cannot pile up on the beat.
     asymmetryTransitionsMs: clampInt(env.SCHED_ASYMMETRY_TRANSITIONS_MS, 60_000, 30_000, 30 * 60_000),
     asymmetryMarksMs: clampInt(env.SCHED_ASYMMETRY_MARKS_MS, 60_000, 30_000, 30 * 60_000),
+    // High-Asymmetry paper lane. 60s: a simulated stop that is only checked
+    // every few minutes is not the stop the rules describe, and the sweep
+    // caches one quote per contract so a fast tick stays cheap.
+    asymmetryPaperMs: clampInt(env.SCHED_ASYMMETRY_PAPER_MS, 60_000, 30_000, 30 * 60_000),
     // End-of-day review check. Hourly; the job itself is idempotent per day.
     asymmetryEodMs: clampInt(env.SCHED_ASYMMETRY_EOD_MS, 60 * 60_000, 5 * 60_000, 6 * 60 * 60_000),
   };

@@ -22,7 +22,7 @@ import { isEarlyCloseDay } from "@/lib/market-session-guard";
 const LEASE_NAME = "scheduler";
 const BASE_TICK_MS = 15_000;
 
-type JobName = "maintenance" | "learning" | "supervisor" | "improvement" | "aiJobs" | "brokerReadiness" | "subscriberReadiness" | "contentDrafts" | "overnightResearch" | "watchlistPlanning" | "asymmetryTransitions" | "asymmetryMarks" | "asymmetryEod";
+type JobName = "maintenance" | "learning" | "supervisor" | "improvement" | "aiJobs" | "brokerReadiness" | "subscriberReadiness" | "contentDrafts" | "overnightResearch" | "watchlistPlanning" | "asymmetryTransitions" | "asymmetryMarks" | "asymmetryPaper" | "asymmetryEod";
 
 export interface SchedulerState {
   started: boolean;
@@ -52,6 +52,8 @@ export interface SchedulerState {
   lastAsymmetryTransitions?: unknown;
   /** Last High-Asymmetry mark sweep. Read-only diagnostics. */
   lastAsymmetryMarks?: unknown;
+  /** Last High-Asymmetry paper sweep. Read-only diagnostics. */
+  lastAsymmetryPaper?: unknown;
   /** Last High-Asymmetry EOD review. Read-only diagnostics. */
   lastAsymmetryEod?: unknown;
   lastProfessionalWatchlist?: {
@@ -89,8 +91,8 @@ function state(): SchedulerState {
   const g = globalThis as G;
   g.__optiscanScheduler ??= {
     started: false, isOwner: false, ownerPid: null, lastBeatAtMs: null,
-    lastRun: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null, brokerReadiness: null, subscriberReadiness: null, contentDrafts: null, overnightResearch: null, watchlistPlanning: null, asymmetryTransitions: null, asymmetryMarks: null, asymmetryEod: null },
-    runs: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0, subscriberReadiness: 0, contentDrafts: 0, overnightResearch: 0, watchlistPlanning: 0, asymmetryTransitions: 0, asymmetryMarks: 0, asymmetryEod: 0 },
+    lastRun: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null, brokerReadiness: null, subscriberReadiness: null, contentDrafts: null, overnightResearch: null, watchlistPlanning: null, asymmetryTransitions: null, asymmetryMarks: null, asymmetryPaper: null, asymmetryEod: null },
+    runs: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0, subscriberReadiness: 0, contentDrafts: 0, overnightResearch: 0, watchlistPlanning: 0, asymmetryTransitions: 0, asymmetryMarks: 0, asymmetryPaper: 0, asymmetryEod: 0 },
     note: "not started", lastError: null, lastWatchlistPlanning: null,
     lastProfessionalWatchlist: { overnight: null, premarket: null },
   };
@@ -459,8 +461,14 @@ async function asymmetryTransitionsJob(nowMs: number): Promise<void> {
   const { tradingDay } = require("@/lib/trading-session");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { observeAsymmetryCase } = require("@/lib/research/asymmetry/live-quote");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { sendAsymmetryWebhook } = require("@/lib/notifications/asymmetry-private-send");
   const res = await runAsymmetryTransitions(db(), {
     observe: observeAsymmetryCase,
+    // Without this the notifier returns NOT_CONFIGURED forever: `send` is
+    // optional and nothing was injecting it, so no private message could ever
+    // leave the process no matter how the flags were set.
+    send: sendAsymmetryWebhook,
     nowMs,
     sessionDate: tradingDay(nowMs),
   });
@@ -488,9 +496,36 @@ async function asymmetryMarksJob(nowMs: number): Promise<void> {
 }
 
 /**
+ * High-Asymmetry PAPER lane (research, OFF by default). Opens simulated
+ * positions for eligible cases and manages the open ones on the same tick, so
+ * entry and management always see the same quote for the same contract.
+ *
+ * Owner-private simulation only: this job cannot create a subscriber alert,
+ * touch any subscriber paper trade, or reach a broker. It is entirely
+ * deterministic — no AI module is imported, called, or awaited anywhere in it.
+ */
+async function asymmetryPaperJob(nowMs: number): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { runAsymmetryPaper } = require("@/lib/research/asymmetry/paper/runner");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { tradingDay } = require("@/lib/trading-session");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { liveAsymmetryQuote } = require("@/lib/research/asymmetry/live-quote");
+  const res = await runAsymmetryPaper(db(), {
+    quote: liveAsymmetryQuote,
+    nowMs,
+    sessionDate: tradingDay(nowMs),
+    codeVersion: process.env.RAILWAY_GIT_COMMIT_SHA ?? null,
+  });
+  state().lastAsymmetryPaper = res;
+}
+
+/**
  * High-Asymmetry end-of-day review (research, OFF by default). Deterministic
- * aggregation is persisted BEFORE the advisory AI runs, so an AI failure can
- * never remove or alter the measured review.
+ * aggregation and the Quant report are persisted BEFORE the advisory AI runs,
+ * so an AI failure — or an exhausted budget — can never remove or alter a
+ * measured result. The advisory call is budget-controlled and happens at most
+ * once per trading session.
  */
 async function asymmetryEodJob(nowMs: number): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -498,13 +533,22 @@ async function asymmetryEodJob(nowMs: number): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { tradingDay } = require("@/lib/trading-session");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { explainAsymmetryReview } = require("@/lib/ai/asymmetry-explain");
+  const { explainAsymmetryReviewWithBudget } = require("@/lib/ai/asymmetry-explain");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { deliverPaperReport } = require("@/lib/research/asymmetry/paper/report-delivery");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { sendAsymmetryWebhook } = require("@/lib/notifications/asymmetry-private-send");
+  const sessionDate = tradingDay(nowMs);
   const res = await runAsymmetryEodReview(db(), {
     nowMs,
-    sessionDate: tradingDay(nowMs),
-    explain: explainAsymmetryReview,
+    sessionDate,
+    explain: (review: unknown) => explainAsymmetryReviewWithBudget(db(), sessionDate, review, nowMs),
+    deliverPaperReport: (report: unknown) => deliverPaperReport(sessionDate, report, { send: sendAsymmetryWebhook }),
   });
-  state().lastAsymmetryEod = { ranAtMs: nowMs, sessionDate: res.sessionDate, persisted: res.persisted, aiStatus: res.aiStatus, errors: res.errors };
+  state().lastAsymmetryEod = {
+    ranAtMs: nowMs, sessionDate: res.sessionDate, persisted: res.persisted,
+    quantPersisted: res.quantPersisted, aiStatus: res.aiStatus, aiReason: res.aiReason, errors: res.errors,
+  };
 }
 
 async function beat(): Promise<void> {
@@ -566,6 +610,9 @@ async function beat(): Promise<void> {
   }
   if (jobDue(s.lastRun.asymmetryMarks, iv.asymmetryMarksMs, nowMs)) {
     await runJob("asymmetryMarks", () => asymmetryMarksJob(nowMs), nowMs);
+  }
+  if (jobDue(s.lastRun.asymmetryPaper, iv.asymmetryPaperMs, nowMs)) {
+    await runJob("asymmetryPaper", () => asymmetryPaperJob(nowMs), nowMs);
   }
   if (jobDue(s.lastRun.asymmetryEod, iv.asymmetryEodMs, nowMs)) {
     await runJob("asymmetryEod", () => asymmetryEodJob(nowMs), nowMs);
