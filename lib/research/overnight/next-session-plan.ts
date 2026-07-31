@@ -36,6 +36,10 @@ export interface OvernightRecommendation {
   catalyst?: string | null;
   sourceTimestampMs?: number | null;
   sourceFreshness?: string;
+  /** What today's session did, signed. Separate from tomorrow's trigger. */
+  sessionSummary?: string | null;
+  /** Where price closed relative to VWAP — why a green day can still be bearish. */
+  vwapPosition?: string | null;
   rankingReason?: string | null;
   diagnosticReason?: string | null;
 }
@@ -309,20 +313,44 @@ function latestMarketContext(db: PlanDb): PlanMarketContext {
   }
 }
 
-function plainThesis(row: AlertStructureRow, bullish: boolean): string | null {
+/**
+ * What the session actually did, in signed terms.
+ *
+ * The word MUST follow the sign of the move, never the trade direction. A name
+ * can close UP on the day and still be a bearish setup because it sits below
+ * VWAP — SPCX did exactly that on 2026-07-30 (+0.61%, price 113.09 vs VWAP
+ * 115.90) and the old code called it a "0.6% prior-session decline" because it
+ * took the bearish branch and discarded the sign with Math.abs().
+ */
+function sessionMoveSentence(row: AlertStructureRow): string | null {
+  const move = numberOrNull(row.percent_move_at_alert);
+  const rvol = numberOrNull(row.relative_volume);
+  if (move == null) return null;
+  const magnitude = Math.abs(move).toFixed(1);
+  const verb = move > 0 ? "rose" : move < 0 ? "fell" : "finished flat";
+  const head = move === 0
+    ? "Price finished the session flat"
+    : `Price ${verb} ${magnitude}% on the session`;
+  return rvol == null ? `${head}.` : `${head} on ${rvol.toFixed(1)}x relative volume.`;
+}
+
+/** Where price sat relative to VWAP — the reason a green day can still be bearish. */
+function vwapPositionSentence(price: number | null, vwap: number | null, vwapLabel: string): string | null {
+  if (price == null || vwap == null || vwap <= 0) return null;
+  const deltaPct = ((price - vwap) / vwap) * 100;
+  if (Math.abs(deltaPct) < 0.05) return `It closed right at ${vwapLabel} ${money(vwap)}.`;
+  return deltaPct > 0
+    ? `It closed ${deltaPct.toFixed(1)}% above ${vwapLabel} ${money(vwap)}.`
+    : `It closed ${Math.abs(deltaPct).toFixed(1)}% below ${vwapLabel} ${money(vwap)}.`;
+}
+
+function plainThesis(row: AlertStructureRow, _bullish: boolean): string | null {
   const explanation = String(row.public_explanation ?? "").replace(/\s+/g, " ").trim();
   if (explanation) {
     const sentence = explanation.split(/(?<=[.!?])\s+/)[0]?.trim();
     if (sentence && sentence.length >= 24) return sentence;
   }
-  const move = numberOrNull(row.percent_move_at_alert);
-  const rvol = numberOrNull(row.relative_volume);
-  if (move != null && rvol != null) {
-    return bullish
-      ? `Price showed a ${move.toFixed(1)}% prior-session move with ${rvol.toFixed(1)}x relative volume.`
-      : `Price showed a ${Math.abs(move).toFixed(1)}% prior-session decline with ${rvol.toFixed(1)}x relative volume.`;
-  }
-  return null;
+  return sessionMoveSentence(row);
 }
 
 function planFromAlert(db: PlanDb, row: AlertStructureRow, indexContextAvailable: boolean): OvernightRecommendation {
@@ -352,12 +380,20 @@ function planFromAlert(db: PlanDb, row: AlertStructureRow, indexContextAvailable
   if (score == null) missing.push("signal score");
 
   const direction = bullish ? "bullish" : "bearish";
+  // "Hold above X and reclaim it" was self-contradictory. Which instruction
+  // applies depends on where price actually closed relative to the level, so
+  // decide from the evidence instead of from the direction alone.
+  const above = price != null && vwapUsable ? price > (vwap as number) : null;
   const triggerText = price == null ? null : bullish
-    ? `Hold above ${money(price)} and reclaim it after the open.`
-    : `Lose ${money(price)} and fail to reclaim it after the open.`;
+    ? (above === false
+      ? `Reclaim ${money(price)} after the open and hold above it.`
+      : `Hold above ${money(price)} after the open.`)
+    : (above === true
+      ? `Lose ${money(price)} after the open and fail to reclaim it.`
+      : `Stay below ${money(price)} after the open.`);
   const invalidationText = !vwapUsable ? null : bullish
-    ? `Lose ${vwapLabel} near ${money(vwap as number)} and fail to reclaim.`
-    : `Reclaim ${vwapLabel} near ${money(vwap as number)} and hold.`;
+    ? `Loses ${vwapLabel} near ${money(vwap as number)} and cannot reclaim it.`
+    : `Reclaims ${vwapLabel} near ${money(vwap as number)} and holds above it.`;
   const triggerLevel = price;
   const invalidationLevel = vwapUsable ? vwap : null;
   const status: PlanStatus = missing.length === 0 && indexContextAvailable
@@ -385,6 +421,8 @@ function planFromAlert(db: PlanDb, row: AlertStructureRow, indexContextAvailable
     priorContractContext: priorContract(db, symbol), status: "WATCH", planStatus: status,
     thesisScore, openReadinessScore, triggerText, invalidationText, thesis, catalyst, sourceTimestampMs,
     sourceFreshness: sourceTimestampMs ? "Prior-session reference" : "Unavailable",
+    sessionSummary: sessionMoveSentence(row),
+    vwapPosition: vwapPositionSentence(price, vwapUsable ? (vwap as number) : null, vwapLabel),
     rankingReason: thesisScore == null ? null : `Thesis ${thesisScore}/100; levels ${price != null && vwapUsable ? "clear" : "incomplete"}; ${indexContextAvailable ? "market context aligned" : "market context unavailable"}.`,
     diagnosticReason: missing.length ? `Missing ${missing.join(", ")}.` : indexContextAvailable ? null : "Market context unavailable.",
   };

@@ -3,18 +3,20 @@
 ## Current repository state
 
 - Branch: main
-- Local HEAD, origin/main, and deployed production are all `0be1530`
+- Local HEAD, origin/main, and deployed production are all `df9c01c`
 - Previous production baseline: efaf2be (superseded 2026-07-30)
-- Railway deployment 5682002117 for that SHA reached success; healthz confirms
+- Both Railway deployments verified by SHA and reached success; healthz confirms
   the deployed commit, schemaOk true, no migration failure
-- PROFESSIONAL_WATCHLIST_ENABLED is unset (OFF); the endpoint reports
-  enabled=false and no professional publication has occurred
+- PROFESSIONAL_WATCHLIST_ENABLED is unset (OFF). The first 18:00 ET window was
+  observed: the professional job WAS reached and recorded outcome DISABLED,
+  publishing nothing. Scheduler wiring is proven; the legacy plan ran normally.
 
 ## Current objective
 
-Observe the first 18:00 ET planning window with the flag still OFF, to prove the
-scheduler actually reaches the professional path before considering enabling it.
-The professional Watchlist has so far only been observed declining to run.
+Decide whether to enable PROFESSIONAL_WATCHLIST_ENABLED. That is a Railway
+variable change and requires explicit owner approval. The path is proven
+reachable and proven inert while disabled, but has never built or published in
+production.
 
 ## How this brain works
 

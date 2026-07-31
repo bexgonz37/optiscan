@@ -50,11 +50,12 @@ confirmed live by `enabled: false` on the professional endpoint. Publication
 also requires the already-provisioned `OWNER_RESEARCH_DISCORD_ENABLED=1` and the
 existing watchlist webhook.
 
-## Not yet deployed
+## Documentation commit — also deployed
 
-The documentation commit recording this verification is a **separate, later
-commit**. Confirm its own Railway deployment before treating the brain notes as
-live on the deployed image.
+`df9c01c` ("docs: record Watchlist production verification") deployed as Railway
+deployment `5682083394`, state **`success`** at 2026-07-30T20:48:09Z.
+`/api/healthz` confirms `commitShort: df9c01c` with `schemaOk: true` and
+`lifecycle.active: true`. **Current deployed production commit is `df9c01c`.**
 
 ## Rules
 

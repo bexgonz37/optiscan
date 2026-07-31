@@ -165,21 +165,35 @@ function formatMarketOpenConfirmLegacy(plan: OvernightPlan): string {
   ].join("\n");
 }
 
+/**
+ * One watchlist row, structured so today's evidence and tomorrow's requirement
+ * are never mixed into the same sentence:
+ *
+ *   Today       — what the session actually did, signed, plus VWAP position
+ *   Why watched — the plain-English thesis
+ *   Needs       — what must happen AFTER the open before anything is actionable
+ *   Invalid if  — what kills it
+ *   Careful     — extension / premium-chase warning
+ *   Missing     — catalyst status and absent evidence
+ *
+ * No internal setup family, no numeric confidence, no raw pipeline vocabulary.
+ */
 function formatRec(r: OvernightRecommendation): string {
   const direction = r.bias === "bearish" ? "PUT" : "CALL";
   const trigger = r.triggerText ?? (r.triggerLevel != null ? `$${r.triggerLevel.toFixed(2)}` : "Unavailable");
   const invalidation = r.invalidationText ?? (r.invalidationLevel != null ? `$${r.invalidationLevel.toFixed(2)}` : "Unavailable");
-  return [
-    `#${r.rank} ${r.symbol} ${direction}`,
-    `Status: ${r.status ?? "WATCH"}`,
-    `Trigger: ${trigger}`,
-    `Invalidation: ${invalidation}`,
-    `Plan: ${r.preferredDteRange} · ${r.preferredMoneyness}`,
-    `Why: ${r.thesis ?? "Prior-session structure remains under review."}`,
-    `Catalyst: ${r.catalyst ?? "No confirmed catalyst"}`,
-    `Risk: ${r.mainRisk}`,
-    "VERIFY CONTRACT AFTER OPTIONS OPEN",
-  ].join("\n");
+  const today = [r.sessionSummary, r.vwapPosition].filter(Boolean).join(" ");
+  const lines = [`#${r.rank} ${r.symbol} — ${direction} watch`];
+  // Lifecycle status (WATCH / ALMOST READY / INVALIDATED) is reader-facing
+  // state, not internal pipeline vocabulary, so it stays.
+  lines.push(`Status: ${r.status ?? "WATCH"}`);
+  if (today) lines.push(`Today: ${today}`);
+  if (r.thesis && r.thesis !== r.sessionSummary) lines.push(`Why watched: ${r.thesis}`);
+  lines.push(`Needs after the open: ${trigger}`);
+  lines.push(`Invalid if: ${invalidation}`);
+  lines.push(`Careful: ${r.mainRisk}`);
+  lines.push(`Catalyst: ${r.catalyst ?? "No confirmed catalyst"}`);
+  return lines.join("\n");
 }
 
 export function formatEodWatchlist(plan: OvernightPlan): string {
@@ -194,9 +208,11 @@ export function formatEodWatchlist(plan: OvernightPlan): string {
   }
   return [
     "**NEXT SESSION WATCHLIST**",
-    "_WATCH only. Not executable after hours._",
+    "_WATCH ONLY — nothing here is executable after hours._",
     "",
-    ...plan.recommendations.slice(0, 5).map(formatRec),
+    plan.recommendations.slice(0, 5).map(formatRec).join("\n\n"),
+    "",
+    "VERIFY CONTRACT AFTER OPTIONS OPEN. Educational research only, not financial advice.",
   ].filter(Boolean).join("\n");
 }
 

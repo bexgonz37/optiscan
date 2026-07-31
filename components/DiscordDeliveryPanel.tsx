@@ -3,6 +3,24 @@
 import { useCallback, useEffect, useState } from "react";
 import { Card, StatusBadge, EmptyState, LoadingState, ErrorState, KeyValue, ResponsiveGrid, type BadgeTone } from "@/components/ui/Shell";
 import { SimpleTable, type Column } from "@/components/ui/Table";
+import { scanHeaders } from "@/hooks/useScanner";
+
+/**
+ * Authenticated JSON GET. A non-2xx response is an ERROR, never data: parsing a
+ * 401 body would produce an object with no `webhooks` key, which the UI would
+ * then render as "NOT CONFIGURED" for webhooks that are in fact configured.
+ */
+async function fetchJson(url: string): Promise<any> {
+  const res = await fetch(url, { cache: "no-store", headers: scanHeaders() });
+  if (!res.ok) {
+    throw new Error(
+      res.status === 401 || res.status === 403
+        ? "Discord health needs your private OptiScan access token."
+        : `Discord health request failed (HTTP ${res.status}).`,
+    );
+  }
+  return res.json();
+}
 
 /**
  * Discord delivery UI (Phase 3). Renders the existing delivery ledger + health
@@ -111,14 +129,20 @@ export function DiscordDeliveryPanel() {
 
   const load = useCallback(async () => {
     try {
+      // Both endpoints are token-gated. Without the header they return 401, and
+      // parsing that error body as health silently yields `webhooks: undefined`
+      // — which renders every webhook as "NOT CONFIGURED" and the ledger as
+      // empty, indistinguishable from a genuinely unconfigured install.
       const [d, h] = await Promise.all([
-        fetch("/api/discord/deliveries?limit=100", { cache: "no-store" }).then((r) => r.json()),
-        fetch("/api/discord/health", { cache: "no-store" }).then((r) => r.json()),
+        fetchJson("/api/discord/deliveries?limit=100"),
+        fetchJson("/api/discord/health"),
       ]);
       setDeliveries(Array.isArray(d?.deliveries) ? d.deliveries : []);
       setHealth(h);
       setError(null);
     } catch (err: any) {
+      // A failed load must not leave stale-but-plausible health on screen.
+      setHealth(null);
       setError(err?.message ?? "Could not load the Discord ledger.");
     }
   }, []);
