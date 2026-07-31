@@ -18,7 +18,7 @@
  * measured aggregates and returns text. Nothing reads that text back into a
  * decision, and a test asserts the module exposes no mutation path.
  */
-import { listCasesOnDb } from "./case-store.ts";
+import { ensureAsymmetrySchema, listCasesOnDb } from "./case-store.ts";
 import { listOutcomesOnDb } from "./mark-runner.ts";
 import type { AsymmetryResearchState } from "./states.ts";
 
@@ -170,7 +170,11 @@ export async function runAsymmetryEodReview(db: ReviewDb, deps: EodDeps): Promis
     out.review = review;
 
     // PERSIST FIRST. AI cannot prevent the measured review from existing.
+    // The schema must be ensured here: on a session with zero captured cases
+    // nothing else has created the tables, and a missing table would otherwise
+    // silently lose the review.
     try {
+      ensureAsymmetrySchema(db);
       db.prepare(`
         INSERT INTO asymmetry_daily_reviews (session_date, built_at_ms, review_json, ai_summary, ai_status)
         VALUES (?,?,?,NULL,'PENDING')
@@ -185,6 +189,14 @@ export async function runAsymmetryEodReview(db: ReviewDb, deps: EodDeps): Promis
     if (!deps.explain) {
       out.aiStatus = "DISABLED";
       setAiStatus(db, deps.sessionDate, null, "DISABLED");
+      return out;
+    }
+    // AI explains a STORED review or nothing at all. If persistence failed there
+    // is no row for a summary to attach to, and calling the model would spend a
+    // request describing a result that does not exist.
+    if (!out.persisted) {
+      out.aiStatus = "SKIPPED";
+      out.errors.push("ai: skipped because the deterministic review was not persisted");
       return out;
     }
     try {

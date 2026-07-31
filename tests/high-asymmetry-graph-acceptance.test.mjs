@@ -304,3 +304,40 @@ test("no radar module can reach a subscriber SEND path", () => {
     }
   }
 });
+
+// ── Regression: the EOD review must create its own table, and AI must not run
+//    when the deterministic review was not stored. Both were found in
+//    production during controlled activation: the review failed with
+//    "no such table: asymmetry_daily_reviews" while aiStatus reported OK,
+//    meaning the model described a result that was never persisted.
+
+test("REGRESSION: the EOD review creates its own tables on a zero-case session", async () => {
+  const bare = new Database(":memory:"); // no schema at all
+  const res = await runAsymmetryEodReview(bare, {
+    nowMs: OBSERVED, sessionDate: SESSION, env: ON,
+    explain: async () => "summary",
+  });
+  assert.equal(res.persisted, true, "the review must persist even with zero captured cases");
+  assert.deepEqual(res.errors, [], "a missing table must not surface as an error");
+  assert.equal(readEodReviewOnDb(bare, SESSION).review.candidatesSurfaced, 0);
+  bare.close();
+});
+
+test("REGRESSION: AI is skipped when the deterministic review was not persisted", async () => {
+  // A database that reads but refuses every write.
+  const readOnlyish = {
+    exec() { throw new Error("attempt to write a readonly database"); },
+    prepare(sql) {
+      if (/^\s*(INSERT|UPDATE)/i.test(sql)) throw new Error("attempt to write a readonly database");
+      return { get: () => undefined, all: () => [], run: () => { throw new Error("readonly"); } };
+    },
+  };
+  let aiCalled = false;
+  const res = await runAsymmetryEodReview(readOnlyish, {
+    nowMs: OBSERVED, sessionDate: SESSION, env: ON,
+    explain: async () => { aiCalled = true; return "should not happen"; },
+  });
+  assert.equal(res.persisted, false);
+  assert.equal(aiCalled, false, "AI must never explain a review that was not stored");
+  assert.equal(res.aiStatus, "SKIPPED");
+});
