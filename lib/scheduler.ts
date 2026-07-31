@@ -22,7 +22,7 @@ import { isEarlyCloseDay } from "@/lib/market-session-guard";
 const LEASE_NAME = "scheduler";
 const BASE_TICK_MS = 15_000;
 
-type JobName = "maintenance" | "learning" | "supervisor" | "improvement" | "aiJobs" | "brokerReadiness" | "subscriberReadiness" | "contentDrafts" | "overnightResearch" | "watchlistPlanning" | "asymmetryTransitions" | "asymmetryMarks" | "asymmetryPaper" | "asymmetryEod";
+type JobName = "maintenance" | "learning" | "supervisor" | "improvement" | "aiJobs" | "brokerReadiness" | "subscriberReadiness" | "contentDrafts" | "overnightResearch" | "watchlistPlanning" | "asymmetryTransitions" | "asymmetryMarks" | "asymmetryPaper" | "asymmetryPaperGate" | "asymmetryEod";
 
 export interface SchedulerState {
   started: boolean;
@@ -54,6 +54,8 @@ export interface SchedulerState {
   lastAsymmetryMarks?: unknown;
   /** Last High-Asymmetry paper sweep. Read-only diagnostics. */
   lastAsymmetryPaper?: unknown;
+  /** Last automatic paper-activation gate run. Read-only diagnostics. */
+  lastAsymmetryPaperGate?: unknown;
   /** Last High-Asymmetry EOD review. Read-only diagnostics. */
   lastAsymmetryEod?: unknown;
   lastProfessionalWatchlist?: {
@@ -91,8 +93,8 @@ function state(): SchedulerState {
   const g = globalThis as G;
   g.__optiscanScheduler ??= {
     started: false, isOwner: false, ownerPid: null, lastBeatAtMs: null,
-    lastRun: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null, brokerReadiness: null, subscriberReadiness: null, contentDrafts: null, overnightResearch: null, watchlistPlanning: null, asymmetryTransitions: null, asymmetryMarks: null, asymmetryPaper: null, asymmetryEod: null },
-    runs: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0, subscriberReadiness: 0, contentDrafts: 0, overnightResearch: 0, watchlistPlanning: 0, asymmetryTransitions: 0, asymmetryMarks: 0, asymmetryPaper: 0, asymmetryEod: 0 },
+    lastRun: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null, brokerReadiness: null, subscriberReadiness: null, contentDrafts: null, overnightResearch: null, watchlistPlanning: null, asymmetryTransitions: null, asymmetryMarks: null, asymmetryPaper: null, asymmetryPaperGate: null, asymmetryEod: null },
+    runs: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0, subscriberReadiness: 0, contentDrafts: 0, overnightResearch: 0, watchlistPlanning: 0, asymmetryTransitions: 0, asymmetryMarks: 0, asymmetryPaper: 0, asymmetryPaperGate: 0, asymmetryEod: 0 },
     note: "not started", lastError: null, lastWatchlistPlanning: null,
     lastProfessionalWatchlist: { overnight: null, premarket: null },
   };
@@ -521,6 +523,45 @@ async function asymmetryPaperJob(nowMs: number): Promise<void> {
 }
 
 /**
+ * High-Asymmetry automatic paper-activation gate.
+ *
+ * This is what removes the human from activation. The owner sets
+ * HIGH_ASYMMETRY_PAPER_ENABLED=1 once; this job then proves the live exact-OCC
+ * quote path from real persisted marks and flips the PERSISTED activation
+ * state to ACTIVE on its own. No redeploy and no Railway change is needed on
+ * the day, and nothing about the criteria is relaxed to get there.
+ *
+ * Deterministic: no AI, and no provider call of its own — it judges the marks
+ * the real mark-runner produced, so it cannot pass on a parallel path that
+ * succeeds where production fails.
+ */
+async function asymmetryPaperGateJob(nowMs: number): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { runPaperActivationGate } = require("@/lib/research/asymmetry/paper/gate-runner");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { resolvePrivateConfig } = require("@/lib/research/asymmetry/private-notify");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { sendAsymmetryWebhook } = require("@/lib/notifications/asymmetry-private-send");
+
+  // Sweep health is injected so the gate module stays pure over the database.
+  const s = state();
+  const sweepErrors: string[] = [
+    ...(((s.lastAsymmetryMarks as any)?.errors ?? []) as string[]),
+    ...(((s.lastAsymmetryTransitions as any)?.errors ?? []) as string[]),
+  ];
+
+  // The owner-private webhook ONLY. If it is missing or collides with a
+  // subscriber channel the gate still runs and simply does not notify.
+  const cfg = resolvePrivateConfig();
+  const notify = cfg.webhook && !cfg.refusedReason
+    ? (content: string) => sendAsymmetryWebhook(cfg.webhook, content)
+    : undefined;
+
+  const res = await runPaperActivationGate(db(), { nowMs, schedulerErrors: sweepErrors, notify });
+  state().lastAsymmetryPaperGate = res;
+}
+
+/**
  * High-Asymmetry end-of-day review (research, OFF by default). Deterministic
  * aggregation and the Quant report are persisted BEFORE the advisory AI runs,
  * so an AI failure — or an exhausted budget — can never remove or alter a
@@ -610,6 +651,9 @@ async function beat(): Promise<void> {
   }
   if (jobDue(s.lastRun.asymmetryMarks, iv.asymmetryMarksMs, nowMs)) {
     await runJob("asymmetryMarks", () => asymmetryMarksJob(nowMs), nowMs);
+  }
+  if (jobDue(s.lastRun.asymmetryPaperGate, iv.asymmetryPaperGateMs, nowMs)) {
+    await runJob("asymmetryPaperGate", () => asymmetryPaperGateJob(nowMs), nowMs);
   }
   if (jobDue(s.lastRun.asymmetryPaper, iv.asymmetryPaperMs, nowMs)) {
     await runJob("asymmetryPaper", () => asymmetryPaperJob(nowMs), nowMs);

@@ -31,6 +31,7 @@ export interface SchedulerIntervals {
   asymmetryTransitionsMs: number;
   asymmetryMarksMs: number;
   asymmetryPaperMs: number;
+  asymmetryPaperGateMs: number;
   asymmetryEodMs: number;
 }
 
@@ -79,6 +80,10 @@ export function schedulerIntervals(env: NodeJS.ProcessEnv = process.env): Schedu
     // every few minutes is not the stop the rules describe, and the sweep
     // caches one quote per contract so a fast tick stays cheap.
     asymmetryPaperMs: clampInt(env.SCHED_ASYMMETRY_PAPER_MS, 60_000, 30_000, 30 * 60_000),
+    // Activation gate. 2 min: the window is 09:40-11:30 ET, so this gives ~55
+    // bounded attempts — frequent enough to activate promptly once proof
+    // exists, cheap because the gate reads persisted rows and calls no provider.
+    asymmetryPaperGateMs: clampInt(env.SCHED_ASYMMETRY_PAPER_GATE_MS, 120_000, 60_000, 30 * 60_000),
     // End-of-day review check. Hourly; the job itself is idempotent per day.
     asymmetryEodMs: clampInt(env.SCHED_ASYMMETRY_EOD_MS, 60 * 60_000, 5 * 60_000, 6 * 60 * 60_000),
   };

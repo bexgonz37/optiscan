@@ -31,6 +31,8 @@ export async function GET(req: Request) {
       await import("@/lib/research/asymmetry/paper/lane");
     const { readAiBudgetUsage, resolveAiBudgetConfig } = await import("@/lib/ai/asymmetry-budget");
     const { resolveReportDelivery } = await import("@/lib/research/asymmetry/paper/report-delivery");
+    const { readActivationOnDb, resolvePaperPermission, GATE_OPEN_ET_MINUTE, GATE_CLOSE_ET_MINUTE, etMinutesOfDay } =
+      await import("@/lib/research/asymmetry/paper/activation");
 
     const db = getDb() as any;
     const sessionDate = url.searchParams.get("date") || tradingDay();
@@ -62,6 +64,18 @@ export async function GET(req: Request) {
     const aiCfg = resolveAiBudgetConfig();
     const aiUsage = readAiBudgetUsage(db, sessionDate, aiCfg);
     const deliveryCfg = resolveReportDelivery();
+    const activation = readActivationOnDb(db, sessionDate);
+    const permission = resolvePaperPermission(db, sessionDate);
+    const nowEtMinute = etMinutesOfDay(Date.now());
+    const nextGateCheck = permission.activationState === "ACTIVE" || String(permission.activationState).startsWith("BLOCKED")
+      ? null
+      : !permission.masterPaperAuthorized
+        ? "not authorized"
+        : nowEtMinute < GATE_OPEN_ET_MINUTE
+          ? `gate window opens at 09:40 ET (${GATE_OPEN_ET_MINUTE - nowEtMinute} min)`
+          : nowEtMinute <= GATE_CLOSE_ET_MINUTE
+            ? "within the gate window; next scheduler tick"
+            : "gate window closed for this session";
 
     const paperRow = (p: any) => ({
       positionFingerprint: p.positionFingerprint,
@@ -124,9 +138,30 @@ export async function GET(req: Request) {
       missingEvidenceCoverage: [...missing.entries()].map(([reason, n]) => ({ reason, count: n })).sort((a, b) => b.count - a.count),
       eodQuantReview: eod.review,
       aiAdvisory: { status: eod.aiStatus, summary: eod.aiSummary },
+      paperActivation: {
+        // Both locks, reported separately so it is never ambiguous which one
+        // is holding. The environment flag alone does NOT permit an entry.
+        masterPaperAuthorized: permission.masterPaperAuthorized,
+        activationState: permission.activationState,
+        paperEntriesAllowed: permission.paperEntriesAllowed,
+        activationTimestamp: activation?.activatedAtMs ?? null,
+        nextGateCheck,
+        gateAttempts: activation?.gateAttempts ?? 0,
+        gateEvidence: activation?.evidence ?? null,
+        gateBlockReason: activation?.blockReason ?? null,
+        firstAcceptedAsk: activation?.firstAcceptedAsk ?? null,
+        firstAcceptedBid: activation?.firstAcceptedBid ?? null,
+        proofCaseFingerprint: activation?.caseFingerprint ?? null,
+        proofOptionSymbol: activation?.optionSymbol ?? null,
+        lastGateRun: sched.lastAsymmetryPaperGate ?? null,
+        canSendSubscriber: false,
+        automaticRealTrading: false,
+      },
       paperTrading: {
         lane: ASYMMETRY_PAPER_LANE,
         enabled: process.env[PAPER_ENABLED_ENV] === "1",
+        paperEntriesAllowed: permission.paperEntriesAllowed,
+        paperPositionsOpened: positions.length,
         rulesVersion: PAPER_RULES_VERSION,
         openedToday: positions.length,
         openPositions: positions.filter((p: any) => p.positionState === "OPEN").map(paperRow),
@@ -166,6 +201,8 @@ export async function GET(req: Request) {
         marksLastRunAtMs: sched.lastRun.asymmetryMarks ?? null,
         paperRuns: sched.runs.asymmetryPaper ?? 0,
         paperLastRunAtMs: sched.lastRun.asymmetryPaper ?? null,
+        paperGateRuns: sched.runs.asymmetryPaperGate ?? 0,
+        paperGateLastRunAtMs: sched.lastRun.asymmetryPaperGate ?? null,
         eodRuns: sched.runs.asymmetryEod ?? 0,
         eodLastRunAtMs: sched.lastRun.asymmetryEod ?? null,
         lastMarks: sched.lastAsymmetryMarks ?? null,
