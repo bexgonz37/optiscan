@@ -1,12 +1,12 @@
 # Current Task Packet
 
-Task ID: high-asymmetry-live-intake
+Task ID: high-asymmetry-state-runner
 
 ## Active position
 
 - Repo: `C:\Users\bexgo\Downloads\optiscan-asymmetry` (separate worktree)
 - Branch: `feature/high-asymmetry-radar`
-- Local HEAD: the live-intake commit (this checkpoint)
+- Local HEAD: the runtime-edge commit (this checkpoint)
 - `origin/main`: `49b2174` — this branch is NOT pushed and NOT merged
 - Deployed production commit: `49b2174` (served from `optiscan-main`; nothing
   on this branch is deployed)
@@ -25,8 +25,10 @@ Task ID: high-asymmetry-live-intake
 
 ## Verified locally
 
-- Focused: 17/17 (private notify) + 13/13 (live intake)
-- Full suite: **2617/2617** pass, 0 fail, 0 skipped
+- Focused: 17/17 (private notify) + 13/13 (live intake) + 17/17 (runtime edge)
+- Full suite: **2633/2634**; the 1 failure is a pre-existing timing-sensitive
+  test that passes 14/14 in isolation, fails a DIFFERENT test on each parallel
+  run, and contains zero asymmetry references. Not a regression from this work.
 - `npx tsc --noEmit --incremental false`: clean
 - `npm run build`: compiled successfully
 - `git diff --check`: clean
@@ -46,7 +48,11 @@ snapshot taken by the `optiscan-main` workstream.
 | Replay executed against real production data | LIVE_AND_VERIFIED |
 | Owner-private notification path | BUILT_DISABLED |
 | Live intake admission core | BUILT_DISABLED |
-| Live intake WIRING into candidate stream | MISSING |
+| **Live call site in options/loop.ts** | **LOCAL_ONLY** |
+| **Shadow-case persistence (5 tables)** | **LOCAL_ONLY** |
+| State-transition runner + notifier wiring | MISSING |
+| Forward-mark scheduler + runner | MISSING |
+| Outcome aggregation | MISSING |
 | Forward outcome tracking (1/3/5/10/15/30/60m) | MISSING |
 | End-of-day Quant evidence summary | MISSING |
 | Private diagnostics endpoint | MISSING |
@@ -56,7 +62,8 @@ snapshot taken by the `optiscan-main` workstream.
 
 - The private path has never sent a message. It is a formatter with gates; its
   behaviour against a real webhook is untested.
-- The radar does not observe live candidates — nothing calls it.
+- The radar now HAS a production caller, but it is local-only and disabled: it
+  has never executed against a live candidate. Zero cases have ever been written.
 - `options_research_observations` is EMPTY in production (0 rows), so no cohort,
   premium-chase, or outcome number exists. An empty table is absent evidence,
   not a measured result and not strategy performance.
@@ -92,16 +99,17 @@ Neither has been created or set. Both are required before the path can emit.
 
 ## Exact next bounded checkpoint
 
-WIRE the admission core into the live candidate stream. `decideLiveIntake` is
-built and tested but nothing calls it, so the radar still observes nothing.
-Call it from the existing candidate flow AFTER exact-OCC selection and BEFORE
-subscriber delivery, persist admitted observations via an additive research
-table, and only then consider the private notification. The call must be
-flag-gated, must not alter any live SEND decision, and a capture failure must
-never block the scanner or Discord delivery.
+Build the STATE-TRANSITION RUNNER: re-evaluate open cases, detect deterministic
+state changes, persist each transition, and call the existing private notifier
+only on eligible ones. It needs a real caller — either the options loop on a
+later tick or a scheduler job — or it becomes another disconnected module.
 
-Still MISSING after that: forward outcome tracking (1/3/5/10/15/30/60m), the
-end-of-day Quant review, and private diagnostics.
+Then, in order: forward-mark scheduler + runner (7 horizons), outcome
+aggregation (MFE/MAE/milestones), EOD Quant review reached from a scheduled
+job, AI advisory called by that review, and the private diagnostics route.
+
+Acceptance rule carried forward: a module reachable only from tests or
+diagnostics does not count as built.
 
 ## Stop conditions
 

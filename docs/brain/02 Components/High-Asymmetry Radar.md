@@ -1,8 +1,9 @@
 # High-Asymmetry Radar
 
-Status: **BUILT_DISABLED** — owner-private notification path is code-complete
-and inert. Shadow only, not wired to the live candidate stream, not deployed.
-The replay HAS now been run against real production data (see below).
+Status: **LOCAL_ONLY** — the first real runtime edge exists (live loop ->
+capture -> persisted case) but is committed locally only: not merged, not
+deployed, and disabled by default. Downstream runners (transitions, forward
+marks, outcomes, EOD review, AI, diagnostics) are still MISSING.
 
 Branch: `feature/high-asymmetry-radar` (separate worktree). Nothing in this note
 describes production behaviour on `main`.
@@ -15,9 +16,13 @@ describes production behaviour on `main`.
 | Replay against real production data | LIVE_AND_VERIFIED (result: zero evidence, see below) |
 | Owner-private notification path (`private-notify.ts`) | BUILT_DISABLED |
 | Live intake admission core (`live-intake.ts`) | BUILT_DISABLED |
-| Live intake WIRING into the candidate stream | MISSING |
-| Forward outcome tracking scheduler | MISSING |
-| End-of-day Quant evidence summary | MISSING |
+| **Live call site in `options/loop.ts`** | **LOCAL_ONLY** (real edge, not deployed) |
+| **Shadow-case persistence (`case-store.ts`)** | **LOCAL_ONLY** |
+| State-transition RUNNER (auto-detect + notify) | MISSING |
+| Forward-mark scheduler + runner | MISSING |
+| Outcome aggregation | MISSING |
+| EOD Quant review | MISSING |
+| AI advisory on measured results | MISSING |
 | Private diagnostics endpoint | MISSING |
 
 ## The replay HAS now been run against real data (2026-07-30)
@@ -66,11 +71,46 @@ findings that do not need data to be true:
    `outcomes.ts` and `coverage-audit.ts`, which now require a mark to share the
    entry's trading day.
 
+## The first real runtime edge (this checkpoint)
+
+`options/loop.ts` now imports and calls `captureAsymmetryCandidate`, placed
+immediately after the existing `recordOptionsResearchObservation` call for
+`CONTRACT_SELECTED` — where the exact OCC is legitimately known and subscriber
+qualification has NOT finished. The radar therefore sees contracts the
+subscriber pipeline may go on to reject.
+
+    options loop -> captureAsymmetryCandidate -> decideLiveIntake -> openAsymmetryCaseOnDb
+
+This is the first time any asymmetry module has a production caller. Verified
+by test, not assumption: one assertion fails if the import is removed, another
+if the call is removed, another if the result is ever assigned or branched on.
+
+**Isolation.** `captureAsymmetryCandidate` never throws — every path sits in one
+try/catch returning a result. The call site discards that result, so it cannot
+alter the callout, the delivery decision, paper linkage, or any SEND. Tested
+against an exploding database and malformed input.
+
+**Off by default.** Without `HIGH_ASYMMETRY_CAPTURE_ENABLED=1` it returns
+DISABLED having touched no database — asserted with a spy that fails if any
+statement is prepared. This flag is SEPARATE from the notification flag: capture
+is silent research and can run alone.
+
+**Persistence.** Five additive tables, all `CREATE TABLE IF NOT EXISTS`, no
+destructive DDL (asserted). One active case per fingerprint is enforced by the
+PRIMARY KEY `(session_date, fingerprint)`, not by a read-then-write race, so a
+duplicate tick cannot create a second case. The FIRST detection wins — a later
+observation never overwrites the early ask, because the early price is the whole
+measurement.
+
+**Lead time is unknown until proven.** Before the subscriber pipeline qualifies
+the same contract, `leadMs` and `premiumAvoidedPct` are NULL, not 0. Reporting
+zero there would invent an edge that was never measured.
+
 ## Live intake admission core — BUILT_DISABLED
 
-`lib/research/asymmetry/live-intake.ts`. PURE decision function. **Nothing
-calls it yet** — the wiring into the live candidate stream is still MISSING, so
-the radar observes nothing in production.
+`lib/research/asymmetry/live-intake.ts`. PURE decision function, now reached
+from the live loop via `capture.ts`. It is NOT deployed, so the radar still
+observes nothing in production.
 
 Its purpose is to admit candidates EARLIER and with FEWER hard gates than the
 subscriber pipeline. The subscriber path is conservative because a bad SEND

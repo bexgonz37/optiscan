@@ -27,6 +27,8 @@ import { incrementInstrumentationFallbackInserts } from "../../db-legacy-columns
 import { quoteFreshness } from "../../quote-freshness.ts";
 import { bearishPipelineEnabled } from "./bearish-authority.ts";
 import { recordOptionsResearchObservation } from "./prospective-evidence.ts";
+import { captureAsymmetryCandidate } from "../asymmetry/capture.ts";
+import { tradingDay } from "../../trading-session.ts";
 
 export interface ChainContract { optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number; bid: number | null; ask: number | null; spreadPct: number | null; volume: number | null; openInterest: number | null; iv: number | null; delta: number | null; providerTimestamp: number | null }
 
@@ -157,6 +159,53 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
         openInterest: res.contract.openInterest, delta: res.contract.delta, freshnessState: res.callout?.freshness ?? null,
       };
       recordOptionsResearchObservation(db as any, { ...contractObservation, candidateState: "CONTRACT_SELECTED" });
+
+      // HIGH-ASYMMETRY RADAR (research, owner-private, OFF by default).
+      // Placed here deliberately: the exact OCC is legitimately known, and
+      // subscriber qualification has NOT finished — so the radar observes
+      // contracts the subscriber pipeline may go on to reject, which is the
+      // whole point of an early-warning read.
+      //
+      // captureAsymmetryCandidate never throws and returns nothing this loop
+      // reads. It cannot alter `res`, the callout, the delivery decision, paper
+      // linkage, or any SEND. Its result is deliberately discarded.
+      captureAsymmetryCandidate(db as any, {
+        symbol: input.symbol,
+        direction: res.contract.side === "put" ? "PUT" : "CALL",
+        optionSymbol: res.contract.optionSymbol,
+        underlying: input.symbol,
+        expiration: res.contract.expiration,
+        strike: res.contract.strike,
+        right: res.contract.side === "put" ? "P" : "C",
+        observedAtMs: input.nowMs,
+        sessionDate: tradingDay(input.nowMs),
+        fingerprint: `${tradingDay(input.nowMs)}|${res.contract.optionSymbol}`,
+        bid: res.contract.bid ?? null,
+        ask: res.contract.ask ?? null,
+        quoteAtMs: res.contract.providerTimestamp ?? null,
+        quoteAgeMs: quoteFreshness(res.contract.providerTimestamp, input.nowMs).ageMs,
+        optionVolume: res.contract.volume ?? null,
+        openInterest: res.contract.openInterest ?? null,
+        impliedVolatility: (res.contract as any).iv ?? null,
+        delta: res.contract.delta ?? null,
+        gamma: (res.contract as any).gamma ?? null,
+        underlyingPrice: input.underlying.price ?? null,
+        vwap: (input.underlying as any).vwap ?? null,
+        stockVolume: (input.underlying as any).volume ?? null,
+        relativeVolume: (input.underlying as any).relativeVolume ?? null,
+        volumeAcceleration: null,
+        priorMovePct: (input.underlying as any).changePercent ?? null,
+        compressionState: null,
+        distanceToTriggerPct: null,
+        roomToNextLevelPct: null,
+        marketAlignment: null,
+        sectorAlignment: null,
+        catalyst: null,
+        setupFamily: res.selection.selected?.key ?? null,
+        scannerVersion: process.env.RAILWAY_GIT_COMMIT_SHA ?? null,
+        invalidated: false,
+        nowMs: input.nowMs,
+      });
       if (res.state === "READY") {
         recordOptionsResearchObservation(db as any, { ...contractObservation, candidateState: "QUOTE_VALIDATED", contractQualityState: "VALID" });
         recordOptionsResearchObservation(db as any, { ...contractObservation, candidateState: "READY", readinessState: "READY", contractQualityState: "VALID", frozenEntry: res.callout?.entry?.mid ?? null, targetT1: res.callout?.entry?.t1 ?? null, targetT2: res.callout?.entry?.t2 ?? null, targetStop: res.callout?.entry?.stop ?? null });
