@@ -1,11 +1,12 @@
 # High-Asymmetry Radar
 
-Status: **LOCAL_ONLY** — the FULL runtime graph is now connected and green
-locally, but nothing is merged, deployed, or enabled, and it has never executed
-against a live candidate. Zero cases exist.
+Status: **BUILT_DISABLED, DEPLOYED** — merged to `main` and live in production
+at `cdfcfc7` with all three flags unset. Verified inert: the scheduler jobs run
+and decline, zero cases exist, zero messages sent. It has NEVER executed against
+a live candidate.
 
-Branch: `feature/high-asymmetry-radar` (separate worktree). Nothing in this note
-describes production behaviour on `main`.
+Merged to `main` and deployed disabled. Everything below describes code that is
+PRESENT in production but performing no work.
 
 ## Feature status
 
@@ -72,7 +73,43 @@ findings that do not need data to be true:
    `outcomes.ts` and `coverage-audit.ts`, which now require a mark to share the
    entry's trading day.
 
-## The connected runtime graph (this checkpoint)
+## Production disabled-state proof (2026-07-31, commit `cdfcfc7`)
+
+Deployment `5686432103` reached `success`. `/api/healthz` serves `cdfcfc7` with
+`schemaOk: true`, `schemaMissing: []`, `missingLegacyColumns: []`,
+`lifecycle.active: true`.
+
+**All three scheduler jobs are registered and DID run**, each declining
+correctly — this is the strongest available proof, because a job that never ran
+would prove nothing:
+
+    asymmetryTransitions  runs=1
+    asymmetryMarks        runs=1   ran:false
+                                   reason:"HIGH_ASYMMETRY_CAPTURE_ENABLED is not set"
+                                   errors:[]
+    asymmetryEod          runs=1   persisted:false  aiStatus:SKIPPED  errors:[]
+
+`GET /api/research/asymmetry/live` → 200: `activeCases 0`, `stateCounts {}`,
+`recentTransitions 0`, `outcomes 0`, `eodQuantReview null`,
+`privateNotification.enabled false`, `webhookConfigured false`,
+`canSendSubscriber false`, `automaticTrading false`. No webhook value is
+returned anywhere — configuration is reported by presence only.
+
+**The five asymmetry tables do NOT exist on the production volume, and that is
+correct.** `ensureAsymmetrySchema` is called only from inside the write
+functions, which never execute while the flag is unset — so "zero work" means
+zero, including zero DDL. They are created lazily and idempotently on the first
+enabled write. The diagnostics route returned 200 with zeros rather than an
+error, proving it degrades gracefully against absent tables.
+
+**Nothing was sent.** Discord is byte-identical to the pre-deploy baseline:
+`sent24h 2`, `failed24h 0`, `lastSentAt 2026-07-30T22:01:11.886Z`, webhooks
+`{options:true, watchlist:true, recap:false}`. No recap variable was touched.
+
+**Existing behaviour unchanged.** Scanner `running: true`; `/`, `/watchlist`,
+`/callouts`, `/quant`, `/discord`, `/paper`, `/ai` all 200.
+
+## The connected runtime graph
 
 Every node now has a real caller or scheduler. Verified by Graphify as 1-hop
 `calls` edges, not by documentation:

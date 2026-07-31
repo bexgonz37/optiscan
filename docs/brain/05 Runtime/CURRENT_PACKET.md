@@ -6,7 +6,8 @@ Task ID: high-asymmetry-observe-first-live-session
 
 - Branch: `feature/high-asymmetry-radar`, merged with `origin/main`
 - `origin/main` before this work: `49b2174`
-- Merged and deployed commit: recorded below after production verification
+- Merged and deployed commit: **`cdfcfc7`** (deployment `5686432103`, success)
+- Production verified inert on 2026-07-31
 
 ## Completed — production hardening (already live on main)
 
@@ -36,7 +37,9 @@ and a reader. Off by default at every stage.
 | AI advisory (injected, post-persistence) | BUILT_DISABLED |
 | Private diagnostics route | BUILT_DISABLED |
 | Verified quote provider | BUILT_DISABLED |
+| Merged to main and deployed | LIVE_AND_VERIFIED (disabled) |
 | Executed against a live candidate | MISSING |
+| Asymmetry tables on the production volume | MISSING (created lazily on first enabled write — correct) |
 | Subscriber SEND authority | MISSING (permanently, by design) |
 
 ## Feature flags — all unset
@@ -68,11 +71,15 @@ notification so the radar can collect silently before anything is surfaced.
 
 Observe one live session with the radar DISABLED, then decide on activation.
 
-1. Confirm the deployed build is inert: `/api/research/asymmetry/live` returns
-   `enabled: false`, `canSendSubscriber: false`, zero cases, and the three
-   scheduler jobs registered but reporting no-op.
-2. Confirm normal scanner, Discord alerts, and Watchlist behaviour unchanged.
-3. Only then request approval for the three variables above.
+Steps 1 and 2 are DONE and verified in production at `cdfcfc7`:
+- all three scheduler jobs ran and declined with the exact flag reason, errors []
+- diagnostics 200, zero cases, `canSendSubscriber false`, no webhook exposed
+- Discord byte-identical to baseline (sent24h 2, same lastSentAt); nothing sent
+- scanner `running: true`; all seven routes 200
+
+Remaining: request owner approval for the three variables, then observe ONE live
+session with capture enabled and notification still off, before surfacing
+anything.
 
 ## Stop conditions
 
