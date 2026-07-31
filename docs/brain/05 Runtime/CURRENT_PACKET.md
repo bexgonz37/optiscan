@@ -117,72 +117,89 @@ leading hypothesis, and the smallest safe fix is to align `getQuote`'s window
 with capture's rather than to raise page counts.** Do not pre-emptively change
 it: the gate must observe the real behaviour first.
 
-## Exact next bounded checkpoint — RESUME HERE
+## Exact next bounded checkpoint — AUTOMATIC, NO HUMAN REQUIRED
 
-Task ID for the next session: `high-asymmetry-quote-path-readonly-check`
+Task ID: `high-asymmetry-automatic-activation`
 
-**Status as of 2026-07-31 01:50 ET: PAUSED BY OWNER, NOTHING IN FLIGHT.**
+Activation no longer needs Claude, a terminal, or the owner's computer. The
+scheduler proves the quote path and flips a PERSISTED state on its own.
 
-An overnight wait had been armed to fire at 09:40 ET and probe the gate. The
-owner stopped it. No background task is running, no code changed, no Railway
-variable changed. Production is untouched and inert.
+### Two independent locks
 
-### Resume instruction
+A paper entry requires BOTH. Either alone opens nothing.
 
-After **09:40 ET** on the next trading day, run a **READ-ONLY** live
-quote-path check. Read-only means GET diagnostics only: no writes, no provider
-calls of our own, no Discord, no flag change, no code change.
+1. `HIGH_ASYMMETRY_PAPER_ENABLED=1` — the owner's master authorization
+2. persisted activation state `ACTIVE` — the machine's own live proof
 
-Probe (already written, no repo footprint — scratchpad only; recreate if the
-scratchpad is gone, it is ~100 lines of `fetch` against these routes):
-  - `/api/healthz`
-  - `/api/research/asymmetry/live`   <- the one that matters
-  - `/api/discord/health`
-  - `/api/scanner/live`
+`activationActive` defaults to FALSE in the entry writer, so a caller that
+forgets to pass it cannot open a position by omission.
 
-### The ONLY gate to test
+### States
 
-All six must hold before the flag is even considered:
+`DISABLED` (no master flag) · `ARMED_WAITING_FOR_LIVE_PROOF` · `ACTIVE` ·
+`BLOCKED_INSUFFICIENT_EVIDENCE` · `BLOCKED_QUOTE_PATH_DEFECT`
 
-1. at least one real asymmetry case exists (`activeCases` > 0)
-2. the exact stored OCC matches the quote provider (no `WRONG_OCC`)
-3. a fresh executable **ask** is available at entry time
-4. a later valid **bid** mark is available for the same OCC
-5. `NO_QUOTE` / `WRONG_OCC` / `PROVIDER_ERROR` are NOT dominating
-6. subscriber isolation intact: `canSendSubscriber: false`,
-   `automaticRealTrading: false`, Discord routes unchanged
+Per trading day. A quote path that worked yesterday proves nothing about today,
+so each session re-arms and must re-prove itself.
 
-Classify exactly one of: `QUOTE_PATH_VERIFIED` /
-`INSUFFICIENT_LIVE_EVIDENCE` / `QUOTE_PATH_DEFECT`.
+### What the gate proves
 
-**Keep `HIGH_ASYMMETRY_PAPER_ENABLED` OFF unless the result is clearly
-QUOTE_PATH_VERIFIED.** Do not lower the standard to reach an enable decision.
-Zero cases is INSUFFICIENT_LIVE_EVIDENCE, not a defect and not a pass.
+ONE query: a case joined to a mark on the same session AND the same
+`option_symbol`, where the case had a fresh ask, the mark has a real bid, and
+the mark came LATER than detection. Conditions 2-5 hold simultaneously or not
+at all — checking them separately would admit a combination that never
+co-occurred.
 
-### If NO_QUOTE dominates
+The gate makes NO provider call of its own. It judges the marks the real
+mark-runner produced, so it cannot pass on a parallel path that succeeds where
+production fails.
 
-Do not guess. The leading hypothesis is already recorded above: capture stores
-from a 0-14 DTE / 2-page fetch while `getQuote` looks up in a 0-60 DTE /
-3-page fetch. Smallest safe fix would be aligning `getQuote`'s window to
-capture's, NOT raising page counts. Confirm against real rejection counts
-before touching anything.
+### Classification is deliberate about blame
 
-### Baseline to compare against (captured 2026-07-31 01:41 ET)
+- dominant `WRONG_OCC` or `NO_QUOTE` over >= 6 attempts, zero accepted
+  -> `BLOCKED_QUOTE_PATH_DEFECT` + one owner-private notice
+- dominant `PROVIDER_ERROR` -> `INSUFFICIENT`, NOT a defect. An outage must not
+  send anyone to change code that is correct.
+- thin data -> stays `ARMED`, retries until 11:30 ET, criteria never relaxed
+- past 11:30 ET without proof -> `BLOCKED_INSUFFICIENT_EVIDENCE` + one notice
 
-- commit `4f1dd06` serving; `ok: true`, `schemaOk: true`
-- `activeCases: 0`, `stateCounts: {}`, `markRejections: []`, `outcomes: 0`
-- `privateNotification`: enabled true, webhookConfigured true,
-  refusedReason null, notified 0, suppressed 0
-- `paperTrading.enabled: false`; `lastPaper.ran: false`
-  (reason `HIGH_ASYMMETRY_PAPER_ENABLED is not set`)
-- `aiBudget`: callsToday 1, remainingToday 0, EOD returns `aiStatus: CACHED`
-  — the once-per-session cap and the cache are both demonstrably working
-- Discord `{options: true, watchlist: true, recap: false}`, `sent24h: 2`,
-  `lastSentAt: 2026-07-30T22:01:11.886Z`, `failed24h: 0`
-- scanner `running: true`, `errors: 0`
-- recap refusing with `HIGH_ASYMMETRY_PAPER_ENABLED is not set`
+### Window and cadence
 
-Any drift from this baseline on resume is itself a finding.
+09:40-11:30 ET, checked every 2 minutes (clamped), gate job ordered BEFORE the
+paper sweep so activation and the day's first entry can land on the same beat.
+Before 09:40 the gate refuses outright — an equity premarket print must never
+be mistaken for proof that the OPTION quote path works.
+
+### Idempotency
+
+The activation UPDATE is guarded on the row still being `ARMED`. Repeated ticks
+and concurrent processes produce exactly one winner, a block cannot demote an
+ACTIVE day, arming cannot overwrite a state today already reached, and a
+redeploy re-reads the state rather than re-proving it. All asserted by test.
+
+### What the owner must do
+
+Set exactly one variable, tonight:
+
+    HIGH_ASYMMETRY_PAPER_ENABLED=1
+
+Expected immediately after: `activationState: ARMED_WAITING_FOR_LIVE_PROOF`,
+`paperEntriesAllowed: false`, `nextGateCheck` counting down to 09:40 ET.
+
+Tomorrow the system verifies and activates by itself, or blocks itself with a
+persisted reason and one owner-private message. No computer needs to be on.
+
+### Where to look afterwards
+
+`/api/research/asymmetry/live` -> `paperActivation`:
+`masterPaperAuthorized`, `activationState`, `paperEntriesAllowed`,
+`activationTimestamp`, `nextGateCheck`, `gateAttempts`, `gateEvidence`,
+`gateBlockReason`, `firstAcceptedAsk`, `firstAcceptedBid`.
+
+If it reads `BLOCKED_QUOTE_PATH_DEFECT`, the pre-session hypothesis above
+(capture 0-14 DTE / 2 pages vs getQuote 0-60 DTE / 3 pages) is the first thing
+to check, and the smallest safe fix is aligning the windows — NOT raising page
+counts.
 
 ## Stop conditions
 
