@@ -20,6 +20,7 @@ import { notifyPrivateAsymmetry, createPrivateCaseMemory, PRIVATE_NOTIFIABLE_STA
 import type { AsymmetryResearchState } from "./states.ts";
 import { resolvePaperPermission } from "./paper/activation.ts";
 import { decideNotification, resolveNotificationStrength } from "./notification-gate.ts";
+import { recordNotifyDecisionOnDb, attachNotifyOutcomeOnDb } from "./notify-journal.ts";
 
 export const TRANSITIONS_ENABLED_ENV = "HIGH_ASYMMETRY_CAPTURE_ENABLED";
 
@@ -141,20 +142,40 @@ export async function runAsymmetryTransitions(
         // CAPTURE AND SPEAK ARE SEPARATE DECISIONS. Whatever this returns, the
         // transition below is still persisted and the case stays in the
         // research population — only the Discord message is affected.
+        const peakAsk = peakAskFromMarks(db, c.sessionDate, c.fingerprint);
+        const chase = chasePct(c.earlyAsk, obs.ask);
         const gate = decideNotification({
           state: to, optionSymbol: c.optionSymbol,
           bid: obs.bid, ask: obs.ask, quoteAtMs: obs.quoteAtMs,
           underlyingPrice: c.underlyingPrice,
-          spreadPct: obs.spreadPct, premiumChasePct: chasePct(c.earlyAsk, obs.ask),
+          spreadPct: obs.spreadPct, premiumChasePct: chase,
           openInterest: obs.openInterest, contractVolume: null,
           missingEvidence: c.missingEvidence, trigger: null, invalidation: null,
           // Current-validity inputs. Both come from rows the system already
           // wrote — no provider call is added to send a message.
           nowMs: deps.nowMs,
           entryAskAtCapture: c.earlyAsk,
-          peakAskSinceCapture: peakAskFromMarks(db, c.sessionDate, c.fingerprint),
+          peakAskSinceCapture: peakAsk,
         }, strength);
         if (!gate.notify) out.silentCaptures += 1;
+
+        // Journal the decision WITH the thresholds that produced it, before the
+        // send is attempted. 120s and 50% are provisional defaults; this row is
+        // the only way they can be judged later on real outcomes instead of on
+        // one memorable example. A journal failure is swallowed by design.
+        const journal = recordNotifyDecisionOnDb(db as any, {
+          sessionDate: c.sessionDate, fingerprint: c.fingerprint, decidedAtMs: deps.nowMs,
+          symbol: c.symbol, optionSymbol: c.optionSymbol, direction: c.direction,
+          fromState: c.state, toState: to,
+          decision: gate, config: strength,
+          bid: obs.bid, ask: obs.ask, quoteAtMs: obs.quoteAtMs,
+          underlyingPrice: c.underlyingPrice, spreadPct: obs.spreadPct, premiumChasePct: chase,
+          openInterest: obs.openInterest, contractVolume: null,
+          entryAskAtCapture: c.earlyAsk, peakAskSinceCapture: peakAsk,
+          missingEvidenceCount: c.missingEvidence.length,
+          firstDetectedAtMs: c.firstDetectedAtMs,
+        });
+        if (journal.error) out.errors.push(`${c.fingerprint}: journal ${journal.error}`);
         const eligible = gate.notify && PRIVATE_NOTIFIABLE_STATES.includes(to);
         let notifyOutcome: string | null = null;
         if (eligible) {
@@ -177,6 +198,17 @@ export async function runAsymmetryTransitions(
           out.suppressed += 1;
           notifyOutcome = gate.reason;
         }
+
+        // Close the journal row with what delivery actually did. Send latency
+        // is the gap between DECIDING and Discord accepting — the part of
+        // capture-to-notify delay that belongs to us, not to the provider.
+        attachNotifyOutcomeOnDb(db as any, {
+          sessionDate: c.sessionDate, fingerprint: c.fingerprint,
+          toState: to, decidedAtMs: deps.nowMs,
+        }, {
+          notifyOutcome: notifyOutcome ?? "UNKNOWN",
+          sentAtMs: notifyOutcome === "SENT" ? Date.now() : null,
+        });
 
         const rec = recordTransitionOnDb(db, {
           sessionDate: c.sessionDate, fingerprint: c.fingerprint,
