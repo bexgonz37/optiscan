@@ -57,4 +57,5 @@ production.
 - [[02 Components/Market Data]]
 - [[02 Components/Opportunity Lifecycle]]
 - [[02 Components/AI Learning System]]
+- [[02 Components/High-Asymmetry Radar]] (feature branch only — shadow research)
 - [[04 Bugs/Missing Discord Alerts]]

@@ -1,113 +1,93 @@
 # Current Task Packet
 
-Task ID: observe-watchlist-copy-and-professional-window
+Task ID: high-asymmetry-observe-first-live-session
 
 ## Active position
 
-- Repo: `C:\Users\bexgo\Downloads\optiscan-main`, branch `main`
-- Local HEAD: `be68a12`
-- `origin/main`: `be68a12`
-- Deployed production commit: **`be68a12`**
+- Branch: `feature/high-asymmetry-radar`, merged with `origin/main`
+- `origin/main` before this work: `49b2174`
+- Merged and deployed commit: recorded below after production verification
 
-## Completed this session
-
-Four separate commits, each one concern, each pushed and deployed:
+## Completed — production hardening (already live on main)
 
 | Commit | Concern | Status |
 | --- | --- | --- |
 | `08bb849` | Browser connection-pool exhaustion (poll guard) | LIVE_AND_VERIFIED |
-| `0b67ba8` | `/api/now` alert-lookup indexes | LIVE_AND_VERIFIED |
-| `cb89c03` | Discord panel authenticated reads | DEPLOYED_UNPROVEN |
-| `be68a12` | Next-session Watchlist copy sign fix | DEPLOYED_UNPROVEN |
+| `0b67ba8` | `/api/now` alert-lookup indexes (14s → 2.5s p95 3.06s) | LIVE_AND_VERIFIED |
+| `cb89c03` | Discord panel authenticated reads | LIVE_AND_VERIFIED |
+| `be68a12` | Watchlist copy signed-move fix | DEPLOYED_UNPROVEN |
 
-## Verified locally
+All four survived the merge, verified by grep for their distinguishing symbols.
 
-- `08bb849`: 10/10 focused, 2510/2510 full
-- `0b67ba8`: 7/7 focused, 2517/2517 full
-- `cb89c03`: 8/8 focused, 2525/2525 full
-- `be68a12`: 9/9 focused, **2534/2534** full
-- Every commit: tsc clean, build clean, `git diff --check` clean
+## Completed — High-Asymmetry runtime graph
 
-## Verified in production
-
-- `/api/healthz` serves `be68a12`, `schemaOk: true`, `schemaMissing: []`,
-  `lifecycle.active: true`
-- `/api/now` latency after the index fix: median **2.49s**, p95 **3.06s**,
-  measured over 10 requests (was 13–15s). First request after a deploy is
-  ~20s cold.
-- All seven routes return 200: `/`, `/watchlist`, `/callouts`, `/quant`,
-  `/discord`, `/paper`, `/ai`
-- Poll-guard soak: `/watchlist` held ~3.5 min produced 11 requests, all 200,
-  **zero pending** — previously multiple concurrent `/api/now` hung forever
-
-## What remains unproven
-
-- **`cb89c03`** — the Discord panel fix is deployed but I have NOT re-opened
-  `/discord` in a browser to confirm Options/Watchlist now read CONFIGURED and
-  the ledger shows real sends. Only the render contract is unit-tested.
-- **`be68a12`** — the corrected copy has NOT appeared in a real Discord
-  message. Verified from a deterministic fixture only. Next real send is the
-  18:00 ET window.
-- The professional Watchlist has still never built or published in production.
-  It has only been observed declining at the flag gate.
-
-## Feature status
+Every node has a real caller or scheduler. All five tables have both a writer
+and a reader. Off by default at every stage.
 
 | Feature | Status |
 | --- | --- |
-| Poll guard / connection-pool fix | LIVE_AND_VERIFIED |
-| `/api/now` indexes | LIVE_AND_VERIFIED |
-| Discord panel authenticated reads | DEPLOYED_UNPROVEN |
-| Next-session Watchlist copy | DEPLOYED_UNPROVEN |
-| Legacy next-session Watchlist plan | LIVE_AND_VERIFIED (5 rows, sent 18:01 ET) |
-| Professional Watchlist | DEPLOYED_UNPROVEN (flag off, never published) |
-| Daily recap | MISSING (webhook never configured, zero sends ever) |
-| Earlier-entry / loss-protection research | RESEARCH_ONLY |
-| High-Asymmetry private notify (other worktree) | BUILT_DISABLED |
+| Live call site in `options/loop.ts` | BUILT_DISABLED |
+| Shadow-case persistence (5 additive tables) | BUILT_DISABLED |
+| Transition runner + scheduler (`asymmetryTransitions`, 60s) | BUILT_DISABLED |
+| Owner-private notifier wiring | BUILT_DISABLED |
+| Forward marks + scheduler (`asymmetryMarks`, 60s due-work) | BUILT_DISABLED |
+| Outcome aggregation | BUILT_DISABLED |
+| EOD Quant review (`asymmetryEod`, hourly) | BUILT_DISABLED |
+| AI advisory (injected, post-persistence) | BUILT_DISABLED |
+| Private diagnostics route | BUILT_DISABLED |
+| Verified quote provider | BUILT_DISABLED |
+| Executed against a live candidate | MISSING |
+| Subscriber SEND authority | MISSING (permanently, by design) |
 
-## Feature flags
+## Feature flags — all unset
 
-- Disabled: `PROFESSIONAL_WATCHLIST_ENABLED` (unset)
-- Unset: `DISCORD_WEBHOOK_RECAP`
-- Enabled: `OWNER_RESEARCH_DISCORD_ENABLED`, `AI_ENABLED`
+- `HIGH_ASYMMETRY_CAPTURE_ENABLED` — unset. Gates capture, transitions, marks,
+  and the EOD review. Unset means the entire radar does zero work.
+- `HIGH_ASYMMETRY_PRIVATE_ENABLED` — unset.
+- `HIGH_ASYMMETRY_PRIVATE_WEBHOOK` — unset.
 
-No Railway variable has been created, changed, or removed at any point.
+None has been created or set. Capture is deliberately separate from
+notification so the radar can collect silently before anything is surfaced.
 
-## Known blockers
+## What remains unproven
 
-1. `/api/now` still costs ~2.4s at floor — the 546-alert loop in
-   `buildPaperChainDiagnostic`. Reducing it changes what the endpoint returns,
-   so it needs an owner decision on the contract.
-2. Recap requires `DISCORD_WEBHOOK_RECAP`, an owner-only Railway change.
-3. Professional Watchlist enablement is an owner-only Railway change.
-4. `paperLinkFailure` metric name is misleading (counts pre-delivery
-   rejections, not delivered-but-unlinked). Diagnostic clarity only.
+- **The radar has never executed against a live candidate. Zero cases exist.**
+- The quote provider is verified at the INTERFACE level — the export exists,
+  arity is 2, `providerTimestamp` is mapped to the field `validateMark` reads,
+  and `PROVIDER_ERROR` is distinct from `NO_QUOTE` — but it has never been
+  called against the live chain. Whether `fetchOptionChain` returns a contract
+  whose `optionSymbol` matches a stored OCC exactly is untested in production.
+  If it does not, marks record `NO_QUOTE`: safe, but zero graded outcomes.
+- Graphify cannot prove the three scheduler → runner edges. The scheduler uses
+  dynamic `require()` (26 of them, the convention for every job in that file),
+  which the AST extractor cannot resolve; the pre-existing
+  `watchlistPlanningJob` shows the identical artefact. Those edges are proven by
+  source and tests instead, not by a multi-hop Graphify path.
 
 ## Exact next bounded checkpoint
 
-Two read-only confirmations, no code:
+Observe one live session with the radar DISABLED, then decide on activation.
 
-1. Open `/discord` in a browser and confirm ALERTS + WATCHLIST read
-   **Configured**, RECAPS reads **NOT CONFIGURED**, and the ledger lists real
-   sends. This closes `cb89c03`.
-2. After the next 18:00 ET window, read the delivered
-   `owner_next_session_watchlist` payload from the ledger and confirm no
-   positive move is described as a decline. This closes `be68a12`.
+1. Confirm the deployed build is inert: `/api/research/asymmetry/live` returns
+   `enabled: false`, `canSendSubscriber: false`, zero cases, and the three
+   scheduler jobs registered but reporting no-op.
+2. Confirm normal scanner, Discord alerts, and Watchlist behaviour unchanged.
+3. Only then request approval for the three variables above.
 
 ## Stop conditions
 
-- do not change a Railway variable without explicit owner approval
-- do not enable a feature flag as part of verification
-- do not send a manual Discord test message
-- do not touch trading gates, ranking, or the asymmetry worktree
+- do not set any Railway variable without explicit owner approval
+- do not enable capture or private notification as part of verification
+- do not send any Discord test message
+- do not touch trading gates, ranking, or subscriber delivery
 - do not stage Obsidian line-ending noise, `graph.json`, `workspace.json`,
   `graphify-out/`, or unrelated files
-- do not describe a deployed-but-unobserved change as verified
+- do not describe the radar as active: it is built and disabled, and has never
+  observed a live candidate
 
 ## Relevant notes
 
-- [[../02 Components/Discord Alerts]]
-- [[../02 Components/watchlist]]
-- [[../02 Components/delivery]]
-- [[../02 Components/deployment]]
+- [[../02 Components/High-Asymmetry Radar]]
 - [[../02 Components/safety]]
+- [[../02 Components/deployment]]
+- [[../02 Components/Discord Alerts]]
