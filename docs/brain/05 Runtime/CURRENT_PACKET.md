@@ -1,6 +1,6 @@
 # Current Task Packet
 
-Task ID: high-asymmetry-paper-lane-deploy-disabled
+Task ID: high-asymmetry-paper-lane-deploy-disabled (PAUSED — see resume point)
 
 ## Active position
 
@@ -117,23 +117,72 @@ leading hypothesis, and the smallest safe fix is to align `getQuote`'s window
 with capture's rather than to raise page counts.** Do not pre-emptively change
 it: the gate must observe the real behaviour first.
 
-## Exact next bounded checkpoint
+## Exact next bounded checkpoint — RESUME HERE
 
-1. Deploy with `HIGH_ASYMMETRY_PAPER_ENABLED` unset. Verify:
-   - `/api/research/asymmetry/live` returns `paperTrading.enabled: false`
-   - the `asymmetryPaper` job is registered and reports the flag reason
-   - Discord byte-identical to baseline; scanner unaffected
-2. Observe the first live session with the paper lane still DISABLED.
-3. Only then request approval for `HIGH_ASYMMETRY_PAPER_ENABLED=1`.
+Task ID for the next session: `high-asymmetry-quote-path-readonly-check`
 
-Watch, in order, during the first live session:
-1. `activeCases` non-zero — the live call site fires.
-2. `markRejections` — NO_QUOTE means the OCC does not match; PROVIDER_ERROR
-   means an outage.
-3. `privateNotification.notifiedCount` — the first message the fix makes
-   possible.
-4. After 20:15 ET, the EOD review persists with the paper section present and
-   `deliveryStatus: BLOCKED_CONFIG`.
+**Status as of 2026-07-31 01:50 ET: PAUSED BY OWNER, NOTHING IN FLIGHT.**
+
+An overnight wait had been armed to fire at 09:40 ET and probe the gate. The
+owner stopped it. No background task is running, no code changed, no Railway
+variable changed. Production is untouched and inert.
+
+### Resume instruction
+
+After **09:40 ET** on the next trading day, run a **READ-ONLY** live
+quote-path check. Read-only means GET diagnostics only: no writes, no provider
+calls of our own, no Discord, no flag change, no code change.
+
+Probe (already written, no repo footprint — scratchpad only; recreate if the
+scratchpad is gone, it is ~100 lines of `fetch` against these routes):
+  - `/api/healthz`
+  - `/api/research/asymmetry/live`   <- the one that matters
+  - `/api/discord/health`
+  - `/api/scanner/live`
+
+### The ONLY gate to test
+
+All six must hold before the flag is even considered:
+
+1. at least one real asymmetry case exists (`activeCases` > 0)
+2. the exact stored OCC matches the quote provider (no `WRONG_OCC`)
+3. a fresh executable **ask** is available at entry time
+4. a later valid **bid** mark is available for the same OCC
+5. `NO_QUOTE` / `WRONG_OCC` / `PROVIDER_ERROR` are NOT dominating
+6. subscriber isolation intact: `canSendSubscriber: false`,
+   `automaticRealTrading: false`, Discord routes unchanged
+
+Classify exactly one of: `QUOTE_PATH_VERIFIED` /
+`INSUFFICIENT_LIVE_EVIDENCE` / `QUOTE_PATH_DEFECT`.
+
+**Keep `HIGH_ASYMMETRY_PAPER_ENABLED` OFF unless the result is clearly
+QUOTE_PATH_VERIFIED.** Do not lower the standard to reach an enable decision.
+Zero cases is INSUFFICIENT_LIVE_EVIDENCE, not a defect and not a pass.
+
+### If NO_QUOTE dominates
+
+Do not guess. The leading hypothesis is already recorded above: capture stores
+from a 0-14 DTE / 2-page fetch while `getQuote` looks up in a 0-60 DTE /
+3-page fetch. Smallest safe fix would be aligning `getQuote`'s window to
+capture's, NOT raising page counts. Confirm against real rejection counts
+before touching anything.
+
+### Baseline to compare against (captured 2026-07-31 01:41 ET)
+
+- commit `4f1dd06` serving; `ok: true`, `schemaOk: true`
+- `activeCases: 0`, `stateCounts: {}`, `markRejections: []`, `outcomes: 0`
+- `privateNotification`: enabled true, webhookConfigured true,
+  refusedReason null, notified 0, suppressed 0
+- `paperTrading.enabled: false`; `lastPaper.ran: false`
+  (reason `HIGH_ASYMMETRY_PAPER_ENABLED is not set`)
+- `aiBudget`: callsToday 1, remainingToday 0, EOD returns `aiStatus: CACHED`
+  — the once-per-session cap and the cache are both demonstrably working
+- Discord `{options: true, watchlist: true, recap: false}`, `sent24h: 2`,
+  `lastSentAt: 2026-07-30T22:01:11.886Z`, `failed24h: 0`
+- scanner `running: true`, `errors: 0`
+- recap refusing with `HIGH_ASYMMETRY_PAPER_ENABLED is not set`
+
+Any drift from this baseline on resume is itself a finding.
 
 ## Stop conditions
 
