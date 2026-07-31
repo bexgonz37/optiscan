@@ -245,6 +245,9 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
           sessionDate: asymSession, observedAtMs: input.nowMs, stage: asymStage,
           symbol: input.symbol, optionSymbol: asymResult.optionSymbol,
           reason: asymResult.reason, blockedBy: asymResult.blockedBy, labels: asymResult.labels,
+          // Raw and unmodified, next to the clock it was compared against.
+          rawQuoteAtMs: res.contract.providerTimestamp ?? null,
+          comparedNowMs: input.nowMs,
         });
       }
       if (res.state === "READY") {

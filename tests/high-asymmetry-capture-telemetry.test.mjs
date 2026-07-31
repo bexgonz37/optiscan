@@ -211,6 +211,34 @@ test("the migration is additive and repeat-safe", () => {
     assert.ok(d.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(t), `${t} must exist`);
   }
   const src = readFileSync("lib/research/asymmetry/capture-telemetry.ts", "utf8");
-  assert.equal(/DROP\s+TABLE|ALTER\s+TABLE/i.test(src), false, "no destructive DDL");
+  // ADD COLUMN is permitted — it is additive and the samples table already
+  // exists in production. Everything destructive stays forbidden.
+  assert.equal(/DROP\s+TABLE|DROP\s+COLUMN|RENAME\s+TO/i.test(src), false, "no destructive DDL");
+  for (const m of src.matchAll(/ALTER\s+TABLE.*/gi)) {
+    assert.match(m[0], /ADD COLUMN/, `only additive ALTER is allowed, found: ${m[0]}`);
+  }
+  d.close();
+});
+
+test("the additive column migration is repeat-safe and preserves rows", () => {
+  const d = new Database(":memory:");
+  // Simulate the PRODUCTION table: created before the columns existed.
+  d.exec(`CREATE TABLE asymmetry_capture_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, session_date TEXT NOT NULL, observed_at_ms INTEGER NOT NULL,
+    stage TEXT NOT NULL, symbol TEXT, option_symbol TEXT, reason TEXT, blocked_by TEXT, labels TEXT)`);
+  d.prepare("INSERT INTO asymmetry_capture_samples (session_date, observed_at_ms, stage, symbol) VALUES (?,?,?,?)")
+    .run(SESSION, T0, "CAPTURE_BLOCKED", "OLD");
+  for (let i = 0; i < 3; i += 1) ensureCaptureTelemetrySchema(d);
+  const cols = d.prepare("PRAGMA table_info(asymmetry_capture_samples)").all().map((c) => c.name);
+  assert.ok(cols.includes("raw_quote_at_ms") && cols.includes("compared_now_ms"), "columns must be added");
+  assert.equal(d.prepare("SELECT COUNT(*) n FROM asymmetry_capture_samples").get().n, 1, "existing rows preserved");
+  // And the wider INSERT now succeeds against the migrated table.
+  recordCaptureSampleOnDb(d, {
+    sessionDate: SESSION, observedAtMs: T0, stage: "CAPTURE_BLOCKED", symbol: "NEW",
+    optionSymbol: null, reason: "EVIDENCE_FROM_FUTURE", rawQuoteAtMs: 1785506832637000000, comparedNowMs: 1785506832637,
+  });
+  const s = readCaptureTelemetryOnDb(d, SESSION).recentSamples[0];
+  assert.equal(s.rawQuoteAtMs, 1785506832637000000);
+  assert.equal(s.magnitudeRatio, 1000000, "a nanosecond value must read as ~1e6 x the millisecond clock");
   d.close();
 });

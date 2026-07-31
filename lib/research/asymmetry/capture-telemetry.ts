@@ -78,11 +78,32 @@ export function ensureCaptureTelemetrySchema(db: TelemetryDb): void {
       option_symbol TEXT,
       reason TEXT,
       blocked_by TEXT,
-      labels TEXT
+      labels TEXT,
+      -- The RAW provider timestamp exactly as received, plus the clock it was
+      -- compared against. Stored unmodified so a units question can be settled
+      -- by magnitude instead of inference.
+      raw_quote_at_ms INTEGER,
+      compared_now_ms INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_asym_capture_samples_session
       ON asymmetry_capture_samples(session_date, id DESC);
   `);
+  // ADDITIVE COLUMN MIGRATION. The samples table already exists in production
+  // from an earlier deploy, and CREATE TABLE IF NOT EXISTS will not add a
+  // column to it — the wider INSERT would fail on every write and, because
+  // this module swallows its own errors, record nothing while looking healthy.
+  // Each ADD COLUMN is guarded by a pragma check so a repeat run is a no-op.
+  addColumnIfMissing(db, "asymmetry_capture_samples", "raw_quote_at_ms", "INTEGER");
+  addColumnIfMissing(db, "asymmetry_capture_samples", "compared_now_ms", "INTEGER");
+}
+
+/** Repeat-safe additive column. Never drops, never rewrites an existing column. */
+function addColumnIfMissing(db: TelemetryDb, table: string, column: string, type: string): void {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>;
+    if (cols.some((c) => String(c.name) === column)) return;
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  } catch { /* telemetry only; a failed widening must never reach the caller */ }
 }
 
 function hasTable(db: TelemetryDb, name: string): boolean {
@@ -131,16 +152,18 @@ export function recordCaptureSampleOnDb(db: TelemetryDb, s: {
   sessionDate: string; observedAtMs: number; stage: CaptureStage;
   symbol: string | null; optionSymbol: string | null; reason: string | null;
   blockedBy?: string[]; labels?: string[];
+  rawQuoteAtMs?: number | null; comparedNowMs?: number | null;
 }): void {
   try {
     ensureCaptureTelemetrySchema(db);
     db.prepare(`
       INSERT INTO asymmetry_capture_samples
-        (session_date, observed_at_ms, stage, symbol, option_symbol, reason, blocked_by, labels)
-      VALUES (?,?,?,?,?,?,?,?)
+        (session_date, observed_at_ms, stage, symbol, option_symbol, reason, blocked_by, labels, raw_quote_at_ms, compared_now_ms)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
     `).run(
       s.sessionDate, s.observedAtMs, s.stage, s.symbol, s.optionSymbol, s.reason,
       JSON.stringify(s.blockedBy ?? []), JSON.stringify(s.labels ?? []),
+      s.rawQuoteAtMs ?? null, s.comparedNowMs ?? null,
     );
     // Prune to the newest MAX_RECENT_SAMPLES for this session.
     db.prepare(`
@@ -160,6 +183,9 @@ export interface CaptureTelemetry {
   recentSamples: Array<{
     observedAtMs: number; stage: string; symbol: string | null;
     optionSymbol: string | null; reason: string | null; blockedBy: string[]; labels: string[];
+    rawQuoteAtMs: number | null; comparedNowMs: number | null;
+    /** Order-of-magnitude ratio raw/now. ~1 = ms, ~1e3 = us, ~1e6 = ns. */
+    magnitudeRatio: number | null;
   }>;
   /** The deterministic verdict on WHY there are no cases. Never guessed. */
   dominantCause: string;
@@ -187,7 +213,7 @@ export function readCaptureTelemetryOnDb(db: TelemetryDb, sessionDate: string): 
       lastAtMs: r.last_at_ms == null ? null : Number(r.last_at_ms),
     }));
     const recentSamples = (db.prepare(
-      "SELECT observed_at_ms, stage, symbol, option_symbol, reason, blocked_by, labels FROM asymmetry_capture_samples WHERE session_date=? ORDER BY id DESC LIMIT ?",
+      "SELECT observed_at_ms, stage, symbol, option_symbol, reason, blocked_by, labels, raw_quote_at_ms, compared_now_ms FROM asymmetry_capture_samples WHERE session_date=? ORDER BY id DESC LIMIT ?",
     ).all(sessionDate, MAX_RECENT_SAMPLES) as any[]).map((r) => ({
       observedAtMs: Number(r.observed_at_ms),
       stage: String(r.stage),
@@ -196,6 +222,11 @@ export function readCaptureTelemetryOnDb(db: TelemetryDb, sessionDate: string): 
       reason: r.reason == null ? null : String(r.reason),
       blockedBy: safeArray(r.blocked_by),
       labels: safeArray(r.labels),
+      rawQuoteAtMs: r.raw_quote_at_ms == null ? null : Number(r.raw_quote_at_ms),
+      comparedNowMs: r.compared_now_ms == null ? null : Number(r.compared_now_ms),
+      magnitudeRatio: r.raw_quote_at_ms == null || !Number(r.compared_now_ms)
+        ? null
+        : Math.round((Number(r.raw_quote_at_ms) / Number(r.compared_now_ms)) * 1000) / 1000,
     }));
     return { counters, rejections, recentSamples, dominantCause: classifyCause(counters, rejections) };
   } catch {
