@@ -170,6 +170,38 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
   const dedupMs = isCoreSymbol(sig.ticker) ? 8 * 60_000 : 10 * 60_000;
   if (alertRecentDuplicate(sig.ticker, source, day, sig.direction, dedupMs, nowMs)) return null;
 
+  // THESIS-LANE AUTHORITY. The check above is a TIME WINDOW (8 min for a core
+  // symbol); it asks "did we alert recently", never "is this idea still open".
+  // On 2026-07-29 three AAPL PUT alerts went out for the SAME OCC at 14:50,
+  // 15:02 and 15:44 — every repeat outside the window — while the first was
+  // open and already past Target 1. A held lane now blocks a second OPENING
+  // send and the later signal is recorded as evidence instead.
+  let claimedLaneKey: string | null = null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getDb } = require("@/lib/db");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { claimThesisLane, attachLaneEvidenceOnDb } = require("@/lib/thesis-lane");
+    const laneDirection = sig.direction === "bearish" ? "bearish" : "bullish";
+    const claim = claimThesisLane(getDb(), {
+      symbol: sig.ticker, direction: laneDirection, sessionDate: day, nowMs,
+      optionSymbol: sideContract?.optionSymbol ?? null,
+      score: (sig as { signalScore?: number | null }).signalScore ?? null,
+    });
+    if (!claim.claimed) {
+      attachLaneEvidenceOnDb(getDb(), {
+        laneKey: claim.laneKey, sessionDate: day, nowMs,
+        candidateOptionSymbol: sideContract?.optionSymbol ?? null,
+        candidateScore: (sig as { signalScore?: number | null }).signalScore ?? null,
+        reason: claim.reason,
+        originalAlertId: claim.existing?.alertId ?? null,
+        lifecycleEvent: "THESIS_STRENGTHENED",
+      });
+      return null;
+    }
+    claimedLaneKey = claim.laneKey;
+  } catch { /* authority is best-effort; never blocks a scan */ }
+
   const expRemainPct = expectedRemainingMovePct({ shortRate: sig.shortRate ?? 0, minsToClose });
   const status = calcMoveStatus({
     movePct: sig.movePct, shortRate: sig.shortRate, accel: sig.accel,
@@ -518,6 +550,20 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
         });
       } catch { /* bookkeeping never breaks capture */ }
     }
+  }
+  // Bind the opening alert to the lane it claimed, so a later suppression can
+  // point at the alert that actually holds the idea. If the alert was never
+  // created the lane is released, otherwise a failed capture would hold the
+  // lane shut for the rest of the session.
+  if (claimedLaneKey) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { getDb } = require("@/lib/db");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { bindLaneAlertOnDb, closeThesisLaneOnDb } = require("@/lib/thesis-lane");
+      if (id != null) bindLaneAlertOnDb(getDb(), claimedLaneKey, id, nowMs);
+      else closeThesisLaneOnDb(getDb(), claimedLaneKey, nowMs, "INVALIDATED");
+    } catch { /* diagnostics only */ }
   }
   return id;
 }
