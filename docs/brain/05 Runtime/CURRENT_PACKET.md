@@ -1,12 +1,12 @@
 # Current Task Packet
 
-Task ID: high-asymmetry-state-runner
+Task ID: high-asymmetry-merge-and-observe
 
 ## Active position
 
 - Repo: `C:\Users\bexgo\Downloads\optiscan-asymmetry` (separate worktree)
 - Branch: `feature/high-asymmetry-radar`
-- Local HEAD: the runtime-edge commit (this checkpoint)
+- Local HEAD: the full-graph commit (this checkpoint)
 - `origin/main`: `49b2174` — this branch is NOT pushed and NOT merged
 - Deployed production commit: `49b2174` (served from `optiscan-main`; nothing
   on this branch is deployed)
@@ -25,10 +25,10 @@ Task ID: high-asymmetry-state-runner
 
 ## Verified locally
 
-- Focused: 17/17 (private notify) + 13/13 (live intake) + 17/17 (runtime edge)
-- Full suite: **2633/2634**; the 1 failure is a pre-existing timing-sensitive
-  test that passes 14/14 in isolation, fails a DIFFERENT test on each parallel
-  run, and contains zero asymmetry references. Not a regression from this work.
+- Focused: 17 private-notify + 13 live-intake + 17 runtime-edge + 20 graph-acceptance
+- Full suite: **2654/2654 green, twice consecutively.** The previously flaky
+  timing test passed on both runs; no test was quarantined or weakened.
+- `tsc` clean, build clean, `git diff --check` clean, no destructive DDL.
 - `npx tsc --noEmit --incremental false`: clean
 - `npm run build`: compiled successfully
 - `git diff --check`: clean
@@ -53,9 +53,11 @@ snapshot taken by the `optiscan-main` workstream.
 | State-transition runner + notifier wiring | MISSING |
 | Forward-mark scheduler + runner | MISSING |
 | Outcome aggregation | MISSING |
-| Forward outcome tracking (1/3/5/10/15/30/60m) | MISSING |
-| End-of-day Quant evidence summary | MISSING |
-| Private diagnostics endpoint | MISSING |
+| Forward outcome tracking (1/3/5/10/15/30/60m) | LOCAL_ONLY |
+| End-of-day Quant review (scheduled) | LOCAL_ONLY |
+| AI advisory on measured results | LOCAL_ONLY |
+| Private diagnostics endpoint | LOCAL_ONLY |
+| Executed against a live candidate | MISSING |
 | Subscriber SEND authority | MISSING (permanently, by design) |
 
 ## What remains unproven
@@ -81,10 +83,13 @@ trades, 868 options alerts, 35,936 candidates.
 
 ## Feature flags
 
+- Disabled: `HIGH_ASYMMETRY_CAPTURE_ENABLED` (unset) — gates capture, marks,
+  transitions, and the EOD review. Unset means the whole radar does no work.
 - Disabled: `HIGH_ASYMMETRY_PRIVATE_ENABLED` (unset)
 - Unset: `HIGH_ASYMMETRY_PRIVATE_WEBHOOK`
 
-Neither has been created or set. Both are required before the path can emit.
+None has been created or set. Capture is deliberately separate from
+notification: the radar can collect silently without surfacing anything.
 
 ## Known blockers
 
@@ -99,17 +104,17 @@ Neither has been created or set. Both are required before the path can emit.
 
 ## Exact next bounded checkpoint
 
-Build the STATE-TRANSITION RUNNER: re-evaluate open cases, detect deterministic
-state changes, persist each transition, and call the existing private notifier
-only on eligible ones. It needs a real caller — either the options loop on a
-later tick or a scheduler job — or it becomes another disconnected module.
+Merge and deploy DISABLED, then observe. In order:
 
-Then, in order: forward-mark scheduler + runner (7 horizons), outcome
-aggregation (MFE/MAE/milestones), EOD Quant review reached from a scheduled
-job, AI advisory called by that review, and the private diagnostics route.
+1. Merge current `main` into this branch, rerun full validation.
+2. Merge to `main`, push, deploy with ALL High-Asymmetry variables unset.
+3. Verify in production: health green, schema green, normal alerts unaffected,
+   `/api/research/asymmetry/live` returns 200 with `enabled: false`, and zero
+   private or subscriber messages sent.
+4. Only then request approval for the variables below.
 
-Acceptance rule carried forward: a module reachable only from tests or
-diagnostics does not count as built.
+The graph is connected but has NEVER RUN against a live candidate. Everything
+about its live behaviour is unproven.
 
 ## Stop conditions
 

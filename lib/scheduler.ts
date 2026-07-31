@@ -22,7 +22,7 @@ import { isEarlyCloseDay } from "@/lib/market-session-guard";
 const LEASE_NAME = "scheduler";
 const BASE_TICK_MS = 15_000;
 
-type JobName = "maintenance" | "learning" | "supervisor" | "improvement" | "aiJobs" | "brokerReadiness" | "subscriberReadiness" | "contentDrafts" | "overnightResearch" | "watchlistPlanning";
+type JobName = "maintenance" | "learning" | "supervisor" | "improvement" | "aiJobs" | "brokerReadiness" | "subscriberReadiness" | "contentDrafts" | "overnightResearch" | "watchlistPlanning" | "asymmetryMarks" | "asymmetryEod";
 
 export interface SchedulerState {
   started: boolean;
@@ -48,6 +48,10 @@ export interface SchedulerState {
    * Last professional Watchlist publication per phase. Read-only diagnostics:
    * a failure here is recorded and the legacy plan continues regardless.
    */
+  /** Last High-Asymmetry mark sweep. Read-only diagnostics. */
+  lastAsymmetryMarks?: unknown;
+  /** Last High-Asymmetry EOD review. Read-only diagnostics. */
+  lastAsymmetryEod?: unknown;
   lastProfessionalWatchlist?: {
     overnight: ProfessionalWatchlistRunState | null;
     premarket: ProfessionalWatchlistRunState | null;
@@ -83,8 +87,8 @@ function state(): SchedulerState {
   const g = globalThis as G;
   g.__optiscanScheduler ??= {
     started: false, isOwner: false, ownerPid: null, lastBeatAtMs: null,
-    lastRun: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null, brokerReadiness: null, subscriberReadiness: null, contentDrafts: null, overnightResearch: null, watchlistPlanning: null },
-    runs: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0, subscriberReadiness: 0, contentDrafts: 0, overnightResearch: 0, watchlistPlanning: 0 },
+    lastRun: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null, brokerReadiness: null, subscriberReadiness: null, contentDrafts: null, overnightResearch: null, watchlistPlanning: null, asymmetryMarks: null, asymmetryEod: null },
+    runs: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0, subscriberReadiness: 0, contentDrafts: 0, overnightResearch: 0, watchlistPlanning: 0, asymmetryMarks: 0, asymmetryEod: 0 },
     note: "not started", lastError: null, lastWatchlistPlanning: null,
     lastProfessionalWatchlist: { overnight: null, premarket: null },
   };
@@ -440,6 +444,46 @@ async function overnightResearchJob(nowMs: number): Promise<void> {
   if (legacyError) throw new Error(legacyError);
 }
 
+/**
+ * High-Asymmetry forward marks (research, OFF by default). Due-work only: the
+ * runner computes which horizons have elapsed and marks those. A failure is
+ * recorded in scheduler state and can never abort the beat or reach delivery.
+ */
+async function asymmetryMarksJob(nowMs: number): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { runDueAsymmetryMarks } = require("@/lib/research/asymmetry/mark-runner");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { tradingDay } = require("@/lib/trading-session");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { liveAsymmetryQuote } = require("@/lib/research/asymmetry/live-quote");
+  const res = runDueAsymmetryMarks(db(), {
+    quote: liveAsymmetryQuote,
+    nowMs,
+    sessionDate: tradingDay(nowMs),
+  });
+  state().lastAsymmetryMarks = res;
+}
+
+/**
+ * High-Asymmetry end-of-day review (research, OFF by default). Deterministic
+ * aggregation is persisted BEFORE the advisory AI runs, so an AI failure can
+ * never remove or alter the measured review.
+ */
+async function asymmetryEodJob(nowMs: number): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { runAsymmetryEodReview } = require("@/lib/research/asymmetry/eod-review");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { tradingDay } = require("@/lib/trading-session");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { explainAsymmetryReview } = require("@/lib/ai/asymmetry-explain");
+  const res = await runAsymmetryEodReview(db(), {
+    nowMs,
+    sessionDate: tradingDay(nowMs),
+    explain: explainAsymmetryReview,
+  });
+  state().lastAsymmetryEod = { ranAtMs: nowMs, sessionDate: res.sessionDate, persisted: res.persisted, aiStatus: res.aiStatus, errors: res.errors };
+}
+
 async function beat(): Promise<void> {
   const s = state();
   const nowMs = Date.now();
@@ -493,6 +537,12 @@ async function beat(): Promise<void> {
   }
   if (jobDue(s.lastRun.watchlistPlanning, iv.watchlistPlanningMs, nowMs)) {
     await runJob("watchlistPlanning", () => watchlistPlanningJob(nowMs), nowMs);
+  }
+  if (jobDue(s.lastRun.asymmetryMarks, iv.asymmetryMarksMs, nowMs)) {
+    await runJob("asymmetryMarks", () => asymmetryMarksJob(nowMs), nowMs);
+  }
+  if (jobDue(s.lastRun.asymmetryEod, iv.asymmetryEodMs, nowMs)) {
+    await runJob("asymmetryEod", () => asymmetryEodJob(nowMs), nowMs);
   }
   if (jobDue(s.lastRun.overnightResearch, iv.overnightResearchMs, nowMs)) {
     await runJob("overnightResearch", () => overnightResearchJob(nowMs), nowMs);

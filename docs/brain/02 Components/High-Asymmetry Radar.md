@@ -1,9 +1,8 @@
 # High-Asymmetry Radar
 
-Status: **LOCAL_ONLY** — the first real runtime edge exists (live loop ->
-capture -> persisted case) but is committed locally only: not merged, not
-deployed, and disabled by default. Downstream runners (transitions, forward
-marks, outcomes, EOD review, AI, diagnostics) are still MISSING.
+Status: **LOCAL_ONLY** — the FULL runtime graph is now connected and green
+locally, but nothing is merged, deployed, or enabled, and it has never executed
+against a live candidate. Zero cases exist.
 
 Branch: `feature/high-asymmetry-radar` (separate worktree). Nothing in this note
 describes production behaviour on `main`.
@@ -16,14 +15,16 @@ describes production behaviour on `main`.
 | Replay against real production data | LIVE_AND_VERIFIED (result: zero evidence, see below) |
 | Owner-private notification path (`private-notify.ts`) | BUILT_DISABLED |
 | Live intake admission core (`live-intake.ts`) | BUILT_DISABLED |
-| **Live call site in `options/loop.ts`** | **LOCAL_ONLY** (real edge, not deployed) |
-| **Shadow-case persistence (`case-store.ts`)** | **LOCAL_ONLY** |
-| State-transition RUNNER (auto-detect + notify) | MISSING |
-| Forward-mark scheduler + runner | MISSING |
-| Outcome aggregation | MISSING |
-| EOD Quant review | MISSING |
-| AI advisory on measured results | MISSING |
-| Private diagnostics endpoint | MISSING |
+| Live call site in `options/loop.ts` | LOCAL_ONLY |
+| Shadow-case persistence (5 tables) | LOCAL_ONLY |
+| State-transition runner + notifier wiring | LOCAL_ONLY |
+| Forward-mark scheduler + runner | LOCAL_ONLY |
+| Outcome aggregation | LOCAL_ONLY |
+| EOD Quant review (scheduled) | LOCAL_ONLY |
+| AI advisory on measured results | LOCAL_ONLY |
+| Private diagnostics endpoint | LOCAL_ONLY |
+| Executed against a live candidate | MISSING |
+| Merged / deployed / enabled | MISSING |
 
 ## The replay HAS now been run against real data (2026-07-30)
 
@@ -71,7 +72,38 @@ findings that do not need data to be true:
    `outcomes.ts` and `coverage-audit.ts`, which now require a mark to share the
    entry's trading day.
 
-## The first real runtime edge (this checkpoint)
+## The connected runtime graph (this checkpoint)
+
+Every node now has a real caller or scheduler. Verified by Graphify as 1-hop
+`calls` edges, not by documentation:
+
+    runOptionsCandidate -> captureAsymmetryCandidate -> openAsymmetryCaseOnDb
+    runAsymmetryTransitions -> notifyPrivateAsymmetry
+    runDueAsymmetryMarks -> aggregateOutcomesOnDb
+    runAsymmetryEodReview -> buildDeterministicReview -> (injected AI)
+
+Callers: the live options loop calls capture; the scheduler beat calls
+`asymmetryMarks` (60s due-work) and `asymmetryEod` (hourly, idempotent per
+trading day). All five tables have both a writer and a reader.
+
+**An architectural boundary was violated and fixed properly.** The AI explainer
+was first written inside `lib/research/asymmetry/`, which broke two existing
+spec tests: model calls are forbidden outside `lib/ai/`, and no asymmetry module
+may import an AI path. Rather than weaken either test, the call moved to
+`lib/ai/asymmetry-explain.ts` and the scheduler injects it into the EOD review's
+`explain` hook. The dependency now points AI -> research, never the reverse, and
+the radar still imports no AI.
+
+**AI cannot affect a measured result.** The deterministic review is persisted
+BEFORE `explain` is invoked — asserted by a test comparing source offsets. An AI
+failure yields `aiStatus: FAILED` and leaves the review row intact.
+
+**Marks are due-work, not timers.** Each sweep computes which of the seven
+horizons have elapsed and are unrecorded, so a redeploy loses no horizon and a
+replayed sweep writes nothing (PRIMARY KEY on session+fingerprint+horizon).
+Entry is the ASK and marks are the BID — conservative on both sides, asserted.
+
+## The first real runtime edge (previous checkpoint)
 
 `options/loop.ts` now imports and calls `captureAsymmetryCandidate`, placed
 immediately after the existing `recordOptionsResearchObservation` call for

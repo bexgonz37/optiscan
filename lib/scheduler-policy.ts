@@ -28,6 +28,8 @@ export interface SchedulerIntervals {
    * and rebuild the persisted plan. Owns every write GET /api/now used to perform.
    */
   watchlistPlanningMs: number;
+  asymmetryMarksMs: number;
+  asymmetryEodMs: number;
 }
 
 function clampInt(v: string | undefined, def: number, min: number, max: number): number {
@@ -65,6 +67,11 @@ export function schedulerIntervals(env: NodeJS.ProcessEnv = process.env): Schedu
     // 10 min default Watchlist planning refresh. Bounded provider use (2 index candle
     // fetches per run) and idempotent, so a repeat run is always safe. Never faster than 60s.
     watchlistPlanningMs: clampInt(env.SCHED_WATCHLIST_PLANNING_MS, 10 * 60_000, 60_000, 6 * 60 * 60_000),
+    // High-Asymmetry forward marks. 60s so the 1-minute horizon is reachable;
+    // the runner itself only does due work, so a fast tick is cheap.
+    asymmetryMarksMs: clampInt(env.SCHED_ASYMMETRY_MARKS_MS, 60_000, 30_000, 30 * 60_000),
+    // End-of-day review check. Hourly; the job itself is idempotent per day.
+    asymmetryEodMs: clampInt(env.SCHED_ASYMMETRY_EOD_MS, 60 * 60_000, 5 * 60_000, 6 * 60 * 60_000),
   };
 }
 

@@ -235,7 +235,7 @@ export function attachNormalQualificationOnDb(
              lead_ms = ? - first_detected_at_ms,
              premium_avoided_pct = CASE
                WHEN early_ask IS NOT NULL AND early_ask > 0 AND ? IS NOT NULL AND ? > 0
-                 THEN ((? - early_ask) / early_ask) * 100.0
+                 THEN ROUND(((? - early_ask) / early_ask) * 100.0, 4)
                ELSE NULL END,
              updated_at_ms = ?
        WHERE session_date = ? AND option_symbol = ? AND normal_qualified_at_ms IS NULL
