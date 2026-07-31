@@ -130,17 +130,35 @@ test("the module imports no delivery, notification, paper, scanner, broker, or A
     /from\s+["'][^"']*\/twitter/i,
     /from\s+["'][^"']*social/i,
   ];
-  const files = readdirSync(MODULE_DIR).filter((f) => f.endsWith(".ts"));
-  assert.ok(files.length >= 6, "the radar modules must exist to be checked");
+  // The paper lane lives in a subdirectory and is subject to the SAME rules —
+  // it was outside this sweep when it was added, which is exactly how an
+  // unguarded module gets in.
+  const files = [
+    ...readdirSync(MODULE_DIR).filter((f) => f.endsWith(".ts")).map((f) => ({ label: f, path: join(MODULE_DIR, f) })),
+    ...readdirSync(join(MODULE_DIR, "paper")).filter((f) => f.endsWith(".ts"))
+      .map((f) => ({ label: `paper/${f}`, path: join(MODULE_DIR, "paper", f) })),
+  ];
+  assert.ok(files.length >= 12, "the radar modules must exist to be checked");
 
-  for (const file of files) {
-    const source = readFileSync(join(MODULE_DIR, file), "utf8");
+  for (const { label, path } of files) {
+    const source = readFileSync(path, "utf8");
     for (const pattern of forbidden) {
-      assert.equal(pattern.test(source), false, `${file} must not import ${pattern}`);
+      assert.equal(pattern.test(source), false, `${label} must not import ${pattern}`);
     }
-    // No send call can exist anywhere in the module, by any name.
-    assert.equal(/\b(sendDiscord|postToDiscord|deliver[A-Z]\w*|sendOwner\w*|fetch\s*\()/.test(source), false,
-      `${file} must contain no delivery or network call`);
+    // No module may IMPLEMENT a send. The transport lives in private-send.ts,
+    // which the scheduler injects — the same dependency-injection boundary the
+    // AI advisory already uses. What is forbidden here is a research module
+    // reaching the network or a subscriber delivery function by itself.
+    assert.equal(/\bfetch\s*\(/.test(source), false, `${label} must contain no network call`);
+    assert.equal(/\b(sendDiscord|postToDiscord|sendTrackedDiscord|deliverOptionsCallout|deliverCalloutDiscord|notifyNewAlert|sendOwner\w*)\b/.test(source), false,
+      `${label} must not call a delivery or notification function`);
+    // Any `deliver*` identifier that survives must be an INJECTED dependency or
+    // a declaration — never an imported implementation.
+    for (const [, name] of source.matchAll(/\b(deliver[A-Z]\w*)\b/g)) {
+      const imported = new RegExp(`import\\s*\\{[^}]*\\b${name}\\b[^}]*\\}`).test(source)
+        || new RegExp(`require\\([^)]*\\)[^;]*\\b${name}\\b`).test(source);
+      assert.equal(imported, false, `${label} must not import ${name}; delivery is injected, not imported`);
+    }
   }
 });
 
