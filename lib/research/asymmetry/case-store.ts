@@ -255,6 +255,9 @@ export interface ActiveCase {
   optionSymbol: string; state: AsymmetryResearchState; firstDetectedAtMs: number;
   earlyAsk: number | null; leadMs: number | null; premiumAvoidedPct: number | null;
   missingEvidence: string[];
+  /** Part of the paper lane's position identity. A wrong or absent value would
+   *  split one position into two fingerprints, so it is read, never inferred. */
+  setupFamily: string | null;
 }
 
 /** Cases for a session, newest first. Read path for diagnostics and tracking. */
@@ -263,7 +266,8 @@ export function listCasesOnDb(db: StoreDb, sessionDate: string, limit = 200): Ac
   try {
     const rows = db.prepare(`
       SELECT session_date, fingerprint, symbol, direction, option_symbol, state,
-             first_detected_at_ms, early_ask, lead_ms, premium_avoided_pct, missing_evidence
+             first_detected_at_ms, early_ask, lead_ms, premium_avoided_pct, missing_evidence,
+             setup_family
         FROM asymmetry_cases WHERE session_date=? ORDER BY first_detected_at_ms DESC LIMIT ?
     `).all(sessionDate, Math.max(1, Math.min(1000, limit))) as any[];
     return rows.map((r) => ({
@@ -278,6 +282,7 @@ export function listCasesOnDb(db: StoreDb, sessionDate: string, limit = 200): Ac
       leadMs: r.lead_ms == null ? null : Number(r.lead_ms),
       premiumAvoidedPct: r.premium_avoided_pct == null ? null : Number(r.premium_avoided_pct),
       missingEvidence: safeParseArray(r.missing_evidence),
+      setupFamily: r.setup_family == null ? null : String(r.setup_family),
     }));
   } catch {
     return [];
