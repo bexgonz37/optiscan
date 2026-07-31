@@ -88,6 +88,35 @@ flag, not merely inherit the gate of whatever job it was attached to.
   NO_QUOTE / WRONG_OCC. Safe, but zero positions and zero graded outcomes.
 - The private send path has never actually posted a message.
 
+## Pre-session OCC analysis (2026-07-31 01:45 ET, before the open)
+
+The open question has been "will the stored OCC match what the provider
+returns". Static tracing narrows it considerably:
+
+- Capture stores `res.contract.optionSymbol`, produced by `mapOptionContracts`.
+- `getQuote` matches with `mapOptionContracts(...).find(x => x.optionSymbol === optionSymbol)`.
+
+Same producer, same field, exact string equality. The FORMAT will match.
+
+The windows differ, and that is the part to watch:
+
+| Path | DTE | maxPages |
+| --- | --- | --- |
+| capture (`getChain`) — stores the OCC | 0-14 | 2 |
+| `getQuote` — marks and paper | 0-60 | 3 |
+
+A wider window is not automatically safer: 0-60 returns far more contracts than
+0-14, so a 3-page cap could in principle truncate before reaching the target.
+Polygon's snapshot pages are ordered by option ticker, and an OCC encodes the
+expiration immediately after the underlying, so alphabetical order approximates
+expiration ascending and a 0-14 contract should land in the first pages. That
+is reasoning about ordering, NOT a guarantee from the provider.
+
+**If NO_QUOTE dominates on Friday, this pagination/window mismatch is the
+leading hypothesis, and the smallest safe fix is to align `getQuote`'s window
+with capture's rather than to raise page counts.** Do not pre-emptively change
+it: the gate must observe the real behaviour first.
+
 ## Exact next bounded checkpoint
 
 1. Deploy with `HIGH_ASYMMETRY_PAPER_ENABLED` unset. Verify:
