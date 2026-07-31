@@ -28,7 +28,7 @@
  */
 import type { AsymmetryResearchState } from "./states.ts";
 
-export const NOTIFICATION_GATE_VERSION = "ASYM_NOTIFY_V1" as const;
+export const NOTIFICATION_GATE_VERSION = "ASYM_NOTIFY_V2" as const;
 
 /** States that may ever produce an opening notification. */
 export const NOTIFY_ELIGIBLE_STATES: readonly AsymmetryResearchState[] = Object.freeze([
@@ -46,6 +46,17 @@ export interface NotificationStrengthConfig {
   minContractVolume: number;
   /** CONFIRMING must be at least this complete to earn a message. */
   maxMissingEvidenceForConfirming: number;
+  /**
+   * Maximum age of the quote AT THE MOMENT OF SENDING. A state promoted from
+   * evidence minutes ago must not speak on that evidence now — the state is a
+   * record of the past, and a message is a claim about the present.
+   */
+  maxQuoteAgeAtNotifyMs: number;
+  /**
+   * Give-back from the best premium seen since capture, as a fraction of the
+   * peak gain. Past this, the move being described has already rolled over.
+   */
+  maxRolloverGiveBackFraction: number;
 }
 
 export const DEFAULT_NOTIFICATION_STRENGTH: Readonly<NotificationStrengthConfig> = Object.freeze({
@@ -54,6 +65,8 @@ export const DEFAULT_NOTIFICATION_STRENGTH: Readonly<NotificationStrengthConfig>
   minOpenInterest: 250,
   minContractVolume: 25,
   maxMissingEvidenceForConfirming: 2,
+  maxQuoteAgeAtNotifyMs: 120_000,
+  maxRolloverGiveBackFraction: 0.5,
 });
 
 export function resolveNotificationStrength(env: NodeJS.ProcessEnv = process.env): NotificationStrengthConfig {
@@ -68,6 +81,10 @@ export function resolveNotificationStrength(env: NodeJS.ProcessEnv = process.env
     minContractVolume: n(env.ASYM_NOTIFY_MIN_VOL, DEFAULT_NOTIFICATION_STRENGTH.minContractVolume, 0, 100_000),
     maxMissingEvidenceForConfirming: Math.floor(
       n(env.ASYM_NOTIFY_MAX_MISSING, DEFAULT_NOTIFICATION_STRENGTH.maxMissingEvidenceForConfirming, 0, 20)),
+    maxQuoteAgeAtNotifyMs: n(env.ASYM_NOTIFY_MAX_QUOTE_AGE_MS,
+      DEFAULT_NOTIFICATION_STRENGTH.maxQuoteAgeAtNotifyMs, 5_000, 30 * 60_000),
+    maxRolloverGiveBackFraction: n(env.ASYM_NOTIFY_MAX_GIVEBACK,
+      DEFAULT_NOTIFICATION_STRENGTH.maxRolloverGiveBackFraction, 0.1, 1),
   };
 }
 
@@ -86,10 +103,24 @@ export interface NotificationEvidence {
   missingEvidence: string[];
   trigger: string | null;
   invalidation: string | null;
+  /** The clock the quote is judged against. Required for staleness at send. */
+  nowMs?: number | null;
+  /**
+   * Best premium observed since capture, from PERSISTED marks. Costs no
+   * provider call — it is data the mark runner already wrote.
+   */
+  peakAskSinceCapture?: number | null;
+  entryAskAtCapture?: number | null;
 }
+
+/** Exactly one timing verdict per decision. */
+export type TimingClassification =
+  | "ON_TIME" | "STALE_EVIDENCE" | "MOMENTUM_ROLLOVER"
+  | "PREMIUM_CHASE" | "INSUFFICIENT_TIMING_EVIDENCE";
 
 export interface NotificationDecision {
   notify: boolean;
+  timing: TimingClassification;
   /** Machine-readable suppression reason. Persisted for the ratio report. */
   reason: string;
   version: string;
@@ -111,8 +142,8 @@ export function decideNotification(
   e: NotificationEvidence,
   cfg: NotificationStrengthConfig = DEFAULT_NOTIFICATION_STRENGTH,
 ): NotificationDecision {
-  const no = (reason: string): NotificationDecision =>
-    ({ notify: false, reason, version: NOTIFICATION_GATE_VERSION, silentCapture: true });
+  const no = (reason: string, timing: TimingClassification = "ON_TIME"): NotificationDecision =>
+    ({ notify: false, timing, reason, version: NOTIFICATION_GATE_VERSION, silentCapture: true });
 
   // 1. State. EARLY is silent by definition; the chased/failed states never open.
   if (e.state === "EARLY_ASYMMETRY") return no("SILENT_EARLY_ASYMMETRY");
@@ -132,7 +163,9 @@ export function decideNotification(
   const spread = num(e.spreadPct);
   if (spread != null && spread > cfg.maxSpreadPct) return no(`UNUSABLE_SPREAD_${spread.toFixed(1)}`);
   const chase = num(e.premiumChasePct);
-  if (chase != null && chase >= cfg.maxPremiumChasePct) return no(`PREMIUM_CHASE_${chase.toFixed(1)}`);
+  if (chase != null && chase >= cfg.maxPremiumChasePct) {
+    return no(`PREMIUM_CHASE_${chase.toFixed(1)}`, "PREMIUM_CHASE");
+  }
   const oi = num(e.openInterest);
   if (oi != null && oi < cfg.minOpenInterest) return no(`WEAK_OPEN_INTEREST_${oi}`);
   const vol = num(e.contractVolume);
@@ -144,7 +177,34 @@ export function decideNotification(
     return no(`CONFIRMING_EVIDENCE_INCOMPLETE_${e.missingEvidence.length}`);
   }
 
-  return { notify: true, reason: "NOTIFY", version: NOTIFICATION_GATE_VERSION, silentCapture: false };
+  // 5. CURRENT VALIDITY. A promoted state is a record of the past; sending is a
+  //    claim about the present. Neither check can be bypassed by TRIGGERED.
+  const now = num(e.nowMs);
+  const quoteAt = num(e.quoteAtMs);
+  if (now != null && quoteAt != null) {
+    const age = now - quoteAt;
+    if (age > cfg.maxQuoteAgeAtNotifyMs) {
+      return no(`LATE_OR_ROLLOVER_SUPPRESSION_STALE_${Math.round(age / 1000)}S`, "STALE_EVIDENCE");
+    }
+  }
+
+  // Premium rollover, measured from marks already persisted — no provider call.
+  // If the contract ran and has given back most of that gain, the move being
+  // described is over, whatever the stored state still says.
+  const peak = num(e.peakAskSinceCapture);
+  const entry = num(e.entryAskAtCapture);
+  if (peak != null && entry != null && entry > 0 && peak > entry) {
+    const peakGain = peak - entry;
+    const givenBack = peak - ask;
+    if (givenBack > peakGain * cfg.maxRolloverGiveBackFraction) {
+      return no(
+        `LATE_OR_ROLLOVER_SUPPRESSION_GAVE_BACK_${Math.round((givenBack / peakGain) * 100)}PCT`,
+        "MOMENTUM_ROLLOVER",
+      );
+    }
+  }
+
+  return { notify: true, timing: "ON_TIME", reason: "NOTIFY", version: NOTIFICATION_GATE_VERSION, silentCapture: false };
 }
 
 /** The headline health number: how much of what we capture we actually say. */

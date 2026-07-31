@@ -148,6 +148,11 @@ export async function runAsymmetryTransitions(
           spreadPct: obs.spreadPct, premiumChasePct: chasePct(c.earlyAsk, obs.ask),
           openInterest: obs.openInterest, contractVolume: null,
           missingEvidence: c.missingEvidence, trigger: null, invalidation: null,
+          // Current-validity inputs. Both come from rows the system already
+          // wrote — no provider call is added to send a message.
+          nowMs: deps.nowMs,
+          entryAskAtCapture: c.earlyAsk,
+          peakAskSinceCapture: peakAskFromMarks(db, c.sessionDate, c.fingerprint),
         }, strength);
         if (!gate.notify) out.silentCaptures += 1;
         const eligible = gate.notify && PRIVATE_NOTIFIABLE_STATES.includes(to);
@@ -189,6 +194,23 @@ export async function runAsymmetryTransitions(
   } catch (err: any) {
     out.errors.push(String(err?.message ?? err));
     return out;
+  }
+}
+
+/**
+ * Highest ask recorded since capture, from persisted marks. Read-only and
+ * cheap; returns null when nothing was marked, which the gate treats as "no
+ * rollover evidence" rather than as no rollover.
+ */
+function peakAskFromMarks(db: RunnerDb, sessionDate: string, fingerprint: string): number | null {
+  try {
+    const row = db.prepare(
+      "SELECT MAX(ask) a FROM asymmetry_marks WHERE session_date=? AND fingerprint=? AND rejected_reason IS NULL",
+    ).get(sessionDate, fingerprint) as { a?: number } | undefined;
+    const v = Number(row?.a);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  } catch {
+    return null;
   }
 }
 

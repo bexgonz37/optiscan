@@ -106,8 +106,8 @@ test("an unmeasured blocker does not block — missing stays missing", () => {
 // ── The gate only ever tightens ─────────────────────────────────────────────
 
 test("the gate is versioned and configurable within clamps", () => {
-  assert.equal(NOTIFICATION_GATE_VERSION, "ASYM_NOTIFY_V1");
-  assert.equal(decideNotification(ev()).version, "ASYM_NOTIFY_V1");
+  assert.equal(NOTIFICATION_GATE_VERSION, "ASYM_NOTIFY_V2");
+  assert.equal(decideNotification(ev()).version, "ASYM_NOTIFY_V2");
   const cfg = resolveNotificationStrength({ ASYM_NOTIFY_MAX_SPREAD_PCT: "8" });
   assert.equal(cfg.maxSpreadPct, 8);
   assert.equal(resolveNotificationStrength({ ASYM_NOTIFY_MAX_SPREAD_PCT: "junk" }).maxSpreadPct,
@@ -160,4 +160,78 @@ test("the underlying price is read from persisted evidence, not refetched", () =
   assert.match(runner, /underlyingPrice: c\.underlyingPrice/, "and must not be hardcoded null");
   // No provider call was added anywhere in the notification path.
   assert.equal(/fetchOptionChain|buildLiveGradeDeps/.test(readFileSync("lib/research/asymmetry/notification-gate.ts", "utf8")), false);
+});
+
+// ── Current-validity revalidation (ASYM_NOTIFY_V2) ──────────────────────────
+
+test("A PROMOTED STATE MUST NOT SPEAK ON STALE EVIDENCE", () => {
+  // The NVDA complaint: an alert arrived describing a move that was already
+  // over. A stored state is a record of the past; sending is a claim about now.
+  const d = decideNotification(ev({ nowMs: T0 + 5 * 60_000, quoteAtMs: T0 }));
+  assert.equal(d.notify, false);
+  assert.equal(d.timing, "STALE_EVIDENCE");
+  assert.match(d.reason, /LATE_OR_ROLLOVER_SUPPRESSION_STALE_300S/);
+  assert.equal(d.silentCapture, true, "the case is still captured and tracked");
+});
+
+test("a fresh quote at send time still notifies", () => {
+  assert.equal(decideNotification(ev({ nowMs: T0 + 30_000, quoteAtMs: T0 })).notify, true);
+});
+
+test("NOT EVEN TRIGGERED CAN BYPASS THE CURRENT-VALIDITY CHECKS", () => {
+  const stale = decideNotification(ev({ state: "TRIGGERED", nowMs: T0 + 10 * 60_000, quoteAtMs: T0 }));
+  assert.equal(stale.notify, false);
+  assert.equal(stale.timing, "STALE_EVIDENCE");
+});
+
+test("a contract that ran and gave the move back is suppressed as ROLLOVER", () => {
+  // Captured at 2.00, peaked at 4.00, now back to 2.50: 75% of the gain gone.
+  const d = decideNotification(ev({
+    nowMs: T0 + 30_000, quoteAtMs: T0,
+    entryAskAtCapture: 2.0, peakAskSinceCapture: 4.0, ask: 2.5, premiumChasePct: 25,
+  }));
+  assert.equal(d.notify, false);
+  // Chase is checked first and is the more fundamental problem here.
+  assert.ok(["MOMENTUM_ROLLOVER", "PREMIUM_CHASE"].includes(d.timing));
+});
+
+test("rollover is measured even when the premium is not chased", () => {
+  const d = decideNotification(ev({
+    nowMs: T0 + 30_000, quoteAtMs: T0,
+    entryAskAtCapture: 2.0, peakAskSinceCapture: 4.0, ask: 2.1, premiumChasePct: 5,
+  }));
+  assert.equal(d.notify, false);
+  assert.equal(d.timing, "MOMENTUM_ROLLOVER");
+  assert.match(d.reason, /GAVE_BACK_95PCT/);
+});
+
+test("a contract still near its peak is NOT called a rollover", () => {
+  const d = decideNotification(ev({
+    nowMs: T0 + 30_000, quoteAtMs: T0,
+    entryAskAtCapture: 2.0, peakAskSinceCapture: 2.2, ask: 2.15, premiumChasePct: 7.5,
+  }));
+  assert.equal(d.notify, true);
+  assert.equal(d.timing, "ON_TIME");
+});
+
+test("absent rollover evidence is not treated as rollover", () => {
+  // Nothing marked yet: unknown, not "it rolled over".
+  const d = decideNotification(ev({ nowMs: T0 + 30_000, quoteAtMs: T0, peakAskSinceCapture: null }));
+  assert.equal(d.notify, true, "missing marks must not fabricate a rollover verdict");
+});
+
+test("the rollover input comes from persisted marks, not a new provider call", () => {
+  const src = readFileSync("lib/research/asymmetry/transition-runner.ts", "utf8");
+  assert.match(src, /peakAskFromMarks/);
+  assert.match(src, /FROM asymmetry_marks/, "read from rows already written");
+  assert.equal(/fetchOptionChain|buildLiveGradeDeps/.test(src), false,
+    "no provider call may be added to decide whether to speak");
+});
+
+test("every decision carries exactly one timing classification", () => {
+  for (const e of [ev(), ev({ state: "EARLY_ASYMMETRY" }), ev({ spreadPct: 40 }), ev({ nowMs: T0 + 9e5, quoteAtMs: T0 })]) {
+    const d = decideNotification(e);
+    assert.ok(["ON_TIME", "STALE_EVIDENCE", "MOMENTUM_ROLLOVER", "PREMIUM_CHASE", "INSUFFICIENT_TIMING_EVIDENCE"].includes(d.timing));
+  }
+  assert.equal(decideNotification(ev()).version, "ASYM_NOTIFY_V2", "the gate version must advance with the rules");
 });
