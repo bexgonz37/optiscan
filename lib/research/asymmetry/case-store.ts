@@ -258,6 +258,13 @@ export interface ActiveCase {
   /** Part of the paper lane's position identity. A wrong or absent value would
    *  split one position into two fingerprints, so it is read, never inferred. */
   setupFamily: string | null;
+  /**
+   * Underlying price AT DETECTION, read back out of the persisted evidence.
+   * It was already captured from the live scanner payload, so surfacing it
+   * costs ZERO additional provider calls — it was simply never read back, and
+   * alerts printed "Underlying: unavailable" for a value we already had.
+   */
+  underlyingPrice: number | null;
 }
 
 /** Cases for a session, newest first. Read path for diagnostics and tracking. */
@@ -267,7 +274,7 @@ export function listCasesOnDb(db: StoreDb, sessionDate: string, limit = 200): Ac
     const rows = db.prepare(`
       SELECT session_date, fingerprint, symbol, direction, option_symbol, state,
              first_detected_at_ms, early_ask, lead_ms, premium_avoided_pct, missing_evidence,
-             setup_family
+             setup_family, evidence_json
         FROM asymmetry_cases WHERE session_date=? ORDER BY first_detected_at_ms DESC LIMIT ?
     `).all(sessionDate, Math.max(1, Math.min(1000, limit))) as any[];
     return rows.map((r) => ({
@@ -283,9 +290,21 @@ export function listCasesOnDb(db: StoreDb, sessionDate: string, limit = 200): Ac
       premiumAvoidedPct: r.premium_avoided_pct == null ? null : Number(r.premium_avoided_pct),
       missingEvidence: safeParseArray(r.missing_evidence),
       setupFamily: r.setup_family == null ? null : String(r.setup_family),
+      underlyingPrice: evidenceNumber(r.evidence_json, "underlyingPrice"),
     }));
   } catch {
     return [];
+  }
+}
+
+/** Pull one numeric field out of persisted evidence. Never throws, never guesses. */
+function evidenceNumber(raw: unknown, field: string): number | null {
+  try {
+    const parsed = JSON.parse(String(raw ?? "{}"));
+    const v = Number((parsed as Record<string, unknown>)?.[field]);
+    return Number.isFinite(v) ? v : null;
+  } catch {
+    return null;
   }
 }
 

@@ -19,6 +19,7 @@ import { listCasesOnDb, recordTransitionOnDb, type ActiveCase } from "./case-sto
 import { notifyPrivateAsymmetry, createPrivateCaseMemory, PRIVATE_NOTIFIABLE_STATES, type PrivateCaseMemory } from "./private-notify.ts";
 import type { AsymmetryResearchState } from "./states.ts";
 import { resolvePaperPermission } from "./paper/activation.ts";
+import { decideNotification, resolveNotificationStrength } from "./notification-gate.ts";
 
 export const TRANSITIONS_ENABLED_ENV = "HIGH_ASYMMETRY_CAPTURE_ENABLED";
 
@@ -45,6 +46,8 @@ export interface TransitionRunResult {
   transitions: number;
   notified: number;
   suppressed: number;
+  /** Transitions captured and tracked but deliberately not surfaced. */
+  silentCaptures: number;
   errors: string[];
 }
 
@@ -110,7 +113,7 @@ export async function runAsymmetryTransitions(
   db: RunnerDb,
   deps: TransitionDeps,
 ): Promise<TransitionRunResult> {
-  const out: TransitionRunResult = { ran: false, reason: null, casesRead: 0, transitions: 0, notified: 0, suppressed: 0, errors: [] };
+  const out: TransitionRunResult = { ran: false, reason: null, casesRead: 0, transitions: 0, notified: 0, suppressed: 0, silentCaptures: 0, errors: [] };
   try {
     const env = deps.env ?? process.env;
     if (env[TRANSITIONS_ENABLED_ENV] !== "1") {
@@ -124,6 +127,7 @@ export async function runAsymmetryTransitions(
     const paperStatus = !permission.masterPaperAuthorized
       ? "DISABLED" as const
       : permission.paperEntriesAllowed ? "WAITING_FOR_ENTRY" as const : "BLOCKED" as const;
+    const strength = resolveNotificationStrength(env);
     const cases = listCasesOnDb(db, deps.sessionDate, 500);
     out.casesRead = cases.length;
 
@@ -134,7 +138,19 @@ export async function runAsymmetryTransitions(
         const to = nextState(c.state, obs, c.earlyAsk);
         if (to === c.state) continue;
 
-        const eligible = PRIVATE_NOTIFIABLE_STATES.includes(to);
+        // CAPTURE AND SPEAK ARE SEPARATE DECISIONS. Whatever this returns, the
+        // transition below is still persisted and the case stays in the
+        // research population — only the Discord message is affected.
+        const gate = decideNotification({
+          state: to, optionSymbol: c.optionSymbol,
+          bid: obs.bid, ask: obs.ask, quoteAtMs: obs.quoteAtMs,
+          underlyingPrice: c.underlyingPrice,
+          spreadPct: obs.spreadPct, premiumChasePct: chasePct(c.earlyAsk, obs.ask),
+          openInterest: obs.openInterest, contractVolume: null,
+          missingEvidence: c.missingEvidence, trigger: null, invalidation: null,
+        }, strength);
+        if (!gate.notify) out.silentCaptures += 1;
+        const eligible = gate.notify && PRIVATE_NOTIFIABLE_STATES.includes(to);
         let notifyOutcome: string | null = null;
         if (eligible) {
           const res = await notifyPrivateAsymmetry({
@@ -147,13 +163,14 @@ export async function runAsymmetryTransitions(
             openInterest: obs.openInterest, contractVolume: null,
             trigger: null, invalidation: null,
             missingEvidence: c.missingEvidence, setupFamilyLabel: c.setupFamily,
-            underlyingPrice: null, paperStatus,
+            underlyingPrice: c.underlyingPrice, paperStatus,
           }, { memory: deps.memory ?? sharedMemory, send: deps.send, env });
           notifyOutcome = res.outcome;
           if (res.outcome === "SENT") out.notified += 1;
           else out.suppressed += 1;
         } else {
           out.suppressed += 1;
+          notifyOutcome = gate.reason;
         }
 
         const rec = recordTransitionOnDb(db, {

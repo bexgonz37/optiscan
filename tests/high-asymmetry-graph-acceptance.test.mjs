@@ -31,7 +31,10 @@ function seeded() {
     optionSymbol: OCC, state: "EARLY_ASYMMETRY", firstDetectedAtMs: OBSERVED,
     earlyAsk: 2.00, earlyBid: 1.95, earlySpreadPct: 2.5,
     setupFamily: "breakout", scannerVersion: "test",
-    evidenceJson: "{}", missingEvidence: ["NO_CATALYST"],
+    // The underlying price is part of the MINIMUM notification payload, and it
+    // is genuinely captured at detection — a case without it is silently
+    // tracked rather than surfaced (see the notification gate).
+    evidenceJson: JSON.stringify({ underlyingPrice: 198.4 }), missingEvidence: ["NO_CATALYST"],
     normalQualifiedAtMs: null, normalAsk: null,
   }, OBSERVED);
   return db;
