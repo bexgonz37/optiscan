@@ -1,6 +1,7 @@
 # OptiScan Autonomous Roadmap — Status
 
-**Updated:** 2026-08-03 · **Deployed:** `8bd2f44` (confirmed live) · `a7153b6`, `604e04e` pushed · **Started from:** `7246304`
+**Updated:** 2026-08-03 (evening) · **Deployed:** `819eda6` (confirmed live) ·
+`1b7939f` pushed · **Started from:** `7246304`
 
 Durable status for the Gate B–G roadmap. Updated after every gate.
 
@@ -9,8 +10,65 @@ Durable status for the Gate B–G roadmap. Updated after every gate.
 ## Current stage
 
 **Gate B — IN PROGRESS.** B1/B2/B3/B5/B6/B7 shipped; **B5 is MEASURED**,
-**B6 is PROVEN**, **B7 is DEPLOYED_UNPROVEN**. B4 not started; B8 needs one RTH
-session on `604e04e`.
+**B6 is PROVEN**, **B7 is PASSED (extended hours) / RTH-UNCONFIRMED**. B4 not
+started; B8 needs one RTH session.
+
+---
+
+## Gate B7 — PASSED under saturation. The reserve is reachable.
+
+`asymmetry_mark` admission rate, sliced **per deployment** — which is the only
+reason this is answerable at all:
+
+| Deployment | B7 live? | Requests | Quota blocks | Admission | Req/min |
+|---|---|---:|---:|---:|---:|
+| `8282ecb` | no | 263 | 90,588 | **0.29%** | 1.4 |
+| `8bd2f44` | no | 0 | 4,492 | **0.00%** | 0 |
+| `718c0cc` | no | 0 | 1,254 | **0.00%** | 0 |
+| `226ba96` | **yes** | 748 | 9,703 | **7.16%** | **39.4** |
+| `819eda6` | **yes** | 453 | 3,285 | **12.12%** | **56.6** |
+
+**From zero to ~40–57 requests/minute against a 44/minute reserve.** The lane
+that took in *nothing at all* across three consecutive deployments now consumes
+its reserve in full and bursts into the shared pool on top of it. The live
+partition read back from production during a saturated minute:
+
+```
+minuteCap 280 · totalReserved 179 · sharedPool 101 · sharedUsed 101/101
+  scanner             37/58
+  options_paper_mark  23/44
+  asymmetry_mark      44/44   ← reserve fully consumed
+  options_discovery    0/28
+  alert_capture        0/5
+```
+
+The shared pool is exhausted (101/101) while `asymmetry_mark` still gets served.
+That is precisely the property that failed on 2026-08-03 morning, and it is now
+observed rather than asserted.
+
+**Two corrections this measurement forced:**
+
+1. **The exact-OCC fix DID work — the mixed total was hiding it.**
+   `options_paper_mark` records/request: **240.7** on `8282ecb` → **1.0** on
+   `226ba96`/`819eda6`. Read against the day's total it still looked like 227,
+   because 94% of the lane's requests came from the pre-fix deployment. The
+   previous session recorded "effect unconfirmed"; the effect was complete, and
+   only the measurement was wrong.
+2. **A trading date was never a measurement window.** Four deployments metered
+   into 2026-08-03. Every before/after conclusion drawn from the day's totals —
+   including "the cost fix did not unstarve marking" — was drawn from evidence
+   that summed the sessions before a change with the session after it.
+
+**Why this is not yet a full PASS.** `226ba96` reached production at roughly the
+16:00 ET close, so both B7 deployments were measured in **extended hours only**
+(19 + 8 minutes). Contention was real — 44,258 refusals in those 19 minutes — so
+reachability-under-saturation is genuinely demonstrated. What is *not* yet shown
+is behaviour under RTH demand, where discovery and the scanner ask far harder.
+
+**Exact future validation requirement:** one full RTH session on `1b7939f` or
+later, read with `?deployment=<sha>`. B7 becomes unconditionally PASSED if
+`asymmetry_mark` holds ≥ ~30 requests/minute while `scanner` and
+`options_paper_mark` stay above 90% admission.
 
 ## Gate ledger
 
@@ -23,8 +81,8 @@ session on `604e04e`.
 | **B5** | Massive consumer audit | **MEASURED — defects fixed, effect unconfirmed** | Full live table below; three defects found and corrected in `a5f5976` |
 | **B6** | Durable provider accounting | **PROVEN** | 197 minutes / 55,415 requests read back across a deploy boundary; 4 meter defects fixed in `a7153b6` |
 | **B4** | Scheduler fairness / long horizons | **NOT STARTED** | 30m 15/173, 60m 12/133 remain weak |
-| **B7** | Per-consumer provider budgets | **SHIPPED — DEPLOYED_UNPROVEN** | Per-minute reserves in `604e04e`; reachability-under-saturation asserted by test. Effect needs one RTH session |
-| **B8** | Live Gate B validation | **BLOCKED** | Needs one full RTH session on `a5f5976` |
+| **B7** | Per-consumer provider budgets | **PASSED (extended hours) — RTH unconfirmed** | `asymmetry_mark` 0.00% → **12.12%**, 0 → **56.6 req/min** against a 44/min reserve, measured per-deployment. Shared pool 101/101 exhausted while the reserve still served |
+| **B8** | Live Gate B validation | **BLOCKED** | Needs one full RTH session on `1b7939f`+ |
 | **C** | Verified performance | **BLOCKED** | Requires `independentMarkPct >= 50%` |
 | **D** | Historical learning | **NOT STARTED** | Independent of C |
 | **E** | Experiment registry | **NOT STARTED** | — |
@@ -272,34 +330,66 @@ the ambient consumer — the first code to use Gate B5's attribution for a
 
 ---
 
+## Attribution — the anonymous spenders are named (`1b7939f`)
+
+`unattributed` per deployment: 36,543 (`8282ecb`) → 1,795 (`226ba96`, 39.6% of
+that deployment) → 691 (`819eda6`, 36.8%). Still the largest single bucket.
+
+`1b7939f` names the sources found by tracing every path that reaches a metered
+call. Under B7 this is not cosmetic: an unscoped caller holds **no reserve**, so
+anonymous traffic competes for the shared pool against protected lanes.
+
+| Source | New owner | Why |
+|---|---|---|
+| `lib/paper-engine.ts` sweep | `options_paper_mark` | Runs every 30s, up to 5 **whole chains**, owned by nobody. It marks paper trades — bounded ~10/min against a 44/min reserve |
+| `lib/supervisor-cycle.ts` | `options_discovery` | Reaches `runAgentsForTicker` → 0-90 DTE chain per ticker |
+| `app/api/options/[ticker]` | `dashboard_api` | A whole chain per browser request |
+| `app/api/candles/*`, `scan/*`, `scanner/live`, `context/zero-dte` | `dashboard_api` | Browser/operator spend — holds no reserve **on purpose** |
+| `app/api/research/options/replay` | `historical_research` (`historical: true`) | Research must never read as live spend or borrow a live reserve in RTH |
+
+`lib/position-callout.ts` needed nothing — it already runs inside the scanner
+tick's scope. Scopes are opened **only at true entry points**, never inside
+shared helpers, so innermost-wins still bills a shared function to its real
+caller. Effect is unmeasured: `1b7939f` deployed after the close.
+
+---
+
 ## Next automatic action — EXACT RESUME POINT
 
-1. **Confirm `a7153b6` and `604e04e` are live** (`durable.deployments`) before
-   reading any number. `a7153b6` changes what the meter records; `604e04e`
-   changes who gets served.
-2. **Re-read `/api/system/provider-usage` after a full RTH session on `604e04e`**
-   and record the table beside the two above. The questions:
-   - **Did `asymmetry_mark`'s admission rate rise off 0.28%?** This is the single
-     number that decides whether B7 worked. Expect roughly 44 requests/minute
-     available to it; anything near zero means the partition is not being reached
-     and the reserve is still theoretical.
-   - Did `options_paper_mark` records/request fall from 241 toward ~1?
-     (Now measurable — before `a7153b6` the exact-OCC path scored 0 records.)
-   - Did `unattributed` fall from 66.7%, and what is left in it?
-   - Did total requests fall while *useful* marks held or rose?
-4. **Check `getCallStats().minuteBudget`** — it now reports the live partition
-   directly, so an operator can see who holds what instead of inferring it from
-   refusal counts, which is how the dead grader reserve went unnoticed for so long.
-5. **Close the remaining `unattributed` sources** — `app/api/options/[ticker]`,
-   `lib/scan-core.ts`, `lib/position-callout.ts`, `lib/paper-engine.ts`,
-   `lib/agents/runtime.ts`. Each is bounded; `+962` requests after the deploy
-   confirms they are live.
-6. **Gate B4** — scheduler fairness / long horizons. Note B7 changes its inputs:
-   long horizons may have been starved by budget rather than by scheduling, so
-   re-measure 30m/60m coverage before designing a scheduler fix.
-7. **Gate B8** — live validation (`independentMarkPct >= 50%`).
+**ALWAYS read provider numbers with `?deployment=<sha7>` from now on.** The
+unscoped total is a sum across deployments and cannot answer a before/after
+question. `/api/system/provider-usage` also accepts `?sinceMs=`/`?untilMs=`, and
+returns `minuteBudget` — the live partition, read directly rather than inferred
+from refusal counts.
 
-Gates C–G are unchanged and remain blocked behind B8.
+1. **Confirm `1b7939f` is live**, then take the **2026-08-04 RTH session** as the
+   first clean full-session window. Read it scoped. The questions:
+   - **Does `asymmetry_mark` hold ≥ ~30 req/min under RTH demand?** Extended
+     hours gave 39.4 and 56.6. RTH is the harder test — discovery and the
+     scanner ask far more.
+   - **Does `scanner` stay above 90% admission?** It was 93.5% on `226ba96`.
+     A reserve that protects marking by starving the scanner is a regression.
+   - **How far does `unattributed` fall from ~37%?** `1b7939f` targets the paper
+     sweep, the supervisor cycle and the dashboard routes. Whatever remains is
+     the next bounded list — trace it the same way, do not file it under
+     `OTHER_EXPLICIT`.
+   - **Is `options_discovery` starved?** It read 0/28 reserve used with the pool
+     exhausted. Either demand genuinely moved to the supervisor cycle (now named
+     by `1b7939f`) or discovery is being refused before it asks.
+2. **Gate B4** — scheduler fairness / long horizons. B7 changes its inputs:
+   30m (15/173) and 60m (12/133) coverage may have been a *budget* failure, not a
+   scheduling one. **Re-measure before designing a scheduler fix** — the
+   asymmetry lane went from 0 to ~40 req/min, which is exactly the capacity long
+   horizons were missing.
+3. **Gate B8** — live validation (`independentMarkPct >= 50%`), which is now
+   reachable for the first time: marking has capacity.
+
+Gates C–G are unchanged and remain blocked behind B8. Not started, and not
+silently dropped: Gate C signal/entry/contract/exit research, the 2026-08-03 QQQ
+missed-winner investigation, the permanent Missed Opportunity Agent, the
+agent/module architecture audit, Gate D historical learning, Gate E experiment
+registry, the High-Asymmetry → regular-callout feedback bridge, Gate F lifecycle
+and report cards, and Gate G subscriber readiness all remain outstanding.
 
 ## Safety posture (unchanged)
 
