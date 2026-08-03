@@ -1,9 +1,112 @@
 # OptiScan Autonomous Roadmap — Status
 
-**Updated:** 2026-08-03 (post-close) · **Deployed:** `a4777ec` (confirmed live) ·
-local = remote = deployed · **Started from:** `7246304`
+**Updated:** 2026-08-03 (post-close, session 2) · **Deployed:** `3250aec`,
+`9894d60` confirmed live in `durable.deployments`; `e7882ed` pushed ·
+local = remote = `e7882ed` · **Started from:** `7246304`
 
 Durable status for the Gate B–G roadmap. Updated after every gate.
+
+---
+
+## Session 2 (2026-08-03 post-close) — the fix did not cover SPY
+
+Three concerns shipped. All three came from **replaying the fix against the
+measurement that motivated it**, rather than from re-reading the code.
+
+### 1. `contract-selection@2` fixed QQQ and left SPY broken (`3250aec`)
+
+The 2026-08-03 measurement recorded **two** chain shapes. The fix was validated
+against one:
+
+| | calls | with delta | in band |
+|---|---:|---:|---:|
+| QQQ 0DTE | 204 | 71 | **0** ← the fix was tested here |
+| SPY 0DTE | 170 | 55 | **1** ← and not here |
+
+Representativeness was written as `passedDeltaBand === 0`. **One is not zero**,
+so the SPY subset counted as representative, the primary path ran, and selection
+was handed to the only member a ranking of one can return.
+
+Replayed against the shipped selector on the measured SPY shape, it returns a
+strike **75 points from spot at bid 0.02 / ask 0.04** — the same worthless
+far-OTM ticket with the same ~66% spread that the QQQ fix exists to prevent. The
+downstream gate correctly rejects it and SPY prices zero calls. **The defect the
+fix was written for survived the fix, on the symbol that motivated it.**
+
+Now `passedDeltaBand < MIN_IN_BAND_SAMPLE (3)`. On the same fixture the selector
+prices the true ATM 735 strike at bid 3.00. The NVDA control (8 in band, 14 calls
+priced) is pinned by test so widening the test cannot demote a working lane.
+
+**The previous entry in this file claimed both cases were covered. It was wrong,
+and the test suite was more honest than the prose** — `tests/contract-discovery.
+test.mjs:168` already said "the nearest-to-target contract is still chosen, as
+before". No test covered `passedDeltaBand === 1`. That was the hole.
+
+### 2. The funnel evidence was computed and thrown away (`9894d60`)
+
+`selectContractWithEvidence` has produced a full `ContractFunnelEvidence` record
+per candidate since `a4777ec`. **Nothing ever stored it.**
+
+Two things this made impossible, both of which were written in this file as
+required next steps:
+
+- **`deltaSource` could not be measured.** The stated validation — "confirm
+  deltaSource splits sensibly between PROVIDER_DELTA and MONEYNESS_PROXY" — had
+  no data anywhere in the database. It could not have been run.
+- **The discovery monitor had no input.** `discovery-monitor.ts` shipped in the
+  same commit as the fix, consumes `ContractFunnelEvidence[]`, and had exactly
+  one caller: its own test file. 187 lines of correct, tested, unreachable code.
+
+`contract_funnel_evidence` is now written per evaluation on the live path
+(`monitor.ts:271` → `runOptionsCandidate`). `GET /api/diagnostics/contract-funnel`
+reads persisted evidence only — deltaSource split, terminal-reason breakdown, and
+the monitor run over every (symbol, side) in the window. No provider call.
+
+Two missing-data rules are enforced in storage, since this table is the evidence
+the pipeline's null-handling is audited against: unknown coverage is stored
+**NULL, never 0**, and `proxyShareOfSelected` stays **null when nothing was
+selected** — no selections is not a measured 0% fallback rate.
+
+### 3. Twitter prompts: a config outage that had become permanent (`e7882ed`)
+
+**The pipeline is not broken.** It generated 50 drafts on 2026-08-03 —
+CONVICTION_INCREASED 38, CLOSED_WINNER 6, JUST_ENTERED_RADAR 4,
+WHY_THIS_WORKED 2 — every one `SKIPPED_NO_WEBHOOK`.
+
+```
+/api/discord/health → webhooks: { options: true, watchlist: true, recap: false }
+```
+
+`DISCORD_WEBHOOK_RECAP` is unset in production. That is configuration and it is
+the owner's to set.
+
+The code defect underneath was worse. The scan marks the source event `PROCESSED`
+**before** checking the webhook, and the retry query excluded
+`SKIPPED_NO_WEBHOOK`. Setting the webhook tomorrow would have delivered future
+content and **stranded all 50 existing drafts permanently**, including
+closed-winner report cards whose lifecycle events are spent. Fixed with a bounded
+recovery pass that delivers the persisted text verbatim — a test asserts draft
+text, `created_at_ms` and `original_alert_at_ms` are byte-identical across
+recovery, so a recovered report card can never become a fresh claim.
+
+> **OWNER ACTION: set `DISCORD_WEBHOOK_RECAP`.** It unblocks Twitter content
+> drafts *and* the AI private recap, which route to the same webhook.
+
+### Also written
+
+`OPTISCAN_AI_ARCHITECTURE_AND_ROADMAP.md` — the AI inventory, authority matrix,
+current/future diagrams and roadmap, verified against production.
+
+The headline: **AI holds no authority in any path that can move money**, model
+routing already exists (Haiku 4.5 narration / Sonnet 5 reasoning, $5 soft /
+$20 hard monthly), an Owner Copilot already exists (`lib/ai/advisory-chat.ts`,
+extend rather than rebuild), and the grounding guard **fires in production** —
+`lastFailureError: "narrative contains an unsupported quantitative claim: 8%"`.
+The largest AI gap is that `ai_job_runs` does not record **which evidence IDs**
+produced an answer.
+
+`lib/ai/quant-*.ts` and `lib/ai/shadow-model.ts` contain **no model call**. The
+`ai/` directory name is the most misleading thing in the repository.
 
 ---
 
@@ -447,10 +550,74 @@ across a detached promise or timer in the mark runners rather than a missing
 
 ---
 
-## Next automatic action — EXACT RESUME POINT (2026-08-03 post-close)
+## EXACT RESUME POINT (2026-08-03 post-close, session 2)
 
-**Deployment verified:** local = `origin/main` = deployed = `f225774`.
-`/api/system/provider-usage` lists it in `durable.deployments`.
+**Deployment verified by reading `/api/system/provider-usage`:** `3250aec` and
+`9894d60` are in `durable.deployments`. `e7882ed` was pushed after that read —
+**confirm it before reading any content-delivery number from it.**
+
+Production at 21:51 UTC: scanner running (265 ticks, last tick 1.4s), provider
+connected, `market_session: afterhours`. The options monitor is `running` but
+idle after the close, which is why `contract_funnel_evidence` is still empty.
+
+### THE FIRST THING TO DO on 2026-08-04 RTH
+
+**The contract-funnel evidence table has never held a production row.** It is
+wired to the live path but the monitor idles after the close, so the wiring is
+*unvalidated*. Within ten minutes of the open:
+
+```
+GET /api/diagnostics/contract-funnel
+GET /api/diagnostics/contract-funnel?symbol=SPY&side=call
+GET /api/diagnostics/contract-funnel?symbol=QQQ&side=call
+```
+
+Confirm, in this order:
+
+1. **`observedInWindow > 0`** — if it is still 0 with the market open, the
+   persistence is not on the path it appears to be on. Nothing else below is
+   readable until this passes.
+2. **SPY and QQQ bullish candidates reach `CONTRACT_SELECTED`** with a
+   `selectedOcc`. This is the actual SPY validation, and it has never happened.
+3. **`deltaSource` splits.** Heavy `MONEYNESS_PROXY` on 0DTE is **expected and
+   correct**. `proxyShareOfSelected: null` means nothing was selected — that is a
+   failure, not a clean sheet.
+4. **`terminalReasons`** — `no eligible contract` should fall sharply from 54.7%
+   of the funnel. Read the enum values, not the old free-text string.
+5. **The downstream gate still rejects thin contracts.** The fix must widen what
+   *reaches* the gate, never what *survives* it. If selected contracts stop being
+   rejected for spread, something loosened that should not have.
+6. **Provider spend unchanged** — neither fix adds a request.
+7. **`discoveryAlerts` stays empty on healthy lanes**, and fires on sick ones.
+
+### Then, in order
+
+8. **Set `DISCORD_WEBHOOK_RECAP`** (owner action), then confirm the 50 stranded
+   drafts recover — one bundle per scheduler run, oldest first — and that the AI
+   private recap starts landing.
+9. **B7 full-RTH validation**, scoped `?deployment=e7882ed`. Pass =
+   `asymmetry_mark` ≥ ~30 req/min while `scanner` and `options_paper_mark` stay
+   above 90% admission. Note `asymmetry_mark` has already moved **263 → 4,967
+   requests** on the day; the reserve is clearly working, but that total spans
+   deployments and is not a before/after answer.
+10. **Remaining `unattributed`** — still the largest bucket at **52.96%** (45,590
+    requests, 482,567 refusals). Read it at **1.0 records/request**: exact-OCC
+    marking traffic escaping its scope. Look for a scope lost across a detached
+    promise or timer in the mark runners, **not** a missing `withProviderConsumer`.
+11. **Gate B4** scheduler fairness, then **B8** independent-mark validation.
+
+### Still outstanding, not silently dropped
+
+Convex Winner Research lane, Opportunity Quality Gate, loss root-cause taxonomy
+and learning loop, automatic safety demotion, Missed Opportunity end-to-end loop
+(detection exists; reroute/experiment/forward-validation do not), matched
+winner/loser/control cohorts, experiment registry, automatic paper experiments,
+High-Asymmetry → regular-callout feedback bridge, Gate C/D/E/F/G.
+
+**AI evidence-ID recording** (Phase 1 of the AI roadmap) is the highest-value AI
+work and is not started.
+
+## Previous resume point (2026-08-03 session 1 — superseded above)
 
 **Do these in order on the 2026-08-04 RTH session:**
 
