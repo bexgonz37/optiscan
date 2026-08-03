@@ -669,3 +669,48 @@ contract's. **Caps were not raised.**
 
 Its own precondition — `independentMarkPct >= 50%` — is still unmeasured.
 Independence instrumentation is Gate B's first task.
+
+---
+
+# Packet update — 2026-08-03 (Gate B, parts B1–B3)
+
+## Horizon windows close the degeneracy hole
+
+`dueHorizons` returns EVERY elapsed unmarked horizon, so one sweep on an
+hour-old position saw 1/3/5/10/15/30/60 all due, fetched **one** quote and wrote
+it to all seven. That is how 84.1% of series became degenerate.
+
+Each horizon now has a deterministic window bounded by midpoints to its
+neighbours — they touch but never overlap, asserted by test across all seven.
+A grace period lets a horizon survive one budget-blocked sweep, but a
+grace-period horizon is **claimable for retry and NOT independently satisfiable**.
+
+## Independence is keyed on the OBSERVATION, not the price
+
+- same provider timestamp on a second horizon → `REUSED_NOT_INDEPENDENT`
+- same price with a different valid timestamp → **independent** (a quiet
+  contract legitimately repeats a price)
+
+## `asymmetry_mark_evidence` — a per-ATTEMPT log
+
+Separate table on purpose. `asymmetry_marks` holds one row per horizon and now
+replaces transient failures on retry, so attempt history recorded there would
+destroy exactly what makes independence measurable. Raw provider timestamps are
+stored as **TEXT** (19-digit ns exceeds `MAX_SAFE_INTEGER`).
+
+Additive, repeat-safe, no destructive DDL. Instrumentation issues **zero**
+provider calls and its own try/catch means it can never affect a mark.
+
+## Status: DEPLOYED_UNPROVEN
+
+Independence is now **measurable but not yet measured** —
+`buildIndependenceReportOnDb` reads persisted evidence only, so a rate appears
+after one live RTH session on the deployed code. **Gate C cannot honestly start
+before `independentMarkPct >= 50%`.**
+
+## Binding constraint is now provider budget
+
+280/280 minute cap saturated, `quotaExceededCount` climbing ~440/min, consumer
+unidentified. **Gate B5 (consumer audit) is the next work.** Do not raise caps.
+
+See `OPTISCAN_AUTONOMOUS_ROADMAP_STATUS.md` for the full gate ledger.
