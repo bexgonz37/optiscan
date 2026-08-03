@@ -1,228 +1,140 @@
-# Phase 3 — Where We Are and What's Next
+# Phase 3 — Status and What's Next
 
-**Written:** 2026-07-31
+**Updated:** 2026-08-02
 **Deployed from:** `main`
-**Previous checkpoint:** `84ca695` (ASYM_NOTIFY_V2)
 
-This file is a handoff. It is written so you can paste it to another assistant
-and get useful direction without re-deriving anything.
+Paste this to another assistant to get useful direction without re-deriving anything.
 
 ---
 
-## 1. The two findings that matter most
+## The three findings that matter
 
-### Finding A — Historical option data IS entitled. The repo said it wasn't.
+### 1. Historical option data IS entitled. The repo said it wasn't.
 
-Two modules asserted that historical option quotes/NBBO were **"not integrated
-or entitled"**:
-
-- `lib/research/replay-provider.ts`
-- `lib/research/asymmetry/source-priority.ts` (`historicalOptionQuotes: NOT_AVAILABLE`)
-
-**Half of that was wrong.** Nothing was *integrated* — true. But the Massive plan
-**is entitled**. A direct probe on 2026-07-31 confirmed:
+Two modules asserted historical option NBBO was "not integrated or entitled".
+Only the first half was true. Probed against the live key:
 
 | Endpoint | Result |
 |---|---|
-| `GET /v3/quotes/{OCC}` | **200** — full NBBO with `bid_price`, `ask_price`, `bid_size`, `ask_size`, nanosecond `sip_timestamp`. Confirmed back to **2023-07-31** on expired contracts. |
-| `GET /v3/trades/{OCC}` | **200** — price/size/conditions |
-| `GET /v2/aggs/ticker/{OCC}/...` | **200** — 1-min and daily OHLCV on option tickers |
-| `GET /v3/reference/options/contracts?expired=true` | **200** — expired contracts back to 2010 expirations |
-| Rate limit | 40 concurrent requests → **40× 200, zero 429s**, no rate-limit headers |
+| `GET /v3/quotes/{OCC}` | **200** — NBBO + sizes, confirmed back to **2023-07-31** |
+| `GET /v3/trades/{OCC}` | **200** |
+| `GET /v2/aggs/ticker/{OCC}/...` | **200** — 1-min and daily |
+| `reference/options/contracts?expired=true` | **200** — back to 2010 expirations |
+| Rate limit | 40 concurrent → 40×200, zero 429s |
 
-**Consequence:** the historical winner/control cohort work (plan sections 5–7)
-was believed impossible. It is possible. That belief is why no cohort ever existed.
+Re-verify: `node scripts/massive-capability-probe.mjs`
 
-Re-verify anytime: `node scripts/massive-capability-probe.mjs`
+**Still genuinely unavailable at any depth:** historical Greeks, IV, open
+interest. Cohort rows for past sessions leave them **null**, never borrowed.
 
-**Still genuinely unavailable at any depth:** historical Greeks, historical
-implied volatility, historical open interest. These are snapshot-only. Cohort
-rows for past sessions must leave them **null**, never borrow today's value.
+### 2. The `NO_QUOTE` epidemic was budget exhaustion, misfiled. **FIXED.**
 
-### Finding B — The rollover half of ASYM_NOTIFY_V2 is INERT in production.
+Production 2026-07-31: **2,718 `NO_QUOTE` mark rejections, 7 usable marks (0.4%)**.
+Sampling 35 real cases resolved a usable quote **35/35** — the contracts were fine.
 
-The 50% give-back check reads `peakAskSinceCapture` from persisted forward marks.
-Production on 2026-07-31:
+Cause: reading ONE contract cost up to 3 requests via `fetchOptionChain`. The
+transition sweep does that per case per 60s → **~1,119 req/min vs a 280/min cap**,
+~436,000/session vs a **200,000/day cap shared with the live scanner**.
+`/api/health` confirmed `callsToday = dailyCap = 200,000`. After exhaustion,
+quota refusals were recorded as `providerError: null` — a *genuine* no-quote.
 
-```
-markRejections: NO_QUOTE 1183, FUTURE_QUOTE 39, STALE_QUOTE 1
-markHealth (usable/total by horizon):
-  1m 2/217   3m 3/205   5m 1/204   10m 1/196   15m 0/186   30m 0/162   60m 0/60
-```
+Fixed in `bb5f2a2`:
+- `fetchOptionContractSnapshot` — one request, exact contract (**2.83× measured**)
+- `PROVIDER_BUDGET` and `NO_TWO_SIDED_MARKET` as distinct reasons
+- bounded per-sweep budget with round-robin rotation
+- transient rejections are retryable (they used to consume the horizon permanently)
 
-**~7 usable marks out of ~1,230 attempts (0.6%).** So `peakAskSinceCapture` is
-`null` for virtually every case, and the give-back threshold **cannot fire**.
+### 3. The NVDA miss was CONTRACT SELECTION, not gate tightness.
 
-A low rollover-suppression count therefore does **not** mean the population is
-healthy — it means the check never ran. The same quote-path defect also has paper
-trading blocked: `activationState: BLOCKED_QUOTE_PATH_DEFECT`, `entriesSkipped: 204`.
+First real cohort run (NVDA 2026-07-31, 40 near-the-money contracts, 67 requests):
+2 winners, 20 controls, 18 ungradeable.
 
-**This is the highest-priority fix. Everything about the 50% threshold is
-unmeasurable until it lands.**
+| Contract | Entry→Exit | Return |
+|---|---|---|
+| `O:NVDA260731C00197500` (0DTE) | $1.45 → $3.45 | **+137.93%** |
+| `O:NVDA260731C00200000` (0DTE) | $0.48 → $1.09 | **+127.08%** |
+| `O:NVDA260807C00200000` — *what the radar took* | $3.25 → $3.65 | **+12.3%** |
+
+Right underlying, right side, right session, **wrong expiry**. Classified
+`SIBLING_CONTRACT_CAPTURED`. **Loosening ASYM_NOTIFY_V2 would not have found
+either winner.** The earlier `LATE_CONFIRMATION` timing verdict still stands, but
+it is the smaller of the two problems.
 
 ---
 
-## 2. NVDA reconstruction — what actually happened
+## Shipped
 
-Reconstructed from persisted case rows + historical exact-OCC NBBO.
-Command: `node --experimental-strip-types scripts/asymmetry-reconstruct-nvda.mjs <live-snapshot.json>`
-
-### `O:NVDA260807C00200000` — the one the current gate lets through
-
-| | |
+| Commit | What |
 |---|---|
-| First capture | 16:23:47.611Z @ ask **$3.25**, underlying $197.23 |
-| HIGH_ASYMMETRY sweep | 16:52:00.199Z @ bid $3.55 / ask **$3.65**, underlying $198.10 |
-| Capture→alert delay | **1,693s (28 min)** |
-| Quote age at alert | **0s** (fresh) |
-| Premium expansion | **+12.31%** (under the 20% chase bar) |
-| Peak-to-alert give-back | 0.00% |
-| 5-min momentum | +0.09% (positive) |
-| VWAP | $196.69 — price **above** |
-| Session peak premium | $3.75 |
-| **Verdict** | **`LATE_CONFIRMATION`** — **80%** of the session's eventual premium gain was already realized at the alert |
-| **Would ASYM_NOTIFY_V2 suppress it?** | **NO. `notify=true`, reason `NOTIFY`.** |
+| `fb34d2f` | `asymmetry_notify_decisions` — every gate decision + thresholds in force |
+| `b71ab7b` | Historical exact-OCC client, accounting, caps, cache, capability matrix |
+| `6bf8a9b` | Timing classifier, reconstruction, field lineage |
+| `0a62fed` | Timing diagnostics endpoint; transitions now carry the fingerprint |
+| `bb5f2a2` | **P0** — quote path cost + attribution + retryability |
+| `80b0e79` | Historical winner/control cohorts, missed-winner review |
+| `e9ce055` | Docs |
 
-### `O:NVDA260803C00197500` — the one the current gate stops
-
-| | |
-|---|---|
-| First capture | 15:38:24.421Z @ ask **$1.78**, underlying $196.28 |
-| HIGH_ASYMMETRY sweep | 16:52:00.199Z @ bid $2.60 / ask **$2.62** |
-| Capture→alert delay | **4,416s (73 min)** |
-| Premium expansion | **+47.19%** |
-| **Verdict** | **`PREMIUM_CHASE`** |
-| **Would ASYM_NOTIFY_V2 suppress it?** | **YES** — `PREMIUM_CHASE_47.2` |
-
-### The conclusion
-
-**ASYM_NOTIFY_V2 does not catch the failure mode that prompted the concern.**
-
-The 200C alert passed all three checks — fresh quote, no give-back, chase under
-20% — and still arrived with 80% of the move already priced in. The gate has no
-check for *"how much of the eventual move is left"*, because at decision time
-that requires lookahead it does not have.
-
-**Do not fix this by tightening the chase threshold from one example.** The
-honest next step is a *leading* proxy for "move mostly over" that needs no
-lookahead. Candidates worth testing against the cohort once one exists:
-
-- time since the underlying's local high
-- premium expansion **rate** (per minute) rather than level
-- distance from VWAP as a fraction of the session range
-- whether the state promotion lagged the underlying breakout
-
-### Caveat, stated plainly
-
-Which of the two was the message the user actually saw is **not attributable**
-from the diagnostics that existed at the time — `asymmetry_transitions` did not
-select `fingerprint`, and a whole sweep shares one `occurred_at_ms`. **That gap is
-now fixed** (fingerprint added to both diagnostics endpoints). Inference: the
-197.5C would have been suppressed as `PREMIUM_CHASE_47.2`, so the delivered one
-was almost certainly the **200C**.
+**Unchanged on purpose:** no threshold tuned, `canSendSubscriber: false`,
+`automaticRealTrading: false`.
 
 ---
 
-## 3. What shipped in this checkpoint
+## Next, in priority order
 
-| Module | Purpose |
-|---|---|
-| `lib/research/asymmetry/notify-journal.ts` | **`asymmetry_notify_decisions`** — every gate decision with full evidence **and the thresholds in force**. This is what makes 120s/50% evaluable later. |
-| `lib/research/asymmetry/historical/request-accounting.ts` | Deterministic per-kind request counting, caps, backoff, circuit breaker, `PROVIDER_BUDGET_BLOCKED` |
-| `lib/research/asymmetry/historical/cache.ts` | Cache keyed `[OCC \| window \| dataType \| providerVersion \| dataVersion]`; settled windows never expire |
-| `lib/research/asymmetry/historical/massive-historical.ts` | Historical NBBO / trades / aggregates, point-in-time quote, truncation reporting |
-| `lib/research/asymmetry/historical/capability-matrix.ts` | The **probed** capability matrix — evidence, not assumption |
-| `lib/research/asymmetry/timing-classification.ts` | Post-hoc verdict, exactly one of the eight labels |
-| `lib/research/asymmetry/reconstruct.ts` | Case timeline rebuild from persisted rows + historical data |
-| `lib/research/asymmetry/field-lineage.ts` | Field-by-field lineage; `resolutionPlan()` **refuses** to justify a provider call for presentation-only fields |
-| `app/api/research/asymmetry/timing/route.ts` | Read-only timing diagnostics. **Issues zero provider calls.** |
-| `scripts/massive-capability-probe.mjs` | Re-runnable entitlement proof (~15 requests) |
-| `scripts/asymmetry-reconstruct-nvda.mjs` | The reconstruction above |
+### P1 — Verify the P0 fix on a live session
+Nothing else is trustworthy until marks work. On the next RTH session check
+`/api/research/asymmetry/timing`:
+- `rolloverCheckViability.usableMarkPct` — was **0.4%**, should rise sharply
+- `rejectionsByKind.ourFault` — should collapse; residual `contractReality` is healthy
+- `/api/health` `callsToday` — must stay well under `dailyCap`. **If it pins again,
+  find the consumer; do not raise the cap.**
+- `casesDeferredForBudget` — non-zero is normal (rotation working). Persistently
+  equal to `casesRead` means tune `ASYM_MAX_QUOTES_PER_SWEEP`.
+- `paperActivation.activationState` should leave `BLOCKED_QUOTE_PATH_DEFECT`.
+  **Do not** set `HIGH_ASYMMETRY_PAPER_ENABLED` to force it.
 
-**Behaviour deliberately unchanged:** no threshold was tuned, `canSendSubscriber:
-false`, `automaticRealTrading: false`, capture/marks/paper/Quant untouched.
+### P2 — Investigate contract selection
+This is now the biggest known gap. The radar picked a 3–7 DTE contract when the
+0DTE at the same strike returned 10× more. Look at how the asymmetry lane picks
+an OCC. **Do not** conclude "always take 0DTE" from one example — run the cohort
+builder across more sessions first.
 
-### Free wins found by the lineage audit (zero provider cost)
+### P3 — Scale the cohorts
+`node --experimental-strip-types scripts/asymmetry-build-cohorts.mjs NVDA 2026-07-31 --entry 14:00 --exit 19:45 --max 40`
 
-These are **already fetched and then dropped before persistence**:
+~2.2 requests per contract. Caps: `ASYM_HIST_MAX_PER_RUN` (2,000),
+`ASYM_HIST_MAX_PER_SYMBOL` (200). Need **≥20 winners and ≥20 controls** before
+any feature difference is evidence. Run more symbols and sessions.
 
-- `impliedVolatility`, `delta`, `gamma` — in the chain payload, only `delta` is mapped
-- `optionVolume` — **`transition-runner.ts` passes `contractVolume: null`, so the
-  `minContractVolume: 25` gate check is INERT and can never fire**
-- `marketAlignment` — market context is already computed each tick, never written to the case
+### P4 — Free mapping wins (zero provider cost)
+Already fetched then dropped: `impliedVolatility`, `gamma`, `optionVolume`,
+`marketAlignment`. Note `transition-runner` passes `contractVolume: null`, so the
+`minContractVolume: 25` gate check is **inert** and cannot fire.
 
----
-
-## 4. What's next, in priority order
-
-### P0 — Fix the quote path feeding forward marks
-Without this, marks stay at 0.6% usable, the rollover threshold stays inert, paper
-stays `BLOCKED_QUOTE_PATH_DEFECT`, and no outcome grading is possible.
-Start at `lib/research/asymmetry/mark-runner.ts` and the `NO_QUOTE` rejection path.
-**Everything downstream is blocked on this.**
-
-### P1 — Let the journal accumulate
-`asymmetry_notify_decisions` starts empty. Give it real sessions before drawing any
-conclusion about 120s or 50%. The counterfactual replay is already proven by test:
-re-run `decideNotification()` over stored rows at any threshold, **no provider calls**.
-
-### P2 — Wire the historical client into a cohort builder
-Everything needed exists. Build `historical/cohort-builder.ts`:
-1. `GET /v3/reference/options/contracts?expired=true` + expiration range → universe
-2. `fetchPremiumCurve()` (1-min aggregates) → find +100% / +200% / +500% moves
-3. `fetchQuoteAtInstant()` → ask-based hypothetical entry, bid-based marks
-4. Match controls on date, time-of-day, liquidity, side, DTE, premium, moneyness, spread
-
-**Rules:** ask for entry, bid for marks, never midpoint, no future evidence, no
-control cohort → no winner analysis. Missing executable quote → **ungradeable**, not a loss.
-
-**Cost warning:** cost is linear in contracts. The caps exist for this
-(`ASYM_HIST_MAX_PER_RUN` default 2,000; `ASYM_HIST_MAX_PER_SYMBOL` default 200).
-Start with **one symbol, one day** and read the accounting before scaling.
-
-### P3 — Collect the free mapping wins
-Persist IV/gamma/volume/marketAlignment. Zero provider cost, and it makes the
-`minContractVolume` gate actually work (strictly stricter, never looser).
-
-### P4 — Only then, threshold proposals
-With a graded cohort and a populated journal, measure whether 120s/50% suppress
-genuine winners. **Proposals only, with sample sizes. Do not auto-change either.**
+### P5 — Threshold proposals
+Only with a populated journal AND a graded cohort. `decideNotification` can be
+re-run over stored rows at any threshold with **no provider call** (proven by test).
+Proposals only, with sample sizes.
 
 ---
 
-## 5. Not done, and why
-
-| Plan section | Status |
-|---|---|
-| §5 Historical cohorts | **Not built.** Client + accounting + caps are ready; the builder is not. Blocked behind P0/P2. |
-| §6 Quant timing analysis | **Not runnable.** The journal is empty and no graded cohort exists. Machinery is in place. |
-| §7 Missed-winner review | **Not runnable.** Needs §5. |
-| Threshold validation | **Deliberately not done.** No sample. Reporting a number here would be fabrication. |
-
-The `/api/research/asymmetry/timing` endpoint reports cohorts as
-`available: false` **with a reason** rather than as zeros — "not yet measured"
-must never read as "measured and empty".
-
----
-
-## 6. Validation status (be honest about this)
+## Validation
 
 - `npx tsc --noEmit --incremental false` — **clean**
 - `npm run build` — **clean**
-- `npm test` — **3029 tests. One run 3029/3029 green. Two runs 3028/3029.**
+- `npm test` — **3071 tests.** One run 3071/3071; the other 3070/3071.
 
-The single failure is **`tests/options-monitor.test.mjs` test 6**, which asserts
+The single failure is `tests/options-monitor.test.mjs` test 6, which asserts
 `Date.now() - t0 < 10` — a 10 ms wall-clock budget that flakes under full-suite
-load. It passes **5/5 in isolation** and is unrelated to this work (options-monitor,
-not asymmetry). **It was not "fixed" to make the gate green** — it is a real
-pre-existing flake and should be made robust separately.
+load. Passes 5/5 in isolation, unrelated to this work. **Not touched to make the
+gate green**; it should be made robust separately.
 
 ---
 
-## 7. Live validation still outstanding
+## Do not conclude yet
 
-- Confirm `asymmetry_notify_decisions` is populating in production after deploy
-- Confirm `/api/research/asymmetry/timing` returns `rolloverCheckViability.inert: true`
-  (it should, until P0 lands — that is the check working correctly)
-- Confirm the alert-to-capture ratio computed from the journal matches the counters
-- Confirm no change in provider spend (this checkpoint adds **zero** calls to the live path)
+- `asymmetry_notify_decisions` has one partial session. **120s and 50% remain
+  provisional and unvalidated.** Neither was changed.
+- 2 winners vs 20 controls is below the minimum of 20 per cohort.
+- The rollover threshold's low suppression count means only that it **could not
+  fire** while marks were broken — not that it is well set.
