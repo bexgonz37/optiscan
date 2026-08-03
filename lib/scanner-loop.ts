@@ -61,6 +61,7 @@ import { recordMomentumDiagnostic } from "@/lib/momentum-diagnostics";
 import { classifyStockMomentum, freshMoverGateAllowed } from "@/lib/stock-momentum-classifier";
 import { rankDiscovery, promotionSet, type DiscoveryQuote } from "@/lib/discovery-ranking";
 import { broadStockEligibility, fastStockMomentumEligibility, stockMomentumPolicyConfig } from "@/lib/stock-momentum-policy";
+import { withProviderConsumer } from "@/lib/provider-context";
 
 const OPP_INGEST_MS = Number(process.env.OPP_INGEST_MS ?? 5000);
 const OPPORTUNITY_TRACKING = process.env.OPPORTUNITY_TRACKING !== "0";
@@ -729,6 +730,12 @@ async function enrichTapeContext(tape: any[], nowMs: number) {
 }
 
 async function tick() {
+  // Live scanner safety is provider priority #1 (Gate B7). Everything this tick
+  // fetches — quotes, candles, chains, news — is attributed to `scanner`.
+  return withProviderConsumer("scanner", () => tickInner());
+}
+
+async function tickInner() {
   const s = state();
   const nowMs = Date.now();
   s.lastTickAt = nowMs;

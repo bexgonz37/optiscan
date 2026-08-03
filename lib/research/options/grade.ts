@@ -28,6 +28,7 @@ import { formatOpportunityClosedUpdate, formatReturnMilestoneUpdate } from "./mi
 import { assertSubscriberScanAllowed } from "../../market-session-guard.ts";
 import { isMilestoneDiscordEligibleOnDb } from "../../opportunity-case/milestone-eligibility.ts";
 import { validateLifecycleQuote } from "./lifecycle-session.ts";
+import { withProviderConsumer } from "../../provider-context.ts";
 
 export interface OpenPosition {
   id: number; option_symbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number;
@@ -372,6 +373,12 @@ async function maybeDeliverOpportunityClosedDiscord(
 /** Grade all OPEN real-option paper positions once. Isolated per-row: a single failing quote never
  *  aborts the pass. Idempotent — only status='ENTERED' rows are examined, and an EXIT flips the status. */
 export async function gradeOpenOptionPositionsOnDb(db: GradeDb, deps: GradeDeps, env: NodeJS.ProcessEnv = process.env, cfg: GradeConfig = defaultGradeConfig(env)): Promise<GradePassResult> {
+  // Marking open subscriber positions is the second-highest provider priority after
+  // scanner safety. The scope attributes every quote this pass fetches, however deep.
+  return withProviderConsumer("options_paper_mark", () => gradeOpenOptionPositionsInner(db, deps, env, cfg));
+}
+
+async function gradeOpenOptionPositionsInner(db: GradeDb, deps: GradeDeps, env: NodeJS.ProcessEnv, cfg: GradeConfig): Promise<GradePassResult> {
   const now = deps.now ?? Date.now;
   const has = Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_paper_trades'").get());
   if (!has) return { examined: 0, graded: 0, held: 0, errors: 0, byReason: {}, milestonesDelivered: 0, closesDelivered: 0 };

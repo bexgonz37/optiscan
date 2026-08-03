@@ -1753,6 +1753,52 @@ CREATE TABLE IF NOT EXISTS options_subscriber_readiness_attestations (
   updated_at_ms INTEGER NOT NULL
 );
 
+-- Durable Massive/Polygon request accounting (Gate B6). The in-process meter lives on
+-- globalThis and zeroes on every deploy, so it can never be the daily meter of record.
+-- Rolled up per minute (not per request) so a 280/min day costs ~thousands of rows
+-- instead of ~168k; every per-day / per-consumer ratio is recoverable by summation.
+CREATE TABLE IF NOT EXISTS provider_request_minute (
+  trading_date TEXT NOT NULL,             -- ET trading date
+  minute_bucket_ms INTEGER NOT NULL,      -- floor(atMs / 60000) * 60000
+  deployment_id TEXT NOT NULL,            -- short commit; proves totals survive restarts
+  consumer TEXT NOT NULL,                 -- scanner | options_paper_mark | ... | unattributed
+  category TEXT NOT NULL,                 -- scanner | mark | discovery | research | enrichment | diagnostic
+  endpoint TEXT NOT NULL,                 -- normalized path, symbols collapsed to :sym / :occ
+  historical INTEGER NOT NULL DEFAULT 0,
+  requests INTEGER NOT NULL DEFAULT 0,    -- calls that actually reached the provider
+  cache_hits INTEGER NOT NULL DEFAULT 0,
+  dedup_avoided INTEGER NOT NULL DEFAULT 0,
+  retries INTEGER NOT NULL DEFAULT 0,
+  http_429 INTEGER NOT NULL DEFAULT 0,
+  provider_errors INTEGER NOT NULL DEFAULT 0,
+  quota_blocks INTEGER NOT NULL DEFAULT 0, -- refused by our own budget, NOT missing data
+  paginated INTEGER NOT NULL DEFAULT 0,
+  records_returned INTEGER NOT NULL DEFAULT 0,
+  latency_ms_total INTEGER NOT NULL DEFAULT 0,
+  latency_ms_max INTEGER NOT NULL DEFAULT 0,
+  accounting_version INTEGER NOT NULL DEFAULT 1,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (trading_date, minute_bucket_ms, deployment_id, consumer, endpoint, historical)
+);
+CREATE INDEX IF NOT EXISTS idx_provider_request_minute_day ON provider_request_minute(trading_date, consumer);
+CREATE INDEX IF NOT EXISTS idx_provider_request_minute_bucket ON provider_request_minute(minute_bucket_ms);
+
+-- Per-symbol / per-OCC spend, day-grained (symbol cardinality makes minute grain unsafe).
+CREATE TABLE IF NOT EXISTS provider_request_symbol_day (
+  trading_date TEXT NOT NULL,
+  consumer TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  option_symbol TEXT NOT NULL DEFAULT '',  -- '' when the call is not OCC-specific
+  requests INTEGER NOT NULL DEFAULT 0,
+  records_returned INTEGER NOT NULL DEFAULT 0,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (trading_date, consumer, symbol, option_symbol)
+);
+CREATE INDEX IF NOT EXISTS idx_provider_request_symbol_day_top
+  ON provider_request_symbol_day(trading_date, requests DESC);
+
 -- Canonical Opportunity Case (Enterprise Phase 2). Append-friendly audit record for delivered AND rejected paths.
 CREATE TABLE IF NOT EXISTS opportunity_cases (
   opportunity_id TEXT PRIMARY KEY,

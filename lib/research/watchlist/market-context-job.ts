@@ -18,6 +18,7 @@ import {
   type NextSessionMarketContext,
   type ProviderBar,
 } from "./market-context-snapshot.ts";
+import { withProviderConsumer } from "../../provider-context.ts";
 
 type JobDb = {
   prepare: (sql: string) => {
@@ -115,6 +116,17 @@ export function clearStaleWatchlistPlansOnDb(
  * persist the current plan. Safe to run repeatedly.
  */
 export async function runWatchlistPlanningJobOnDb(
+  db: JobDb,
+  deps: WatchlistPlanningDeps,
+  planners: {
+    buildNextSessionPlan: (db: JobDb, nowMs: number) => unknown;
+    persistOvernightPlan: (db: JobDb, plan: unknown) => void;
+  },
+): Promise<WatchlistPlanningResult> {
+  return withProviderConsumer("premarket", () => runWatchlistPlanningJobInner(db, deps, planners));
+}
+
+async function runWatchlistPlanningJobInner(
   db: JobDb,
   deps: WatchlistPlanningDeps,
   planners: {

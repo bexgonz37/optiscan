@@ -37,6 +37,7 @@ import {
   listOpenPaperPositionsOnDb, writePaperMarkOnDb, applyPaperMarkOnDb,
   closePaperPositionOnDb, recordUnverifiedExitOnDb, hasPaperPosition,
 } from "./store.ts";
+import { withProviderConsumer } from "../../../provider-context.ts";
 
 type RunnerDb = Parameters<typeof listCasesOnDb>[0] & Parameters<typeof listOpenPaperPositionsOnDb>[0];
 
@@ -78,6 +79,10 @@ export interface PaperRunDeps {
 
 /** Sweep the paper lane: open eligible entries, then manage open positions. */
 export async function runAsymmetryPaper(db: RunnerDb, deps: PaperRunDeps): Promise<PaperRunResult> {
+  return withProviderConsumer("asymmetry_mark", () => runAsymmetryPaperInner(db, deps));
+}
+
+async function runAsymmetryPaperInner(db: RunnerDb, deps: PaperRunDeps): Promise<PaperRunResult> {
   const out: PaperRunResult = {
     ran: false, reason: null, activationState: null, paperEntriesAllowed: false,
     casesRead: 0, entriesOpened: 0, entriesSkipped: 0,

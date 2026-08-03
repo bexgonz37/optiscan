@@ -27,6 +27,7 @@ import {
 } from "./universe.ts";
 import { buildWatchlistPlan, type WatchlistPhase, type WatchlistPlan } from "./professional-plan.ts";
 import { loadProfessionalPlanOnDb, persistProfessionalPlanOnDb } from "./professional-store.ts";
+import { withProviderConsumer } from "../../provider-context.ts";
 
 type RunnerDb = Parameters<typeof persistProfessionalPlanOnDb>[0];
 
@@ -69,6 +70,16 @@ export async function runProfessionalWatchlistOnDb(
   db: RunnerDb,
   deps: ProfessionalWatchlistDeps,
   opts: { phase?: WatchlistPhase; maxSymbols?: number; providerCallBudget?: number } = {},
+): Promise<ProfessionalWatchlistRunResult> {
+  // Bounded research, not live safety. Attribution is what lets Gate B7 throttle this
+  // ahead of scanner or mark traffic instead of guessing which job saturated the cap.
+  return withProviderConsumer("watchlist", () => runProfessionalWatchlistInner(db, deps, opts));
+}
+
+async function runProfessionalWatchlistInner(
+  db: RunnerDb,
+  deps: ProfessionalWatchlistDeps,
+  opts: { phase?: WatchlistPhase; maxSymbols?: number; providerCallBudget?: number },
 ): Promise<ProfessionalWatchlistRunResult> {
   const nowMs = deps.now?.() ?? Date.now();
   const day = tradingDay(nowMs);
