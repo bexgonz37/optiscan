@@ -1,6 +1,6 @@
 # OptiScan Autonomous Roadmap — Status
 
-**Updated:** 2026-08-03 · **Deployed:** `8bd2f44` (confirmed live) · `a7153b6` pushed · **Started from:** `7246304`
+**Updated:** 2026-08-03 · **Deployed:** `8bd2f44` (confirmed live) · `a7153b6`, `604e04e` pushed · **Started from:** `7246304`
 
 Durable status for the Gate B–G roadmap. Updated after every gate.
 
@@ -8,8 +8,9 @@ Durable status for the Gate B–G roadmap. Updated after every gate.
 
 ## Current stage
 
-**Gate B — IN PROGRESS.** B1/B2/B3/B5/B6 shipped; **B5 is now MEASURED**.
-B4, B7, B8 not started.
+**Gate B — IN PROGRESS.** B1/B2/B3/B5/B6/B7 shipped; **B5 is MEASURED**,
+**B6 is PROVEN**, **B7 is DEPLOYED_UNPROVEN**. B4 not started; B8 needs one RTH
+session on `604e04e`.
 
 ## Gate ledger
 
@@ -22,7 +23,7 @@ B4, B7, B8 not started.
 | **B5** | Massive consumer audit | **MEASURED — defects fixed, effect unconfirmed** | Full live table below; three defects found and corrected in `a5f5976` |
 | **B6** | Durable provider accounting | **PROVEN** | 197 minutes / 55,415 requests read back across a deploy boundary; 4 meter defects fixed in `a7153b6` |
 | **B4** | Scheduler fairness / long horizons | **NOT STARTED** | 30m 15/173, 60m 12/133 remain weak |
-| **B7** | Per-consumer provider budgets | **NOT STARTED — NOW THE BLOCKING GATE** | Proved necessary: `asymmetry_mark` admitted 263/94,055 = **0.28%**, and **zero** after the cost fix |
+| **B7** | Per-consumer provider budgets | **SHIPPED — DEPLOYED_UNPROVEN** | Per-minute reserves in `604e04e`; reachability-under-saturation asserted by test. Effect needs one RTH session |
 | **B8** | Live Gate B validation | **BLOCKED** | Needs one full RTH session on `a5f5976` |
 | **C** | Verified performance | **BLOCKED** | Requires `independentMarkPct >= 50%` |
 | **D** | Historical learning | **NOT STARTED** | Independent of C |
@@ -196,7 +197,7 @@ GET /api/system/provider-usage → durable.deployments must contain a7153b6
 
 ## Validation
 
-3274/3274 green **both runs** · `tsc --noEmit` clean · `build` clean ·
+3291/3291 green **both runs** · `tsc --noEmit` clean · `build` clean ·
 `git diff --check` clean · **no migrations in either commit** · graphify updated.
 No cap raised, no budget widened, no strategy promoted or demoted, no bracket
 promoted, no subscriber or Discord behaviour changed.
@@ -228,37 +229,75 @@ promoted, no subscriber or Discord behaviour changed.
    `lib/position-callout.ts`, `lib/paper-engine.ts` and `lib/agents/runtime.ts`
    still make unscoped calls. Each is a bounded, known follow-up.
 
+## Gate B7 — SHIPPED (`604e04e`), effect UNPROVEN
+
+Per-minute budget partitions. Each consumer holds a reserve it can always spend,
+plus fair access to a shared pool; a call is admitted when the consumer is inside
+its own reserve **or** the pool has room. Nothing another lane does can take a
+reserve away — the exact property that failed on 2026-08-03.
+
+At the production cap of 280:
+
+| Lane | Reserve | Why |
+|---|---:|---|
+| `scanner` | 58 | live scanner safety, highest priority |
+| `options_paper_mark` | 44 | active subscriber-lane marks |
+| `asymmetry_mark` | 44 | **separate** reserve — see below |
+| `options_discovery` | 28 | discovery must work, but must not win every race |
+| `alert_capture` | 5 | bounded checkpoint sweep |
+| *shared pool* | 101 | everything else, first-come-first-served |
+
+**The two mark lanes hold separate reserves.** A shared `mark` reserve would have
+been won by the subscriber lane every minute, reproducing the same starvation one
+level down.
+
+**Reserves are fractions of the cap, not absolute counts.** The first draft used
+counts tuned for 280; the suite caught it immediately — at a cap of 2 they
+consumed the whole budget and refused the first call of every unreserved lane.
+The shared pool also has a floor, so an over-reserving config degrades to
+prioritisation rather than deadlock.
+
+**No cap was raised.** A test asserts total admissions can never exceed the cap.
+A partition refusal throws a distinct `minute_partition` quota kind, so like
+every other budget refusal it can never be recorded as missing market data.
+
+Two independent reasons the pre-existing reserve had never fired, both now fixed:
+`recordPolygonCall()` was always called with the default purpose (it now reads
+the ambient consumer — the first code to use Gate B5's attribution for a
+*decision* rather than a report), and that reserve guards the DAILY cap, which at
+55,415/200,000 was never remotely approached.
+
+**Status is DEPLOYED_UNPROVEN.** The guarantee is asserted by test; the effect on
+`asymmetry_mark`'s 0.28% admission rate is not yet measured.
+
+---
+
 ## Next automatic action — EXACT RESUME POINT
 
-**Start here: Gate B7. It is now the blocking gate, on evidence.**
-
-1. **Confirm `a7153b6` is live** (`durable.deployments`) before reading any
-   number from it — that commit changes what the meter records.
-2. **Gate B7 — per-consumer budgets and a REACHABLE reserve.** The session proved
-   cheapness does not buy priority: `asymmetry_mark` ended at a 0.28% admission
-   rate and took zero requests after the cost fix. Required work:
-   - Thread the ambient consumer through `recordPolygonCall()` so the
-     `discovery`/`grader` split in `quota-policy.ts` stops being dead code. **This
-     has never once fired**, and it is the mechanism the reserve depends on.
-   - Partition the 280/minute budget in the declared priority order (scanner
-     safety → active marks → exact-OCC reuse → bounded research → enrichment).
-   - Assert by test that a reserved lane is genuinely reachable when every other
-     lane is saturated. That is the property that failed here, and it must fail
-     the build, not the session.
-   - **Do not raise the cap.**
-3. **Then re-read `/api/system/provider-usage` after a full RTH session on B7**
+1. **Confirm `a7153b6` and `604e04e` are live** (`durable.deployments`) before
+   reading any number. `a7153b6` changes what the meter records; `604e04e`
+   changes who gets served.
+2. **Re-read `/api/system/provider-usage` after a full RTH session on `604e04e`**
    and record the table beside the two above. The questions:
-   - Did `asymmetry_mark`'s admission rate rise off 0.28%?
+   - **Did `asymmetry_mark`'s admission rate rise off 0.28%?** This is the single
+     number that decides whether B7 worked. Expect roughly 44 requests/minute
+     available to it; anything near zero means the partition is not being reached
+     and the reserve is still theoretical.
    - Did `options_paper_mark` records/request fall from 241 toward ~1?
      (Now measurable — before `a7153b6` the exact-OCC path scored 0 records.)
    - Did `unattributed` fall from 66.7%, and what is left in it?
    - Did total requests fall while *useful* marks held or rose?
-4. **Close the remaining `unattributed` sources** — `app/api/options/[ticker]`,
+4. **Check `getCallStats().minuteBudget`** — it now reports the live partition
+   directly, so an operator can see who holds what instead of inferring it from
+   refusal counts, which is how the dead grader reserve went unnoticed for so long.
+5. **Close the remaining `unattributed` sources** — `app/api/options/[ticker]`,
    `lib/scan-core.ts`, `lib/position-callout.ts`, `lib/paper-engine.ts`,
    `lib/agents/runtime.ts`. Each is bounded; `+962` requests after the deploy
    confirms they are live.
-5. **Gate B4** — scheduler fairness / long horizons.
-6. **Gate B8** — live validation (`independentMarkPct >= 50%`).
+6. **Gate B4** — scheduler fairness / long horizons. Note B7 changes its inputs:
+   long horizons may have been starved by budget rather than by scheduling, so
+   re-measure 30m/60m coverage before designing a scheduler fix.
+7. **Gate B8** — live validation (`independentMarkPct >= 50%`).
 
 Gates C–G are unchanged and remain blocked behind B8.
 
