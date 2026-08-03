@@ -44,11 +44,13 @@ import { persistOpportunityCaseOnDb } from "./store.ts";
 import {
   claimThesisIndexOnDb,
   markThesisOpeningDiscordOnDb,
+  readThesisIndexIdentityOnDb,
   recordContractCandidateOnDb,
   releaseThesisClaimOnDb,
   syncThesisLifecycleOnDb,
   type ThesisOpeningSource,
 } from "./thesis-live.ts";
+import { recordThesisReopenCooldownOnDb, type ThesisReopenCooldown } from "./reopen-cooldown.ts";
 
 export interface LiveDb {
   prepare(sql: string): {
@@ -235,6 +237,8 @@ export interface ClaimOpenResult {
   thesisFingerprint: string;
   existing: boolean;
   reason: string;
+  /** Set only when the claim was refused because this thesis closed recently. */
+  cooldown?: ThesisReopenCooldown | null;
 }
 
 /** Atomic open claim. Only the winner may send the opening Discord alert. */
@@ -318,6 +322,7 @@ export function claimOpportunityOpenOnDb(
       thesisFingerprint: thesisClaim.thesisFingerprint,
       existing: Boolean(thesisClaim.active),
       reason: thesisClaim.reason,
+      cooldown: thesisClaim.cooldown ?? null,
     };
   }
   if (!opportunityLifecycleSchemaReady(db)) {
@@ -1063,6 +1068,7 @@ export function closeOpportunityOnDb(
     returnPct?: number | null;
     currentMark?: number | null;
     invalidated?: boolean;
+    env?: NodeJS.ProcessEnv;
   },
 ): void {
   const event: LifecycleEventType = input.invalidated ? "OPPORTUNITY_CLOSED" : "EXIT_HIT";
@@ -1103,9 +1109,22 @@ export function closeOpportunityOnDb(
       db.prepare("DELETE FROM opportunity_active_index WHERE opportunity_case_id=?").run(input.opportunityCaseId);
     } catch { /* isolated */ }
   }
+  // Read the thesis identity BEFORE the claim row is deleted — the cooldown is what stops
+  // the freed thesis from immediately sending a second opening alert for the same play.
+  const closingThesis = readThesisIndexIdentityOnDb(db, input.opportunityCaseId);
   try {
     releaseThesisClaimOnDb(db, input.opportunityCaseId);
   } catch { /* isolated */ }
+  if (closingThesis) {
+    recordThesisReopenCooldownOnDb(db, {
+      ...closingThesis,
+      opportunityCaseId: input.opportunityCaseId,
+      closedAtMs: input.nowMs,
+      closeReason: input.exitReason ?? (input.invalidated ? "invalidated" : null),
+      returnPercent: input.returnPct ?? null,
+      env: input.env,
+    });
+  }
 
   emitContentEventForCase(db, input.opportunityCaseId, event, input.nowMs);
   emitContentEventForCase(db, input.opportunityCaseId, "OPPORTUNITY_CLOSED", input.nowMs);

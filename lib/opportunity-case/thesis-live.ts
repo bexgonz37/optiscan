@@ -14,6 +14,7 @@ import type {
   ContractUpdate,
   OpportunityCase,
 } from "./schema.ts";
+import { findThesisReopenCooldownOnDb, type ThesisReopenCooldown } from "./reopen-cooldown.ts";
 import type { LiveDb } from "./live.ts";
 
 export type ThesisOpeningSource = "canonical" | "owner_actionable";
@@ -303,6 +304,7 @@ export function claimThesisIndexOnDb(
   input: OpportunityThesisIdentityInput & {
     opportunityCaseId: string;
     openingSource: ThesisOpeningSource;
+    env?: NodeJS.ProcessEnv;
   },
 ): {
   claimed: boolean;
@@ -310,6 +312,7 @@ export function claimThesisIndexOnDb(
   thesisFingerprint: string;
   active: ActiveThesis | null;
   reason: string;
+  cooldown?: ThesisReopenCooldown | null;
 } {
   const identity = buildOpportunityThesisIdentity(input);
   const thesisFingerprint = opportunityThesisFingerprint(identity);
@@ -326,6 +329,20 @@ export function claimThesisIndexOnDb(
   }
   if (!opportunityThesisSchemaReady(db)) {
     return { claimed: false, identity, thesisFingerprint, active: null, reason: "THESIS_SCHEMA_UNAVAILABLE" };
+  }
+  // This thesis already ran to a close (target, stop, time stop, expiration). Re-opening it
+  // immediately would send a second opening alert for a play the subscriber was just told
+  // was finished, so refuse the claim until the cooldown expires.
+  const cooldown = findThesisReopenCooldownOnDb(db, thesisFingerprint, input.nowMs);
+  if (cooldown) {
+    return {
+      claimed: false,
+      identity,
+      thesisFingerprint,
+      active: null,
+      reason: "THESIS_REOPEN_COOLDOWN",
+      cooldown,
+    };
   }
   try {
     const result = db.prepare(
@@ -359,6 +376,60 @@ export function claimThesisIndexOnDb(
       active: again,
       reason: again ? "MATCHING_ACTIVE_THESIS" : "THESIS_CLAIM_WRITE_FAILED",
     };
+  }
+}
+
+export interface ThesisIndexIdentity {
+  thesisFingerprint: string;
+  symbol: string;
+  direction: string;
+  optionType: string;
+  sessionDate: string;
+}
+
+/**
+ * The indexed thesis identity for a case, for callers that must capture it before the
+ * claim row is released. Falls back to the case row so a legacy/unindexed case still
+ * yields an identity. Returns null when neither source knows the fingerprint.
+ */
+export function readThesisIndexIdentityOnDb(
+  db: LiveDb,
+  opportunityCaseId: string,
+): ThesisIndexIdentity | null {
+  if (hasTable(db, "opportunity_thesis_active_index")) {
+    try {
+      const row = db.prepare(
+        `SELECT thesis_fingerprint, symbol, direction, option_type, session_date
+         FROM opportunity_thesis_active_index WHERE opportunity_case_id=?`,
+      ).get(opportunityCaseId) as Record<string, unknown> | undefined;
+      if (row?.thesis_fingerprint) {
+        return {
+          thesisFingerprint: String(row.thesis_fingerprint),
+          symbol: String(row.symbol ?? ""),
+          direction: String(row.direction ?? ""),
+          optionType: String(row.option_type ?? ""),
+          sessionDate: String(row.session_date ?? ""),
+        };
+      }
+    } catch { /* fall through to the case row */ }
+  }
+  if (!hasTable(db, "opportunity_cases")) return null;
+  try {
+    const row = db.prepare(
+      `SELECT thesis_fingerprint, underlying_symbol, direction, session_date
+       FROM opportunity_cases WHERE opportunity_id=?`,
+    ).get(opportunityCaseId) as Record<string, unknown> | undefined;
+    if (!row?.thesis_fingerprint) return null;
+    const direction = String(row.direction ?? "").toUpperCase();
+    return {
+      thesisFingerprint: String(row.thesis_fingerprint),
+      symbol: String(row.underlying_symbol ?? ""),
+      direction,
+      optionType: direction === "BEARISH" ? "PUT" : "CALL",
+      sessionDate: String(row.session_date ?? ""),
+    };
+  } catch {
+    return null;
   }
 }
 

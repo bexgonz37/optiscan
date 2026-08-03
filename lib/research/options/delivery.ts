@@ -610,6 +610,48 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
           },
         );
       }
+      if (!claim.claimed && claim.reason === "THESIS_REOPEN_COOLDOWN" && claim.cooldown) {
+        // The subscriber was already told this exact play closed. A second opening alert
+        // for the same symbol + direction inside the cooldown reads as a duplicate.
+        try {
+          logSuppressionOnDb(db, {
+            symbol: input.candidateSymbol,
+            strategy: input.strategy,
+            fingerprint: claim.fingerprint,
+            existingOpportunityCaseId: claim.cooldown.opportunityCaseId,
+            reason: "THESIS_REOPEN_COOLDOWN",
+            decision: "SUPPRESSED_REOPEN",
+            latestReturnPercent: claim.cooldown.returnPercent,
+            details: {
+              closedAtMs: claim.cooldown.closedAtMs,
+              closeReason: claim.cooldown.closeReason,
+              cooldownUntilMs: claim.cooldown.cooldownUntilMs,
+              thesisFingerprint: claim.thesisFingerprint,
+              optionSymbol: input.contract.optionSymbol,
+              alertId,
+            },
+            nowMs,
+          });
+          captureDeliveryObservation(db, input, nowMs, "DEDUPED", {
+            thesisFingerprint: claim.thesisFingerprint,
+            opportunityCaseId: claim.cooldown.opportunityCaseId,
+            alertId,
+          });
+        } catch { /* isolated */ }
+        return finalize(
+          deps,
+          input,
+          alertId,
+          "REJECTED",
+          "thesis_reopen_cooldown",
+          nowMs,
+          state,
+          {
+            opportunityCaseId: claim.cooldown.opportunityCaseId,
+            suppressedDuplicate: true,
+          },
+        );
+      }
       if (!claim.claimed) {
         return finalize(
           deps,

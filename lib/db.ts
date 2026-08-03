@@ -1809,6 +1809,29 @@ CREATE TABLE IF NOT EXISTS opportunity_thesis_active_index (
 CREATE INDEX IF NOT EXISTS idx_opportunity_thesis_symbol
   ON opportunity_thesis_active_index(symbol, direction, option_type, session_date, lifecycle_status);
 
+-- Closing a case deletes its thesis active-index row, which also re-arms the outward
+-- opening path. Without this, the same symbol+direction could send a SECOND opening
+-- alert minutes after the subscriber was told the first one hit T1. One row per closed
+-- thesis; the claim path refuses a re-open until cooldown_until_ms passes.
+CREATE TABLE IF NOT EXISTS opportunity_thesis_reopen_cooldown (
+  thesis_fingerprint TEXT PRIMARY KEY,
+  opportunity_case_id TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  direction TEXT NOT NULL,
+  option_type TEXT NOT NULL,
+  session_date TEXT NOT NULL,
+  closed_at_ms INTEGER NOT NULL,
+  close_reason TEXT,
+  return_percent REAL,
+  cooldown_until_ms INTEGER NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_opportunity_thesis_cooldown_until
+  ON opportunity_thesis_reopen_cooldown(cooldown_until_ms);
+CREATE INDEX IF NOT EXISTS idx_opportunity_thesis_cooldown_symbol
+  ON opportunity_thesis_reopen_cooldown(symbol, direction, option_type, session_date);
+
 CREATE TABLE IF NOT EXISTS opportunity_contract_candidates (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   thesis_fingerprint TEXT NOT NULL,
