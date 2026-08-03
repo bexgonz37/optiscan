@@ -473,3 +473,79 @@ counts under the new contract — expect the verified count to FALL sharply from
 
 Mark density is the only thing standing between here and a usable dataset.
 It needs a live session.
+
+---
+
+# Packet update — 2026-08-03 (Checkpoint 4, live session)
+
+## PARITY: ACHIEVED
+
+`/api/research/options/parity` runs both verifiers over ONE shared keyed
+population. Live result:
+
+| | |
+|---|---|
+| Shared rows | **490** |
+| Matching | **490 (100%)** |
+| Mismatches | **0** |
+| Quant Lab verified | **89** |
+| paper-chain verified | **89** |
+| Disagree on verified | **0** |
+| Fallback keys used | 0 |
+
+Keys: `OPTIONS_ALERT_ID` 270, `PAPER_POSITION_ID` 129, `OPPORTUNITY_CASE_ID` 91.
+
+The earlier **85 vs 82** was a population artifact, exactly as suspected. Over
+the same rows both verifiers agree on every single one.
+
+## The 270 are NOT failed sends
+
+| Class | n | Meaning |
+|---|---|---|
+| `MISSING_MESSAGE_ID` | **270** | alert SENT, Discord message id never recorded — **instrumentation gap** |
+| `MISSING_ALERT_LINK` | **129** | paper row with no alert — paper is not delivery |
+| `ACTUAL_DELIVERY_FAILURE` | **0** | — |
+
+**Zero actual delivery failures.** 270 production defects, all of the same
+instrumentation kind. Not backfillable — a message id cannot be invented.
+
+## Eligible population
+
+490 total → **361 eligible**, 129 permanently ineligible (no alert link).
+**Verified fraction of eligible: 24.65%** (89/361), not 18% of everything.
+
+## Two corrections to earlier claims
+
+1. **The provider-burn alarm was wrong.** I read `callsToday: 144015` at 10:27
+   and inferred the daily cap would exhaust by ~11:15. The call meter lives on
+   `globalThis` and **resets on every deploy** — after my redeploy it read 311.
+   The 144k had accumulated since the previous deploy, not since the open.
+   `callsToday` is **per-process, not per-day**. `quotaExceededCount: 17358`
+   before restart was real, so the MINUTE cap is genuinely being hit.
+
+2. **The mark blocker has moved.** It is no longer PROVIDER_BUDGET.
+
+## Live mark density
+
+usablePct **24.4%** (Checkpoint 1: 0.4% → now 24.4%). Rejections:
+
+| Reason | n |
+|---|---|
+| **FUTURE_QUOTE** | **636** |
+| PROVIDER_BUDGET | 75 |
+| STALE_QUOTE | 41 |
+
+`NO_QUOTE` is gone entirely — the single-contract fix worked.
+
+**FUTURE_QUOTE is now the dominant blocker: 636 of 995 marks.** Provider
+timestamps ahead of the server clock. This is the next thing to fix and it was
+NOT fixed here — a careless fix would accept genuinely bad timestamps.
+
+Per-horizon usable: 1m 62/170, 3m 52/169, 5m 42/169, 10m 38/150, 15m 35/141,
+30m 14/133, **60m 0/63**.
+
+## Still true
+
+- Paper lane is now `ACTIVE`, entries allowed (was `BLOCKED_QUOTE_PATH_DEFECT`).
+- No bracket promoted; production still runs the symmetric ±45%.
+- No strategy quarantined. Official sample NOT quotable. Paid launch blocked.
