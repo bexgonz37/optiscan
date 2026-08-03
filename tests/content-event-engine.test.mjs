@@ -233,6 +233,155 @@ test("missing webhook persists drafts as SKIPPED_NO_WEBHOOK and does not send", 
   assert.equal(db.prepare("SELECT content_status FROM opportunity_content_events WHERE id='ce_nw'").get().content_status, "PROCESSED");
 });
 
+test("REGRESSION: drafts skipped for want of a webhook are RECOVERED once one exists", async () => {
+  // The 2026-08-03 production state: CONTENT_EVENTS_ENABLED=1, generation healthy,
+  // DISCORD_WEBHOOK_RECAP unset, and 50 drafts sitting at SKIPPED_NO_WEBHOOK.
+  //
+  // The scan marks the SOURCE EVENT 'PROCESSED' BEFORE it checks the webhook, so
+  // the PENDING scan never revisits it; and the retry query excluded
+  // SKIPPED_NO_WEBHOOK, so the drafts were never picked up either. Configuring the
+  // webhook would deliver only FUTURE content and strand everything already
+  // written — including closed-winner report cards.
+  const db = makeDb();
+  seedEvent(db, { id: "ce_strand" });
+
+  // Session 1 — no webhook. Drafts are written and deferred.
+  const cold = await runContentDraftsScan(db, {
+    send: async () => { throw new Error("must not send with no webhook"); },
+    webhookConfigured: () => false,
+    loadCaseVars: () => ({ confidence: 0.72, relativeVolume: 4.2, callFlow: 1200 }),
+    now: () => 1_700_000_100_000,
+  }, { CONTENT_EVENTS_ENABLED: "1" });
+  assert.equal(cold.skippedNoWebhook, 1);
+  assert.equal(
+    db.prepare("SELECT content_status FROM opportunity_content_events WHERE id='ce_strand'").get().content_status,
+    "PROCESSED",
+    "the source event is retired at generation time — this is what stranded the drafts",
+  );
+  const stranded = db.prepare(
+    "SELECT COUNT(*) n FROM content_drafts WHERE content_event_id='ce_strand' AND discord_delivery_status='SKIPPED_NO_WEBHOOK'",
+  ).get().n;
+  assert.ok(stranded >= 1);
+
+  // Session 2 — the owner configures the webhook. Nothing new is pending.
+  const { sent, deps } = captureDeps();
+  const warm = await runContentDraftsScan(db, deps, ENV);
+  assert.equal(warm.examined, 0, "no PENDING event remains — recovery cannot rely on the normal scan");
+  assert.equal(warm.deferredDelivered, 1, "the deferred bundle is delivered");
+  assert.equal(sent.length, 1);
+
+  const after = db.prepare(
+    "SELECT discord_delivery_status s, COUNT(*) n FROM content_drafts WHERE content_event_id='ce_strand' GROUP BY s",
+  ).all();
+  assert.deepEqual(after.map((r) => r.s), ["SENT"], "every stranded draft is now SENT");
+});
+
+test("recovery delivers the PERSISTED text — it never regenerates or re-dates content", async () => {
+  const db = makeDb();
+  seedEvent(db, { id: "ce_verbatim" });
+  await runContentDraftsScan(db, {
+    send: async () => ({ ok: true, messageId: "x", error: null }),
+    webhookConfigured: () => false,
+    loadCaseVars: () => ({ confidence: 0.72, relativeVolume: 4.2, callFlow: 1200 }),
+    now: () => 1_700_000_100_000,
+  }, { CONTENT_EVENTS_ENABLED: "1" });
+
+  const before = db.prepare(
+    "SELECT id, draft_text, created_at_ms, original_alert_at_ms FROM content_drafts WHERE content_event_id='ce_verbatim' ORDER BY id",
+  ).all();
+  assert.ok(before.length >= 1);
+
+  const { sent, deps } = captureDeps();
+  await runContentDraftsScan(db, deps, ENV);
+
+  const after = db.prepare(
+    "SELECT id, draft_text, created_at_ms, original_alert_at_ms FROM content_drafts WHERE content_event_id='ce_verbatim' ORDER BY id",
+  ).all();
+  assert.deepEqual(
+    after.map((r) => [r.id, r.draft_text, r.created_at_ms, r.original_alert_at_ms]),
+    before.map((r) => [r.id, r.draft_text, r.created_at_ms, r.original_alert_at_ms]),
+    "recovery must not rewrite text, creation time, or the original alert timestamp",
+  );
+  for (const row of before) {
+    assert.ok(sent[0].includes(row.draft_text), "the delivered body carries the persisted draft verbatim");
+  }
+});
+
+test("recovery stays bounded — a backlog cannot burst into the channel", async () => {
+  const db = makeDb();
+  for (let i = 0; i < 5; i++) seedEvent(db, { id: `ce_bk${i}`, occurred_at_ms: 1_700_000_000_000 + i });
+  // Drain all five into the deferred state, one per run (the existing cap).
+  for (let i = 0; i < 5; i++) {
+    await runContentDraftsScan(db, {
+      send: async () => ({ ok: true, messageId: "x", error: null }),
+      webhookConfigured: () => false,
+      loadCaseVars: () => ({ confidence: 0.72, relativeVolume: 4.2 }),
+      now: () => 1_700_000_100_000,
+    }, { CONTENT_EVENTS_ENABLED: "1" });
+  }
+  const deferredEvents = db.prepare(
+    "SELECT COUNT(DISTINCT content_event_id) n FROM content_drafts WHERE discord_delivery_status='SKIPPED_NO_WEBHOOK'",
+  ).get().n;
+  assert.equal(deferredEvents, 5, "five separate bundles are waiting");
+
+  const { sent, deps } = captureDeps();
+  const res = await runContentDraftsScan(db, deps, ENV);
+  assert.equal(res.deferredDelivered, 1, "at most one bundle per run");
+  assert.equal(sent.length, 1, "and at most one Discord message per run");
+});
+
+test("a failed recovery send stays retryable rather than being lost again", async () => {
+  const db = makeDb();
+  seedEvent(db, { id: "ce_fail" });
+  await runContentDraftsScan(db, {
+    send: async () => ({ ok: true, messageId: "x", error: null }),
+    webhookConfigured: () => false,
+    loadCaseVars: () => ({ confidence: 0.72, relativeVolume: 4.2 }),
+    now: () => 1_700_000_100_000,
+  }, { CONTENT_EVENTS_ENABLED: "1" });
+
+  const failed = await runContentDraftsScan(db, {
+    send: async () => ({ ok: false, messageId: null, error: "discord 500" }),
+    webhookConfigured: () => true,
+    loadCaseVars: () => ({ confidence: 0.72, relativeVolume: 4.2 }),
+    now: () => 1_700_000_200_000,
+  }, ENV);
+  assert.equal(failed.deferredDelivered, 0);
+  const states = db.prepare(
+    "SELECT DISTINCT discord_delivery_status s FROM content_drafts WHERE content_event_id='ce_fail'",
+  ).all().map((r) => r.s);
+  assert.deepEqual(states, ["FAILED"], "a transport failure is FAILED, which is retryable");
+
+  const { sent, deps } = captureDeps();
+  const recovered = await runContentDraftsScan(db, deps, ENV);
+  assert.equal(recovered.deferredDelivered, 0, "FAILED is not the deferred-no-webhook queue...");
+  assert.equal(sent.length, 0);
+  // ...but it remains in the retryable set, so the normal partial-retry path can
+  // still pick it up when its event is re-queued.
+  db.prepare("UPDATE opportunity_content_events SET content_status='PENDING' WHERE id='ce_fail'").run();
+  const { sent: sent2, deps: deps2 } = captureDeps();
+  await runContentDraftsScan(db, deps2, ENV);
+  assert.equal(sent2.length, 1, "the failed bundle is delivered on the next pass");
+});
+
+test("recovery never runs while the webhook is still unconfigured", async () => {
+  const db = makeDb();
+  seedEvent(db, { id: "ce_still_cold" });
+  const coldDeps = {
+    send: async () => { throw new Error("must not send"); },
+    webhookConfigured: () => false,
+    loadCaseVars: () => ({ confidence: 0.72, relativeVolume: 4.2 }),
+    now: () => 1_700_000_100_000,
+  };
+  await runContentDraftsScan(db, coldDeps, { CONTENT_EVENTS_ENABLED: "1" });
+  const again = await runContentDraftsScan(db, coldDeps, { CONTENT_EVENTS_ENABLED: "1" });
+  assert.equal(again.deferredDelivered, 0);
+  const states = db.prepare(
+    "SELECT DISTINCT discord_delivery_status s FROM content_drafts WHERE content_event_id='ce_still_cold'",
+  ).all().map((r) => r.s);
+  assert.deepEqual(states, ["SKIPPED_NO_WEBHOOK"]);
+});
+
 test("unverified performance drafts are suppressed", async () => {
   const db = makeDb();
   seedEvent(db, {

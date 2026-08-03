@@ -301,14 +301,54 @@ function markEventProcessed(db: RtDb, eventId: string, payloadPatch: Record<stri
   } catch { /* isolated */ }
 }
 
+/**
+ * Delivery states that are NOT terminal.
+ *
+ * `SKIPPED_NO_WEBHOOK` belongs here, and its absence was a real defect. The scan
+ * marks the SOURCE EVENT `PROCESSED` before it checks the webhook, so an event
+ * whose drafts were skipped is never re-examined; and this query excluded
+ * `SKIPPED_NO_WEBHOOK`, so the drafts were never picked up either. Every draft
+ * generated while `DISCORD_WEBHOOK_RECAP` was unset therefore became permanently
+ * undeliverable — configuring the webhook afterwards would deliver only FUTURE
+ * content and strand everything already written.
+ *
+ * On 2026-08-03 production held 50 such drafts, including 6 CLOSED_WINNER and 2
+ * WHY_THIS_WORKED report cards, all `SKIPPED_NO_WEBHOOK`.
+ *
+ * "No webhook was configured yet" is a statement about CONFIGURATION, not about
+ * the draft. It is deferral, and deferral must be recoverable.
+ */
+const RETRYABLE_DELIVERY_STATES = ["PENDING", "FAILED", "SKIPPED_NO_WEBHOOK"] as const;
+
+const RETRYABLE_SQL_LIST = RETRYABLE_DELIVERY_STATES.map((s) => `'${s}'`).join(",");
+
 function unsentDrafts(db: RtDb, eventId: string): Array<{ id: string; draft_text: string; category: string; cta_type: string; char_count: number; hashtags_json: string | null; screenshot_suggestion: string | null; chart_annotation: string | null; suggested_cta?: string }> {
   if (!hasTable(db, "content_drafts")) return [];
   return db.prepare(
     `SELECT id, draft_text, category, cta_type, char_count, hashtags_json, screenshot_suggestion, chart_annotation
      FROM content_drafts
-     WHERE content_event_id=? AND discord_delivery_status IN ('PENDING','FAILED')
+     WHERE content_event_id=? AND discord_delivery_status IN (${RETRYABLE_SQL_LIST})
      ORDER BY created_at_ms ASC`,
   ).all(eventId) as any[];
+}
+
+/**
+ * Content events holding drafts that were deferred for want of a webhook, oldest
+ * first. Read regardless of the event's own `content_status`, because the event
+ * was marked PROCESSED at generation time and will never appear in the PENDING
+ * scan again.
+ */
+function deferredDraftEventIds(db: RtDb, limit: number): string[] {
+  if (!hasTable(db, "content_drafts")) return [];
+  try {
+    return (db.prepare(
+      `SELECT content_event_id AS id, MIN(created_at_ms) AS first_at
+         FROM content_drafts
+        WHERE discord_delivery_status='SKIPPED_NO_WEBHOOK'
+        GROUP BY content_event_id
+        ORDER BY first_at ASC LIMIT ?`,
+    ).all(limit) as { id: string }[]).map((r) => String(r.id));
+  } catch { return []; }
 }
 
 export interface ContentScanResult {
@@ -319,6 +359,8 @@ export interface ContentScanResult {
   persisted: number;
   skippedNoWebhook: number;
   suppressedUnverified: number;
+  /** Bundles recovered from a period when no webhook was configured. */
+  deferredDelivered: number;
 }
 
 /**
@@ -334,7 +376,8 @@ export async function runContentDraftsScan(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<ContentScanResult> {
   const out: ContentScanResult = {
-    examined: 0, delivered: 0, skipped: 0, failed: 0, persisted: 0, skippedNoWebhook: 0, suppressedUnverified: 0,
+    examined: 0, delivered: 0, skipped: 0, failed: 0, persisted: 0, skippedNoWebhook: 0,
+    suppressedUnverified: 0, deferredDelivered: 0,
   };
   if (!contentEventsEnabled(env)) return out;
   if (!hasTable(db, "opportunity_content_events")) return out;
@@ -434,30 +477,10 @@ export async function runContentDraftsScan(
     const pending = unsentDrafts(db, eventId);
     if (!pending.length) { out.delivered += 1; continue; }
 
-    const header = `📝 **CONTENT DRAFTS — OWNER ONLY — ${bundle.category}** · ${bundle.symbol}\n_Deterministic template drafts for MANUAL review. Never auto-posted. Not financial advice._\n_Result type: ${claim.resultType}_ · _Session: ${sessionDate}_`;
-    const draftBlocks = pending.map((draft) => [
-      `**Draft** (${draft.char_count} chars) · CTA: ${draft.cta_type}`,
-      "```",
-      draft.draft_text,
-      "```",
-    ].join("\n"));
-    const body = [header, ...draftBlocks].join("\n\n").slice(0, 1900);
-    let res: ContentDeliverResult;
-    try {
-      res = await send(body);
-    } catch (e: any) {
-      res = { ok: false, messageId: null, error: String(e?.message ?? e).slice(0, 300) };
-    }
-    const nextStatus = res.ok ? "SENT" : res.suppressed ? "SUPPRESSED" : "FAILED";
-    for (const draft of pending) {
-      try {
-        db.prepare(
-          `UPDATE content_drafts
-           SET discord_delivery_status=?, discord_message_id=?, updated_at_ms=?
-           WHERE id=?`,
-        ).run(nextStatus, res.messageId, nowMs, draft.id);
-      } catch { /* isolated */ }
-    }
+    const res = await deliverDrafts(db, send, pending, {
+      category: bundle.category, symbol: bundle.symbol,
+      resultType: claim.resultType, sessionDate, nowMs,
+    });
     if (res.ok) out.delivered += 1;
     else if (res.suppressed) out.skipped += 1;
     else out.failed += 1;
@@ -465,7 +488,85 @@ export async function runContentDraftsScan(
       out.failed += 1;
     }
   }
+
+  // ── Deferred recovery ────────────────────────────────────────────────
+  // Drafts written while no webhook was configured are stranded: their source
+  // event was marked PROCESSED at generation time, so the PENDING scan above will
+  // never revisit it. Once a webhook exists, sweep them — oldest first, under the
+  // same one-message-per-run cap, so recovery can never burst a backlog into the
+  // channel. Nothing here regenerates or re-dates content: it delivers exactly the
+  // persisted draft text, and makes no provider call.
+  if (webhookOk) {
+    for (const eventId of deferredDraftEventIds(db, cap)) {
+      try {
+        const pending = unsentDrafts(db, eventId);
+        if (!pending.length) continue;
+        const meta = deferredEventMeta(db, eventId);
+        const res = await deliverDrafts(db, send, pending, { ...meta, nowMs: now() });
+        if (res.ok) out.deferredDelivered += 1;
+        else if (res.suppressed) out.skipped += 1;
+        else out.failed += 1;
+      } catch { out.failed += 1; }
+    }
+  }
   return out;
+}
+
+/** Header facts for a deferred bundle, read from persisted rows only. */
+function deferredEventMeta(db: RtDb, eventId: string): {
+  category: string; symbol: string; resultType: string; sessionDate: string;
+} {
+  const fallback = { category: "CONTENT", symbol: "", resultType: "UNKNOWN", sessionDate: "" };
+  try {
+    const r = db.prepare(
+      `SELECT d.category AS category, d.result_type AS result_type,
+              d.trading_session_date AS session_date, e.symbol AS symbol
+         FROM content_drafts d
+         LEFT JOIN opportunity_content_events e ON e.id = d.content_event_id
+        WHERE d.content_event_id=? ORDER BY d.created_at_ms ASC LIMIT 1`,
+    ).get(eventId) as Record<string, unknown> | undefined;
+    if (!r) return fallback;
+    return {
+      category: r.category == null ? fallback.category : String(r.category),
+      symbol: r.symbol == null ? fallback.symbol : String(r.symbol),
+      resultType: r.result_type == null ? fallback.resultType : String(r.result_type),
+      sessionDate: r.session_date == null ? fallback.sessionDate : String(r.session_date),
+    };
+  } catch { return fallback; }
+}
+
+/** Render and send one bundle, then record the outcome on each draft. Never throws. */
+async function deliverDrafts(
+  db: RtDb,
+  send: (content: string) => Promise<ContentDeliverResult>,
+  pending: Array<{ id: string; draft_text: string; cta_type: string; char_count: number }>,
+  meta: { category: string; symbol: string; resultType: string; sessionDate: string; nowMs: number },
+): Promise<ContentDeliverResult> {
+  const header = `📝 **CONTENT DRAFTS — OWNER ONLY — ${meta.category}** · ${meta.symbol}\n_Deterministic template drafts for MANUAL review. Never auto-posted. Not financial advice._\n_Result type: ${meta.resultType}_ · _Session: ${meta.sessionDate}_`;
+  const draftBlocks = pending.map((draft) => [
+    `**Draft** (${draft.char_count} chars) · CTA: ${draft.cta_type}`,
+    "```",
+    draft.draft_text,
+    "```",
+  ].join("\n"));
+  const body = [header, ...draftBlocks].join("\n\n").slice(0, 1900);
+  let res: ContentDeliverResult;
+  try {
+    res = await send(body);
+  } catch (e: any) {
+    res = { ok: false, messageId: null, error: String(e?.message ?? e).slice(0, 300) };
+  }
+  const nextStatus = res.ok ? "SENT" : res.suppressed ? "SUPPRESSED" : "FAILED";
+  for (const draft of pending) {
+    try {
+      db.prepare(
+        `UPDATE content_drafts
+         SET discord_delivery_status=?, discord_message_id=?, updated_at_ms=?
+         WHERE id=?`,
+      ).run(nextStatus, res.messageId, meta.nowMs, draft.id);
+    } catch { /* isolated */ }
+  }
+  return res;
 }
 
 /** Owner store helpers — list / update drafts without touching live trading paths. */
