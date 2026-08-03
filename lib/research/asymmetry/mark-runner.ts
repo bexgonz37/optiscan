@@ -22,6 +22,8 @@
 import { listCasesOnDb } from "./case-store.ts";
 import { isOptionsQuoteSession } from "../../market-session-guard.ts";
 import { tradingDay } from "../../trading-session.ts";
+import { horizonWindow, evaluateIndependence } from "./horizon-windows.ts";
+import { recordMarkEvidenceOnDb } from "./mark-evidence-store.ts";
 
 export const MARKS_ENABLED_ENV = "HIGH_ASYMMETRY_CAPTURE_ENABLED";
 export const MARK_HORIZONS_MINUTES = [1, 3, 5, 10, 15, 30, 60] as const;
@@ -121,6 +123,8 @@ export interface MarkDeps {
   nowMs: number;
   sessionDate: string;
   env?: NodeJS.ProcessEnv;
+  /** Identifies this sweep in the evidence log. Optional. */
+  sweepId?: string;
 }
 
 /** Sweep due marks for open cases, then re-aggregate outcomes. Never throws. */
@@ -141,7 +145,15 @@ export async function runDueAsymmetryMarks(db: MarkDb, deps: MarkDeps): Promise<
         const marked = existingHorizons(db, c.sessionDate, c.fingerprint);
         const due = dueHorizons(c.firstDetectedAtMs, deps.nowMs, marked);
         if (!due.length) continue;
+        // Provider observations already consumed by other horizons on THIS
+        // position. One quote may serve several rows for continuity, but it is
+        // independent evidence for exactly one horizon — this set is what makes
+        // that enforceable rather than aspirational.
+        const usedProviderTimestamps = new Set<number>();
+        const usedByHorizon = new Map<number, number>();
+
         for (const horizon of due) {
+          const requestStartedAtMs = Date.now();
           const fetched = await deps.quote(c.optionSymbol, c.symbol);
           const q = fetched.quote;
           // Three distinct failures, kept apart. A provider outage, a budget
@@ -176,6 +188,57 @@ export async function runDueAsymmetryMarks(db: MarkDb, deps: MarkDeps): Promise<
             returnPct, rejectedReason: rejection,
           });
           if (wrote) { if (rejection) out.marksRejected += 1; else out.marksWritten += 1; }
+
+          // ── Gate B evidence. Instrumentation only: it issues no provider
+          //    call, and a failure here can never affect the mark above.
+          try {
+            const win = horizonWindow(c.firstDetectedAtMs, horizon);
+            const indep = evaluateIndependence({
+              window: win,
+              providerAtMs: q?.quoteAtMs ?? null,
+              observedAtMs,
+              usedProviderTimestamps,
+            }, usedByHorizon);
+            // Claim the observation so no later horizon can reuse it.
+            if (indep.independent && q?.quoteAtMs != null) {
+              usedProviderTimestamps.add(q.quoteAtMs);
+              usedByHorizon.set(q.quoteAtMs, horizon);
+            }
+            recordMarkEvidenceOnDb(db as never, {
+              markAttemptId: `${c.sessionDate}|${c.fingerprint}|${horizon}|${observedAtMs}`,
+              sessionDate: c.sessionDate, fingerprint: c.fingerprint,
+              optionSymbol: c.optionSymbol, underlying: c.symbol, horizonMinutes: horizon,
+              targetAtMs: win.targetAtMs,
+              acceptableFromMs: win.acceptableFromMs,
+              acceptableUntilMs: win.acceptableUntilMs,
+              sweepId: deps.sweepId ?? null,
+              sweepStartedAtMs: deps.nowMs,
+              schedulerSelectedAtMs: requestStartedAtMs,
+              providerRequestStartedAtMs: requestStartedAtMs,
+              providerResponseReceivedAtMs: observedAtMs,
+              observedAtMs,
+              rawProviderTimestamp: q?.quoteAtMs != null ? String(q.quoteAtMs) : null,
+              sourceField: q?.quoteAtMs != null ? "contract.providerTimestamp" : null,
+              inferredUnit: q?.quoteAtMs != null ? "ms" : null,
+              normalizedProviderTimestampMs: q?.quoteAtMs ?? null,
+              providerSkewMs: q?.quoteAtMs != null ? q.quoteAtMs - observedAtMs : null,
+              sweepDriftMs: observedAtMs - deps.nowMs,
+              requestLatencyMs: observedAtMs - requestStartedAtMs,
+              schedulerDelayMs: requestStartedAtMs - deps.nowMs,
+              quoteAgeMs: q?.quoteAtMs != null ? observedAtMs - q.quoteAtMs : null,
+              bid: q?.bid ?? null, ask: q?.ask ?? null,
+              sourceEndpoint: "v3/snapshot/options/{underlying}/{occ}",
+              cacheStatus: "LIVE",
+              accepted: rejection == null,
+              independent: rejection == null && indep.independent,
+              reusedFromHorizon: indep.reusedFromHorizon,
+              horizonMatchStatus: indep.horizonMatch,
+              markQuality: rejection ?? (indep.independent ? "INDEPENDENT_FRESH" : "REUSED_PRIOR_MARK"),
+              rejectionReason: rejection,
+              timestampPolicyVersion: "MARK_TS_POLICY_V1",
+              dataQualityVersion: "DATA_QUALITY_V1",
+            }, observedAtMs);
+          } catch { /* evidence is observability-only; never affect marking */ }
         }
         if (aggregateOutcomesOnDb(db, c.sessionDate, c.fingerprint, deps.nowMs)) out.outcomesUpdated += 1;
       } catch (err: any) {

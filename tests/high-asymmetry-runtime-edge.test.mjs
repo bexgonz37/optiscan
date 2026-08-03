@@ -172,7 +172,14 @@ test("the schema migration is additive and repeat-safe", () => {
   ensureAsymmetrySchema(d);
   ensureAsymmetrySchema(d);
   const tables = d.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'asymmetry%'").all().map((r) => r.name).sort();
-  assert.deepEqual(tables, ["asymmetry_cases", "asymmetry_daily_reviews", "asymmetry_marks", "asymmetry_outcomes", "asymmetry_transitions"]);
+  // asymmetry_mark_evidence is the per-ATTEMPT log added for Gate B. It is a
+  // separate table on purpose: asymmetry_marks holds one row per horizon and
+  // replaces transient failures on retry, which would destroy the attempt
+  // history that makes mark independence measurable.
+  assert.deepEqual(tables, [
+    "asymmetry_cases", "asymmetry_daily_reviews", "asymmetry_mark_evidence",
+    "asymmetry_marks", "asymmetry_outcomes", "asymmetry_transitions",
+  ]);
   // No destructive DDL anywhere in the store.
   const src = readFileSync("lib/research/asymmetry/case-store.ts", "utf8");
   assert.equal(/DROP TABLE|DROP INDEX|ALTER TABLE .* DROP|DELETE FROM/i.test(src), false, "no destructive DDL");

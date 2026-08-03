@@ -105,6 +105,70 @@ export function ensureAsymmetrySchema(db: StoreDb): void {
     );
     CREATE INDEX IF NOT EXISTS idx_asymmetry_marks_session ON asymmetry_marks(session_date, marked_at_ms);
 
+    /**
+     * Per-attempt mark evidence. SEPARATE TABLE ON PURPOSE.
+     *
+     * asymmetry_marks is keyed (session, fingerprint, horizon) and holds at
+     * most one row per horizon — the current best answer. Evidence is a LOG:
+     * every attempt, including the ones that failed and the ones later replaced
+     * by a retry. Adding 25 columns to the keyed table would have destroyed the
+     * attempt history that makes independence measurable at all.
+     *
+     * Raw provider timestamps are stored as TEXT because a 19-digit nanosecond
+     * value exceeds Number.MAX_SAFE_INTEGER; keeping the string preserves the
+     * original for audit even though the normalized ms is what we compare.
+     */
+    CREATE TABLE IF NOT EXISTS asymmetry_mark_evidence (
+      mark_attempt_id TEXT PRIMARY KEY,
+      session_date TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      option_symbol TEXT NOT NULL,
+      underlying TEXT,
+      horizon_minutes INTEGER NOT NULL,
+
+      target_at_ms INTEGER,
+      acceptable_from_ms INTEGER,
+      acceptable_until_ms INTEGER,
+
+      sweep_id TEXT,
+      sweep_started_at_ms INTEGER,
+      scheduler_selected_at_ms INTEGER,
+      provider_request_started_at_ms INTEGER,
+      provider_response_received_at_ms INTEGER,
+      observed_at_ms INTEGER,
+
+      raw_provider_timestamp TEXT,
+      raw_digit_count INTEGER,
+      source_field TEXT,
+      inferred_unit TEXT,
+      normalized_provider_timestamp_ms INTEGER,
+      provider_skew_ms INTEGER,
+      sweep_drift_ms INTEGER,
+      request_latency_ms INTEGER,
+      scheduler_delay_ms INTEGER,
+      quote_age_ms INTEGER,
+
+      bid REAL, ask REAL, midpoint REAL,
+      source_endpoint TEXT,
+      cache_status TEXT,
+
+      accepted INTEGER NOT NULL DEFAULT 0,
+      independent INTEGER NOT NULL DEFAULT 0,
+      reused_from_horizon INTEGER,
+      horizon_match_status TEXT,
+      mark_quality TEXT,
+      rejection_reason TEXT,
+
+      timestamp_policy_version TEXT,
+      mark_version TEXT,
+      data_quality_version TEXT,
+      created_at_ms INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_asym_mark_evidence_session
+      ON asymmetry_mark_evidence(session_date, created_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_asym_mark_evidence_fp
+      ON asymmetry_mark_evidence(session_date, fingerprint, horizon_minutes);
+
     CREATE TABLE IF NOT EXISTS asymmetry_outcomes (
       session_date TEXT NOT NULL,
       fingerprint TEXT NOT NULL,
