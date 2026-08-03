@@ -30,8 +30,17 @@ export async function GET(req: Request) {
     } = await import("@/lib/research/options/parity-diagnostic");
 
     const db = getDb() as any;
+    // A swallowed query error once turned a SQL syntax mistake into an empty
+    // population that reported cleanly as NOT_COMPARABLE. Failures are now
+    // collected and surfaced, so "no rows" and "the query broke" can never
+    // look the same again.
+    const queryErrors: string[] = [];
     const all = (sql: string, ...a: unknown[]): any[] => {
-      try { return db.prepare(sql).all(...a) as any[]; } catch { return []; }
+      try { return db.prepare(sql).all(...a) as any[]; }
+      catch (err: any) {
+        queryErrors.push(String(err?.message ?? err).slice(0, 200));
+        return [];
+      }
     };
     const cols = (t: string): Set<string> => {
       try { return new Set((db.prepare(`PRAGMA table_info(${t})`).all() as any[]).map((c) => String(c.name))); }
@@ -40,16 +49,25 @@ export async function GET(req: Request) {
 
     const pc = cols("options_paper_trades");
     const ac = cols("options_alerts");
-    const p = (c: string) => (pc.has(c) ? c : `NULL AS ${c}`);
+    // Emit `col AS alias` when the column exists, `NULL AS alias` when it does
+    // not. Aliasing exactly once — an earlier version appended a second alias
+    // onto an already-aliased NULL and produced a syntax error, which the
+    // error-swallowing reader turned into a silent empty population.
+    const p = (c: string, alias = c) => (pc.has(c) ? `t.${c} AS ${alias}` : `NULL AS ${alias}`);
     const a = (c: string) => (ac.has(c) ? c : `NULL AS ${c}`);
 
     // ── ONE shared population, keyed. Paper rows LEFT JOIN their alert. ────
     const rows = all(`
-      SELECT t.id AS paper_id, ${p("t.alert_id").replace("t.", "")} AS alert_id,
-             ${p("option_symbol")} AS paper_occ, ${p("status")} AS status,
-             ${p("entry_fill")} AS entry_fill, ${p("exit_fill")} AS exit_fill,
-             ${p("exit_at_ms")} AS exit_at_ms, ${p("return_pct")} AS return_pct,
-             ${p("entered_at_ms")} AS entered_at_ms, ${p("paper_kind")} AS paper_kind
+      SELECT t.id AS paper_id,
+             ${p("alert_id")},
+             ${p("option_symbol", "paper_occ")},
+             ${p("status")},
+             ${p("entry_fill")},
+             ${p("exit_fill")},
+             ${p("exit_at_ms")},
+             ${p("return_pct")},
+             ${p("entered_at_ms")},
+             ${p("paper_kind")}
         FROM options_paper_trades t
        WHERE t.status='EXITED' AND t.return_pct IS NOT NULL
        ORDER BY t.id DESC LIMIT ?`, limit);
@@ -195,6 +213,9 @@ export async function GET(req: Request) {
         limit,
         note: "Both verifiers are evaluated over THIS shared keyed population. Aggregate counts from differently-scoped queries are NOT parity evidence.",
       },
+      // Non-empty means the diagnostic is UNRELIABLE, whatever it reports.
+      queryErrors,
+      dataComplete: queryErrors.length === 0,
       parity,
       deliveryClassification: census,
       eligiblePopulation: eligible,
