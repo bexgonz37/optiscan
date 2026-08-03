@@ -435,3 +435,41 @@ Mark density is the blocker for everything. Until the independent rate exceeds
 - The 82 verified rows are still below the 60-alert forward-sample requirement,
   and they are backward-looking, not forward.
 - `TIME_30_STOP_20` leads by 0.006 PF over `ASYM_3R` — noise at n=82.
+
+---
+
+# Packet update — 2026-08-02 (Checkpoint 3)
+
+## One verification contract, not three
+
+`lib/research/options/verification-contract.ts` is now the sole authority.
+Quant Lab joins `options_alerts` and delegates the decision. The Checkpoint 2
+approximation is gone — it claimed "stricter-or-equal" but checked FEWER facts,
+so it was more permissive, and official numbers were quoted from it.
+
+Every fact is tri-state; **a null never satisfies a requirement**.
+
+## Mark density — NOT improved this checkpoint
+
+Independent mark rate remains **23.4%** (132 of 565 horizons); 84.1% of series
+degenerate. **No mark-pipeline change shipped.** The root cause work is
+documented but the fix is deferred, because it must be validated during live
+options hours and the market is closed.
+
+## Official sample: NOT quotable
+
+`quotable: false`, blockers named. Deploy verification will restate the live
+counts under the new contract — expect the verified count to FALL sharply from
+276 as delivery proof is now required.
+
+## Still true
+
+- No bracket promoted. Production runs the symmetric ±45%.
+- No strategy quarantined.
+- Paid launch blocked.
+- Zero provider calls added; quant-lab is read-only (asserted by test).
+
+## Next
+
+Mark density is the only thing standing between here and a usable dataset.
+It needs a live session.
