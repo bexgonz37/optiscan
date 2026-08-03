@@ -738,6 +738,90 @@ absolute. That boundary test was also broadened to sweep `paper/`, which it had
 not been covering.
 
 
+## The NO_QUOTE epidemic, and what it really was (2026-08-02)
+
+Production on 2026-07-31 recorded **2,718 `NO_QUOTE` mark rejections against 7
+usable marks (0.4%)**. Read literally that says several hundred liquid contracts
+had no market for a whole session. Sampling 35 of the real cases against the
+live provider resolved a usable two-sided quote for **35/35** — the contracts
+were fine the entire time.
+
+The pre-session hypothesis in CURRENT_PACKET was a DTE/page-window mismatch
+between capture and `getQuote`. That was close but not the cause. The cause was
+**cost**, plus a misattribution that hid it:
+
+- `liveAsymmetryQuote` read ONE contract by calling `fetchOptionChain(0-60 DTE,
+  maxPages 3)` and searching the result — up to 3 requests and 750 contracts to
+  use one of them.
+- The transition sweep does that for every open case every 60 seconds. Measured:
+  **~1,119 requests/minute against a 280/minute cap**, ~436,000 per session
+  against a **200,000/day cap shared with the live scanner**. `/api/health`
+  confirmed `callsToday = dailyCap = 200,000`.
+- Once exhausted, `recordPolygonCall` threw, `fetchOptionChain` returned
+  `available:false`, `getQuote` mapped that to `null`, and `live-quote.ts`
+  reported it as `providerError: null` — **a genuine no-quote**. Its own
+  docstring already promised that must never happen.
+
+So a self-inflicted budget problem was filed as an absence of liquidity, which
+is why it survived a full session of people looking at the numbers. It also
+silently disabled the rollover half of ASYM_NOTIFY_V2 (which reads
+`peakAskSinceCapture` from those marks) and held paper at
+`BLOCKED_QUOTE_PATH_DEFECT` with 204 entries skipped.
+
+**Fixed by:** `fetchOptionContractSnapshot` (one request, exact contract,
+measured 2.83x reduction on real cases); `PROVIDER_BUDGET` and
+`NO_TWO_SIDED_MARKET` as distinct rejection reasons; and a bounded per-sweep
+quote budget with round-robin rotation. Rotation is a correctness property —
+a case that is never observed can never transition, so a fixed-order budget
+would freeze everything past the cutoff permanently.
+
+A related defect fixed at the same time: a transient rejection was written with
+the marks PRIMARY KEY, so `existingHorizons` counted that horizon as done and
+`dueHorizons` never offered it again. One exhausted budget therefore **destroyed**
+a session of forward marks rather than delaying them.
+
+## Historical cohorts are possible after all (2026-08-02)
+
+The repo asserted in two places that historical option quotes were "not
+integrated or entitled". Only the first half was true. A probe of the live key
+proved `/v3/quotes/{OCC}` serves full NBBO with sizes back to at least
+**2023-07-31**, and `reference?expired=true` enumerates expired contracts back
+to 2010. See `historical/capability-matrix.ts`; re-verify with
+`scripts/massive-capability-probe.mjs`.
+
+That mistake is why no historical winner cohort ever existed: the only graded
+population was contracts the radar had already alerted on, so an outsized cohort
+could never contain anything the system missed.
+
+**First real cohort run — NVDA, 2026-07-31, 40 near-the-money contracts:**
+
+| Band | n |
+|---|---|
+| GAIN_100 | 2 |
+| GAIN_25_99 | 4 |
+| FLAT | 9 |
+| LOSS | 7 |
+| UNGRADEABLE | 18 |
+
+Both winners were **0DTE** contracts the radar did not take:
+
+- `O:NVDA260731C00197500` — $1.45 → $3.45, **+137.93%**
+- `O:NVDA260731C00200000` — $0.48 → $1.09, **+127.08%**
+
+The radar captured `O:NVDA260807C00200000` (Aug 7 expiry) instead, which went
+$3.25 → $3.65, **+12.3%**.
+
+**This reframes the original NVDA complaint.** The alert did read
+`LATE_CONFIRMATION` on timing — 80% of that contract's move was already priced
+in. But the larger gap is **contract selection**, not gate tightness: right
+underlying, right side, right session, wrong expiry. Loosening ASYM_NOTIFY_V2
+would not have found either winner. `reviewMissedWinners` classifies this as
+`SIBLING_CONTRACT_CAPTURED` precisely so a selection failure is never mistaken
+for a detection failure — the two argue for opposite changes.
+
+Sample sizes remain far below the minimum of 20 per cohort, so no feature
+difference is evidence yet and none is claimed.
+
 ## Related notes
 
 - [[safety]]

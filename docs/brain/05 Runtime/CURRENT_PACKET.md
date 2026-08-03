@@ -277,3 +277,63 @@ counts.
 - [[../02 Components/deployment]]
 - [[../02 Components/Discord Alerts]]
 - [[../02 Components/AI Learning System]]
+
+---
+
+# Packet update — 2026-08-02
+
+## The quote-path hypothesis was close, and wrong
+
+This packet predicted the defect was a DTE/page-window mismatch (capture 0-14
+DTE / 2 pages vs `getQuote` 0-60 DTE / 3 pages) and advised aligning the windows
+rather than raising page counts. Raising page counts would indeed have been
+wrong — but so was the diagnosis.
+
+Verified against the live provider: for 35 sampled production cases the target
+contract was resolvable **35/35** through BOTH the 3-page chain slice and the
+single-contract snapshot. The window was never the problem.
+
+The real cause was **cost**, and a misattribution that concealed it:
+
+- Reading ONE contract cost up to 3 requests via `fetchOptionChain`.
+- The transition sweep does that per case per 60s: **~1,119 req/min vs a 280/min
+  cap**, ~436,000/session vs a **200,000/day cap shared with the live scanner**.
+- `/api/health` confirmed `callsToday = dailyCap = 200,000`.
+- After exhaustion, quota refusals were recorded as `NO_QUOTE` with
+  `providerError: null` — a *genuine* no-quote. 2,718 of them.
+
+Fixed: single-contract snapshot (2.83x fewer requests, measured), distinct
+`PROVIDER_BUDGET` / `NO_TWO_SIDED_MARKET` reasons, a bounded per-sweep budget
+with rotation, and retryable transient rejections (a transient failure used to
+consume the horizon permanently via the marks PRIMARY KEY).
+
+## What to verify next session
+
+1. `/api/research/asymmetry/timing` → `rolloverCheckViability.usableMarkPct`.
+   It was **0.4%**. If the fix worked this should rise sharply during RTH.
+2. Same endpoint → `rolloverCheckViability.rejectionsByKind`. `ourFault` should
+   collapse; a residual `contractReality` count is expected and healthy.
+3. `/api/health` → `callsToday` should stay well under `dailyCap` through the
+   close. If it pins at the cap again, the budget is still being consumed
+   somewhere else — do not raise the cap, find the consumer.
+4. `lastAsymmetryTransitions.casesDeferredForBudget`. Non-zero is NORMAL and
+   means rotation is working. Persistently equal to `casesRead` means the budget
+   is too tight — tune `ASYM_MAX_QUOTES_PER_SWEEP`, not the provider cap.
+5. `paperActivation.activationState`. It should leave
+   `BLOCKED_QUOTE_PATH_DEFECT` once marks are usable. **Do not** enable
+   `HIGH_ASYMMETRY_PAPER_ENABLED` to force it.
+
+## Do not conclude from this yet
+
+- `asymmetry_notify_decisions` has one partial session. The 120s and 50%
+  thresholds remain provisional and unvalidated. Neither was changed.
+- The NVDA cohort found 2 winners against 20 controls — **below the minimum of
+  20 per cohort**. No feature difference is evidence.
+- The rollover threshold could not fire at all while marks were broken, so its
+  low suppression count says nothing about whether it is well set.
+
+## Stop conditions (unchanged, plus)
+
+- do not raise `POLYGON_DAILY_CALL_CAP` or `POLYGON_MINUTE_CALL_CAP` to make the
+  research lane fit — the lane must yield to the scanner, not the reverse
+- do not tune the 120s or 50% thresholds from the NVDA example
