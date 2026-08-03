@@ -402,6 +402,78 @@ export async function fetchQuoteAtInstant(
   return { quote: res.rows[0] ?? null, outcome: res.outcome };
 }
 
+/** One contract in the historical universe. Reference data only, no prices. */
+export interface ContractRef {
+  occ: string;
+  underlying: string;
+  side: "call" | "put";
+  strike: number;
+  expiration: string;
+}
+
+/**
+ * Enumerate contracts that existed for an underlying, INCLUDING EXPIRED ONES.
+ *
+ * This is the only way to find a contract that no longer exists, and therefore
+ * the entry point to any historical cohort: without it the universe is limited
+ * to contracts still listed today, which is a survivorship-biased sample of
+ * exactly the wrong kind.
+ *
+ * PROBED 2026-08-02: `expired=true` with an expiration_date range returns 200
+ * with full pages back to 2010 expirations. NOTE: combining `as_of` WITH an
+ * expiration_date range returned zero rows — use the date range alone.
+ */
+export async function fetchContractUniverse(
+  underlying: string,
+  expirationFromDay: string,
+  expirationToDay: string,
+  deps: HistoricalDeps,
+  opts: { side?: "call" | "put"; maxPages?: number; limit?: number } = {},
+): Promise<{ contracts: ContractRef[]; outcome: FetchOutcome; pages: number }> {
+  const sym = String(underlying).toUpperCase();
+  const maxPages = Math.max(1, Math.min(20, opts.maxPages ?? 4));
+  const limit = Math.max(1, Math.min(1000, opts.limit ?? 250));
+  const out: ContractRef[] = [];
+  let pages = 0;
+  let lastOutcome: FetchOutcome = { ok: true, blocked: false, cached: false, note: "OK" };
+
+  // Pagination uses an explicit strike cursor rather than next_url so every
+  // page is an independently accounted, independently cacheable request.
+  let strikeCursor: number | null = null;
+  for (let p = 0; p < maxPages; p++) {
+    const params: Record<string, string | number> = {
+      underlying_ticker: sym, expired: "true", limit,
+      "expiration_date.gte": expirationFromDay, "expiration_date.lte": expirationToDay,
+      sort: "strike_price", order: "asc",
+    };
+    if (opts.side) params.contract_type = opts.side;
+    if (strikeCursor != null) params["strike_price.gt"] = strikeCursor;
+
+    const { body, note, blocked } = await request(deps, "REFERENCE", "/v3/reference/options/contracts", params, {
+      symbol: sym, occ: null, windowKey: `ref-${expirationFromDay}-${expirationToDay}-p${p}`,
+    });
+    if (!body) { lastOutcome = { ok: false, blocked, cached: false, note }; break; }
+    pages += 1;
+    const rows = results(body);
+    if (rows.length === 0) break;
+    for (const r of rows) {
+      const rec = r as Record<string, unknown>;
+      const occ = String(rec.ticker ?? "").toUpperCase();
+      const strike = numOrNull(rec.strike_price);
+      const side = String(rec.contract_type ?? "").toLowerCase();
+      if (!occ || strike == null || (side !== "call" && side !== "put")) continue;
+      out.push({ occ, underlying: sym, side, strike, expiration: String(rec.expiration_date ?? "") });
+    }
+    const maxStrike = out.length ? out[out.length - 1].strike : null;
+    if (rows.length < limit || maxStrike == null || maxStrike === strikeCursor) break;
+    strikeCursor = maxStrike;
+  }
+  // The same strike can carry several expirations, so dedupe on the OCC itself.
+  const seen = new Set<string>();
+  const unique = out.filter((c) => (seen.has(c.occ) ? false : (seen.add(c.occ), true)));
+  return { contracts: unique, outcome: lastOutcome, pages };
+}
+
 /**
  * The premium curve for a contract, from 1-minute aggregates.
  *
