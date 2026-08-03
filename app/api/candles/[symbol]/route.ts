@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { fetchCandles, getCallStats } from "@/lib/polygon-provider";
 import { checkApiToken, unauthorized } from "@/lib/auth";
 import { cached } from "@/lib/scan-cache";
+import { withProviderConsumer } from "@/lib/provider-context";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -37,6 +38,11 @@ function quotaMessage(stats: ReturnType<typeof getCallStats>): string {
 }
 
 export async function GET(req: Request, { params }: { params: Promise<{ symbol: string }> }) {
+  // Browser-driven spend, named so it can never again be filed as `unattributed`.
+  return withProviderConsumer("dashboard_api", () => candlesInner(req, params));
+}
+
+async function candlesInner(req: Request, params: Promise<{ symbol: string }>) {
   if (!checkApiToken(req)) return unauthorized();
   const { symbol } = await params;
   const sym = String(symbol ?? "").toUpperCase();

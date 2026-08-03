@@ -8,6 +8,7 @@ import { optionsPressure } from "@/lib/options-pressure";
 import { minutesToClose } from "@/lib/db";
 import { marketSession } from "@/lib/trading-session";
 import { checkApiToken, unauthorized } from "@/lib/auth";
+import { withProviderConsumer } from "@/lib/provider-context";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,6 +42,13 @@ function realityCheck(c: any, minsToClose: number, expRemainPct: number) {
  *  ?zero=1 — 0DTE mode: nearest-expiry chain, best call + best put reality
  *  check, and the options-pressure confirmation read. */
 export async function GET(req: Request, { params }: { params: Promise<{ ticker: string }> }) {
+  // This route fetches a WHOLE CHAIN per request — the most expensive call the
+  // system makes — on behalf of a browser. It was the largest named suspect in the
+  // `unattributed` bucket and is now billed to the dashboard.
+  return withProviderConsumer("dashboard_api", () => optionsInner(req, params));
+}
+
+async function optionsInner(req: Request, params: Promise<{ ticker: string }>) {
   if (!checkApiToken(req)) return unauthorized();
   const { ticker } = await params;
   const zero = new URL(req.url).searchParams.get("zero") === "1";

@@ -13,6 +13,7 @@
 import { getDb, tradingDay } from "@/lib/db";
 import { fetchOptionChain, getCallStats } from "@/lib/polygon-provider";
 import { nearMinuteBudget } from "@/lib/near-miss";
+import { withProviderConsumer } from "@/lib/provider-context";
 import { marketSession, type MarketSession } from "@/lib/trading-session";
 import {
   markToMarket, applyExit, lessonsLearned, ENTRY_WINDOW_MS,
@@ -1624,7 +1625,26 @@ function advanceStockScalps(nowMs: number = Date.now()): number {
   return advanced;
 }
 
+/**
+ * The paper sweep is MARKING, and it was billing to nobody.
+ *
+ * It runs every 30s and fetches up to `MAX_FETCHES_PER_SWEEP` whole chains — the
+ * most expensive request the system makes — entirely outside every provider scope.
+ * Under Gate B7 that is not merely an accounting gap: `unattributed` holds no
+ * reserve, so the lane that advances open paper trades was left competing in the
+ * shared pool while the `options_paper_mark` reserve sat beside it, spoken for by
+ * the subscriber grade lane alone.
+ *
+ * It marks options paper trades, so it bills to the normal-paper mark lane, which
+ * is exactly the reserve the roadmap holds separate from High-Asymmetry marking.
+ * The sweep is bounded at 5 chains per 30s — ~10/minute against a 44/minute
+ * reserve — so it cannot crowd out the grade lane it now shares with.
+ */
 export async function sweepPaperTrades(nowMs: number = Date.now()): Promise<{ advanced: number; fetched: number }> {
+  return withProviderConsumer("options_paper_mark", () => sweepPaperTradesInner(nowMs));
+}
+
+async function sweepPaperTradesInner(nowMs: number): Promise<{ advanced: number; fetched: number }> {
   // Idempotent: freeze fingerprints for any filled trade missing one and grade
   // any filled+terminal trade into the authoritative outcome layer. Restart-safe
   // (guarded by fingerprint_id IS NULL and a UNIQUE(paper_trade_id) outcome row).

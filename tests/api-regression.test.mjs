@@ -197,3 +197,39 @@ test("provider-usage scope params are presence-checked before being parsed", () 
   // The partition must stay in the payload — it is the only way to read a reserve.
   assert.match(route, /minuteBudget: live\.minuteBudget/);
 });
+
+// ── Provider attribution at entry points (Gate B5/B7) ───────────────────────
+// `unattributed` was 63.7% of a full session's provider spend, and under Gate B7
+// it holds no reserve — so an unscoped caller is not merely unnamed, it competes
+// for the shared pool against lanes that are supposed to be protected. Each entry
+// point below reaches a metered provider call and must declare an owner.
+test("every provider-calling entry point declares a consumer", () => {
+  const owners = [
+    // Scheduled/background work — continuous spend, the expensive endpoints.
+    ["lib/paper-engine.ts", "options_paper_mark"],
+    ["lib/supervisor-cycle.ts", "options_discovery"],
+    // Browser/operator-driven work — must land in the shared pool, never a reserve.
+    ["app/api/options/[ticker]/route.ts", "dashboard_api"],
+    ["app/api/candles/[symbol]/route.ts", "dashboard_api"],
+    ["app/api/candles/sparklines/route.ts", "dashboard_api"],
+    ["app/api/context/zero-dte/route.ts", "dashboard_api"],
+    ["app/api/scan/momentum/route.ts", "dashboard_api"],
+    ["app/api/scan/unusual/route.ts", "dashboard_api"],
+    ["app/api/scan/[symbol]/route.ts", "dashboard_api"],
+    ["app/api/scanner/live/route.ts", "dashboard_api"],
+    // Historical research must be readable as historical.
+    ["app/api/research/options/replay/route.ts", "historical_research"],
+  ];
+  for (const [file, consumer] of owners) {
+    const src = read(file);
+    assert.match(src, /withProviderConsumer/, `${file} must open a provider scope`);
+    assert.ok(src.includes(`"${consumer}"`), `${file} must bill to ${consumer}`);
+  }
+});
+
+test("the historical replay route declares itself historical", () => {
+  const src = read("app/api/research/options/replay/route.ts");
+  // Historical spend that reads as live spend is how research ends up competing
+  // with RTH marking for the same minute cap.
+  assert.match(src, /historical: true/);
+});

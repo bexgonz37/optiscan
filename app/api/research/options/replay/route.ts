@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { checkApiToken, unauthorized } from "@/lib/auth";
 import { ensureServerBoot } from "@/lib/server-boot";
+import { withProviderConsumer } from "@/lib/provider-context";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,6 +23,14 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  // Historical replay fetches past bars. It is research, and it must be readable
+  // as research so it can never be mistaken for live spend — nor, under Gate B7,
+  // borrow a live marking reserve during regular hours.
+  return withProviderConsumer({ consumer: "historical_research", historical: true },
+    () => replayInner(req));
+}
+
+async function replayInner(req: Request) {
   if (!checkApiToken(req)) return unauthorized();
   ensureServerBoot();
   let body: any = {};

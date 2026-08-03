@@ -2,12 +2,21 @@ import { NextResponse } from "next/server";
 import { fetchCandles } from "@/lib/polygon-provider";
 import { checkApiToken, unauthorized } from "@/lib/auth";
 import { cached, mapLimit } from "@/lib/scan-cache";
+import { withProviderConsumer } from "@/lib/provider-context";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /** GET /api/candles/sparklines?symbols=AAPL,NVDA — last ~36 session 5m closes for mini charts. */
 export async function GET(req: Request) {
+  // A dashboard poll fans out one candle fetch per symbol against the same minute
+  // cap live marking competes for. Naming it does not slow it down; it makes it
+  // visible, and under Gate B7 it puts browser-driven spend in the shared pool
+  // where it cannot take a marking reserve.
+  return withProviderConsumer("dashboard_api", () => sparklinesInner(req));
+}
+
+async function sparklinesInner(req: Request) {
   if (!checkApiToken(req)) return unauthorized();
   const raw = new URL(req.url).searchParams.get("symbols") ?? "";
   const symbols = [...new Set(

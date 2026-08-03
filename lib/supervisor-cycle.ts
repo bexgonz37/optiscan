@@ -19,6 +19,7 @@ import { getZeroDteUniverse } from "@/lib/universe.js";
 import { loopState } from "@/lib/scanner-loop";
 import { buildCycleUniverse, DEFAULT_SUPERVISOR_CORE_TICKERS, parseTickerList } from "@/lib/supervisor-universe";
 import { recordOptionsDiagnostic } from "@/lib/options-diagnostics";
+import { withProviderConsumer } from "@/lib/provider-context";
 import { marketSession } from "@/lib/trading-session";
 
 const SUPERVISOR_STRATEGY_VERSION = "supervisor-options-v1";
@@ -125,6 +126,15 @@ export interface SupervisorCycleResult {
  * a failure is recorded in telemetry and never throws into the scheduler.
  */
 export async function runSupervisorCycle(nowMs: number = Date.now(), env: NodeJS.ProcessEnv = process.env): Promise<SupervisorCycleResult> {
+  // The canonical callout path reaches `runAgentsForTicker`, which fetches a 0-90
+  // DTE chain per ticker (lib/agents/runtime.ts). Unscoped, that is a scheduled
+  // consumer of the most expensive endpoint billing to `unattributed` — and under
+  // Gate B7, to no reserve. This is discovery work: it evaluates a bounded universe
+  // to decide which tickers become callouts.
+  return withProviderConsumer("options_discovery", () => runSupervisorCycleInner(nowMs, env));
+}
+
+async function runSupervisorCycleInner(nowMs: number, env: NodeJS.ProcessEnv): Promise<SupervisorCycleResult> {
   const g = globalThis as G;
   const t = telemetry();
   if (g.__optiscanSupervisorRunning) {

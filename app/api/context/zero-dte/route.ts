@@ -1,12 +1,17 @@
 import { NextResponse } from "next/server";
 import { checkApiToken, unauthorized } from "@/lib/auth";
 import { resolveZeroDteStripSymbols, fetchStripContext } from "@/lib/zero-dte-context";
+import { withProviderConsumer } from "@/lib/provider-context";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /** GET /api/context/zero-dte — ATM IV context for up to 6 strip symbols (cached). */
 export async function GET(req: Request) {
+  return withProviderConsumer("dashboard_api", () => zeroDteContextInner(req));
+}
+
+async function zeroDteContextInner(req: Request) {
   if (!checkApiToken(req)) return unauthorized();
   const url = new URL(req.url);
   const chart = url.searchParams.get("chart");
