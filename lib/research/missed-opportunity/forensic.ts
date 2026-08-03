@@ -30,6 +30,7 @@ import {
   emptyLadder,
   type ClaimVerdict,
   type MissedOpportunityCase,
+  occSide,
   type QuoteObservation,
 } from "./types.ts";
 import { reconstructSymbol, type ReadDb, type SymbolReconstruction } from "./reconstruct.ts";
@@ -215,6 +216,13 @@ export interface ForensicResult {
   /** Per-contract NBBO coverage, so weak evidence is visible rather than implied. */
   contractsWithNbbo: number;
   nbboObservations: number;
+  /**
+   * NBBO coverage on BOTH sides, regardless of the direction under investigation.
+   * "14 puts quoted, 0 calls quoted" is a finding about where the system was
+   * looking, and it is invisible if only the searched side is reported.
+   */
+  nbboCallContracts: number;
+  nbboPutContracts: number;
   /** Best executable contract found, when any NBBO series produced one. */
   bestOcc: string | null;
   notes: string[];
@@ -241,9 +249,16 @@ export function runSymbolForensic(input: ForensicInput): ForensicResult {
   const wantSide = input.winnerDirection === "CALL" ? "C" : input.winnerDirection === "PUT" ? "P" : null;
   const eligible = [...series.entries()].filter(([occ]) => {
     if (!wantSide) return true;
-    const m = /^O?:?[A-Z]{1,6}\d{6}([CP])\d{8}$/.exec(occ.replace(/^O:/, ""));
-    return m ? m[1] === wantSide : true;
+    const side = occSide(occ);
+    return side ? side === wantSide : true;
   });
+
+  let nbboCallContracts = 0, nbboPutContracts = 0;
+  for (const occ of series.keys()) {
+    const side = occSide(occ);
+    if (side === "C") nbboCallContracts++;
+    else if (side === "P") nbboPutContracts++;
+  }
 
   let best: { occ: string; verified: VerifiedReturns } | null = null;
   let nbboObservations = 0;
@@ -354,6 +369,8 @@ export function runSymbolForensic(input: ForensicInput): ForensicResult {
     case: c,
     contractsWithNbbo: eligible.length,
     nbboObservations,
+    nbboCallContracts,
+    nbboPutContracts,
     bestOcc: occ,
     notes,
   };

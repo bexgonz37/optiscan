@@ -334,6 +334,40 @@ test("reconstruction reports the terminal reason the funnel ended on", () => {
   assert.ok(lane.consideredOccs.includes("O:SPY260803C00640000"));
 });
 
+test("direction is reported as a session-wide tally, not read off one row", () => {
+  const db = seedDb();
+  const ins = db.prepare(
+    `INSERT INTO options_candidates (symbol, direction, state, why, option_symbol, created_at_ms)
+     VALUES (?,?,?,?,?,?)`,
+  );
+  // First row bullish, but the session is overwhelmingly bearish.
+  ins.run("SPY", "bullish", "REJECTED", "x", "O:SPY260803C00640000", min(1));
+  for (let i = 0; i < 5; i++) {
+    ins.run("SPY", "bearish", "REJECTED", "x", "O:SPY260803P00749000", min(2 + i));
+  }
+
+  const lane = reconstructRegularScanner(db, "SPY", min(0), min(60));
+  assert.equal(lane.directionTally.bearish, 5);
+  assert.equal(lane.directionTally.bullish, 1);
+  assert.equal(lane.callsConsidered, 1, "one call contract was considered");
+  assert.equal(lane.putsConsidered, 1);
+});
+
+test("a lane that considered zero calls reports zero, never an implied bullish view", () => {
+  const db = seedDb();
+  const ins = db.prepare(
+    `INSERT INTO options_candidates (symbol, direction, state, why, option_symbol, created_at_ms)
+     VALUES (?,?,?,?,?,?)`,
+  );
+  ins.run("QQQ", "bearish", "REJECTED", "x", "O:QQQ260803P00686000", min(1));
+  ins.run("QQQ", "bearish", "REJECTED", "x", "O:QQQ260803P00680000", min(2));
+
+  const lane = reconstructRegularScanner(db, "QQQ", min(0), min(60));
+  assert.equal(lane.callsConsidered, 0);
+  assert.equal(lane.putsConsidered, 2);
+  assert.equal(lane.directionTally.bullish, undefined);
+});
+
 test("an empty lane is 'no recorded observation', not a fabricated decision", () => {
   const db = seedDb();
   const lane = reconstructRegularScanner(db, "NVDA", min(0), min(60));

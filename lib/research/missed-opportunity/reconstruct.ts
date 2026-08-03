@@ -16,8 +16,20 @@
  */
 import {
   emptyLaneDecision,
+  occSide,
   type LaneDecision,
 } from "./types.ts";
+
+/** Count contracts by side. A lane that considered zero calls was never bullish. */
+function tallySides(occs: Iterable<string>): { callsConsidered: number; putsConsidered: number } {
+  let callsConsidered = 0, putsConsidered = 0;
+  for (const occ of occs) {
+    const side = occSide(occ);
+    if (side === "C") callsConsidered++;
+    else if (side === "P") putsConsidered++;
+  }
+  return { callsConsidered, putsConsidered };
+}
 
 export type ReadDb = {
   prepare: (sql: string) => {
@@ -148,13 +160,17 @@ export function reconstructRegularScanner(
       lastNonReady = r;
     }
     const dir = str(r.direction) ?? str(r.side);
-    if (dir && !firstDirectional) firstDirectional = r;
+    if (dir) {
+      lane.directionTally[dir] = (lane.directionTally[dir] ?? 0) + 1;
+      if (!firstDirectional) firstDirectional = r;
+    }
     for (const occ of extractConsideredOccs(r.considered_json)) considered.add(occ);
     const occ = str(r.option_symbol);
     if (occ) considered.add(occ.toUpperCase());
   }
 
   lane.consideredOccs = [...considered].slice(0, 200);
+  Object.assign(lane, tallySides(considered));
   lane.firstCandidateAtMs = firstDirectional ? num(firstDirectional.created_at_ms) : null;
   lane.direction = firstDirectional ? (str(firstDirectional.direction) ?? str(firstDirectional.side)) : null;
   lane.setupFamily = firstDirectional ? str(firstDirectional.selected_strategy) : null;
@@ -200,6 +216,11 @@ export function reconstructHighAsymmetry(
   lane.direction = str(rows[0].direction);
   lane.setupFamily = str(rows[0].setup_family);
   lane.consideredOccs = rows.map((r) => String(r.option_symbol ?? "").toUpperCase()).filter(Boolean).slice(0, 200);
+  Object.assign(lane, tallySides(lane.consideredOccs));
+  for (const r of rows) {
+    const d = str(r.direction);
+    if (d) lane.directionTally[d] = (lane.directionTally[d] ?? 0) + 1;
+  }
   lane.selectedOcc = lane.consideredOccs[0] ?? null;
   lane.state = str(rows[rows.length - 1].state);
 

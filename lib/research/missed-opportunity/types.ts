@@ -177,6 +177,15 @@ export interface LaneDecision {
   candidateCount: number;
   readyCount: number;
   rejectedCount: number;
+  /**
+   * Direction across the WHOLE session, not just the first row. "The scanner was
+   * bearish" is a claim about a distribution; reading it off one row would state
+   * a conclusion the evidence does not support.
+   */
+  directionTally: Record<string, number>;
+  /** Contracts considered, split by option side. Zero calls is a direction fact. */
+  callsConsidered: number;
+  putsConsidered: number;
 }
 
 export function emptyLaneDecision(): LaneDecision {
@@ -184,7 +193,14 @@ export function emptyLaneDecision(): LaneDecision {
     firstSeenAtMs: null, firstCandidateAtMs: null, direction: null, setupFamily: null,
     selectedOcc: null, consideredOccs: [], terminalReason: null, state: null,
     observationCount: 0, candidateCount: 0, readyCount: 0, rejectedCount: 0,
+    directionTally: {}, callsConsidered: 0, putsConsidered: 0,
   };
+}
+
+/** Option side from an OCC symbol, or null when it is not parseable. */
+export function occSide(occ: string): "C" | "P" | null {
+  const m = /^O?:?[A-Z]{1,6}\d{6}([CP])\d{8}$/.exec(String(occ).replace(/^O:/, ""));
+  return m ? (m[1] as "C" | "P") : null;
 }
 
 /** Provider and scheduler state during the window, to attribute budget-caused misses. */

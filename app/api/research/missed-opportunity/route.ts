@@ -82,6 +82,8 @@ export async function GET(req: Request) {
         bestOcc: r.bestOcc,
         contractsWithNbbo: r.contractsWithNbbo,
         nbboObservations: r.nbboObservations,
+        nbboCallContracts: r.nbboCallContracts,
+        nbboPutContracts: r.nbboPutContracts,
         rootCause: r.case.rootCause,
         secondaryCauses: r.case.secondaryCauses,
         failureFamily: r.case.failureFamily,
