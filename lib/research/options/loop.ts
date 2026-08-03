@@ -33,6 +33,7 @@ import {
 } from "../asymmetry/capture-telemetry.ts";
 import { tradingDay } from "../../trading-session.ts";
 import { selectContractWithEvidence, type ContractFunnelEvidence } from "./contract-discovery.ts";
+import { recordContractFunnelOnDb } from "./contract-funnel-store.ts";
 
 export interface ChainContract { optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number; bid: number | null; ask: number | null; spreadPct: number | null; volume: number | null; openInterest: number | null; iv: number | null; delta: number | null; providerTimestamp: number | null }
 
@@ -177,6 +178,17 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
     // no contract" is a countable fact rather than an absence of evidence.
     // Every call is self-contained and swallowed; none can affect the scanner.
     const asymSession = tradingDay(input.nowMs);
+
+    // ── Contract-funnel evidence ─────────────────────────────────────────
+    // Written for EVERY evaluation, selected or not. Until this call existed the
+    // record was computed and thrown away, which is why `deltaSource` could not
+    // be measured and why the discovery monitor had no input but its own test.
+    // Swallowed like every other evidence write — it can never affect selection.
+    if (res.contractFunnel) {
+      const funnel = { ...res.contractFunnel, direction: res.selection.direction ?? null };
+      recordContractFunnelOnDb(db as any, asymSession, funnel);
+    }
+
     recordCaptureStageOnDb(db as any, asymSession, "LOOP_REACHED", input.nowMs);
     if (!res.contract) {
       recordCaptureStageOnDb(db as any, asymSession, "NO_CONTRACT_SELECTED", input.nowMs);
