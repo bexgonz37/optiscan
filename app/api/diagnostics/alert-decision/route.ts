@@ -16,7 +16,20 @@ export const dynamic = "force-dynamic";
  * therefore evaluated on best-1-minute-velocity with that caveat attached,
  * while the day-timeframe major-move detector is reconstructed exactly.
  *
- * Cost: 2 metered candle fetches (ticker + SPY) per request. Manual use.
+ * PROVIDER COST: ZERO by default (Gate B5).
+ *
+ * This route used to spend 2 metered candle fetches on every call, while the shared
+ * minute cap sat pinned at 280/280 and the mark scheduler was being refused ~2,900
+ * times a minute. A diagnostic that competes with live marking for the budget makes
+ * the very problem it is used to investigate worse, and its spend was invisible
+ * because it ran in no attribution scope.
+ *
+ * The reconstruction needs 1-minute bars, and OptiScan persists none — there is no
+ * bar store to read instead. So the honest contract is: answer
+ * NOT_AVAILABLE_WITHOUT_LIVE_CALL by default, and require the caller to opt in with
+ * `&live=1` to authorise the spend. The opt-in path runs inside the `diagnostics`
+ * consumer scope, so a deliberate diagnostic purchase is always attributed and
+ * visible in /api/system/provider-usage. It is never silent and never the default.
  */
 export async function GET(req: Request) {
   if (!checkApiToken(req)) return unauthorized();
@@ -30,6 +43,27 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: "ticker and timestamp (ISO or epoch ms) required" }, { status: 400 });
   }
 
+  const live = url.searchParams.get("live") === "1";
+  if (!live) {
+    return NextResponse.json({
+      ok: false,
+      status: "NOT_AVAILABLE_WITHOUT_LIVE_CALL",
+      ticker,
+      timestamp: new Date(tsMs).toISOString(),
+      reason:
+        "Reconstructing this decision needs 1-minute bars, and OptiScan persists no bar store, "
+        + "so it cannot be answered from persisted data. Diagnostics make zero provider requests "
+        + "by default (Gate B5) because the minute cap is shared with live marking.",
+      retryWith: `${url.pathname}?ticker=${encodeURIComponent(ticker)}&timestamp=${encodeURIComponent(tsRaw)}&live=1`,
+      costIfAuthorised: "2 metered candle fetches (ticker + SPY), attributed to the `diagnostics` consumer",
+    }, { status: 409 });
+  }
+
+  const { withProviderConsumer } = await import("@/lib/provider-context");
+  return withProviderConsumer("diagnostics", () => buildReport(req, ticker, tsMs));
+}
+
+async function buildReport(req: Request, ticker: string, tsMs: number) {
   const { fetchCandles } = await import("@/lib/polygon-provider");
   const { vwap: sessionVwap, sessionBars } = await import("@/lib/momentum-signals");
   const { detectMajorMove } = await import("@/lib/major-move");

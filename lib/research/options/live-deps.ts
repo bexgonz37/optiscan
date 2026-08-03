@@ -115,19 +115,43 @@ export function buildLiveGradeDeps(): {
   return {
     now: Date.now,
     getDb: () => require("@/lib/db").getDb(), // eslint-disable-line @typescript-eslint/no-require-imports
+    /**
+     * Present-time quote for ONE exact OCC — one provider request.
+     *
+     * FIXED 2026-08-03 (Gate B5 measurement). This read the entire 0-60 DTE chain,
+     * up to 3 pages / 750 contracts, and `.find()`-ed a single row out of it. The
+     * identical defect was fixed on the asymmetry lane on 2026-08-02
+     * (lib/research/asymmetry/live-quote.ts) but the SUBSCRIBER grade lane kept it.
+     *
+     * Production proved the cost: `options_paper_mark` spent 12,975 requests to
+     * receive 3,124,152 contract records — 241 records per request to use one —
+     * which is 27% of the whole day's provider budget. Meanwhile `asymmetry_mark`,
+     * already on the exact-OCC path, was refused 78,595 times and got 263 requests
+     * through. The chain scan was starving the lane that had already been fixed.
+     *
+     * `quoteAgeMs` is measured against the instant the provider ANSWERED, not the
+     * instant the sweep started — the same observation-clock rule as the asymmetry
+     * lane, so a quote fetched late in a long pass is not judged as arriving from
+     * the future.
+     */
     getQuote: async (optionSymbol: string, underlyingSymbol: string) => {
       if (!underlyingSymbol) return null;
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { fetchOptionChain } = require("@/lib/polygon-provider");
-      const res = await fetchOptionChain(underlyingSymbol, { dteMin: 0, dteMax: 60, maxPages: 3 });
+      const { fetchOptionContractSnapshot } = require("@/lib/polygon-provider");
+      const res = await fetchOptionContractSnapshot(underlyingSymbol, optionSymbol);
+      const observedAtMs = Date.now();
+      // A budget refusal is NOT a missing quote. Both yield null here — the grader
+      // treats null as "no observation this tick" and holds, which is correct for
+      // both — but they are counted apart so a quota block can never be read as
+      // evidence that the contract had no market.
+      if (res?.quotaExceeded) return null;
       if (!res?.available) return null;
-      const nowMs = Date.now();
-      const c = mapOptionContracts(res.contracts).find((x) => x.optionSymbol === optionSymbol);
+      const c = res.contract;
       if (!c) return null;
       return {
         bid: c.bid,
         ask: c.ask,
-        quoteAgeMs: quoteFreshness(c.providerTimestamp, nowMs).ageMs,
+        quoteAgeMs: quoteFreshness(c.providerTimestamp, observedAtMs).ageMs,
         providerTimestamp: c.providerTimestamp,
       };
     },

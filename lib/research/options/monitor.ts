@@ -9,6 +9,7 @@
  * per-candidate work is fast. Gated OFF by default; a bounded, staged funnel keeps provider usage low.
  */
 import { researchFlags } from "../flags.ts";
+import { withProviderConsumer } from "../../provider-context.ts";
 import { scoreStrategies, optionsTier1, optionsTier0, type OptionsCandidateInput, type Session } from "./discovery.ts";
 import { sessionState } from "./session-state.ts";
 import { decideDeliveryBatch, type DeliverySubmission } from "./delivery-decision.ts";
@@ -153,7 +154,19 @@ export interface CycleResult { tier: 0 | 1 | 2; scanned: number; created: number
 /** Run ONE monitor cycle over a symbol set. Staged funnel: Stage 1 cheap underlying rejects most;
  *  Stage 2 fetches a chain ONLY when a strategy is applicable. Bounded, cooldown-aware, breaker-aware.
  *  Tier 0 uses a RESERVED provider budget so broad work can never starve SPY/QQQ/IWM. */
+/**
+ * One discovery cycle for a tier.
+ *
+ * Attributed to `options_discovery` (Gate B5). Before this scope existed the whole
+ * independent options monitor billed to `unattributed`, which production measured at
+ * 66.6% of the entire day's provider spend — the single largest consumer in the system
+ * was the one nobody could name.
+ */
 export async function runOptionsMonitorCycle(tier: 0 | 1 | 2, symbols: string[], deps: OptionsMonitorDeps, env: NodeJS.ProcessEnv = process.env, cfg: OptionsMonitorConfig = defaultMonitorConfig(env)): Promise<CycleResult> {
+  return withProviderConsumer("options_discovery", () => runOptionsMonitorCycleInner(tier, symbols, deps, env, cfg));
+}
+
+async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], deps: OptionsMonitorDeps, env: NodeJS.ProcessEnv, cfg: OptionsMonitorConfig): Promise<CycleResult> {
   const s = state();
   const now = deps.now ?? Date.now;
   const session = (deps.session ?? (() => "regular" as Session))();

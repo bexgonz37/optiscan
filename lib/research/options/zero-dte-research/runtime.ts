@@ -9,6 +9,7 @@ import { openZeroDteResearchTrade } from "./open.ts";
 import { gradeZeroDteResearchOnDb } from "./grade.ts";
 import type { ChainContract } from "./contracts.ts";
 import type { GradeDeps } from "../grade.ts";
+import { withProviderConsumer } from "../../../provider-context.ts";
 
 export interface ResearchCycleDeps {
   getUnderlying?: (symbol: string) => Promise<{ price: number; session?: string | null } | null>;
@@ -60,10 +61,22 @@ export function zeroDteResearchRuntimeState() {
   return { ...state, timers: state.timers.length };
 }
 
+/**
+ * One 0DTE research cycle. Attributed to `zero_dte_context` (Gate B5) — it is a
+ * `research` category, so Gate B7 stops it before any live subscriber lane.
+ */
 export async function runZeroDteResearchCycle(
   tier: ResearchTier,
   deps: ResearchCycleDeps,
   env: NodeJS.ProcessEnv = process.env,
+): Promise<{ examined: number; opened: number; graded: Awaited<ReturnType<typeof gradeZeroDteResearchOnDb>> | null }> {
+  return withProviderConsumer("zero_dte_context", () => runZeroDteResearchCycleInner(tier, deps, env));
+}
+
+async function runZeroDteResearchCycleInner(
+  tier: ResearchTier,
+  deps: ResearchCycleDeps,
+  env: NodeJS.ProcessEnv,
 ): Promise<{ examined: number; opened: number; graded: Awaited<ReturnType<typeof gradeZeroDteResearchOnDb>> | null }> {
   const cfg = zeroDteResearchConfig(env);
   if (!cfg.enabled) return { examined: 0, opened: 0, graded: null };

@@ -21,10 +21,14 @@ import { AsyncLocalStorage } from "node:async_hooks";
  */
 export type ProviderConsumer =
   | "scanner"
+  | "alert_capture"
   | "options_discovery"
   | "options_paper_mark"
   | "asymmetry_discovery"
   | "asymmetry_mark"
+  | "options_shadow_mark"
+  | "zero_dte_context"
+  | "swing_scan"
   | "watchlist"
   | "premarket"
   | "historical_research"
@@ -36,10 +40,14 @@ export type ProviderConsumer =
 
 export const PROVIDER_CONSUMERS: readonly ProviderConsumer[] = [
   "scanner",
+  "alert_capture",
   "options_discovery",
   "options_paper_mark",
   "asymmetry_discovery",
   "asymmetry_mark",
+  "options_shadow_mark",
+  "zero_dte_context",
+  "swing_scan",
   "watchlist",
   "premarket",
   "historical_research",
@@ -55,10 +63,14 @@ export type ProviderCategory = "scanner" | "mark" | "discovery" | "research" | "
 
 const CATEGORY_BY_CONSUMER: Record<ProviderConsumer, ProviderCategory> = {
   scanner: "scanner",
+  alert_capture: "scanner",
   options_discovery: "discovery",
   options_paper_mark: "mark",
   asymmetry_discovery: "discovery",
   asymmetry_mark: "mark",
+  options_shadow_mark: "research",
+  zero_dte_context: "research",
+  swing_scan: "research",
   watchlist: "research",
   premarket: "research",
   historical_research: "research",

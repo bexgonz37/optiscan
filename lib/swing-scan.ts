@@ -9,6 +9,7 @@
 
 import { fetchCandles, fetchOptionChain, getCallStats } from "@/lib/polygon-provider";
 import { nearMinuteBudget } from "@/lib/near-miss";
+import { withProviderConsumer } from "@/lib/provider-context";
 import { getZeroDteUniverse } from "@/lib/universe";
 import {
   scoreSwingCandidate, trendScore, momentumScore,
@@ -33,7 +34,12 @@ async function dailyBars(symbol: string): Promise<DailyBar[]> {
   return res?.available ? (res.bars as DailyBar[]) : [];
 }
 
+/** Swing scan. Attributed to `swing_scan` (Gate B5) — `research` category, stopped first under budget pressure. */
 export async function runSwingScan(force = false): Promise<SwingScanResult> {
+  return withProviderConsumer("swing_scan", () => runSwingScanInner(force));
+}
+
+async function runSwingScanInner(force: boolean): Promise<SwingScanResult> {
   const g = globalThis as G;
   const now = Date.now();
   if (!force && g.__optiscanSwingCache && now - g.__optiscanSwingCache.at < CACHE_MS) {

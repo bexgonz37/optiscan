@@ -3,6 +3,7 @@
  * Isolated from DELIVERED_ALERT_PAPER, opportunity cases, claims, and social drafts.
  */
 import { assertSubscriberScanAllowed } from "../../market-session-guard.ts";
+import { withProviderConsumer } from "../../provider-context.ts";
 import { tradingDay } from "../../trading-session.ts";
 import type { ShadowDecisionInput, ShadowDecisionResult } from "./shadow-runner.ts";
 
@@ -210,11 +211,27 @@ export function assertShadowGraderIsolation(db: OutcomeDb): { ok: boolean; viola
   return { ok: violations.length === 0, violations };
 }
 
+/**
+ * Forward-mark shadow outcomes. Research lane — isolated from delivered-alert paper.
+ *
+ * Attributed to `options_shadow_mark` (Gate B5) because it shares `buildLiveGradeDeps().getQuote`
+ * with the subscriber grader and would otherwise be billed as, or hidden inside, subscriber
+ * marking. It is deliberately a `research` category so Gate B7 can starve it before any live lane.
+ */
 export async function gradeShadowOutcomesOnDb(
   db: OutcomeDb,
   deps: ShadowOutcomeDeps = {},
   env: NodeJS.ProcessEnv = process.env,
   nowMs = deps.now?.() ?? Date.now(),
+): Promise<{ updated: number; pending: number; skipped: number }> {
+  return withProviderConsumer("options_shadow_mark", () => gradeShadowOutcomesInner(db, deps, env, nowMs));
+}
+
+async function gradeShadowOutcomesInner(
+  db: OutcomeDb,
+  deps: ShadowOutcomeDeps,
+  env: NodeJS.ProcessEnv,
+  nowMs: number,
 ): Promise<{ updated: number; pending: number; skipped: number }> {
   if (!hasTable(db, "options_shadow_outcomes")) return { updated: 0, pending: 0, skipped: 0 };
   const scanGuard = assertSubscriberScanAllowed(nowMs, env);

@@ -19,7 +19,8 @@
  * inside aggregate limits.
  */
 
-import { fetchCandles, fetchOptionChain } from "@/lib/polygon-provider";
+import { fetchCandles } from "@/lib/polygon-provider";
+import { withProviderConsumer } from "@/lib/provider-context";
 import { isFalsePositive } from "@/lib/alert-scoring";
 import { etCloseMs, tradingDay } from "@/lib/db";
 import { computeOptionOutcome } from "@/lib/signal-outcomes";
@@ -58,8 +59,12 @@ const FP_MIN_FAVORABLE_PCT = Number(process.env.ALERT_FP_MIN_FAVORABLE_PCT ?? 1.
 async function finalizeOptionOutcome(a: { id: number; ticker: string; option_symbol: string | null }) {
   if (a.option_symbol) {
     try {
-      const chain: any = await fetchOptionChain(a.ticker, { dteMin: 0, dteMax: 5, maxPages: 2 });
-      const c = chain?.available ? chain.contracts?.find((x: any) => x.optionSymbol === a.option_symbol) : null;
+      // Exact OCC — one request. This used to read the whole 0-5 DTE chain (up to
+      // 2 pages / 500 contracts) to find one row, the same defect measured on the
+      // grade lane in Gate B5.
+      const { fetchOptionContractSnapshot } = await import("@/lib/polygon-provider");
+      const snap: any = await fetchOptionContractSnapshot(a.ticker, a.option_symbol);
+      const c = snap?.available ? snap.contract : null;
       if (c) {
         insertOptionSnapshot(a.id, "eod", {
           optionSymbol: c.optionSymbol, bid: c.bid, ask: c.ask, mid: c.mid,
@@ -252,8 +257,17 @@ async function maybePostScoreboards(nowMs: number, finalized: number) {
   }
 }
 
-/** One sweep over all tracking alerts. Returns what it did (for /track). */
+/**
+ * One sweep over all tracking alerts. Returns what it did (for /track).
+ *
+ * Attributed to `alert_capture` (Gate B5). This sweep re-quotes every tracked alert
+ * and previously billed to `unattributed`.
+ */
 export async function runTrackerSweep(nowMs = Date.now()) {
+  return withProviderConsumer("alert_capture", () => runTrackerSweepInner(nowMs));
+}
+
+async function runTrackerSweepInner(nowMs: number) {
   const alerts: any[] = trackingAlerts();
   if (!alerts.length) return { checked: 0, recorded: 0, finalized: 0 };
   const barCache = new Map<string, Bar[]>();
