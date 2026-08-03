@@ -1,7 +1,7 @@
 # OptiScan Autonomous Roadmap — Status
 
-**Updated:** 2026-08-03 (evening) · **Deployed:** `819eda6` (confirmed live) ·
-`1b7939f` pushed · **Started from:** `7246304`
+**Updated:** 2026-08-03 (post-close) · **Deployed:** `f225774` (confirmed live) ·
+local = remote = deployed · **Started from:** `7246304`
 
 Durable status for the Gate B–G roadmap. Updated after every gate.
 
@@ -12,6 +12,43 @@ Durable status for the Gate B–G roadmap. Updated after every gate.
 **Gate B — IN PROGRESS.** B1/B2/B3/B5/B6/B7 shipped; **B5 is MEASURED**,
 **B6 is PROVEN**, **B7 is PASSED (extended hours) / RTH-UNCONFIRMED**. B4 not
 started; B8 needs one RTH session.
+
+**Missed Opportunity Agent — CORE SHIPPED** (`a5b763d`, `f225774`), RESEARCH_ONLY.
+The 2026-08-03 SPY/NVDA/QQQ forensic has RUN against production. See
+`MISSED_OPPORTUNITY_AGENT.md` for the full case; the headline is below.
+
+---
+
+## The 2026-08-03 forensic — contract selection, not direction
+
+**RESEARCH_ONLY · NOT_OFFICIAL_PERFORMANCE · NO_PRODUCTION_CHANGE.**
+
+The reported ~+2,000% SPY/NVDA calls and ~+200% QQQ calls were investigated
+against the completed session.
+
+**Direction was not the failure.** OptiScan was predominantly **bullish** on all
+three: SPY 98 bullish / 64 bearish, QQQ 98 / 63, NVDA 169 / 105 candidate rows.
+
+**On SPY and QQQ it never priced a single call contract all session.** 98 bullish
+candidate rows each; zero selected calls; the only contracts reaching selection
+were puts. Terminal reason on both: `no eligible contract in the preferred
+delta/DTE band`.
+
+**Session-wide, that same reason terminated 5,039 of 9,214 candidates — 54.7% of
+the entire funnel.** This is the largest single loss in the pipeline and it sits
+in contract selection, downstream of a correct directional read.
+
+**NVDA is the control.** It *did* price 14 call contracts (827 NBBO observations).
+Best executable **ask→bid** return among them: **+64.06%** — +25% in 22 min, +50%
+in 31 min, never +100%. The claimed +2,000% contract was not one OptiScan quoted,
+so its own evidence can neither verify nor refute that claim. SPY and QQQ produced
+**zero** call NBBO, so no executable claim is possible for them at all.
+
+**Named suspect, NOT PROVEN:** `lib/research/options/live-deps.ts:91` fetches
+Stage-2 chains as `{ dteMin: 0, dteMax: 14, maxPages: 2 }`. SPY/QQQ have the
+largest 0–14 DTE universes in the market; NVDA's is far smaller and NVDA is the
+one name that got calls priced. **Missing greeks are ruled out** — a live probe
+returned 342 SPY calls, 323 with delta and 304 with bid > 0.
 
 ---
 
@@ -376,7 +413,32 @@ across a detached promise or timer in the mark runners rather than a missing
 
 ---
 
-## Next automatic action — EXACT RESUME POINT
+## Next automatic action — EXACT RESUME POINT (2026-08-03 post-close)
+
+**Deployment verified:** local = `origin/main` = deployed = `f225774`.
+`/api/system/provider-usage` lists it in `durable.deployments`.
+
+**Do these in order on the 2026-08-04 RTH session:**
+
+1. **Prove or kill the chain-truncation hypothesis.** Highest value available —
+   it sits on 54.7% of the funnel. Instrument `selectContractFromChain` to record,
+   per call, the chain size received and how many contracts survive each of
+   `side`, `bid > 0`, `dteOk`, `delta != null`; compare SPY against NVDA in the
+   same minute. If SPY's chain arrives without near-the-money calls for the traded
+   expiration, truncation is confirmed. **The fix is a targeted fetch, not a
+   larger `maxPages`** — raising the page count buys more of the wrong thing at
+   the saturated cap B7 exists to protect.
+2. **B7 full-RTH validation** (unchanged, still required). Read scoped with
+   `?deployment=f225774`. Pass = `asymmetry_mark` holds ≥ ~30 req/min while
+   `scanner` and `options_paper_mark` stay above 90% admission.
+3. **Remaining `unattributed`.** On the 4-minute `ff02894` window it was the
+   largest lane by rate — **93.5 req/min at 1.0 records/request, 6.40% admission,
+   5,470 refusals**. 1.0 records/request means exact-OCC marking traffic escaping
+   its scope. Look for a scope lost across a detached promise or timer in the mark
+   runners, not for a missing `withProviderConsumer`.
+4. **Gate B4** scheduler fairness, then **B8** independent-mark validation.
+
+## Previous resume point (still current for B4/B8)
 
 **ALWAYS read provider numbers with `?deployment=<sha7>` from now on.** The
 unscoped total is a sum across deployments and cannot answer a before/after
