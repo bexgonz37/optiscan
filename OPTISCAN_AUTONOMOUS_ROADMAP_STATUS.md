@@ -350,7 +350,29 @@ anonymous traffic competes for the shared pool against protected lanes.
 `lib/position-callout.ts` needed nothing — it already runs inside the scanner
 tick's scope. Scopes are opened **only at true entry points**, never inside
 shared helpers, so innermost-wins still bills a shared function to its real
-caller. Effect is unmeasured: `1b7939f` deployed after the close.
+caller.
+
+### First reading on `1b7939f` — 2 minutes, extended hours
+
+| Consumer | Requests | % | Admission | Records/req |
+|---|---:|---:|---:|---:|
+| `asymmetry_mark` | 148 | 37.95% | 32.89% | 1.0 |
+| `unattributed` | 85 | **21.79%** | 3.98% | **1.0** |
+| `scanner` | 69 | 17.69% | 100.00% | 1269.9 |
+| `options_paper_mark` | 44 | 11.28% | 95.65% | 1.0 |
+| `options_discovery` | 42 | 10.77% | 100.00% | 250.0 |
+
+`unattributed` **36.8% → 21.8%**, and `options_discovery` reappeared at 100%
+admission — the supervisor cycle is now named. Two minutes is a trend, not a
+result; confirm on the 2026-08-04 RTH session.
+
+**The next lead is already visible in this table.** What remains in
+`unattributed` now reads **1.0 records/request** — these are exact-OCC
+single-contract reads, not chains. The anonymous chain callers are gone; what is
+left is a *marking* path escaping its scope, and 2,053 refusals against 85
+admissions says it is asking hard. Suspect an `AsyncLocalStorage` context lost
+across a detached promise or timer in the mark runners rather than a missing
+`withProviderConsumer` — a scope that is opened but not awaited through.
 
 ---
 
@@ -369,9 +391,10 @@ from refusal counts.
      scanner ask far more.
    - **Does `scanner` stay above 90% admission?** It was 93.5% on `226ba96`.
      A reserve that protects marking by starving the scanner is a regression.
-   - **How far does `unattributed` fall from ~37%?** `1b7939f` targets the paper
-     sweep, the supervisor cycle and the dashboard routes. Whatever remains is
-     the next bounded list — trace it the same way, do not file it under
+   - **How far does `unattributed` fall from ~37%?** Early reading on `1b7939f`
+     is 21.8%. What remains reads 1.0 records/request — **exact-OCC marking
+     traffic**, so look for a scope lost across a detached promise or timer,
+     not for a missing `withProviderConsumer`. Do not file it under
      `OTHER_EXPLICIT`.
    - **Is `options_discovery` starved?** It read 0/28 reserve used with the pool
      exhausted. Either demand genuinely moved to the supervisor cycle (now named
