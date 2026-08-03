@@ -33,6 +33,18 @@ export interface QuoteFetchResult {
    * fine, we simply declined to pay for it on this tick.
    */
   budgetBlocked: boolean;
+  /**
+   * The instant this quote was ACTUALLY OBSERVED, captured immediately after
+   * the provider responded.
+   *
+   * This exists because freshness was being judged against the SWEEP-START
+   * clock. With ~171 open cases at roughly 200ms per call, a sweep runs for
+   * tens of seconds, so a quote fetched late in the sweep is legitimately newer
+   * than the sweep's start — and was rejected as FUTURE_QUOTE. That accounted
+   * for 636 of 995 mark failures. Comparing against the real observation
+   * instant fixes it without loosening the guard by a single millisecond.
+   */
+  observedAtMs: number;
 }
 
 /** Fetch a present-time quote for one exact OCC. Never throws. */
@@ -44,14 +56,17 @@ export async function liveAsymmetryQuote(
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { fetchOptionContractSnapshot } = require("@/lib/polygon-provider");
     const res = await fetchOptionContractSnapshot(underlyingSymbol, optionSymbol);
+    // Captured HERE, immediately after the provider responded — NOT at sweep
+    // start. This single line is the FUTURE_QUOTE fix.
+    const observedAtMs = Date.now();
     if (res?.quotaExceeded) {
-      return { quote: null, providerError: null, budgetBlocked: true };
+      return { quote: null, providerError: null, budgetBlocked: true, observedAtMs };
     }
     if (!res?.available) {
-      return { quote: null, providerError: String(res?.note ?? "provider unavailable"), budgetBlocked: false };
+      return { quote: null, providerError: String(res?.note ?? "provider unavailable"), budgetBlocked: false, observedAtMs };
     }
     const c = res.contract;
-    if (!c) return { quote: null, providerError: null, budgetBlocked: false }; // genuine no-quote
+    if (!c) return { quote: null, providerError: null, budgetBlocked: false, observedAtMs }; // genuine no-quote
     return {
       quote: {
         optionSymbol,
@@ -61,6 +76,7 @@ export async function liveAsymmetryQuote(
       },
       providerError: null,
       budgetBlocked: false,
+      observedAtMs,
     };
   } catch (err: any) {
     const msg = String(err?.message ?? err);
@@ -68,6 +84,7 @@ export async function liveAsymmetryQuote(
       quote: null,
       providerError: /quota_exceeded/.test(msg) ? null : msg,
       budgetBlocked: /quota_exceeded/.test(msg),
+      observedAtMs: Date.now(),
     };
   }
 }

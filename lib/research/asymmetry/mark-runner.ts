@@ -112,6 +112,11 @@ export interface MarkDeps {
     providerError: string | null;
     /** True when the request was refused for budget rather than answered. */
     budgetBlocked?: boolean;
+    /**
+     * The instant the quote was observed. Optional so injected test deps keep
+     * working; when absent the sweep clock is used, which is the old behaviour.
+     */
+    observedAtMs?: number;
   }>;
   nowMs: number;
   sessionDate: string;
@@ -142,11 +147,21 @@ export async function runDueAsymmetryMarks(db: MarkDb, deps: MarkDeps): Promise<
           // Three distinct failures, kept apart. A provider outage, a budget
           // refusal, and a contract with no market look identical downstream if
           // they share a reason code — and for one full session they did.
+          // JUDGE AGAINST THE OBSERVATION CLOCK, NOT THE SWEEP CLOCK.
+          // deps.nowMs is captured once when the beat starts. With ~171 open
+          // cases at ~200ms per provider call the sweep runs for tens of
+          // seconds, so a quote fetched late is legitimately NEWER than the
+          // sweep start and was being discarded as FUTURE_QUOTE — 636 of 995
+          // mark failures. Falling back to deps.nowMs keeps injected test
+          // deps working unchanged.
+          const observedAtMs = Number.isFinite(fetched.observedAtMs as number)
+            ? (fetched.observedAtMs as number)
+            : deps.nowMs;
           const rejection: MarkRejection | null = fetched.budgetBlocked
             ? "PROVIDER_BUDGET"
             : fetched.providerError
               ? "PROVIDER_ERROR"
-              : q ? validateMark(q, c.optionSymbol, c.sessionDate, deps.nowMs) : "NO_QUOTE";
+              : q ? validateMark(q, c.optionSymbol, c.sessionDate, observedAtMs) : "NO_QUOTE";
           const returnPct = !rejection && c.earlyAsk && c.earlyAsk > 0 && q?.bid != null
             ? round2(((q.bid - c.earlyAsk) / c.earlyAsk) * 100)
             : null;
@@ -155,7 +170,9 @@ export async function runDueAsymmetryMarks(db: MarkDb, deps: MarkDeps): Promise<
             horizonMinutes: horizon, markedAtMs: deps.nowMs,
             bid: rejection ? null : q?.bid ?? null,
             ask: rejection ? null : q?.ask ?? null,
-            quoteAgeMs: q?.quoteAtMs != null ? deps.nowMs - q.quoteAtMs : null,
+            // Age is measured from the observation instant too, so a long
+            // sweep no longer inflates every quote's apparent age.
+            quoteAgeMs: q?.quoteAtMs != null ? observedAtMs - q.quoteAtMs : null,
             returnPct, rejectedReason: rejection,
           });
           if (wrote) { if (rejection) out.marksRejected += 1; else out.marksWritten += 1; }
