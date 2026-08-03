@@ -76,7 +76,35 @@ export type DeltaSource = "PROVIDER_DELTA" | "MONEYNESS_PROXY";
 
 /** Version stamps so a stored funnel row records the rules that produced it. */
 export const DISCOVERY_VERSION = "contract-discovery@2";
-export const SELECTION_VERSION = "contract-selection@2";
+export const SELECTION_VERSION = "contract-selection@3";
+
+/**
+ * How many in-band contracts make the delta subset a RANKING rather than a
+ * SURVIVOR of missing data.
+ *
+ * `contract-selection@2` tested representativeness as `passedDeltaBand === 0`.
+ * That is a knife-edge, and the chain it was validated against (QQQ, 0 in band)
+ * happened to sit on the safe side of it. **SPY did not.** The same measurement
+ * that produced the QQQ row recorded, for SPY 0DTE:
+ *
+ *     170 calls returned · 55 with delta · **1** inside the 0.35-0.65 band
+ *
+ * One is not zero, so `deltaSubsetUnrepresentative` stayed false, the primary
+ * path ran, and selection was forced onto that single contract — the only
+ * candidate a "ranking" of one can produce. Replayed against the shipped
+ * selector on the measured SPY shape, it returns a strike **75 points from
+ * spot at bid 0.02 / ask 0.04**: the same worthless far-OTM lottery ticket,
+ * with the same ~66% spread, that the QQQ fix was written to stop selecting.
+ * The downstream gate then correctly rejects it and SPY prices zero calls.
+ *
+ * A band holding one or two contracts, on a chain where greeks are missing
+ * elsewhere, carries no more information than a band holding none: in both
+ * cases the contracts that would have populated it are exactly the ones the
+ * provider declined to publish greeks for. Three is the smallest count that
+ * can express a preference between neighbours rather than report a survivor.
+ * The NVDA control of 2026-08-03 measured 8 in band and is unaffected.
+ */
+export const MIN_IN_BAND_SAMPLE = 3;
 
 /** One bounded provider partition. Short DTE first, widening only as permitted. */
 export interface DiscoveryPartition {
@@ -151,6 +179,12 @@ export interface ContractFunnelEvidence {
   withAsk: number;
   twoSided: number;
   withDelta: number;
+  /**
+   * Share of TRADEABLE contracts carrying a provider delta, 0..1. Recorded, never
+   * gated on: it is how "missing-data fallback rate" becomes a measurable number
+   * rather than an assertion. 1 means greeks were complete.
+   */
+  deltaCoverage: number;
   passedDeltaBand: number;
   rankedCount: number;
   deltaSource: DeltaSource | null;
@@ -173,7 +207,7 @@ function emptyEvidence(
     moneyness: strat?.moneyness ?? "ATM",
     contractsReceived: 0, callsReceived: 0, putsReceived: 0,
     passedSide: 0, passedDte: 0, withBid: 0, withAsk: 0, twoSided: 0,
-    withDelta: 0, passedDeltaBand: 0, rankedCount: 0,
+    withDelta: 0, deltaCoverage: 0, passedDeltaBand: 0, rankedCount: 0,
     deltaSource: null, selectedOcc: null,
     terminalReason: "INSUFFICIENT_EVIDENCE",
     greeksMissingOnSide: false, pageLimitReached: false,
@@ -289,6 +323,7 @@ export function selectContractWithEvidence(
   }
 
   ev.withDelta = tradeable.filter((c) => c.delta != null).length;
+  ev.deltaCoverage = tradeable.length > 0 ? ev.withDelta / tradeable.length : 0;
   // "Greeks missing on this side" means the sample is INCOMPLETE, not empty — a
   // chain with 6 of 208 deltas is missing greeks in every sense that matters.
   ev.greeksMissingOnSide = tradeable.length > 0 && ev.withDelta < tradeable.length;
@@ -318,14 +353,18 @@ export function selectContractWithEvidence(
    * priced. That is the SPY/QQQ failure, and a fallback keyed on `withDelta === 0`
    * never fires for it.
    *
-   * The honest condition is about REPRESENTATIVENESS, not presence. When nothing
-   * with a delta lands in the band AND contracts without greeks exist, the empty
-   * band is an artifact of missing data rather than a fact about the market — the
-   * sample cannot answer the question. When greeks are COMPLETE and the band is
-   * still empty, that is a real absence and must stay a correct rejection.
+   * The honest condition is about REPRESENTATIVENESS, not presence. When too few
+   * contracts with a delta land in the band AND contracts without greeks exist,
+   * the band is an artifact of missing data rather than a fact about the market —
+   * the sample cannot answer the question. When greeks are COMPLETE, whatever the
+   * band contains is a real fact about the chain and the provider path stands.
+   *
+   * `@2` wrote the first clause as `passedDeltaBand === 0`, which is a knife-edge
+   * that the measured SPY chain (exactly ONE in band) fell on the wrong side of.
+   * See MIN_IN_BAND_SAMPLE for the measurement and the replay.
    */
   const deltaSubsetUnrepresentative =
-    ev.passedDeltaBand === 0 && withDelta.length < tradeable.length;
+    ev.passedDeltaBand < MIN_IN_BAND_SAMPLE && withDelta.length < tradeable.length;
 
   if (withDelta.length > 0 && !deltaSubsetUnrepresentative) {
     const ranked = [...withDelta].sort(

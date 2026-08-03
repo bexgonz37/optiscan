@@ -155,6 +155,82 @@ test("REGRESSION: a SPARSE delta subset that misses the band does not hijack sel
   assert.ok(r.contract.strike < 940, "must NOT pick the far-OTM sliver that carried greeks");
 });
 
+test("REGRESSION: the measured SPY shape — exactly ONE contract in band — is still missing data", () => {
+  // The 2026-08-03 measurement recorded TWO shapes, not one:
+  //   QQQ 0DTE: 204 calls,  71 with delta,  0 in band  <- the fix was validated here
+  //   SPY 0DTE: 170 calls,  55 with delta,  1 in band  <- and NOT here
+  // `passedDeltaBand === 0` is a knife-edge SPY falls on the wrong side of: one
+  // in-band contract makes the subset "representative" and hands selection to the
+  // only member a ranking of one can return.
+  const chain = bigChain({ spot: 735, strikeLo: 650, strikeHi: 819, dtes: [0], greeksOnDte: [] });
+  let tagged = 0;
+  for (const c of chain) {
+    // Greeks on the far-OTM tail only — the real provider pattern, where the busy
+    // near-the-money 0DTE strikes are the ones that lag.
+    if (c.side === "call" && c.strike >= 805 && tagged < 55) { c.delta = 0.02; tagged++; }
+  }
+  // ...and exactly ONE of them lands inside the 0.45-0.65 band.
+  const inBand = chain.find((c) => c.side === "call" && c.strike === 810);
+  inBand.delta = 0.5;
+
+  const r = selectContractWithEvidence(chain, "call", "confirmed_breakout", NOW, {
+    symbol: "SPY", underlyingPrice: 735,
+  });
+  assert.equal(r.evidence.passedDeltaBand, 1, "the measured SPY shape: exactly one in band");
+  assert.ok(r.evidence.greeksMissingOnSide, "and greeks are missing elsewhere on the side");
+  assert.equal(r.evidence.deltaSource, "MONEYNESS_PROXY", "one survivor is not a ranking");
+  assert.ok(
+    Math.abs(r.contract.strike - 735) <= 5,
+    `must price the near-the-money call, got strike ${r.contract.strike}`,
+  );
+  assert.notEqual(r.contract.strike, 810, "must NOT pick the lone far-OTM strike that carried a greek");
+});
+
+test("a band of TWO on an incomplete chain is still a survivor, not a ranking", () => {
+  const chain = bigChain({ spot: 735, strikeLo: 650, strikeHi: 819, dtes: [0], greeksOnDte: [] });
+  for (const k of [808, 812]) {
+    chain.find((c) => c.side === "call" && c.strike === k).delta = 0.5;
+  }
+  const r = selectContractWithEvidence(chain, "call", "confirmed_breakout", NOW, {
+    symbol: "SPY", underlyingPrice: 735,
+  });
+  assert.equal(r.evidence.passedDeltaBand, 2);
+  assert.equal(r.evidence.deltaSource, "MONEYNESS_PROXY");
+  assert.ok(Math.abs(r.contract.strike - 735) <= 5, `got strike ${r.contract.strike}`);
+});
+
+test("the NVDA control — a genuine in-band ranking — still uses the PROVIDER delta", () => {
+  // NVDA measured 8 in band on 2026-08-03 and priced 14 call contracts correctly.
+  // Widening the representativeness test must not demote a lane that was working.
+  const chain = bigChain({ symbol: "NVDA", spot: 735, strikeLo: 650, strikeHi: 819, dtes: [0], greeksOnDte: [] });
+  let tagged = 0;
+  for (const c of chain) {
+    // Eight in-band greeks clustered where a real chain publishes them: near the money.
+    if (c.side === "call" && c.strike >= 731 && c.strike <= 738 && tagged < 8) { c.delta = 0.55; tagged++; }
+  }
+  assert.equal(tagged, 8);
+  const r = selectContractWithEvidence(chain, "call", "confirmed_breakout", NOW, {
+    symbol: "NVDA", underlyingPrice: 735,
+  });
+  assert.equal(r.evidence.passedDeltaBand, 8, "a real in-band sample");
+  assert.equal(r.evidence.deltaSource, "PROVIDER_DELTA", "8 >= MIN_IN_BAND_SAMPLE — do not demote a working lane");
+});
+
+test("deltaCoverage records the missing-data rate without gating on it", () => {
+  const complete = bigChain({ dtes: [1], greeksOnDte: [1] });
+  const rc = selectContractWithEvidence(complete, "call", "confirmed_breakout", NOW, {
+    symbol: "SPY", underlyingPrice: 758,
+  });
+  assert.equal(rc.evidence.deltaCoverage, 1, "complete greeks = coverage 1");
+
+  const none = bigChain({ dtes: [0], greeksOnDte: [] });
+  const rn = selectContractWithEvidence(none, "call", "confirmed_breakout", NOW, {
+    symbol: "SPY", underlyingPrice: 758,
+  });
+  assert.equal(rn.evidence.deltaCoverage, 0, "no greeks = coverage 0");
+  assert.ok(rn.contract, "and coverage is evidence only — it never blocks a selection");
+});
+
 test("COMPLETE greeks with an empty band stays a correct rejection", () => {
   // Every tradeable contract has a delta and none is in band. That is a real
   // absence, not missing data — the proxy must NOT rescue it.
