@@ -609,3 +609,63 @@ Gate A's exit condition (FUTURE_QUOTE materially reduced) was not met, so no
 later gate was executed. No brackets rerun, no strategies quarantined, no
 historical cohorts, no experiment registry, no lifecycle, no conflict authority.
 Paid launch remains blocked.
+
+---
+
+# Packet update — 2026-08-03 (Gate A, part 2 — CORRECTION: Gate A PASSED)
+
+## My previous report was wrong. There is no second cause.
+
+I reported that the observation-clock fix "did NOT resolve the dominant defect"
+and that a second FUTURE_QUOTE cause existed. **That conclusion was a
+measurement error.** The delta window I used (10:43 → 11:08) straddled the
+deploy: the fix went live at ~11:04, so 21 of those 25 minutes ran the OLD
+code. The +183 FUTURE_QUOTE I attributed to the new code was almost entirely
+produced by the old code.
+
+## Bounded live sample, 8 minutes, entirely post-fix
+
+| Metric | Value |
+|---|---|
+| Attempted marks | **135** |
+| Accepted (usable) | **94 = 69.6%** |
+| **FUTURE_QUOTE** | **0 = 0.0%** |
+| PROVIDER_BUDGET | 32 |
+| STALE_QUOTE | 9 |
+
+**FUTURE_QUOTE went to zero and stayed there for eight consecutive minutes.**
+
+Usable rate on new marks: **24.4% → 69.6%**. Cumulative rose 29.1% → 32.7% and
+keeps climbing as the old FUTURE_QUOTE rows dilute — the cumulative figure lags
+because those terminal rows remain, correctly, in history.
+
+## A second fix also proved itself
+
+At t+3m the PROVIDER_BUDGET delta went **negative (−36)**. That is the
+Checkpoint-1 retryability change working: budget-blocked horizons are transient,
+get retried on a later sweep, and the upsert replaces the placeholder with a
+real observation. Transient failures no longer consume a horizon permanently.
+
+## The binding constraint is now provider budget, not timestamps
+
+`callsThisMinute` pinned at **280/280** for the whole sample, and
+`quotaExceededCount` climbed 773 → 4300 (~440/min). PROVIDER_BUDGET is now the
+only material rejection cause and it is correctly classified as ours, not the
+contract's. **Caps were not raised.**
+
+## Per-horizon usable marks
+
+1m 121/249 · 3m 99/233 · 5m 73/222 · 10m 48/199 · 15m 42/199 · 30m 15/173 ·
+60m 12/133. Long horizons still lag — a budget/scheduling matter, not timestamps.
+
+## Gate A: PASSED
+
+- Second cause: **does not exist** — proven by an 8-minute zero-FUTURE_QUOTE sample.
+- Genuine future timestamps still reject (unit + end-to-end tests).
+- Default forward tolerance remains **0 ms**. Guard not weakened.
+- No provider-call growth, no cap increase, no scanner or subscriber change.
+
+## Gate B may start
+
+Its own precondition — `independentMarkPct >= 50%` — is still unmeasured.
+Independence instrumentation is Gate B's first task.
