@@ -63,9 +63,23 @@ function hasTable(db: AccountingDb, name: string): boolean {
 /**
  * Normalise a Polygon path into a low-cardinality endpoint label: symbols and OCC codes
  * become `:sym`, so `/v3/snapshot/options/AAPL/O:AAPL...` collapses to one bucket.
+ *
+ * PERCENT-DECODING IS LOAD-BEARING. Callers build these paths with
+ * `encodeURIComponent(occ)`, and `URL.pathname` hands the encoding back verbatim, so the
+ * segment that arrives here is `O%3ANVDA260807C00200000` — which `/^O:/` does not match.
+ * Every exact-OCC read therefore became its OWN endpoint bucket. Production on
+ * 2026-08-03 showed 21 separate per-contract rows of 15-16 requests each crowding the
+ * top-25 report, and that was with exact-OCC reads at only 0.7% of spend. Once marking
+ * moved onto the exact-OCC path (a5f5976) the report would have fragmented into
+ * thousands of one-request rows and become unreadable exactly when it mattered most.
  */
 export function normalizeEndpoint(pathname: string): string {
-  const trimmed = String(pathname || "").split("?")[0].replace(/\/+$/, "");
+  const raw = String(pathname || "").split("?")[0].replace(/\/+$/, "");
+  // decodeURIComponent throws on a malformed escape; a bad label must never break metering.
+  let trimmed = raw;
+  try {
+    trimmed = decodeURIComponent(raw);
+  } catch { /* keep the raw form */ }
   if (!trimmed) return "unknown";
   return trimmed
     .split("/")
@@ -390,6 +404,18 @@ export interface ProviderUsageReport {
 const pct = (part: number, whole: number): number | null =>
   whole > 0 ? +((part / whole) * 100).toFixed(2) : null;
 
+/** How many distinct endpoint labels the day has, so the remainder row can name its size. */
+function countDistinctEndpoints(db: AccountingDb, tradingDate: string): number {
+  try {
+    const row = db.prepare(
+      "SELECT COUNT(DISTINCT endpoint) n FROM provider_request_minute WHERE trading_date=?",
+    ).get(tradingDate) as Record<string, any> | undefined;
+    return Number(row?.n ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
 /**
  * Persisted usage for a trading date. Read-only and provider-free — safe for
  * diagnostics, dashboards, and health endpoints.
@@ -477,7 +503,11 @@ export function buildProviderUsageReportOnDb(
       };
     });
 
-    const byEndpoint = (db.prepare(
+    // Top 25 by spend, PLUS an explicit remainder row. The bare LIMIT 25 dropped the
+    // tail silently, so the endpoint column never summed to the total and a reader had
+    // no way to tell truncation from completeness. An accounting report that does not
+    // add up is worse than no report.
+    const endpointRows = (db.prepare(
       `SELECT endpoint, SUM(requests) requests FROM provider_request_minute
        WHERE trading_date=? GROUP BY endpoint ORDER BY requests DESC LIMIT 25`,
     ).all(tradingDate) as Record<string, any>[]).map((r) => ({
@@ -485,6 +515,15 @@ export function buildProviderUsageReportOnDb(
       requests: Number(r.requests ?? 0),
       pctOfRequests: pct(Number(r.requests ?? 0), totalRequests),
     }));
+    const shown = endpointRows.reduce((sum, r) => sum + r.requests, 0);
+    const remainder = totalRequests - shown;
+    const byEndpoint = remainder > 0
+      ? [...endpointRows, {
+        endpoint: `(${countDistinctEndpoints(db, tradingDate) - endpointRows.length} more endpoints)`,
+        requests: remainder,
+        pctOfRequests: pct(remainder, totalRequests),
+      }]
+      : endpointRows;
 
     const cacheHits = Number(totals?.cacheHits ?? 0);
     const dedupAvoided = Number(totals?.dedupAvoided ?? 0);

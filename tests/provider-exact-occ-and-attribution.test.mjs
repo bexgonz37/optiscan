@@ -1,7 +1,7 @@
 /**
  * tests/provider-exact-occ-and-attribution.test.mjs
  *
- * Gate B5 CLOSE — the three defects that live production measurement exposed on
+ * Gate B5 CLOSE — the four defects that live production measurement exposed on
  * 2026-08-03, with the numbers that proved each one.
  *
  * The provider ran pinned at 280/280 requests per minute for the entire session
@@ -15,7 +15,10 @@
  *   /v3/snapshot/options/:sym (WHOLE CHAIN)  34,116 req  70.9%
  *   exact-OCC snapshots, all 21 combined        323 req   0.7%
  *
- * Three separate defects, one per suite below:
+ * Four separate defects, one per suite below. The fourth is in the METER: three
+ * blind spots that were harmless while marking pulled whole chains, and become
+ * actively misleading the moment marking moves onto the exact-OCC path — the
+ * report would have shown the fix as a regression.
  *
  *  1. EXACT OCC. Reading one contract by downloading its whole chain. Fixed on the
  *     asymmetry lane 2026-08-02; the subscriber grade lane and the alert tracker
@@ -27,6 +30,11 @@
  *
  *  3. DIAGNOSTICS. A diagnostic route spent live requests against the same saturated
  *     cap it was being used to investigate.
+ *
+ *  4. THE METER. Percent-encoded OCCs never collapsed, so every contract got its own
+ *     endpoint bucket. Object-shaped `results` counted as zero records, so exact-OCC
+ *     reads looked empty. The endpoint table dropped its tail silently, so it never
+ *     summed to the total. And cache/dedup savings were never emitted at all.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -191,4 +199,129 @@ test("alert-decision refuses to spend by default and says exactly why", () => {
     src.indexOf("NOT_AVAILABLE_WITHOUT_LIVE_CALL") < src.indexOf('await import("@/lib/polygon-provider")'),
     "the default path must return before the provider module is even loaded",
   );
+});
+
+// ── 4. The meter itself: it must not misreport the fix it is measuring ────────
+//
+// Every check here failed against the code that produced the 2026-08-03 session.
+// Each defect was harmless while marking pulled whole chains and became actively
+// misleading the moment marking moved onto the exact-OCC path.
+
+import { normalizeEndpoint, buildProviderUsageReportOnDb, recordProviderRequestOnDb } from "../lib/provider-accounting.ts";
+import Database from "better-sqlite3";
+
+const ACCT_DDL = `
+  CREATE TABLE provider_request_minute (
+    trading_date TEXT NOT NULL, minute_bucket_ms INTEGER NOT NULL, deployment_id TEXT NOT NULL,
+    consumer TEXT NOT NULL, category TEXT NOT NULL, endpoint TEXT NOT NULL,
+    historical INTEGER NOT NULL DEFAULT 0,
+    requests INTEGER NOT NULL DEFAULT 0, cache_hits INTEGER NOT NULL DEFAULT 0,
+    dedup_avoided INTEGER NOT NULL DEFAULT 0, retries INTEGER NOT NULL DEFAULT 0,
+    http_429 INTEGER NOT NULL DEFAULT 0, provider_errors INTEGER NOT NULL DEFAULT 0,
+    quota_blocks INTEGER NOT NULL DEFAULT 0, paginated INTEGER NOT NULL DEFAULT 0,
+    records_returned INTEGER NOT NULL DEFAULT 0, latency_ms_total INTEGER NOT NULL DEFAULT 0,
+    latency_ms_max INTEGER NOT NULL DEFAULT 0, accounting_version INTEGER NOT NULL DEFAULT 1,
+    created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (trading_date, minute_bucket_ms, deployment_id, consumer, endpoint, historical)
+  );
+  CREATE TABLE provider_request_symbol_day (
+    trading_date TEXT NOT NULL, consumer TEXT NOT NULL, symbol TEXT NOT NULL,
+    option_symbol TEXT NOT NULL DEFAULT '', requests INTEGER NOT NULL DEFAULT 0,
+    records_returned INTEGER NOT NULL DEFAULT 0,
+    created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (trading_date, consumer, symbol, option_symbol)
+  );
+`;
+
+test("a percent-encoded OCC collapses to one endpoint bucket", () => {
+  // This is EXACTLY what URL.pathname yields after encodeURIComponent(occ), and it is
+  // what production actually recorded: 21 separate per-contract rows in the top 25.
+  assert.equal(
+    normalizeEndpoint("/v3/snapshot/options/NVDA/O%3ANVDA260807C00200000"),
+    "/v3/snapshot/options/:sym/:occ",
+  );
+  // Unencoded form must keep working.
+  assert.equal(
+    normalizeEndpoint("/v3/snapshot/options/NVDA/O:NVDA260807C00200000"),
+    "/v3/snapshot/options/:sym/:occ",
+  );
+  // Two different contracts must land in the SAME bucket, or the report fragments.
+  assert.equal(
+    normalizeEndpoint("/v3/snapshot/options/XOM/O%3AXOM260807C00155000"),
+    normalizeEndpoint("/v3/snapshot/options/BAC/O%3ABAC260814P00062000"),
+  );
+});
+
+test("a malformed escape never breaks metering", () => {
+  assert.equal(typeof normalizeEndpoint("/v3/snapshot/options/%E0%A4%A"), "string");
+});
+
+test("the endpoint report adds up to the total, or says what it dropped", () => {
+  const d = new Database(":memory:");
+  d.exec(ACCT_DDL);
+  const at = Date.UTC(2026, 7, 3, 15, 0, 0);
+  // 30 distinct endpoints — more than the top-25 window.
+  for (let i = 0; i < 30; i += 1) {
+    recordProviderRequestOnDb(d, {
+      consumer: "options_paper_mark", endpoint: `/v3/endpoint-${i}`, status: "ok",
+      atMs: at, recordsReturned: 1,
+    }, { deploymentId: "test" });
+  }
+  const report = buildProviderUsageReportOnDb(d, "2026-08-03");
+  const summed = report.byEndpoint.reduce((s, r) => s + r.requests, 0);
+  assert.equal(summed, report.totalRequests,
+    "the endpoint column must sum to the total — a silent LIMIT 25 made it never add up");
+  assert.match(report.byEndpoint[report.byEndpoint.length - 1].endpoint, /more endpoints/,
+    "the dropped tail must be named, not hidden");
+  d.close();
+});
+
+test("an untruncated report carries no remainder row", () => {
+  const d = new Database(":memory:");
+  d.exec(ACCT_DDL);
+  const at = Date.UTC(2026, 7, 3, 15, 0, 0);
+  for (let i = 0; i < 3; i += 1) {
+    recordProviderRequestOnDb(d, {
+      consumer: "scanner", endpoint: `/v3/endpoint-${i}`, status: "ok", atMs: at,
+    }, { deploymentId: "test" });
+  }
+  const report = buildProviderUsageReportOnDb(d, "2026-08-03");
+  assert.equal(report.byEndpoint.length, 3);
+  assert.equal(report.byEndpoint.some((r) => /more endpoints/.test(r.endpoint)), false);
+  d.close();
+});
+
+test("a single-resource response counts as one record, not zero", () => {
+  const src = readFileSync("lib/polygon-provider.js", "utf8");
+  assert.match(src, /function countResults/,
+    "record counting must handle object-shaped `results`");
+  const body = src.slice(src.indexOf("function countResults"));
+  assert.match(body.slice(0, 400), /typeof r === "object"/,
+    "the exact-OCC snapshot returns `results` as an OBJECT — counting only arrays scored it 0");
+  assert.equal(/recordsReturned: Array\.isArray\(json\?\.results\)/.test(src), false,
+    "the array-only count must not come back");
+});
+
+test("cache hits and dedupe avoidance are actually emitted", () => {
+  const src = code("lib/polygon-provider.js");
+  assert.match(src, /accountAvoided\(\s*MARKET_SNAP_ENDPOINT\s*,\s*"cache_hit"\s*\)/,
+    "a TTL cache hit must be recorded — both counters read 0 across 48,135 requests");
+  assert.match(src, /accountAvoided\(\s*MARKET_SNAP_ENDPOINT\s*,\s*"dedup_avoided"\s*\)/,
+    "an inflight dedupe must be recorded");
+});
+
+test("an avoided request is never counted as a request", async () => {
+  const { recordProviderRequestOnDb: rec, buildProviderUsageReportOnDb: build } =
+    await import("../lib/provider-accounting.ts");
+  const d = new Database(":memory:");
+  d.exec(ACCT_DDL);
+  const at = Date.UTC(2026, 7, 3, 15, 0, 0);
+  rec(d, { consumer: "scanner", endpoint: "/x", status: "ok", atMs: at }, { deploymentId: "t" });
+  rec(d, { consumer: "scanner", endpoint: "/x", status: "cache_hit", atMs: at }, { deploymentId: "t" });
+  rec(d, { consumer: "scanner", endpoint: "/x", status: "dedup_avoided", atMs: at }, { deploymentId: "t" });
+  const r = build(d, "2026-08-03");
+  assert.equal(r.totalRequests, 1, "only the call we actually paid for is a request");
+  assert.equal(r.totalCacheHits, 1);
+  assert.equal(r.totalDedupAvoided, 1);
+  d.close();
 });
