@@ -1,6 +1,6 @@
 # OptiScan Autonomous Roadmap — Status
 
-**Updated:** 2026-08-03 (post-close) · **Deployed:** `f225774` (confirmed live) ·
+**Updated:** 2026-08-03 (post-close) · **Deployed:** `a4777ec` (confirmed live) ·
 local = remote = deployed · **Started from:** `7246304`
 
 Durable status for the Gate B–G roadmap. Updated after every gate.
@@ -44,11 +44,45 @@ in 31 min, never +100%. The claimed +2,000% contract was not one OptiScan quoted
 so its own evidence can neither verify nor refute that claim. SPY and QQQ produced
 **zero** call NBBO, so no executable claim is possible for them at all.
 
-**Named suspect, NOT PROVEN:** `lib/research/options/live-deps.ts:91` fetches
-Stage-2 chains as `{ dteMin: 0, dteMax: 14, maxPages: 2 }`. SPY/QQQ have the
-largest 0–14 DTE universes in the market; NVDA's is far smaller and NVDA is the
-one name that got calls priced. **Missing greeks are ruled out** — a live probe
-returned 342 SPY calls, 323 with delta and 304 with bid > 0.
+**ROOT CAUSE PROVEN AND FIXED (`a4777ec`, deployed).** The suspect on record was
+page truncation. **It was wrong.** A bounded probe of the exact Stage-2 request
+found calls arriving in quantity — 330 SPY and 296 QQQ inside the first two pages.
+
+The cause was one filter in `selectContractFromChain`: `c.delta != null`. The
+provider does not publish greeks for much of the SHORT-DATED chain — precisely
+what 0DTE and 1-7DTE strategies want:
+
+| | calls returned | with delta | in 0.35-0.65 band |
+|---|---:|---:|---:|
+| SPY 0DTE | 170 | 55 | **1** |
+| QQQ 0DTE | 204 | 71 | **0** |
+| NVDA (control) | — | — | 8 → calls priced |
+
+The discarded contracts were not marginal:
+
+```
+O:SPY260803C00736000  bid 21.85  ask 22.17  OI 1705  delta NULL
+O:QQQ260803C00685000  bid 15.06  ask 15.55  OI 6352  delta NULL
+```
+
+**A counterfactual replay then falsified the first version of the fix**, which fell
+back only when NO contract had a delta. QQQ measured **208 tradeable calls, 6 with
+delta, none in band** — so `withDelta > 0` held, the primary path ran, and selection
+was forced onto the sliver carrying greeks: a 0.209-delta contract at bid 0.06 /
+ask 0.08 that the downstream gate correctly rejected. A contract *was* selected and
+zero calls were still priced.
+
+The shipped condition is **representativeness, not presence**: when nothing with a
+delta lands in the band while ungreeked tradeable contracts exist, the empty band is
+an artifact of missing data and a labelled `MONEYNESS_PROXY` takes over. When greeks
+are COMPLETE and the band is still empty, that is a real absence and stays a correct
+rejection. Ranking now receives **208 QQQ contracts where it received 5**.
+
+Gates untouched — liquidity and spread live downstream and still decide. No provider
+cap raised, no extra request made.
+
+**Status:** CODE_FIX DEPLOYED · TESTS PASSED · LIVE_RTH_VALIDATION PENDING_NEXT_SESSION
+· PRODUCTION_RULE_PROMOTION NONE.
 
 ---
 
@@ -420,14 +454,17 @@ across a detached promise or timer in the mark runners rather than a missing
 
 **Do these in order on the 2026-08-04 RTH session:**
 
-1. **Prove or kill the chain-truncation hypothesis.** Highest value available —
-   it sits on 54.7% of the funnel. Instrument `selectContractFromChain` to record,
-   per call, the chain size received and how many contracts survive each of
-   `side`, `bid > 0`, `dteOk`, `delta != null`; compare SPY against NVDA in the
-   same minute. If SPY's chain arrives without near-the-money calls for the traded
-   expiration, truncation is confirmed. **The fix is a targeted fetch, not a
-   larger `maxPages`** — raising the page count buys more of the wrong thing at
-   the saturated cap B7 exists to protect.
+1. **Validate the deployed contract-discovery fix (`a4777ec`) under live RTH.**
+   This is now a VALIDATION step, not an investigation — the root cause is proven
+   and the fix is in production. Confirm on the open:
+   - SPY and QQQ bullish candidates now reach **priced call contracts**
+   - the `no eligible contract` share falls sharply from 54.7%
+   - `deltaSource` splits sensibly between `PROVIDER_DELTA` and `MONEYNESS_PROXY`
+     (heavy proxy use on 0DTE is expected and correct)
+   - the downstream liquidity/spread gate still rejects thin contracts — the fix
+     must widen what reaches the gate, never what survives it
+   - provider spend is unchanged (the fix adds no request)
+   - the discovery monitor stays quiet on healthy lanes
 2. **B7 full-RTH validation** (unchanged, still required). Read scoped with
    `?deployment=f225774`. Pass = `asymmetry_mark` holds ≥ ~30 req/min while
    `scanner` and `options_paper_mark` stay above 90% admission.
