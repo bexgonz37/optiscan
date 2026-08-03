@@ -35,8 +35,27 @@ export async function GET(req: Request) {
   // counters — it does not make a provider call.
   flushProviderAccounting();
 
+  // Gate B7 measurement scope. A trading date that spans a deploy mixes the session
+  // before a change with the session after it, which is exactly the evidence a
+  // before/after question cannot use. `?deployment=<sha7>` or `?sinceMs=`/`?untilMs=`
+  // narrows the report to a window that means something.
+  // An ABSENT param must stay absent: `Number(null)` is 0 and 0 is finite, so
+  // parsing before checking presence would silently bound every unscoped read to
+  // `minute_bucket_ms <= 0` and report an empty day.
+  const numParam = (name: string): number | undefined => {
+    const raw = url.searchParams.get(name);
+    if (raw == null || raw === "") return undefined;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : undefined;
+  };
+  const scope = {
+    deploymentId: url.searchParams.get("deployment") || undefined,
+    sinceMs: numParam("sinceMs"),
+    untilMs: numParam("untilMs"),
+  };
+
   const db = getDb();
-  const report = buildProviderUsageReportOnDb(db, tradingDate);
+  const report = buildProviderUsageReportOnDb(db, tradingDate, scope);
   const perMinute = providerRequestsPerMinuteOnDb(db, nowMs - windowMinutes * 60_000, nowMs);
   const live = getCallStats(nowMs);
 
@@ -53,6 +72,10 @@ export async function GET(req: Request) {
     dailyCap: live.dailyCap,
     recentMinutes: perMinute,
     topSymbols: topProviderSymbolsOnDb(db, tradingDate, 25),
+    // Gate B7 — the live partition, so an operator can read who holds what directly.
+    // `getCallStats` has always computed this; the route dropped it, which left the
+    // reserve exactly as unreadable as the dead grader reserve it replaced.
+    minuteBudget: live.minuteBudget,
     liveMeter: {
       note: "process-local gauge — resets on deploy/restart; `durable` is the meter of record",
       callsToday: live.callsToday,

@@ -380,7 +380,13 @@ export interface ConsumerUsageRow {
 export interface ProviderUsageReport {
   tradingDate: string;
   accountingVersion: number;
-  /** Deployments that contributed to this trading date — proves the total survived restarts. */
+  /**
+   * The narrowing applied, echoed back. A scoped and an unscoped report are the
+   * same shape and wildly different numbers; without this a reader cannot tell
+   * which one they have, which is the confusion the scope exists to end.
+   */
+  scope: { deploymentId: string | null; sinceMs: number | null; untilMs: number | null };
+  /** Deployments that contributed to this report — proves the total survived restarts. */
   deployments: string[];
   totalRequests: number;
   totalCacheHits: number;
@@ -404,12 +410,61 @@ export interface ProviderUsageReport {
 const pct = (part: number, whole: number): number | null =>
   whole > 0 ? +((part / whole) * 100).toFixed(2) : null;
 
-/** How many distinct endpoint labels the day has, so the remainder row can name its size. */
-function countDistinctEndpoints(db: AccountingDb, tradingDate: string): number {
+/**
+ * Narrows a usage report to part of a trading date.
+ *
+ * WHY. A trading date is not a measurement window. On 2026-08-03 four deployments
+ * metered into the same date, and Gate B7's entire question — did a reserve change
+ * who got served — is unanswerable against a total that sums the sessions before
+ * the reserve existed with the session after. The rows have always carried
+ * `deployment_id` and `minute_bucket_ms`; only the report refused to use them, so
+ * every post-deploy conclusion was being drawn from mixed evidence.
+ *
+ * Scoping is read-side only: no counter changes, and an unscoped call behaves
+ * exactly as before.
+ */
+export interface ProviderUsageScope {
+  /** Short commit SHA, as recorded by `deploymentIdFrom`. */
+  deploymentId?: string;
+  /** Inclusive lower bound on `minute_bucket_ms`. */
+  sinceMs?: number;
+  /** Inclusive upper bound on `minute_bucket_ms`. */
+  untilMs?: number;
+}
+
+/** `WHERE trading_date=? …` plus the scope's clauses, and the bound parameters in order. */
+function scopeClause(tradingDate: string, scope: ProviderUsageScope = {}): {
+  where: string;
+  params: (string | number)[];
+} {
+  const params: (string | number)[] = [tradingDate];
+  let where = "trading_date=?";
+  if (scope.deploymentId) {
+    where += " AND deployment_id=?";
+    params.push(scope.deploymentId);
+  }
+  if (Number.isFinite(scope.sinceMs)) {
+    where += " AND minute_bucket_ms>=?";
+    params.push(Number(scope.sinceMs));
+  }
+  if (Number.isFinite(scope.untilMs)) {
+    where += " AND minute_bucket_ms<=?";
+    params.push(Number(scope.untilMs));
+  }
+  return { where, params };
+}
+
+/** How many distinct endpoint labels the scope has, so the remainder row can name its size. */
+function countDistinctEndpoints(
+  db: AccountingDb,
+  tradingDate: string,
+  scope: ProviderUsageScope = {},
+): number {
   try {
+    const { where, params } = scopeClause(tradingDate, scope);
     const row = db.prepare(
-      "SELECT COUNT(DISTINCT endpoint) n FROM provider_request_minute WHERE trading_date=?",
-    ).get(tradingDate) as Record<string, any> | undefined;
+      `SELECT COUNT(DISTINCT endpoint) n FROM provider_request_minute WHERE ${where}`,
+    ).get(...params) as Record<string, any> | undefined;
     return Number(row?.n ?? 0);
   } catch {
     return 0;
@@ -417,16 +472,24 @@ function countDistinctEndpoints(db: AccountingDb, tradingDate: string): number {
 }
 
 /**
- * Persisted usage for a trading date. Read-only and provider-free — safe for
- * diagnostics, dashboards, and health endpoints.
+ * Persisted usage for a trading date, optionally narrowed to one deployment or
+ * minute range. Read-only and provider-free — safe for diagnostics, dashboards,
+ * and health endpoints.
  */
 export function buildProviderUsageReportOnDb(
   db: AccountingDb,
   tradingDate: string,
+  scope: ProviderUsageScope = {},
 ): ProviderUsageReport {
+  const scopeEcho = {
+    deploymentId: scope.deploymentId ?? null,
+    sinceMs: Number.isFinite(scope.sinceMs) ? Number(scope.sinceMs) : null,
+    untilMs: Number.isFinite(scope.untilMs) ? Number(scope.untilMs) : null,
+  };
   const empty: ProviderUsageReport = {
     tradingDate,
     accountingVersion: PROVIDER_ACCOUNTING_VERSION,
+    scope: scopeEcho,
     deployments: [],
     totalRequests: 0,
     totalCacheHits: 0,
@@ -449,32 +512,33 @@ export function buildProviderUsageReportOnDb(
   if (!hasTable(db, "provider_request_minute")) return empty;
 
   try {
+    const { where, params } = scopeClause(tradingDate, scope);
     const totals = db.prepare(
       `SELECT COALESCE(SUM(requests),0) requests, COALESCE(SUM(cache_hits),0) cacheHits,
               COALESCE(SUM(dedup_avoided),0) dedupAvoided, COALESCE(SUM(retries),0) retries,
               COALESCE(SUM(http_429),0) http429, COALESCE(SUM(provider_errors),0) providerErrors,
               COALESCE(SUM(quota_blocks),0) quotaBlocks
-       FROM provider_request_minute WHERE trading_date=?`,
-    ).get(tradingDate) as Record<string, number>;
+       FROM provider_request_minute WHERE ${where}`,
+    ).get(...params) as Record<string, number>;
     const totalRequests = Number(totals?.requests ?? 0);
 
     const perMinute = db.prepare(
       `SELECT minute_bucket_ms bucket, SUM(requests) n
-       FROM provider_request_minute WHERE trading_date=?
+       FROM provider_request_minute WHERE ${where}
        GROUP BY minute_bucket_ms ORDER BY n DESC LIMIT 1`,
-    ).get(tradingDate) as { bucket?: number; n?: number } | undefined;
+    ).get(...params) as { bucket?: number; n?: number } | undefined;
 
     const minutes = Number(
       (db.prepare(
         `SELECT COUNT(*) n FROM (
            SELECT minute_bucket_ms FROM provider_request_minute
-           WHERE trading_date=? AND requests>0 GROUP BY minute_bucket_ms)`,
-      ).get(tradingDate) as { n?: number } | undefined)?.n ?? 0,
+           WHERE ${where} AND requests>0 GROUP BY minute_bucket_ms)`,
+      ).get(...params) as { n?: number } | undefined)?.n ?? 0,
     );
 
     const deployments = (db.prepare(
-      `SELECT DISTINCT deployment_id FROM provider_request_minute WHERE trading_date=? ORDER BY deployment_id`,
-    ).all(tradingDate) as { deployment_id?: string }[]).map((r) => String(r.deployment_id ?? ""));
+      `SELECT DISTINCT deployment_id FROM provider_request_minute WHERE ${where} ORDER BY deployment_id`,
+    ).all(...params) as { deployment_id?: string }[]).map((r) => String(r.deployment_id ?? ""));
 
     const byConsumer = (db.prepare(
       `SELECT consumer, category, SUM(requests) requests, SUM(cache_hits) cacheHits,
@@ -482,9 +546,9 @@ export function buildProviderUsageReportOnDb(
               SUM(provider_errors) providerErrors, SUM(quota_blocks) quotaBlocks,
               SUM(records_returned) recordsReturned, SUM(latency_ms_total) latencyTotal,
               MAX(latency_ms_max) latencyMax
-       FROM provider_request_minute WHERE trading_date=?
+       FROM provider_request_minute WHERE ${where}
        GROUP BY consumer, category ORDER BY requests DESC`,
-    ).all(tradingDate) as Record<string, any>[]).map((r) => {
+    ).all(...params) as Record<string, any>[]).map((r) => {
       const requests = Number(r.requests ?? 0);
       return {
         consumer: String(r.consumer ?? "unattributed"),
@@ -509,8 +573,8 @@ export function buildProviderUsageReportOnDb(
     // add up is worse than no report.
     const endpointRows = (db.prepare(
       `SELECT endpoint, SUM(requests) requests FROM provider_request_minute
-       WHERE trading_date=? GROUP BY endpoint ORDER BY requests DESC LIMIT 25`,
-    ).all(tradingDate) as Record<string, any>[]).map((r) => ({
+       WHERE ${where} GROUP BY endpoint ORDER BY requests DESC LIMIT 25`,
+    ).all(...params) as Record<string, any>[]).map((r) => ({
       endpoint: String(r.endpoint ?? "unknown"),
       requests: Number(r.requests ?? 0),
       pctOfRequests: pct(Number(r.requests ?? 0), totalRequests),
@@ -519,7 +583,7 @@ export function buildProviderUsageReportOnDb(
     const remainder = totalRequests - shown;
     const byEndpoint = remainder > 0
       ? [...endpointRows, {
-        endpoint: `(${countDistinctEndpoints(db, tradingDate) - endpointRows.length} more endpoints)`,
+        endpoint: `(${countDistinctEndpoints(db, tradingDate, scope) - endpointRows.length} more endpoints)`,
         requests: remainder,
         pctOfRequests: pct(remainder, totalRequests),
       }]
@@ -531,6 +595,7 @@ export function buildProviderUsageReportOnDb(
     return {
       tradingDate,
       accountingVersion: PROVIDER_ACCOUNTING_VERSION,
+      scope: scopeEcho,
       deployments,
       totalRequests,
       totalCacheHits: cacheHits,

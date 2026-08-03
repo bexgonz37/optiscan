@@ -261,3 +261,109 @@ test("the sink attributes buffered calls to the ambient consumer", () => {
     __setProviderAccountingDb(null);
   }
 });
+
+// ── Report scoping (Gate B7 measurement) ────────────────────────────────────
+// A trading date that spans a deploy mixes the session before a change with the
+// session after it. These assert the report can be narrowed to a window that can
+// actually answer a before/after question.
+
+const OLD_ENV = { RAILWAY_GIT_COMMIT_SHA: "0000aaa1111" }; // -> "0000aaa"
+const NEW_ENV = { RAILWAY_GIT_COMMIT_SHA: "226ba96b42c" }; // -> "226ba96"
+
+test("a report scoped to one deployment excludes every other deployment's spend", () => {
+  const d = db();
+  const date = accountingTradingDate(T);
+  // Before the deploy: marking is starved — 2 requests, 40 refusals.
+  for (let i = 0; i < 2; i++) {
+    recordProviderRequestOnDb(d, {
+      consumer: "asymmetry_mark", endpoint: "/v3/snapshot/options/:sym/:occ",
+      status: "ok", atMs: T, latencyMs: 10, recordsReturned: 1,
+    }, OLD_ENV);
+  }
+  for (let i = 0; i < 40; i++) {
+    recordProviderRequestOnDb(d, {
+      consumer: "asymmetry_mark", endpoint: "/v3/snapshot/options/:sym/:occ",
+      status: "quota_block", atMs: T,
+    }, OLD_ENV);
+  }
+  // After the deploy: the reserve is reachable — 30 requests, 1 refusal.
+  for (let i = 0; i < 30; i++) {
+    recordProviderRequestOnDb(d, {
+      consumer: "asymmetry_mark", endpoint: "/v3/snapshot/options/:sym/:occ",
+      status: "ok", atMs: T + 60_000, latencyMs: 10, recordsReturned: 1,
+    }, NEW_ENV);
+  }
+  recordProviderRequestOnDb(d, {
+    consumer: "asymmetry_mark", endpoint: "/v3/snapshot/options/:sym/:occ",
+    status: "quota_block", atMs: T + 60_000,
+  }, NEW_ENV);
+
+  const whole = buildProviderUsageReportOnDb(d, date);
+  assert.equal(whole.totalRequests, 32, "the unscoped report still sums the whole date");
+  assert.deepEqual(whole.deployments, ["0000aaa", "226ba96"]);
+  assert.equal(whole.scope.deploymentId, null, "an unscoped report says so");
+
+  const after = buildProviderUsageReportOnDb(d, date, { deploymentId: "226ba96" });
+  assert.equal(after.totalRequests, 30);
+  assert.equal(after.totalQuotaBlocks, 1);
+  assert.deepEqual(after.deployments, ["226ba96"], "the scope narrows the deployment list too");
+  assert.equal(after.scope.deploymentId, "226ba96", "the report names its own scope");
+  assert.equal(after.byConsumer[0].consumer, "asymmetry_mark");
+  assert.equal(after.byConsumer[0].requests, 30);
+  assert.equal(after.byConsumer[0].quotaBlocks, 1);
+
+  // The mixed total would have read as 32/41 = 78% admission; the honest
+  // post-deploy answer is 30/31 = 97%. Scoping is what separates them.
+  const before = buildProviderUsageReportOnDb(d, date, { deploymentId: "0000aaa" });
+  assert.equal(before.totalRequests, 2);
+  assert.equal(before.totalQuotaBlocks, 40);
+});
+
+test("a report scoped to a minute window bounds both ends inclusively", () => {
+  const d = db();
+  const date = accountingTradingDate(T);
+  for (const offset of [0, 60_000, 120_000, 180_000]) {
+    recordProviderRequestOnDb(d, {
+      consumer: "scanner", endpoint: "/v2/snapshot", status: "ok",
+      atMs: T + offset, latencyMs: 5, recordsReturned: 1,
+    }, NEW_ENV);
+  }
+  assert.equal(buildProviderUsageReportOnDb(d, date).totalRequests, 4);
+
+  const mid = buildProviderUsageReportOnDb(d, date, { sinceMs: T + 60_000, untilMs: T + 120_000 });
+  assert.equal(mid.totalRequests, 2, "both bounds are inclusive");
+  assert.equal(mid.minutesObserved, 2);
+  assert.equal(mid.scope.sinceMs, T + 60_000);
+  assert.equal(mid.scope.untilMs, T + 120_000);
+
+  const from = buildProviderUsageReportOnDb(d, date, { sinceMs: T + 120_000 });
+  assert.equal(from.totalRequests, 2, "an open upper bound is allowed");
+
+  // Deployment and window compose.
+  const both = buildProviderUsageReportOnDb(d, date, {
+    deploymentId: "226ba96", sinceMs: T + 180_000,
+  });
+  assert.equal(both.totalRequests, 1);
+  const none = buildProviderUsageReportOnDb(d, date, {
+    deploymentId: "0000aaa", sinceMs: T + 180_000,
+  });
+  assert.equal(none.totalRequests, 0, "a scope matching nothing reports zero, not the whole day");
+});
+
+test("scoped endpoint percentages are computed against the scoped total", () => {
+  const d = db();
+  const date = accountingTradingDate(T);
+  recordProviderRequestOnDb(d, {
+    consumer: "scanner", endpoint: "/v2/old", status: "ok", atMs: T, latencyMs: 5,
+  }, OLD_ENV);
+  for (let i = 0; i < 3; i++) {
+    recordProviderRequestOnDb(d, {
+      consumer: "scanner", endpoint: "/v2/new", status: "ok", atMs: T, latencyMs: 5,
+    }, NEW_ENV);
+  }
+  const after = buildProviderUsageReportOnDb(d, date, { deploymentId: "226ba96" });
+  assert.equal(after.byEndpoint.length, 1, "the other deployment's endpoint is not listed");
+  assert.equal(after.byEndpoint[0].endpoint, "/v2/new");
+  assert.equal(after.byEndpoint[0].pctOfRequests, 100, "100% of the SCOPED total, not 75% of the day");
+  assert.equal(after.byConsumer[0].pctOfRequests, 100);
+});

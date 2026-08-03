@@ -184,3 +184,16 @@ test("jsonApiError responds with structured JSON envelope", () => {
   assert.match(src, /application\/json/);
   assert.match(src, /error: \{ code, message \}/);
 });
+
+test("provider-usage scope params are presence-checked before being parsed", () => {
+  const route = read("app/api/system/provider-usage/route.ts");
+  // `Number(null)` is 0 and 0 is finite. Parsing an absent param before checking
+  // presence bounds every unscoped read to `minute_bucket_ms <= 0`, which reports
+  // an empty trading day for the endpoint the whole Gate B measurement reads from.
+  assert.match(route, /raw == null \|\| raw === ""/,
+    "absent scope params must return undefined, not 0");
+  assert.doesNotMatch(route, /Number\(url\.searchParams\.get\((?:"|')(?:sinceMs|untilMs)/,
+    "scope params must not be parsed straight out of searchParams");
+  // The partition must stay in the payload — it is the only way to read a reserve.
+  assert.match(route, /minuteBudget: live\.minuteBudget/);
+});
