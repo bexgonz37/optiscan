@@ -549,3 +549,63 @@ Per-horizon usable: 1m 62/170, 3m 52/169, 5m 42/169, 10m 38/150, 15m 35/141,
 - Paper lane is now `ACTIVE`, entries allowed (was `BLOCKED_QUOTE_PATH_DEFECT`).
 - No bracket promoted; production still runs the symmetric ±45%.
 - No strategy quarantined. Official sample NOT quotable. Paid launch blocked.
+
+---
+
+# Packet update — 2026-08-03 (Checkpoint 5, Gate A — DEPLOYED_UNPROVEN)
+
+## Two causes ruled OUT with evidence
+
+1. **Normalization is correct.** `provider-timestamp.js` puts 19-digit values
+   in the ns band; `1785768941130622200` → `1785768941131`. Raw exceeds
+   `MAX_SAFE_INTEGER` but the lost digits are sub-millisecond.
+2. **The provider clock is never ahead.** Measured live on NVDA/AAPL/SPY/TSLA/AMD:
+   skew **−887, −2799, −599396, −2177, −1418 ms**. Always behind.
+3. **Wrong timestamp field is ruled out too.** Of 250 NVDA contracts, **0** had
+   `last_quote`, `last_trade` or `day.last_updated` ahead of now. The fallback
+   chain is not the source.
+
+## Cause found and fixed (partially effective)
+
+`deps.nowMs` is captured ONCE at beat start and reused for the whole sweep.
+With ~217 cases at ~200ms/call the sweep runs tens of seconds, so a late quote
+is legitimately newer than the sweep start → `quoteAt > nowMs` → FUTURE_QUOTE.
+
+Fixed: `liveAsymmetryQuote` captures `Date.now()` immediately after the
+provider responds; the mark runner judges freshness and age against that.
+**Guard NOT weakened** — default forward tolerance is **0 ms**, genuine future
+quotes still rejected (asserted unit + end-to-end).
+
+## Live result — the fix did NOT resolve the dominant defect
+
+Delta over 300 new marks after deploy:
+
+| | Before (10:43) | After (11:08) | New |
+|---|---|---|---|
+| Total marks | 995 | 1295 | +300 |
+| Usable | 243 (24.4%) | 323 (24.9%) | +80 (**26.7%** of new) |
+| FUTURE_QUOTE | 636 | 819 | **+183 (61% of new)** |
+
+Real but small improvement. **60m horizon went 0/63 → 12/128** — the first
+usable 60-minute marks ever recorded.
+
+**FUTURE_QUOTE remains the dominant failure at 61%.** There is a SECOND cause
+and I have not found it. Do not claim Gate A succeeded.
+
+## What the next session must do FIRST
+
+Instrument per-mark timestamp evidence (raw, source field, unit, observedAtMs,
+sweepStartedAtMs, computed skew) and persist it. `mark-timestamp-policy.ts`
+already produces all of it — it is **not yet wired to persistence**, which is
+why the second cause is invisible. One session of real skew distributions will
+identify it; further guessing will not.
+
+Note also: `callsThisMinute 280/280`, `quotaMode: minute_limited` during the
+test. The minute cap is saturated, which may interact with mark timing.
+
+## Gates B, C, D, E — NOT STARTED
+
+Gate A's exit condition (FUTURE_QUOTE materially reduced) was not met, so no
+later gate was executed. No brackets rerun, no strategies quarantined, no
+historical cohorts, no experiment registry, no lifecycle, no conflict authority.
+Paid launch remains blocked.
