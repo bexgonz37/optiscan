@@ -32,19 +32,22 @@ import {
   recordCaptureStageOnDb, recordCaptureRejectionsOnDb, recordCaptureSampleOnDb,
 } from "../asymmetry/capture-telemetry.ts";
 import { tradingDay } from "../../trading-session.ts";
+import { selectContractWithEvidence, type ContractFunnelEvidence } from "./contract-discovery.ts";
 
 export interface ChainContract { optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number; bid: number | null; ask: number | null; spreadPct: number | null; volume: number | null; openInterest: number | null; iv: number | null; delta: number | null; providerTimestamp: number | null }
 
-/** Pick the contract nearest the strategy's preferred |delta| within the preferred DTE band. */
-export function selectContractFromChain(chain: ChainContract[], side: "call" | "put", strategyKey: string, nowMs: number): ChainContract | null {
-  const strat = getStrategy(strategyKey); if (!strat) return null;
-  const [dLo, dHi] = strat.preferredDelta;
-  const dteBands = new Set(strat.preferredDte);
-  const dteOk = (dte: number) => dteBands.has(dte <= 0 ? "0dte" : dte <= 7 ? "1-7dte" : dte <= 14 ? "8-14dte" : dte <= 30 ? "15-30dte" : dte <= 90 ? "31-90dte" : "longer");
-  const target = (dLo + dHi) / 2;
-  const cand = chain.filter((c) => c.side === side && (c.bid ?? 0) > 0 && dteOk(c.dte) && c.delta != null);
-  if (cand.length === 0) return null;
-  return cand.sort((a, b) => Math.abs(Math.abs(a.delta!) - target) - Math.abs(Math.abs(b.delta!) - target))[0];
+/**
+ * Pick the contract nearest the strategy's preferred |delta| within the preferred
+ * DTE band.
+ *
+ * Delegates to `selectContractWithEvidence`, which adds the moneyness fallback for
+ * chains where the provider published no greeks — the defect that deleted the
+ * entire call side on SPY and QQQ on 2026-08-03. `underlyingPrice` is optional
+ * here for backwards compatibility; without it the fallback cannot run and the
+ * behaviour is the original delta-only selection.
+ */
+export function selectContractFromChain(chain: ChainContract[], side: "call" | "put", strategyKey: string, nowMs: number, underlyingPrice?: number | null): ChainContract | null {
+  return selectContractWithEvidence(chain, side, strategyKey, nowMs, { underlyingPrice }).contract;
 }
 
 export interface OptionsEvalResult {
@@ -53,15 +56,33 @@ export interface OptionsEvalResult {
   callout: CalloutResult | null;
   paperEntry: RealOptionEntry | null;
   state: string;
+  /** How contract discovery narrowed for this candidate. Null when it never ran. */
+  contractFunnel?: ContractFunnelEvidence | null;
 }
 
 /** PURE: run the full deterministic evaluation for one candidate given a fetched chain. */
 export function evaluateOptionsCandidate(input: OptionsCandidateInput, chain: ChainContract[], opts: { bearishActionable?: boolean; currentUnderlyingPrice?: number; currentAtMs?: number; entryZone?: [number, number] | null; targets?: [number, number] | null } = {}): OptionsEvalResult {
+  let contractFunnelEvidence: ContractFunnelEvidence | null = null;
   const selection = selectOptionsStrategy(input, { bearishActionable: opts.bearishActionable });
-  if (!selection.selected) return { selection, contract: null, callout: null, paperEntry: null, state: "REJECTED" };
+  if (!selection.selected) return { selection, contract: null, callout: null, paperEntry: null, state: "REJECTED", contractFunnel: null };
   const side = selection.selected.side;
-  const contract = selectContractFromChain(chain, side, selection.selected.key, input.nowMs);
-  if (!contract) return { selection, contract: null, callout: { state: "REJECTED", message: null, reason: "no eligible contract in the preferred delta/DTE band", freshness: null, entry: null }, paperEntry: null, state: "REJECTED" };
+  const picked = selectContractWithEvidence(chain, side, selection.selected.key, input.nowMs, {
+    symbol: input.symbol,
+    underlyingPrice: input.underlying.price ?? null,
+  });
+  const contract = picked.contract;
+  contractFunnelEvidence = picked.evidence;
+  if (!contract) {
+    // The terminal reason now names WHICH narrowing killed the candidate. The old
+    // single string could not distinguish "the provider returned no calls" from
+    // "the calls it returned had no greeks" from "nothing was near the money" —
+    // three different defects that need three different fixes.
+    return {
+      selection, contract: null,
+      callout: { state: "REJECTED", message: null, reason: `no eligible contract in the preferred delta/DTE band [${picked.evidence.terminalReason}]`, freshness: null, entry: null },
+      paperEntry: null, state: "REJECTED", contractFunnel: picked.evidence,
+    };
+  }
 
   const cc: CalloutContract = { optionSymbol: contract.optionSymbol, side: contract.side, strike: contract.strike, expiration: contract.expiration, dte: contract.dte, bid: contract.bid, ask: contract.ask, spreadPct: contract.spreadPct, quoteAgeMs: quoteFreshness(contract.providerTimestamp, input.nowMs).ageMs, openInterest: contract.openInterest, volume: contract.volume };
   const strat = getStrategy(selection.selected.key)!;
@@ -84,7 +105,7 @@ export function evaluateOptionsCandidate(input: OptionsCandidateInput, chain: Ch
     const q: OptionQuote = { optionSymbol: contract.optionSymbol, side: contract.side, strike: contract.strike, expiration: contract.expiration, dte: contract.dte, bid: contract.bid, ask: contract.ask, volume: contract.volume, openInterest: contract.openInterest, iv: contract.iv, delta: contract.delta, quoteAgeMs: cc.quoteAgeMs, providerTimestamp: contract.providerTimestamp };
     paperEntry = buildRealOptionEntry({ quote: q, underlyingPrice: input.underlying.price ?? 0, strategy: selection.selected.key, target: opts.targets?.[0] ?? null, invalidation: null });
   }
-  return { selection, contract, callout, paperEntry, state: callout.state };
+  return { selection, contract, callout, paperEntry, state: callout.state, contractFunnel: contractFunnelEvidence };
 }
 
 interface LoopDb { prepare(sql: string): { run: (...a: any[]) => { changes: number } } }
