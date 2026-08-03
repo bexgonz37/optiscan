@@ -44,12 +44,64 @@ export interface TransitionRunResult {
   ran: boolean;
   reason: string | null;
   casesRead: number;
+  /** Cases actually observed this sweep, after the quote budget. */
+  casesObserved: number;
+  /** Cases skipped because the sweep's quote budget was spent. */
+  casesDeferredForBudget: number;
   transitions: number;
   notified: number;
   suppressed: number;
   /** Transitions captured and tracked but deliberately not surfaced. */
   silentCaptures: number;
   errors: string[];
+}
+
+/**
+ * Quote requests one transition sweep may spend.
+ *
+ * WHY A BUDGET EXISTS HERE AT ALL. This sweep re-observes every open case on
+ * every tick. Measured against real production load — 395 open cases on a
+ * 60-second cadence — that is 395 requests a minute against a 280/minute cap
+ * and ~154,000 a day against a 200,000/day cap SHARED WITH THE LIVE SCANNER.
+ * Before the single-contract fix it was ~1,119 a minute and ~436,000 a day, so
+ * the daily budget was exhausted mid-session and every research quote after
+ * that failed. Research must degrade gracefully, never starve the scanner.
+ *
+ * When the budget is spent the remaining cases are DEFERRED, not failed: they
+ * keep their state, stay in the population, and are first in line next sweep.
+ */
+export const DEFAULT_MAX_QUOTES_PER_SWEEP = 120;
+
+export function resolveSweepQuoteBudget(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.ASYM_MAX_QUOTES_PER_SWEEP);
+  if (!Number.isFinite(n)) return DEFAULT_MAX_QUOTES_PER_SWEEP;
+  return Math.max(0, Math.min(2_000, Math.floor(n)));
+}
+
+/**
+ * Round-robin cursor so the budget does not always land on the same cases.
+ * Module-scoped, like the notifier memory. Resetting on redeploy is harmless —
+ * it only restarts the rotation.
+ *
+ * Fairness is a correctness property, not a nicety: a case that is never
+ * observed can never transition, so a fixed-order budget would permanently
+ * freeze everything past the cutoff.
+ */
+const sweepCursor = new Map<string, number>();
+
+/**
+ * Order cases so the ones waiting longest are served first, then wrap.
+ * Pure and deterministic given a cursor.
+ */
+export function rotateForBudget<T>(cases: readonly T[], cursor: number, budget: number): {
+  selected: T[]; nextCursor: number; deferred: number;
+} {
+  if (cases.length === 0 || budget <= 0) return { selected: [], nextCursor: cursor, deferred: cases.length };
+  if (budget >= cases.length) return { selected: [...cases], nextCursor: 0, deferred: 0 };
+  const start = ((cursor % cases.length) + cases.length) % cases.length;
+  const selected: T[] = [];
+  for (let i = 0; i < budget; i++) selected.push(cases[(start + i) % cases.length]);
+  return { selected, nextCursor: (start + budget) % cases.length, deferred: cases.length - budget };
 }
 
 /**
@@ -102,6 +154,8 @@ export interface TransitionDeps {
   env?: NodeJS.ProcessEnv;
   nowMs: number;
   sessionDate: string;
+  /** Overrides the env-resolved per-sweep quote budget. For tests. */
+  maxQuotesPerSweep?: number;
 }
 
 /** Module-scoped notifier memory so dedupe survives across sweeps. */
@@ -114,7 +168,10 @@ export async function runAsymmetryTransitions(
   db: RunnerDb,
   deps: TransitionDeps,
 ): Promise<TransitionRunResult> {
-  const out: TransitionRunResult = { ran: false, reason: null, casesRead: 0, transitions: 0, notified: 0, suppressed: 0, silentCaptures: 0, errors: [] };
+  const out: TransitionRunResult = {
+    ran: false, reason: null, casesRead: 0, casesObserved: 0, casesDeferredForBudget: 0,
+    transitions: 0, notified: 0, suppressed: 0, silentCaptures: 0, errors: [],
+  };
   try {
     const env = deps.env ?? process.env;
     if (env[TRANSITIONS_ENABLED_ENV] !== "1") {
@@ -129,13 +186,25 @@ export async function runAsymmetryTransitions(
       ? "DISABLED" as const
       : permission.paperEntriesAllowed ? "WAITING_FOR_ENTRY" as const : "BLOCKED" as const;
     const strength = resolveNotificationStrength(env);
-    const cases = listCasesOnDb(db, deps.sessionDate, 500);
-    out.casesRead = cases.length;
+    const allCases = listCasesOnDb(db, deps.sessionDate, 500);
+    out.casesRead = allCases.length;
+
+    // Spend a bounded number of quote requests per sweep, rotating so every
+    // case is observed within ceil(N / budget) sweeps instead of the first N
+    // winning forever.
+    const budget = deps.maxQuotesPerSweep ?? resolveSweepQuoteBudget(env);
+    const cursor = sweepCursor.get(deps.sessionDate) ?? 0;
+    const { selected: cases, nextCursor, deferred } = rotateForBudget(allCases, cursor, budget);
+    sweepCursor.set(deps.sessionDate, nextCursor);
+    out.casesDeferredForBudget = deferred;
 
     for (const c of cases) {
       try {
         const obs = await deps.observe(c);
+        // A null observation is "no evidence this tick" — a missing quote, or a
+        // request we declined to pay for. Never read as a dead setup.
         if (!obs) continue;
+        out.casesObserved += 1;
         const to = nextState(c.state, obs, c.earlyAsk);
         if (to === c.state) continue;
 

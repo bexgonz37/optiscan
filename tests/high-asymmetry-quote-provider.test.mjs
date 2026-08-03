@@ -27,18 +27,30 @@ const OBSERVED = Date.parse("2026-07-30T14:00:00.000Z");
 
 // ── The provider function actually exists, with the signature we call ───────
 
-test("the real provider export exists and is the one the adapter uses", async () => {
-  const deps = await import("../lib/research/options/live-deps.ts");
-  assert.equal(typeof deps.buildLiveGradeDeps, "function", "buildLiveGradeDeps must exist");
-  const built = deps.buildLiveGradeDeps();
-  assert.equal(typeof built.getQuote, "function", "getQuote must exist on the built deps");
-  // Arity: (optionSymbol, underlyingSymbol)
-  assert.equal(built.getQuote.length, 2, "getQuote must take the OCC AND the underlying symbol");
+// REBOUND 2026-08-02. The adapter used to read one contract by fetching its
+// whole chain via buildLiveGradeDeps().getQuote, which cost up to 3 requests per
+// contract and exhausted the shared daily provider budget mid-session. It now
+// calls fetchOptionContractSnapshot — one request, exact contract. The tests
+// keep their original purpose: the adapter must call a function that REALLY
+// EXISTS, with the shape the mark runner needs.
 
-  // And the adapter must call THAT function, not an invented name.
+test("the real provider export exists and is the one the adapter uses", async () => {
+  const provider = await import("../lib/polygon-provider.js");
+  assert.equal(typeof provider.fetchOptionContractSnapshot, "function",
+    "fetchOptionContractSnapshot must exist");
+  // Arity: (underlying, optionSymbol)
+  assert.equal(provider.fetchOptionContractSnapshot.length, 2,
+    "it must take the underlying AND the exact OCC");
+
   const src = readFileSync("lib/research/asymmetry/live-quote.ts", "utf8");
-  assert.match(src, /buildLiveGradeDeps/, "the adapter must use the real provider builder");
+  assert.match(src, /fetchOptionContractSnapshot/, "the adapter must use the real single-contract fetch");
   assert.equal(/getOptionQuoteSnapshot/.test(src), false, "the non-existent function must never return");
+  // The whole-chain read is what blew the budget; it must not come back here.
+  // Checked against CALLS, not prose — the docstring names it deliberately so
+  // the next reader knows why it was removed.
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  assert.equal(/fetchOptionChain\s*[(,}]/.test(code), false,
+    "reading one contract must never fetch a whole chain again");
 });
 
 test("the adapter never references a function that does not exist in the repo", () => {
@@ -46,7 +58,12 @@ test("the adapter never references a function that does not exist in the repo", 
   const called = [...src.matchAll(/const \{ (\w+) \} = require\("@\/([^"]+)"\)/g)];
   assert.ok(called.length > 0, "the adapter must require something");
   for (const [, fn, mod] of called) {
-    const modSrc = readFileSync(`${mod.replace(/^lib/, "lib")}.ts`, "utf8");
+    // Modules are .ts or .js; resolve whichever exists rather than assuming.
+    let modSrc = null;
+    for (const ext of [".ts", ".js"]) {
+      try { modSrc = readFileSync(`${mod}${ext}`, "utf8"); break; } catch { /* try next */ }
+    }
+    assert.ok(modSrc, `${mod} must resolve to a real file`);
     assert.ok(
       new RegExp(`export (async )?function ${fn}\\b|export const ${fn}\\b`).test(modSrc),
       `${fn} must actually be exported by ${mod}`,
@@ -57,15 +74,19 @@ test("the adapter never references a function that does not exist in the repo", 
 // ── The returned shape satisfies what the mark runner needs ────────────────
 
 test("the provider shape maps onto everything the mark runner requires", () => {
-  // The grade-deps contract, read from source: bid, ask, quoteAgeMs, providerTimestamp.
-  const src = readFileSync("lib/research/options/live-deps.ts", "utf8");
-  const contract = src.slice(src.indexOf("getQuote: (optionSymbol"), src.indexOf("fetchUnderlying:"));
+  // parseOptionsSnapshot is the single mapper for BOTH the chain and the
+  // single-contract path, so the fields cannot drift between them.
+  const src = readFileSync("lib/polygon-provider.js", "utf8");
+  const mapper = src.slice(src.indexOf("export function parseOptionsSnapshot"), src.indexOf("const REQUEST_TIMEOUT_MS"));
   for (const field of ["bid", "ask", "providerTimestamp"]) {
-    assert.ok(contract.includes(field), `the provider must return ${field}`);
+    assert.ok(mapper.includes(field), `the provider mapper must produce ${field}`);
   }
+  assert.match(src, /const \[contract\] = parseOptionsSnapshot/,
+    "the single-contract path must reuse the chain mapper, not a parallel one");
+
   // The adapter maps providerTimestamp -> quoteAtMs, which is what validateMark reads.
   const adapter = readFileSync("lib/research/asymmetry/live-quote.ts", "utf8");
-  assert.match(adapter, /quoteAtMs: num\(q\.providerTimestamp\)/,
+  assert.match(adapter, /quoteAtMs: num\(c\.providerTimestamp\)/,
     "providerTimestamp must be mapped to the field validateMark checks");
 });
 
@@ -75,7 +96,27 @@ test("a quote from the real shape is freshness-checkable and executable", () => 
   assert.equal(validateMark(fromProvider, OCC, SESSION, now), null, "a good provider quote must validate");
   // And the same shape is rejected when it is not executable.
   assert.equal(validateMark({ ...fromProvider, quoteAtMs: null }, OCC, SESSION, now), "NO_QUOTE");
-  assert.equal(validateMark({ ...fromProvider, bid: 0 }, OCC, SESSION, now), "NO_QUOTE");
+  // A zero bid is a REAL observation about the contract, so it gets its own
+  // reason rather than being pooled with quotes that never arrived.
+  assert.equal(validateMark({ ...fromProvider, bid: 0 }, OCC, SESSION, now), "NO_TWO_SIDED_MARKET");
+});
+
+test("a budget refusal is reported by the provider as its own flag", async () => {
+  const provider = await import("../lib/polygon-provider.js");
+  // Cap of 1 with the meter already at 1 forces a refusal on the next call.
+  const prevCap = process.env.POLYGON_DAILY_CALL_CAP;
+  const prevKey = process.env.POLYGON_API_KEY;
+  process.env.POLYGON_API_KEY = prevKey || "test-key";
+  process.env.POLYGON_DAILY_CALL_CAP = "1";
+  provider.__resetCallStatsForTest();
+  provider.recordPolygonCall();
+  const res = await provider.fetchOptionContractSnapshot("NVDA", OCC);
+  assert.equal(res.quotaExceeded, true, "a refused request must say so");
+  assert.equal(res.available, false);
+  assert.equal(res.contract, null, "a refusal never yields a fabricated quote");
+  provider.__resetCallStatsForTest();
+  if (prevCap === undefined) delete process.env.POLYGON_DAILY_CALL_CAP; else process.env.POLYGON_DAILY_CALL_CAP = prevCap;
+  if (prevKey === undefined) delete process.env.POLYGON_API_KEY;
 });
 
 // ── Provider failure is distinguishable from a genuine absence ─────────────

@@ -65,6 +65,21 @@ export async function GET(req: Request) {
     const usableMarks = Number(markHealth.usable ?? 0);
     const totalMarks = Number(markHealth.total ?? 0);
 
+    // Split rejections into "we could not see it" and "there was nothing to
+    // see". Before 2026-08-02 both were NO_QUOTE, and 2,718 budget refusals
+    // read as contracts with no market — which hid the real defect for a whole
+    // session. A rising PROVIDER_BUDGET count now means the sweep budget is too
+    // tight; a rising NO_TWO_SIDED_MARKET count means the candidates are thin.
+    const rejectionsByKind = { ourFault: 0, contractReality: 0 } as { ourFault: number; contractReality: number };
+    for (const r of markRejections) {
+      const reason = String(r.reason);
+      if (reason === "PROVIDER_BUDGET" || reason === "PROVIDER_ERROR" || reason === "NO_QUOTE") {
+        rejectionsByKind.ourFault += Number(r.n);
+      } else {
+        rejectionsByKind.contractReality += Number(r.n);
+      }
+    }
+
     const casesWithUsablePeak = Number(safeAll(db,
       `SELECT COUNT(DISTINCT fingerprint) n FROM asymmetry_marks
         WHERE session_date=? AND rejected_reason IS NULL AND ask IS NOT NULL`, sessionDate)[0]?.n ?? 0);
@@ -138,6 +153,8 @@ export async function GET(req: Request) {
         usableMarks,
         usableMarkPct: totalMarks > 0 ? Math.round((usableMarks / totalMarks) * 1000) / 10 : null,
         markRejections,
+        rejectionsByKind,
+        rejectionKindNote: "ourFault = PROVIDER_BUDGET + PROVIDER_ERROR + NO_QUOTE (we could not see it, and it is retried). contractReality = NO_TWO_SIDED_MARKET, STALE_QUOTE, FUTURE_QUOTE, WRONG_* (a real observation, settled).",
         totalCases,
         casesWithUsablePeak,
         casesWithUsablePeakPct: totalCases > 0 ? Math.round((casesWithUsablePeak / totalCases) * 1000) / 10 : null,

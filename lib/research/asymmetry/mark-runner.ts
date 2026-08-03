@@ -32,7 +32,17 @@ type MarkDb = Parameters<typeof listCasesOnDb>[0];
 export type MarkRejection =
   | "NO_QUOTE" | "STALE_QUOTE" | "FUTURE_QUOTE" | "WRONG_OCC" | "WRONG_SESSION"
   /** The provider itself failed. Distinct from a genuine absence of quote. */
-  | "PROVIDER_ERROR";
+  | "PROVIDER_ERROR"
+  /**
+   * We DECLINED to pay for this quote — daily/minute provider cap reached.
+   * Separated from NO_QUOTE because it says nothing about the contract.
+   * Production on 2026-07-31 recorded 2,718 NO_QUOTE rejections that were
+   * really this, which made a self-inflicted budget problem look like a market
+   * with no liquidity and hid the real defect for a full session.
+   */
+  | "PROVIDER_BUDGET"
+  /** Quote arrived but had no usable two-sided market (bid <= 0 or crossed). */
+  | "NO_TWO_SIDED_MARKET";
 
 export interface MarkQuote {
   optionSymbol: string;
@@ -70,7 +80,12 @@ export function validateMark(
   if (tradingDay(at) !== entrySessionDate) return "WRONG_SESSION";
   const bid = num(quote.bid);
   const ask = num(quote.ask);
-  if (bid == null || bid <= 0 || ask == null || ask < bid) return "NO_QUOTE";
+  if (bid == null || ask == null) return "NO_QUOTE";
+  // A quote that arrived but has no executable two-sided market is a REAL
+  // observation about the contract, unlike a quote that never arrived. Kept
+  // apart so "we could not see it" and "there was nothing to see" stay
+  // countable separately.
+  if (bid <= 0 || ask < bid) return "NO_TWO_SIDED_MARKET";
   return null;
 }
 
@@ -92,7 +107,12 @@ export interface MarkDeps {
    * underlying symbol too — this matches the real provider interface
    * (`buildLiveGradeDeps().getQuote`), verified against source.
    */
-  quote: (optionSymbol: string, underlyingSymbol: string) => Promise<{ quote: MarkQuote | null; providerError: string | null }>;
+  quote: (optionSymbol: string, underlyingSymbol: string) => Promise<{
+    quote: MarkQuote | null;
+    providerError: string | null;
+    /** True when the request was refused for budget rather than answered. */
+    budgetBlocked?: boolean;
+  }>;
   nowMs: number;
   sessionDate: string;
   env?: NodeJS.ProcessEnv;
@@ -119,11 +139,14 @@ export async function runDueAsymmetryMarks(db: MarkDb, deps: MarkDeps): Promise<
         for (const horizon of due) {
           const fetched = await deps.quote(c.optionSymbol, c.symbol);
           const q = fetched.quote;
-          // A provider outage is recorded as PROVIDER_ERROR so it can never be
-          // mistaken for a contract that genuinely had no market.
-          const rejection: MarkRejection | null = fetched.providerError
-            ? "PROVIDER_ERROR"
-            : q ? validateMark(q, c.optionSymbol, c.sessionDate, deps.nowMs) : "NO_QUOTE";
+          // Three distinct failures, kept apart. A provider outage, a budget
+          // refusal, and a contract with no market look identical downstream if
+          // they share a reason code — and for one full session they did.
+          const rejection: MarkRejection | null = fetched.budgetBlocked
+            ? "PROVIDER_BUDGET"
+            : fetched.providerError
+              ? "PROVIDER_ERROR"
+              : q ? validateMark(q, c.optionSymbol, c.sessionDate, deps.nowMs) : "NO_QUOTE";
           const returnPct = !rejection && c.earlyAsk && c.earlyAsk > 0 && q?.bid != null
             ? round2(((q.bid - c.earlyAsk) / c.earlyAsk) * 100)
             : null;
@@ -149,16 +172,40 @@ export async function runDueAsymmetryMarks(db: MarkDb, deps: MarkDeps): Promise<
   }
 }
 
+/**
+ * Rejections that say nothing about the contract and may succeed on a later
+ * sweep. A horizon that failed for one of these is NOT considered marked, so
+ * the runner will try it again while the horizon is still meaningful.
+ *
+ * Without this, a single transient refusal permanently consumed the horizon:
+ * the marks PRIMARY KEY made the row final, existingHorizons counted it as
+ * done, and dueHorizons never offered it again. One exhausted budget therefore
+ * destroyed a whole session of forward marks rather than delaying them.
+ */
+export const TRANSIENT_MARK_REJECTIONS: readonly MarkRejection[] =
+  Object.freeze(["PROVIDER_BUDGET", "PROVIDER_ERROR", "NO_QUOTE"]);
+
+export function isTransientRejection(reason: string | null | undefined): boolean {
+  return reason != null && (TRANSIENT_MARK_REJECTIONS as readonly string[]).includes(reason);
+}
+
 function existingHorizons(db: MarkDb, sessionDate: string, fingerprint: string): number[] {
   try {
-    return (db.prepare("SELECT horizon_minutes h FROM asymmetry_marks WHERE session_date=? AND fingerprint=?")
-      .all(sessionDate, fingerprint) as any[]).map((r) => Number(r.h));
+    const rows = db.prepare(
+      "SELECT horizon_minutes h, rejected_reason r FROM asymmetry_marks WHERE session_date=? AND fingerprint=?",
+    ).all(sessionDate, fingerprint) as any[];
+    // A transiently-failed horizon is still owed, so it is not reported as done.
+    return rows.filter((r) => !isTransientRejection(r.r == null ? null : String(r.r))).map((r) => Number(r.h));
   } catch {
     return [];
   }
 }
 
-/** Repeat-safe: the PRIMARY KEY makes a replayed horizon a no-op. */
+/**
+ * Write a mark. Repeat-safe, and a retry may REPLACE a transient failure with a
+ * real observation — but a settled row is never overwritten, so a successful
+ * mark or a genuine market condition can't be clobbered by a later sweep.
+ */
 export function writeMarkOnDb(db: MarkDb, m: {
   sessionDate: string; fingerprint: string; optionSymbol: string;
   horizonMinutes: number; markedAtMs: number;
@@ -167,9 +214,17 @@ export function writeMarkOnDb(db: MarkDb, m: {
 }): boolean {
   try {
     const res = db.prepare(`
-      INSERT OR IGNORE INTO asymmetry_marks
+      INSERT INTO asymmetry_marks
         (session_date, fingerprint, option_symbol, horizon_minutes, marked_at_ms, bid, ask, quote_age_ms, return_pct, rejected_reason)
       VALUES (?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(session_date, fingerprint, horizon_minutes) DO UPDATE SET
+        marked_at_ms = excluded.marked_at_ms,
+        bid = excluded.bid,
+        ask = excluded.ask,
+        quote_age_ms = excluded.quote_age_ms,
+        return_pct = excluded.return_pct,
+        rejected_reason = excluded.rejected_reason
+      WHERE asymmetry_marks.rejected_reason IN ('PROVIDER_BUDGET','PROVIDER_ERROR','NO_QUOTE')
     `).run(m.sessionDate, m.fingerprint, m.optionSymbol, m.horizonMinutes, m.markedAtMs,
       m.bid, m.ask, m.quoteAgeMs, m.returnPct, m.rejectedReason);
     return Number(res.changes ?? 0) > 0;
