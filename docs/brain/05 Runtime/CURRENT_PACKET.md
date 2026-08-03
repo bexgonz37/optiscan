@@ -337,3 +337,55 @@ consume the horizon permanently via the marks PRIMARY KEY).
 - do not raise `POLYGON_DAILY_CALL_CAP` or `POLYGON_MINUTE_CALL_CAP` to make the
   research lane fit — the lane must yield to the scanner, not the reverse
 - do not tune the 120s or 50% thresholds from the NVDA example
+
+---
+
+# Packet update — 2026-08-02 (Checkpoint 1)
+
+## The losses are a BRACKET defect, not a spread defect
+
+Median target **+44.94%**, median stop **−44.94%** — a symmetric 1:1 bracket —
+run at an **18.29% win rate**. Implied expectancy **−28.5%** vs observed
+**−25.88%**. A 1:1 bracket needs >50% win rate to break even; at 18.29% the
+target would need to be ~201% against that stop. **36 of 40 stops are wider
+than −40%.**
+
+No exit policy rescues it. Best alternative (`Trail 10%`) reaches PF 0.42 vs
+current 0.39. Every one of 17 tested policies stays under PF 0.5.
+
+## The fill convention was misdescribed in the plan
+
+Entry is the **MID** (`delivery.ts` → `entryFill: i.entry.mid`), exit is
+**60% toward the bid** (`paper.ts::realOptionExit`). Immediate drag is
+**−0.3 × spreadPct**, so a 10% spread costs 3%. Explaining a −24.6% MFE by
+spread alone would need an **82% spread**. Spread is NOT the story.
+
+## Two measurement defects, neither about spread
+
+1. **84.1%** of verified trades carry ONE mark reused across all 7 horizon
+   buckets. "Return at 1m" is not a 1-minute measurement.
+2. **471 of 553** rows fail the paper-chain verifier; Quant Lab filters only on
+   `status='EXITED'`. The headline is computed over an **85% unverified**
+   population. ORCL/INTC/SQQQ appear **only** in the excluded set.
+
+## Corrected numbers (verified 82 only)
+
+| Metric | Quant Lab (357, unverified) | Verified (82) |
+|---|---|---|
+| Median return | −44.8% | −42.73% |
+| MFE median | −24.6% | **−4.21%** |
+| Ever profitable | — | **43.9%** |
+| Reached +25% | — | 23.2% |
+
+MFE is far better than the aggregate implied. The signal is **not** dead.
+
+## Do not conclude
+
+- `entryQuality` is **EARLY on all 40** verified rows — these were not late alerts.
+- ORCL/DRAM/INTC/SQQQ remain **UNVERIFIED**; they are excluded rows, not graded results.
+- Median spread was **not measured** — the −3% drag figure assumes a 10% spread.
+
+## Next
+
+Checkpoint 2 = fix the bracket (asymmetric R:R or much tighter stop) and the
+mark density. Do **not** pause strategies on the contaminated 357 sample.
