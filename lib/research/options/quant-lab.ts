@@ -3,6 +3,11 @@
  * Lanes never blend: delivered / 0DTE research / shadow / research-only stay separate.
  */
 import { buildShadowSoakAggregate } from "./shadow-outcomes.ts";
+import {
+  verifyOpportunity, compareParity, isQuotable,
+  OFFICIAL_STATUS, VERIFICATION_CONTRACT_VERSION, GRADING_VERSION, DATA_QUALITY_VERSION,
+  type CanonicalVerification, type VerificationStatus,
+} from "./verification-contract.ts";
 import { timeBucketEt } from "./zero-dte-research/families.ts";
 
 export type QuantLabConfidence = "LOW" | "MEDIUM" | "HIGH";
@@ -88,7 +93,14 @@ export interface QuantLabSnapshot extends QuantLabReport {
     deliveredTotal: number; deliveredVerified: number; deliveredExcluded: number;
     verifiedFraction: number | null;
     byStatus: Record<string, number>;
-    quotable: boolean; approximation: string; note: string;
+    byLinkage: Record<string, number>;
+    /** A GATE, not a label: parity, sample, verified fraction and mark quality must all pass. */
+    quotable: boolean;
+    quotableBlockers: string[];
+    contractVersion: string;
+    gradingVersion: string;
+    dataQualityVersion: string;
+    note: string;
   };
 }
 
@@ -466,22 +478,19 @@ function reportFromRows(
 }
 
 /**
- * Verification status per paper row, derived deterministically from columns
- * this module can see.
+ * Verification per paper row, using the CANONICAL contract and the SAME
+ * evidence paper-chain uses — including the options_alerts delivery proof.
  *
- * WHY THIS IS HERE. paper-chain rejected 471 of 553 rows while this module
- * selected `status='EXITED' AND return_pct IS NOT NULL` with no verification at
- * all — so the headline performance number was computed over a population that
- * the verifier had already thrown out. Two verifiers is one too many.
- *
- * This is a CONSERVATIVE APPROXIMATION of paper-chain's predicate, built only
- * from `options_paper_trades` plus `options_paper_marks`. It cannot see Discord
- * delivery proof, so it can only ever be STRICTER-or-equal on the fields it
- * does check, and it labels itself as an approximation rather than claiming
- * parity it has not got.
+ * Checkpoint 2 shipped an approximation here that could not see delivery proof.
+ * It classified 276 of 357 rows verified while paper-chain classified 82 of
+ * 553, and because it checked FEWER facts it was more permissive, not
+ * stricter, despite the comment claiming otherwise. Official performance was
+ * quoted from it. This replaces that approximation with the real join, and the
+ * decision itself now lives in verification-contract.ts so there is exactly one
+ * implementation to disagree with.
  */
-function verificationByTradeId(db: QuantDb): Map<number, string> {
-  const out = new Map<number, string>();
+function verificationByTradeId(db: QuantDb): Map<number, CanonicalVerification> {
+  const out = new Map<number, CanonicalVerification>();
   if (!hasTable(db, "options_paper_trades")) return out;
   const cols = tableCols(db, "options_paper_trades");
   if (!cols.has("id")) return out;
@@ -490,49 +499,106 @@ function verificationByTradeId(db: QuantDb): Map<number, string> {
   const rows = db.prepare(`
     SELECT id,
            ${has("alert_id") ? "alert_id" : "NULL AS alert_id"},
+           ${has("option_symbol") ? "option_symbol" : "NULL AS option_symbol"},
            ${has("entry_fill") ? "entry_fill" : "NULL AS entry_fill"},
            ${has("exit_fill") ? "exit_fill" : "NULL AS exit_fill"},
+           ${has("exit_at_ms") ? "exit_at_ms" : "NULL AS exit_at_ms"},
            ${has("status") ? "status" : "NULL AS status"},
            ${has("return_pct") ? "return_pct" : "NULL AS return_pct"}
       FROM options_paper_trades
   `).all() as Record<string, unknown>[];
 
-  // Duplicate detection: more than one paper position for the same alert.
   const perAlert = new Map<string, number>();
   for (const r of rows) {
     const a = r.alert_id == null ? null : String(r.alert_id);
     if (a) perAlert.set(a, (perAlert.get(a) ?? 0) + 1);
   }
 
-  const markedTradeIds = new Set<number>();
+  // ── THE JOIN. Delivery proof lives on options_alerts and nowhere else. ──
+  const alerts = new Map<string, Record<string, unknown>>();
+  const alertsAvailable = hasTable(db, "options_alerts");
+  if (alertsAvailable) {
+    const ac = tableCols(db, "options_alerts");
+    const a = (c: string) => (ac.has(c) ? c : `NULL AS ${c}`);
+    try {
+      for (const r of db.prepare(`
+        SELECT alert_id, ${a("state")}, ${a("research_only")}, ${a("paper_linked")},
+               ${a("discord_message_id")}, ${a("opportunity_case_id")}, ${a("option_symbol")}
+          FROM options_alerts
+      `).all() as Record<string, unknown>[]) {
+        if (r.alert_id != null) alerts.set(String(r.alert_id), r);
+      }
+    } catch { /* absent columns are handled as unknown facts below */ }
+  }
+
+  // Marks, needed for grading-mark validity and exit corroboration.
+  const marksByTrade = new Map<number, Array<Record<string, unknown>>>();
   if (hasTable(db, "options_paper_marks")) {
     try {
-      for (const m of db.prepare("SELECT DISTINCT trade_id FROM options_paper_marks").all() as Record<string, unknown>[]) {
+      for (const m of db.prepare(
+        "SELECT trade_id, bid, ask, exit_fill, mark_at_ms FROM options_paper_marks",
+      ).all() as Record<string, unknown>[]) {
         const id = Number(m.trade_id);
-        if (Number.isFinite(id)) markedTradeIds.add(id);
+        if (!Number.isFinite(id)) continue;
+        const list = marksByTrade.get(id) ?? [];
+        list.push(m);
+        marksByTrade.set(id, list);
       }
-    } catch { /* marks are optional; absence is handled below */ }
+    } catch { /* marks optional */ }
   }
+
+  const fin = (v: unknown): number | null => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
 
   for (const r of rows) {
     const id = Number(r.id);
     if (!Number.isFinite(id)) continue;
     const alertId = r.alert_id == null ? null : String(r.alert_id);
-    const entry = Number(r.entry_fill);
-    const exit = Number(r.exit_fill);
+    const alert = alertId ? alerts.get(alertId) ?? null : null;
     const status = r.status == null ? null : String(r.status);
-    const ret = Number(r.return_pct);
+    const entry = fin(r.entry_fill);
+    const exit = fin(r.exit_fill);
+    const exitAt = fin(r.exit_at_ms);
+    const marks = marksByTrade.get(id) ?? [];
 
-    // Worst-cause-first, matching lib/research/options/trade-verification.ts.
-    let v: string;
-    if (!alertId) v = "AUDIT_ONLY";
-    else if ((perAlert.get(alertId) ?? 0) > 1) v = "DUPLICATE";
-    else if (!Number.isFinite(entry) || entry <= 0) v = "UNVERIFIED_ENTRY";
-    else if (!markedTradeIds.has(id)) v = "INVALID_OR_STALE_MARK";
-    else if (status === "EXITED" && (!Number.isFinite(exit) || exit <= 0)) v = "UNVERIFIED_EXIT";
-    else if (!Number.isFinite(ret)) v = "UNGRADEABLE";
-    else v = "VERIFIED_GRADED";
-    out.set(id, v);
+    const gradingMarkValid = marks.some((m) => {
+      const b = fin(m.bid), a = fin(m.ask);
+      return b != null && b > 0 && a != null && a >= b && fin(m.exit_fill) != null;
+    });
+    // Exit corroboration: a mark near the exit instant carrying the exit fill.
+    const exitMarkMatched = status !== "EXITED"
+      ? true
+      : marks.some((m) => {
+        const mAt = fin(m.mark_at_ms), mExit = fin(m.exit_fill);
+        return mAt != null && mExit != null && exitAt != null && exit != null
+          && Math.abs(mAt - exitAt) <= 120_000 && Math.abs(mExit - exit) <= 0.01;
+      });
+
+    const paperOcc = r.option_symbol == null ? null : String(r.option_symbol).toUpperCase();
+    const alertOcc = alert?.option_symbol == null ? null : String(alert.option_symbol).toUpperCase();
+
+    out.set(id, verifyOpportunity({
+      // When options_alerts is absent entirely the provenance is UNKNOWABLE, so
+      // alertPresent stays null (LEGACY_UNLINKABLE) rather than false.
+      alertPresent: !alertsAvailable ? null : Boolean(alert),
+      alertSentToSubscriber: alert ? (String(alert.state ?? "") === "SENT" && Number(alert.research_only ?? 0) === 0) : null,
+      discordMessageIdPresent: alert ? Boolean(alert.discord_message_id) : null,
+      opportunityCasePresent: alert ? Boolean(alert.opportunity_case_id) : null,
+      alertPaperLinked: alert ? Number(alert.paper_linked ?? 0) === 1 : null,
+      paperMirrorPresent: true, // the row IS the paper mirror
+      paperRowCount: alertId ? perAlert.get(alertId) ?? 1 : 1,
+      entryFillValid: entry != null && entry > 0,
+      exitFillValid: status === "EXITED" ? exit != null && exit > 0 : true,
+      exitMarkMatched,
+      gradingMarkValid,
+      // Identity is proven only when both sides are known and equal.
+      occMatches: paperOcc && alertOcc ? paperOcc === alertOcc : (alert ? null : null),
+      sessionValid: null, // not derivable here; stays UNKNOWN, never assumed valid
+      returnComputable: fin(r.return_pct) != null,
+      auditOnly: alertId ? false : true,
+    }));
   }
   return out;
 }
@@ -574,7 +640,7 @@ function loadPaperRows(db: QuantDb, kinds: string[] | null, opts: { verifiedOnly
   // median return, profit factor, MFE, MAE or milestone rates.
   if (opts.verifiedOnly) {
     const verification = verificationByTradeId(db);
-    raw = raw.filter((r) => verification.get(Number(r.id)) === "VERIFIED_GRADED");
+    raw = raw.filter((r) => verification.get(Number(r.id))?.verificationStatus === OFFICIAL_STATUS);
   }
 
   return raw.map((r) => ({
@@ -708,18 +774,32 @@ export function buildQuantLabSnapshot(
   // Exclusion census over the delivered lane, by cause.
   const verificationMap = verificationByTradeId(db);
   const deliveredVerification: Record<string, number> = {};
+  const deliveredLinkage: Record<string, number> = {};
   try {
     const ids = db.prepare(
       `SELECT id FROM options_paper_trades WHERE status='EXITED' AND return_pct IS NOT NULL${
         tableCols(db, "options_paper_trades").has("paper_kind") ? " AND paper_kind='DELIVERED_ALERT_PAPER'" : ""}`,
     ).all() as Record<string, unknown>[];
     for (const r of ids) {
-      const s = verificationMap.get(Number(r.id)) ?? "EXCLUDED_OTHER";
+      const v = verificationMap.get(Number(r.id)) ?? null;
+      const s = v?.verificationStatus ?? "EXCLUDED_OTHER";
       deliveredVerification[s] = (deliveredVerification[s] ?? 0) + 1;
+      const lk = v?.linkage ?? "LEGACY_UNLINKABLE";
+      deliveredLinkage[lk] = (deliveredLinkage[lk] ?? 0) + 1;
     }
   } catch { /* census is diagnostic only */ }
   const deliveredTotal = Object.values(deliveredVerification).reduce((a, b) => a + b, 0);
   const deliveredVerified = deliveredVerification.VERIFIED_GRADED ?? 0;
+  // Quotability is a GATE, not a label: parity, sample size, verified fraction
+  // and independent mark coverage must all pass. Independent mark rate is not
+  // computed here, so it is reported unknown and therefore blocks — which is
+  // the correct conservative default.
+  const quotableCheck = isQuotable({
+    parityStatus: "NOT_COMPARABLE",
+    verifiedCount: deliveredVerified,
+    verifiedFraction: deliveredTotal > 0 ? deliveredVerified / deliveredTotal : null,
+    independentMarkRate: null,
+  });
   const blockedRows = loadShadowRows(db, false);
   const wouldSendRows = loadShadowRows(db, true);
 
@@ -769,9 +849,13 @@ export function buildQuantLabSnapshot(
       deliveredExcluded: deliveredTotal - deliveredVerified,
       verifiedFraction: deliveredTotal > 0 ? Math.round((deliveredVerified / deliveredTotal) * 10_000) / 10_000 : null,
       byStatus: deliveredVerification,
-      quotable: deliveredTotal > 0 && deliveredVerified >= 30 && deliveredVerified / deliveredTotal >= 0.8,
-      approximation: "Derived from options_paper_trades + options_paper_marks. It cannot see Discord delivery proof, so it is stricter-or-equal to paper-chain on the fields it checks and is NOT claimed to be identical.",
-      note: "Official metrics count VERIFIED_GRADED only. Excluded rows remain visible here and in the delivered_unverified lane; they are never deleted and never blended into official performance.",
+      byLinkage: deliveredLinkage,
+      quotable: quotableCheck.quotable,
+      quotableBlockers: quotableCheck.blockers,
+      contractVersion: VERIFICATION_CONTRACT_VERSION,
+      gradingVersion: GRADING_VERSION,
+      dataQualityVersion: DATA_QUALITY_VERSION,
+      note: "Official metrics count VERIFIED_GRADED only, decided by the shared verification-contract that paper-chain uses too — not by a local approximation. Excluded rows remain visible here and in the delivered_unverified lane; they are never deleted and never blended into official performance.",
     },
   };
 }

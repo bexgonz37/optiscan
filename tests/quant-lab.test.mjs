@@ -26,6 +26,7 @@ function migrateMinimal(db) {
     CREATE TABLE options_alerts (
       alert_id TEXT PRIMARY KEY, candidate_symbol TEXT NOT NULL, strategy TEXT, option_symbol TEXT, side TEXT,
       research_only INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL,
+      paper_linked INTEGER, discord_message_id TEXT, opportunity_case_id TEXT,
       created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL, sent_at_ms INTEGER
     );
   `);
@@ -55,8 +56,8 @@ function insertPaper(db, {
       option_symbol, side, dte, status, return_pct, mfe_pct, mae_pct, exit_reason,
       strategy, strategy_family, paper_kind, feature_snapshot_json,
       time_bucket, market_regime, contract_moneyness, delta_band, exit_policy_version,
-      entered_at_ms, created_at_ms, updated_at_ms, alert_id, entry_fill, exit_fill
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      entered_at_ms, created_at_ms, updated_at_ms, alert_id, entry_fill, exit_fill, exit_at_ms
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
     optionSymbol,
     side,
@@ -81,6 +82,8 @@ function insertPaper(db, {
     alertId,
     verifiable ? 1.0 : null,
     verifiable ? 1.1 : null,
+    // Exit corroboration needs an exit instant a mark can be matched against.
+    verifiable ? now - 30_000 : null,
   );
   if (verifiable) {
     const id = Number(db.prepare("SELECT last_insert_rowid() id").get().id);
@@ -88,6 +91,16 @@ function insertPaper(db, {
       (trade_id, option_symbol, mark_at_ms, bid, ask, exit_fill, return_pct, quote_age_ms, created_at_ms)
       VALUES (?,?,?,?,?,?,?,?,?)`)
       .run(id, optionSymbol, now - 30_000, 1.05, 1.15, 1.1, returnPct, 1000, now);
+    // Delivery proof. The canonical verification contract requires the alert
+    // row, a SENT non-research state, a Discord message id, an opportunity case
+    // and a paper link — a paper row alone never proves an alert was delivered.
+    db.prepare(`INSERT OR IGNORE INTO options_alerts
+      (alert_id, candidate_symbol, option_symbol, state, research_only, paper_linked,
+       discord_message_id, opportunity_case_id, created_at_ms, updated_at_ms, sent_at_ms)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+      // created→sent gives a realistic detection-to-Discord latency; a zero-gap
+      // row would silently drag the fixture's latency median to zero.
+      .run(alertId, "SPY", optionSymbol, "SENT", 0, 1, `dm_${alertId}`, `oc_${alertId}`, now - 2500, now, now);
   }
 }
 
