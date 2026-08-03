@@ -19,6 +19,10 @@ function migrateMinimal(db) {
       contract_moneyness TEXT, delta_band TEXT, account_risk_usd REAL, fingerprint TEXT, contract_alts_json TEXT,
       created_at_ms INTEGER, updated_at_ms INTEGER
     );
+    CREATE TABLE options_paper_marks (
+      trade_id INTEGER, option_symbol TEXT, mark_at_ms INTEGER, bid REAL, ask REAL,
+      exit_fill REAL, return_pct REAL, quote_age_ms INTEGER, created_at_ms INTEGER
+    );
     CREATE TABLE options_alerts (
       alert_id TEXT PRIMARY KEY, candidate_symbol TEXT NOT NULL, strategy TEXT, option_symbol TEXT, side TEXT,
       research_only INTEGER NOT NULL DEFAULT 0, state TEXT NOT NULL,
@@ -39,15 +43,20 @@ function insertPaper(db, {
   strategy = "momentum",
   family = "index_intraday_momentum",
   qualityScore = 0.8,
+  // Verification-relevant fields. Rows default to a VERIFIED shape so lane
+  // tests exercise lane separation rather than accidentally testing exclusion.
+  // Pass verifiable:false to assert the exclusion path on purpose.
+  verifiable = true,
 }) {
   const now = Date.now();
+  const alertId = verifiable ? `al_${optionSymbol}` : null;
   db.prepare(`
     INSERT INTO options_paper_trades (
       option_symbol, side, dte, status, return_pct, mfe_pct, mae_pct, exit_reason,
       strategy, strategy_family, paper_kind, feature_snapshot_json,
       time_bucket, market_regime, contract_moneyness, delta_band, exit_policy_version,
-      entered_at_ms, created_at_ms, updated_at_ms
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      entered_at_ms, created_at_ms, updated_at_ms, alert_id, entry_fill, exit_fill
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
     optionSymbol,
     side,
@@ -69,7 +78,17 @@ function insertPaper(db, {
     now - 60_000,
     now,
     now,
+    alertId,
+    verifiable ? 1.0 : null,
+    verifiable ? 1.1 : null,
   );
+  if (verifiable) {
+    const id = Number(db.prepare("SELECT last_insert_rowid() id").get().id);
+    db.prepare(`INSERT INTO options_paper_marks
+      (trade_id, option_symbol, mark_at_ms, bid, ask, exit_fill, return_pct, quote_age_ms, created_at_ms)
+      VALUES (?,?,?,?,?,?,?,?,?)`)
+      .run(id, optionSymbol, now - 30_000, 1.05, 1.15, 1.1, returnPct, 1000, now);
+  }
 }
 
 test("quant-lab snapshot keeps delivered and 0DTE lanes separate", () => {
@@ -176,4 +195,43 @@ test("missing Quant metadata lowers completeness and cannot support default conc
   assert.equal(report.metadataCompleteness.exitPolicy, 0);
   assert.equal(report.metadataCompleteness.qualityScore, 0);
   assert.equal(report.confidence, "LOW");
+});
+
+test("official delivered lane counts VERIFIED rows only; unverified stay visible", () => {
+  // The exact production failure: quant-lab selected `status='EXITED' AND
+  // return_pct IS NOT NULL` with no verification, so 471 of 553 rows the
+  // paper-chain verifier had already rejected still drove the headline.
+  const db = new Database(":memory:");
+  migrateMinimal(db);
+
+  insertPaper(db, { paperKind: "DELIVERED_ALERT_PAPER", optionSymbol: "O:SPY260727C00500000", returnPct: 10 });
+  // No alert_id / entry_fill / marks — exactly the shape of an excluded row.
+  insertPaper(db, { paperKind: "DELIVERED_ALERT_PAPER", optionSymbol: "O:QQQ260727P00480000", returnPct: -95, verifiable: false });
+
+  const snap = buildQuantLabSnapshot(db, {});
+  assert.equal(snap.lanes.delivered.sampleSize, 1, "official lane sees the verified row only");
+  assert.equal(snap.lanes.delivered_unverified.sampleSize, 2, "the pre-verification population stays visible");
+
+  // The -95% row must not drag the official median.
+  assert.equal(snap.lanes.delivered.metrics.medianReturn, 10);
+  assert.ok(snap.lanes.delivered_unverified.metrics.medianReturn < 0, "the contaminated lane still shows the loss");
+
+  assert.equal(snap.verification.deliveredTotal, 2);
+  assert.equal(snap.verification.deliveredVerified, 1);
+  assert.equal(snap.verification.deliveredExcluded, 1);
+  assert.equal(snap.verification.byStatus.AUDIT_ONLY, 1, "excluded rows keep a named cause");
+  assert.equal(snap.verification.quotable, false, "one verified row is never quotable");
+  assert.equal(snap.verification.officialStatus, "VERIFIED_GRADED");
+});
+
+test("a duplicated alert is excluded from official performance", () => {
+  const db = new Database(":memory:");
+  migrateMinimal(db);
+  insertPaper(db, { paperKind: "DELIVERED_ALERT_PAPER", optionSymbol: "O:SPY260727C00500000", returnPct: 10 });
+  // Same option symbol => same generated alert_id => duplicate position.
+  insertPaper(db, { paperKind: "DELIVERED_ALERT_PAPER", optionSymbol: "O:SPY260727C00500000", returnPct: -80 });
+
+  const snap = buildQuantLabSnapshot(db, {});
+  assert.equal(snap.lanes.delivered.sampleSize, 0, "both halves of a duplicate are excluded");
+  assert.equal(snap.verification.byStatus.DUPLICATE, 2);
 });
