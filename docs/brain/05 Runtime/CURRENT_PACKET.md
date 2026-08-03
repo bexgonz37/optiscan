@@ -389,3 +389,49 @@ MFE is far better than the aggregate implied. The signal is **not** dead.
 
 Checkpoint 2 = fix the bracket (asymmetric R:R or much tighter stop) and the
 mark density. Do **not** pause strategies on the contaminated 357 sample.
+
+---
+
+# Packet update — 2026-08-02 (Checkpoint 2)
+
+## Quant Lab now counts verified rows only
+
+`delivered` = VERIFIED_GRADED only, and is the **only** lane performance may be
+quoted from. `delivered_unverified` keeps the old population visible. A
+verification census reports every exclusion by cause. **Nothing deleted.**
+
+The filter is a **conservative approximation** of paper-chain (it cannot see
+Discord delivery proof) and says so in the payload.
+
+## Shadow bracket results — verified 82, independent marks only
+
+| Policy | expectancy | PF | R:R | breakeven win% |
+|---|---|---|---|---|
+| BASELINE_SYMMETRIC_45 | −17.07% | 0.303 | 1.00 | 50.0 |
+| ASYM_2R | −8.74% | 0.465 | 2.00 | 33.3 |
+| TIGHT_STOP_20 | −6.52% | 0.532 | 2.25 | 30.8 |
+| ASYM_3R | −6.34% | 0.545 | 3.00 | 25.0 |
+| **TIME_30_STOP_20** | **−6.14%** | **0.551** | 2.25 | 30.8 |
+| TRAIL_15_FROM_10 | −9.46% | 0.345 | — | 13 rows only |
+
+**Every candidate roughly halves the loss. NOT ONE reaches PF 1.0.**
+Fixing the bracket is necessary but **not sufficient** — the signal still loses.
+Target hit rates of 0–4.9% mean +45–60% targets are effectively unreachable.
+
+## Promotion REFUSED
+
+Independent mark rate is **23.4%** (132 of 565 horizons); 84.1% of series are
+degenerate. Every simulated exit rests on carried-forward quotes, so no policy
+may be promoted. **This is the correct outcome, not a failure.**
+
+## What to do next
+
+Mark density is the blocker for everything. Until the independent rate exceeds
+50%, no bracket can be chosen and no strategy can be quarantined.
+
+## Do not conclude
+
+- No bracket has been promoted. Production still runs the symmetric ±45%.
+- The 82 verified rows are still below the 60-alert forward-sample requirement,
+  and they are backward-looking, not forward.
+- `TIME_30_STOP_20` leads by 0.006 PF over `ASYM_3R` — noise at n=82.
