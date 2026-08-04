@@ -37,10 +37,13 @@ function seed(db, over = {}) {
   ensureAsymmetrySchema(db);
   openAsymmetryCaseOnDb(db, {
     sessionDate: SESSION, fingerprint: `${SESSION}|${OCC}`, symbol: "NVDA", direction: "CALL",
-    optionSymbol: OCC, state: "CONFIRMING", firstDetectedAtMs: NOW - 600_000,
+    optionSymbol: OCC, state: "CONFIRMING", firstDetectedAtMs: NOW - 10_000,
     earlyAsk: 3.25, earlyBid: 3.20, earlySpreadPct: 1.5,
     setupFamily: "pullback_continuation", scannerVersion: "test",
-    evidenceJson: JSON.stringify({ underlyingPrice: 198.1 }), missingEvidence: [],
+    evidenceJson: JSON.stringify({
+      underlyingPrice: 198.1, priorMovePct: 0.1, roomToNextLevelPct: 1.5,
+      distanceToTriggerPct: 0.1, delta: 0.45, targetT1: 5.0, targetStop: 2.0,
+    }), missingEvidence: [],
     normalQualifiedAtMs: null, normalAsk: null, ...over,
   }, NOW - 600_000);
 }
@@ -49,7 +52,10 @@ function seed(db, over = {}) {
 const obs = (over = {}) => ({
   fingerprint: `${SESSION}|${OCC}`,
   bid: 3.55, ask: 3.65, quoteAtMs: NOW - 5_000,
-  triggered: false, invalidated: false, spreadPct: 2.7, openInterest: 5_000, ...over,
+  triggered: false, invalidated: false, spreadPct: 2.7, openInterest: 5_000,
+  contractVolume: 900, dte: 7, delta: 0.45,
+  currentUnderlyingPrice: 198.2, underlyingQuoteAtMs: NOW - 5_000,
+  ...over,
 });
 
 async function run(db, observation, sent) {
@@ -74,9 +80,18 @@ test("a NOTIFIED transition is journalled with its evidence and thresholds", { s
   assert.equal(row.notifyOutcome, "SENT");
   assert.equal(row.ask, 3.65);
   assert.equal(row.quoteAgeMs, 5_000);
-  assert.equal(row.cfgMaxQuoteAgeMs, 120_000, "the threshold in force is recorded");
+  assert.equal(row.cfgMaxQuoteAgeMs, 30_000, "the strategy threshold in force is recorded");
   assert.equal(row.cfgMaxGiveBackFraction, 0.5);
-  assert.equal(row.captureToNotifyMs, 600_000);
+  assert.equal(row.captureToNotifyMs, 10_000);
+  assert.equal(row.setupFamily, "pullback_continuation");
+  assert.equal(row.freshnessSource, "STRATEGY_CATALOG");
+  assert.equal(row.deliveryLevel, "IMMEDIATE_OWNER_ALERT");
+  assert.ok(row.qualityScore >= 80);
+  assert.equal(row.strategyPolicy.minRewardRemainingPct, 10);
+  assert.equal(row.strategyPolicy.minDistanceFromInvalidationPct, 5);
+  assert.equal(row.decisionMetrics.targetT1, 5);
+  assert.equal(row.decisionMetrics.targetStop, 2);
+  assert.ok(row.decisionMetrics.rewardRemainingPct > 30);
   db.close();
 });
 
@@ -203,6 +218,44 @@ test("the alert-to-capture ratio is computed from the journal, not from volatile
   assert.equal(r.alertToCaptureRatioPct, 50);
   assert.equal(r.byTiming.STALE_EVIDENCE, 1);
   assert.equal(r.byTiming.ON_TIME, 1);
+  db.close();
+});
+
+test("the immediate-message budget is spent on the highest-ranked fresh case", { skip }, async () => {
+  const db = new Database(":memory:");
+  const highOcc = OCC;
+  const lowOcc = "O:NVDA260807C00205000";
+  seed(db, {
+    fingerprint: `${SESSION}|${highOcc}`,
+    optionSymbol: highOcc,
+    firstDetectedAtMs: NOW - 10_000,
+  });
+  seed(db, {
+    fingerprint: `${SESSION}|${lowOcc}`,
+    optionSymbol: lowOcc,
+    firstDetectedAtMs: NOW - 5_000,
+  });
+  const sent = [];
+  await runAsymmetryTransitions(db, {
+    observe: (c) => c.optionSymbol === highOcc
+      ? obs({ fingerprint: c.fingerprint, ask: 3.30, bid: 3.28, spreadPct: 0.61 })
+      : obs({ fingerprint: c.fingerprint, ask: 3.55, bid: 3.40, spreadPct: 4.32, openInterest: 1_500, contractVolume: 300 }),
+    memory: createPrivateCaseMemory(),
+    send: async (_w, content) => { sent.push(content); return { ok: true }; },
+    env: { ...ENV, HIGH_ASYMMETRY_MAX_MESSAGES_PER_SESSION: "1" },
+    nowMs: NOW,
+    sessionDate: SESSION,
+  });
+
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /NVDA 08\/07 \$200 Call/, "the stronger contract gets the scarce immediate slot");
+  const rows = listNotifyDecisionsOnDb(db, SESSION);
+  assert.equal(rows.length, 2, "both cases remain persisted even though only one message can send");
+  const high = rows.find((r) => r.optionSymbol === highOcc);
+  const low = rows.find((r) => r.optionSymbol === lowOcc);
+  assert.ok(high.qualityScore > low.qualityScore);
+  assert.equal(high.notifyOutcome, "SENT");
+  assert.equal(low.notifyOutcome, "SUPPRESSED_RATE_LIMIT");
   db.close();
 });
 

@@ -59,9 +59,9 @@ export const PRIVATE_WEBHOOK_ENV = "HIGH_ASYMMETRY_PRIVATE_WEBHOOK";
 export const PRIVATE_MAX_SESSION_MESSAGES_ENV = "HIGH_ASYMMETRY_MAX_MESSAGES_PER_SESSION";
 
 /** Default ceiling on owner messages per symbol per session. */
-export const DEFAULT_MAX_MESSAGES_PER_SYMBOL_SESSION = 4;
+export const DEFAULT_MAX_MESSAGES_PER_SYMBOL_SESSION = 2;
 /** Default ceiling on all owner-private High-Asymmetry messages per session. */
-export const DEFAULT_MAX_MESSAGES_PER_SESSION = 40;
+export const DEFAULT_MAX_MESSAGES_PER_SESSION = 8;
 
 export type PrivateNotifyOutcome =
   | "DISABLED"

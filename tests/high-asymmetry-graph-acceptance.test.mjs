@@ -30,11 +30,15 @@ function seeded() {
     sessionDate: SESSION, fingerprint: FP, symbol: "NVDA", direction: "CALL",
     optionSymbol: OCC, state: "EARLY_ASYMMETRY", firstDetectedAtMs: OBSERVED,
     earlyAsk: 2.00, earlyBid: 1.95, earlySpreadPct: 2.5,
-    setupFamily: "breakout", scannerVersion: "test",
+    setupFamily: "confirmed_breakout", scannerVersion: "test",
     // The underlying price is part of the MINIMUM notification payload, and it
     // is genuinely captured at detection — a case without it is silently
     // tracked rather than surfaced (see the notification gate).
-    evidenceJson: JSON.stringify({ underlyingPrice: 198.4 }), missingEvidence: ["NO_CATALYST"],
+    evidenceJson: JSON.stringify({
+      underlyingPrice: 198.4, priorMovePct: 0.1, roomToNextLevelPct: 1.5,
+      targetT1: 5.0, targetStop: 1.2,
+      distanceToTriggerPct: 0.1, delta: 0.5,
+    }), missingEvidence: ["NO_CATALYST"],
     normalQualifiedAtMs: null, normalAsk: null,
   }, OBSERVED);
   return db;
@@ -96,10 +100,15 @@ test("EDGE: transition runner reads cases, writes transitions, invokes the notif
   const res = await runAsymmetryTransitions(db, {
     // ask 2.05 vs a 2.00 entry is only a 2.5% expansion, so this is a genuine
     // TRIGGERED rather than a chase.
-    observe: async () => ({ fingerprint: FP, bid: 2.00, ask: 2.05, quoteAtMs: OBSERVED, triggered: true, invalidated: false, spreadPct: 3, openInterest: 4000 }),
+    observe: async () => ({
+      fingerprint: FP, bid: 2.00, ask: 2.05, quoteAtMs: OBSERVED + 9_000,
+      triggered: true, invalidated: false, spreadPct: 3, openInterest: 4000,
+      contractVolume: 800, dte: 7, delta: 0.5,
+      currentUnderlyingPrice: 198.5, underlyingQuoteAtMs: OBSERVED + 9_000,
+    }),
     send: async (w, c) => { sends.push({ w, c }); return { ok: true }; },
     env: { ...ON, HIGH_ASYMMETRY_PRIVATE_ENABLED: "1", HIGH_ASYMMETRY_PRIVATE_WEBHOOK: "https://private/hook" },
-    nowMs: OBSERVED + 60_000, sessionDate: SESSION,
+    nowMs: OBSERVED + 10_000, sessionDate: SESSION,
   });
   assert.equal(res.ran, true);
   assert.equal(res.casesRead, 1);

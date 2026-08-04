@@ -35,6 +35,7 @@ const candidate = (over = {}) => ({
   underlyingPrice: 198.5, vwap: 197.0, stockVolume: 1e6, relativeVolume: 1.8,
   volumeAcceleration: 1.2, priorMovePct: 1.1, compressionState: "COMPRESSED",
   distanceToTriggerPct: 0.7, roomToNextLevelPct: 2.4,
+  targetT1: 2.85, targetStop: 1.35,
   marketAlignment: "ALIGNED", sectorAlignment: "ALIGNED",
   catalyst: { label: "Confirmed launch", source: "company release" },
   setupFamily: "breakout_continuation", scannerVersion: "test",
@@ -50,6 +51,10 @@ test("the real options loop imports and calls the radar capture entrypoint", () 
     "the live loop must import the capture entrypoint");
   const code = loop.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
   assert.match(code, /captureAsymmetryCandidate\(/, "the live loop must CALL it, not merely import it");
+  assert.match(code, /targetT1:\s*res\.callout\?\.entry\?\.t1/,
+    "the gate must reuse the authoritative frozen target without another provider call");
+  assert.match(code, /targetStop:\s*res\.callout\?\.entry\?\.stop/,
+    "the gate must reuse the authoritative frozen invalidation without another provider call");
 
   // It must sit after exact-OCC selection and before subscriber qualification
   // finishes — i.e. inside the contract branch, alongside the existing capture.
@@ -150,6 +155,8 @@ test("a captured candidate becomes a durable case that the read path returns", (
   assert.equal(cases.length, 1);
   assert.equal(cases[0].optionSymbol, OCC);
   assert.equal(cases[0].earlyAsk, 2.10, "the conservative ask entry is recorded");
+  assert.equal(cases[0].targetT1, 2.85, "the authoritative frozen target is retained");
+  assert.equal(cases[0].targetStop, 1.35, "the authoritative frozen stop is retained");
   assert.equal(lastStateOnDb(d, "2026-07-30", `2026-07-30|${OCC}`), r.state);
   d.close();
 });

@@ -39,7 +39,7 @@ type JournalDb = {
   exec: (sql: string) => unknown;
 };
 
-export const NOTIFY_JOURNAL_VERSION = "ASYM_NOTIFY_JOURNAL_V1" as const;
+export const NOTIFY_JOURNAL_VERSION = "ASYM_NOTIFY_JOURNAL_V2" as const;
 
 export function ensureNotifyJournalSchema(db: JournalDb): void {
   db.exec(`
@@ -60,6 +60,10 @@ export function ensureNotifyJournalSchema(db: JournalDb): void {
       reason TEXT NOT NULL,
       gate_version TEXT NOT NULL,
       silent_capture INTEGER NOT NULL,
+      setup_family TEXT,
+      freshness_source TEXT,
+      quality_score REAL,
+      delivery_level TEXT,
 
       -- What the gate saw. Raw, unrounded, never inferred.
       bid REAL, ask REAL, quote_at_ms INTEGER, quote_age_ms INTEGER,
@@ -81,6 +85,8 @@ export function ensureNotifyJournalSchema(db: JournalDb): void {
       cfg_min_contract_volume INTEGER,
       cfg_max_missing_for_confirming INTEGER,
       cfg_max_capture_to_notify_ms INTEGER,
+      strategy_policy_json TEXT,
+      decision_metrics_json TEXT,
 
       -- Delivery, filled in after the send attempt resolves.
       notify_outcome TEXT,
@@ -99,6 +105,12 @@ export function ensureNotifyJournalSchema(db: JournalDb): void {
   `);
   addColumnIfMissing(db, "asymmetry_notify_decisions", "action", "TEXT");
   addColumnIfMissing(db, "asymmetry_notify_decisions", "cfg_max_capture_to_notify_ms", "INTEGER");
+  addColumnIfMissing(db, "asymmetry_notify_decisions", "setup_family", "TEXT");
+  addColumnIfMissing(db, "asymmetry_notify_decisions", "freshness_source", "TEXT");
+  addColumnIfMissing(db, "asymmetry_notify_decisions", "quality_score", "REAL");
+  addColumnIfMissing(db, "asymmetry_notify_decisions", "delivery_level", "TEXT");
+  addColumnIfMissing(db, "asymmetry_notify_decisions", "strategy_policy_json", "TEXT");
+  addColumnIfMissing(db, "asymmetry_notify_decisions", "decision_metrics_json", "TEXT");
 }
 
 function hasTable(db: JournalDb, name: string): boolean {
@@ -152,6 +164,15 @@ export interface NotifyJournalEntry {
   peakAskSinceCapture: number | null;
   missingEvidenceCount: number;
   firstDetectedAtMs: number | null;
+  setupFamily?: string | null;
+  currentUnderlyingPrice?: number | null;
+  underlyingQuoteAtMs?: number | null;
+  dte?: number | null;
+  delta?: number | null;
+  underlyingMoveBeforeDetectionPct?: number | null;
+  roomToNextLevelPct?: number | null;
+  targetT1?: number | null;
+  targetStop?: number | null;
 }
 
 export interface JournalResult { ok: boolean; created: boolean; error: string | null }
@@ -182,19 +203,21 @@ export function recordNotifyDecisionOnDb(db: JournalDb, e: NotifyJournalEntry): 
         session_date, fingerprint, decided_at_ms, symbol, option_symbol, direction,
         from_state, to_state,
         notify, timing, action, reason, gate_version, silent_capture,
+        setup_family, freshness_source, quality_score, delivery_level,
         bid, ask, quote_at_ms, quote_age_ms, underlying_price, spread_pct, premium_chase_pct,
         open_interest, contract_volume, entry_ask_at_capture, peak_ask_since_capture,
         give_back_fraction, missing_evidence_count, first_detected_at_ms, capture_to_notify_ms,
         cfg_max_quote_age_ms, cfg_max_giveback_fraction, cfg_max_spread_pct, cfg_max_chase_pct,
         cfg_min_open_interest, cfg_min_contract_volume, cfg_max_missing_for_confirming,
-        cfg_max_capture_to_notify_ms,
+        cfg_max_capture_to_notify_ms, strategy_policy_json, decision_metrics_json,
         journal_version
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(
       e.sessionDate, e.fingerprint, e.decidedAtMs, e.symbol, e.optionSymbol, e.direction,
       e.fromState, e.toState,
       e.decision.notify ? 1 : 0, e.decision.timing, e.decision.action, e.decision.reason, e.decision.version,
       e.decision.silentCapture ? 1 : 0,
+      e.setupFamily ?? null, e.config.freshnessSource, e.decision.qualityScore, e.decision.deliveryLevel,
       e.bid, e.ask, e.quoteAtMs, quoteAgeMs, e.underlyingPrice, e.spreadPct, e.premiumChasePct,
       e.openInterest, e.contractVolume, e.entryAskAtCapture, e.peakAskSinceCapture,
       giveBackFraction(e.entryAskAtCapture, e.peakAskSinceCapture, e.ask),
@@ -203,6 +226,34 @@ export function recordNotifyDecisionOnDb(db: JournalDb, e: NotifyJournalEntry): 
       e.config.maxSpreadPct, e.config.maxPremiumChasePct,
       e.config.minOpenInterest, e.config.minContractVolume, e.config.maxMissingEvidenceForConfirming,
       e.config.maxCaptureToNotifyMs,
+      JSON.stringify({
+        strategyKey: e.config.strategyKey,
+        freshnessSource: e.config.freshnessSource,
+        strategySide: e.config.strategySide,
+        maxUnderlyingQuoteAgeAtNotifyMs: e.config.maxUnderlyingQuoteAgeAtNotifyMs,
+        maxUnderlyingMoveBeforeEntryPct: e.config.maxUnderlyingMoveBeforeEntryPct,
+        minRewardRemainingPct: e.config.minRewardRemainingPct,
+        minDistanceFromInvalidationPct: e.config.minDistanceFromInvalidationPct,
+        preferredDteBands: e.config.preferredDteBands,
+        preferredDelta: e.config.preferredDelta,
+        minImmediateScore: e.config.minImmediateScore,
+      }),
+      JSON.stringify({
+        currentUnderlyingPrice: e.currentUnderlyingPrice ?? null,
+        underlyingQuoteAtMs: e.underlyingQuoteAtMs ?? null,
+        dte: e.dte ?? null,
+        delta: e.delta ?? null,
+        underlyingMoveBeforeDetectionPct: e.underlyingMoveBeforeDetectionPct ?? null,
+        roomToNextLevelPct: e.roomToNextLevelPct ?? null,
+        targetT1: e.targetT1 ?? null,
+        targetStop: e.targetStop ?? null,
+        candidateAgeMs: e.decision.candidateAgeMs,
+        optionQuoteAgeMs: e.decision.optionQuoteAgeMs,
+        underlyingQuoteAgeMs: e.decision.underlyingQuoteAgeMs,
+        underlyingMoveBeforeEntryPct: e.decision.underlyingMoveBeforeEntryPct,
+        rewardRemainingPct: e.decision.rewardRemainingPct,
+        distanceToInvalidationPct: e.decision.distanceToInvalidationPct,
+      }),
       NOTIFY_JOURNAL_VERSION,
     );
     return { ok: true, created: Number(res.changes ?? 0) > 0, error: null };
@@ -249,6 +300,10 @@ export interface JournalRow {
   cfgMaxQuoteAgeMs: number | null; cfgMaxGiveBackFraction: number | null;
   cfgMaxSpreadPct: number | null; cfgMaxChasePct: number | null;
   cfgMaxCaptureToNotifyMs: number | null;
+  setupFamily: string | null; freshnessSource: string | null;
+  qualityScore: number | null; deliveryLevel: string | null;
+  strategyPolicy: Record<string, unknown> | null;
+  decisionMetrics: Record<string, unknown> | null;
   notifyOutcome: string | null; sentAtMs: number | null; sendLatencyMs: number | null;
 }
 
@@ -287,6 +342,12 @@ export function listNotifyDecisionsForOccOnDb(
 
 function mapRow(r: any): JournalRow {
   const n = (v: unknown): number | null => (v == null ? null : Number.isFinite(Number(v)) ? Number(v) : null);
+  const json = (v: unknown): Record<string, unknown> | null => {
+    try {
+      const parsed = JSON.parse(String(v ?? ""));
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+    } catch { return null; }
+  };
   return {
     sessionDate: String(r.session_date), fingerprint: String(r.fingerprint),
     decidedAtMs: Number(r.decided_at_ms), symbol: String(r.symbol),
@@ -305,6 +366,12 @@ function mapRow(r: any): JournalRow {
     cfgMaxQuoteAgeMs: n(r.cfg_max_quote_age_ms), cfgMaxGiveBackFraction: n(r.cfg_max_giveback_fraction),
     cfgMaxSpreadPct: n(r.cfg_max_spread_pct), cfgMaxChasePct: n(r.cfg_max_chase_pct),
     cfgMaxCaptureToNotifyMs: n(r.cfg_max_capture_to_notify_ms),
+    setupFamily: r.setup_family == null ? null : String(r.setup_family),
+    freshnessSource: r.freshness_source == null ? null : String(r.freshness_source),
+    qualityScore: n(r.quality_score),
+    deliveryLevel: r.delivery_level == null ? null : String(r.delivery_level),
+    strategyPolicy: json(r.strategy_policy_json),
+    decisionMetrics: json(r.decision_metrics_json),
     notifyOutcome: r.notify_outcome == null ? null : String(r.notify_outcome),
     sentAtMs: n(r.sent_at_ms), sendLatencyMs: n(r.send_latency_ms),
   };

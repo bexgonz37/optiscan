@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   decideNotification, alertToCaptureRatio, resolveNotificationStrength,
+  resolveStrategyNotificationStrength, strategyNotificationPolicyMatrix,
   NOTIFY_ELIGIBLE_STATES, NOTIFY_GATED_STATES, NOTIFICATION_GATE_VERSION,
   DEFAULT_NOTIFICATION_STRENGTH,
 } from "../lib/research/asymmetry/notification-gate.ts";
@@ -110,8 +111,8 @@ test("an unmeasured blocker does not block — missing stays missing", () => {
 // ── The gate only ever tightens ─────────────────────────────────────────────
 
 test("the gate is versioned and configurable within clamps", () => {
-  assert.equal(NOTIFICATION_GATE_VERSION, "ASYM_NOTIFY_V2");
-  assert.equal(decideNotification(ev()).version, "ASYM_NOTIFY_V2");
+  assert.equal(NOTIFICATION_GATE_VERSION, "ASYM_NOTIFY_V3");
+  assert.equal(decideNotification(ev()).version, "ASYM_NOTIFY_V3");
   const cfg = resolveNotificationStrength({ ASYM_NOTIFY_MAX_SPREAD_PCT: "8" });
   assert.equal(cfg.maxSpreadPct, 8);
   assert.equal(resolveNotificationStrength({ ASYM_NOTIFY_MAX_SPREAD_PCT: "junk" }).maxSpreadPct,
@@ -178,6 +179,104 @@ test("A PROMOTED STATE MUST NOT SPEAK ON STALE EVIDENCE", () => {
   assert.equal(d.action, "HIGH_ASYMMETRY_TOO_LATE");
   assert.match(d.reason, /LATE_OR_ROLLOVER_SUPPRESSION_STALE_300S/);
   assert.equal(d.silentCapture, true, "the case is still captured and tracked");
+});
+
+const strategyEv = (over = {}) => ({
+  ...ev(),
+  setupFamily: "zero_dte_index", direction: "CALL",
+  nowMs: T0 + 5_000, firstDetectedAtMs: T0,
+  quoteAtMs: T0 + 4_000, underlyingQuoteAtMs: T0 + 4_000,
+  currentUnderlyingPrice: 198.5,
+  underlyingMoveBeforeDetectionPct: 0.1,
+  roomToNextLevelPct: 1.5,
+  targetT1: 3.0, targetStop: 1.2,
+  dte: 0, delta: 0.5,
+  spreadPct: 2, openInterest: 3_000, contractVolume: 1_000,
+  premiumChasePct: 2,
+  ...over,
+});
+
+test("strategy freshness comes from the existing catalog, not the global 15-minute default", () => {
+  const zero = resolveStrategyNotificationStrength("zero_dte_index", {});
+  const swing = resolveStrategyNotificationStrength("longer_dated_swing", {});
+  assert.equal(zero.maxCaptureToNotifyMs, 10_000);
+  assert.equal(zero.maxQuoteAgeAtNotifyMs, 10_000);
+  assert.equal(swing.maxCaptureToNotifyMs, 120_000);
+  assert.equal(swing.maxQuoteAgeAtNotifyMs, 120_000);
+  assert.equal(zero.freshnessSource, "STRATEGY_CATALOG");
+  assert.equal(strategyNotificationPolicyMatrix({}).length, 27);
+});
+
+test("a 0DTE strategy cannot use an excessively old setup", () => {
+  const cfg = resolveStrategyNotificationStrength("zero_dte_index", {});
+  const d = decideNotification(strategyEv({
+    nowMs: T0 + 20_000,
+    quoteAtMs: T0 + 19_500,
+    underlyingQuoteAtMs: T0 + 19_500,
+  }), cfg);
+  assert.equal(d.notify, false);
+  assert.equal(d.timing, "ENTRY_TOO_LATE");
+  assert.equal(d.action, "HIGH_ASYMMETRY_TOO_LATE");
+  assert.match(d.reason, /ENTRY_TOO_LATE_20S/);
+});
+
+test("a longer-dated strategy uses its own freshness and can still qualify", () => {
+  const cfg = resolveStrategyNotificationStrength("longer_dated_swing", {});
+  const d = decideNotification(strategyEv({
+    setupFamily: "longer_dated_swing", dte: 45, delta: 0.4,
+    nowMs: T0 + 90_000, quoteAtMs: T0 + 89_500,
+    underlyingQuoteAtMs: T0 + 89_500,
+  }), cfg);
+  assert.equal(d.notify, true);
+  assert.equal(d.deliveryLevel, "IMMEDIATE_OWNER_ALERT");
+  assert.ok(d.qualityScore >= cfg.minImmediateScore);
+});
+
+test("unknown strategy and incomplete current evidence remain quiet owner-watch research", () => {
+  const unknown = decideNotification(strategyEv({ setupFamily: "legacy_breakout" }),
+    resolveStrategyNotificationStrength("legacy_breakout", {}));
+  assert.equal(unknown.notify, false);
+  assert.equal(unknown.action, "HIGH_ASYMMETRY_OWNER_WATCH");
+  assert.equal(unknown.deliveryLevel, "OWNER_WATCH");
+
+  const missingUnderlying = decideNotification(strategyEv({ underlyingQuoteAtMs: null }),
+    resolveStrategyNotificationStrength("zero_dte_index", {}));
+  assert.equal(missingUnderlying.notify, false);
+  assert.match(missingUnderlying.reason, /INSUFFICIENT_CURRENT_UNDERLYING_EVIDENCE/);
+});
+
+test("the session move from prior close is context, not chase after eligibility", () => {
+  const cfg = resolveStrategyNotificationStrength("zero_dte_index", {});
+  const gapContinuation = decideNotification(strategyEv({
+    underlyingMoveBeforeDetectionPct: 5,
+    currentUnderlyingPrice: 198.5,
+  }), cfg);
+  assert.equal(gapContinuation.notify, true);
+  assert.ok(gapContinuation.underlyingMoveBeforeEntryPct < 0.1);
+});
+
+test("premium expansion and exhausted reward cannot become immediate alerts", () => {
+  const cfg = resolveStrategyNotificationStrength("zero_dte_index", {});
+  const expanded = decideNotification(strategyEv({ premiumChasePct: 25 }), cfg);
+  assert.equal(expanded.action, "HIGH_ASYMMETRY_PAPER_ONLY");
+  assert.equal(expanded.deliveryLevel, "PAPER_ONLY");
+  assert.equal(expanded.notify, false);
+
+  const exhausted = decideNotification(strategyEv({ targetT1: 1.05, ask: 1.04 }), cfg);
+  assert.equal(exhausted.action, "HIGH_ASYMMETRY_TOO_LATE");
+  assert.equal(exhausted.notify, false);
+
+  const invalidated = decideNotification(strategyEv({ targetStop: 1.03, ask: 1.04 }), cfg);
+  assert.equal(invalidated.action, "HIGH_ASYMMETRY_TOO_LATE");
+  assert.match(invalidated.reason, /NEAR_OR_BELOW_INVALIDATION/);
+});
+
+test("future-dated evidence cannot pass the strategy freshness gate", () => {
+  const cfg = resolveStrategyNotificationStrength("zero_dte_index", {});
+  const future = decideNotification(strategyEv({ quoteAtMs: T0 + 30_000 }), cfg);
+  assert.equal(future.notify, false);
+  assert.equal(future.action, "HIGH_ASYMMETRY_OWNER_WATCH");
+  assert.match(future.reason, /INVALID_FUTURE_OPTION_QUOTE_TIMESTAMP/);
 });
 
 test("A FRESH QUOTE DOES NOT MAKE AN OLD CAPTURE AN EARLY ENTRY", () => {
@@ -255,5 +354,5 @@ test("every decision carries exactly one timing classification", () => {
     assert.ok(["HIGH_ASYMMETRY_ALERT", "HIGH_ASYMMETRY_OWNER_WATCH", "HIGH_ASYMMETRY_PAPER_ONLY", "HIGH_ASYMMETRY_TOO_LATE", "HIGH_ASYMMETRY_ARCHIVE", "REJECTED"].includes(d.action));
     assert.equal(d.notify, d.action === "HIGH_ASYMMETRY_ALERT");
   }
-  assert.equal(decideNotification(ev()).version, "ASYM_NOTIFY_V2", "the gate version must advance with the rules");
+  assert.equal(decideNotification(ev()).version, "ASYM_NOTIFY_V3", "the gate version must advance with the rules");
 });

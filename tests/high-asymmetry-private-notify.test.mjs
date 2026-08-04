@@ -206,7 +206,7 @@ test("a global session ceiling bounds broad-market spam", async () => {
 });
 
 test("the global session ceiling is env-configurable and clamped", () => {
-  assert.equal(resolvePrivateSessionMessageLimit({}), 40);
+  assert.equal(resolvePrivateSessionMessageLimit({}), 8);
   assert.equal(resolvePrivateSessionMessageLimit({ [PRIVATE_MAX_SESSION_MESSAGES_ENV]: "12" }), 12);
   assert.equal(resolvePrivateSessionMessageLimit({ [PRIVATE_MAX_SESSION_MESSAGES_ENV]: "-3" }), 0);
   assert.equal(resolvePrivateSessionMessageLimit({ [PRIVATE_MAX_SESSION_MESSAGES_ENV]: "9999" }), 500);

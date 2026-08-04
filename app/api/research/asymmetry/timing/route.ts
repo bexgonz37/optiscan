@@ -27,7 +27,8 @@ export async function GET(req: Request) {
     const { tradingDay } = await import("@/lib/trading-session");
     const { listNotifyDecisionsOnDb, journalRatioOnDb, NOTIFY_JOURNAL_VERSION } =
       await import("@/lib/research/asymmetry/notify-journal");
-    const { NOTIFICATION_GATE_VERSION, DEFAULT_NOTIFICATION_STRENGTH, resolveNotificationStrength } =
+    const { NOTIFICATION_GATE_VERSION, DEFAULT_NOTIFICATION_STRENGTH, resolveNotificationStrength,
+      strategyNotificationPolicyMatrix } =
       await import("@/lib/research/asymmetry/notification-gate");
     const { DEFAULT_TIMING_THRESHOLDS, TIMING_CLASSIFIER_VERSION } =
       await import("@/lib/research/asymmetry/timing-classification");
@@ -125,6 +126,7 @@ export async function GET(req: Request) {
       thresholds: {
         inForce: strength,
         shipped: DEFAULT_NOTIFICATION_STRENGTH,
+        strategyMatrix: strategyNotificationPolicyMatrix(),
         timing: DEFAULT_TIMING_THRESHOLDS,
         provisional: true,
         note: "The 120,000ms staleness window and 0.5 give-back fraction are reasoned defaults, NOT historically validated constants. asymmetry_notify_decisions stores the inputs and the thresholds together so they can be re-run at other values later without touching production.",
@@ -145,6 +147,11 @@ export async function GET(req: Request) {
         chaseSuppressions: decisions.filter((d) => d.timing === "PREMIUM_CHASE").length,
         byTiming: ratio.byTiming,
         byAction: ratio.byAction,
+        byDeliveryLevel: tally(decisions, (d) => d.deliveryLevel ?? "LEGACY_AMBIGUOUS"),
+        immediateAlerts: decisions.filter((d) => d.deliveryLevel === "IMMEDIATE_OWNER_ALERT").length,
+        ownerWatches: decisions.filter((d) => d.deliveryLevel === "OWNER_WATCH").length,
+        digestCases: decisions.filter((d) => d.deliveryLevel === "PERIODIC_DIGEST").length,
+        paperOnlyCases: decisions.filter((d) => d.deliveryLevel === "PAPER_ONLY").length,
         byReason: ratio.byReason,
       },
 
@@ -171,6 +178,8 @@ export async function GET(req: Request) {
         captureToNotifyMsBucket: tally(decisions, (d) => bucket(d.captureToNotifyMs, [60_000, 300_000, 900_000, 3_600_000])),
         stateAtNotification: tally(decisions, (d) => d.toState),
         premiumChasePctBucket: tally(decisions, (d) => bucket(d.premiumChasePct, [5, 10, 20, 50])),
+        qualityScoreBucket: tally(decisions, (d) => bucket(d.qualityScore, [50, 60, 70, 80, 90])),
+        byStrategy: tally(decisions, (d) => d.setupFamily ?? "UNKNOWN_STRATEGY"),
       },
 
       recentDecisions: decisions.slice(-limit).map((d) => ({
@@ -179,6 +188,9 @@ export async function GET(req: Request) {
         notify: d.notify, timing: d.timing, reason: d.reason, notifyOutcome: d.notifyOutcome,
         bid: d.bid, ask: d.ask, quoteAgeMs: d.quoteAgeMs, underlyingPrice: d.underlyingPrice,
         action: d.action,
+        setupFamily: d.setupFamily, freshnessSource: d.freshnessSource,
+        qualityScore: d.qualityScore, deliveryLevel: d.deliveryLevel,
+        strategyPolicy: d.strategyPolicy, decisionMetrics: d.decisionMetrics,
         premiumChasePct: d.premiumChasePct, entryAskAtCapture: d.entryAskAtCapture,
         peakAskSinceCapture: d.peakAskSinceCapture, giveBackFraction: d.giveBackFraction,
         captureToNotifyMs: d.captureToNotifyMs, sendLatencyMs: d.sendLatencyMs,

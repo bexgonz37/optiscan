@@ -19,7 +19,7 @@ import { listCasesOnDb, recordTransitionOnDb, type ActiveCase } from "./case-sto
 import { notifyPrivateAsymmetry, createPrivateCaseMemory, PRIVATE_NOTIFIABLE_STATES, type PrivateCaseMemory } from "./private-notify.ts";
 import type { AsymmetryResearchState } from "./states.ts";
 import { resolvePaperPermission } from "./paper/activation.ts";
-import { decideNotification, resolveNotificationStrength } from "./notification-gate.ts";
+import { decideNotification, resolveStrategyNotificationStrength } from "./notification-gate.ts";
 import { recordNotifyDecisionOnDb, attachNotifyOutcomeOnDb } from "./notify-journal.ts";
 import { isOptionsQuoteSession } from "../../market-session-guard.ts";
 
@@ -39,6 +39,11 @@ export interface CaseObservation {
   invalidated: boolean;
   spreadPct: number | null;
   openInterest: number | null;
+  contractVolume?: number | null;
+  dte?: number | null;
+  delta?: number | null;
+  currentUnderlyingPrice?: number | null;
+  underlyingQuoteAtMs?: number | null;
 }
 
 export interface TransitionRunResult {
@@ -190,7 +195,6 @@ export async function runAsymmetryTransitions(
     const paperStatus = !permission.masterPaperAuthorized
       ? "DISABLED" as const
       : permission.paperEntriesAllowed ? "WAITING_FOR_ENTRY" as const : "BLOCKED" as const;
-    const strength = resolveNotificationStrength(env);
     const allCases = listCasesOnDb(db, deps.sessionDate, 500);
     out.casesRead = allCases.length;
 
@@ -203,6 +207,15 @@ export async function runAsymmetryTransitions(
     sweepCursor.set(deps.sessionDate, nextCursor);
     out.casesDeferredForBudget = deferred;
 
+    const evaluations: Array<{
+      c: ActiveCase;
+      obs: CaseObservation;
+      to: AsymmetryResearchState;
+      peakAsk: number | null;
+      chase: number | null;
+      strength: ReturnType<typeof resolveStrategyNotificationStrength>;
+      gate: ReturnType<typeof decideNotification>;
+    }> = [];
     for (const c of cases) {
       try {
         const obs = await deps.observe(c);
@@ -218,12 +231,14 @@ export async function runAsymmetryTransitions(
         // research population — only the Discord message is affected.
         const peakAsk = peakAskFromMarks(db, c.sessionDate, c.fingerprint);
         const chase = chasePct(c.earlyAsk, obs.ask);
+        const strength = resolveStrategyNotificationStrength(c.setupFamily, env);
         const gate = decideNotification({
-          state: to, optionSymbol: c.optionSymbol,
+          state: to, setupFamily: c.setupFamily, direction: c.direction,
+          optionSymbol: c.optionSymbol,
           bid: obs.bid, ask: obs.ask, quoteAtMs: obs.quoteAtMs,
           underlyingPrice: c.underlyingPrice,
           spreadPct: obs.spreadPct, premiumChasePct: chase,
-          openInterest: obs.openInterest, contractVolume: null,
+          openInterest: obs.openInterest, contractVolume: obs.contractVolume ?? null,
           missingEvidence: c.missingEvidence, trigger: null, invalidation: null,
           // Current-validity inputs. Both come from rows the system already
           // wrote — no provider call is added to send a message.
@@ -231,13 +246,43 @@ export async function runAsymmetryTransitions(
           entryAskAtCapture: c.earlyAsk,
           peakAskSinceCapture: peakAsk,
           firstDetectedAtMs: c.firstDetectedAtMs,
+          dte: obs.dte ?? null,
+          delta: obs.delta ?? c.capturedDelta,
+          currentUnderlyingPrice: obs.currentUnderlyingPrice ?? null,
+          underlyingQuoteAtMs: obs.underlyingQuoteAtMs ?? null,
+          underlyingMoveBeforeDetectionPct: c.priorMovePct,
+          roomToNextLevelPct: c.roomToNextLevelPct,
+          targetT1: c.targetT1,
+          targetStop: c.targetStop,
         }, strength);
         if (!gate.notify) out.silentCaptures += 1;
 
+        evaluations.push({ c, obs, to, peakAsk, chase, strength, gate });
+      } catch (err: any) {
+        // One bad observation must never abort the sweep.
+        out.errors.push(`${c.fingerprint}: ${String(err?.message ?? err)}`);
+      }
+    }
+
+    // Scarce immediate-message slots go to the strongest current decisions in
+    // this sweep. Research persistence is unaffected: every evaluation below
+    // is still journalled and transitioned, regardless of rank or send result.
+    evaluations.sort((a, b) => {
+      const eligible = Number(b.gate.notify) - Number(a.gate.notify);
+      if (eligible !== 0) return eligible;
+      const score = (b.gate.qualityScore ?? -1) - (a.gate.qualityScore ?? -1);
+      if (score !== 0) return score;
+      return b.c.firstDetectedAtMs - a.c.firstDetectedAtMs;
+    });
+
+    for (const evaluated of evaluations) {
+      const { c, obs, to, peakAsk, chase, strength, gate } = evaluated;
+      try {
+
         // Journal the decision WITH the thresholds that produced it, before the
-        // send is attempted. 120s and 50% are provisional defaults; this row is
-        // the only way they can be judged later on real outcomes instead of on
-        // one memorable example. A journal failure is swallowed by design.
+        // send is attempted. Strategy thresholds and decision metrics travel
+        // together so they can be judged on outcomes. A journal failure is
+        // swallowed by design.
         const journal = recordNotifyDecisionOnDb(db as any, {
           sessionDate: c.sessionDate, fingerprint: c.fingerprint, decidedAtMs: deps.nowMs,
           symbol: c.symbol, optionSymbol: c.optionSymbol, direction: c.direction,
@@ -245,10 +290,19 @@ export async function runAsymmetryTransitions(
           decision: gate, config: strength,
           bid: obs.bid, ask: obs.ask, quoteAtMs: obs.quoteAtMs,
           underlyingPrice: c.underlyingPrice, spreadPct: obs.spreadPct, premiumChasePct: chase,
-          openInterest: obs.openInterest, contractVolume: null,
+          openInterest: obs.openInterest, contractVolume: obs.contractVolume ?? null,
           entryAskAtCapture: c.earlyAsk, peakAskSinceCapture: peakAsk,
           missingEvidenceCount: c.missingEvidence.length,
           firstDetectedAtMs: c.firstDetectedAtMs,
+          setupFamily: c.setupFamily,
+          currentUnderlyingPrice: obs.currentUnderlyingPrice ?? null,
+          underlyingQuoteAtMs: obs.underlyingQuoteAtMs ?? null,
+          dte: obs.dte ?? null,
+          delta: obs.delta ?? c.capturedDelta,
+          underlyingMoveBeforeDetectionPct: c.priorMovePct,
+          roomToNextLevelPct: c.roomToNextLevelPct,
+          targetT1: c.targetT1,
+          targetStop: c.targetStop,
         });
         if (journal.error) out.errors.push(`${c.fingerprint}: journal ${journal.error}`);
         const eligible = gate.notify && PRIVATE_NOTIFIABLE_STATES.includes(to);
@@ -261,7 +315,7 @@ export async function runAsymmetryTransitions(
             whyEarly: `State advanced to ${to.replace(/_/g, " ").toLowerCase()} on live evidence.`,
             premiumChasePct: chasePct(c.earlyAsk, obs.ask),
             bid: obs.bid, ask: obs.ask, spreadPct: obs.spreadPct,
-            openInterest: obs.openInterest, contractVolume: null,
+            openInterest: obs.openInterest, contractVolume: obs.contractVolume ?? null,
             trigger: null, invalidation: null,
             missingEvidence: c.missingEvidence, setupFamilyLabel: c.setupFamily,
             underlyingPrice: c.underlyingPrice, paperStatus,

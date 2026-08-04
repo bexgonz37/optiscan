@@ -344,6 +344,8 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
         compressionState: null,
         distanceToTriggerPct: null,
         roomToNextLevelPct: null,
+        targetT1: res.callout?.entry?.t1 ?? null,
+        targetStop: res.callout?.entry?.stop ?? null,
         marketAlignment: null,
         sectorAlignment: null,
         catalyst: null,

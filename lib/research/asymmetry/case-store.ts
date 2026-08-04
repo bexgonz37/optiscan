@@ -329,6 +329,12 @@ export interface ActiveCase {
    * alerts printed "Underlying: unavailable" for a value we already had.
    */
   underlyingPrice: number | null;
+  priorMovePct: number | null;
+  distanceToTriggerPct: number | null;
+  roomToNextLevelPct: number | null;
+  capturedDelta: number | null;
+  targetT1: number | null;
+  targetStop: number | null;
 }
 
 /** Cases for a session, newest first. Read path for diagnostics and tracking. */
@@ -355,6 +361,12 @@ export function listCasesOnDb(db: StoreDb, sessionDate: string, limit = 200): Ac
       missingEvidence: safeParseArray(r.missing_evidence),
       setupFamily: r.setup_family == null ? null : String(r.setup_family),
       underlyingPrice: evidenceNumber(r.evidence_json, "underlyingPrice"),
+      priorMovePct: evidenceNumber(r.evidence_json, "priorMovePct"),
+      distanceToTriggerPct: evidenceNumber(r.evidence_json, "distanceToTriggerPct"),
+      roomToNextLevelPct: evidenceNumber(r.evidence_json, "roomToNextLevelPct"),
+      capturedDelta: evidenceNumber(r.evidence_json, "delta"),
+      targetT1: evidenceNumber(r.evidence_json, "targetT1"),
+      targetStop: evidenceNumber(r.evidence_json, "targetStop"),
     }));
   } catch {
     return [];

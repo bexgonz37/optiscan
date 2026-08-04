@@ -56,7 +56,7 @@ test("schema creation is repeat-safe", { skip }, () => {
   db.close();
 });
 
-test("legacy notify journals gain action and capture-window columns repeat-safely", { skip }, () => {
+test("legacy notify journals gain strategy and ranking columns repeat-safely", { skip }, () => {
   const db = new Database(":memory:");
   db.exec(`
     CREATE TABLE asymmetry_notify_decisions (
@@ -80,6 +80,9 @@ test("legacy notify journals gain action and capture-window columns repeat-safel
   const cols = db.prepare("PRAGMA table_info(asymmetry_notify_decisions)").all().map((c) => c.name);
   assert.ok(cols.includes("action"));
   assert.ok(cols.includes("cfg_max_capture_to_notify_ms"));
+  for (const col of ["setup_family", "freshness_source", "quality_score", "delivery_level", "strategy_policy_json", "decision_metrics_json"]) {
+    assert.ok(cols.includes(col), `${col} must be added after legacy table creation`);
+  }
   db.close();
 });
 
@@ -263,5 +266,6 @@ test("journal version is stamped on every row", { skip }, () => {
   recordNotifyDecisionOnDb(db, entry());
   const v = db.prepare("SELECT journal_version v FROM asymmetry_notify_decisions").get().v;
   assert.equal(v, NOTIFY_JOURNAL_VERSION);
+  assert.equal(v, "ASYM_NOTIFY_JOURNAL_V2");
   db.close();
 });

@@ -49,6 +49,15 @@ export interface QuoteFetchResult {
   cacheHit: boolean;
   /** The exact-OCC provider request joined compatible in-flight work. */
   dedupHit: boolean;
+  /** Contract facts returned by the same exact-OCC response. No extra request. */
+  contractEvidence: {
+    dte: number | null;
+    delta: number | null;
+    openInterest: number | null;
+    contractVolume: number | null;
+    underlyingPrice: number | null;
+    underlyingQuoteAtMs: number | null;
+  } | null;
 }
 
 /** Fetch a present-time quote for one exact OCC. Never throws. */
@@ -64,13 +73,13 @@ export async function liveAsymmetryQuote(
     // start. This single line is the FUTURE_QUOTE fix.
     const observedAtMs = Date.now();
     if (res?.quotaExceeded) {
-      return { quote: null, providerError: null, budgetBlocked: true, observedAtMs, cacheHit: false, dedupHit: false };
+      return { quote: null, providerError: null, budgetBlocked: true, observedAtMs, cacheHit: false, dedupHit: false, contractEvidence: null };
     }
     if (!res?.available) {
-      return { quote: null, providerError: String(res?.note ?? "provider unavailable"), budgetBlocked: false, observedAtMs, cacheHit: false, dedupHit: false };
+      return { quote: null, providerError: String(res?.note ?? "provider unavailable"), budgetBlocked: false, observedAtMs, cacheHit: false, dedupHit: false, contractEvidence: null };
     }
     const c = res.contract;
-    if (!c) return { quote: null, providerError: null, budgetBlocked: false, observedAtMs, cacheHit: Boolean(res.cacheHit), dedupHit: Boolean(res.dedupHit) }; // genuine no-quote
+    if (!c) return { quote: null, providerError: null, budgetBlocked: false, observedAtMs, cacheHit: Boolean(res.cacheHit), dedupHit: Boolean(res.dedupHit), contractEvidence: null }; // genuine no-quote
     return {
       quote: {
         optionSymbol,
@@ -83,6 +92,14 @@ export async function liveAsymmetryQuote(
       observedAtMs,
       cacheHit: Boolean(res.cacheHit),
       dedupHit: Boolean(res.dedupHit),
+      contractEvidence: {
+        dte: num(c.dte),
+        delta: num(c.delta),
+        openInterest: num(c.openInterest),
+        contractVolume: num(c.volume),
+        underlyingPrice: num(c.underlyingPrice),
+        underlyingQuoteAtMs: num(c.underlyingProviderTimestamp),
+      },
     };
   } catch (err: any) {
     const msg = String(err?.message ?? err);
@@ -93,6 +110,7 @@ export async function liveAsymmetryQuote(
       observedAtMs: Date.now(),
       cacheHit: false,
       dedupHit: false,
+      contractEvidence: null,
     };
   }
 }
@@ -113,6 +131,8 @@ export async function observeAsymmetryCase(
 ): Promise<{
   fingerprint: string; bid: number | null; ask: number | null; quoteAtMs: number | null;
   triggered: boolean; invalidated: boolean; spreadPct: number | null; openInterest: number | null;
+  contractVolume: number | null; dte: number | null; delta: number | null;
+  currentUnderlyingPrice: number | null; underlyingQuoteAtMs: number | null;
 } | null> {
   const fetched = await liveAsymmetryQuote(c.optionSymbol, c.symbol);
   const q = fetched.quote;
@@ -129,7 +149,11 @@ export async function observeAsymmetryCase(
     triggered: false,
     invalidated: false,
     spreadPct: mid > 0 ? Math.round(((q.ask - q.bid) / mid) * 10000) / 100 : null,
-    // Open interest is not returned by the grade-quote path; absent stays absent.
-    openInterest: null,
+    openInterest: fetched.contractEvidence?.openInterest ?? null,
+    contractVolume: fetched.contractEvidence?.contractVolume ?? null,
+    dte: fetched.contractEvidence?.dte ?? null,
+    delta: fetched.contractEvidence?.delta ?? null,
+    currentUnderlyingPrice: fetched.contractEvidence?.underlyingPrice ?? null,
+    underlyingQuoteAtMs: fetched.contractEvidence?.underlyingQuoteAtMs ?? null,
   };
 }

@@ -1513,3 +1513,98 @@ and zero HTTP 429s. High-Asymmetry was the dominant optional pressure:
    session authority before building owner-facing Ask OptiScan and redesigning
    the Options page.
 6. Keep `PAPER_0DTE_RESEARCH_ENABLED` unset.
+
+---
+
+# Packet update - 2026-08-04 (provider-pressure deployment correction)
+
+The provider-pressure concern above is no longer local-only. Commit
+`c6eef4b24f3d6625686ded63d118d7dbf91a3f7f` was pushed and deployed. Three
+post-handoff health samples reported the exact commit with database, schema,
+lifecycle, provider, and scanner loop green and `quotaExceeded=false`.
+
+In the first three deployment minutes, provider accounting reported 311
+admitted requests, three exact-OCC cache hits, zero provider failures, zero
+HTTP 429s, and no post-close `asymmetry_discovery` or `asymmetry_mark` calls.
+This is after-hours evidence only; RTH cache/dedup and Core-capacity impact
+remain to be measured on representative traffic.
+
+# Packet update - 2026-08-04 (strategy-aware High-Asymmetry delivery gate)
+
+## Root cause and correction
+
+The 15-minute High-Asymmetry capture-age ceiling ignored the existing 27-entry
+options strategy catalog. That allowed a 0DTE momentum setup to remain eligible
+far too long while applying the same clock to a multi-week strategy. The live
+transition path also discarded current DTE, delta, liquidity, and underlying
+facts already returned by the exact-OCC response.
+
+This concern replaces the global live rule with deterministic strategy policy:
+
+- Candidate, option-quote, and underlying-quote maximum ages now come from each
+  strategy's existing `freshnessMaxMs` (10-120 seconds in the current catalog).
+- Side, preferred DTE band, preferred delta, strategy spread, open interest,
+  and contract-volume requirements are rechecked at the notification boundary.
+- Current DTE, delta, liquidity, underlying price, and underlying timestamp are
+  reused from the same exact-OCC response. No provider request was added.
+- Favorable extension is measured from first capture to the current underlying
+  quote. The prior-close session move remains context and is not mislabeled as
+  chase after eligibility.
+- The authoritative options callout's frozen option T1 and stop are persisted
+  into new cases. They supply measured reward remaining and distance from
+  invalidation; a strategy case without those current decision facts is owner
+  watch, not an immediate alert.
+- Premium expansion remains PAPER_ONLY. Old/stale, exhausted-target, and
+  near-or-below-invalidation cases become TOO_LATE. Future-dated evidence fails
+  closed to owner watch.
+- Every strategy decision receives a deterministic 0-100 quality score. Only
+  score 80 or higher may enter the immediate-owner lane. Lower scores are
+  classified OWNER_WATCH or PERIODIC_DIGEST and remain persisted. Scheduled
+  digest delivery is not implemented by this concern and must not be claimed.
+- Eligible cases in one sweep are ranked before scarce Discord slots are used.
+  The default immediate ceiling is now eight messages per session and two per
+  symbol/session, down from the emergency 40 and four ceilings.
+
+The timing diagnostics now expose the 27-strategy policy matrix, delivery-level
+counts, quality-score buckets, per-strategy counts, and the full policy/metrics
+attached to recent decisions. New strategy journal rows are stamped
+`ASYM_NOTIFY_JOURNAL_V2`; legacy rows and ambiguous historical causes are not
+rewritten.
+
+## Validation
+
+- Focused High-Asymmetry, runtime-edge, exact-quote, journal, migration, ranking,
+  dedup, and notification tests: 125 / 125 passed.
+- Full `npm test` passed twice: 3,462 / 3,462 both runs.
+- `npx tsc --noEmit --incremental false` passed.
+- `npm run build` passed.
+- `git diff --check` passed before this packet edit.
+- Migration review: six nullable journal columns are added after table creation
+  with guarded repeat-safe ALTERs; dependent indexes are created by the base
+  schema before no new indexed columns are introduced. Case target evidence is
+  JSON-only and requires no DDL.
+- Existing untracked files remain untouched.
+- Graphify was not regenerated because its installed launcher still references
+  the removed Python 3.11 runtime.
+
+## RTH boundary and exact resume point
+
+The ordinary options session was closed during implementation. No fresh RTH
+High-Asymmetry alert, suppression, Discord delivery, or provider-capacity result
+is claimed from offline tests.
+
+1. Commit and push this green concern, deploy it, and verify the exact live SHA
+   plus health/provider/loop state.
+2. Verify the timing endpoint exposes `ASYM_NOTIFY_V3`,
+   `ASYM_NOTIFY_JOURNAL_V2`, the strategy matrix, and delivery-level metrics.
+3. During the next representative RTH window, measure fresh ALERT, OWNER_WATCH,
+   PERIODIC_DIGEST, PAPER_ONLY, TOO_LATE, duplicate suppression, and actual
+   Discord message counts. Confirm a fresh fully evidenced case can alert and
+   that old/premium-expanded cases cannot.
+4. Measure RTH exact-OCC cache reuse, in-flight dedup, admissions, refusals,
+   request counts per case, and Core impact. Do not infer these from after-hours
+   zero-work behavior.
+5. Continue with the system-wide after-hours options-message audit,
+   instrument-aware session authority, and end-to-end latency attribution.
+6. Keep `PAPER_0DTE_RESEARCH_ENABLED` unset. Ask OptiScan and the Options page
+   redesign remain behind the live trading safety work.

@@ -187,7 +187,9 @@ test("observeAsymmetryCase never invents trigger or invalidation", async () => {
   const fn = src.slice(src.indexOf("export async function observeAsymmetryCase"));
   assert.match(fn, /triggered: false/, "a quote alone cannot prove a trigger");
   assert.match(fn, /invalidated: false/, "a quote alone cannot prove invalidation");
-  assert.match(fn, /openInterest: null/, "OI is not returned by this path and must stay absent");
+  for (const field of ["openInterest", "contractVolume", "dte", "delta", "currentUnderlyingPrice", "underlyingQuoteAtMs"]) {
+    assert.match(fn, new RegExp(`${field}: fetched\\.contractEvidence`), `${field} must reuse the exact-OCC response`);
+  }
 });
 
 test("both adapters return null rather than throwing when the provider is unavailable", async () => {

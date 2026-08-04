@@ -62,6 +62,9 @@ const inert = (outcome: CaptureOutcome, reason: string | null): CaptureResult =>
 
 export interface CaptureInput extends Omit<LiveIntakeInput, "hasActiveCase"> {
   setupFamilyLabel?: string | null;
+  /** Frozen option-premium levels from the authoritative options callout. */
+  targetT1?: number | null;
+  targetStop?: number | null;
 }
 
 /**
@@ -134,6 +137,8 @@ export function captureAsymmetryCandidate(
         compressionState: input.compressionState,
         distanceToTriggerPct: input.distanceToTriggerPct,
         roomToNextLevelPct: input.roomToNextLevelPct,
+        targetT1: input.targetT1 ?? null,
+        targetStop: input.targetStop ?? null,
         marketAlignment: input.marketAlignment,
         sectorAlignment: input.sectorAlignment,
         catalyst: input.catalyst,
