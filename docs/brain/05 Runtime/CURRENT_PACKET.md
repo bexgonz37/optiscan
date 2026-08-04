@@ -1012,3 +1012,106 @@ redesign. RTH items also untouched — the expired token blocked reading
    during a live session right now.
 5. Ask OptiScan (Priorities 6–15) needs its own session; audit the existing AI
    backend FIRST so a second chatbot is not built alongside it.
+
+---
+
+# Packet update — 2026-08-04 (fix verified in production, after an outage I caused)
+
+## I broke production, then fixed it
+
+`0cc84fb` shipped `CREATE INDEX ... ON content_drafts(discord_delivery_reason)`
+inside `SCHEMA`. On a fresh database that is fine. On the long-lived production
+file, `CREATE TABLE IF NOT EXISTS` is a no-op, the reason columns arrive later
+via ALTER, and the index therefore ran against a column that did not exist —
+`no such column`, which aborts `db.exec(SCHEMA)`.
+
+`SCHEMA` is the first thing every database open runs, so this was **not scoped
+to content**. `/api/discord/health` 500, `/api/opportunity-cases` 503,
+`/api/content-drafts` 503. Roughly a 20-minute outage.
+
+Fixed in `1a4131a`: the index now runs immediately AFTER its ALTERs. All routes
+verified back to 200.
+
+**Why my repeat-safety check missed it:** it seeded a fresh table and applied
+only the ALTERs. It proved the migrations were idempotent — they are — and never
+asked whether SCHEMA still parsed against a table that predates them.
+**Idempotent is not the same as ordered.** No content fixture builds a
+pre-migration table, so nothing could have caught this.
+
+Standing gap, recorded in `tests/content-drafts-migration.test.mjs`: the real
+`getDb()` is untestable from `node:test` because `lib/db.ts` imports through the
+`@/` alias the runner cannot resolve. Closing it means giving the runner the
+alias, and would have caught this class directly.
+
+## The fix is confirmed working in production
+
+Four samples, ~2.5 min apart, on `1a4131a`:
+
+| | s1 | s2 | s3 | s4 |
+|---|---|---|---|---|
+| SENT | 628 | **632** | 632 | 632 |
+| FAILED | 859 | **858** | 858 | 858 |
+| PENDING | 0 | **1** | 0 | 0 |
+| SUPPRESSED | 738 | 738 | **742** | 742 |
+
+Three things proven by observation, not by test:
+
+1. **`FAILED 859 -> 858`.** A previously unreachable FAILED draft was swept.
+   `eligibleForRecovery` = 1,261 SKIPPED + 859 FAILED = 2,120 — the 860 are in
+   the pool for the first time.
+2. **`PENDING: 1` in s2.** A transient refusal parked as RETRYABLE instead of
+   being destroyed. This is the whole defect, fixed and observed.
+3. **`SUPPRESSED_DUPLICATE: 4` in s3.** A genuine duplicate still terminates,
+   and now says why. Dedup is intact.
+
+## ~720 drafts were destroyed before the fix landed
+
+`SUPPRESSED` went **18 -> 738** while the old code ran between the previous
+session and this deploy. All 738 carry `<none recorded>` — written by code that
+had no reason column.
+
+They are terminal and **outside the recovery pool**. The fix prevents further
+loss; it does not resurrect these.
+
+Most were almost certainly `rate_limited` — transient, and their content is
+still truthful. But 4 confirmed duplicates in one sample show the bucket is
+mixed, so **blanket resurrection would post real duplicates.**
+
+**Proposed, NOT executed (needs owner approval):** return a
+`<none recorded>` SUPPRESSED draft to the pool only when no draft sharing its
+fingerprint has ever reached SENT. That is a bounded, evidence-checked
+reclassification rather than a blind resend. It would add ~738 drafts to a
+backlog already 2,120 deep, which is exactly why it is a decision and not a
+default.
+
+## Backlog and drain — unchanged advice
+
+758 events awaiting. Ceiling is still the guard: `MAX_POSTS 2 / 10 min` = 12/hr.
+**`MAX_POSTS` was NOT raised, and the sweep interval was NOT changed**, per
+instruction. Priority 4 (live-vs-backlog queues) remains unimplemented — and it
+matters more now: live drafts share one FIFO with a 2,120-deep backlog.
+
+## Not done — the broader roadmap is PRESERVED
+
+Priorities 4-16 untouched: live-vs-backlog recovery policy, after-hours options
+content safety, AI backend audit, **Ask OptiScan** (multi-session), evidence
+explanations, CREATE CLAUDE TASK, options page redesign.
+
+RTH items untouched despite an open session — the outage and its hotfix took the
+session. `contract-funnel` `observedInWindow`, B7 reserves, and 0DTE activation
+all still pending. `PAPER_0DTE_RESEARCH_ENABLED` remains **unset**, correctly.
+
+Everything in the earlier packet sections (Gates A/B, mark density, bracket
+work, High-Asymmetry, Quant verification contract) stands unchanged.
+
+## Exact resume point
+
+1. **Decide the 738-draft reclassification** above. Nothing else should touch
+   that bucket until then.
+2. **Priority 4 first** — live drafts must not queue behind 2,120 backlog rows.
+   This is now the highest-value content work.
+3. Then Priority 5 (after-hours options content safety) — a live truthfulness
+   risk while sessions are open.
+4. Audit the existing AI backend BEFORE building Ask OptiScan, so a second
+   chatbot is not built beside the current one.
+5. RTH: contract-funnel, B7, 0DTE — next open session.
