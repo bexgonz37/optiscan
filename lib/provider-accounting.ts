@@ -377,6 +377,23 @@ export interface ConsumerUsageRow {
   pctOfRequests: number | null;
 }
 
+export interface ConsumerEndpointUsageRow extends ConsumerUsageRow {
+  endpoint: string;
+  historical: boolean;
+}
+
+export interface ConsumerMinuteUsageRow {
+  minuteBucketMs: number;
+  consumer: string;
+  category: string;
+  requests: number;
+  cacheHits: number;
+  dedupAvoided: number;
+  http429: number;
+  providerErrors: number;
+  quotaBlocks: number;
+}
+
 export interface ProviderUsageReport {
   tradingDate: string;
   accountingVersion: number;
@@ -617,6 +634,109 @@ export function buildProviderUsageReportOnDb(
     };
   } catch {
     return empty;
+  }
+}
+
+/**
+ * Consumer+endpoint attribution for chasing the `unattributed` bucket.
+ *
+ * `byConsumer` answers "who spent"; `byEndpoint` answers "what was expensive".
+ * Neither can prove which escaped call site is responsible. This grouped view is
+ * deliberately read-only and uses the same scoped minute buckets as the main
+ * report, so it cannot create provider traffic while diagnosing provider traffic.
+ */
+export function providerConsumerEndpointBreakdownOnDb(
+  db: AccountingDb,
+  tradingDate: string,
+  scope: ProviderUsageScope = {},
+  limit = 100,
+): ConsumerEndpointUsageRow[] {
+  if (!hasTable(db, "provider_request_minute")) return [];
+  try {
+    const { where, params } = scopeClause(tradingDate, scope);
+    const totals = db.prepare(
+      `SELECT COALESCE(SUM(requests),0) requests
+         FROM provider_request_minute WHERE ${where}`,
+    ).get(...params) as { requests?: number } | undefined;
+    const totalRequests = Number(totals?.requests ?? 0);
+    return (db.prepare(
+      `SELECT consumer, category, endpoint, historical,
+              SUM(requests) requests, SUM(cache_hits) cacheHits,
+              SUM(dedup_avoided) dedupAvoided, SUM(retries) retries,
+              SUM(http_429) http429, SUM(provider_errors) providerErrors,
+              SUM(quota_blocks) quotaBlocks, SUM(records_returned) recordsReturned,
+              SUM(latency_ms_total) latencyTotal, MAX(latency_ms_max) latencyMax
+         FROM provider_request_minute WHERE ${where}
+        GROUP BY consumer, category, endpoint, historical
+        ORDER BY (SUM(requests) + SUM(quota_blocks)) DESC, SUM(quota_blocks) DESC, SUM(requests) DESC
+        LIMIT ?`,
+    ).all(...params, Math.max(1, Math.min(500, Math.floor(limit)))) as Record<string, any>[]).map((r) => {
+      const requests = Number(r.requests ?? 0);
+      return {
+        consumer: String(r.consumer ?? "unattributed"),
+        category: String(r.category ?? "diagnostic"),
+        endpoint: String(r.endpoint ?? "unknown"),
+        historical: Number(r.historical ?? 0) === 1,
+        requests,
+        cacheHits: Number(r.cacheHits ?? 0),
+        dedupAvoided: Number(r.dedupAvoided ?? 0),
+        retries: Number(r.retries ?? 0),
+        http429: Number(r.http429 ?? 0),
+        providerErrors: Number(r.providerErrors ?? 0),
+        quotaBlocks: Number(r.quotaBlocks ?? 0),
+        recordsReturned: Number(r.recordsReturned ?? 0),
+        avgLatencyMs: requests > 0 ? Math.round(Number(r.latencyTotal ?? 0) / requests) : null,
+        maxLatencyMs: r.latencyMax == null ? null : Number(r.latencyMax),
+        pctOfRequests: pct(requests, totalRequests),
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Per-consumer minute distribution over a bounded window. This shows scheduler
+ * collisions and refusal bursts without forcing an operator to infer them from a
+ * day-level rollup.
+ */
+export function providerConsumerMinuteBreakdownOnDb(
+  db: AccountingDb,
+  tradingDate: string,
+  fromMs: number,
+  toMs: number,
+  scope: ProviderUsageScope = {},
+): ConsumerMinuteUsageRow[] {
+  if (!hasTable(db, "provider_request_minute")) return [];
+  try {
+    const floorFrom = Math.floor(fromMs / 60_000) * 60_000;
+    const bounded: ProviderUsageScope = {
+      ...scope,
+      sinceMs: Math.max(Number.isFinite(scope.sinceMs) ? Number(scope.sinceMs) : floorFrom, floorFrom),
+      untilMs: Math.min(Number.isFinite(scope.untilMs) ? Number(scope.untilMs) : toMs, toMs),
+    };
+    const { where, params } = scopeClause(tradingDate, bounded);
+    return (db.prepare(
+      `SELECT minute_bucket_ms, consumer, category,
+              SUM(requests) requests, SUM(cache_hits) cacheHits,
+              SUM(dedup_avoided) dedupAvoided, SUM(http_429) http429,
+              SUM(provider_errors) providerErrors, SUM(quota_blocks) quotaBlocks
+         FROM provider_request_minute WHERE ${where}
+        GROUP BY minute_bucket_ms, consumer, category
+        ORDER BY minute_bucket_ms ASC, (SUM(requests) + SUM(quota_blocks)) DESC`,
+    ).all(...params) as Record<string, any>[]).map((r) => ({
+      minuteBucketMs: Number(r.minute_bucket_ms ?? 0),
+      consumer: String(r.consumer ?? "unattributed"),
+      category: String(r.category ?? "diagnostic"),
+      requests: Number(r.requests ?? 0),
+      cacheHits: Number(r.cacheHits ?? 0),
+      dedupAvoided: Number(r.dedupAvoided ?? 0),
+      http429: Number(r.http429 ?? 0),
+      providerErrors: Number(r.providerErrors ?? 0),
+      quotaBlocks: Number(r.quotaBlocks ?? 0),
+    }));
+  } catch {
+    return [];
   }
 }
 

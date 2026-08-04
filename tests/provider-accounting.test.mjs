@@ -14,6 +14,8 @@ import {
   accountingTradingDate,
   buildProviderUsageReportOnDb,
   normalizeEndpoint,
+  providerConsumerEndpointBreakdownOnDb,
+  providerConsumerMinuteBreakdownOnDb,
   providerRequestsPerMinuteOnDb,
   pruneProviderAccountingOnDb,
   recordProviderRequestOnDb,
@@ -166,6 +168,32 @@ test("per-minute buckets expose the saturated minute", () => {
   assert.equal(report.minutesObserved, 2);
   const series = providerRequestsPerMinuteOnDb(d, T - 60_000, T + 120_000);
   assert.deepEqual(series.map((r) => r.requests), [3, 9]);
+});
+
+test("consumer endpoint and minute breakdowns expose unattributed callers", () => {
+  const d = db();
+  recordProviderRequestOnDb(d, {
+    consumer: "dashboard_api", endpoint: "/v3/snapshot/options/SPY",
+    status: "ok", atMs: T, latencyMs: 10,
+  }, ENV);
+  recordProviderRequestOnDb(d, {
+    consumer: "unattributed", endpoint: "/v3/snapshot/options/SPY/O:SPY260724C00600000",
+    status: "quota_block", atMs: T + 60_000,
+  }, ENV);
+
+  const date = accountingTradingDate(T);
+  const byEndpoint = providerConsumerEndpointBreakdownOnDb(d, date);
+  assert.equal(byEndpoint[0].consumer, "unattributed");
+  assert.equal(byEndpoint[0].endpoint, "/v3/snapshot/options/:sym/:occ");
+  assert.equal(byEndpoint[0].quotaBlocks, 1);
+  assert.equal(byEndpoint[1].consumer, "dashboard_api");
+  assert.equal(byEndpoint[1].requests, 1);
+
+  const byMinute = providerConsumerMinuteBreakdownOnDb(d, date, T, T + 120_000);
+  assert.deepEqual(byMinute.map((r) => [r.consumer, r.requests, r.quotaBlocks]), [
+    ["dashboard_api", 1, 0],
+    ["unattributed", 0, 1],
+  ]);
 });
 
 test("per-symbol and per-OCC spend is tracked for the calls that name a target", () => {

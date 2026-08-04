@@ -11,6 +11,8 @@ import { getCallStats } from "@/lib/polygon-provider";
 import {
   accountingTradingDate,
   buildProviderUsageReportOnDb,
+  providerConsumerEndpointBreakdownOnDb,
+  providerConsumerMinuteBreakdownOnDb,
   providerRequestsPerMinuteOnDb,
   topProviderSymbolsOnDb,
 } from "@/lib/provider-accounting";
@@ -72,6 +74,14 @@ export async function GET(req: Request) {
     dailyCap: live.dailyCap,
     recentMinutes: perMinute,
     topSymbols: topProviderSymbolsOnDb(db, tradingDate, 25),
+    consumerEndpointBreakdown: providerConsumerEndpointBreakdownOnDb(db, tradingDate, scope, 100),
+    consumerMinuteBreakdown: providerConsumerMinuteBreakdownOnDb(
+      db,
+      tradingDate,
+      nowMs - windowMinutes * 60_000,
+      nowMs,
+      scope,
+    ),
     // Gate B7 — the live partition, so an operator can read who holds what directly.
     // `getCallStats` has always computed this; the route dropped it, which left the
     // reserve exactly as unreadable as the dead grader reserve it replaced.
