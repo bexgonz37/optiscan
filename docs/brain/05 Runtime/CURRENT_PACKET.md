@@ -1,60 +1,134 @@
 # Current Task Packet
 
-Task ID: roadmap-session-3-truthful-zero-states (IN PROGRESS — see resume point)
+Task ID: roadmap-session-4-legacy-upgrade-safety-and-funnel-scope (IN PROGRESS — see resume point)
 
-## Active position (2026-08-04, post-close)
+## Active position (2026-08-04, RTH session)
 
-- Branch: `main` · local = `origin/main` = **`c7a07e2`** · deployed **`b1359eb`**
-  confirmed, `c7a07e2` deploying
-- Verified: `npm test` **3392/3392 twice**, `npx tsc --noEmit --incremental
+- Branch: `main` · local = `origin/main` = deployed = **`7ab7c4c`** (Railway
+  SUCCESS 16:09Z, verified against `/api/health`)
+- Verified: `npm test` **3429/3429 twice**, `npx tsc --noEmit --incremental
   false` clean, `npm run build` clean, `git diff --check` clean
-- Production: `/api/health` ok, `faults: []`, provider healthy, breaker closed,
-  quota not exceeded, session closed (after hours — expected)
+- Production: `/api/health` ok, provider healthy, `loopRunning: true`,
+  `quotaExceeded: false`, `session: regular`
 
-### This session's finding, in one line
+### Corrections to the previously reported state
 
-Three "zero/false" states on the dashboards were **not measurements**. Each was a
-boolean that could not explain itself, read as though it had.
+| Claim carried in | Actually |
+| --- | --- |
+| deployed = `1a4131a` | deployed was `005dd49`; now `7ab7c4c` |
+| `observedInWindow` has never held a confirmed RTH row | **False.** 134 → 382 → 390 across this session. The funnel has been capturing live RTH evidence all along |
+| `DISCORD_RECAP_ENABLED=0` (owner blocked) | Owner has since set it to **1**. `recapDelivery.state = CONFIGURED_AND_ENABLED` |
+| ~2,120 recoverable, 738 unexplained SUPPRESSED | Confirmed exactly: `eligibleForRecovery: 2113`, `suppressedByReason["<none recorded>"]: 738` |
+| `PAPER_0DTE_RESEARCH_ENABLED` unset | Confirmed still unset |
 
-| Surface | Displayed | Actually |
-|---|---|---|
-| Quant delivered lane | `n=0`, "not enough data" | **92 verified** of 364, 272 excluded — page had failed to load |
-| `webhooks.recap` | `false` | webhook **configured**; `DISCORD_RECAP_ENABLED=0` |
-| Aggressive 0DTE | `$0`, 0 trades, "research only" | `PAPER_0DTE_RESEARCH_ENABLED` **unset** — never switched on |
+## This session's findings
 
-> **This packet already recorded the recap cause correctly** (see the
-> BLOCKED_CONFIG row below: `DISCORD_RECAP_ENABLED=0, owner`). Session 2
-> diagnosed a missing webhook anyway. The evidence was in the repository the
-> whole time — the health endpoint was the thing that could not say it.
+### 1. The migration test could not see the migration it guarded (fixed, `bc0b951`)
+
+`tests/content-drafts-migration.test.mjs` re-declares the migration list
+locally, so it can only prove a *copy* of production's ordering is safe.
+Measured: with the `0cc84fb` defect reintroduced into `lib/db.ts`, it reports
+**3 pass / 0 fail** while production is down.
+
+Root cause of the blind spot: `lib/db.ts` imports through the `@/` alias, which
+`node:test` does not resolve, so the real `getDb()` was untestable and every
+fixture built a fresh in-memory table — the one case where the defect is
+invisible.
+
+`tests/helpers/register-alias.mjs` (`module.registerHooks`, no loader thread, no
+new dependency) makes the real `getDb()` importable.
+`tests/legacy-database-upgrade.test.mjs` runs it against a seeded legacy **file**.
+Verified to catch the outage: defect reintroduced → **7 fail / 0 pass**,
+including all three route tests, reproducing the real blast radius.
+
+Incident: [[../04 Bugs/Incident 2026-08-04 Database Init Outage]] — ~16m50s,
+15:13:04Z → 15:29:54Z, from the Railway deployment records.
+
+### 2. A scoped funnel query answered with the global funnel (fixed, `7ab7c4c`)
+
+Measured in production before the fix:
+
+```
+?symbol=SPY  -> deltaSource.total 38   terminalReasons 1532 PROVIDER_ERROR   observedInWindow 382
+?symbol=ZZZZ -> deltaSource.total 0    terminalReasons 1532 PROVIDER_ERROR   observedInWindow 382
+```
+
+`ZZZZ` cannot exist and still returned the whole global funnel, under a `scope`
+header claiming the filter had been applied. Only `deltaSourceSplitOnDb` took a
+scope; the other two readers had no scope parameter, so the route could not have
+passed one.
+
+**This changed the diagnosis.** After the fix, SPY's real evidence is:
+
+```
+?symbol=SPY       -> 41 rows: NO_CONTRACT_IN_DTE_RANGE 40, PROVIDER_ERROR 1
+?symbol=SPY&side=call -> 27 rows: NO_CONTRACT_IN_DTE_RANGE 27, none selected
+```
+
+SPY calls die at the **DTE-range filter**, not at the provider. The CRITICAL
+`BULLISH_CANDIDATES_NO_CALLS` alert for SPY and QQQ points at contract discovery's
+0–14 DTE window, not at provider health. The unscoped view had pinned 1532
+provider errors on SPY and would have sent the next session to the wrong subsystem.
+
+### 3. PROVIDER_ERROR is the funnel's top terminal reason and is MIS-NAMED (proven, NOT yet fixed)
+
+Global: **1699 of 3206** contract-discovery rows terminate `PROVIDER_ERROR` (~53%).
+
+The label is wrong. `contract-discovery.ts:292` assigns `PROVIDER_ERROR` purely
+on `chain.length === 0`. Three genuinely different outcomes reach that line:
+
+1. `{available: true, contracts: []}` — the provider **succeeded** and there are
+   genuinely no contracts in the requested 0–14 DTE range. Not an error at all.
+   (`lib/polygon-provider.js:635`)
+2. `{available: false, note: err.message}` — a real fetch failure, which also
+   absorbs quota/budget refusals thrown as errors. (`:640`)
+3. `providerUnavailable()` — no API key. (`:441`)
+
+`lib/research/options/live-deps.ts:88` then discards both `available` and `note`:
+
+```ts
+return res?.available ? mapOptionContracts(res.contracts) : [];
+```
+
+The sibling single-quote path already fixed exactly this: `fetchOptionQuote`
+reports `quotaExceeded` **separately** from `available`, with a comment stating
+that a budget refusal is not a missing quote. `fetchOptionChain` never got that
+treatment.
+
+Consequence: our own admission control refusing a call, and the provider
+genuinely having nothing in range, are both filed as the provider's fault — in
+the single largest bucket in the funnel.
 
 ## Resume point (exact)
 
-**Offline-safe work delivered this session:** Quant zero-state + evidence census
-(`b1359eb`), recap delivery diagnosis (`c7a07e2`). Both pushed; `b1359eb`
-verified in production.
+**Next concern, fully specified, not started:** propagate a structured chain
+outcome so `PROVIDER_ERROR` stops absorbing budget refusals and genuine empties.
 
-**Blocked on the owner, not on code:**
-1. `DISCORD_RECAP_ENABLED=1` → releases the 50 stranded drafts via the
-   `e7882ed` recovery pass. Verify `recapDelivery.state` becomes
-   `CONFIGURED_AND_ENABLED` and count how many of the 50 recover.
-2. `PAPER_0DTE_RESEARCH_ENABLED=1` → starts the Aggressive 0DTE lane. Recommend
-   deferring until B7 RTH shows reserve headroom (the lane asks 80 req/min of a
-   provider measured at ~8% admission).
+- `fetchOptionChain` (`lib/polygon-provider.js:601`) — return a discriminated
+  reason (`OK` / `EMPTY_IN_RANGE` / `PROVIDER_FAILED` / `NO_API_KEY` /
+  `QUOTA_REFUSED`) alongside `contracts`, mirroring `fetchOptionQuote`'s
+  `quotaExceeded` precedent.
+- `live-deps.getChain` (`:88`) — stop discarding it. Note `deps.getChain` is
+  typed `(symbol) => Promise<ChainContract[]>` in `monitor.ts:37`; widening that
+  return type is the ripple to plan for.
+- `selectContractWithEvidence` (`contract-discovery.ts:292`) — take the outcome
+  and emit distinct terminal reasons instead of inferring from `chain.length`.
+- Regression tests: an empty-but-successful chain must NOT read as
+  `PROVIDER_ERROR`; a quota refusal must NOT read as `PROVIDER_ERROR`.
 
-**Blocked on the 2026-08-04 RTH session (cannot be done after close):**
-3. **Contract-funnel live validation** — `GET /api/diagnostics/contract-funnel`
-   must show `observedInWindow > 0` with real candidate IDs, stored
-   `deltaSource`, and a measurable MONEYNESS_PROXY share. The wiring
-   (`9894d60`) is deployed and **has never held a confirmed RTH row**.
-4. **SPY/QQQ delta-fix validation** — confirm SPY prices calls, with NVDA as the
-   pinned control.
-5. **B7 RTH / B8 independent marks** — one full RTH session on `1b7939f`+.
+**Then:** SPY/QQQ `NO_CONTRACT_IN_DTE_RANGE` — with scoping fixed, this is now
+directly measurable per symbol and side. 27/27 SPY calls died there.
 
-**Next code concern (not started):** the Options page redesign (Part 12) — the
-same zero-state dishonesty proven on `/quant` almost certainly applies to
-`/ai`'s `BLOCK 6 / STALE 6 / contracts unavailable` display. Reuse
-`decideQuantZeroState`'s shape: a fault, an exclusion, and an empty set must not
-render alike. Parts 2, 6–10, 13–16 remain untouched.
+**Untouched this session (whole priorities):** legacy-suppression classification
+(738), live-vs-backlog delivery priority, historical FAILED classification, B7
+provider reserve validation, after-hours options content safety, High-Asymmetry
+quality/spam audit, existing-AI audit, Ask OptiScan, engineering
+recommendations, Options page redesign.
+
+**Also observed, not yet investigated:** `/api/diagnostics/content-delivery`
+reports `lastScan.result.examined: 0, skipped: 1` — the recovery sweep is
+running but processing nothing, while `scansToDrainBacklog: 755`. The backlog is
+not draining. Worth confirming before any classification work assumes it is.
 
 ## Prior task — High-Asymmetry paper lane (still valid)
 
