@@ -505,7 +505,9 @@ async function asymmetryTransitionsJob(nowMs: number): Promise<void> {
   const { observeAsymmetryCase } = require("@/lib/research/asymmetry/live-quote");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { sendAsymmetryWebhook } = require("@/lib/notifications/asymmetry-private-send");
-  const res = await runAsymmetryTransitions(db(), {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { withProviderConsumer } = require("@/lib/provider-context");
+  const res = await withProviderConsumer("asymmetry_discovery", () => runAsymmetryTransitions(db(), {
     observe: observeAsymmetryCase,
     // Without this the notifier returns NOT_CONFIGURED forever: `send` is
     // optional and nothing was injecting it, so no private message could ever
@@ -513,7 +515,7 @@ async function asymmetryTransitionsJob(nowMs: number): Promise<void> {
     send: sendAsymmetryWebhook,
     nowMs,
     sessionDate: tradingDay(nowMs),
-  });
+  }));
   state().lastAsymmetryTransitions = res;
 }
 
@@ -529,11 +531,13 @@ async function asymmetryMarksJob(nowMs: number): Promise<void> {
   const { tradingDay } = require("@/lib/trading-session");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { liveAsymmetryQuote } = require("@/lib/research/asymmetry/live-quote");
-  const res = await runDueAsymmetryMarks(db(), {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { withProviderConsumer } = require("@/lib/provider-context");
+  const res = await withProviderConsumer("asymmetry_mark", () => runDueAsymmetryMarks(db(), {
     quote: liveAsymmetryQuote,
     nowMs,
     sessionDate: tradingDay(nowMs),
-  });
+  }));
   state().lastAsymmetryMarks = res;
 }
 

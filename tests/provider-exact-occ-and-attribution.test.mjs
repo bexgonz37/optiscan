@@ -125,9 +125,24 @@ for (const [file, consumer] of SCOPED) {
   });
 }
 
+test("the High-Asymmetry scheduler attributes transition and mark quote sweeps", () => {
+  const src = code("lib/scheduler.ts");
+  const transitionsStart = src.indexOf("async function asymmetryTransitionsJob");
+  const marksStart = src.indexOf("async function asymmetryMarksJob");
+  const paperStart = src.indexOf("async function asymmetryPaperJob");
+  assert.ok(transitionsStart >= 0 && marksStart > transitionsStart && paperStart > marksStart);
+  const transitions = src.slice(transitionsStart, marksStart);
+  const marks = src.slice(marksStart, paperStart);
+
+  assert.match(transitions, /withProviderConsumer\(\s*["'`]asymmetry_discovery["'`]/,
+    "transition observations call the exact-OCC quote adapter and must not be unattributed");
+  assert.match(marks, /withProviderConsumer\(\s*["'`]asymmetry_mark["'`]/,
+    "forward marks call the exact-OCC quote adapter and must not be unattributed");
+});
+
 test("every scoped consumer is a declared consumer with a category", async () => {
   const { PROVIDER_CONSUMERS, providerCategoryFor } = await import("../lib/provider-context.ts");
-  for (const [, consumer] of SCOPED) {
+  for (const consumer of [...SCOPED.map(([, c]) => c), "asymmetry_discovery"]) {
     assert.ok(PROVIDER_CONSUMERS.includes(consumer), `${consumer} must be declared`);
     assert.ok(providerCategoryFor(consumer), `${consumer} must roll up to a category`);
   }
