@@ -1999,9 +1999,18 @@ CREATE TABLE IF NOT EXISTS content_drafts (
   updated_at_ms INTEGER NOT NULL,
   approved_at_ms INTEGER,
   rejected_at_ms INTEGER,
-  manually_posted_at_ms INTEGER
+  manually_posted_at_ms INTEGER,
+  -- Delivery evidence: WHY a draft reached its status, and whether that reason
+  -- can change. Mirrored in CONTENT_DRAFT_COLUMN_MIGRATIONS for existing files.
+  discord_delivery_reason TEXT,
+  discord_delivery_explanation TEXT,
+  discord_delivery_retryable INTEGER,
+  discord_delivery_detail TEXT,
+  discord_attempt_count INTEGER NOT NULL DEFAULT 0,
+  discord_last_attempt_at_ms INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_content_drafts_event ON content_drafts(content_event_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_content_drafts_delivery_reason ON content_drafts(discord_delivery_status, discord_delivery_reason);
 CREATE INDEX IF NOT EXISTS idx_content_drafts_status ON content_drafts(status, discord_delivery_status);
 CREATE INDEX IF NOT EXISTS idx_content_drafts_symbol_cat ON content_drafts(category, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_content_drafts_case ON content_drafts(opportunity_case_id, created_at_ms);
@@ -2389,6 +2398,20 @@ const REPLAY_RUNS_COLUMN_MIGRATIONS: Array<[string, string]> = [
   ["lease_until_ms", "ALTER TABLE replay_runs ADD COLUMN lease_until_ms INTEGER"],
   ["heartbeat_ms", "ALTER TABLE replay_runs ADD COLUMN heartbeat_ms INTEGER"],
 ];
+/**
+ * Content-draft delivery evidence (additive). The pipeline persisted only the
+ * final status, so a transient rate limit and a genuine duplicate were the same
+ * row. All nullable: existing drafts keep their status and simply carry no
+ * reason, which is honest — no reason was recorded for them.
+ */
+const CONTENT_DRAFT_COLUMN_MIGRATIONS: Array<[string, string]> = [
+  ["discord_delivery_reason", "ALTER TABLE content_drafts ADD COLUMN discord_delivery_reason TEXT"],
+  ["discord_delivery_explanation", "ALTER TABLE content_drafts ADD COLUMN discord_delivery_explanation TEXT"],
+  ["discord_delivery_retryable", "ALTER TABLE content_drafts ADD COLUMN discord_delivery_retryable INTEGER"],
+  ["discord_delivery_detail", "ALTER TABLE content_drafts ADD COLUMN discord_delivery_detail TEXT"],
+  ["discord_attempt_count", "ALTER TABLE content_drafts ADD COLUMN discord_attempt_count INTEGER NOT NULL DEFAULT 0"],
+  ["discord_last_attempt_at_ms", "ALTER TABLE content_drafts ADD COLUMN discord_last_attempt_at_ms INTEGER"],
+];
 const MOMENTUM_DIAGNOSTIC_COLUMN_MIGRATIONS: Array<[string, string]> = [
   ["classification", "ALTER TABLE momentum_diagnostics ADD COLUMN classification TEXT"],
   ["dominant_reason", "ALTER TABLE momentum_diagnostics ADD COLUMN dominant_reason TEXT"],
@@ -2459,6 +2482,10 @@ function migrate(db: Database.Database) {
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='momentum_diagnostics'").get()) {
     const momentumDiagCols = cols("momentum_diagnostics");
     for (const [col, sql] of MOMENTUM_DIAGNOSTIC_COLUMN_MIGRATIONS) if (!momentumDiagCols.has(col)) db.exec(sql);
+  }
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='content_drafts'").get()) {
+    const contentDraftCols = cols("content_drafts");
+    for (const [col, sql] of CONTENT_DRAFT_COLUMN_MIGRATIONS) if (!contentDraftCols.has(col)) db.exec(sql);
   }
   // Analog Engine (additive): replay-seed observability — attempted-vs-succeeded calls + per-symbol status.
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='replay_runs'").get()) {

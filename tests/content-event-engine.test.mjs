@@ -136,7 +136,9 @@ function makeDb() {
       frozen_entry REAL, mark_used REAL, original_alert_at_ms INTEGER, trading_session_date TEXT,
       status TEXT NOT NULL DEFAULT 'GENERATED', discord_delivery_status TEXT NOT NULL DEFAULT 'PENDING',
       discord_message_id TEXT, final_copy TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
-      approved_at_ms INTEGER, rejected_at_ms INTEGER, manually_posted_at_ms INTEGER
+      approved_at_ms INTEGER, rejected_at_ms INTEGER, manually_posted_at_ms INTEGER,
+      discord_delivery_reason TEXT, discord_delivery_explanation TEXT, discord_delivery_retryable INTEGER,
+      discord_delivery_detail TEXT, discord_attempt_count INTEGER NOT NULL DEFAULT 0, discord_last_attempt_at_ms INTEGER
     );
     CREATE TABLE options_alerts (
       alert_id TEXT PRIMARY KEY, opportunity_case_id TEXT, state TEXT, entry_mid REAL,
@@ -352,16 +354,51 @@ test("a failed recovery send stays retryable rather than being lost again", asyn
   ).all().map((r) => r.s);
   assert.deepEqual(states, ["FAILED"], "a transport failure is FAILED, which is retryable");
 
+  // CONTRACT CHANGE. This used to assert deferredDelivered === 0 — the recovery
+  // sweep matched only the literal status SKIPPED_NO_WEBHOOK, so a retryable
+  // transport failure could be picked up ONLY if its source event happened to be
+  // re-queued. Events are marked PROCESSED at generation time and are not
+  // normally re-queued, so in practice a FAILED draft was stranded for good.
+  // That is what left 860 FAILED drafts sitting in production.
+  //
+  // The sweep now matches every retryable state, so a transport failure recovers
+  // on the next pass without needing its event resurrected.
   const { sent, deps } = captureDeps();
   const recovered = await runContentDraftsScan(db, deps, ENV);
-  assert.equal(recovered.deferredDelivered, 0, "FAILED is not the deferred-no-webhook queue...");
+  assert.equal(recovered.deferredDelivered, 1, "a retryable FAILED draft is recovered by the sweep");
+  assert.equal(sent.length, 1);
+  const after = db.prepare(
+    "SELECT DISTINCT discord_delivery_status s FROM content_drafts WHERE content_event_id='ce_fail'",
+  ).all().map((r) => r.s);
+  assert.deepEqual(after, ["SENT"], "and ends up delivered");
+});
+
+test("a NON-retryable failure is not swept up again", async () => {
+  // Discord rejecting the payload (4xx) is a verdict on the content, not the
+  // transport. Retrying it forever would be a loop, so it must leave the pool.
+  const db = makeDb();
+  seedEvent(db, { id: "ce_4xx" });
+  await runContentDraftsScan(db, {
+    send: async () => ({ ok: false, messageId: null, error: "discord 400: invalid form body" }),
+    webhookConfigured: () => true,
+    loadCaseVars: () => ({ confidence: 0.72, relativeVolume: 4.2 }),
+    now: () => 1_700_000_100_000,
+  }, ENV);
+
+  const rows = db.prepare(
+    "SELECT discord_delivery_status s, discord_delivery_reason r, discord_delivery_retryable t FROM content_drafts WHERE content_event_id='ce_4xx'",
+  ).all();
+  assert.ok(rows.length > 0);
+  for (const row of rows) {
+    assert.equal(row.s, "FAILED");
+    assert.equal(row.r, "FAILED_DISCORD_REJECTED");
+    assert.equal(row.t, 0, "explicitly non-retryable");
+  }
+
+  const { sent, deps } = captureDeps();
+  const again = await runContentDraftsScan(db, deps, ENV);
+  assert.equal(again.deferredDelivered, 0, "a 4xx rejection is not retried blindly");
   assert.equal(sent.length, 0);
-  // ...but it remains in the retryable set, so the normal partial-retry path can
-  // still pick it up when its event is re-queued.
-  db.prepare("UPDATE opportunity_content_events SET content_status='PENDING' WHERE id='ce_fail'").run();
-  const { sent: sent2, deps: deps2 } = captureDeps();
-  await runContentDraftsScan(db, deps2, ENV);
-  assert.equal(sent2.length, 1, "the failed bundle is delivered on the next pass");
 });
 
 test("recovery never runs while the webhook is still unconfigured", async () => {

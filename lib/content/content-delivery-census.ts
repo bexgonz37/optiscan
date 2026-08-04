@@ -58,6 +58,17 @@ export interface ContentDeliveryCensus {
    * nothing is pending; this is arithmetic on the cap, not a promise.
    */
   scansToDrainBacklog: number | null;
+  /**
+   * Counts per persisted reason code, split by status. Null on databases
+   * predating the reason columns — which is not zero, it is "never recorded".
+   */
+  byReason: Record<string, number> | null;
+  suppressedByReason: Record<string, number> | null;
+  failedByReason: Record<string, number> | null;
+  /** Rows written before delivery reasons were persisted at all. */
+  withoutRecordedReason: number | null;
+  retryableFailures: number | null;
+  nonRetryableFailures: number | null;
 }
 
 const UNDELIVERED = ["PENDING", "FAILED", "SKIPPED_NO_WEBHOOK"] as const;
@@ -86,7 +97,22 @@ function unavailable(state: ContentDeliveryStateKind, headline: string): Content
     oldestUndeliveredAtMs: null,
     newestDeliveredAtMs: null,
     scansToDrainBacklog: null,
+    byReason: null,
+    suppressedByReason: null,
+    failedByReason: null,
+    withoutRecordedReason: null,
+    retryableFailures: null,
+    nonRetryableFailures: null,
   };
+}
+
+function columnExists(db: CensusDb, table: string, column: string): boolean {
+  try {
+    return (db.prepare(`PRAGMA table_info(${table})`).all() as { name?: string }[])
+      .some((c) => c.name === column);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -127,6 +153,49 @@ export function buildContentDeliveryCensus(db: CensusDb, eventsPerScan = 1): Con
     }
   };
 
+  // A database predating the reason columns must report null, not zero: no
+  // reason was recorded for those rows, which is different from "no reason".
+  const hasReasons = columnExists(db, "content_drafts", "discord_delivery_reason");
+  let byReason: Record<string, number> | null = null;
+  let suppressedByReason: Record<string, number> | null = null;
+  let failedByReason: Record<string, number> | null = null;
+  let withoutRecordedReason: number | null = null;
+  let retryableFailures: number | null = null;
+  let nonRetryableFailures: number | null = null;
+  if (hasReasons) {
+    try {
+      const pairs = db.prepare(
+        `SELECT discord_delivery_status AS st, COALESCE(discord_delivery_reason,'<none recorded>') AS rc,
+                COUNT(*) AS n
+           FROM content_drafts GROUP BY st, rc`,
+      ).all() as { st: string; rc: string; n: number }[];
+      byReason = {};
+      suppressedByReason = {};
+      failedByReason = {};
+      withoutRecordedReason = 0;
+      for (const p of pairs) {
+        const n = Number(p.n) || 0;
+        byReason[p.rc] = (byReason[p.rc] ?? 0) + n;
+        if (p.rc === "<none recorded>") withoutRecordedReason += n;
+        if (p.st === "SUPPRESSED") suppressedByReason[p.rc] = (suppressedByReason[p.rc] ?? 0) + n;
+        if (p.st === "FAILED") failedByReason[p.rc] = (failedByReason[p.rc] ?? 0) + n;
+      }
+      const rt = db.prepare(
+        `SELECT COALESCE(discord_delivery_retryable,-1) AS r, COUNT(*) AS n
+           FROM content_drafts WHERE discord_delivery_status='FAILED' GROUP BY r`,
+      ).all() as { r: number; n: number }[];
+      retryableFailures = rt.filter((x) => Number(x.r) === 1).reduce((a, x) => a + Number(x.n), 0);
+      nonRetryableFailures = rt.filter((x) => Number(x.r) === 0).reduce((a, x) => a + Number(x.n), 0);
+    } catch {
+      byReason = null;
+      suppressedByReason = null;
+      failedByReason = null;
+      withoutRecordedReason = null;
+      retryableFailures = null;
+      nonRetryableFailures = null;
+    }
+  }
+
   const eligibleForRecovery = UNDELIVERED.reduce((a, s) => a + (by[s] ?? 0), 0);
   const eventsAwaitingRecovery = num(
     `SELECT COUNT(*) n FROM (SELECT content_event_id FROM content_drafts
@@ -158,5 +227,11 @@ export function buildContentDeliveryCensus(db: CensusDb, eventsPerScan = 1): Con
     ),
     scansToDrainBacklog:
       eventsAwaitingRecovery && eventsPerScan > 0 ? Math.ceil(eventsAwaitingRecovery / eventsPerScan) : null,
+    byReason,
+    suppressedByReason,
+    failedByReason,
+    withoutRecordedReason,
+    retryableFailures,
+    nonRetryableFailures,
   };
 }

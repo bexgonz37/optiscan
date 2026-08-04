@@ -32,6 +32,7 @@ import {
 import { tradingDay } from "../trading-session.ts";
 import { evaluateMarketSessionGuard } from "../market-session-guard.ts";
 import { recapDeliveryEnabled } from "../notifications/recap-delivery-guard.ts";
+import { classifyDeliveryResult, describeReason, redactForPersistence } from "./delivery-reason.ts";
 
 interface RtDb {
   prepare(sql: string): {
@@ -69,6 +70,24 @@ export type DraftRowStatus = "GENERATED" | "APPROVED" | "REJECTED" | "MANUALLY_P
 
 function hasTable(db: RtDb, name: string): boolean {
   try { return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name)); } catch { return false; }
+}
+
+/**
+ * Whether the delivery-reason columns exist. A database written before those
+ * columns were added must keep working exactly as it did — referencing a column
+ * SQLite does not have is an error, not a NULL, so the retryability filter has
+ * to be omitted rather than defaulted.
+ */
+function hasRetryableColumn(db: RtDb): boolean {
+  try {
+    return (db.prepare("PRAGMA table_info(content_drafts)").all() as { name?: string }[])
+      .some((c) => c.name === "discord_delivery_retryable");
+  } catch { return false; }
+}
+
+/** `AND` clause excluding explicitly non-retryable rows, or "" pre-migration. */
+function retryableFilter(db: RtDb): string {
+  return hasRetryableColumn(db) ? " AND discord_delivery_retryable IS NOT 0" : "";
 }
 
 function djb2(s: string): string {
@@ -333,19 +352,29 @@ const RETRYABLE_SQL_LIST = RETRYABLE_DELIVERY_STATES.map((s) => `'${s}'`).join("
 
 function unsentDrafts(db: RtDb, eventId: string): Array<{ id: string; draft_text: string; category: string; cta_type: string; char_count: number; hashtags_json: string | null; screenshot_suggestion: string | null; chart_annotation: string | null; suggested_cta?: string }> {
   if (!hasTable(db, "content_drafts")) return [];
+  // A row explicitly marked non-retryable (Discord rejected the payload, attempts
+  // exhausted) must not be picked up again. `IS NOT 0` keeps pre-migration rows,
+  // whose retryability was never recorded, eligible as before.
   return db.prepare(
     `SELECT id, draft_text, category, cta_type, char_count, hashtags_json, screenshot_suggestion, chart_annotation
      FROM content_drafts
-     WHERE content_event_id=? AND discord_delivery_status IN (${RETRYABLE_SQL_LIST})
+     WHERE content_event_id=? AND discord_delivery_status IN (${RETRYABLE_SQL_LIST})${retryableFilter(db)}
      ORDER BY created_at_ms ASC`,
   ).all(eventId) as any[];
 }
 
 /**
- * Content events holding drafts that were deferred for want of a webhook, oldest
- * first. Read regardless of the event's own `content_status`, because the event
- * was marked PROCESSED at generation time and will never appear in the PENDING
- * scan again.
+ * Content events holding UNDELIVERED drafts, oldest first. Read regardless of
+ * the event's own `content_status`, because the event was marked PROCESSED at
+ * generation time and will never appear in the PENDING scan again.
+ *
+ * This selected only `SKIPPED_NO_WEBHOOK`, which was correct while that was the
+ * one way a draft could be deferred. It no longer is: a transient refusal now
+ * parks a draft at `PENDING`, and a retryable transport failure at `FAILED`.
+ * Matching one literal status would have stranded both — the same defect the
+ * webhook deferral had, reintroduced one state along.
+ *
+ * Rows explicitly marked non-retryable are excluded.
  */
 function deferredDraftEventIds(db: RtDb, limit: number): string[] {
   if (!hasTable(db, "content_drafts")) return [];
@@ -353,7 +382,7 @@ function deferredDraftEventIds(db: RtDb, limit: number): string[] {
     return (db.prepare(
       `SELECT content_event_id AS id, MIN(created_at_ms) AS first_at
          FROM content_drafts
-        WHERE discord_delivery_status='SKIPPED_NO_WEBHOOK'
+        WHERE discord_delivery_status IN (${RETRYABLE_SQL_LIST})${retryableFilter(db)}
         GROUP BY content_event_id
         ORDER BY first_at ASC LIMIT ?`,
     ).all(limit) as { id: string }[]).map((r) => String(r.id));
@@ -408,10 +437,17 @@ export async function runContentDraftsScan(
     ).all(cap) as Record<string, unknown>[];
   } catch { return out; }
 
+  // Events the PENDING pass already acted on this run. The recovery sweep below
+  // now matches PENDING as a retryable state, so without this an event parked by
+  // a transient refusal would be retried again in the SAME scan — two attempts
+  // against a channel budget that just refused one.
+  const handledThisRun = new Set<string>();
+
   for (const row of rows) {
     out.examined += 1;
     try {
     const eventId = String(row.id);
+    handledThisRun.add(eventId);
     const caseId = row.opportunity_case_id != null ? String(row.opportunity_case_id) : null;
     const nowMs = now();
 
@@ -472,12 +508,28 @@ export async function runContentDraftsScan(
     if (!webhookOk) {
       out.skippedNoWebhook += 1;
       if (hasTable(db, "content_drafts")) {
+        // A kill switch that is ON and a webhook that was never configured are
+        // different owner actions with different fixes. They shared a status
+        // before; they no longer share a reason.
+        const deferral = describeReason(
+          recapDeliveryEnabled(env) ? "SKIPPED_NO_WEBHOOK" : "DISABLED_BY_KILL_SWITCH",
+        );
         try {
           db.prepare(
-            `UPDATE content_drafts SET discord_delivery_status='SKIPPED_NO_WEBHOOK', updated_at_ms=?
-             WHERE content_event_id=? AND discord_delivery_status='PENDING'`,
-          ).run(nowMs, eventId);
-        } catch { /* isolated */ }
+            `UPDATE content_drafts
+             SET discord_delivery_status='SKIPPED_NO_WEBHOOK', updated_at_ms=?,
+                 discord_delivery_reason=?, discord_delivery_explanation=?,
+                 discord_delivery_retryable=1
+             WHERE content_event_id=? AND discord_delivery_status IN ('PENDING','SKIPPED_NO_WEBHOOK')`,
+          ).run(nowMs, deferral.code, deferral.explanation, eventId);
+        } catch {
+          try {
+            db.prepare(
+              `UPDATE content_drafts SET discord_delivery_status='SKIPPED_NO_WEBHOOK', updated_at_ms=?
+               WHERE content_event_id=? AND discord_delivery_status='PENDING'`,
+            ).run(nowMs, eventId);
+          } catch { /* isolated */ }
+        }
       }
       continue;
     }
@@ -507,6 +559,7 @@ export async function runContentDraftsScan(
   // persisted draft text, and makes no provider call.
   if (webhookOk) {
     for (const eventId of deferredDraftEventIds(db, cap)) {
+      if (handledThisRun.has(eventId)) continue;
       try {
         const pending = unsentDrafts(db, eventId);
         if (!pending.length) continue;
@@ -565,15 +618,41 @@ async function deliverDrafts(
   } catch (e: any) {
     res = { ok: false, messageId: null, error: String(e?.message ?? e).slice(0, 300) };
   }
-  const nextStatus = res.ok ? "SENT" : res.suppressed ? "SUPPRESSED" : "FAILED";
+  // The status is derived from the REASON's retryability, never from the bare
+  // `suppressed` boolean. Three of the guard's six suppression verdicts are
+  // transient, and writing SUPPRESSED for those dropped the draft out of
+  // RETRYABLE_DELIVERY_STATES permanently. See lib/content/delivery-reason.ts.
+  const reason = classifyDeliveryResult(res);
   for (const draft of pending) {
     try {
       db.prepare(
         `UPDATE content_drafts
-         SET discord_delivery_status=?, discord_message_id=?, updated_at_ms=?
+         SET discord_delivery_status=?, discord_message_id=?, updated_at_ms=?,
+             discord_delivery_reason=?, discord_delivery_explanation=?,
+             discord_delivery_retryable=?, discord_delivery_detail=?,
+             discord_last_attempt_at_ms=?,
+             discord_attempt_count=COALESCE(discord_attempt_count,0)+1
          WHERE id=?`,
-      ).run(nextStatus, res.messageId, meta.nowMs, draft.id);
-    } catch { /* isolated */ }
+      ).run(
+        reason.status,
+        res.messageId,
+        meta.nowMs,
+        reason.code,
+        reason.explanation,
+        reason.retryable ? 1 : 0,
+        redactForPersistence(res.error),
+        meta.nowMs,
+        draft.id,
+      );
+    } catch {
+      // A pre-migration database lacks the reason columns. Preserve the original
+      // write rather than losing the outcome entirely.
+      try {
+        db.prepare(
+          `UPDATE content_drafts SET discord_delivery_status=?, discord_message_id=?, updated_at_ms=? WHERE id=?`,
+        ).run(reason.status, res.messageId, meta.nowMs, draft.id);
+      } catch { /* isolated */ }
+    }
   }
   return res;
 }
