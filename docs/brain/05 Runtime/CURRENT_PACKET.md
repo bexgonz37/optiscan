@@ -766,3 +766,105 @@ before `independentMarkPct >= 50%`.**
 unidentified. **Gate B5 (consumer audit) is the next work.** Do not raise caps.
 
 See `OPTISCAN_AUTONOMOUS_ROADMAP_STATUS.md` for the full gate ledger.
+
+---
+
+# Packet update — 2026-08-04 (content delivery, post-close)
+
+## Verified state, not the state the prompt asserted
+
+| Claim carried into this session | Actual |
+|---|---|
+| deployed `c7a07e2` | **`12d510a`** — production was already fully current |
+| clean tree | **20 untracked files** (audit doc, ~15 railway/probe scripts, `graph.json`) |
+| `DISCORD_RECAP_ENABLED` awaiting owner | **already set to `1`** |
+| 50 stranded drafts | **2,927 undelivered across 1,026 events**, of 3,446 total |
+
+`local = origin/main = 12d510a` was correct. 3392/3392 was correct.
+
+## The recap kill switch is off and recovery IS running
+
+`recapDelivery.state = CONFIGURED_AND_ENABLED`, `killSwitchEngaged: false`,
+`canDeliver: true`. The `c7a07e2` health fix reads correctly in production.
+
+Last scan: **`deferredDelivered: 1`**, `newestDeliveredAtMs` = now. **501 drafts
+delivered, all 501 carrying a real Discord message id.** Recovery works.
+
+## I reported the opposite first, and was wrong
+
+I read `/api/content-drafts`, saw 200/200 `SKIPPED_NO_WEBHOOK`, partitioned by
+category to widen the window, saw 480 rows with **zero touched tonight**, and
+concluded recovery was not firing.
+
+That was a measurement artifact. The endpoint hard-caps at **200 rows ordered
+`created_at_ms DESC`** and recovery drains **oldest-first** — so recovered rows
+are, by construction, outside the window. Partitioning by category hit the same
+cap per category. The true population is **3,446**, not 480. I could not have
+seen a recovered row by that method no matter how many I fetched.
+
+This is the same defect class the session was convened to fix — a surface that
+could not distinguish "none" from "none visible" — and it caught me.
+
+## Measured census (whole table, SQL aggregate)
+
+| Delivery status | n |
+|---|---|
+| SKIPPED_NO_WEBHOOK | **2,067** |
+| FAILED | **860** |
+| SENT | **501** (501 with message id) |
+| SUPPRESSED | 18 |
+| **total** | **3,446** |
+
+## The real blocker is DRAIN RATE, and it is the owner's call
+
+`cap = Math.min(maxPerScan ?? 20, 1)` — **one event per scan**, deliberately, so
+recovery can never burst a backlog into the channel. At the 3-minute
+`contentDrafts` interval:
+
+    1,026 events x 3 min = ~51 hours of continuous running
+
+The backlog drains on its own and needs no intervention. But raising the rate
+posts faster into the owner's private Discord, so **I did not change it.**
+`scansToDrainBacklog` is now reported so the tradeoff is visible.
+
+**Not investigated: the 860 FAILED.** They are retryable and re-enter the sweep,
+so they are not lost — but the failure reason is not persisted per draft, only
+the status. That is the next content concern.
+
+## Shipped — `3bd59c9`
+
+- `lastContentDrafts` on the scheduler: ran / reason / webhookConfigured / full
+  `ContentScanResult` / error. `contentDraftsJob` previously awaited the result
+  purely for side effects and discarded every field.
+- `buildContentDeliveryCensus` — whole-table counts, tri-state.
+  `NOT_INITIALIZED` / `READ_FAILED` carry **null**, never 0.
+- `GET /api/diagnostics/content-delivery`.
+- Regression test reproducing the 200-row masking directly.
+
+Read-only. No provider call, no send authority, no gate changed.
+`npm test` 3398/3398 twice, `tsc` clean, `build` clean, `git diff --check` clean.
+
+## Corrected note on the recovery test
+
+`tests/content-event-engine.test.mjs` proves recovery while injecting BOTH
+`webhookConfigured` and `send`. Production injects neither. I re-ran the scan
+with only env + a spy send — the production dependency shape — and it delivered
+correctly, which is why this commit changes no delivery logic. The packet's
+standing warning about paths proven only under injection still applies here.
+
+## Blocked on the 2026-08-04 RTH session — unchanged
+
+Market was closed all session (`session: "closed"`). Untouched:
+contract-funnel live validation (`observedInWindow`), B7 provider reserves,
+Aggressive 0DTE activation (`PAPER_0DTE_RESEARCH_ENABLED` still **unset** —
+correctly, pending B7), Gate B4 independence rate.
+
+## Exact resume point
+
+1. **Re-read `/api/diagnostics/content-delivery`.** `delivered` must exceed 501
+   and `eventsAwaitingRecovery` must be below 1,026. If they have not moved,
+   `lastScan.result` now names the reason directly.
+2. **Decide the drain rate** (owner). Leave at ~51h, or raise `maxPerScan`.
+3. **Diagnose the 860 FAILED** — persist a per-draft failure reason first.
+4. Then the RTH-blocked items above.
+5. Options page redesign remains the next offline-safe code concern, untouched.
