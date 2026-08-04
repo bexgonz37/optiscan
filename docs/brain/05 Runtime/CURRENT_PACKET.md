@@ -1,13 +1,65 @@
 # Current Task Packet
 
-Task ID: high-asymmetry-paper-lane-deploy-disabled (PAUSED — see resume point)
+Task ID: roadmap-session-3-truthful-zero-states (IN PROGRESS — see resume point)
 
-## Active position
+## Active position (2026-08-04, post-close)
 
-- Branch: `main`
-- Previous deployed commit: `6c15d3b` (docs `c9c5851` on top)
+- Branch: `main` · local = `origin/main` = **`c7a07e2`** · deployed **`b1359eb`**
+  confirmed, `c7a07e2` deploying
+- Verified: `npm test` **3392/3392 twice**, `npx tsc --noEmit --incremental
+  false` clean, `npm run build` clean, `git diff --check` clean
+- Production: `/api/health` ok, `faults: []`, provider healthy, breaker closed,
+  quota not exceeded, session closed (after hours — expected)
+
+### This session's finding, in one line
+
+Three "zero/false" states on the dashboards were **not measurements**. Each was a
+boolean that could not explain itself, read as though it had.
+
+| Surface | Displayed | Actually |
+|---|---|---|
+| Quant delivered lane | `n=0`, "not enough data" | **92 verified** of 364, 272 excluded — page had failed to load |
+| `webhooks.recap` | `false` | webhook **configured**; `DISCORD_RECAP_ENABLED=0` |
+| Aggressive 0DTE | `$0`, 0 trades, "research only" | `PAPER_0DTE_RESEARCH_ENABLED` **unset** — never switched on |
+
+> **This packet already recorded the recap cause correctly** (see the
+> BLOCKED_CONFIG row below: `DISCORD_RECAP_ENABLED=0, owner`). Session 2
+> diagnosed a missing webhook anyway. The evidence was in the repository the
+> whole time — the health endpoint was the thing that could not say it.
+
+## Resume point (exact)
+
+**Offline-safe work delivered this session:** Quant zero-state + evidence census
+(`b1359eb`), recap delivery diagnosis (`c7a07e2`). Both pushed; `b1359eb`
+verified in production.
+
+**Blocked on the owner, not on code:**
+1. `DISCORD_RECAP_ENABLED=1` → releases the 50 stranded drafts via the
+   `e7882ed` recovery pass. Verify `recapDelivery.state` becomes
+   `CONFIGURED_AND_ENABLED` and count how many of the 50 recover.
+2. `PAPER_0DTE_RESEARCH_ENABLED=1` → starts the Aggressive 0DTE lane. Recommend
+   deferring until B7 RTH shows reserve headroom (the lane asks 80 req/min of a
+   provider measured at ~8% admission).
+
+**Blocked on the 2026-08-04 RTH session (cannot be done after close):**
+3. **Contract-funnel live validation** — `GET /api/diagnostics/contract-funnel`
+   must show `observedInWindow > 0` with real candidate IDs, stored
+   `deltaSource`, and a measurable MONEYNESS_PROXY share. The wiring
+   (`9894d60`) is deployed and **has never held a confirmed RTH row**.
+4. **SPY/QQQ delta-fix validation** — confirm SPY prices calls, with NVDA as the
+   pinned control.
+5. **B7 RTH / B8 independent marks** — one full RTH session on `1b7939f`+.
+
+**Next code concern (not started):** the Options page redesign (Part 12) — the
+same zero-state dishonesty proven on `/quant` almost certainly applies to
+`/ai`'s `BLOCK 6 / STALE 6 / contracts unavailable` display. Reuse
+`decideQuantZeroState`'s shape: a fault, an exclusion, and an empty set must not
+render alike. Parts 2, 6–10, 13–16 remain untouched.
+
+## Prior task — High-Asymmetry paper lane (still valid)
+
 - This work: the automatic paper-trading lane, built and **DISABLED**
-- Verified locally: `npm test` 2802/2802, `tsc --noEmit` clean,
+- Verified at the time: `npm test` 2802/2802, `tsc --noEmit` clean,
   `npm run build` clean, `git diff --check` clean, `graphify update .` run
 
 ## Completed — High-Asymmetry paper lane

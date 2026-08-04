@@ -1,10 +1,104 @@
 # OptiScan Autonomous Roadmap — Status
 
-**Updated:** 2026-08-03 (post-close, session 2) · **Deployed:** `3250aec`,
-`9894d60` confirmed live in `durable.deployments`; `e7882ed` pushed ·
-local = remote = `e7882ed` · **Started from:** `7246304`
+**Updated:** 2026-08-04 (post-close, session 3) · **Deployed:** `b1359eb`
+confirmed live via `/api/command-center`; `c7a07e2` pushed · local = remote =
+`c7a07e2` · **Started from:** `7246304`
 
 Durable status for the Gate B–G roadmap. Updated after every gate.
+
+---
+
+## Session 3 (2026-08-04 post-close) — two diagnoses from session 2 were wrong
+
+Both were wrong in the same way: **a boolean that could not explain itself was
+read as though it had.**
+
+### 1. Quant "n=0" was a failed fetch, not an empty lane (`b1359eb`)
+
+The Quant page showed evidence quality LOW, **sample size 0**, closed outcomes 0,
+"not enough data" everywhere. Production, read directly:
+
+```
+GET /api/research/options/quant-lab
+  lanes.delivered.sampleSize             =  92
+  lanes.delivered_unverified.sampleSize  = 364
+  verification: total 364 / verified 92 / excluded 272
+                byStatus { UNVERIFIED_DELIVERY: 270, VERIFIED_GRADED: 92, UNVERIFIED_EXIT: 2 }
+```
+
+The page reads that payload correctly — and renders `report?.sampleSize ?? 0`
+for every tile, so a null snapshot resolves to a confident zero. The tell is in
+the screenshot itself: **"Biggest data gap: Unavailable"** can only come from an
+empty `metadataCompleteness`, which the live payload does not have.
+
+`decideQuantZeroState` now separates LOAD_FAILED / LANE_EMPTY_ALL_EXCLUDED /
+LANE_GENUINELY_EMPTY / DATA_PRESENT, and **only DATA_PRESENT may render a
+number**. A fault says UNKNOWN, never 0, and never "not enough data".
+
+**The 83 / 92 / 364 contradiction is resolved — they are the same records under
+three definitions:** 364 EXITED delivered rows; 92 that pass VERIFY_CONTRACT_V1;
+83 of those inside the Paper page's 30-day, `limit=100` window
+(`app/paper/page.tsx:161,304`). The census that reconciles them was computed in
+every response and rendered nowhere. It is now a panel on `/quant`.
+
+**Delivered paper P&L is also reconciled.** `paper-chain.verifiedPnlBreakdown`:
+verified total **−$3,085** (realized −$3,075.2, open mark −$9.8) over **88 valid
+trades** — matching the Paper page exactly — while **474 rows carrying
+−$69,176.6 are excluded** as audit-only/unverified. Almost the entire apparent
+loss lives in rows that never passed verification.
+
+### 2. Twitter delivery: the webhook was never missing (`c7a07e2`)
+
+Session 2 recorded "**`DISCORD_WEBHOOK_RECAP` is unset in production**" and
+raised an OWNER ACTION to set it. Read from the production service:
+
+```
+DISCORD_WEBHOOK_RECAP   SET (121 chars)   ← configured the whole time
+DISCORD_RECAP_ENABLED   "0"               ← delivery switched off
+```
+
+**That OWNER ACTION was wrong and would not have restored delivery.** A missing
+secret never explained the reported timeline; a kill-switch turned on during
+2026-08-03 explains it exactly.
+
+`discordWebhookConfigured("recap")` (`notifications.ts:77`) returns false for
+*both* causes, and `/api/discord/health` published that one boolean. The gate is
+correct and is **unchanged** — a test pins `canDeliver` against the old
+expression across all five configurations. What was added is the explanation:
+`recapDeliveryDiagnosis()` → CONFIGURED_AND_ENABLED / DISABLED_BY_KILL_SWITCH /
+MISSING_CONFIGURATION / MISSING_AND_DISABLED, surfaced as `recapDelivery`.
+
+`SKIPPED_NO_WEBHOOK` remains the persisted status — `RETRYABLE_DELIVERY_STATES`
+and the `e7882ed` recovery pass are keyed on it — now documented at its
+declaration as a **retry bucket, not a diagnosis**.
+
+**The repository already knew.** `docs/brain/05 Runtime/CURRENT_PACKET.md:24`
+records the High-Asymmetry report delivery as
+`BLOCKED_CONFIG (DISCORD_RECAP_ENABLED=0, owner)`. The correct cause was written
+down before session 2 diagnosed a missing webhook. The failure was not a lack of
+evidence — it was that `/api/discord/health` could not state what the packet
+already said, so the boolean outranked the note.
+
+> **OWNER ACTION (replaces the session-2 one): set `DISCORD_RECAP_ENABLED=1` or
+> remove it. Do NOT add another webhook — one is already configured.** The
+> `e7882ed` recovery pass should then deliver the 50 stranded drafts.
+
+### 3. Aggressive 0DTE Research: disabled by configuration
+
+`/api/research/options/zero-dte-research` → `config.enabled: false`,
+`runtime.running: false`, **`cycles: 0`**, and `PAPER_0DTE_RESEARCH_ENABLED` is
+**UNSET** in production (`config.ts:73`). Terminal reason:
+**`FEATURE_FLAG_DISABLED`** — the lane is not broken, disconnected, or starved of
+candidates. It has never been switched on.
+
+Not flipped autonomously: the lane requests
+`PAPER_0DTE_PROVIDER_BUDGET_PER_MINUTE` (default **80**) against a provider that
+Gate B5 measured in **permanent refusal (~8% admission)**. Enabling it is an
+owner decision with a real cost to the Core lane, and it is research-only, so
+nothing is lost by waiting for that decision.
+
+> **OWNER DECISION: set `PAPER_0DTE_RESEARCH_ENABLED=1` to start the lane.**
+> Recommend doing so only after B7's RTH validation shows reserve headroom.
 
 ---
 
@@ -77,8 +171,13 @@ WHY_THIS_WORKED 2 — every one `SKIPPED_NO_WEBHOOK`.
 /api/discord/health → webhooks: { options: true, watchlist: true, recap: false }
 ```
 
-`DISCORD_WEBHOOK_RECAP` is unset in production. That is configuration and it is
-the owner's to set.
+> **SUPERSEDED BY SESSION 3 — THIS PARAGRAPH IS WRONG.** `DISCORD_WEBHOOK_RECAP`
+> was **set** in production (121 chars) the entire time. The `recap: false`
+> above is `DISCORD_RECAP_ENABLED=0`, a kill-switch, surfacing through a boolean
+> that cannot tell the two apart. See Session 3 §2.
+
+~~`DISCORD_WEBHOOK_RECAP` is unset in production. That is configuration and it is
+the owner's to set.~~
 
 The code defect underneath was worse. The scan marks the source event `PROCESSED`
 **before** checking the webhook, and the retry query excluded
@@ -89,8 +188,10 @@ recovery pass that delivers the persisted text verbatim — a test asserts draft
 text, `created_at_ms` and `original_alert_at_ms` are byte-identical across
 recovery, so a recovered report card can never become a fresh claim.
 
-> **OWNER ACTION: set `DISCORD_WEBHOOK_RECAP`.** It unblocks Twitter content
-> drafts *and* the AI private recap, which route to the same webhook.
+> ~~**OWNER ACTION: set `DISCORD_WEBHOOK_RECAP`.**~~ **WRONG — superseded.** The
+> webhook is already set. The correct action is `DISCORD_RECAP_ENABLED=1`. It
+> unblocks Twitter content drafts *and* the AI private recap, which route to the
+> same webhook.
 
 ### Also written
 
