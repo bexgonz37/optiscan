@@ -2010,7 +2010,6 @@ CREATE TABLE IF NOT EXISTS content_drafts (
   discord_last_attempt_at_ms INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_content_drafts_event ON content_drafts(content_event_id, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_content_drafts_delivery_reason ON content_drafts(discord_delivery_status, discord_delivery_reason);
 CREATE INDEX IF NOT EXISTS idx_content_drafts_status ON content_drafts(status, discord_delivery_status);
 CREATE INDEX IF NOT EXISTS idx_content_drafts_symbol_cat ON content_drafts(category, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_content_drafts_case ON content_drafts(opportunity_case_id, created_at_ms);
@@ -2486,6 +2485,15 @@ function migrate(db: Database.Database) {
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='content_drafts'").get()) {
     const contentDraftCols = cols("content_drafts");
     for (const [col, sql] of CONTENT_DRAFT_COLUMN_MIGRATIONS) if (!contentDraftCols.has(col)) db.exec(sql);
+    // MUST be created here, not in SCHEMA. On an existing production table
+    // `CREATE TABLE IF NOT EXISTS` is a no-op, so a SCHEMA-level index over
+    // discord_delivery_reason runs BEFORE the ALTERs that add that column and
+    // throws "no such column" — which aborts db.exec(SCHEMA) and takes the whole
+    // database init down with it. An index on a migrated column belongs after
+    // the migration that creates the column.
+    db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_content_drafts_delivery_reason ON content_drafts(discord_delivery_status, discord_delivery_reason)",
+    );
   }
   // Analog Engine (additive): replay-seed observability — attempted-vs-succeeded calls + per-symbol status.
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='replay_runs'").get()) {
