@@ -1245,3 +1245,157 @@ work, High-Asymmetry, Quant verification contract) stands unchanged.
 4. Audit the existing AI backend BEFORE building Ask OptiScan, so a second
    chatbot is not built beside the current one.
 5. RTH: contract-funnel, B7, 0DTE — next open session.
+
+---
+
+# Packet update - 2026-08-04 (live options truthfulness, provider attribution, High-Asymmetry gate)
+
+## Verified from the repo and production
+
+Before this packet update, `local = origin/main = a7e1770` and production was
+serving `a7e1770`. Production health was green: provider configured, loop
+running, database writable, and no provider quota fault reported by health.
+
+The previously reported deployment gap is closed for the provider-attribution
+work. `/api/healthz.commitShort` matched the deployed SHA after each push
+through `a7e1770`.
+
+Graphify remains blocked locally because the installed launcher points at a
+removed Python 3.11 runtime. Existing `graphify-out/graph.json` remains usable
+as stale context, but Graphify was not regenerated and no system Python/runtime
+repair was attempted.
+
+## Strategy DTE retrieval
+
+Root cause found and fixed: `longer_dated_swing` requested 15-90 DTE while the
+Stage-2 chain fetch covered only 0-14 DTE. That made many SPY/QQQ bullish
+candidates terminate at `NO_CONTRACT_IN_DTE_RANGE` even when the strategy was
+asking for longer-dated contracts.
+
+Shipped earlier in this run:
+
+- `b917a6d` - strategy-aware option-chain DTE fetches.
+- `04be096` - range diagnostics in contract-funnel output.
+- `8d91b24` - selected quote diagnostics in contract-funnel output.
+
+The fix requests only the expiration partitions required by the active strategy
+and reuses compatible cache/in-flight work. It does not globally widen every
+chain request and does not weaken DTE, spread, or liquidity eligibility.
+
+Observed live evidence after the fix:
+
+- SPY CALL `longer_dated_swing`: 15-90 DTE fetched; selected contracts appeared,
+  including longer-dated calls.
+- QQQ CALL `longer_dated_swing`: 15-90 DTE fetched; selected contracts appeared.
+- NVDA controls selected both CALL and PUT contracts when the fetched range
+  matched the strategy.
+
+Historical ambiguous funnel rows were not backfilled or assigned invented
+causes.
+
+## Provider attribution and reserves
+
+Dashboard/manual API calls were verified to attribute as `dashboard_api` rather
+than `unknown/unattributed` after controlled `/api/agents` and `/api/callouts`
+requests.
+
+Provider usage also showed the exact-OCC High-Asymmetry sweep flood was already
+properly attributed after `af91f0c`:
+
+- `asymmetry_mark` exact-OCC quote requests were the dominant blocked consumer.
+- `asymmetry_discovery`, `options_discovery`, `scanner`, and
+  `options_paper_mark` were separately visible.
+- No HTTP 429s were observed in the sampled windows; the large refusal count was
+  internal provider budgeting/throttling, not provider quota errors.
+
+One remaining unattributed provider caller was traced to
+`/api/research/options/diagnostic`, which called the live provider batch reader
+outside any consumer scope. That was fixed in:
+
+- `a7e1770` - wraps the diagnostic route in the `diagnostics` provider consumer.
+
+Controlled production proof after `a7e1770`: diagnostic provider attempts
+incremented `diagnostics`, while the old unattributed whole-market snapshot
+bucket did not grow.
+
+`PAPER_0DTE_RESEARCH_ENABLED` remains unset. Do not enable it yet: Core scanning
+is protected by reserves, but optional High-Asymmetry marking still produces
+large internal block counts and needs further pressure reduction before safe
+0DTE paper activation.
+
+## High-Asymmetry timing and spam
+
+Most recent-session audit data from the timing endpoint showed high owner-alert
+pressure:
+
+- 2026-08-04: 2,028 decisions, 887 distinct cases, 397 notified, 1,631
+  suppressed, 44.8% alert-to-capture ratio.
+- 2026-08-03: 2,190 decisions, 989 distinct cases, 413 notified, 1,777
+  suppressed, 41.8% alert-to-capture ratio.
+- 2026-07-31: 287 decisions, 135 distinct cases, 72 notified, 215 suppressed,
+  53.3% alert-to-capture ratio.
+
+The audit found a specific late-entry gap: several sent decisions had fresh
+quotes but `capture_to_notify_ms` around 42-43 minutes. The existing gate caught
+stale quotes, premium chase, and rollover, but did not suppress cases where the
+setup itself was old by the time an opening notification was emitted.
+
+Shipped locally in code commit:
+
+- `a99f431` - deterministic High-Asymmetry timing action gate and session-wide
+  owner notification cap.
+
+`a99f431` adds:
+
+- `ENTRY_TOO_LATE` suppression when capture-to-notify age exceeds the configured
+  threshold, default 15 minutes.
+- Deterministic notification actions:
+  `HIGH_ASYMMETRY_ALERT`, `HIGH_ASYMMETRY_OWNER_WATCH`,
+  `HIGH_ASYMMETRY_PAPER_ONLY`, `HIGH_ASYMMETRY_TOO_LATE`,
+  `HIGH_ASYMMETRY_ARCHIVE`, and `REJECTED`.
+- Only `HIGH_ASYMMETRY_ALERT` may create an immediate Discord message.
+- Premium-chase suppressions map to `HIGH_ASYMMETRY_PAPER_ONLY`.
+- Stale, rollover, or old-capture cases map to `HIGH_ASYMMETRY_TOO_LATE`.
+- Notify-journal persistence for action and configured capture-age threshold,
+  with guarded additive columns for legacy databases.
+- Timing endpoint diagnostics for `lateEntrySuppressions` and `byAction`.
+- Session-wide owner-private High-Asymmetry message ceiling, default 40 per
+  session via `HIGH_ASYMMETRY_MAX_MESSAGES_PER_SESSION`.
+
+Existing per-symbol/session and fingerprint/state dedupe remain in place.
+Research evidence is still persisted quietly; spam is reduced through lifecycle
+gating and notification budgeting, not by deleting evidence.
+
+## Validation
+
+For `a99f431`, before this packet update:
+
+- Focused High-Asymmetry notification-gate tests passed.
+- Notify-journal schema/legacy tests passed.
+- Private notification spam/cap tests passed.
+- Integration suppression/graph/runtime High-Asymmetry tests passed.
+- Full `npm test` passed twice: 3,450 / 3,450 both runs.
+- `npx tsc --noEmit --incremental false` passed.
+- `npm run build` passed.
+- `git diff --check` passed.
+- Migration review: additive nullable journal columns, guarded and repeat-safe;
+  no destructive migration.
+
+## Exact resume point
+
+1. Push `a99f431` and this packet update to `origin/main`.
+2. Let Railway deploy the new main SHA; verify `/api/healthz.commitShort`
+   matches the exact live SHA.
+3. Verify production health, provider configuration, loop state, and absence of
+   new production faults.
+4. Verify `/api/research/asymmetry/timing` exposes `lateEntrySuppressions`,
+   `byAction`, and action-bearing recent decisions. Future new decisions should
+   persist the new action columns.
+5. Continue provider pressure reduction using evidence only: compatible cache
+   reuse, in-flight dedupe, avoiding repeated empty-range requests, and optional
+   suppression under Core pressure.
+6. Keep `PAPER_0DTE_RESEARCH_ENABLED` unset until Core capacity protection is
+   proven under representative RTH load after the High-Asymmetry cap is live.
+7. Next unfinished live-trading concern: deeper High-Asymmetry outcome grading
+   and pressure reduction. Ask OptiScan and major UI work remain behind the live
+   trading path.
