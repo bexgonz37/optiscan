@@ -868,3 +868,36 @@ correctly, pending B7), Gate B4 independence rate.
 3. **Diagnose the 860 FAILED** — persist a per-draft failure reason first.
 4. Then the RTH-blocked items above.
 5. Options page redesign remains the next offline-safe code concern, untouched.
+
+## Amendment, same session — the drain is real but partly SUPPRESSED
+
+Two consecutive censuses, one scan apart:
+
+| | first | second |
+|---|---|---|
+| SKIPPED_NO_WEBHOOK | 2,067 | **2,064** |
+| SUPPRESSED | 18 | **21** |
+| SENT | 501 | 501 |
+| eventsAwaitingRecovery | 1,026 | 1,025 |
+
+`lastScan.result`: `deferredDelivered 1` on the first, `skipped 1` on the second.
+
+So the sweep runs every interval and claims one event each time — but that
+event's three drafts went to **SUPPRESSED, not SENT**. `deliverDrafts` writes
+SUPPRESSED when `postToDiscord` returns `suppressed: true`. Earlier in the same
+window another bundle delivered for real, so this is a **mix**, not a uniform
+failure.
+
+**The suppression reason is computed and thrown away.** `defaultSend` builds
+`recap suppressed: ${r.suppressionReason}` into `ContentDeliverResult.error`,
+and `deliverDrafts` persists only the STATUS — the error string is dropped. So
+"suppressed" is visible and "why" is not. Same defect shape as the one this
+session just fixed one level up, now one level down.
+
+This raises the FAILED/SUPPRESSED work above the drain-rate decision: draining
+faster into a suppressing path only converts the backlog to SUPPRESSED sooner.
+
+**Revised resume order:** persist a per-draft `discord_delivery_reason` (likely
+the recap dedup guard in `recap-delivery-guard.ts` — `recapPayloadKey` hashes
+the payload, and recovery re-sends persisted text, so identical bundles may key
+alike), THEN decide drain rate, THEN the RTH items.
