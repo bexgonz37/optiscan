@@ -1399,3 +1399,41 @@ For `a99f431`, before this packet update:
 7. Next unfinished live-trading concern: deeper High-Asymmetry outcome grading
    and pressure reduction. Ask OptiScan and major UI work remain behind the live
    trading path.
+
+---
+
+# Packet update - 2026-08-04 (post-deploy verification)
+
+`87c3062` was pushed to `origin/main` and deployed successfully. Production
+reported `/api/healthz.commitShort = "87c3062"` with health green, provider
+`polygon`, key present, loop running, database ready, lifecycle active, and
+`quotaExceeded = false`.
+
+This post-deploy note is docs-only. If a later docs-only packet commit is the
+branch or production SHA, the runtime High-Asymmetry code is still the code from
+`a99f431`.
+
+Live verification completed:
+
+- `/api/research/asymmetry/timing` returned `readOnly: true` and
+  `providerCallsIssued: 0`.
+- The timing diagnostics exposed `lateEntrySuppressions`, `byAction`, and
+  action-bearing recent decisions.
+- Controlled calls to `/api/agents?ticker=SPY` and `/api/callouts` increased
+  deployment-scoped `dashboard_api` option-chain requests by 9 and increased
+  unknown/unattributed requests by 0.
+- No HTTP 429s or provider errors were introduced by the controlled probe.
+
+Exact resume point:
+
+1. Do not redo the structured-chain, strategy-DTE, or provider-attribution work
+   unless new evidence shows a regression.
+2. Continue with evidence-backed provider pressure reduction, especially
+   High-Asymmetry exact-OCC marking pressure and repeated empty-range avoidance.
+3. Audit the next live High-Asymmetry decisions under `a99f431` behavior and
+   confirm late captures become `HIGH_ASYMMETRY_TOO_LATE` instead of immediate
+   Discord alerts.
+4. Keep `PAPER_0DTE_RESEARCH_ENABLED` unset until Core capacity is proven under
+   representative RTH load with the new notification cap live.
+5. Graphify still needs owner/runtime repair before regeneration; existing
+   graph output remains usable as stale context.
