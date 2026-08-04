@@ -10,6 +10,8 @@ import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { scanHeaders } from "@/hooks/useScanner";
+import { decideQuantZeroState } from "@/lib/research/options/quant-zero-state";
+import type { VerificationCensus } from "@/lib/research/options/quant-zero-state";
 
 type Confidence = "LOW" | "MEDIUM" | "HIGH";
 
@@ -74,6 +76,7 @@ type Report = {
 type Snapshot = Report & {
   generatedAtMs: number;
   lanes: Record<string, Report>;
+  verification?: VerificationCensus;
 };
 
 const LANE_OPTIONS: { key: string; label: string }[] = [
@@ -364,6 +367,20 @@ function QuantLabInner() {
   const biggestGap = Object.entries(completeness).sort((a, b) => a[1] - b[1])[0] ?? null;
   const sampleSize = report?.sampleSize ?? 0;
   const conclusionReady = sampleSize >= 5;
+
+  // Why there is nothing to show, when there is nothing to show. A failed load
+  // must never render as `0` — see lib/research/options/quant-zero-state.ts.
+  const zeroState = useMemo(
+    () => decideQuantZeroState({
+      loadError: error,
+      report,
+      verification: snap?.verification ?? null,
+      lane: laneParam,
+    }),
+    [error, report, snap, laneParam],
+  );
+  const showMetrics = zeroState.metricsRenderable;
+  const nLabel = zeroState.sampleSizeKnown ? String(sampleSize) : "Unknown";
   const positiveFindings = supportedStrategies.filter((row) => Number(row.expectancy) > 0);
   const negativeFindings = supportedStrategies.filter((row) => Number(row.expectancy) < 0);
   const earlyCaptureSignal = m?.captureEfficiency != null && m.captureEfficiency < 0.5;
@@ -412,25 +429,85 @@ function QuantLabInner() {
         <header className="cc-term-panel-head">
           <span className="cc-term-panel-title">Summary</span>
           <div className="cc-term-panel-right">
-            <span className={`cc-term-pill ${confTone(report?.confidence)}`}>{report?.confidence ?? "LOW"} confidence</span>
-            <span className="cc-term-pill muted">n={report?.sampleSize ?? 0}</span>
+            <span className={`cc-term-pill ${confTone(report?.confidence)}`}>
+              {showMetrics ? `${report?.confidence ?? "LOW"} confidence` : zeroState.kind.replace(/_/g, " ").toLowerCase()}
+            </span>
+            <span className="cc-term-pill muted">n={nLabel}</span>
           </div>
         </header>
         <div className="cc-term-panel-body">
-          <div className="quant-summary-grid">
-            <Kpi label="Evidence quality" value={report?.insufficientEvidence ? "Insufficient" : report?.confidence ?? "LOW"} tone={confTone(report?.confidence)} />
-            <Kpi label="Sample size" value={String(report?.sampleSize ?? 0)} hint="closed outcomes" tone="info" />
-            <Kpi label="Win rate" value={fmtPct(m?.winRate)} hint={conclusionReady ? "supported sample" : `Low confidence · n=${sampleSize}`} tone={conclusionReady ? toneForRate(m?.winRate) : "muted"} />
-            <Kpi label="Average return" value={fmtRet(m?.meanReturn)} hint={conclusionReady ? "realized option return" : `Low confidence · n=${sampleSize}`} tone={conclusionReady ? toneForSigned(m?.meanReturn) : "muted"} />
-            <Kpi label="Profit factor" value={fmtNum(m?.profitFactor)} hint={conclusionReady ? "gross gains ÷ gross losses" : "Not conclusive"} />
-            <Kpi label="Best supported setup" value={supportedStrategies[0]?.key ?? "Not enough data"} />
-            <Kpi label="Worst supported setup" value={supportedStrategies.at(-1)?.key ?? "Not enough data"} />
-            <Kpi label="Best time window" value={supportedTimes[0]?.key ?? "Not enough data"} />
-            <Kpi label="Biggest data gap" value={biggestGap ? `${biggestGap[0]} ${biggestGap[1].toFixed(0)}%` : "Unavailable"} tone="warn" />
-          </div>
+          {showMetrics ? (
+            <div className="quant-summary-grid">
+              <Kpi label="Evidence quality" value={report?.insufficientEvidence ? "Insufficient" : report?.confidence ?? "LOW"} tone={confTone(report?.confidence)} />
+              <Kpi label="Sample size" value={String(sampleSize)} hint="verified closed outcomes" tone="info" />
+              <Kpi label="Win rate" value={fmtPct(m?.winRate)} hint={conclusionReady ? "supported sample" : `Low confidence · n=${sampleSize}`} tone={conclusionReady ? toneForRate(m?.winRate) : "muted"} />
+              <Kpi label="Average return" value={fmtRet(m?.meanReturn)} hint={conclusionReady ? "realized option return" : `Low confidence · n=${sampleSize}`} tone={conclusionReady ? toneForSigned(m?.meanReturn) : "muted"} />
+              <Kpi label="Profit factor" value={fmtNum(m?.profitFactor)} hint={conclusionReady ? "gross gains ÷ gross losses" : "Not conclusive"} />
+              <Kpi label="Best supported setup" value={supportedStrategies[0]?.key ?? "No setup reaches n≥5"} />
+              <Kpi label="Worst supported setup" value={supportedStrategies.at(-1)?.key ?? "No setup reaches n≥5"} />
+              <Kpi label="Best time window" value={supportedTimes[0]?.key ?? "No window reaches n≥5"} />
+              <Kpi label="Biggest data gap" value={biggestGap ? `${biggestGap[0]} ${biggestGap[1].toFixed(0)}%` : "Unavailable"} tone="warn" />
+            </div>
+          ) : (
+            /* No metrics were read. Showing 0 here would assert a measurement
+             * that never happened — the 2026-08-03 defect. */
+            <div className={`cc-term-banner ${zeroState.kind === "LOAD_FAILED" ? "bad" : "warn"}`}>
+              <strong>{zeroState.headline}</strong>
+              <div>{zeroState.detail}</div>
+            </div>
+          )}
           <p className="cc-term-disclaimer">Deterministic research only. Nothing on this page changes production rules automatically.</p>
         </div>
       </section>
+
+      {snap?.verification && laneParam === "delivered" ? (
+        <section className="cc-term-panel">
+          <header className="cc-term-panel-head">
+            <span className="cc-term-panel-title">Evidence census — why the official sample is smaller than the lane</span>
+            <div className="cc-term-panel-right">
+              <span className={`cc-term-pill ${snap.verification.quotable ? "ok" : "muted"}`}>
+                {snap.verification.quotable ? "quotable" : "not quotable"}
+              </span>
+            </div>
+          </header>
+          <div className="cc-term-panel-body">
+            <div className="quant-summary-grid">
+              <Kpi label="Delivered closed records" value={String(snap.verification.deliveredTotal)} hint="every EXITED delivered paper trade" tone="info" />
+              <Kpi label="Counted in official metrics" value={String(snap.verification.deliveredVerified)} hint={snap.verification.officialStatus} tone="ok" />
+              <Kpi label="Excluded" value={String(snap.verification.deliveredExcluded)} hint="kept, never deleted, never blended" tone="warn" />
+              <Kpi
+                label="Verified fraction"
+                value={snap.verification.verifiedFraction != null ? `${(snap.verification.verifiedFraction * 100).toFixed(1)}%` : "Unknown"}
+                tone="muted"
+              />
+            </div>
+            {zeroState.exclusions.length ? (
+              <div className="quant-table-wrap">
+                <table className="mini-table">
+                  <thead>
+                    <tr><th>Exclusion reason</th><th>Records</th><th>Share of excluded</th></tr>
+                  </thead>
+                  <tbody>
+                    {zeroState.exclusions.map((x) => (
+                      <tr key={x.reason}>
+                        <td>{x.reason}</td>
+                        <td>{x.n}</td>
+                        <td>{snap.verification!.deliveredExcluded ? `${((x.n / snap.verification!.deliveredExcluded) * 100).toFixed(1)}%` : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+            {snap.verification.quotableBlockers?.length ? (
+              <p className="cc-term-disclaimer">
+                Blocking quotability: {snap.verification.quotableBlockers.join(" · ")}
+              </p>
+            ) : null}
+            <p className="cc-term-disclaimer">{snap.verification.note}</p>
+          </div>
+        </section>
+      ) : null}
 
       <div className="term-quant-viz-grid">
         <section className="cc-term-panel">
