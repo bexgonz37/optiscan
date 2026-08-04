@@ -38,7 +38,7 @@ export async function GET(req: Request) {
     const side = sideParam === "call" || sideParam === "put" ? sideParam : undefined;
     const windowMs = Math.max(60_000, Number(url.searchParams.get("windowMs") ?? 15 * 60_000));
 
-    const db = getDb() as never;
+    const db = getDb() as any;
     // One scope, applied to all three readers. Two of them used to ignore it and
     // return global counts under a `scope` header that claimed the filter had
     // been applied — so `?symbol=SPY` attributed every symbol's PROVIDER_ERRORs
@@ -47,6 +47,63 @@ export async function GET(req: Request) {
     const split = deltaSourceSplitOnDb(db, date, scope);
     const terminalReasons = terminalReasonBreakdownOnDb(db, date, scope);
     const recent = readRecentFunnelEvidenceOnDb(db, date, Date.now() - windowMs, 2000, scope);
+    const recentSinceMs = Date.now() - windowMs;
+    const quoteByKey = (() => {
+      try {
+        const where = ["session_date = ?", "observed_at_ms >= ?", "option_symbol IS NOT NULL", "TRIM(option_symbol) <> ''"];
+        const args: unknown[] = [date, recentSinceMs];
+        if (symbol) { where.push("symbol = ?"); args.push(symbol); }
+        if (side) { where.push("option_type = ?"); args.push(side); }
+        const rows = db.prepare(
+          `SELECT observed_at_ms, symbol, option_symbol, option_type, strategy_family,
+                  underlying_price, option_bid, option_ask, spread_pct, quote_timestamp_ms,
+                  quote_age_ms, volume, open_interest, delta, dte, freshness_state,
+                  readiness_state, contract_quality_state, candidate_state
+             FROM options_research_observations
+            WHERE ${where.join(" AND ")}
+            ORDER BY observed_at_ms DESC, CASE candidate_state
+              WHEN 'READY' THEN 0
+              WHEN 'QUOTE_VALIDATED' THEN 1
+              WHEN 'CONTRACT_SELECTED' THEN 2
+              ELSE 3
+            END
+            LIMIT 2000`,
+        ).all(...args) as Record<string, unknown>[];
+        const out = new Map<string, Record<string, unknown>>();
+        for (const row of rows) {
+          const key = `${String(row.symbol ?? "").toUpperCase()}|${String(row.option_symbol ?? "")}|${Number(row.observed_at_ms ?? 0)}`;
+          if (!out.has(key)) out.set(key, row);
+        }
+        return out;
+      } catch {
+        return new Map<string, Record<string, unknown>>();
+      }
+    })();
+    const selectedQuoteFor = (e: (typeof recent)[number]) => {
+      if (!e.selectedOcc) return null;
+      const row = quoteByKey.get(`${e.symbol.toUpperCase()}|${e.selectedOcc}|${e.atMs}`);
+      if (!row) return null;
+      const num = (v: unknown) => v == null || v === "" ? null : Number(v);
+      return {
+        optionSymbol: String(row.option_symbol ?? ""),
+        optionType: row.option_type == null ? null : String(row.option_type),
+        strategyFamily: row.strategy_family == null ? null : String(row.strategy_family),
+        underlyingPrice: num(row.underlying_price),
+        bid: num(row.option_bid),
+        ask: num(row.option_ask),
+        spreadPct: num(row.spread_pct),
+        quoteTimestampMs: num(row.quote_timestamp_ms),
+        quoteAgeMs: num(row.quote_age_ms),
+        volume: num(row.volume),
+        openInterest: num(row.open_interest),
+        delta: num(row.delta),
+        dte: num(row.dte),
+        freshnessState: row.freshness_state == null ? null : String(row.freshness_state),
+        readinessState: row.readiness_state == null ? null : String(row.readiness_state),
+        contractQualityState: row.contract_quality_state == null ? null : String(row.contract_quality_state),
+        candidateState: row.candidate_state == null ? null : String(row.candidate_state),
+      };
+    };
     // Which strategy asked, and how far the chain it was given actually got. A
     // terminal reason alone cannot distinguish "the date math dropped valid
     // contracts" from "this strategy asked for a band the fetch never requested".
@@ -110,6 +167,7 @@ export async function GET(req: Request) {
         deltaCoverage: e.deltaCoverage,
         rankedCount: e.rankedCount,
         deltaSource: e.deltaSource,
+        selectedQuote: selectedQuoteFor(e),
       })),
       discoveryAlerts: alerts,
       note:
