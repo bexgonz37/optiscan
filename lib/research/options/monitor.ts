@@ -13,7 +13,7 @@ import { withProviderConsumer } from "../../provider-context.ts";
 import { scoreStrategies, optionsTier1, optionsTier0, type OptionsCandidateInput, type Session } from "./discovery.ts";
 import { sessionState } from "./session-state.ts";
 import { decideDeliveryBatch, type DeliverySubmission } from "./delivery-decision.ts";
-import { runOptionsCandidate, type ChainContract } from "./loop.ts";
+import { runOptionsCandidate, type ChainContract, type ChainFetchOutcome } from "./loop.ts";
 import { computeOptionsFeatures, featuresToUnderlying, type Bar, type FeatureContext } from "./features.ts";
 import { summarizeChainFeatures, chainFeaturesToActivity, type OptionContract } from "./chain-features.ts";
 import { assertSubscriberScanAllowed } from "../../market-session-guard.ts";
@@ -34,7 +34,13 @@ export interface UnderlyingSnapshot {
 }
 export interface OptionsMonitorDeps {
   getUnderlyingBatch: (symbols: string[]) => Promise<Map<string, UnderlyingSnapshot>>;
-  getChain: (symbol: string) => Promise<ChainContract[]>;
+  /**
+   * Returns a discriminated outcome, not a bare array. The array form could not
+   * distinguish our own page-budget truncation from an empty market, and
+   * contract discovery was recording the difference as `PROVIDER_ERROR`.
+   * `underlyingPrice` lets the fetch bound strikes around spot.
+   */
+  getChain: (symbol: string, underlyingPrice?: number | null) => Promise<ChainFetchOutcome>;
   /** Stage 1.5: compact recent 1-minute bars for enriched decision-time features. Optional — without
    *  it the monitor falls back to snapshot-only features (sparser). */
   getBars?: (symbol: string) => Promise<Bar[]>;
@@ -257,9 +263,16 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
       if (breakerOpen(s, now())) { s.metrics.throttles += 1; return; }
       if (!tryConsume(s, cfg, now(), tier)) { s.metrics.throttles += 1; return; }
       // STAGE 2 — fetch the chain + compute chain features.
-      const chain = await deps.getChain(symbol);
+      const chainRes = await deps.getChain(symbol, input.underlying.price ?? null);
+      const chain = chainRes.contracts;
       s.metrics.providerChain += 1; s.metrics.stage2Chain += 1; s.metrics.chainsFetched += 1; chains += 1; breakerSuccess(s);
-      const chainF = summarizeChainFeatures({ symbol, underlyingPrice: input.underlying.price, underlyingDollarVolume: input.underlying.dayDollarVolume, contracts: chain as unknown as OptionContract[], chainAvailable: chain.length > 0, nowMs: now() });
+      // "Available" is about whether the provider answered, not whether the answer
+      // was non-empty. A successful empty response is available-and-empty; a
+      // refusal or failure is not available at all.
+      const chainAvailable = chainRes.outcome === "CONTRACTS_AVAILABLE"
+        || chainRes.outcome === "NO_CONTRACTS_IN_REQUESTED_RANGE"
+        || chainRes.outcome === "CHAIN_TRUNCATED_BEFORE_RANGE";
+      const chainF = summarizeChainFeatures({ symbol, underlyingPrice: input.underlying.price, underlyingDollarVolume: input.underlying.dayDollarVolume, contracts: chain as unknown as OptionContract[], chainAvailable, nowMs: now() });
       input = { ...input, optionsActivity: chainFeaturesToActivity(chainF) };
       featureSnapshot = { ...featureSnapshot, chain: chainF, legacyBearishEscalation };
       // If we only reached here via escalation, require the chain to actually be abnormal.
@@ -269,6 +282,7 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
       if (earlinessPhase === "early") s.metrics.phaseEarly += 1; else if (earlinessPhase === "during") s.metrics.phaseDuring += 1; else if (earlinessPhase === "late") s.metrics.phaseLate += 1;
 
       const res = runOptionsCandidate({ ...input }, chain, getDb ? { getDb } : {}, env, {
+        chainOutcome: chainRes,
         featureSnapshot: { ...featureSnapshot, fractionMove, earlinessPhase }, earlinessPhase, escalatedBy, coreBroad: tier === 2 ? "broad" : "core",
         rankTier: tier, fractionMove,
         ...(portfolio.enabled ? { collectDelivery: (sub) => deliveryBatch.push(sub) } : {}),

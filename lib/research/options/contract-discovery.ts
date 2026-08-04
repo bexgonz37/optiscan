@@ -49,7 +49,7 @@
  * never decides what survives it. Nothing here raises a provider cap.
  */
 import { getStrategy, type TenorBand } from "./strategy-catalog.ts";
-import type { ChainContract } from "./loop.ts";
+import type { ChainContract, ChainFetchOutcome } from "./loop.ts";
 
 /** Why contract discovery ended the way it did. Persisted verbatim. */
 export type ContractTerminalReason =
@@ -68,6 +68,14 @@ export type ContractTerminalReason =
   | "PREMIUM_REJECTED"
   | "CONTRACT_RANKING_EMPTY"
   | "PROVIDER_BUDGET_BLOCKED"
+  /* Distinct outcomes that a bare `chain.length === 0` used to collapse into
+   * PROVIDER_ERROR. A successful empty response is not a failure; our own budget
+   * refusing the call is not the provider's fault; an absent API key is not a
+   * market-data result at all. */
+  | "NO_CONTRACTS_RETURNED"
+  | "PROVIDER_QUOTA_EXCEEDED"
+  | "PROVIDER_CONFIGURATION_MISSING"
+  | "PROVIDER_TIMEOUT"
   | "PROVIDER_ERROR"
   | "INSUFFICIENT_EVIDENCE";
 
@@ -214,6 +222,34 @@ function emptyEvidence(
   };
 }
 
+/**
+ * Attribute an EMPTY chain to what actually happened.
+ *
+ * Without an outcome from the fetch this can only fall back to the old guess,
+ * so the fallback is preserved verbatim rather than upgraded — inventing a
+ * reason for a caller that supplied no evidence would be the same defect in a
+ * new place. A caller that reports nothing gets `PROVIDER_ERROR`, exactly as
+ * before, and the funnel can tell the two populations apart by whether the
+ * newer reasons appear at all.
+ */
+function terminalReasonForEmptyChain(
+  outcome: ChainFetchOutcome | null,
+  pageLimitReached: boolean,
+): ContractTerminalReason {
+  if (!outcome) return pageLimitReached ? "CHAIN_TRUNCATION_SUSPECTED" : "PROVIDER_ERROR";
+  switch (outcome.outcome) {
+    case "CHAIN_TRUNCATED_BEFORE_RANGE": return "CHAIN_TRUNCATION_SUSPECTED";
+    case "NO_CONTRACTS_IN_REQUESTED_RANGE": return "NO_CONTRACTS_RETURNED";
+    case "CONTRACTS_AVAILABLE": return "NO_CONTRACTS_RETURNED";
+    case "PROVIDER_QUOTA_EXCEEDED": return "PROVIDER_QUOTA_EXCEEDED";
+    case "PROVIDER_CONFIGURATION_MISSING": return "PROVIDER_CONFIGURATION_MISSING";
+    case "PROVIDER_TIMEOUT": return "PROVIDER_TIMEOUT";
+    case "PROVIDER_FAILURE":
+    case "PROVIDER_INVALID_RESPONSE": return "PROVIDER_ERROR";
+    default: return "PROVIDER_ERROR";
+  }
+}
+
 function dteOkFor(strategyKey: string): (dte: number) => boolean {
   const strat = getStrategy(strategyKey);
   const bands = new Set<string>(strat?.preferredDte ?? []);
@@ -269,11 +305,15 @@ export function selectContractWithEvidence(
     underlyingPrice?: number | null;
     partitionsAttempted?: string[];
     pageLimitReached?: boolean;
+    chainOutcome?: ChainFetchOutcome | null;
   } = {},
 ): SelectionResult {
   const ev = emptyEvidence(opts.symbol ?? "", side, strategyKey, nowMs);
   ev.partitionsAttempted = opts.partitionsAttempted ?? [];
-  ev.pageLimitReached = Boolean(opts.pageLimitReached);
+  // `pageLimitReached` had no production caller — both call sites omitted it, so
+  // `CHAIN_TRUNCATION_SUSPECTED` was unreachable dead code and every truncated
+  // chain was attributed to the market instead. The fetch now reports it.
+  ev.pageLimitReached = Boolean(opts.pageLimitReached ?? opts.chainOutcome?.truncated);
 
   const strat = getStrategy(strategyKey);
   if (!strat) {
@@ -289,7 +329,10 @@ export function selectContractWithEvidence(
   ev.passedSide = sameSide.length;
 
   if (chain.length === 0) {
-    ev.terminalReason = ev.pageLimitReached ? "CHAIN_TRUNCATION_SUSPECTED" : "PROVIDER_ERROR";
+    // An empty chain is FIVE different facts and this line used to guess one of
+    // them. Where the fetch reported its own outcome, use it; `PROVIDER_ERROR`
+    // now means only what it says.
+    ev.terminalReason = terminalReasonForEmptyChain(opts.chainOutcome ?? null, ev.pageLimitReached);
     return { contract: null, evidence: ev };
   }
   if (sameSide.length === 0) {
@@ -306,7 +349,23 @@ export function selectContractWithEvidence(
   const inDte = sameSide.filter((c) => dteOk(c.dte));
   ev.passedDte = inDte.length;
   if (inDte.length === 0) {
-    ev.terminalReason = "NO_CONTRACT_IN_DTE_RANGE";
+    /**
+     * THE DEFECT THIS BRANCH CONCEALED.
+     *
+     * Measured live on 2026-08-04 RTH: SPY and QQQ chains came back 500
+     * contracts over 2 pages, every one expiring that day or the next, because
+     * Polygon pages in option-ticker order and an OCC sorts by expiration. The
+     * 0-14 DTE window was requested and never sampled past the front. Every
+     * strategy not asking for "0dte" therefore reported NO_CONTRACT_IN_DTE_RANGE
+     * with certainty — 51 of 52 SPY rows — and that reads as "the market had
+     * nothing", which is the opposite of the truth. It had plenty; we stopped
+     * reading.
+     *
+     * Truncation is OUR limit, so it is named as ours.
+     */
+    ev.terminalReason = ev.pageLimitReached
+      ? "CHAIN_TRUNCATION_SUSPECTED"
+      : "NO_CONTRACT_IN_DTE_RANGE";
     return { contract: null, evidence: ev };
   }
 

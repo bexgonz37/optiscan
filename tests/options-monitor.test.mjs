@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { runOptionsMonitorCycle, startOptionsMonitor, stopOptionsMonitor, optionsMonitorHealth, defaultMonitorConfig, __resetOptionsMonitorForTest } from "../lib/research/options/monitor.ts";
 import { canOpenRealOptionPaper } from "../lib/research/options/paper.ts";
+import { chainOk } from "../lib/research/options/loop.ts";
 
 function db() {
   const d = new Database(":memory:");
@@ -21,7 +22,7 @@ function deps(d, { getChainSpy, getUnderlyingSpy, slowChainMs = 0 } = {}) {
     session: () => "regular",
     getDb: () => d,
     getUnderlyingBatch: async (syms) => { if (getUnderlyingSpy) getUnderlyingSpy.calls++; return new Map(syms.map((s) => [s, snap()])); },
-    getChain: async (sym) => { if (getChainSpy) getChainSpy.calls.push(sym); if (slowChainMs) await new Promise((r) => setTimeout(r, slowChainMs)); return chain.map((c) => ({ ...c, optionSymbol: `O:${sym}260320C00042000` })); },
+    getChain: async (sym) => { if (getChainSpy) getChainSpy.calls.push(sym); if (slowChainMs) await new Promise((r) => setTimeout(r, slowChainMs)); return chainOk(chain.map((c) => ({ ...c, optionSymbol: `O:${sym}260320C00042000` }))); },
     tier2Universe: () => ["IREN", "ASTS"],
   };
 }

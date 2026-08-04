@@ -4,6 +4,7 @@ import Database from "better-sqlite3";
 import { computeOptionsFeatures, featuresToUnderlying } from "../lib/research/options/features.ts";
 import { summarizeChainFeatures, chainFeaturesToActivity } from "../lib/research/options/chain-features.ts";
 import { runOptionsMonitorCycle, __resetOptionsMonitorForTest, optionsMonitorMetrics } from "../lib/research/options/monitor.ts";
+import { chainOk } from "../lib/research/options/loop.ts";
 
 const T0 = 1_700_000_000_000;
 // compact 1-min bars: base ~100, compressing, then pushing up toward a 101 level near nowMs
@@ -74,7 +75,7 @@ function db() {
 const snap = (over = {}) => ({ price: 100, dayDollarVolume: 60_000_000, relVolume: null, velPct: null, accelPct: null, gapPct: null, aboveVwap: null, hodBreak: null, nearResistancePct: null, compressionPct: null, realizedVolExpanding: null, openingRange: null, premarketLevelTest: null, ...over });
 const chain = [{ optionSymbol: "O:HOOD260320C00101000", side: "call", strike: 101, expiration: "2026-03-20", dte: 12, bid: 1.2, ask: 1.3, spreadPct: 8, volume: 4000, openInterest: 1200, iv: 0.5, delta: 0.5, providerTimestamp: NOW - 1000 }];
 function deps(d, over = {}) {
-  return { now: () => NOW, session: () => "regular", getDb: () => d, getUnderlyingBatch: async (syms) => new Map(syms.map((s) => [s, snap()])), getBars: async () => bars(40), getChain: async (sym) => chain.map((c) => ({ ...c, optionSymbol: `O:${sym}260320C00101000` })), ...over };
+  return { now: () => NOW, session: () => "regular", getDb: () => d, getUnderlyingBatch: async (syms) => new Map(syms.map((s) => [s, snap()])), getBars: async () => bars(40), getChain: async (sym) => chainOk(chain.map((c) => ({ ...c, optionSymbol: `O:${sym}260320C00101000` }))), ...over };
 }
 const ON = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1" };
 
@@ -95,7 +96,7 @@ test("5(monitor). stale bars reject before any chain fetch", async () => {
   __resetOptionsMonitorForTest();
   const d = db();
   const chainSpy = { calls: [] };
-  const dp = deps(d, { getBars: async () => bars(40).map((b) => ({ ...b, t: b.t - 60 * 60_000 })), getChain: async (s) => { chainSpy.calls.push(s); return chain; } });
+  const dp = deps(d, { getBars: async () => bars(40).map((b) => ({ ...b, t: b.t - 60 * 60_000 })), getChain: async (s) => { chainSpy.calls.push(s); return chainOk(chain); } });
   await runOptionsMonitorCycle(1, ["HOOD"], dp, ON);
   assert.equal(chainSpy.calls.length, 0, "stale bars → no chain fetch");
 });

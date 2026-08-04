@@ -38,6 +38,51 @@ import { recordContractFunnelOnDb } from "./contract-funnel-store.ts";
 export interface ChainContract { optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number; bid: number | null; ask: number | null; spreadPct: number | null; volume: number | null; openInterest: number | null; iv: number | null; delta: number | null; providerTimestamp: number | null }
 
 /**
+ * Why a chain fetch returned what it did — never a bare array.
+ *
+ * An empty `contracts` used to be the only signal a caller got, so a successful
+ * response with nothing in range, our own budget refusing the call, an absent
+ * API key and a genuine provider failure were indistinguishable. Contract
+ * discovery resolved that ambiguity by guessing `PROVIDER_ERROR`, which became
+ * 53% of the funnel and sent every investigation to the wrong subsystem.
+ *
+ * `truncated` is the one that mattered most in practice: it means OUR page
+ * budget ran out while the provider still had contracts to give, so an empty
+ * DTE band is an artifact of the request, not a fact about the market.
+ */
+export type ChainFetchOutcomeCode =
+  | "CONTRACTS_AVAILABLE"
+  | "NO_CONTRACTS_IN_REQUESTED_RANGE"
+  | "CHAIN_TRUNCATED_BEFORE_RANGE"
+  | "PROVIDER_QUOTA_EXCEEDED"
+  | "PROVIDER_TIMEOUT"
+  | "PROVIDER_FAILURE"
+  | "PROVIDER_CONFIGURATION_MISSING"
+  | "PROVIDER_INVALID_RESPONSE";
+
+export interface ChainFetchOutcome {
+  contracts: ChainContract[];
+  outcome: ChainFetchOutcomeCode;
+  truncated: boolean;
+  expirationsCovered: string[];
+  requestedDteMin: number | null;
+  requestedDteMax: number | null;
+  pagesRequested: number;
+  pagesReceived: number;
+}
+
+/** A complete, successful chain — the shape a test fixture almost always means. */
+export function chainOk(contracts: ChainContract[]): ChainFetchOutcome {
+  return {
+    contracts,
+    outcome: contracts.length > 0 ? "CONTRACTS_AVAILABLE" : "NO_CONTRACTS_IN_REQUESTED_RANGE",
+    truncated: false,
+    expirationsCovered: [...new Set(contracts.map((c) => c.expiration).filter(Boolean))].sort(),
+    requestedDteMin: null, requestedDteMax: null, pagesRequested: 1, pagesReceived: 1,
+  };
+}
+
+/**
  * Pick the contract nearest the strategy's preferred |delta| within the preferred
  * DTE band.
  *
@@ -62,7 +107,7 @@ export interface OptionsEvalResult {
 }
 
 /** PURE: run the full deterministic evaluation for one candidate given a fetched chain. */
-export function evaluateOptionsCandidate(input: OptionsCandidateInput, chain: ChainContract[], opts: { bearishActionable?: boolean; currentUnderlyingPrice?: number; currentAtMs?: number; entryZone?: [number, number] | null; targets?: [number, number] | null } = {}): OptionsEvalResult {
+export function evaluateOptionsCandidate(input: OptionsCandidateInput, chain: ChainContract[], opts: { bearishActionable?: boolean; currentUnderlyingPrice?: number; currentAtMs?: number; entryZone?: [number, number] | null; targets?: [number, number] | null; chainOutcome?: ChainFetchOutcome | null } = {}): OptionsEvalResult {
   let contractFunnelEvidence: ContractFunnelEvidence | null = null;
   const selection = selectOptionsStrategy(input, { bearishActionable: opts.bearishActionable });
   if (!selection.selected) return { selection, contract: null, callout: null, paperEntry: null, state: "REJECTED", contractFunnel: null };
@@ -70,6 +115,7 @@ export function evaluateOptionsCandidate(input: OptionsCandidateInput, chain: Ch
   const picked = selectContractWithEvidence(chain, side, selection.selected.key, input.nowMs, {
     symbol: input.symbol,
     underlyingPrice: input.underlying.price ?? null,
+    chainOutcome: opts.chainOutcome ?? null,
   });
   const contract = picked.contract;
   contractFunnelEvidence = picked.evidence;
@@ -119,6 +165,8 @@ export interface OptionsCandidateExtra {
   collectDelivery?: (submission: import("./delivery-decision.ts").DeliverySubmission) => void;
   rankTier?: 0 | 1 | 2;
   fractionMove?: number | null;
+  /** How the chain fetch actually went, so an empty band can be attributed correctly. */
+  chainOutcome?: ChainFetchOutcome | null;
 }
 
 /** Fire-and-forget: run the candidate, persist it (with the enriched decision-time snapshot the AI/
@@ -126,7 +174,10 @@ export interface OptionsCandidateExtra {
  *  INDEPENDENT_OPTIONS_DISCOVERY_ENABLED=1. Never throws into the caller. */
 export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainContract[], deps: { getDb?: () => LoopDb } = {}, env: NodeJS.ProcessEnv = process.env, extra: OptionsCandidateExtra = {}): OptionsEvalResult | null {
   if (!researchFlags(env).independentOptionsDiscovery) return null;
-  const res = evaluateOptionsCandidate(input, chain, { bearishActionable: bearishPipelineEnabled(env) });
+  const res = evaluateOptionsCandidate(input, chain, {
+    bearishActionable: bearishPipelineEnabled(env),
+    chainOutcome: extra.chainOutcome ?? null,
+  });
   const snapJson = extra.featureSnapshot !== undefined ? JSON.stringify(extra.featureSnapshot) : null;
   try {
     const db = (deps.getDb ?? liveDb)();

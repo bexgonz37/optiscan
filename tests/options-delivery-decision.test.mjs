@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { decideDeliveryBatch, computeSubscriberQuality, clusterKey, deliveryDecisionMetricsOnDb, decisionConfig } from "../lib/research/options/delivery-decision.ts";
 import { runOptionsMonitorCycle, __resetOptionsMonitorForTest } from "../lib/research/options/monitor.ts";
+import { chainOk } from "../lib/research/options/loop.ts";
 
 // Portfolio-level delivery decision: technically-valid ≠ subscriber-worthy. The scanner stays sensitive;
 // Discord becomes selective. NOW is a Tuesday 15:00 UTC = 11:00 ET (REGULAR_SESSION) unless stated.
@@ -182,7 +183,7 @@ test("END-TO-END: monitor cycle in portfolio mode collects READY candidates and 
   const env = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", EARLY_OPTIONS_CALLOUTS_ENABLED: "1", OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1", OPTIONS_CALLOUTS_KILL: "1" }; // kill switch: decisions recorded, no real send
   const snap = (syms) => new Map(syms.map((s) => [s, { price: 500, dayDollarVolume: 900_000_000, relVolume: 3, velPct: 1, accelPct: 1, gapPct: null, aboveVwap: true, hodBreak: null, nearResistancePct: null, compressionPct: null, realizedVolExpanding: null, openingRange: null, premarketLevelTest: null }]));
   const chain = (sym) => [{ optionSymbol: `O:${sym}260724C00500000`, side: "call", strike: 500, expiration: "2026-07-24", dte: 2, bid: 1.2, ask: 1.3, spreadPct: 8, volume: 400, openInterest: 1200, iv: 0.5, delta: 0.5, providerTimestamp: NOW - 1000 }];
-  await runOptionsMonitorCycle(1, ["NVDA", "TSLA"], { now: () => NOW, session: () => "regular", getDb: () => d, getUnderlyingBatch: async (s) => snap(s), getChain: async (sym) => chain(sym) }, env);
+  await runOptionsMonitorCycle(1, ["NVDA", "TSLA"], { now: () => NOW, session: () => "regular", getDb: () => d, getUnderlyingBatch: async (s) => snap(s), getChain: async (sym) => chainOk(chain(sym)) }, env);
   const rows = d.prepare("SELECT symbol, outcome, rank, batch_size FROM options_delivery_decisions").all();
   assert.ok(rows.length >= 2, "both READY candidates entered ONE ranked batch");
   assert.equal(new Set(rows.map((r) => r.batch_size)).size, 1, "single batch — candidates competed against each other");
@@ -196,7 +197,7 @@ test("missing portfolio delivery config fails closed with zero decision rows", a
   const env = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", EARLY_OPTIONS_CALLOUTS_ENABLED: "1", OPTIONS_CALLOUTS_KILL: "1" };
   const snap = (syms) => new Map(syms.map((s) => [s, { price: 500, dayDollarVolume: 900_000_000, relVolume: 3, velPct: 1, accelPct: 1, gapPct: null, aboveVwap: true, hodBreak: null, nearResistancePct: null, compressionPct: null, realizedVolExpanding: null, openingRange: null, premarketLevelTest: null }]));
   const chain = (sym) => [{ optionSymbol: `O:${sym}260724C00500000`, side: "call", strike: 500, expiration: "2026-07-24", dte: 2, bid: 1.2, ask: 1.3, spreadPct: 8, volume: 400, openInterest: 1200, iv: 0.5, delta: 0.5, providerTimestamp: NOW - 1000 }];
-  const res = await runOptionsMonitorCycle(1, ["NVDA"], { now: () => NOW, session: () => "regular", getDb: () => d, getUnderlyingBatch: async (s) => snap(s), getChain: async (sym) => chain(sym) }, env);
+  const res = await runOptionsMonitorCycle(1, ["NVDA"], { now: () => NOW, session: () => "regular", getDb: () => d, getUnderlyingBatch: async (s) => snap(s), getChain: async (sym) => chainOk(chain(sym)) }, env);
   assert.equal(res.scanned, 0, "cycle fails closed before producing subscriber candidates");
   assert.equal(d.prepare("SELECT COUNT(*) n FROM options_delivery_decisions").get().n, 0);
   assert.equal(d.prepare("SELECT COUNT(*) n FROM options_alerts").get().n, 0, "no legacy immediate options alert is created");

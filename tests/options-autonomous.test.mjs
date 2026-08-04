@@ -9,6 +9,7 @@ import { deliverOptionsCallout } from "../lib/research/options/delivery.ts";
 import { canOpenRealOptionPaper } from "../lib/research/options/paper.ts";
 import { optionsTier1 } from "../lib/research/options/discovery.ts";
 import { marketSession, isMarketHoliday } from "../lib/trading-session.ts";
+import { chainOk } from "../lib/research/options/loop.ts";
 
 const NOW = Date.parse("2026-01-15T15:00:00.000Z");
 function db() {
@@ -29,7 +30,7 @@ function makeBars(n, lastAgeMs) {
   return out;
 }
 const ON = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1" };
-const monDeps = (d, getBars, session = "regular") => ({ now: () => NOW, session: () => session, getDb: () => d, getUnderlyingBatch: async (syms) => new Map(syms.map((s) => [s, { price: 100, dayDollarVolume: 60_000_000, relVolume: null, velPct: null, accelPct: null, gapPct: null, aboveVwap: null, hodBreak: null, nearResistancePct: null, compressionPct: null, realizedVolExpanding: null, openingRange: null, premarketLevelTest: null }])), getBars, getChain: async () => [] });
+const monDeps = (d, getBars, session = "regular") => ({ now: () => NOW, session: () => session, getDb: () => d, getUnderlyingBatch: async (syms) => new Map(syms.map((s) => [s, { price: 100, dayDollarVolume: 60_000_000, relVolume: null, velPct: null, accelPct: null, gapPct: null, aboveVwap: null, hodBreak: null, nearResistancePct: null, compressionPct: null, realizedVolExpanding: null, openingRange: null, premarketLevelTest: null }])), getBars, getChain: async () => chainOk([]) });
 function openPos(d, over = {}) {
   const p = { option_symbol: "O:NVDA260117C00100000", side: "call", strike: 100, expiration: "2026-01-17", dte: 5, result_class: "REAL_OPTION_PAPER", entry_fill: 2.0, status: "ENTERED", strategy: "momentum_acceleration", entered_at_ms: NOW, ...over };
   d.prepare("INSERT INTO options_paper_trades (option_symbol, side, strike, expiration, dte, result_class, entry_fill, strategy, status, entered_at_ms, created_at_ms, updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")

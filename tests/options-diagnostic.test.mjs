@@ -4,6 +4,7 @@ import Database from "better-sqlite3";
 import { runOptionsMonitorCycle, optionsMonitorMetrics, __resetOptionsMonitorForTest } from "../lib/research/options/monitor.ts";
 import { optionsTier1Diagnostic } from "../lib/research/options/diagnostic.ts";
 import { optionsTier1 } from "../lib/research/options/discovery.ts";
+import { chainOk } from "../lib/research/options/loop.ts";
 
 const NOW = 1_700_000_000_000;
 function makeBars(n, lastAgeMs, { rising = true } = {}) {
@@ -24,7 +25,7 @@ function db() {
 const T1 = optionsTier1({});
 const ON = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1" };
 const snapMap = (syms) => new Map(syms.map((s) => [s, { price: 100, dayDollarVolume: 60_000_000 }]));
-const monDeps = (d, getBars) => ({ now: () => NOW, session: () => "regular", getDb: () => d, getUnderlyingBatch: async (syms) => new Map(syms.map((s) => [s, { price: 100, dayDollarVolume: 60_000_000, relVolume: null, velPct: null, accelPct: null, gapPct: null, aboveVwap: null, hodBreak: null, nearResistancePct: null, compressionPct: null, realizedVolExpanding: null, openingRange: null, premarketLevelTest: null }])), getBars, getChain: async () => [] });
+const monDeps = (d, getBars) => ({ now: () => NOW, session: () => "regular", getDb: () => d, getUnderlyingBatch: async (syms) => new Map(syms.map((s) => [s, { price: 100, dayDollarVolume: 60_000_000, relVolume: null, velPct: null, accelPct: null, gapPct: null, aboveVwap: null, hodBreak: null, nearResistancePct: null, compressionPct: null, realizedVolExpanding: null, openingRange: null, premarketLevelTest: null }])), getBars, getChain: async () => chainOk([]) });
 
 // ── reproduce the exact production state ──
 test("REPRODUCE: 14 Stage-1 passes, 14 enrichments, all STALE ⇒ 0 distributions, 0 Stage-2", async () => {

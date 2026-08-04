@@ -41,6 +41,27 @@ function toSnapshot(q: any, prev: Map<string, PrevChange>, nowMs: number): Under
   };
 }
 
+/**
+ * Half-width of the strike window fetched around spot, as a fraction.
+ *
+ * Chosen from a live measurement on 2026-08-04, not from theory. At ±8% the
+ * 0-14 DTE fetch covered NVDA's ENTIRE window in one page (previously truncated
+ * at 4 expirations) and gained SPY/QQQ the 1-7DTE band they had never reached.
+ *
+ * It is a genuine trade-off and it is not free at the extremes: a 14DTE 0.30
+ * delta sits near 3% OTM on SPY but nearer 9% on a 45%-IV name, so a very high
+ * IV underlying can have its far delta band clipped. That is the RIGHT direction
+ * to err — the alternative, which is what shipped before, silently dropped whole
+ * EXPIRATIONS instead, and a missing expiration cannot be recovered downstream
+ * while a missing wing strike is one the strategies would not have picked.
+ *
+ * Tunable without a deploy; widening it costs expiration coverage, not requests.
+ */
+const CHAIN_STRIKE_WINDOW_PCT = Math.max(
+  0.01,
+  Math.min(0.5, Number(process.env.OPTIONS_CHAIN_STRIKE_WINDOW_PCT ?? 0.08)),
+);
+
 function mapOptionContracts(raw: any[]): ChainContract[] {
   return (raw ?? []).map((c: any): ChainContract => ({
     optionSymbol: c.optionSymbol ?? c.symbol ?? c.ticker ?? "", side: String(c.side ?? c.contract_type ?? "").toLowerCase() === "put" ? "put" : "call",
@@ -85,11 +106,30 @@ export function buildLiveOptionsDeps(): OptionsMonitorDeps {
       if (!cached || Date.now() - cached.at > 60_000 || cached.bars.length === 0) return null;
       return deriveDecisionLevels(cached.bars, Date.now());
     },
-    getChain: async (symbol: string) => {
+    getChain: async (symbol: string, underlyingPrice?: number | null) => {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { fetchOptionChain } = require("@/lib/polygon-provider");
-      const res = await fetchOptionChain(symbol, { dteMin: 0, dteMax: 14, maxPages: 2 });
-      return res?.available ? mapOptionContracts(res.contracts) : [];
+      // Strikes bounded around spot when we know it. Same 2 pages, same cost —
+      // but the budget is spent reaching further out in TIME instead of into
+      // wings no strategy selects from. Without this the 0-14 DTE window we ask
+      // for is never sampled past the front expirations on SPY/QQQ.
+      const spot = Number(underlyingPrice);
+      const res = await fetchOptionChain(symbol, {
+        dteMin: 0, dteMax: 14, maxPages: 2,
+        ...(Number.isFinite(spot) && spot > 0
+          ? { underlyingPrice: spot, strikeAroundPct: CHAIN_STRIKE_WINDOW_PCT }
+          : {}),
+      });
+      return {
+        contracts: res?.available ? mapOptionContracts(res.contracts) : [],
+        outcome: res?.outcome ?? "PROVIDER_INVALID_RESPONSE",
+        truncated: Boolean(res?.truncated),
+        expirationsCovered: res?.expirationsCovered ?? [],
+        requestedDteMin: res?.requestedDteMin ?? null,
+        requestedDteMax: res?.requestedDteMax ?? null,
+        pagesRequested: Number(res?.pagesRequested ?? 0),
+        pagesReceived: Number(res?.pagesReceived ?? 0),
+      };
     },
     tier2Universe: async () => {
       const nowMs = Date.now();

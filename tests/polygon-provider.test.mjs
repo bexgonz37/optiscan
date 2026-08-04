@@ -72,7 +72,11 @@ test("parseAggregates maps OHLCV and tolerates junk", () => {
 });
 
 test("parseOptionsSnapshot: mid from bid/ask, spreadPct, dte", () => {
-  const now = Date.parse("2026-07-05T00:00:00Z");
+  // Mid-session ET (11:00 ET on 2026-07-05), so the trading day is unambiguous.
+  // The previous fixture used 00:00Z, which is 20:00 ET on the PREVIOUS day —
+  // exactly the boundary this DTE fix is about, and a poor place to pin
+  // unrelated assertions.
+  const now = Date.parse("2026-07-05T15:00:00Z");
   const [c] = parseOptionsSnapshot(
     {
       results: [
@@ -94,6 +98,43 @@ test("parseOptionsSnapshot: mid from bid/ask, spreadPct, dte", () => {
   assert.equal(c.spreadPct, 18.18);
   assert.equal(c.dte, 10);
   assert.equal(c.openInterest, 900);
+});
+
+test("parseOptionsSnapshot: DTE is a calendar-day count in ET, not a rounded ms delta", () => {
+  // THE DEFECT. `Math.round((Date.parse(exp) - nowMs) / 86400000)` compares an
+  // expiration parsed at UTC MIDNIGHT against a mid-session clock. At 12:24 ET
+  // the next day's expiration is 0.32 days away and rounds to ZERO, so a real
+  // 1DTE contract reported as 0DTE. Measured on live SPY/NVDA chains on
+  // 2026-08-04: every 2026-08-05 contract came back dte = 0.
+  //
+  // That shifted EVERY contract down one band in `dteOkFor`, so a strategy
+  // asking for "1-7dte" was matched against contracts labelled "0dte".
+  const midSession = Date.parse("2026-08-04T16:24:00Z"); // 12:24 ET
+  const mk = (expiration) => ({
+    results: [{
+      details: { ticker: "O:SPY", contract_type: "call", strike_price: 700, expiration_date: expiration },
+      last_quote: { bid: 1, ask: 1.1 },
+    }],
+  });
+  const dteFor = (exp) => parseOptionsSnapshot(mk(exp), midSession)[0].dte;
+
+  assert.equal(dteFor("2026-08-04"), 0, "same-day expiration is 0DTE");
+  assert.equal(dteFor("2026-08-05"), 1, "next-day expiration is 1DTE, NOT 0DTE");
+  assert.equal(dteFor("2026-08-11"), 7, "one week out is 7DTE");
+  assert.equal(dteFor("2026-08-18"), 14, "the far edge of the 0-14 window is 14DTE");
+});
+
+test("parseOptionsSnapshot: a same-day expiration never goes negative late in the session", () => {
+  // 15:55 ET on expiration day. The contract has not expired, and a negative DTE
+  // would sort it out of every band.
+  const nearClose = Date.parse("2026-08-04T19:55:00Z");
+  const [c] = parseOptionsSnapshot({
+    results: [{
+      details: { ticker: "O:SPY", contract_type: "call", strike_price: 700, expiration_date: "2026-08-04" },
+      last_quote: { bid: 1, ask: 1.1 },
+    }],
+  }, nearClose);
+  assert.equal(c.dte, 0);
 });
 
 test("fetchOptionChain paginates via next_url up to maxPages", async (t) => {

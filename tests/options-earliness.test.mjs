@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { runOptionsMonitorCycle, optionsMonitorMetrics, __resetOptionsMonitorForTest } from "../lib/research/options/monitor.ts";
+import { chainOk } from "../lib/research/options/loop.ts";
 
 // Earliness fix: a FORMING symbol (passed liquidity + freshness, no plausible strategy YET) must be
 // re-checked at the scan cadence instead of being frozen for the full 60s symbol cooldown — so the
@@ -24,7 +25,7 @@ const base = { price: 100, dayDollarVolume: 60_000_000, relVolume: null, velPct:
 const FORMING = (syms) => new Map(syms.map((s) => [s, { ...base }]));
 const VALIDATED = (syms) => new Map(syms.map((s) => [s, { ...base, accelPct: 1.0, relVolume: 3, velPct: 1.0 }]));
 function deps(d, nowRef, snapRef) {
-  return { now: () => nowRef.v, session: () => "regular", getDb: () => d, getUnderlyingBatch: async (s) => snapRef.fn(s), getChain: async () => [] };
+  return { now: () => nowRef.v, session: () => "regular", getDb: () => d, getUnderlyingBatch: async (s) => snapRef.fn(s), getChain: async () => chainOk([]) };
 }
 
 test("EARLINESS: a forming symbol is re-checked at the next cadence (default recheck=0), catching the setup ~45s sooner", async () => {
@@ -74,7 +75,7 @@ test("EXECUTABLE QUALITY UNCHANGED: success/stale/hard-reject paths still use th
   const nowRef = { v: NOW };
   const env = { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", OPTIONS_PORTFOLIO_DELIVERY_ENABLED: "1" };
   // stale bars (last bar 30min old) → hard reject with the full 60s cooldown (not the forming re-check).
-  const stale = { now: () => nowRef.v, session: () => "regular", getDb: () => d, getUnderlyingBatch: async (s) => FORMING(s), getBars: async () => { const n = 40, out = []; for (let i = 0; i < n; i++) out.push({ t: NOW - 30 * 60_000 - (n - 1 - i) * 60_000, o: 100, h: 100.1, l: 99.9, c: 100, v: 1000 }); return out; }, getChain: async () => [] };
+  const stale = { now: () => nowRef.v, session: () => "regular", getDb: () => d, getUnderlyingBatch: async (s) => FORMING(s), getBars: async () => { const n = 40, out = []; for (let i = 0; i < n; i++) out.push({ t: NOW - 30 * 60_000 - (n - 1 - i) * 60_000, o: 100, h: 100.1, l: 99.9, c: 100, v: 1000 }); return out; }, getChain: async () => chainOk([]) };
   await runOptionsMonitorCycle(1, ["NVDA"], stale, env);
   assert.equal(optionsMonitorMetrics().stages.stage15Stale, 1);
   nowRef.v = NOW + 15_000; // within 60s
