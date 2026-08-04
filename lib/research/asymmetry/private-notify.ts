@@ -56,9 +56,12 @@ export const FORBIDDEN_WEBHOOK_ENV = Object.freeze([
 
 export const PRIVATE_ENABLED_ENV = "HIGH_ASYMMETRY_PRIVATE_ENABLED";
 export const PRIVATE_WEBHOOK_ENV = "HIGH_ASYMMETRY_PRIVATE_WEBHOOK";
+export const PRIVATE_MAX_SESSION_MESSAGES_ENV = "HIGH_ASYMMETRY_MAX_MESSAGES_PER_SESSION";
 
 /** Default ceiling on owner messages per symbol per session. */
 export const DEFAULT_MAX_MESSAGES_PER_SYMBOL_SESSION = 4;
+/** Default ceiling on all owner-private High-Asymmetry messages per session. */
+export const DEFAULT_MAX_MESSAGES_PER_SESSION = 40;
 
 export type PrivateNotifyOutcome =
   | "DISABLED"
@@ -121,18 +124,25 @@ export interface PrivateCaseMemory {
   sentCountForSymbol: (sessionDate: string, symbol: string) => number;
   /** Increment that counter. */
   incrementSymbol: (sessionDate: string, symbol: string) => void;
+  /** How many owner messages already sent for this whole session. */
+  sentCountForSession: (sessionDate: string) => number;
+  /** Increment the session-wide counter. */
+  incrementSession: (sessionDate: string) => void;
 }
 
 /** A simple in-memory implementation. Bounded by session + fingerprint. */
 export function createPrivateCaseMemory(): PrivateCaseMemory {
   const states = new Map<string, AsymmetryResearchState>();
   const counts = new Map<string, number>();
+  const sessionCounts = new Map<string, number>();
   const key = (sessionDate: string, symbol: string) => `${sessionDate}|${symbol.toUpperCase()}`;
   return {
     lastState: (fp) => states.get(fp),
     record: (fp, state) => { states.set(fp, state); },
     sentCountForSymbol: (d, s) => counts.get(key(d, s)) ?? 0,
     incrementSymbol: (d, s) => { counts.set(key(d, s), (counts.get(key(d, s)) ?? 0) + 1); },
+    sentCountForSession: (d) => sessionCounts.get(d) ?? 0,
+    incrementSession: (d) => { sessionCounts.set(d, (sessionCounts.get(d) ?? 0) + 1); },
   };
 }
 
@@ -162,6 +172,11 @@ export function resolvePrivateConfig(env: NodeJS.ProcessEnv = process.env): Priv
     }
   }
   return { enabled, webhook, refusedReason };
+}
+
+export function resolvePrivateSessionMessageLimit(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env[PRIVATE_MAX_SESSION_MESSAGES_ENV]);
+  return Number.isFinite(n) ? Math.max(0, Math.min(500, Math.floor(n))) : DEFAULT_MAX_MESSAGES_PER_SESSION;
 }
 
 const money = (n: number | null) => (n == null ? "unavailable" : `$${n.toFixed(2)}`);
@@ -237,6 +252,7 @@ export interface PrivateSendDeps {
   memory: PrivateCaseMemory;
   env?: NodeJS.ProcessEnv;
   maxPerSymbolSession?: number;
+  maxPerSession?: number;
 }
 
 /**
@@ -284,6 +300,10 @@ export async function notifyPrivateAsymmetry(
     if (deps.memory.sentCountForSymbol(candidate.sessionDate, candidate.symbol) >= ceiling) {
       return { ...base, outcome: "SUPPRESSED_RATE_LIMIT", reason: `symbol ceiling ${ceiling} reached`, content: null };
     }
+    const sessionCeiling = deps.maxPerSession ?? resolvePrivateSessionMessageLimit(deps.env ?? process.env);
+    if (deps.memory.sentCountForSession(candidate.sessionDate) >= sessionCeiling) {
+      return { ...base, outcome: "SUPPRESSED_RATE_LIMIT", reason: `session ceiling ${sessionCeiling} reached`, content: null };
+    }
 
     const content = buildPrivateMessage(candidate);
     if (!deps.send) {
@@ -295,6 +315,7 @@ export async function notifyPrivateAsymmetry(
     }
     deps.memory.record(candidate.fingerprint, candidate.state);
     deps.memory.incrementSymbol(candidate.sessionDate, candidate.symbol);
+    deps.memory.incrementSession(candidate.sessionDate);
     return { ...base, outcome: "SENT", reason: null, content };
   } catch (err: any) {
     return { ...base, outcome: "SEND_FAILED", reason: String(err?.message ?? err), content: null };

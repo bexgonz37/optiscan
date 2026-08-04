@@ -39,7 +39,9 @@ test("EARLY_ASYMMETRY is SILENT by default", () => {
 
 test("HIGH_ASYMMETRY and TRIGGERED may notify", () => {
   for (const state of NOTIFY_ELIGIBLE_STATES) {
-    assert.equal(decideNotification(ev({ state })).notify, true, `${state} must be eligible`);
+    const d = decideNotification(ev({ state }));
+    assert.equal(d.notify, true, `${state} must be eligible`);
+    assert.equal(d.action, "HIGH_ASYMMETRY_ALERT");
   }
 });
 
@@ -91,7 +93,9 @@ test("a message nobody can act on is suppressed, not sent", () => {
 
 test("LIQUIDITY AND PREMIUM CHASE CAN NEVER BE BYPASSED", () => {
   assert.match(decideNotification(ev({ spreadPct: 40 })).reason, /UNUSABLE_SPREAD_40/);
-  assert.match(decideNotification(ev({ premiumChasePct: 25 })).reason, /PREMIUM_CHASE_25/);
+  const chased = decideNotification(ev({ premiumChasePct: 25 }));
+  assert.match(chased.reason, /PREMIUM_CHASE_25/);
+  assert.equal(chased.action, "HIGH_ASYMMETRY_PAPER_ONLY");
   assert.match(decideNotification(ev({ openInterest: 10 })).reason, /WEAK_OPEN_INTEREST_10/);
   assert.match(decideNotification(ev({ contractVolume: 3 })).reason, /WEAK_CONTRACT_VOLUME_3/);
   // Not even the strongest state overrides them.
@@ -113,6 +117,7 @@ test("the gate is versioned and configurable within clamps", () => {
   assert.equal(resolveNotificationStrength({ ASYM_NOTIFY_MAX_SPREAD_PCT: "junk" }).maxSpreadPct,
     DEFAULT_NOTIFICATION_STRENGTH.maxSpreadPct);
   assert.ok(resolveNotificationStrength({ ASYM_NOTIFY_MAX_SPREAD_PCT: "9999" }).maxSpreadPct <= 100);
+  assert.equal(resolveNotificationStrength({ ASYM_NOTIFY_MAX_CAPTURE_TO_NOTIFY_MS: "600000" }).maxCaptureToNotifyMs, 600000);
 });
 
 test("the alert-to-capture ratio is unknown on an empty population, never 0", () => {
@@ -170,8 +175,22 @@ test("A PROMOTED STATE MUST NOT SPEAK ON STALE EVIDENCE", () => {
   const d = decideNotification(ev({ nowMs: T0 + 5 * 60_000, quoteAtMs: T0 }));
   assert.equal(d.notify, false);
   assert.equal(d.timing, "STALE_EVIDENCE");
+  assert.equal(d.action, "HIGH_ASYMMETRY_TOO_LATE");
   assert.match(d.reason, /LATE_OR_ROLLOVER_SUPPRESSION_STALE_300S/);
   assert.equal(d.silentCapture, true, "the case is still captured and tracked");
+});
+
+test("A FRESH QUOTE DOES NOT MAKE AN OLD CAPTURE AN EARLY ENTRY", () => {
+  const d = decideNotification(ev({
+    nowMs: T0 + 42 * 60_000,
+    quoteAtMs: T0 + 42 * 60_000 - 1_000,
+    firstDetectedAtMs: T0,
+  }));
+  assert.equal(d.notify, false);
+  assert.equal(d.timing, "ENTRY_TOO_LATE");
+  assert.equal(d.action, "HIGH_ASYMMETRY_TOO_LATE");
+  assert.match(d.reason, /ENTRY_TOO_LATE_42M/);
+  assert.equal(d.silentCapture, true, "late cases are retained for research, not discarded");
 });
 
 test("a fresh quote at send time still notifies", () => {
@@ -202,6 +221,7 @@ test("rollover is measured even when the premium is not chased", () => {
   }));
   assert.equal(d.notify, false);
   assert.equal(d.timing, "MOMENTUM_ROLLOVER");
+  assert.equal(d.action, "HIGH_ASYMMETRY_TOO_LATE");
   assert.match(d.reason, /GAVE_BACK_95PCT/);
 });
 
@@ -231,7 +251,9 @@ test("the rollover input comes from persisted marks, not a new provider call", (
 test("every decision carries exactly one timing classification", () => {
   for (const e of [ev(), ev({ state: "EARLY_ASYMMETRY" }), ev({ spreadPct: 40 }), ev({ nowMs: T0 + 9e5, quoteAtMs: T0 })]) {
     const d = decideNotification(e);
-    assert.ok(["ON_TIME", "STALE_EVIDENCE", "MOMENTUM_ROLLOVER", "PREMIUM_CHASE", "INSUFFICIENT_TIMING_EVIDENCE"].includes(d.timing));
+    assert.ok(["ON_TIME", "ENTRY_TOO_LATE", "STALE_EVIDENCE", "MOMENTUM_ROLLOVER", "PREMIUM_CHASE", "INSUFFICIENT_TIMING_EVIDENCE"].includes(d.timing));
+    assert.ok(["HIGH_ASYMMETRY_ALERT", "HIGH_ASYMMETRY_OWNER_WATCH", "HIGH_ASYMMETRY_PAPER_ONLY", "HIGH_ASYMMETRY_TOO_LATE", "HIGH_ASYMMETRY_ARCHIVE", "REJECTED"].includes(d.action));
+    assert.equal(d.notify, d.action === "HIGH_ASYMMETRY_ALERT");
   }
   assert.equal(decideNotification(ev()).version, "ASYM_NOTIFY_V2", "the gate version must advance with the rules");
 });

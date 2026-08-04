@@ -56,6 +56,7 @@ export function ensureNotifyJournalSchema(db: JournalDb): void {
       -- What the gate decided.
       notify INTEGER NOT NULL,
       timing TEXT NOT NULL,
+      action TEXT NOT NULL,
       reason TEXT NOT NULL,
       gate_version TEXT NOT NULL,
       silent_capture INTEGER NOT NULL,
@@ -79,6 +80,7 @@ export function ensureNotifyJournalSchema(db: JournalDb): void {
       cfg_min_open_interest INTEGER,
       cfg_min_contract_volume INTEGER,
       cfg_max_missing_for_confirming INTEGER,
+      cfg_max_capture_to_notify_ms INTEGER,
 
       -- Delivery, filled in after the send attempt resolves.
       notify_outcome TEXT,
@@ -95,6 +97,8 @@ export function ensureNotifyJournalSchema(db: JournalDb): void {
     CREATE INDEX IF NOT EXISTS idx_asym_notify_decisions_timing
       ON asymmetry_notify_decisions(session_date, timing);
   `);
+  addColumnIfMissing(db, "asymmetry_notify_decisions", "action", "TEXT");
+  addColumnIfMissing(db, "asymmetry_notify_decisions", "cfg_max_capture_to_notify_ms", "INTEGER");
 }
 
 function hasTable(db: JournalDb, name: string): boolean {
@@ -102,6 +106,23 @@ function hasTable(db: JournalDb, name: string): boolean {
     return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name));
   } catch {
     return false;
+  }
+}
+
+function hasColumn(db: JournalDb, table: string, column: string): boolean {
+  try {
+    return (db.prepare(`PRAGMA table_info(${table})`).all() as any[]).some((r) => String(r.name) === column);
+  } catch {
+    return false;
+  }
+}
+
+function addColumnIfMissing(db: JournalDb, table: string, column: string, ddl: string): void {
+  try {
+    if (!hasTable(db, table) || hasColumn(db, table, column)) return;
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+  } catch {
+    // Journal schema upgrades must never break the live scanner or delivery path.
   }
 }
 
@@ -160,18 +181,19 @@ export function recordNotifyDecisionOnDb(db: JournalDb, e: NotifyJournalEntry): 
       INSERT OR IGNORE INTO asymmetry_notify_decisions (
         session_date, fingerprint, decided_at_ms, symbol, option_symbol, direction,
         from_state, to_state,
-        notify, timing, reason, gate_version, silent_capture,
+        notify, timing, action, reason, gate_version, silent_capture,
         bid, ask, quote_at_ms, quote_age_ms, underlying_price, spread_pct, premium_chase_pct,
         open_interest, contract_volume, entry_ask_at_capture, peak_ask_since_capture,
         give_back_fraction, missing_evidence_count, first_detected_at_ms, capture_to_notify_ms,
         cfg_max_quote_age_ms, cfg_max_giveback_fraction, cfg_max_spread_pct, cfg_max_chase_pct,
         cfg_min_open_interest, cfg_min_contract_volume, cfg_max_missing_for_confirming,
+        cfg_max_capture_to_notify_ms,
         journal_version
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(
       e.sessionDate, e.fingerprint, e.decidedAtMs, e.symbol, e.optionSymbol, e.direction,
       e.fromState, e.toState,
-      e.decision.notify ? 1 : 0, e.decision.timing, e.decision.reason, e.decision.version,
+      e.decision.notify ? 1 : 0, e.decision.timing, e.decision.action, e.decision.reason, e.decision.version,
       e.decision.silentCapture ? 1 : 0,
       e.bid, e.ask, e.quoteAtMs, quoteAgeMs, e.underlyingPrice, e.spreadPct, e.premiumChasePct,
       e.openInterest, e.contractVolume, e.entryAskAtCapture, e.peakAskSinceCapture,
@@ -180,6 +202,7 @@ export function recordNotifyDecisionOnDb(db: JournalDb, e: NotifyJournalEntry): 
       e.config.maxQuoteAgeAtNotifyMs, e.config.maxRolloverGiveBackFraction,
       e.config.maxSpreadPct, e.config.maxPremiumChasePct,
       e.config.minOpenInterest, e.config.minContractVolume, e.config.maxMissingEvidenceForConfirming,
+      e.config.maxCaptureToNotifyMs,
       NOTIFY_JOURNAL_VERSION,
     );
     return { ok: true, created: Number(res.changes ?? 0) > 0, error: null };
@@ -216,7 +239,7 @@ export interface JournalRow {
   sessionDate: string; fingerprint: string; decidedAtMs: number;
   symbol: string; optionSymbol: string; direction: string | null;
   fromState: string | null; toState: string;
-  notify: boolean; timing: string; reason: string; gateVersion: string; silentCapture: boolean;
+  notify: boolean; timing: string; action: string; reason: string; gateVersion: string; silentCapture: boolean;
   bid: number | null; ask: number | null; quoteAtMs: number | null; quoteAgeMs: number | null;
   underlyingPrice: number | null; spreadPct: number | null; premiumChasePct: number | null;
   openInterest: number | null; contractVolume: number | null;
@@ -225,6 +248,7 @@ export interface JournalRow {
   firstDetectedAtMs: number | null; captureToNotifyMs: number | null;
   cfgMaxQuoteAgeMs: number | null; cfgMaxGiveBackFraction: number | null;
   cfgMaxSpreadPct: number | null; cfgMaxChasePct: number | null;
+  cfgMaxCaptureToNotifyMs: number | null;
   notifyOutcome: string | null; sentAtMs: number | null; sendLatencyMs: number | null;
 }
 
@@ -268,7 +292,9 @@ function mapRow(r: any): JournalRow {
     decidedAtMs: Number(r.decided_at_ms), symbol: String(r.symbol),
     optionSymbol: String(r.option_symbol), direction: r.direction == null ? null : String(r.direction),
     fromState: r.from_state == null ? null : String(r.from_state), toState: String(r.to_state),
-    notify: Number(r.notify) === 1, timing: String(r.timing), reason: String(r.reason),
+    notify: Number(r.notify) === 1, timing: String(r.timing),
+    action: r.action == null ? (Number(r.notify) === 1 ? "HIGH_ASYMMETRY_ALERT" : "LEGACY_AMBIGUOUS") : String(r.action),
+    reason: String(r.reason),
     gateVersion: String(r.gate_version), silentCapture: Number(r.silent_capture) === 1,
     bid: n(r.bid), ask: n(r.ask), quoteAtMs: n(r.quote_at_ms), quoteAgeMs: n(r.quote_age_ms),
     underlyingPrice: n(r.underlying_price), spreadPct: n(r.spread_pct), premiumChasePct: n(r.premium_chase_pct),
@@ -278,6 +304,7 @@ function mapRow(r: any): JournalRow {
     firstDetectedAtMs: n(r.first_detected_at_ms), captureToNotifyMs: n(r.capture_to_notify_ms),
     cfgMaxQuoteAgeMs: n(r.cfg_max_quote_age_ms), cfgMaxGiveBackFraction: n(r.cfg_max_giveback_fraction),
     cfgMaxSpreadPct: n(r.cfg_max_spread_pct), cfgMaxChasePct: n(r.cfg_max_chase_pct),
+    cfgMaxCaptureToNotifyMs: n(r.cfg_max_capture_to_notify_ms),
     notifyOutcome: r.notify_outcome == null ? null : String(r.notify_outcome),
     sentAtMs: n(r.sent_at_ms), sendLatencyMs: n(r.send_latency_ms),
   };
@@ -291,11 +318,11 @@ function mapRow(r: any): JournalRow {
 export function journalRatioOnDb(db: JournalDb, sessionDate: string): {
   decisions: number; notified: number; suppressed: number;
   distinctCases: number; alertToCaptureRatioPct: number | null;
-  byTiming: Record<string, number>; byReason: Array<{ reason: string; count: number }>;
+  byTiming: Record<string, number>; byAction: Record<string, number>; byReason: Array<{ reason: string; count: number }>;
 } {
   const empty = {
     decisions: 0, notified: 0, suppressed: 0, distinctCases: 0,
-    alertToCaptureRatioPct: null, byTiming: {}, byReason: [],
+    alertToCaptureRatioPct: null, byTiming: {}, byAction: {}, byReason: [],
   };
   if (!hasTable(db, "asymmetry_notify_decisions")) return empty;
   try {
@@ -306,6 +333,13 @@ export function journalRatioOnDb(db: JournalDb, sessionDate: string): {
         FROM asymmetry_notify_decisions WHERE session_date=?`).get(sessionDate) as any;
     const byTimingRows = db.prepare(
       `SELECT timing, COUNT(*) n FROM asymmetry_notify_decisions WHERE session_date=? GROUP BY timing`,
+    ).all(sessionDate) as any[];
+    const actionExpr = hasColumn(db, "asymmetry_notify_decisions", "action")
+      ? "COALESCE(action, CASE WHEN notify=1 THEN 'HIGH_ASYMMETRY_ALERT' ELSE 'LEGACY_AMBIGUOUS' END)"
+      : "CASE WHEN notify=1 THEN 'HIGH_ASYMMETRY_ALERT' ELSE 'LEGACY_AMBIGUOUS' END";
+    const byActionRows = db.prepare(
+      `SELECT ${actionExpr} action, COUNT(*) n
+         FROM asymmetry_notify_decisions WHERE session_date=? GROUP BY 1`,
     ).all(sessionDate) as any[];
     const byReasonRows = db.prepare(
       `SELECT reason, COUNT(*) n FROM asymmetry_notify_decisions
@@ -318,6 +352,7 @@ export function journalRatioOnDb(db: JournalDb, sessionDate: string): {
       decisions, notified, suppressed: decisions - notified, distinctCases,
       alertToCaptureRatioPct: distinctCases > 0 ? Math.round((notified / distinctCases) * 1000) / 10 : null,
       byTiming: Object.fromEntries(byTimingRows.map((r) => [String(r.timing), Number(r.n)])),
+      byAction: Object.fromEntries(byActionRows.map((r) => [String(r.action), Number(r.n)])),
       byReason: byReasonRows.map((r) => ({ reason: String(r.reason), count: Number(r.n) })),
     };
   } catch {

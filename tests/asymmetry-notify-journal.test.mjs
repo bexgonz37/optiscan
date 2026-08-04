@@ -56,6 +56,33 @@ test("schema creation is repeat-safe", { skip }, () => {
   db.close();
 });
 
+test("legacy notify journals gain action and capture-window columns repeat-safely", { skip }, () => {
+  const db = new Database(":memory:");
+  db.exec(`
+    CREATE TABLE asymmetry_notify_decisions (
+      session_date TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      decided_at_ms INTEGER NOT NULL,
+      symbol TEXT NOT NULL,
+      option_symbol TEXT NOT NULL,
+      to_state TEXT NOT NULL,
+      notify INTEGER NOT NULL,
+      timing TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      gate_version TEXT NOT NULL,
+      silent_capture INTEGER NOT NULL,
+      journal_version TEXT NOT NULL,
+      PRIMARY KEY (session_date, fingerprint, to_state, decided_at_ms)
+    );
+  `);
+  ensureNotifyJournalSchema(db);
+  ensureNotifyJournalSchema(db);
+  const cols = db.prepare("PRAGMA table_info(asymmetry_notify_decisions)").all().map((c) => c.name);
+  assert.ok(cols.includes("action"));
+  assert.ok(cols.includes("cfg_max_capture_to_notify_ms"));
+  db.close();
+});
+
 test("a decision persists its inputs AND the thresholds in force", { skip }, () => {
   const db = new Database(":memory:");
   const res = recordNotifyDecisionOnDb(db, entry());
@@ -69,11 +96,13 @@ test("a decision persists its inputs AND the thresholds in force", { skip }, () 
   assert.equal(row.captureToNotifyMs, 6000);
   assert.equal(row.entryAskAtCapture, 3.25);
   assert.equal(row.peakAskSinceCapture, 3.65);
+  assert.equal(row.action, "HIGH_ASYMMETRY_ALERT");
   // The thresholds. Without these the row cannot be honestly re-evaluated.
   assert.equal(row.cfgMaxQuoteAgeMs, 120_000);
   assert.equal(row.cfgMaxGiveBackFraction, 0.5);
   assert.equal(row.cfgMaxSpreadPct, 15);
   assert.equal(row.cfgMaxChasePct, 20);
+  assert.equal(row.cfgMaxCaptureToNotifyMs, 15 * 60_000);
   assert.equal(row.gateVersion, NOTIFICATION_GATE_VERSION);
   db.close();
 });

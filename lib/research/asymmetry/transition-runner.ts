@@ -225,6 +225,7 @@ export async function runAsymmetryTransitions(
           nowMs: deps.nowMs,
           entryAskAtCapture: c.earlyAsk,
           peakAskSinceCapture: peakAsk,
+          firstDetectedAtMs: c.firstDetectedAtMs,
         }, strength);
         if (!gate.notify) out.silentCaptures += 1;
 

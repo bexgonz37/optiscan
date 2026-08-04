@@ -57,6 +57,7 @@ export interface NotificationStrengthConfig {
    * peak gain. Past this, the move being described has already rolled over.
    */
   maxRolloverGiveBackFraction: number;
+  maxCaptureToNotifyMs: number;
 }
 
 export const DEFAULT_NOTIFICATION_STRENGTH: Readonly<NotificationStrengthConfig> = Object.freeze({
@@ -67,6 +68,7 @@ export const DEFAULT_NOTIFICATION_STRENGTH: Readonly<NotificationStrengthConfig>
   maxMissingEvidenceForConfirming: 2,
   maxQuoteAgeAtNotifyMs: 120_000,
   maxRolloverGiveBackFraction: 0.5,
+  maxCaptureToNotifyMs: 15 * 60_000,
 });
 
 export function resolveNotificationStrength(env: NodeJS.ProcessEnv = process.env): NotificationStrengthConfig {
@@ -85,8 +87,18 @@ export function resolveNotificationStrength(env: NodeJS.ProcessEnv = process.env
       DEFAULT_NOTIFICATION_STRENGTH.maxQuoteAgeAtNotifyMs, 5_000, 30 * 60_000),
     maxRolloverGiveBackFraction: n(env.ASYM_NOTIFY_MAX_GIVEBACK,
       DEFAULT_NOTIFICATION_STRENGTH.maxRolloverGiveBackFraction, 0.1, 1),
+    maxCaptureToNotifyMs: n(env.ASYM_NOTIFY_MAX_CAPTURE_TO_NOTIFY_MS,
+      DEFAULT_NOTIFICATION_STRENGTH.maxCaptureToNotifyMs, 30_000, 2 * 60 * 60_000),
   };
 }
+
+export type HighAsymmetryNotificationAction =
+  | "HIGH_ASYMMETRY_ALERT"
+  | "HIGH_ASYMMETRY_OWNER_WATCH"
+  | "HIGH_ASYMMETRY_PAPER_ONLY"
+  | "HIGH_ASYMMETRY_TOO_LATE"
+  | "HIGH_ASYMMETRY_ARCHIVE"
+  | "REJECTED";
 
 /** Everything the gate may look at. Measured values only — nothing inferred. */
 export interface NotificationEvidence {
@@ -111,16 +123,19 @@ export interface NotificationEvidence {
    */
   peakAskSinceCapture?: number | null;
   entryAskAtCapture?: number | null;
+  firstDetectedAtMs?: number | null;
 }
 
 /** Exactly one timing verdict per decision. */
 export type TimingClassification =
-  | "ON_TIME" | "STALE_EVIDENCE" | "MOMENTUM_ROLLOVER"
+  | "ON_TIME" | "ENTRY_TOO_LATE" | "STALE_EVIDENCE" | "MOMENTUM_ROLLOVER"
   | "PREMIUM_CHASE" | "INSUFFICIENT_TIMING_EVIDENCE";
 
 export interface NotificationDecision {
   notify: boolean;
   timing: TimingClassification;
+  /** Deterministic lifecycle output. Only HIGH_ASYMMETRY_ALERT may send now. */
+  action: HighAsymmetryNotificationAction;
   /** Machine-readable suppression reason. Persisted for the ratio report. */
   reason: string;
   version: string;
@@ -142,8 +157,33 @@ export function decideNotification(
   e: NotificationEvidence,
   cfg: NotificationStrengthConfig = DEFAULT_NOTIFICATION_STRENGTH,
 ): NotificationDecision {
-  const no = (reason: string, timing: TimingClassification = "ON_TIME"): NotificationDecision =>
-    ({ notify: false, timing, reason, version: NOTIFICATION_GATE_VERSION, silentCapture: true });
+  const actionFor = (
+    reason: string,
+    timing: TimingClassification,
+    state: AsymmetryResearchState,
+  ): HighAsymmetryNotificationAction => {
+    if (timing === "ENTRY_TOO_LATE" || timing === "STALE_EVIDENCE" || timing === "MOMENTUM_ROLLOVER") {
+      return "HIGH_ASYMMETRY_TOO_LATE";
+    }
+    if (timing === "PREMIUM_CHASE" || /PREMIUM_CHASE/.test(reason)) return "HIGH_ASYMMETRY_PAPER_ONLY";
+    if (state === "EARLY_ASYMMETRY" || state === "CONFIRMING" || /INSUFFICIENT_NOTIFICATION_EVIDENCE|EVIDENCE_INCOMPLETE/.test(reason)) {
+      return "HIGH_ASYMMETRY_OWNER_WATCH";
+    }
+    if (state === "INVALIDATED") return "HIGH_ASYMMETRY_ARCHIVE";
+    return "REJECTED";
+  };
+  const no = (
+    reason: string,
+    timing: TimingClassification = "ON_TIME",
+    action?: HighAsymmetryNotificationAction,
+  ): NotificationDecision => ({
+    notify: false,
+    timing,
+    action: action ?? actionFor(reason, timing, e.state),
+    reason,
+    version: NOTIFICATION_GATE_VERSION,
+    silentCapture: true,
+  });
 
   // 1. State. EARLY is silent by definition; the chased/failed states never open.
   if (e.state === "EARLY_ASYMMETRY") return no("SILENT_EARLY_ASYMMETRY");
@@ -187,6 +227,13 @@ export function decideNotification(
       return no(`LATE_OR_ROLLOVER_SUPPRESSION_STALE_${Math.round(age / 1000)}S`, "STALE_EVIDENCE");
     }
   }
+  const firstDetected = num(e.firstDetectedAtMs);
+  if (now != null && firstDetected != null) {
+    const age = now - firstDetected;
+    if (age > cfg.maxCaptureToNotifyMs) {
+      return no(`ENTRY_TOO_LATE_${Math.round(age / 60_000)}M`, "ENTRY_TOO_LATE", "HIGH_ASYMMETRY_TOO_LATE");
+    }
+  }
 
   // Premium rollover, measured from marks already persisted — no provider call.
   // If the contract ran and has given back most of that gain, the move being
@@ -204,7 +251,14 @@ export function decideNotification(
     }
   }
 
-  return { notify: true, timing: "ON_TIME", reason: "NOTIFY", version: NOTIFICATION_GATE_VERSION, silentCapture: false };
+  return {
+    notify: true,
+    timing: "ON_TIME",
+    action: "HIGH_ASYMMETRY_ALERT",
+    reason: "NOTIFY",
+    version: NOTIFICATION_GATE_VERSION,
+    silentCapture: false,
+  };
 }
 
 /** The headline health number: how much of what we capture we actually say. */

@@ -10,12 +10,14 @@ import {
   notifyPrivateAsymmetry,
   buildPrivateMessage,
   resolvePrivateConfig,
+  resolvePrivateSessionMessageLimit,
   createPrivateCaseMemory,
   PRIVATE_NOTIFIABLE_STATES,
   PRIVATE_SUPPRESSED_STATES,
   FORBIDDEN_WEBHOOK_ENV,
   PRIVATE_ENABLED_ENV,
   PRIVATE_WEBHOOK_ENV,
+  PRIVATE_MAX_SESSION_MESSAGES_ENV,
 } from "../lib/research/asymmetry/private-notify.ts";
 import { canResearchStateSend, ASYMMETRY_RESEARCH_STATES, RESEARCH_STATE_CAN_SEND } from "../lib/research/asymmetry/states.ts";
 
@@ -184,6 +186,31 @@ test("a per-symbol session ceiling bounds the noise", async () => {
 });
 
 // ── Message content ─────────────────────────────────────────────────────────
+
+test("a global session ceiling bounds broad-market spam", async () => {
+  const s = recorder();
+  const memory = createPrivateCaseMemory();
+  for (let i = 0; i < 5; i++) {
+    await notifyPrivateAsymmetry(candidate({
+      fingerprint: `fp_session_${i}`,
+      symbol: `SYM${i}`,
+    }), { send: s.send, memory, env: ON, maxPerSession: 3 });
+  }
+  assert.equal(s.calls.length, 3, "the session ceiling must stop one-off spam across many symbols");
+  const blocked = await notifyPrivateAsymmetry(candidate({
+    fingerprint: "fp_session_blocked",
+    symbol: "NEW",
+  }), { send: s.send, memory, env: ON, maxPerSession: 3 });
+  assert.equal(blocked.outcome, "SUPPRESSED_RATE_LIMIT");
+  assert.match(blocked.reason, /session ceiling 3 reached/);
+});
+
+test("the global session ceiling is env-configurable and clamped", () => {
+  assert.equal(resolvePrivateSessionMessageLimit({}), 40);
+  assert.equal(resolvePrivateSessionMessageLimit({ [PRIVATE_MAX_SESSION_MESSAGES_ENV]: "12" }), 12);
+  assert.equal(resolvePrivateSessionMessageLimit({ [PRIVATE_MAX_SESSION_MESSAGES_ENV]: "-3" }), 0);
+  assert.equal(resolvePrivateSessionMessageLimit({ [PRIVATE_MAX_SESSION_MESSAGES_ENV]: "9999" }), 500);
+});
 
 test("the message carries every required field and never claims a prediction", () => {
   const msg = buildPrivateMessage(candidate());
