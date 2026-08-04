@@ -55,6 +55,15 @@ export interface ContentDraftsDeps {
   maxPerScan?: number;
 }
 
+/**
+ * `SKIPPED_NO_WEBHOOK` is a RETRY BUCKET, not a diagnosis. It means "undelivered
+ * and retryable", and `RETRYABLE_DELIVERY_STATES` depends on that name, so it is
+ * not renamed here. It does NOT mean a webhook was missing: on 2026-08-03 all 50
+ * drafts carried it while `DISCORD_WEBHOOK_RECAP` was configured and
+ * `DISCORD_RECAP_ENABLED=0` was the actual cause. For the reason, ask
+ * `recapDeliveryDiagnosis()` in lib/notifications/recap-health.ts — never infer
+ * it from this status.
+ */
 export type DiscordDeliveryStatus = "PENDING" | "SENT" | "FAILED" | "SKIPPED_NO_WEBHOOK";
 export type DraftRowStatus = "GENERATED" | "APPROVED" | "REJECTED" | "MANUALLY_POSTED" | "EDITED";
 

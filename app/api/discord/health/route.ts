@@ -3,6 +3,7 @@ import { requireApiToken } from "@/lib/api-route-auth";
 import { discordDeliverySummary, discordDeliveryWindowMetrics, listDiscordDeliveries } from "@/lib/alert-store";
 import { buildSubscriberDiscordReadiness } from "@/lib/discord-readiness";
 import { discordWebhookConfigured } from "@/lib/notifications";
+import { recapDeliveryDiagnosis } from "@/lib/notifications/recap-health";
 import { subscriberDiscordOwnershipSummary } from "@/lib/subscriber-discord-owner";
 import { buildDiscordRoutingRows } from "@/lib/discord-routing";
 import { nextWatchlistWindowSummary, schedulerState } from "@/lib/scheduler";
@@ -17,6 +18,11 @@ export async function GET(req: Request) {
     watchlist: discordWebhookConfigured("watchlist"),
     recap: discordWebhookConfigured("recap"),
   };
+  // `webhooks.recap` is a GATE and stays one. It cannot explain itself: it
+  // returns false both for a missing webhook and for DISCORD_RECAP_ENABLED=0,
+  // and on 2026-08-03 that ambiguity was read as a missing webhook when the
+  // real cause was the kill-switch. The diagnosis carries no secret value.
+  const recapDelivery = recapDeliveryDiagnosis();
   const metrics = discordDeliveryWindowMetrics(24);
   const recentDeliveries = listDiscordDeliveries(250);
   const lastFor = (webhookName: string, statuses: string[], field: "sent_at" | "created_at") => {
@@ -50,6 +56,7 @@ export async function GET(req: Request) {
     subscriberSurface: "discord_only",
     ownership: subscriberDiscordOwnershipSummary(),
     webhooks,
+    recapDelivery,
     metrics,
     routing,
     readiness,
