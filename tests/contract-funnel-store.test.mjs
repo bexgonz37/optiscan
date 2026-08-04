@@ -20,6 +20,7 @@ import {
   readRecentFunnelEvidenceOnDb,
   deltaSourceSplitOnDb,
   terminalReasonBreakdownOnDb,
+  strategyStageBreakdownOnDb,
 } from "../lib/research/options/contract-funnel-store.ts";
 import { selectContractWithEvidence } from "../lib/research/options/contract-discovery.ts";
 import { evaluateDiscoveryHealth } from "../lib/research/options/discovery-monitor.ts";
@@ -43,7 +44,12 @@ function ev(over = {}) {
     withDelta: 55, deltaCoverage: 55 / 170, passedDeltaBand: 1, rankedCount: 170,
     deltaSource: "MONEYNESS_PROXY", selectedOcc: "O:SPY260803C00735000",
     terminalReason: "CONTRACT_SELECTED",
-    greeksMissingOnSide: true, pageLimitReached: false, ...over,
+    greeksMissingOnSide: true, pageLimitReached: false,
+    requestedDteMin: 0, requestedDteMax: 14, fetchedDteRanges: ["call:0-0dte"],
+    requestedExpirationStart: "2026-08-03", requestedExpirationEnd: "2026-08-17",
+    expirationsCovered: ["2026-08-03"], pagesRequested: 2, pagesReceived: 1,
+    rawContractsReceived: 500, normalizedContractsReceived: 500,
+    chainOutcome: "CONTRACTS_AVAILABLE", rangeCoverage: "FULL", ...over,
   };
 }
 
@@ -65,6 +71,12 @@ test("a funnel row round-trips, including deltaSource", () => {
   assert.equal(back[0].terminalReason, "CONTRACT_SELECTED");
   assert.equal(back[0].greeksMissingOnSide, true);
   assert.ok(Math.abs(back[0].deltaCoverage - 55 / 170) < 1e-9);
+  assert.equal(back[0].requestedDteMin, 0);
+  assert.equal(back[0].requestedDteMax, 14);
+  assert.deepEqual(back[0].fetchedDteRanges, ["call:0-0dte"]);
+  assert.deepEqual(back[0].expirationsCovered, ["2026-08-03"]);
+  assert.equal(back[0].rangeCoverage, "FULL");
+  assert.equal(back[0].chainOutcome, "CONTRACTS_AVAILABLE");
 });
 
 test("THE MEASUREMENT: the PROVIDER_DELTA / MONEYNESS_PROXY split is now answerable", () => {
@@ -119,6 +131,40 @@ test("terminal reasons aggregate into the 'what killed the funnel' breakdown", (
   assert.equal(b[0].reason, "NO_CONTRACT_IN_DTE_RANGE");
   assert.equal(b[0].count, 9);
   assert.equal(b[1].count, 4);
+});
+
+test("strategy stage breakdown reports range request and coverage metadata", () => {
+  const d = db();
+  recordContractFunnelOnDb(d, DAY, ev({
+    strategyKey: "longer_dated_swing",
+    terminalReason: "RANGE_NOT_FETCHED",
+    selectedOcc: null,
+    deltaSource: null,
+    requestedDteMin: 15,
+    requestedDteMax: 90,
+    fetchedDteRanges: ["call:15-30dte", "call:31-60dte"],
+    expirationsCovered: ["2026-08-21", "2026-09-18"],
+    pagesRequested: 4,
+    pagesReceived: 3,
+    rawContractsReceived: 320,
+    normalizedContractsReceived: 318,
+    chainOutcome: "NO_CONTRACTS_IN_REQUESTED_RANGE",
+    rangeCoverage: "PARTIAL",
+  }));
+
+  const [row] = strategyStageBreakdownOnDb(d, DAY, { symbol: "SPY", side: "call" });
+  assert.equal(row.strategyKey, "longer_dated_swing");
+  assert.equal(row.terminalReason, "RANGE_NOT_FETCHED");
+  assert.equal(row.requestedDteMin, 15);
+  assert.equal(row.requestedDteMax, 90);
+  assert.deepEqual(row.fetchedDteRanges, ["call:15-30dte", "call:31-60dte"]);
+  assert.deepEqual(row.expirationsCovered, ["2026-08-21", "2026-09-18"]);
+  assert.equal(row.pagesRequested, 4);
+  assert.equal(row.pagesReceived, 3);
+  assert.equal(row.rawContractsReceived, 320);
+  assert.equal(row.normalizedContractsReceived, 318);
+  assert.deepEqual(row.chainOutcomes, ["NO_CONTRACTS_IN_REQUESTED_RANGE"]);
+  assert.deepEqual(row.rangeCoverage, ["PARTIAL"]);
 });
 
 test("THE MONITOR NOW HAS AN INPUT: stored evidence feeds evaluateDiscoveryHealth", () => {

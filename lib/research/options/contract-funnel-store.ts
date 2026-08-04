@@ -333,16 +333,43 @@ export function strategyStageBreakdownOnDb(
 ): {
   strategyKey: string; rows: number; terminalReason: string;
   contractsReceived: number; passedSide: number; passedDte: number;
+  requestedDteMin: number | null; requestedDteMax: number | null;
+  fetchedDteRanges: string[]; expirationsCovered: string[];
+  pagesRequested: number; pagesReceived: number;
+  rawContractsReceived: number; normalizedContractsReceived: number;
+  chainOutcomes: string[]; rangeCoverage: string[];
 }[] {
   try {
     ensureContractFunnelSchema(db);
     const { sql: whereSql, args } = funnelWhere(sessionDate, opts);
+    const splitConcat = (v: unknown): string[] =>
+      typeof v === "string" && v.length ? v.split("\x1f").filter(Boolean) : [];
+    const jsonArraysFromConcat = (v: unknown): string[] => {
+      const out = new Set<string>();
+      for (const part of splitConcat(v)) {
+        try {
+          const parsed = JSON.parse(part);
+          if (Array.isArray(parsed)) for (const item of parsed) out.add(String(item));
+        } catch { /* ignore legacy/non-json values */ }
+      }
+      return [...out].sort();
+    };
     return (db.prepare(
       `SELECT strategy_key AS strategyKey, terminal_reason AS terminalReason,
               COUNT(*) AS n,
               SUM(contracts_received) AS contractsReceived,
               SUM(passed_side) AS passedSide,
-              SUM(passed_dte) AS passedDte
+              SUM(passed_dte) AS passedDte,
+              MIN(requested_dte_min) AS requestedDteMin,
+              MAX(requested_dte_max) AS requestedDteMax,
+              GROUP_CONCAT(fetched_dte_ranges_json, CHAR(31)) AS fetchedDteRangesJson,
+              GROUP_CONCAT(expirations_covered_json, CHAR(31)) AS expirationsCoveredJson,
+              SUM(pages_requested) AS pagesRequested,
+              SUM(pages_received) AS pagesReceived,
+              SUM(raw_contracts_received) AS rawContractsReceived,
+              SUM(normalized_contracts_received) AS normalizedContractsReceived,
+              GROUP_CONCAT(chain_outcome, CHAR(31)) AS chainOutcomes,
+              GROUP_CONCAT(range_coverage, CHAR(31)) AS rangeCoverage
          FROM contract_funnel_evidence WHERE ${whereSql}
         GROUP BY strategy_key, terminal_reason
         ORDER BY n DESC`,
@@ -353,6 +380,16 @@ export function strategyStageBreakdownOnDb(
       contractsReceived: Number(r.contractsReceived ?? 0),
       passedSide: Number(r.passedSide ?? 0),
       passedDte: Number(r.passedDte ?? 0),
+      requestedDteMin: r.requestedDteMin == null ? null : Number(r.requestedDteMin),
+      requestedDteMax: r.requestedDteMax == null ? null : Number(r.requestedDteMax),
+      fetchedDteRanges: jsonArraysFromConcat(r.fetchedDteRangesJson),
+      expirationsCovered: jsonArraysFromConcat(r.expirationsCoveredJson),
+      pagesRequested: Number(r.pagesRequested ?? 0),
+      pagesReceived: Number(r.pagesReceived ?? 0),
+      rawContractsReceived: Number(r.rawContractsReceived ?? 0),
+      normalizedContractsReceived: Number(r.normalizedContractsReceived ?? 0),
+      chainOutcomes: [...new Set(splitConcat(r.chainOutcomes))].sort(),
+      rangeCoverage: [...new Set(splitConcat(r.rangeCoverage))].sort(),
     }));
   } catch {
     return [];
