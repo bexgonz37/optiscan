@@ -50,7 +50,7 @@ Production `/api/system/provider-usage` sample:
 
 ### Exact resume point
 
-1. Finish validation/commit/deploy of the `dashboard_api` attribution patch.
+1. Deploy `7aaff8d` and verify `/api/healthz.commitShort === "7aaff8d"`. Commit/push are done; production was still serving `4afd20c` after two post-push polls, and Railway API auth is unavailable.
 2. Re-check `/api/system/provider-usage` after deploy; `unattributed` should stop growing from manual agent/callout probes. If it still grows, inspect remaining direct provider callers not covered by endpoint/scheduler scopes.
 3. Fix the strategy/request-window mismatch exposed by SPY/QQQ: the live chain request must be driven by the selected strategy's DTE bands or the evaluator must not blame the market for bands the fetch never requested.
 4. Add richer persisted per-request chain diagnostics before changing request breadth: requested expiration start/end, outcome, pages requested/received, truncation, and DTE bucket counts.
