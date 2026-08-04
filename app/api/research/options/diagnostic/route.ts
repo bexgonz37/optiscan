@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { checkApiToken, unauthorized } from "@/lib/auth";
 import { ensureServerBoot } from "@/lib/server-boot";
+import { withProviderConsumer } from "@/lib/provider-context";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,6 +14,10 @@ export const dynamic = "force-dynamic";
 export async function GET(req: Request) {
   if (!checkApiToken(req)) return unauthorized();
   ensureServerBoot();
+  return withProviderConsumer("diagnostics", () => diagnosticInner(req));
+}
+
+async function diagnosticInner(_req: Request) {
   const { buildLiveOptionsDeps } = await import("@/lib/research/options/live-deps");
   const { optionsTier1Diagnostic } = await import("@/lib/research/options/diagnostic");
   const live = buildLiveOptionsDeps();

@@ -222,6 +222,14 @@ test("alert-decision refuses to spend by default and says exactly why", () => {
 // Each defect was harmless while marking pulled whole chains and became actively
 // misleading the moment marking moved onto the exact-OCC path.
 
+test("the research options diagnostic attributes its live provider reads", () => {
+  const src = code("app/api/research/options/diagnostic/route.ts");
+  assert.match(src, /withProviderConsumer\(\s*["'`]diagnostics["'`]/,
+    "token-gated diagnostic reads must bill to diagnostics, not unattributed");
+  assert.match(src, /buildLiveOptionsDeps/,
+    "this endpoint still reaches the live options deps and therefore needs a provider scope");
+});
+
 import { normalizeEndpoint, buildProviderUsageReportOnDb, recordProviderRequestOnDb } from "../lib/provider-accounting.ts";
 import Database from "better-sqlite3";
 
