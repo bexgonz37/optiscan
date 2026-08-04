@@ -58,6 +58,18 @@ export interface SchedulerState {
   lastAsymmetryPaperGate?: unknown;
   /** Last High-Asymmetry EOD review. Read-only diagnostics. */
   lastAsymmetryEod?: unknown;
+  /**
+   * Last content-draft scan. Read-only diagnostics.
+   *
+   * `runContentDraftsScan` returns a full `ContentScanResult` — examined,
+   * delivered, failed, skippedNoWebhook, deferredDelivered — and the job used to
+   * discard every field of it. So when the recap kill switch was cleared and the
+   * stranded drafts still did not move, production had no way to say whether the
+   * recovery sweep had run and found nothing, run and failed, or not run at all.
+   * A sweep that cannot report its own outcome is not observable, and an
+   * unobservable sweep cannot be debugged from the outside.
+   */
+  lastContentDrafts?: unknown;
   lastProfessionalWatchlist?: {
     overnight: ProfessionalWatchlistRunState | null;
     premarket: ProfessionalWatchlistRunState | null;
@@ -220,9 +232,37 @@ async function subscriberReadinessJob(nowMs: number): Promise<void> {
  */
 async function contentDraftsJob(): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { contentEventsEnabled, runContentDraftsScan } = require("@/lib/content/content-drafts-runtime");
-  if (!contentEventsEnabled(process.env)) return;
-  await runContentDraftsScan(db(), {}, process.env);
+  const { contentEventsEnabled, runContentDraftsScan, contentWebhookConfigured } = require("@/lib/content/content-drafts-runtime");
+  const ranAtMs = Date.now();
+  if (!contentEventsEnabled(process.env)) {
+    // "Did not run" and "ran and delivered nothing" are different facts. Record
+    // which one happened rather than leaving the field null for both.
+    state().lastContentDrafts = { ran: false, reason: "CONTENT_EVENTS_DISABLED", ranAtMs, result: null, error: null };
+    return;
+  }
+  try {
+    const result = await runContentDraftsScan(db(), {}, process.env);
+    state().lastContentDrafts = {
+      ran: true,
+      reason: null,
+      ranAtMs,
+      webhookConfigured: contentWebhookConfigured(process.env),
+      result,
+      error: null,
+    };
+  } catch (e: any) {
+    // The job is diagnostics-bearing now, so a throw must be recorded rather
+    // than swallowed into an indistinguishable silence.
+    state().lastContentDrafts = {
+      ran: true,
+      reason: "THREW",
+      ranAtMs,
+      webhookConfigured: contentWebhookConfigured(process.env),
+      result: null,
+      error: String(e?.message ?? e).slice(0, 300),
+    };
+    throw e;
+  }
 }
 
 type EtClock = { weekday: string; minutes: number };
