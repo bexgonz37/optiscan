@@ -54,11 +54,29 @@ export type ChainFetchOutcomeCode =
   | "CONTRACTS_AVAILABLE"
   | "NO_CONTRACTS_IN_REQUESTED_RANGE"
   | "CHAIN_TRUNCATED_BEFORE_RANGE"
+  | "RANGE_NOT_FETCHED"
   | "PROVIDER_QUOTA_EXCEEDED"
   | "PROVIDER_TIMEOUT"
   | "PROVIDER_FAILURE"
   | "PROVIDER_CONFIGURATION_MISSING"
   | "PROVIDER_INVALID_RESPONSE";
+
+export interface ChainFetchPartitionOutcome {
+  label: string;
+  side: "call" | "put" | null;
+  dteMin: number;
+  dteMax: number;
+  outcome: ChainFetchOutcomeCode;
+  truncated: boolean;
+  requestedExpirationStart: string | null;
+  requestedExpirationEnd: string | null;
+  expirationsCovered: string[];
+  contractsReceived: number;
+  pagesRequested: number;
+  pagesReceived: number;
+  cacheHit?: boolean;
+  dedupHit?: boolean;
+}
 
 export interface ChainFetchOutcome {
   contracts: ChainContract[];
@@ -67,6 +85,20 @@ export interface ChainFetchOutcome {
   expirationsCovered: string[];
   requestedDteMin: number | null;
   requestedDteMax: number | null;
+  requestedSide?: "call" | "put" | null;
+  strategyKey?: string | null;
+  providerPurpose?: string | null;
+  requestedExpirationStart?: string | null;
+  requestedExpirationEnd?: string | null;
+  requestedDteRanges?: Array<{ dteMin: number; dteMax: number; label?: string }>;
+  fetchedDteRanges?: Array<{ dteMin: number; dteMax: number; label?: string }>;
+  partitions?: ChainFetchPartitionOutcome[];
+  cacheHit?: boolean;
+  dedupHit?: boolean;
+  rawContractsReceived?: number;
+  normalizedContractsReceived?: number;
+  safeErrorCode?: string | null;
+  safeErrorMessage?: string | null;
   pagesRequested: number;
   pagesReceived: number;
 }
@@ -78,7 +110,14 @@ export function chainOk(contracts: ChainContract[]): ChainFetchOutcome {
     outcome: contracts.length > 0 ? "CONTRACTS_AVAILABLE" : "NO_CONTRACTS_IN_REQUESTED_RANGE",
     truncated: false,
     expirationsCovered: [...new Set(contracts.map((c) => c.expiration).filter(Boolean))].sort(),
-    requestedDteMin: null, requestedDteMax: null, pagesRequested: 1, pagesReceived: 1,
+    requestedDteMin: null, requestedDteMax: null,
+    requestedSide: null, strategyKey: null, providerPurpose: null,
+    requestedExpirationStart: null, requestedExpirationEnd: null,
+    requestedDteRanges: [], fetchedDteRanges: [], partitions: [],
+    cacheHit: false, dedupHit: false,
+    rawContractsReceived: contracts.length, normalizedContractsReceived: contracts.length,
+    safeErrorCode: null, safeErrorMessage: null,
+    pagesRequested: 1, pagesReceived: 1,
   };
 }
 
@@ -115,6 +154,7 @@ export function evaluateOptionsCandidate(input: OptionsCandidateInput, chain: Ch
   const picked = selectContractWithEvidence(chain, side, selection.selected.key, input.nowMs, {
     symbol: input.symbol,
     underlyingPrice: input.underlying.price ?? null,
+    partitionsAttempted: opts.chainOutcome?.partitions?.map((p) => p.label) ?? opts.chainOutcome?.requestedDteRanges?.map((r) => r.label ?? `${r.dteMin}-${r.dteMax}dte`) ?? [],
     chainOutcome: opts.chainOutcome ?? null,
   });
   const contract = picked.contract;

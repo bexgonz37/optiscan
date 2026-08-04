@@ -7,15 +7,26 @@
  * activity) are a documented next enrichment; until then the monitor is intentionally sparse.
  */
 import type { OptionsMonitorDeps, UnderlyingSnapshot } from "./monitor.ts";
-import type { ChainContract } from "./loop.ts";
+import type { ChainContract, ChainFetchOutcome, ChainFetchPartitionOutcome } from "./loop.ts";
 import { tier2Eligible, type Session } from "./discovery.ts";
+import { planPartitions, type DiscoveryPartition } from "./contract-discovery.ts";
 import { deriveDecisionLevels } from "./levels.ts";
 import type { Bar } from "./features.ts";
 import { quoteFreshness } from "../../quote-freshness.ts";
+import { emitProviderRequest } from "../../provider-accounting-sink.ts";
 
 type PrevChange = { change: number; atMs: number };
 type BarsCache = Map<string, { at: number; bars: Bar[] }>;
-type G = typeof globalThis & { __optiscanOptSnap?: { at: number; quotes: any[] }; __optiscanOptPrev?: Map<string, PrevChange>; __optiscanOptBars?: BarsCache };
+type ChainCache = Map<string, { at: number; outcome: ChainFetchOutcome }>;
+type ChainInflight = Map<string, Promise<ChainFetchOutcome>>;
+type LiveChainPartition = Omit<DiscoveryPartition, "side"> & { side: "call" | "put" | null };
+type G = typeof globalThis & {
+  __optiscanOptSnap?: { at: number; quotes: any[] };
+  __optiscanOptPrev?: Map<string, PrevChange>;
+  __optiscanOptBars?: BarsCache;
+  __optiscanOptChainCache?: ChainCache;
+  __optiscanOptChainInflight?: ChainInflight;
+};
 
 async function marketSnapshot(nowMs: number): Promise<any[]> {
   // Shared TTL/inflight lives in fetchMarketSnapshot (scanner + options).
@@ -61,6 +72,18 @@ const CHAIN_STRIKE_WINDOW_PCT = Math.max(
   0.01,
   Math.min(0.5, Number(process.env.OPTIONS_CHAIN_STRIKE_WINDOW_PCT ?? 0.08)),
 );
+const CHAIN_CACHE_TTL_MS = Math.max(
+  1000,
+  Number(process.env.OPTIONS_CHAIN_CACHE_TTL_MS ?? 15_000),
+);
+const CHAIN_PARTITION_MAX_PAGES = Math.max(
+  1,
+  Number(process.env.OPTIONS_CHAIN_PARTITION_MAX_PAGES ?? 2),
+);
+const CHAIN_MAX_STRATEGY_PARTITIONS = Math.max(
+  1,
+  Number(process.env.OPTIONS_CHAIN_MAX_STRATEGY_PARTITIONS ?? 6),
+);
 
 function mapOptionContracts(raw: any[]): ChainContract[] {
   return (raw ?? []).map((c: any): ChainContract => ({
@@ -71,10 +94,208 @@ function mapOptionContracts(raw: any[]): ChainContract[] {
   })).filter((c: ChainContract) => c.optionSymbol && Number.isFinite(c.strike));
 }
 
+function chainCacheKey(symbol: string, part: LiveChainPartition, underlyingPrice?: number | null): string {
+  const spot = Number(underlyingPrice);
+  const spotBucket = Number.isFinite(spot) && spot > 0 ? (Math.round(spot * 10) / 10).toFixed(1) : "na";
+  return [
+    symbol.toUpperCase(),
+    part.side ?? "both",
+    `${part.dteMin}-${part.dteMax}`,
+    `spot:${spotBucket}`,
+    `window:${CHAIN_STRIKE_WINDOW_PCT}`,
+    `pages:${CHAIN_PARTITION_MAX_PAGES}`,
+  ].join("|");
+}
+
+function cloneOutcome(outcome: ChainFetchOutcome, over: Partial<ChainFetchOutcome> = {}): ChainFetchOutcome {
+  return {
+    ...outcome,
+    contracts: [...outcome.contracts],
+    expirationsCovered: [...outcome.expirationsCovered],
+    requestedDteRanges: [...(outcome.requestedDteRanges ?? [])],
+    fetchedDteRanges: [...(outcome.fetchedDteRanges ?? [])],
+    partitions: [...(outcome.partitions ?? [])],
+    ...over,
+  };
+}
+
+function partitionFromResponse(
+  part: LiveChainPartition,
+  res: any,
+  contracts: ChainContract[],
+): ChainFetchPartitionOutcome {
+  return {
+    label: part.label,
+    side: part.side,
+    dteMin: Number(res?.requestedDteMin ?? part.dteMin),
+    dteMax: Number(res?.requestedDteMax ?? part.dteMax),
+    outcome: res?.outcome ?? "PROVIDER_INVALID_RESPONSE",
+    truncated: Boolean(res?.truncated),
+    requestedExpirationStart: res?.requestedExpirationGte ?? null,
+    requestedExpirationEnd: res?.requestedExpirationLte ?? null,
+    expirationsCovered: res?.expirationsCovered ?? [],
+    contractsReceived: contracts.length,
+    pagesRequested: Number(res?.pagesRequested ?? CHAIN_PARTITION_MAX_PAGES),
+    pagesReceived: Number(res?.pagesReceived ?? 0),
+  };
+}
+
+function safeProviderMessage(res: any): string | null {
+  const msg = typeof res?.note === "string" ? res.note : null;
+  return msg ? msg.replace(/apiKey=[^&\s]+/gi, "apiKey=REDACTED").slice(0, 240) : null;
+}
+
+function outcomeFromResponse(part: LiveChainPartition, res: any): ChainFetchOutcome {
+  const contracts = res?.available ? mapOptionContracts(res.contracts) : [];
+  const partition = partitionFromResponse(part, res, contracts);
+  const succeeded = partition.outcome === "CONTRACTS_AVAILABLE" || partition.outcome === "NO_CONTRACTS_IN_REQUESTED_RANGE";
+  return {
+    contracts,
+    outcome: partition.outcome,
+    truncated: partition.truncated,
+    expirationsCovered: partition.expirationsCovered,
+    requestedDteMin: partition.dteMin,
+    requestedDteMax: partition.dteMax,
+    requestedSide: part.side,
+    strategyKey: null,
+    providerPurpose: "options_discovery",
+    requestedExpirationStart: partition.requestedExpirationStart,
+    requestedExpirationEnd: partition.requestedExpirationEnd,
+    requestedDteRanges: [{ dteMin: part.dteMin, dteMax: part.dteMax, label: part.label }],
+    fetchedDteRanges: succeeded && !partition.truncated
+      ? [{ dteMin: part.dteMin, dteMax: part.dteMax, label: part.label }]
+      : [],
+    partitions: [partition],
+    cacheHit: false,
+    dedupHit: false,
+    rawContractsReceived: Array.isArray(res?.contracts) ? res.contracts.length : contracts.length,
+    normalizedContractsReceived: contracts.length,
+    safeErrorCode: res?.outcome && String(res.outcome).startsWith("PROVIDER_") ? String(res.outcome) : null,
+    safeErrorMessage: safeProviderMessage(res),
+    pagesRequested: partition.pagesRequested,
+    pagesReceived: partition.pagesReceived,
+  };
+}
+
+function dedupeContracts(contracts: ChainContract[]): ChainContract[] {
+  const seen = new Set<string>();
+  const out: ChainContract[] = [];
+  for (const c of contracts) {
+    const key = c.optionSymbol.toUpperCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(c);
+  }
+  return out;
+}
+
+function combineOutcomes(
+  strategyKey: string | null,
+  side: "call" | "put" | null,
+  planned: LiveChainPartition[],
+  outcomes: ChainFetchOutcome[],
+): ChainFetchOutcome {
+  if (!outcomes.length) {
+    return {
+      contracts: [],
+      outcome: "RANGE_NOT_FETCHED",
+      truncated: false,
+      expirationsCovered: [],
+      requestedDteMin: planned.length ? Math.min(...planned.map((p) => p.dteMin)) : null,
+      requestedDteMax: planned.length ? Math.max(...planned.map((p) => p.dteMax)) : null,
+      requestedSide: side,
+      strategyKey,
+      providerPurpose: "options_discovery",
+      requestedExpirationStart: null,
+      requestedExpirationEnd: null,
+      requestedDteRanges: planned.map((p) => ({ dteMin: p.dteMin, dteMax: p.dteMax, label: p.label })),
+      fetchedDteRanges: [],
+      partitions: [],
+      cacheHit: false,
+      dedupHit: false,
+      rawContractsReceived: 0,
+      normalizedContractsReceived: 0,
+      safeErrorCode: "RANGE_NOT_FETCHED",
+      safeErrorMessage: null,
+      pagesRequested: 0,
+      pagesReceived: 0,
+    };
+  }
+  const contracts = dedupeContracts(outcomes.flatMap((o) => o.contracts));
+  const partitions = outcomes.flatMap((o) => o.partitions ?? []);
+  const successOutcomes = new Set(["CONTRACTS_AVAILABLE", "NO_CONTRACTS_IN_REQUESTED_RANGE"]);
+  const firstBlocking = outcomes.find((o) => !successOutcomes.has(o.outcome));
+  const outcome = contracts.length > 0
+    ? "CONTRACTS_AVAILABLE"
+    : firstBlocking?.outcome ?? (outcomes.some((o) => o.truncated) ? "CHAIN_TRUNCATED_BEFORE_RANGE" : "NO_CONTRACTS_IN_REQUESTED_RANGE");
+  return {
+    contracts,
+    outcome,
+    truncated: outcomes.some((o) => o.truncated),
+    expirationsCovered: [...new Set(outcomes.flatMap((o) => o.expirationsCovered))].sort(),
+    requestedDteMin: planned.length ? Math.min(...planned.map((p) => p.dteMin)) : null,
+    requestedDteMax: planned.length ? Math.max(...planned.map((p) => p.dteMax)) : null,
+    requestedSide: side,
+    strategyKey,
+    providerPurpose: "options_discovery",
+    requestedExpirationStart: outcomes.map((o) => o.requestedExpirationStart).filter(Boolean).sort()[0] ?? null,
+    requestedExpirationEnd: outcomes.map((o) => o.requestedExpirationEnd).filter(Boolean).sort().at(-1) ?? null,
+    requestedDteRanges: planned.map((p) => ({ dteMin: p.dteMin, dteMax: p.dteMax, label: p.label })),
+    fetchedDteRanges: outcomes.flatMap((o) => o.fetchedDteRanges ?? []),
+    partitions,
+    cacheHit: outcomes.some((o) => o.cacheHit),
+    dedupHit: outcomes.some((o) => o.dedupHit),
+    rawContractsReceived: outcomes.reduce((n, o) => n + Number(o.rawContractsReceived ?? o.contracts.length), 0),
+    normalizedContractsReceived: contracts.length,
+    safeErrorCode: firstBlocking?.safeErrorCode ?? (outcome.startsWith("PROVIDER_") ? outcome : null),
+    safeErrorMessage: firstBlocking?.safeErrorMessage ?? null,
+    pagesRequested: outcomes.reduce((n, o) => n + Number(o.pagesRequested ?? 0), 0),
+    pagesReceived: outcomes.reduce((n, o) => n + Number(o.pagesReceived ?? 0), 0),
+  };
+}
+
 export function buildLiveOptionsDeps(): OptionsMonitorDeps {
   const g = globalThis as G;
   const prev = (g.__optiscanOptPrev ??= new Map());
   const barsCache = (g.__optiscanOptBars ??= new Map());
+  const chainCache = (g.__optiscanOptChainCache ??= new Map());
+  const chainInflight = (g.__optiscanOptChainInflight ??= new Map());
+
+  async function fetchPartition(symbol: string, underlyingPrice: number | null | undefined, part: LiveChainPartition): Promise<ChainFetchOutcome> {
+    const key = chainCacheKey(symbol, part, underlyingPrice);
+    const nowMs = Date.now();
+    const cached = chainCache.get(key);
+    if (cached && nowMs - cached.at < CHAIN_CACHE_TTL_MS) {
+      emitProviderRequest({ endpoint: `/v3/snapshot/options/${symbol.toUpperCase()}`, status: "cache_hit", symbol });
+      return cloneOutcome(cached.outcome, { cacheHit: true });
+    }
+    const existing = chainInflight.get(key);
+    if (existing) {
+      emitProviderRequest({ endpoint: `/v3/snapshot/options/${symbol.toUpperCase()}`, status: "dedup_avoided", symbol });
+      return existing.then((outcome: ChainFetchOutcome) => cloneOutcome(outcome, { dedupHit: true }));
+    }
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { fetchOptionChain } = require("@/lib/polygon-provider");
+    const spot = Number(underlyingPrice);
+    const pending = fetchOptionChain(symbol, {
+      dteMin: part.dteMin,
+      dteMax: part.dteMax,
+      maxPages: CHAIN_PARTITION_MAX_PAGES,
+      ...(part.side ? { side: part.side } : {}),
+      ...(Number.isFinite(spot) && spot > 0
+        ? { underlyingPrice: spot, strikeAroundPct: CHAIN_STRIKE_WINDOW_PCT }
+        : {}),
+    }).then((res: any) => {
+      const outcome = outcomeFromResponse(part, res);
+      chainCache.set(key, { at: Date.now(), outcome });
+      return outcome;
+    }).finally(() => {
+      chainInflight.delete(key);
+    });
+    chainInflight.set(key, pending);
+    return pending;
+  }
+
   return {
     now: Date.now,
     session: (): Session => { try { const { marketSession } = require("@/lib/trading-session"); return marketSession(Date.now()) as Session; } catch { return "regular"; } }, // eslint-disable-line @typescript-eslint/no-require-imports
@@ -106,30 +327,25 @@ export function buildLiveOptionsDeps(): OptionsMonitorDeps {
       if (!cached || Date.now() - cached.at > 60_000 || cached.bars.length === 0) return null;
       return deriveDecisionLevels(cached.bars, Date.now());
     },
-    getChain: async (symbol: string, underlyingPrice?: number | null) => {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { fetchOptionChain } = require("@/lib/polygon-provider");
-      // Strikes bounded around spot when we know it. Same 2 pages, same cost —
-      // but the budget is spent reaching further out in TIME instead of into
-      // wings no strategy selects from. Without this the 0-14 DTE window we ask
-      // for is never sampled past the front expirations on SPY/QQQ.
-      const spot = Number(underlyingPrice);
-      const res = await fetchOptionChain(symbol, {
-        dteMin: 0, dteMax: 14, maxPages: 2,
-        ...(Number.isFinite(spot) && spot > 0
-          ? { underlyingPrice: spot, strikeAroundPct: CHAIN_STRIKE_WINDOW_PCT }
-          : {}),
-      });
-      return {
-        contracts: res?.available ? mapOptionContracts(res.contracts) : [],
-        outcome: res?.outcome ?? "PROVIDER_INVALID_RESPONSE",
-        truncated: Boolean(res?.truncated),
-        expirationsCovered: res?.expirationsCovered ?? [],
-        requestedDteMin: res?.requestedDteMin ?? null,
-        requestedDteMax: res?.requestedDteMax ?? null,
-        pagesRequested: Number(res?.pagesRequested ?? 0),
-        pagesReceived: Number(res?.pagesReceived ?? 0),
-      };
+    getChain: async (symbol: string, underlyingPrice?: number | null, opts: { side?: "call" | "put" | null; strategyKey?: string | null } = {}) => {
+      const side = opts.side === "put" ? "put" : opts.side === "call" ? "call" : null;
+      const strategyKey = typeof opts.strategyKey === "string" && opts.strategyKey ? opts.strategyKey : null;
+      const planned: LiveChainPartition[] = side && strategyKey
+        ? planPartitions(side, strategyKey, CHAIN_MAX_STRATEGY_PARTITIONS)
+        : [{ side: null, dteMin: 0, dteMax: 14, label: "both:0-14dte" }];
+      const outcomes: ChainFetchOutcome[] = [];
+      for (const part of planned) {
+        const out = await fetchPartition(symbol, underlyingPrice, part);
+        outcomes.push(out);
+        if (out.outcome === "PROVIDER_QUOTA_EXCEEDED"
+          || out.outcome === "PROVIDER_CONFIGURATION_MISSING"
+          || out.outcome === "PROVIDER_TIMEOUT"
+          || out.outcome === "PROVIDER_FAILURE"
+          || out.outcome === "PROVIDER_INVALID_RESPONSE") {
+          break;
+        }
+      }
+      return combineOutcomes(strategyKey, side, planned, outcomes);
     },
     tier2Universe: async () => {
       const nowMs = Date.now();

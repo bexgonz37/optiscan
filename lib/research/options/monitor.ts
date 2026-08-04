@@ -10,7 +10,7 @@
  */
 import { researchFlags } from "../flags.ts";
 import { withProviderConsumer } from "../../provider-context.ts";
-import { scoreStrategies, optionsTier1, optionsTier0, type OptionsCandidateInput, type Session } from "./discovery.ts";
+import { scoreStrategies, selectOptionsStrategy, optionsTier1, optionsTier0, type OptionsCandidateInput, type Session } from "./discovery.ts";
 import { sessionState } from "./session-state.ts";
 import { decideDeliveryBatch, type DeliverySubmission } from "./delivery-decision.ts";
 import { runOptionsCandidate, type ChainContract, type ChainFetchOutcome } from "./loop.ts";
@@ -40,7 +40,7 @@ export interface OptionsMonitorDeps {
    * contract discovery was recording the difference as `PROVIDER_ERROR`.
    * `underlyingPrice` lets the fetch bound strikes around spot.
    */
-  getChain: (symbol: string, underlyingPrice?: number | null) => Promise<ChainFetchOutcome>;
+  getChain: (symbol: string, underlyingPrice?: number | null, opts?: { side?: "call" | "put" | null; strategyKey?: string | null }) => Promise<ChainFetchOutcome>;
   /** Stage 1.5: compact recent 1-minute bars for enriched decision-time features. Optional — without
    *  it the monitor falls back to snapshot-only features (sparser). */
   getBars?: (symbol: string) => Promise<Bar[]>;
@@ -253,6 +253,9 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
         catch { legacyBearishEscalation = null; }
       }
       const plausible = scoreStrategies(input).some((x) => x.applicable);
+      const preSelection = plausible
+        ? selectOptionsStrategy(input, { bearishActionable: bearishPipelineEnabled(env) })
+        : null;
       // FORMING, not yet plausible: re-check at the scan cadence (symbolFormingRecheckMs, default 0)
       // instead of freezing 60s, so the callout can fire as soon as the setup validates — while it is
       // still forming, not after the expansion. NOT a quality change: no gate loosened, no extra alert
@@ -263,7 +266,10 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
       if (breakerOpen(s, now())) { s.metrics.throttles += 1; return; }
       if (!tryConsume(s, cfg, now(), tier)) { s.metrics.throttles += 1; return; }
       // STAGE 2 — fetch the chain + compute chain features.
-      const chainRes = await deps.getChain(symbol, input.underlying.price ?? null);
+      const chainRes = await deps.getChain(symbol, input.underlying.price ?? null, {
+        side: preSelection?.selected?.side ?? null,
+        strategyKey: preSelection?.selected?.key ?? null,
+      });
       const chain = chainRes.contracts;
       s.metrics.providerChain += 1; s.metrics.stage2Chain += 1; s.metrics.chainsFetched += 1; chains += 1; breakerSuccess(s);
       // "Available" is about whether the provider answered, not whether the answer

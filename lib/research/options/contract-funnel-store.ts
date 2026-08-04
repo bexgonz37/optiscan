@@ -84,6 +84,25 @@ export function ensureContractFunnelSchema(db: StoreDb): void {
     CREATE INDEX IF NOT EXISTS idx_contract_funnel_terminal
       ON contract_funnel_evidence(session_date, terminal_reason);
   `);
+  const cols = new Set(
+    (db.prepare("PRAGMA table_info(contract_funnel_evidence)").all() as Array<{ name: string }>)
+      .map((c) => String(c.name)),
+  );
+  const add = (name: string, ddl: string) => {
+    if (!cols.has(name)) db.exec(`ALTER TABLE contract_funnel_evidence ADD COLUMN ${ddl}`);
+  };
+  add("requested_dte_min", "requested_dte_min INTEGER");
+  add("requested_dte_max", "requested_dte_max INTEGER");
+  add("fetched_dte_ranges_json", "fetched_dte_ranges_json TEXT");
+  add("requested_expiration_start", "requested_expiration_start TEXT");
+  add("requested_expiration_end", "requested_expiration_end TEXT");
+  add("expirations_covered_json", "expirations_covered_json TEXT");
+  add("pages_requested", "pages_requested INTEGER NOT NULL DEFAULT 0");
+  add("pages_received", "pages_received INTEGER NOT NULL DEFAULT 0");
+  add("raw_contracts_received", "raw_contracts_received INTEGER NOT NULL DEFAULT 0");
+  add("normalized_contracts_received", "normalized_contracts_received INTEGER NOT NULL DEFAULT 0");
+  add("chain_outcome", "chain_outcome TEXT");
+  add("range_coverage", "range_coverage TEXT NOT NULL DEFAULT 'UNKNOWN'");
 }
 
 export interface FunnelWriteResult {
@@ -111,8 +130,12 @@ export function recordContractFunnelOnDb(
          contracts_received, calls_received, puts_received, passed_side, passed_dte,
          two_sided, with_delta, delta_coverage, passed_delta_band, ranked_count,
          delta_source, selected_occ, terminal_reason,
-         greeks_missing_on_side, page_limit_reached
-       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         greeks_missing_on_side, page_limit_reached,
+         requested_dte_min, requested_dte_max, fetched_dte_ranges_json,
+         requested_expiration_start, requested_expiration_end, expirations_covered_json,
+         pages_requested, pages_received, raw_contracts_received, normalized_contracts_received,
+         chain_outcome, range_coverage
+       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(
       sessionDate, ev.atMs, ev.symbol, ev.direction ?? null, ev.requestedSide, ev.strategyKey,
       ev.discoveryVersion, ev.selectionVersion,
@@ -126,6 +149,11 @@ export function recordContractFunnelOnDb(
       ev.passedDeltaBand, ev.rankedCount,
       ev.deltaSource ?? null, ev.selectedOcc ?? null, ev.terminalReason,
       ev.greeksMissingOnSide ? 1 : 0, ev.pageLimitReached ? 1 : 0,
+      ev.requestedDteMin ?? null, ev.requestedDteMax ?? null, JSON.stringify(ev.fetchedDteRanges ?? []),
+      ev.requestedExpirationStart ?? null, ev.requestedExpirationEnd ?? null, JSON.stringify(ev.expirationsCovered ?? []),
+      ev.pagesRequested ?? 0, ev.pagesReceived ?? 0, ev.rawContractsReceived ?? ev.contractsReceived,
+      ev.normalizedContractsReceived ?? ev.contractsReceived,
+      ev.chainOutcome ?? null, ev.rangeCoverage ?? "UNKNOWN",
     );
     return { ok: true, error: null };
   } catch (e) {
@@ -157,6 +185,16 @@ export function readRecentFunnelEvidenceOnDb(
 
 function rowToEvidence(r: Record<string, unknown>): ContractFunnelEvidence {
   const n = (v: unknown): number => (typeof v === "number" ? v : Number(v ?? 0));
+  const stringArray = (v: unknown): string[] => {
+    if (Array.isArray(v)) return v.map(String);
+    if (typeof v !== "string" || !v.trim()) return [];
+    try {
+      const parsed = JSON.parse(v);
+      return Array.isArray(parsed) ? parsed.map(String) : [];
+    } catch {
+      return [];
+    }
+  };
   return {
     symbol: String(r.symbol ?? ""),
     direction: r.direction == null ? null : String(r.direction),
@@ -188,6 +226,20 @@ function rowToEvidence(r: Record<string, unknown>): ContractFunnelEvidence {
     terminalReason: String(r.terminal_reason ?? "INSUFFICIENT_EVIDENCE") as ContractFunnelEvidence["terminalReason"],
     greeksMissingOnSide: n(r.greeks_missing_on_side) === 1,
     pageLimitReached: n(r.page_limit_reached) === 1,
+    requestedDteMin: r.requested_dte_min == null ? null : n(r.requested_dte_min),
+    requestedDteMax: r.requested_dte_max == null ? null : n(r.requested_dte_max),
+    fetchedDteRanges: stringArray(r.fetched_dte_ranges_json),
+    requestedExpirationStart: r.requested_expiration_start == null ? null : String(r.requested_expiration_start),
+    requestedExpirationEnd: r.requested_expiration_end == null ? null : String(r.requested_expiration_end),
+    expirationsCovered: stringArray(r.expirations_covered_json),
+    pagesRequested: n(r.pages_requested),
+    pagesReceived: n(r.pages_received),
+    rawContractsReceived: n(r.raw_contracts_received),
+    normalizedContractsReceived: n(r.normalized_contracts_received),
+    chainOutcome: r.chain_outcome == null ? null : String(r.chain_outcome) as ContractFunnelEvidence["chainOutcome"],
+    rangeCoverage: (["FULL", "PARTIAL", "NONE", "UNKNOWN"].includes(String(r.range_coverage))
+      ? String(r.range_coverage)
+      : "UNKNOWN") as ContractFunnelEvidence["rangeCoverage"],
   };
 }
 

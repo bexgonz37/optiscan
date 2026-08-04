@@ -59,6 +59,7 @@ export type ContractTerminalReason =
   | "WRONG_SIDE_RETURNED"
   | "PAGE_LIMIT_REACHED"
   | "CHAIN_TRUNCATION_SUSPECTED"
+  | "RANGE_NOT_FETCHED"
   | "NO_CONTRACT_IN_DTE_RANGE"
   | "NO_CONTRACT_IN_DELTA_RANGE"
   | "NO_CONTRACT_IN_MONEYNESS_RANGE"
@@ -135,6 +136,7 @@ const BAND_RANGES: Record<TenorBand, [number, number]> = {
 const SUBDIVISIONS: Partial<Record<TenorBand, [number, number][]>> = {
   // A 1-7dte strategy should try tomorrow before it tries next Friday.
   "1-7dte": [[1, 1], [2, 3], [4, 7]],
+  "31-90dte": [[31, 60], [61, 90]],
 };
 
 /**
@@ -201,6 +203,18 @@ export interface ContractFunnelEvidence {
   /** True when the provider returned the side but every one lacked greeks. */
   greeksMissingOnSide: boolean;
   pageLimitReached: boolean;
+  requestedDteMin: number | null;
+  requestedDteMax: number | null;
+  fetchedDteRanges: string[];
+  requestedExpirationStart: string | null;
+  requestedExpirationEnd: string | null;
+  expirationsCovered: string[];
+  pagesRequested: number;
+  pagesReceived: number;
+  rawContractsReceived: number;
+  normalizedContractsReceived: number;
+  chainOutcome: ChainFetchOutcome["outcome"] | null;
+  rangeCoverage: "FULL" | "PARTIAL" | "NONE" | "UNKNOWN";
 }
 
 function emptyEvidence(
@@ -219,6 +233,11 @@ function emptyEvidence(
     deltaSource: null, selectedOcc: null,
     terminalReason: "INSUFFICIENT_EVIDENCE",
     greeksMissingOnSide: false, pageLimitReached: false,
+    requestedDteMin: null, requestedDteMax: null, fetchedDteRanges: [],
+    requestedExpirationStart: null, requestedExpirationEnd: null,
+    expirationsCovered: [], pagesRequested: 0, pagesReceived: 0,
+    rawContractsReceived: 0, normalizedContractsReceived: 0,
+    chainOutcome: null, rangeCoverage: "UNKNOWN",
   };
 }
 
@@ -238,6 +257,7 @@ function terminalReasonForEmptyChain(
 ): ContractTerminalReason {
   if (!outcome) return pageLimitReached ? "CHAIN_TRUNCATION_SUSPECTED" : "PROVIDER_ERROR";
   switch (outcome.outcome) {
+    case "RANGE_NOT_FETCHED": return "RANGE_NOT_FETCHED";
     case "CHAIN_TRUNCATED_BEFORE_RANGE": return "CHAIN_TRUNCATION_SUSPECTED";
     case "NO_CONTRACTS_IN_REQUESTED_RANGE": return "NO_CONTRACTS_RETURNED";
     case "CONTRACTS_AVAILABLE": return "NO_CONTRACTS_RETURNED";
@@ -248,6 +268,56 @@ function terminalReasonForEmptyChain(
     case "PROVIDER_INVALID_RESPONSE": return "PROVIDER_ERROR";
     default: return "PROVIDER_ERROR";
   }
+}
+
+function rangesFromOutcome(outcome: ChainFetchOutcome | null): Array<{ dteMin: number; dteMax: number }> {
+  if (!outcome) return [];
+  const fetched = outcome.fetchedDteRanges ?? [];
+  if (fetched.length) return fetched.filter((r) => Number.isFinite(r.dteMin) && Number.isFinite(r.dteMax));
+  if (outcome.requestedDteMin != null && outcome.requestedDteMax != null) {
+    return [{ dteMin: outcome.requestedDteMin, dteMax: outcome.requestedDteMax }];
+  }
+  return [];
+}
+
+function bandRange(band: TenorBand): [number, number] {
+  switch (band) {
+    case "0dte": return [0, 0];
+    case "1-7dte": return [1, 7];
+    case "8-14dte": return [8, 14];
+    case "15-30dte": return [15, 30];
+    case "31-90dte": return [31, 90];
+    default: return [91, 365];
+  }
+}
+
+function covers(lo: number, hi: number, ranges: Array<{ dteMin: number; dteMax: number }>): boolean {
+  let cursor = lo;
+  for (const r of [...ranges].sort((a, b) => a.dteMin - b.dteMin)) {
+    if (r.dteMax < cursor) continue;
+    if (r.dteMin > cursor) return false;
+    cursor = Math.max(cursor, r.dteMax + 1);
+    if (cursor > hi) return true;
+  }
+  return cursor > hi;
+}
+
+function overlaps(lo: number, hi: number, ranges: Array<{ dteMin: number; dteMax: number }>): boolean {
+  return ranges.some((r) => r.dteMax >= lo && r.dteMin <= hi);
+}
+
+function strategyRangeCoverage(outcome: ChainFetchOutcome | null, strategyKey: string): ContractFunnelEvidence["rangeCoverage"] {
+  const strat = getStrategy(strategyKey);
+  const ranges = rangesFromOutcome(outcome);
+  if (!strat || ranges.length === 0) return "UNKNOWN";
+  const bands = strat.preferredDte.map(bandRange);
+  if (bands.every(([lo, hi]) => covers(lo, hi, ranges))) return "FULL";
+  if (bands.some(([lo, hi]) => overlaps(lo, hi, ranges))) return "PARTIAL";
+  return "NONE";
+}
+
+function rangeString(r: { dteMin: number; dteMax: number; label?: string }): string {
+  return r.label ?? `${r.dteMin}-${r.dteMax}dte`;
 }
 
 function dteOkFor(strategyKey: string): (dte: number) => boolean {
@@ -314,6 +384,18 @@ export function selectContractWithEvidence(
   // `CHAIN_TRUNCATION_SUSPECTED` was unreachable dead code and every truncated
   // chain was attributed to the market instead. The fetch now reports it.
   ev.pageLimitReached = Boolean(opts.pageLimitReached ?? opts.chainOutcome?.truncated);
+  ev.requestedDteMin = opts.chainOutcome?.requestedDteMin ?? null;
+  ev.requestedDteMax = opts.chainOutcome?.requestedDteMax ?? null;
+  ev.fetchedDteRanges = (opts.chainOutcome?.fetchedDteRanges ?? []).map(rangeString);
+  ev.requestedExpirationStart = opts.chainOutcome?.requestedExpirationStart ?? null;
+  ev.requestedExpirationEnd = opts.chainOutcome?.requestedExpirationEnd ?? null;
+  ev.expirationsCovered = opts.chainOutcome?.expirationsCovered ?? [];
+  ev.pagesRequested = Number(opts.chainOutcome?.pagesRequested ?? 0);
+  ev.pagesReceived = Number(opts.chainOutcome?.pagesReceived ?? 0);
+  ev.rawContractsReceived = Number(opts.chainOutcome?.rawContractsReceived ?? chain.length);
+  ev.normalizedContractsReceived = Number(opts.chainOutcome?.normalizedContractsReceived ?? chain.length);
+  ev.chainOutcome = opts.chainOutcome?.outcome ?? null;
+  ev.rangeCoverage = strategyRangeCoverage(opts.chainOutcome ?? null, strategyKey);
 
   const strat = getStrategy(strategyKey);
   if (!strat) {
@@ -332,7 +414,11 @@ export function selectContractWithEvidence(
     // An empty chain is FIVE different facts and this line used to guess one of
     // them. Where the fetch reported its own outcome, use it; `PROVIDER_ERROR`
     // now means only what it says.
-    ev.terminalReason = terminalReasonForEmptyChain(opts.chainOutcome ?? null, ev.pageLimitReached);
+    const failureReason = terminalReasonForEmptyChain(opts.chainOutcome ?? null, ev.pageLimitReached);
+    ev.terminalReason = failureReason === "NO_CONTRACTS_RETURNED"
+      && (ev.rangeCoverage === "NONE" || ev.rangeCoverage === "PARTIAL")
+      ? "RANGE_NOT_FETCHED"
+      : failureReason;
     return { contract: null, evidence: ev };
   }
   if (sameSide.length === 0) {
@@ -363,9 +449,13 @@ export function selectContractWithEvidence(
      *
      * Truncation is OUR limit, so it is named as ours.
      */
-    ev.terminalReason = ev.pageLimitReached
+    ev.terminalReason = ev.rangeCoverage === "NONE"
+      ? "RANGE_NOT_FETCHED"
+      : ev.pageLimitReached
       ? "CHAIN_TRUNCATION_SUSPECTED"
-      : "NO_CONTRACT_IN_DTE_RANGE";
+      : ev.rangeCoverage === "PARTIAL"
+        ? "RANGE_NOT_FETCHED"
+        : "NO_CONTRACT_IN_DTE_RANGE";
     return { contract: null, evidence: ev };
   }
 
@@ -472,6 +562,7 @@ export function indicatesDiscoveryDefect(ev: ContractFunnelEvidence): boolean {
     ev.terminalReason === "NO_CALLS_RETURNED" ||
     ev.terminalReason === "NO_PUTS_RETURNED" ||
     ev.terminalReason === "WRONG_SIDE_RETURNED" ||
+    ev.terminalReason === "RANGE_NOT_FETCHED" ||
     ev.terminalReason === "CHAIN_TRUNCATION_SUSPECTED" ||
     ev.terminalReason === "PAGE_LIMIT_REACHED" ||
     // Contracts arrived and were tradeable, but every one lacked greeks and no

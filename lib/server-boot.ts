@@ -182,7 +182,7 @@ export function ensureServerBoot(): void {
       },
       getChain: async (symbol: string) => {
         const chain = await mon.getChain(symbol);
-        return (chain ?? []).map((c: any) => ({
+        return (chain.contracts ?? []).map((c: any) => ({
           optionSymbol: c.optionSymbol ?? c.option_symbol,
           side: c.side,
           strike: Number(c.strike),
