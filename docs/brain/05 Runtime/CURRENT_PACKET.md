@@ -901,3 +901,114 @@ faster into a suppressing path only converts the backlog to SUPPRESSED sooner.
 the recap dedup guard in `recap-delivery-guard.ts` — `recapPayloadKey` hashes
 the payload, and recovery re-sends persisted text, so identical bundles may key
 alike), THEN decide drain rate, THEN the RTH items.
+
+---
+
+# Packet update — 2026-08-04 (suppression root cause, RTH session)
+
+## Verified before relying on it
+
+`local = origin/main = 5bbb96f` ✅ · tree clean of tracked changes (20 untracked,
+unchanged) ✅ · production healthy, provider healthy, loop running ✅ ·
+**`session: "regular"` — the market is OPEN this session** ✅
+
+**Railway API token has EXPIRED** (`Not Authorized` from backboard GraphQL).
+`scripts/*` and the probe path both read `SCAN_API_TOKEN` from Railway, so
+production diagnostics could not be read this session. Owner must re-auth.
+
+## The suppression cause — proven, and NOT the payload hash
+
+I carried in the hypothesis that `recapPayloadKey` was hashing recovered text
+into collisions. **That hypothesis is wrong.** Read from the guard source:
+
+`lib/notifications/recap-delivery-guard.ts`
+
+    const WINDOW_MS = 10 * 60_000;
+    const MAX_POSTS = 2;
+
+The recap channel allows **2 posts per 10 minutes, channel-wide**. The
+`contentDrafts` job runs every **3 minutes** and attempts one bundle per run —
+**~3.3 attempts per window against a budget of 2**. About **40% of sweeps are
+refused for channel budget alone.**
+
+## Why that destroyed drafts
+
+`deliverDrafts` picked its status from one boolean:
+
+    res.ok ? "SENT" : res.suppressed ? "SUPPRESSED" : "FAILED"
+
+`postToDiscord` sets `suppressed: true` for **six** guard verdicts. Three are
+transient (`rate_limited`, `in_flight`, `retry_backoff`), and `disabled` is
+owner-reversible. `SUPPRESSED` is **not** in `RETRYABLE_DELIVERY_STATES`, so
+every draft refused for a momentary budget **left the pool permanently**.
+
+The backlog was not draining. It was being **consumed**: ~2 delivered and ~1.3
+destroyed per 10 minutes. That is exactly the observed shape — SKIPPED_NO_WEBHOOK
+−3, SUPPRESSED +3, SENT flat.
+
+## The 860 FAILED — same root cause, different state
+
+`deferredDraftEventIds` matched the literal status `SKIPPED_NO_WEBHOOK` only.
+A FAILED draft could be retried **only if its source event was re-queued**, and
+events are marked PROCESSED at generation time and never are. So all 860 were
+**unreachable by any code path**. Not a Discord problem — a query predicate.
+
+An existing test asserted that stranding as correct. Updated deliberately.
+
+## Shipped — `0cc84fb`
+
+Retryability is derived from the reason; status from retryability. Transient
+refusals park at `PENDING` and are swept again. `SUPPRESSED_DUPLICATE` and
+`SUPPRESSED_RETRY_EXHAUSTED` stay terminal — **dedup is not weakened**.
+
+An unrecognized suppression is classified **transient** on purpose: a future
+guard verdict must not silently inherit "delete this draft".
+
+Persisted per attempt: reason code, owner-safe explanation, retryability,
+redacted detail, attempt count, last attempt time. Secrets cannot reach the
+table — webhook URLs carry their token in the path and are stripped, asserted.
+
+Migration additive/nullable, guarded, mirrored into base schema. **Verified
+repeat-safe: 3 passes applied 6 / 0 / 0**, existing rows preserved with reason
+NULL — never recorded, so never invented. Queries detect the columns at runtime.
+
+`npm test` **3415/3415 twice**, tsc clean, build clean, `git diff --check` clean.
+
+## Drain policy — the sweep interval is NOT the lever
+
+With the fix, drafts are no longer destroyed. But throughput is now bounded by
+the guard, not the job:
+
+    MAX_POSTS 2 per 10 min = 12/hour ceiling
+    ~1,025 events -> ~85 hours
+
+**Running the sweep more often cannot help** — it would only produce more
+`rate_limited` parks. The only levers are `MAX_POSTS`/`WINDOW_MS` in the recap
+guard, or not sending old backlog to Discord at all.
+
+**Recommendation (owner decision, NOT taken):** do not raise `MAX_POSTS`. Split
+the queue by age — deliver LIVE and RECENT drafts, and leave historical backlog
+in the app as an archive/summary rather than replaying weeks of drafts into the
+channel. Priority 4 remains unimplemented.
+
+## Not done this session
+
+Priorities 4–16 untouched: recovery priority queues, after-hours options content
+safety, AI backend audit, **Ask OptiScan** (a multi-session build), options page
+redesign. RTH items also untouched — the expired token blocked reading
+`contract-funnel`, B7 reserves, and 0DTE state, even though the market was open.
+
+`PAPER_0DTE_RESEARCH_ENABLED` remains **unset**, correctly.
+
+## Exact resume point
+
+1. **Owner: re-auth Railway** (`railway login`) so production diagnostics read again.
+2. Verify `/api/diagnostics/content-delivery`: `suppressedByReason` should now
+   be dominated by `SUPPRESSED_RATE_LIMIT` **falling** while `SENT` rises, and
+   `failedByReason` should classify the 860. Confirm no draft is lost.
+3. Decide the drain policy above before any rate change.
+4. Priority 5 (after-hours options content safety) is the next offline-safe
+   concern and is a genuine truthfulness risk — content is being generated
+   during a live session right now.
+5. Ask OptiScan (Priorities 6–15) needs its own session; audit the existing AI
+   backend FIRST so a second chatbot is not built alongside it.
