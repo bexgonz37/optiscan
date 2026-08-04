@@ -6,6 +6,7 @@ import {
   __resetCallStatsForTest,
   QuotaExceededError,
   fetchBulkQuotes,
+  fetchOptionContractSnapshot,
 } from "../lib/polygon-provider.js";
 
 const ORIGINAL_ENV = { ...process.env };
@@ -121,3 +122,74 @@ test("quota guard fires BEFORE the network request", async () => {
   assert.equal(fetches, 1, "capped call must never reach the network");
   resetEnv();
 });
+
+test("exact OCC snapshots reuse one bounded-TTL provider response", async () => {
+  resetEnv();
+  process.env.POLYGON_API_KEY = "test-key";
+  process.env.POLYGON_MINUTE_CALL_CAP = "0";
+  process.env.POLYGON_DAILY_CALL_CAP = "0";
+  process.env.OPTIONS_EXACT_QUOTE_CACHE_TTL_MS = "5000";
+  const occ = "O:SPY260807C00600000";
+  let fetches = 0;
+  globalThis.fetch = async () => {
+    fetches += 1;
+    return exactOccResponse(occ);
+  };
+
+  const first = await fetchOptionContractSnapshot("SPY", occ);
+  const second = await fetchOptionContractSnapshot("SPY", occ);
+
+  assert.equal(first.available, true);
+  assert.equal(first.cacheHit, false);
+  assert.equal(second.available, true);
+  assert.equal(second.cacheHit, true);
+  assert.equal(second.dedupHit, false);
+  assert.equal(fetches, 1, "a fresh exact-contract quote must be shared across compatible consumers");
+  resetEnv();
+});
+
+test("concurrent exact OCC snapshots deduplicate in-flight work", async () => {
+  resetEnv();
+  process.env.POLYGON_API_KEY = "test-key";
+  process.env.POLYGON_MINUTE_CALL_CAP = "0";
+  process.env.POLYGON_DAILY_CALL_CAP = "0";
+  process.env.OPTIONS_EXACT_QUOTE_CACHE_TTL_MS = "5000";
+  const occ = "O:QQQ260807P00500000";
+  let fetches = 0;
+  let release;
+  const blocked = new Promise((resolve) => { release = resolve; });
+  globalThis.fetch = async () => {
+    fetches += 1;
+    await blocked;
+    return exactOccResponse(occ);
+  };
+
+  const first = fetchOptionContractSnapshot("QQQ", occ);
+  const second = fetchOptionContractSnapshot("QQQ", occ);
+  release();
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+
+  assert.equal(firstResult.available, true);
+  assert.equal(secondResult.available, true);
+  assert.equal(secondResult.dedupHit, true);
+  assert.equal(fetches, 1, "concurrent readers must await the same provider request");
+  resetEnv();
+});
+
+function exactOccResponse(occ) {
+  return {
+    ok: true,
+    json: async () => ({
+      results: {
+        details: { ticker: occ, contract_type: /P\d{8}$/.test(occ) ? "put" : "call" },
+        last_quote: {
+          bid: 1.2,
+          ask: 1.25,
+          last_updated: Date.now() * 1_000_000,
+        },
+        day: { volume: 100 },
+        open_interest: 500,
+      },
+    }),
+  };
+}

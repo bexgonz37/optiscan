@@ -45,6 +45,10 @@ export interface QuoteFetchResult {
    * instant fixes it without loosening the guard by a single millisecond.
    */
   observedAtMs: number;
+  /** The exact-OCC provider response was reused inside the bounded TTL. */
+  cacheHit: boolean;
+  /** The exact-OCC provider request joined compatible in-flight work. */
+  dedupHit: boolean;
 }
 
 /** Fetch a present-time quote for one exact OCC. Never throws. */
@@ -60,13 +64,13 @@ export async function liveAsymmetryQuote(
     // start. This single line is the FUTURE_QUOTE fix.
     const observedAtMs = Date.now();
     if (res?.quotaExceeded) {
-      return { quote: null, providerError: null, budgetBlocked: true, observedAtMs };
+      return { quote: null, providerError: null, budgetBlocked: true, observedAtMs, cacheHit: false, dedupHit: false };
     }
     if (!res?.available) {
-      return { quote: null, providerError: String(res?.note ?? "provider unavailable"), budgetBlocked: false, observedAtMs };
+      return { quote: null, providerError: String(res?.note ?? "provider unavailable"), budgetBlocked: false, observedAtMs, cacheHit: false, dedupHit: false };
     }
     const c = res.contract;
-    if (!c) return { quote: null, providerError: null, budgetBlocked: false, observedAtMs }; // genuine no-quote
+    if (!c) return { quote: null, providerError: null, budgetBlocked: false, observedAtMs, cacheHit: Boolean(res.cacheHit), dedupHit: Boolean(res.dedupHit) }; // genuine no-quote
     return {
       quote: {
         optionSymbol,
@@ -77,6 +81,8 @@ export async function liveAsymmetryQuote(
       providerError: null,
       budgetBlocked: false,
       observedAtMs,
+      cacheHit: Boolean(res.cacheHit),
+      dedupHit: Boolean(res.dedupHit),
     };
   } catch (err: any) {
     const msg = String(err?.message ?? err);
@@ -85,6 +91,8 @@ export async function liveAsymmetryQuote(
       providerError: /quota_exceeded/.test(msg) ? null : msg,
       budgetBlocked: /quota_exceeded/.test(msg),
       observedAtMs: Date.now(),
+      cacheHit: false,
+      dedupHit: false,
     };
   }
 }

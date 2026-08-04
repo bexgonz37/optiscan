@@ -21,6 +21,7 @@ import type { AsymmetryResearchState } from "./states.ts";
 import { resolvePaperPermission } from "./paper/activation.ts";
 import { decideNotification, resolveNotificationStrength } from "./notification-gate.ts";
 import { recordNotifyDecisionOnDb, attachNotifyOutcomeOnDb } from "./notify-journal.ts";
+import { isOptionsQuoteSession } from "../../market-session-guard.ts";
 
 export const TRANSITIONS_ENABLED_ENV = "HIGH_ASYMMETRY_CAPTURE_ENABLED";
 
@@ -176,6 +177,10 @@ export async function runAsymmetryTransitions(
     const env = deps.env ?? process.env;
     if (env[TRANSITIONS_ENABLED_ENV] !== "1") {
       out.reason = `${TRANSITIONS_ENABLED_ENV} is not set`;
+      return out;
+    }
+    if (!isOptionsQuoteSession(deps.nowMs, env)) {
+      out.reason = "OPTIONS_SESSION_CLOSED";
       return out;
     }
     out.ran = true;

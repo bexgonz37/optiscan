@@ -1437,3 +1437,79 @@ Exact resume point:
    representative RTH load with the new notification cap live.
 5. Graphify still needs owner/runtime repair before regeneration; existing
    graph output remains usable as stale context.
+
+---
+
+# Packet update - 2026-08-04 (High-Asymmetry provider pressure, after-hours guard)
+
+## Verified baseline
+
+- Before this concern, local `HEAD`, `origin/main`, and production were
+  `a895030e442e928db6e49b03148c243f3fdbd1ff`.
+- Production `/api/healthz` and `/api/health` were green: database ready,
+  schema healthy, lifecycle active, Polygon configured, loop running, and
+  `quotaExceeded=false`.
+- The sampled production session was `afterhours`; ordinary equity/ETF options
+  were closed. No fresh RTH High-Asymmetry alert behavior is claimed here.
+- `PAPER_0DTE_RESEARCH_ENABLED` remains unset.
+- Existing `graphify-out/graph.json` remains usable as stale read-only context.
+  Regeneration is still blocked because `graphify.exe` references the removed
+  Python 3.11 runtime; no runtime repair or dependency installation was made.
+
+## Measured root cause
+
+Deployment-scoped provider usage for `a895030` over a 33-minute sample recorded
+7,842 admitted requests, 4,139 internal budget refusals, zero provider errors,
+and zero HTTP 429s. High-Asymmetry was the dominant optional pressure:
+
+- `asymmetry_discovery`: 1,803 admitted and 1,797 refused exact-OCC reads.
+- `asymmetry_mark`: 442 admitted and 2,000 refused exact-OCC reads.
+- After the ordinary options session closed, the transition sweep still
+  attempted about 120 exact-OCC reads per minute.
+- Exact-OCC reads had no provider-boundary TTL cache or in-flight deduplication;
+  compatible transition, mark, paper, and Core reads could each pay separately.
+
+## Shipped locally in this concern
+
+- Added a process-shared exact-OCC response cache at the Polygon provider
+  boundary. Default TTL is 2 seconds, configurable with
+  `OPTIONS_EXACT_QUOTE_CACHE_TTL_MS`, clamped to 0-15 seconds, and bounded to
+  5,000 completed entries.
+- Concurrent identical underlying/OCC reads now join one in-flight provider
+  request. Cache hits and in-flight reuse remain visible in provider accounting
+  and High-Asymmetry mark evidence.
+- Successful exact-contract responses, including a genuine empty snapshot, may
+  be reused briefly. Provider errors and internal budget refusals are never
+  cached and remain distinct outcomes.
+- High-Asymmetry transition enrichment and forward marking now return
+  `OPTIONS_SESSION_CLOSED` before reading cases or issuing provider calls once
+  the ordinary options quote session is closed.
+- No provider cap, strategy rule, contract gate, paper setting, or alert
+  threshold was widened.
+
+## Validation
+
+- Focused provider/High-Asymmetry suites: 67 / 67 passed.
+- Full `npm test` passed twice: 3,454 / 3,454 both runs.
+- `npx tsc --noEmit --incremental false` passed.
+- `npm run build` passed.
+- `git diff --check` passed.
+- Migration review: no database migration in this concern.
+
+## Exact resume point
+
+1. Commit and push this provider-pressure concern, let Railway deploy it, and
+   verify the exact production SHA plus green health/provider/loop state.
+2. Compare deployment-scoped `asymmetry_discovery` and `asymmetry_mark`
+   requests, refusals, cache hits, and dedup avoidance against the baseline
+   above. After close, both scheduled sweeps should report
+   `OPTIONS_SESSION_CLOSED` and issue zero exact-OCC provider calls.
+3. During the next representative RTH session, verify fresh decisions under the
+   `a99f431` timing gate. Do not infer live success from after-hours rows.
+4. Replace the global 15-minute High-Asymmetry age with deterministic
+   strategy/DTE-specific freshness and lower the normal immediate-message
+   budget well below the existing emergency ceiling of 40.
+5. Audit all options-related after-hours messages and add instrument-aware
+   session authority before building owner-facing Ask OptiScan and redesigning
+   the Options page.
+6. Keep `PAPER_0DTE_RESEARCH_ENABLED` unset.

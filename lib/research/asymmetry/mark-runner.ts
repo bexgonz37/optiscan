@@ -119,6 +119,8 @@ export interface MarkDeps {
      * working; when absent the sweep clock is used, which is the old behaviour.
      */
     observedAtMs?: number;
+    cacheHit?: boolean;
+    dedupHit?: boolean;
   }>;
   nowMs: number;
   sessionDate: string;
@@ -134,6 +136,10 @@ export async function runDueAsymmetryMarks(db: MarkDb, deps: MarkDeps): Promise<
     const env = deps.env ?? process.env;
     if (env[MARKS_ENABLED_ENV] !== "1") {
       out.reason = `${MARKS_ENABLED_ENV} is not set`;
+      return out;
+    }
+    if (!isOptionsQuoteSession(deps.nowMs, env)) {
+      out.reason = "OPTIONS_SESSION_CLOSED";
       return out;
     }
     out.ran = true;
@@ -228,7 +234,7 @@ export async function runDueAsymmetryMarks(db: MarkDb, deps: MarkDeps): Promise<
               quoteAgeMs: q?.quoteAtMs != null ? observedAtMs - q.quoteAtMs : null,
               bid: q?.bid ?? null, ask: q?.ask ?? null,
               sourceEndpoint: "v3/snapshot/options/{underlying}/{occ}",
-              cacheStatus: "LIVE",
+              cacheStatus: fetched.dedupHit ? "INFLIGHT_REUSED" : fetched.cacheHit ? "CACHE_HIT" : "LIVE",
               accepted: rejection == null,
               independent: rejection == null && indep.independent,
               reusedFromHorizon: indep.reusedFromHorizon,

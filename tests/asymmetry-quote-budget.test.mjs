@@ -218,6 +218,52 @@ test("the default budget keeps the sweep inside the provider minute cap", { skip
     "the research lane must never be able to consume the whole minute cap on its own");
 });
 
+test("a closed ordinary options session stops transition enrichment before provider work", { skip }, async () => {
+  const db = new Database(":memory:");
+  seedCase(db);
+  let observed = 0;
+  const closedAtMs = Date.parse("2026-07-31T20:30:00Z");
+  const res = await runAsymmetryTransitions(db, {
+    observe: () => {
+      observed += 1;
+      return { fingerprint: FP, bid: 3.55, ask: 3.65, quoteAtMs: closedAtMs, triggered: false, invalidated: false, spreadPct: 2.7, openInterest: 5000 };
+    },
+    memory: createPrivateCaseMemory(),
+    send: async () => ({ ok: true }),
+    env: { HIGH_ASYMMETRY_CAPTURE_ENABLED: "1" },
+    nowMs: closedAtMs,
+    sessionDate: SESSION,
+  });
+
+  assert.equal(res.ran, false);
+  assert.equal(res.reason, "OPTIONS_SESSION_CLOSED");
+  assert.equal(observed, 0, "after-hours reprocessing must not spend exact-OCC provider capacity");
+  assert.equal(res.notified, 0);
+  db.close();
+});
+
+test("a closed ordinary options session stops forward marks before provider work", { skip }, async () => {
+  const db = new Database(":memory:");
+  seedCase(db);
+  let quotes = 0;
+  const closedAtMs = Date.parse("2026-07-31T20:30:00Z");
+  const res = await runDueAsymmetryMarks(db, {
+    quote: async () => {
+      quotes += 1;
+      return { quote: null, providerError: null, budgetBlocked: false };
+    },
+    nowMs: closedAtMs,
+    sessionDate: SESSION,
+    env: { HIGH_ASYMMETRY_CAPTURE_ENABLED: "1" },
+  });
+
+  assert.equal(res.ran, false);
+  assert.equal(res.reason, "OPTIONS_SESSION_CLOSED");
+  assert.equal(quotes, 0, "after-hours marking must not spend exact-OCC provider capacity");
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM asymmetry_marks").get().n, 0);
+  db.close();
+});
+
 function seedCase(db, over = {}) {
   ensureAsymmetrySchema(db);
   openAsymmetryCaseOnDb(db, {
