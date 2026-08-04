@@ -259,6 +259,54 @@ export function deltaSourceSplitOnDb(
   }
 }
 
+/**
+ * Per-strategy stage census — "how far did each strategy's candidates get".
+ *
+ * WHY THIS EXISTS. `terminalReasonBreakdownOnDb` says 51 of 52 SPY rows died at
+ * NO_CONTRACT_IN_DTE_RANGE. It cannot say WHICH strategy asked, or whether the
+ * chain that was handed to the filter even contained the band the strategy
+ * wanted. Those two facts separate a real DTE/expiration defect from a strategy
+ * whose requested band the fetch could never have supplied — and they are the
+ * difference between fixing the date math and fixing the request.
+ *
+ * `contractsReceived` / `passedSide` / `passedDte` are the three counts either
+ * diagnosis has to explain, so they are reported per strategy rather than summed.
+ * Averages are carried as SUM + n so a caller can weight them honestly; a
+ * strategy with no rows is absent rather than reported as zero.
+ */
+export function strategyStageBreakdownOnDb(
+  db: StoreDb,
+  sessionDate: string,
+  opts: FunnelScope = {},
+): {
+  strategyKey: string; rows: number; terminalReason: string;
+  contractsReceived: number; passedSide: number; passedDte: number;
+}[] {
+  try {
+    ensureContractFunnelSchema(db);
+    const { sql: whereSql, args } = funnelWhere(sessionDate, opts);
+    return (db.prepare(
+      `SELECT strategy_key AS strategyKey, terminal_reason AS terminalReason,
+              COUNT(*) AS n,
+              SUM(contracts_received) AS contractsReceived,
+              SUM(passed_side) AS passedSide,
+              SUM(passed_dte) AS passedDte
+         FROM contract_funnel_evidence WHERE ${whereSql}
+        GROUP BY strategy_key, terminal_reason
+        ORDER BY n DESC`,
+    ).all(...args) as Record<string, unknown>[]).map((r) => ({
+      strategyKey: String(r.strategyKey ?? ""),
+      terminalReason: String(r.terminalReason ?? ""),
+      rows: Number(r.n ?? 0),
+      contractsReceived: Number(r.contractsReceived ?? 0),
+      passedSide: Number(r.passedSide ?? 0),
+      passedDte: Number(r.passedDte ?? 0),
+    }));
+  } catch {
+    return [];
+  }
+}
+
 /** Terminal-reason distribution — "what killed the funnel today", by count, within scope. */
 export function terminalReasonBreakdownOnDb(
   db: StoreDb,

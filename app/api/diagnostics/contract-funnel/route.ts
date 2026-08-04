@@ -27,6 +27,7 @@ export async function GET(req: Request) {
     const { tradingDay } = await import("@/lib/trading-session");
     const {
       deltaSourceSplitOnDb, terminalReasonBreakdownOnDb, readRecentFunnelEvidenceOnDb,
+      strategyStageBreakdownOnDb,
     } = await import("@/lib/research/options/contract-funnel-store");
     const { evaluateDiscoveryHealth, rankAlerts } = await import("@/lib/research/options/discovery-monitor");
     const { getDb } = await import("@/lib/db");
@@ -46,6 +47,10 @@ export async function GET(req: Request) {
     const split = deltaSourceSplitOnDb(db, date, scope);
     const terminalReasons = terminalReasonBreakdownOnDb(db, date, scope);
     const recent = readRecentFunnelEvidenceOnDb(db, date, Date.now() - windowMs, 2000, scope);
+    // Which strategy asked, and how far the chain it was given actually got. A
+    // terminal reason alone cannot distinguish "the date math dropped valid
+    // contracts" from "this strategy asked for a band the fetch never requested".
+    const strategyStages = strategyStageBreakdownOnDb(db, date, scope);
 
     // Run the monitor over every (symbol, side) present in the window. It reads
     // persisted evidence only and cannot send anything.
@@ -74,6 +79,7 @@ export async function GET(req: Request) {
           : "Share of SELECTED contracts that required the missing-data fallback.",
       },
       terminalReasons,
+      strategyStages,
       observedInWindow: recent.length,
       discoveryAlerts: alerts,
       note:
