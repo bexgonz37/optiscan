@@ -212,3 +212,73 @@ test("the split can be sliced by symbol and side", () => {
   assert.equal(deltaSourceSplitOnDb(d, DAY, { symbol: "SPY", side: "call" }).moneynessProxy, 1);
   assert.equal(deltaSourceSplitOnDb(d, DAY, { side: "put" }).providerDelta, 1);
 });
+
+/**
+ * SCOPE CONSISTENCY.
+ *
+ * Measured in production on 2026-08-04: `?symbol=SPY` returned SPY's delta split
+ * (total 38) beside the GLOBAL terminal reasons (1532 PROVIDER_ERROR) and the
+ * GLOBAL observed count (382) — all three under a `scope: { symbol: "SPY" }`
+ * header. `?symbol=ZZZZ`, a symbol that cannot exist, returned the same 382 and
+ * the same 1532. Only deltaSourceSplitOnDb took a scope; the other two readers
+ * had no scope parameter at all, so the filter was silently dropped and global
+ * evidence was presented as if it belonged to the requested symbol.
+ */
+test("SCOPE: every reader honours the symbol filter, not just the delta split", () => {
+  const d = db();
+  recordContractFunnelOnDb(d, DAY, ev({ symbol: "SPY", terminalReason: "CONTRACT_SELECTED" }));
+  recordContractFunnelOnDb(d, DAY, ev({ symbol: "SPY", terminalReason: "PROVIDER_ERROR", deltaSource: null, selectedOcc: null }));
+  recordContractFunnelOnDb(d, DAY, ev({ symbol: "NVDA", terminalReason: "PROVIDER_ERROR", deltaSource: null, selectedOcc: null }));
+  recordContractFunnelOnDb(d, DAY, ev({ symbol: "NVDA", terminalReason: "PROVIDER_ERROR", deltaSource: null, selectedOcc: null }));
+
+  const scope = { symbol: "SPY" };
+  assert.equal(deltaSourceSplitOnDb(d, DAY, scope).total, 2, "split already scoped");
+
+  const reasons = terminalReasonBreakdownOnDb(d, DAY, scope);
+  assert.equal(
+    reasons.reduce((n, r) => n + r.count, 0), 2,
+    "terminal reasons must count SPY only — NVDA's PROVIDER_ERRORs are not SPY's",
+  );
+  assert.equal(reasons.find((r) => r.reason === "PROVIDER_ERROR")?.count, 1);
+
+  assert.equal(
+    readRecentFunnelEvidenceOnDb(d, DAY, 0, 2000, scope).length, 2,
+    "observedInWindow must count SPY only",
+  );
+});
+
+test("SCOPE: a symbol with no evidence reports nothing, not the global funnel", () => {
+  const d = db();
+  recordContractFunnelOnDb(d, DAY, ev({ symbol: "SPY" }));
+  recordContractFunnelOnDb(d, DAY, ev({ symbol: "NVDA", terminalReason: "PROVIDER_ERROR" }));
+
+  // The production control: an impossible symbol must not inherit global counts.
+  const scope = { symbol: "ZZZZ" };
+  assert.equal(deltaSourceSplitOnDb(d, DAY, scope).total, 0);
+  assert.deepEqual(terminalReasonBreakdownOnDb(d, DAY, scope), []);
+  assert.equal(readRecentFunnelEvidenceOnDb(d, DAY, 0, 2000, scope).length, 0);
+});
+
+test("SCOPE: the side filter applies to terminal reasons and the observed window too", () => {
+  const d = db();
+  recordContractFunnelOnDb(d, DAY, ev({ requestedSide: "call" }));
+  recordContractFunnelOnDb(d, DAY, ev({ requestedSide: "put", terminalReason: "NO_CONTRACT_IN_DTE_RANGE" }));
+  recordContractFunnelOnDb(d, DAY, ev({ requestedSide: "put", terminalReason: "NO_CONTRACT_IN_DTE_RANGE" }));
+
+  const scope = { symbol: "SPY", side: "put" };
+  const reasons = terminalReasonBreakdownOnDb(d, DAY, scope);
+  assert.equal(reasons.length, 1, "only the put terminal reason may appear");
+  assert.equal(reasons[0].reason, "NO_CONTRACT_IN_DTE_RANGE");
+  assert.equal(reasons[0].count, 2);
+  assert.equal(readRecentFunnelEvidenceOnDb(d, DAY, 0, 2000, scope).length, 2);
+});
+
+test("SCOPE: an unscoped call still reports the whole session, unchanged", () => {
+  const d = db();
+  recordContractFunnelOnDb(d, DAY, ev({ symbol: "SPY" }));
+  recordContractFunnelOnDb(d, DAY, ev({ symbol: "NVDA", terminalReason: "PROVIDER_ERROR" }));
+
+  assert.equal(deltaSourceSplitOnDb(d, DAY).total, 2);
+  assert.equal(terminalReasonBreakdownOnDb(d, DAY).reduce((n, r) => n + r.count, 0), 2);
+  assert.equal(readRecentFunnelEvidenceOnDb(d, DAY, 0).length, 2);
+});

@@ -38,9 +38,14 @@ export async function GET(req: Request) {
     const windowMs = Math.max(60_000, Number(url.searchParams.get("windowMs") ?? 15 * 60_000));
 
     const db = getDb() as never;
-    const split = deltaSourceSplitOnDb(db, date, { symbol, side });
-    const terminalReasons = terminalReasonBreakdownOnDb(db, date);
-    const recent = readRecentFunnelEvidenceOnDb(db, date, Date.now() - windowMs);
+    // One scope, applied to all three readers. Two of them used to ignore it and
+    // return global counts under a `scope` header that claimed the filter had
+    // been applied — so `?symbol=SPY` attributed every symbol's PROVIDER_ERRORs
+    // to SPY, and an impossible symbol still reported the full global funnel.
+    const scope: { symbol?: string; side?: "call" | "put" } = { symbol, side };
+    const split = deltaSourceSplitOnDb(db, date, scope);
+    const terminalReasons = terminalReasonBreakdownOnDb(db, date, scope);
+    const recent = readRecentFunnelEvidenceOnDb(db, date, Date.now() - windowMs, 2000, scope);
 
     // Run the monitor over every (symbol, side) present in the window. It reads
     // persisted evidence only and cannot send anything.

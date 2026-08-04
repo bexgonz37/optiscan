@@ -139,14 +139,16 @@ export function readRecentFunnelEvidenceOnDb(
   sessionDate: string,
   sinceMs: number,
   limit = 2000,
+  opts: FunnelScope = {},
 ): ContractFunnelEvidence[] {
   try {
     ensureContractFunnelSchema(db);
+    const { sql: whereSql, args } = funnelWhere(sessionDate, opts, { sinceMs });
     const rows = db.prepare(
       `SELECT * FROM contract_funnel_evidence
-        WHERE session_date = ? AND at_ms >= ?
+        WHERE ${whereSql}
         ORDER BY at_ms DESC LIMIT ?`,
-    ).all(sessionDate, sinceMs, limit) as Record<string, unknown>[];
+    ).all(...args, limit) as Record<string, unknown>[];
     return rows.map(rowToEvidence);
   } catch {
     return [];
@@ -198,6 +200,26 @@ export interface DeltaSourceSplit {
   proxyShareOfSelected: number | null;
 }
 
+/** Scope shared by every funnel reader, so a filter cannot be honoured by one and dropped by another. */
+export type FunnelScope = { symbol?: string; side?: "call" | "put" };
+
+/**
+ * One filter builder for all three readers.
+ *
+ * These clauses used to be written inline in deltaSourceSplitOnDb only. The other
+ * two readers took no scope at all, so `?symbol=SPY` returned SPY's delta split
+ * beside GLOBAL terminal reasons and a GLOBAL observed count — all three under a
+ * `scope: { symbol: "SPY" }` header that claimed otherwise.
+ */
+function funnelWhere(sessionDate: string, scope: FunnelScope, extra: { sinceMs?: number } = {}) {
+  const where = ["session_date = ?"];
+  const args: unknown[] = [sessionDate];
+  if (extra.sinceMs != null) { where.push("at_ms >= ?"); args.push(extra.sinceMs); }
+  if (scope.symbol) { where.push("symbol = ?"); args.push(scope.symbol); }
+  if (scope.side) { where.push("requested_side = ?"); args.push(scope.side); }
+  return { sql: where.join(" AND "), args };
+}
+
 /**
  * The measurement the 2026-08-03 fix was supposed to be validated against, and
  * which no query could answer until this table existed.
@@ -205,17 +227,15 @@ export interface DeltaSourceSplit {
 export function deltaSourceSplitOnDb(
   db: StoreDb,
   sessionDate: string,
-  opts: { symbol?: string; side?: "call" | "put" } = {},
+  opts: FunnelScope = {},
 ): DeltaSourceSplit {
   const empty: DeltaSourceSplit = {
     total: 0, providerDelta: 0, moneynessProxy: 0, unselected: 0, proxyShareOfSelected: null,
   };
   try {
     ensureContractFunnelSchema(db);
-    const where = ["session_date = ?"];
-    const args: unknown[] = [sessionDate];
-    if (opts.symbol) { where.push("symbol = ?"); args.push(opts.symbol); }
-    if (opts.side) { where.push("requested_side = ?"); args.push(opts.side); }
+    const { sql: whereSql, args } = funnelWhere(sessionDate, opts);
+    const where = [whereSql];
     const rows = db.prepare(
       `SELECT delta_source AS src, COUNT(*) AS n
          FROM contract_funnel_evidence WHERE ${where.join(" AND ")}
@@ -239,18 +259,20 @@ export function deltaSourceSplitOnDb(
   }
 }
 
-/** Terminal-reason distribution — "what killed the funnel today", by count. */
+/** Terminal-reason distribution — "what killed the funnel today", by count, within scope. */
 export function terminalReasonBreakdownOnDb(
   db: StoreDb,
   sessionDate: string,
+  opts: FunnelScope = {},
 ): { reason: string; count: number }[] {
   try {
     ensureContractFunnelSchema(db);
+    const { sql: whereSql, args } = funnelWhere(sessionDate, opts);
     return (db.prepare(
       `SELECT terminal_reason AS reason, COUNT(*) AS count
-         FROM contract_funnel_evidence WHERE session_date = ?
+         FROM contract_funnel_evidence WHERE ${whereSql}
         GROUP BY terminal_reason ORDER BY count DESC`,
-    ).all(sessionDate) as { reason: string; count: number }[]).map((r) => ({
+    ).all(...args) as { reason: string; count: number }[]).map((r) => ({
       reason: String(r.reason), count: Number(r.count ?? 0),
     }));
   } catch {
