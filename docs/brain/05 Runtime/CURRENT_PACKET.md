@@ -1,5 +1,61 @@
 # Current Task Packet
 
+## Packet update — 2026-08-04 RTH live validation and B7 attribution patch
+
+### Verified state
+
+- Local HEAD: `4afd20c10b4fbc1ba414c71a05cbd42a1b3c144b`
+- `origin/main`: `4afd20c10b4fbc1ba414c71a05cbd42a1b3c144b`
+- Production `/api/healthz`: serving `4afd20c10b4fbc1ba414c71a05cbd42a1b3c144b`
+- Production `/api/health`: `ok: true`, provider `polygon`, key present, DB writable, loop running, session `regular`, quota not globally exceeded at sample time
+- Railway backboard API: still `Not Authorized`; Railway deployment metadata is not readable until the owner re-authenticates Railway
+- Existing Graphify output was stale before this work: built from `7ab7c4c`, while code/production were already `4afd20c`
+
+### Claude/later work verified, with corrections
+
+- Legacy DB upgrade safety tests remain present in the suite and the full suite passed.
+- Contract-funnel symbol scoping is fixed: impossible `symbol=ZZZZ` returns no scoped evidence, not the global funnel.
+- The ambiguous chain `[]` result has already been replaced locally and in production by structured outcomes in `fetchOptionChain` / `ChainFetchOutcome`.
+- Production is no longer serving `7ab7c4c`; it is serving `4afd20c`.
+- SPY calls are no longer uniformly dead at `NO_CONTRACT_IN_DTE_RANGE`: current production scoped SPY CALL evidence shows selected call contracts as well as remaining DTE failures.
+
+### Structured chain result and SPY/QQQ/NVDA live evidence
+
+Current production structured outcomes distinguish successful empties, provider failures, timeouts, missing configuration, quota/budget refusals, and page truncation. Historical rows with old terminal reasons remain historical; no cause was invented for them.
+
+RTH samples from `/api/diagnostics/contract-funnel`:
+
+- SPY CALL: total 51 rows; terminal reasons `NO_CONTRACT_IN_DTE_RANGE` 43, `CONTRACT_SELECTED` 6, `CHAIN_TRUNCATION_SUSPECTED` 2. Recent window observed 4 rows and raised `PAGE_LIMIT_REPEATED`.
+- QQQ CALL: total 46 rows; terminal reasons `NO_CONTRACT_IN_DTE_RANGE` 35, `CONTRACT_SELECTED` 9, `CHAIN_TRUNCATION_SUSPECTED` 1, `PROVIDER_ERROR` 1. Recent window observed 5 rows and raised `PAGE_LIMIT_REPEATED`.
+- NVDA CALL: total 14 rows; terminal reason `CONTRACT_SELECTED` 14. Recent window observed 1 row and raised no discovery alert.
+
+Root-cause correction: for many remaining SPY/QQQ rows, the top strategies are `longer_dated_swing`, `breakout_forming`, `pullback_continuation`, `reversal_bounce`, and `sr_reclaim`. `longer_dated_swing` asks for 15-90 DTE in the catalog, while the live Stage-2 fetch used by `buildLiveOptionsDeps.getChain` is intentionally 0-14 DTE. The new per-strategy stage breakdown exposes that mismatch. Do not hide this by broadening all live fetches; the next code concern should route/search by the selected strategy's DTE bands or persist enough per-request fields to prove the intended window before changing request breadth.
+
+### B7 provider reserves
+
+Production `/api/system/provider-usage` sample:
+
+- Minute cap 280; live partition total reserved 179; shared pool 101.
+- Reserves visible: `scanner` 58, `alert_capture` 5, `options_discovery` 28, `options_paper_mark` 44, `asymmetry_mark` 44.
+- Live sample used: `options_discovery` 28/28 reserve, `options_paper_mark` 18/44 reserve, shared 9/101, scanner reserve unused in that minute.
+- Durable 2026-08-04 totals at sample: 158,891 provider requests, 516,914 quota blocks, 72 provider errors, 0 HTTP 429.
+- By admitted requests: `options_discovery` 65,569, `scanner` 49,975, `options_paper_mark` 36,690, `unattributed` 5,817, `options_shadow_mark` 445, `alert_capture` 247, `premarket` 148.
+- B7 decision: keep `PAPER_0DTE_RESEARCH_ENABLED` unset. Core capacity is protected by reserves, but optional/research activation is not justified while quota-block pressure remains this high and unattributed refusals remain enormous.
+
+### Shipped locally in this update
+
+- `/api/agents` and `/api/callouts` now wrap their provider work in `withProviderConsumer("dashboard_api", ...)`.
+- `tests/api-regression.test.mjs` now pins those two browser/operator entry points so manual agent/callout probes cannot fall into `unattributed`.
+- No cap was raised, no trading gate was weakened, no Discord send path was changed, and no paper/real-money setting was enabled.
+
+### Exact resume point
+
+1. Finish validation/commit/deploy of the `dashboard_api` attribution patch.
+2. Re-check `/api/system/provider-usage` after deploy; `unattributed` should stop growing from manual agent/callout probes. If it still grows, inspect remaining direct provider callers not covered by endpoint/scheduler scopes.
+3. Fix the strategy/request-window mismatch exposed by SPY/QQQ: the live chain request must be driven by the selected strategy's DTE bands or the evaluator must not blame the market for bands the fetch never requested.
+4. Add richer persisted per-request chain diagnostics before changing request breadth: requested expiration start/end, outcome, pages requested/received, truncation, and DTE bucket counts.
+5. Only after the live contract path is truthful for SPY/QQQ/NVDA should High-Asymmetry timing/spam audit resume.
+
 Task ID: roadmap-session-4-legacy-upgrade-safety-and-funnel-scope (IN PROGRESS — see resume point)
 
 ## Active position (2026-08-04, RTH session)

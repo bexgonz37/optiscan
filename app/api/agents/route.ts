@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { checkApiToken, unauthorized } from "@/lib/auth";
 import { ensureServerBoot } from "@/lib/server-boot";
+import { withProviderConsumer } from "@/lib/provider-context";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,7 +20,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: "ticker query parameter is required" }, { status: 400 });
   }
   const { runAgentsForTicker } = await import("@/lib/agents/runtime");
-  const result = await runAgentsForTicker(ticker.toUpperCase());
+  const result = await withProviderConsumer("dashboard_api", () => runAgentsForTicker(ticker.toUpperCase()));
   return NextResponse.json({
     ok: true,
     ticker: result.ticker,

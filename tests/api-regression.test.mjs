@@ -217,6 +217,8 @@ test("every provider-calling entry point declares a consumer", () => {
     ["app/api/scan/unusual/route.ts", "dashboard_api"],
     ["app/api/scan/[symbol]/route.ts", "dashboard_api"],
     ["app/api/scanner/live/route.ts", "dashboard_api"],
+    ["app/api/agents/route.ts", "dashboard_api"],
+    ["app/api/callouts/route.ts", "dashboard_api"],
     // Historical research must be readable as historical.
     ["app/api/research/options/replay/route.ts", "historical_research"],
   ];

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { checkApiToken, unauthorized } from "@/lib/auth";
 import { ensureServerBoot } from "@/lib/server-boot";
+import { withProviderConsumer } from "@/lib/provider-context";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,7 +23,7 @@ export async function GET(req: Request) {
   const list = tickers.length ? tickers.slice(0, 8) : DEFAULT_TICKERS;
 
   const { buildCalloutsForTickers } = await import("@/lib/callouts/runtime");
-  const result = await buildCalloutsForTickers(list);
+  const result = await withProviderConsumer("dashboard_api", () => buildCalloutsForTickers(list));
 
   return NextResponse.json({
     ok: true,
