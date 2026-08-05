@@ -1,5 +1,113 @@
 # Current Task Packet
 
+## Packet update — 2026-08-05 instrument session authority shipped (Codex handoff completed)
+
+### Verified state
+
+- Local HEAD = `origin/main` = production: `1884fd847469691ca95860171a705796bf0f8af9` (`1884fd8`)
+- Previous production SHA: `a577f386c3433e1853d752cbeec6da9eeb55b96a` (`a577f38`)
+- Production `/api/healthz`: `ok: true`, db writable, `schemaMissing: []`, lifecycle enabled/ready/active
+- Production `/api/health`: `ok: true`, provider `polygon`, key present, loop running, session `regular`, `quotaExceeded: false`
+- `PAPER_0DTE_RESEARCH_ENABLED` remains unset
+- Railway CLI authenticated this session; deployment verified by SHA, not assumed
+
+### Clock correction
+
+The handoff prompt assumed the options session was closed (2026-08-04 ~16:31 PT). Production
+clock at resume was **2026-08-05T15:42Z = 11:42 ET, session `regular`** — the market was OPEN.
+After-hours behavior was therefore proven by deterministic injected-clock tests, NOT by live
+after-hours observation. No fresh after-hours RTH claim is made.
+
+### Codex partial work recovered
+
+Working tree was recovered intact; nothing was reset, reverted, or discarded. Two Codex commits
+(`c6eef4b`, `a577f38`) were already pushed past the reported `a895030` baseline. 21 tracked
+modified files plus 2 new lib modules and 3 new test files were preserved.
+
+### Helper extraction (the one item Codex could not finish)
+
+`tests/option-milestone-evidence.test.mjs` could not compile: it imported
+`verifiedOptionMilestoneSnapshots` from `lib/alert-tracker.ts`, which pulls `@/lib/*` path
+aliases that `node --experimental-strip-types` cannot resolve.
+
+Extracted the real rule into **`lib/option-milestone-evidence.ts`** — dependency-light, no DB,
+no provider, injectable `nowMs` and `maxQuoteAgeMs`. `alert-tracker.ts` imports and re-exports
+it, so production behavior is unchanged and the test exercises production code rather than a
+copy.
+
+### Session authority
+
+`lib/instrument-session-authority.ts` is the single deterministic classifier. States:
+`UNDERLYING_RTH_OPEN` / `UNDERLYING_EXTENDED_HOURS` / `UNDERLYING_CLOSED`,
+`OPTIONS_REGULAR_OPEN` / `OPTIONS_EXTENDED_SESSION_OPEN` / `OPTIONS_CLOSED`, and
+`SESSION_UNKNOWN`, which fails closed to non-actionable.
+
+Instrument classes: `EQUITY_OPTION` (16:00 ET), `ETF_415_OPTION` (explicit Nasdaq 4:15 roster),
+`INDEX_GTH_OPTION` (Cboe curb + GTH; PM-settled 0DTE fails closed at the underlying close),
+`UNKNOWN`. `optionsSessionAllowsStrategy` keeps session-open and strategy-eligible separate —
+an open extended session does not make a regular-session strategy actionable.
+
+### After-hours actionability and delivery re-evaluation
+
+Delivery now revalidates at the network boundary instead of replaying the capture-time decision:
+`notifyNewAlert`, `confirmAndSendPending`, `deliverCalloutDiscord`, `retryDiscordDelivery`, and
+the asymmetry transition runner all re-check session + quote freshness before sending.
+`discord_deliveries.delivery_context_json` persists the context so a queued draft is re-checked,
+never trusted. Stale owner research archives as `SUPPRESSED_STALE_RESEARCH`; verified performance
+content delivers labelled `HISTORICAL REPORT CARD — NON-ACTIONABLE`. The tracker no longer marks
+or finalizes option outcomes once the applicable options session is closed, so after-hours
+underlying movement cannot become option performance.
+
+Notify journal → `ASYM_NOTIFY_JOURNAL_V3` (six delivery-outcome columns added through
+`addColumnIfMissing`; migration is repeat-safe and migrated cleanly in production).
+
+### Validation
+
+- `npm test`: **3470 pass / 0 fail**, run twice
+- `npx tsc --noEmit --incremental false`: clean
+- `npm run build`: clean
+- `git diff --check`: clean
+- One pre-existing test (`asymmetry-notify-journal`) pinned the journal literal at V2 and was
+  updated to V3 — that assertion is the intentional schema tripwire, not a behavior change.
+
+### Pre-existing production defects found (NOT caused by this deploy)
+
+Both files below are byte-identical between `a577f38` and `1884fd8`; the diff is empty.
+
+1. **Seed worker disabled.** `Cannot find module '/app/lib/provider-timestamp.js' imported from
+   /app/lib/polygon-provider.js` → 5 failures → `seed worker disabled`. The file is tracked, is
+   not in `.dockerignore`, and was added 2026-07-31 (82 commits back).
+2. **Server boot skipped.** `Cannot find module '/app/lib/server-boot.ts' imported from
+   /app/.next/server/instrumentation.js`. The scheduler loop still reports running via a
+   different path (`lastTickAgeMs` ~2s), but the instrumentation boot path is dead.
+
+Both look like one root cause: the deployed image cannot resolve `lib/*` source modules from
+traced `.next` output. **This is the recommended next concern** — it plausibly affects analog
+seeding and boot-time wiring, and it must be understood before any latency numbers from
+production are trusted.
+
+### Not done (scope honestly stated)
+
+Priorities 5, 6, 9, 11, 12 were not started. Owner-token-gated diagnostics
+(`/api/diagnostics/*`) returned `unauthorized`, so the after-hours message audit and the
+end-to-end latency percentile trace could not be run against production data this session.
+
+Priority 10 (AI backend audit) was partially completed by inspection only:
+`app/api/ai/advisory-chat` + `lib/ai/advisory-chat{,-evidence,-store,-sources}.ts` +
+`components/AdvisoryChat.tsx` + `app/ai/page.tsx` are wired end to end →
+**LIVE_AND_CONNECTED** (~1,840 lines). It already emits structured
+`FACT / INFERENCE / HYPOTHESIS / RECOMMENDATION / DATA_QUALITY_WARNING`. Ask OptiScan should
+**extend this stack and its taxonomy**, not add a second chatbot. `app/copilot/page.tsx` still
+exists and must be renamed/retired under the no-"Copilot" naming rule.
+
+### Exact resume point
+
+Fix the deployed-image module resolution for `lib/provider-timestamp.js` and `lib/server-boot.ts`
+(seed worker + instrumentation boot), then obtain the owner access token to run the Priority 5
+after-hours message audit and the Priority 6 latency trace against real production rows.
+
+---
+
 ## Packet update — 2026-08-04 RTH live validation and B7 attribution patch
 
 ### Verified state
