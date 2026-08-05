@@ -514,6 +514,7 @@ async function asymmetryTransitionsJob(nowMs: number): Promise<void> {
     // leave the process no matter how the flags were set.
     send: sendAsymmetryWebhook,
     nowMs,
+    clock: Date.now,
     sessionDate: tradingDay(nowMs),
   }));
   state().lastAsymmetryTransitions = res;

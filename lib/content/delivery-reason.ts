@@ -47,6 +47,7 @@ export type DeliveryReasonCode =
   | "SUPPRESSED_RETRY_BACKOFF"
   | "SUPPRESSED_RETRY_EXHAUSTED"
   | "SUPPRESSED_PERSISTENCE_FAILED"
+  | "SUPPRESSED_STALE_RESEARCH"
   | "DISABLED_BY_KILL_SWITCH"
   | "SKIPPED_NO_WEBHOOK"
   | "FAILED_DISCORD_REJECTED"
@@ -98,6 +99,7 @@ const BY_CODE: Record<DeliveryReasonCode, Omit<DeliveryReason, "code" | "explana
   SUPPRESSED_IN_FLIGHT: { retryable: true, status: "PENDING" },
   SUPPRESSED_RETRY_BACKOFF: { retryable: true, status: "PENDING" },
   SUPPRESSED_PERSISTENCE_FAILED: { retryable: true, status: "PENDING" },
+  SUPPRESSED_STALE_RESEARCH: { retryable: false, status: "SUPPRESSED" },
   // The owner can turn the kill switch back on; the draft must survive that.
   DISABLED_BY_KILL_SWITCH: { retryable: true, status: "SKIPPED_NO_WEBHOOK" as DeliveryStatus },
   SKIPPED_NO_WEBHOOK: { retryable: true, status: "SKIPPED_NO_WEBHOOK" as DeliveryStatus },
@@ -118,6 +120,7 @@ const EXPLANATION: Record<DeliveryReasonCode, string> = {
   SUPPRESSED_IN_FLIGHT: "Another worker holds the delivery claim. Queued for a later sweep.",
   SUPPRESSED_RETRY_BACKOFF: "Waiting out a delivery backoff. Queued for a later sweep.",
   SUPPRESSED_PERSISTENCE_FAILED: "The delivery claim could not be recorded, so no send was attempted. Queued for a later sweep.",
+  SUPPRESSED_STALE_RESEARCH: "The draft remains archived in the app, but its live-looking research window has passed. Not sent to Discord.",
   DISABLED_BY_KILL_SWITCH: "DISCORD_RECAP_ENABLED is off. Held until the owner turns it back on.",
   SKIPPED_NO_WEBHOOK: "No recap webhook is configured. Held until one exists.",
   FAILED_DISCORD_REJECTED: "Discord rejected the message. Not retried without repair.",

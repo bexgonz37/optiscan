@@ -286,10 +286,21 @@ export async function buildCalloutsForTickers(
         }
       }
       try {
+        const contract = webhook === "options" ? canonicalOptionContract(b.callout) : null;
         const res = await deliverCalloutDiscord({
           webhook,
           payload: toWebhookPayload(b.discord),
           idempotencyKey: b.decision.idempotencyKey,
+          deliveryContext: contract ? {
+            symbol: contract.ticker,
+            optionSymbol: contract.optionSymbol,
+            expiration: contract.expiration,
+            candidateAtMs: b.callout.timestamp,
+            quoteAtMs: b.callout.optionQuoteAtMs ?? Number.NaN,
+            strategySessions: ["regular"],
+            maxCandidateAgeMs: 90_000,
+            maxQuoteAgeMs: 90_000,
+          } : null,
         });
         b.deliveryId = res.deliveryId ?? null;
         b.deliveryStatus = res.status;

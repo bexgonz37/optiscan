@@ -35,11 +35,13 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const RICH_VARS = {
-  symbol: "AMD", optionType: "call", strike: 400, expiration: "08/27",
+  symbol: "AMD", optionType: "call", strike: 400, expiration: "2026-08-07",
   premium: 5.2, confidence: 0.72, relativeVolume: 4.2, callFlow: 1200,
   sector: "Semiconductors", catalyst: "AI demand", vwap: 398.5, support: 395, resistance: 405,
   underlyingPrice: 399.1, reason: "Reclaimed VWAP on rising call flow",
 };
+const CONTENT_EVENT_MS = Date.parse("2026-08-04T14:58:20Z");
+const CONTENT_NOW_MS = Date.parse("2026-08-04T15:00:00Z");
 
 test("renderLine drops a line when a placeholder value is missing", () => {
   assert.equal(renderLine("Rel volume {{relativeVolume}}", { relativeVolume: 4.2 }), "Rel volume 4.2x");
@@ -156,11 +158,11 @@ function makeDb() {
 function seedEvent(db, over = {}) {
   const row = {
     id: over.id ?? "ce_1", opportunity_case_id: "oc_1", event_type: "OPPORTUNITY_OPENED", symbol: "AMD",
-    occurred_at_ms: 1_700_000_000_000, frozen_entry: 5.2, current_mark: null, return_percent: null,
+    occurred_at_ms: CONTENT_EVENT_MS, frozen_entry: 5.2, current_mark: null, return_percent: null,
     milestone_percent: null, max_return_percent: null, direction: "bullish", option_type: "call",
-    strike: 400, expiration: "08/27", original_thesis_json: JSON.stringify(["Reclaimed VWAP on rising call flow"]),
+    strike: 400, expiration: "2026-08-07", original_thesis_json: JSON.stringify(["Reclaimed VWAP on rising call flow"]),
     evidence_summary_json: JSON.stringify(["rel vol 4.2x"]), strategy_key: "sr_reclaim", content_status: "PENDING",
-    label: null, payload_json: null, created_at_ms: 1_700_000_000_000, ...over,
+    label: null, payload_json: null, created_at_ms: CONTENT_EVENT_MS, ...over,
   };
   db.prepare(`INSERT INTO opportunity_content_events
     (id,opportunity_case_id,event_type,symbol,occurred_at_ms,frozen_entry,current_mark,return_percent,milestone_percent,max_return_percent,direction,option_type,strike,expiration,original_thesis_json,evidence_summary_json,strategy_key,content_status,label,payload_json,created_at_ms)
@@ -178,7 +180,7 @@ function captureDeps() {
       send: async (content) => { sent.push(content); return { ok: true, messageId: `m${sent.length}`, error: null }; },
       webhookConfigured: () => true,
       loadCaseVars: () => ({ confidence: 0.72, relativeVolume: 4.2, callFlow: 1200, sector: "Semiconductors", catalyst: "AI demand", vwap: 398.5, support: 395 }),
-      now: () => 1_700_000_100_000,
+      now: () => CONTENT_NOW_MS,
     },
   };
 }
@@ -224,7 +226,7 @@ test("missing webhook persists drafts as SKIPPED_NO_WEBHOOK and does not send", 
     send: async (c) => { sent.push(c); return { ok: true, messageId: "x", error: null }; },
     webhookConfigured: () => false,
     loadCaseVars: () => ({ confidence: 0.72, relativeVolume: 4.2, callFlow: 1200 }),
-    now: () => 1_700_000_100_000,
+    now: () => CONTENT_NOW_MS,
   }, { CONTENT_EVENTS_ENABLED: "1" });
   assert.equal(sent.length, 0);
   assert.ok(res.persisted >= 1 || res.skippedNoWebhook >= 1);
@@ -252,7 +254,7 @@ test("REGRESSION: drafts skipped for want of a webhook are RECOVERED once one ex
     send: async () => { throw new Error("must not send with no webhook"); },
     webhookConfigured: () => false,
     loadCaseVars: () => ({ confidence: 0.72, relativeVolume: 4.2, callFlow: 1200 }),
-    now: () => 1_700_000_100_000,
+    now: () => CONTENT_NOW_MS,
   }, { CONTENT_EVENTS_ENABLED: "1" });
   assert.equal(cold.skippedNoWebhook, 1);
   assert.equal(
@@ -285,7 +287,7 @@ test("recovery delivers the PERSISTED text — it never regenerates or re-dates 
     send: async () => ({ ok: true, messageId: "x", error: null }),
     webhookConfigured: () => false,
     loadCaseVars: () => ({ confidence: 0.72, relativeVolume: 4.2, callFlow: 1200 }),
-    now: () => 1_700_000_100_000,
+    now: () => CONTENT_NOW_MS,
   }, { CONTENT_EVENTS_ENABLED: "1" });
 
   const before = db.prepare(
@@ -311,14 +313,14 @@ test("recovery delivers the PERSISTED text — it never regenerates or re-dates 
 
 test("recovery stays bounded — a backlog cannot burst into the channel", async () => {
   const db = makeDb();
-  for (let i = 0; i < 5; i++) seedEvent(db, { id: `ce_bk${i}`, occurred_at_ms: 1_700_000_000_000 + i });
+  for (let i = 0; i < 5; i++) seedEvent(db, { id: `ce_bk${i}`, occurred_at_ms: CONTENT_EVENT_MS + i });
   // Drain all five into the deferred state, one per run (the existing cap).
   for (let i = 0; i < 5; i++) {
     await runContentDraftsScan(db, {
       send: async () => ({ ok: true, messageId: "x", error: null }),
       webhookConfigured: () => false,
       loadCaseVars: () => ({ confidence: 0.72, relativeVolume: 4.2 }),
-      now: () => 1_700_000_100_000,
+      now: () => CONTENT_NOW_MS,
     }, { CONTENT_EVENTS_ENABLED: "1" });
   }
   const deferredEvents = db.prepare(
@@ -339,14 +341,14 @@ test("a failed recovery send stays retryable rather than being lost again", asyn
     send: async () => ({ ok: true, messageId: "x", error: null }),
     webhookConfigured: () => false,
     loadCaseVars: () => ({ confidence: 0.72, relativeVolume: 4.2 }),
-    now: () => 1_700_000_100_000,
+    now: () => CONTENT_NOW_MS,
   }, { CONTENT_EVENTS_ENABLED: "1" });
 
   const failed = await runContentDraftsScan(db, {
     send: async () => ({ ok: false, messageId: null, error: "discord 500" }),
     webhookConfigured: () => true,
     loadCaseVars: () => ({ confidence: 0.72, relativeVolume: 4.2 }),
-    now: () => 1_700_000_200_000,
+    now: () => CONTENT_NOW_MS + 100_000,
   }, ENV);
   assert.equal(failed.deferredDelivered, 0);
   const states = db.prepare(
@@ -382,7 +384,7 @@ test("a NON-retryable failure is not swept up again", async () => {
     send: async () => ({ ok: false, messageId: null, error: "discord 400: invalid form body" }),
     webhookConfigured: () => true,
     loadCaseVars: () => ({ confidence: 0.72, relativeVolume: 4.2 }),
-    now: () => 1_700_000_100_000,
+    now: () => CONTENT_NOW_MS,
   }, ENV);
 
   const rows = db.prepare(
@@ -408,7 +410,7 @@ test("recovery never runs while the webhook is still unconfigured", async () => 
     send: async () => { throw new Error("must not send"); },
     webhookConfigured: () => false,
     loadCaseVars: () => ({ confidence: 0.72, relativeVolume: 4.2 }),
-    now: () => 1_700_000_100_000,
+    now: () => CONTENT_NOW_MS,
   };
   await runContentDraftsScan(db, coldDeps, { CONTENT_EVENTS_ENABLED: "1" });
   const again = await runContentDraftsScan(db, coldDeps, { CONTENT_EVENTS_ENABLED: "1" });
@@ -481,7 +483,7 @@ test("partial Discord failure retries only unsent messages", async () => {
     },
     webhookConfigured: () => true,
     loadCaseVars: () => ({ confidence: 0.72, relativeVolume: 4.2, callFlow: 1200, vwap: 398.5 }),
-    now: () => 1_700_000_100_000,
+    now: () => CONTENT_NOW_MS,
   };
   const first = await runContentDraftsScan(db, deps, ENV);
   assert.ok(first.failed >= 1 || first.persisted >= 1);

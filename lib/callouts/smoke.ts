@@ -53,6 +53,7 @@ export async function runDiscordSmokeTest(opts: { send?: boolean; nowMs?: number
       webhook: it.webhook,
       payload: toWebhookPayload(it.payload),
       idempotencyKey: `smoke:${it.name}:${hourBucket(nowMs)}`,
+      nonActionableSystemTest: true,
     });
     results.push({ name: it.name, webhook: it.webhook, sent: res.sent, skipped: res.skipped, status: res.status, reason: res.reason });
   }

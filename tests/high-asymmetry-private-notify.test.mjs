@@ -27,6 +27,8 @@ const ON = { [PRIVATE_ENABLED_ENV]: "1", [PRIVATE_WEBHOOK_ENV]: PRIVATE };
 const candidate = (over = {}) => ({
   fingerprint: "fp_1", sessionDate: "2026-07-31", symbol: "NVDA", direction: "CALL",
   optionSymbol: "O:NVDA260807C00200000", state: "EARLY_ASYMMETRY", observedAtMs: Date.UTC(2026, 6, 31, 14, 0, 0),
+  quoteAtMs: Date.UTC(2026, 6, 31, 13, 59, 55), underlyingQuoteAtMs: Date.UTC(2026, 6, 31, 13, 59, 55),
+  maxQuoteAgeMs: 10_000, maxUnderlyingQuoteAgeMs: 10_000, strategySessions: ["regular"],
   whyEarly: "Contract observed before any premium expansion from the earliest valid executable quote.",
   premiumChasePct: 1.2, bid: 2.0, ask: 2.1, spreadPct: 4.9,
   openInterest: 5000, contractVolume: 800,
@@ -125,8 +127,8 @@ test("the module contains no alert, contract, paper, or trade authority", () => 
   const imports = [...src.matchAll(/from\s+["']([^"']+)["']/g)].map((m) => m[1]);
   // Formatting helpers and the read-only paper PERMISSION are allowed; neither
   // can select a contract, freeze an entry, or open a position.
-  assert.deepEqual(imports.sort(), ["./contract-format.ts", "./states.ts"],
-    "the private path must import only state types and pure formatting");
+  assert.deepEqual(imports.sort(), ["../../instrument-session-authority.ts", "./contract-format.ts", "./states.ts"],
+    "the private path may import only state types and pure deterministic guards/formatting");
   // Strip comments: the safety rationale legitimately names the things the CODE
   // must not do, and prose must not be mistaken for an authority reference.
   const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");

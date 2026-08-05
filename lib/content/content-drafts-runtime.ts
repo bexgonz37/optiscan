@@ -31,6 +31,7 @@ import {
 } from "./claim-integrity.ts";
 import { tradingDay } from "../trading-session.ts";
 import { evaluateMarketSessionGuard } from "../market-session-guard.ts";
+import { evaluateInstrumentSession } from "../instrument-session-authority.ts";
 import { recapDeliveryEnabled } from "../notifications/recap-delivery-guard.ts";
 import { classifyDeliveryResult, describeReason, redactForPersistence } from "./delivery-reason.ts";
 
@@ -65,7 +66,7 @@ export interface ContentDraftsDeps {
  * `recapDeliveryDiagnosis()` in lib/notifications/recap-health.ts — never infer
  * it from this status.
  */
-export type DiscordDeliveryStatus = "PENDING" | "SENT" | "FAILED" | "SKIPPED_NO_WEBHOOK";
+export type DiscordDeliveryStatus = "PENDING" | "SENT" | "FAILED" | "SUPPRESSED" | "SKIPPED_NO_WEBHOOK";
 export type DraftRowStatus = "GENERATED" | "APPROVED" | "REJECTED" | "MANUALLY_POSTED" | "EDITED";
 
 function hasTable(db: RtDb, name: string): boolean {
@@ -98,6 +99,43 @@ function djb2(s: string): string {
 
 export function contentEventsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.CONTENT_EVENTS_ENABLED === "1";
+}
+
+export type ContentDeliveryPolicy =
+  | "DELIVER_CURRENT_RESEARCH"
+  | "DELIVER_HISTORICAL_REPORT_CARD"
+  | "ARCHIVE_STALE_RESEARCH";
+
+export function classifyContentDeliveryPolicy(input: {
+  category: string;
+  symbol: string;
+  expiration: string | null;
+  sessionDate: string;
+  eventOccurredAtMs: number | null;
+  nowMs: number;
+  env?: NodeJS.ProcessEnv;
+}): { policy: ContentDeliveryPolicy; reason: string } {
+  const env = input.env ?? process.env;
+  const session = evaluateInstrumentSession(
+    { symbol: input.symbol, expiration: input.expiration }, input.nowMs, env,
+  );
+  const nowDay = tradingDay(input.nowMs);
+  const maxAgeRaw = Number(env.CONTENT_RESEARCH_MAX_DELIVERY_AGE_MS ?? 15 * 60_000);
+  const maxAgeMs = Number.isFinite(maxAgeRaw) ? Math.max(30_000, Math.min(60 * 60_000, maxAgeRaw)) : 15 * 60_000;
+  const ageMs = input.eventOccurredAtMs == null ? null : input.nowMs - input.eventOccurredAtMs;
+  const historical = input.sessionDate !== nowDay
+    || (input.expiration != null && input.expiration < nowDay)
+    || ageMs == null || ageMs < 0 || ageMs > maxAgeMs
+    || session.underlyingState !== "UNDERLYING_RTH_OPEN";
+  if (isPerformanceCategory(input.category)) {
+    return historical
+      ? { policy: "DELIVER_HISTORICAL_REPORT_CARD", reason: "verified performance content is historical and non-actionable" }
+      : { policy: "DELIVER_CURRENT_RESEARCH", reason: "verified performance content is current" };
+  }
+  if (historical) {
+    return { policy: "ARCHIVE_STALE_RESEARCH", reason: "live-looking research is stale, expired, cross-session, or outside underlying RTH" };
+  }
+  return { policy: "DELIVER_CURRENT_RESEARCH", reason: "current-session owner research inside its delivery window" };
 }
 
 /** Content drafts route to Recaps in the three-channel Discord setup. */
@@ -541,6 +579,9 @@ export async function runContentDraftsScan(
     const res = await deliverDrafts(db, send, pending, {
       category: bundle.category, symbol: bundle.symbol,
       resultType: claim.resultType, sessionDate, nowMs,
+      expiration: row.expiration == null ? null : String(row.expiration),
+      eventOccurredAtMs: row.occurred_at_ms == null ? null : Number(row.occurred_at_ms),
+      env,
     });
     if (res.ok) out.delivered += 1;
     else if (res.suppressed) out.skipped += 1;
@@ -564,7 +605,7 @@ export async function runContentDraftsScan(
         const pending = unsentDrafts(db, eventId);
         if (!pending.length) continue;
         const meta = deferredEventMeta(db, eventId);
-        const res = await deliverDrafts(db, send, pending, { ...meta, nowMs: now() });
+        const res = await deliverDrafts(db, send, pending, { ...meta, nowMs: now(), env });
         if (res.ok) out.deferredDelivered += 1;
         else if (res.suppressed) out.skipped += 1;
         else out.failed += 1;
@@ -577,12 +618,17 @@ export async function runContentDraftsScan(
 /** Header facts for a deferred bundle, read from persisted rows only. */
 function deferredEventMeta(db: RtDb, eventId: string): {
   category: string; symbol: string; resultType: string; sessionDate: string;
+  expiration: string | null; eventOccurredAtMs: number | null;
 } {
-  const fallback = { category: "CONTENT", symbol: "", resultType: "UNKNOWN", sessionDate: "" };
+  const fallback = {
+    category: "CONTENT", symbol: "", resultType: "UNKNOWN", sessionDate: "",
+    expiration: null, eventOccurredAtMs: null,
+  };
   try {
     const r = db.prepare(
       `SELECT d.category AS category, d.result_type AS result_type,
-              d.trading_session_date AS session_date, e.symbol AS symbol
+              d.trading_session_date AS session_date, e.symbol AS symbol,
+              e.expiration AS expiration, e.occurred_at_ms AS occurred_at_ms
          FROM content_drafts d
          LEFT JOIN opportunity_content_events e ON e.id = d.content_event_id
         WHERE d.content_event_id=? ORDER BY d.created_at_ms ASC LIMIT 1`,
@@ -593,6 +639,8 @@ function deferredEventMeta(db: RtDb, eventId: string): {
       symbol: r.symbol == null ? fallback.symbol : String(r.symbol),
       resultType: r.result_type == null ? fallback.resultType : String(r.result_type),
       sessionDate: r.session_date == null ? fallback.sessionDate : String(r.session_date),
+      expiration: r.expiration == null ? null : String(r.expiration),
+      eventOccurredAtMs: r.occurred_at_ms == null ? null : Number(r.occurred_at_ms),
     };
   } catch { return fallback; }
 }
@@ -602,8 +650,28 @@ async function deliverDrafts(
   db: RtDb,
   send: (content: string) => Promise<ContentDeliverResult>,
   pending: Array<{ id: string; draft_text: string; cta_type: string; char_count: number }>,
-  meta: { category: string; symbol: string; resultType: string; sessionDate: string; nowMs: number },
+  meta: {
+    category: string; symbol: string; resultType: string; sessionDate: string; nowMs: number;
+    expiration: string | null; eventOccurredAtMs: number | null; env: NodeJS.ProcessEnv;
+  },
 ): Promise<ContentDeliverResult> {
+  const policy = classifyContentDeliveryPolicy(meta);
+  if (policy.policy === "ARCHIVE_STALE_RESEARCH") {
+    const reason = describeReason("SUPPRESSED_STALE_RESEARCH");
+    for (const draft of pending) {
+      try {
+        db.prepare(
+          `UPDATE content_drafts
+             SET discord_delivery_status='SUPPRESSED', updated_at_ms=?,
+                 discord_delivery_reason=?, discord_delivery_explanation=?,
+                 discord_delivery_retryable=0, discord_delivery_detail=?,
+                 discord_last_attempt_at_ms=?
+           WHERE id=?`,
+        ).run(meta.nowMs, reason.code, reason.explanation, policy.reason, meta.nowMs, draft.id);
+      } catch { /* The persisted draft remains available even on a legacy schema. */ }
+    }
+    return { ok: false, messageId: null, error: policy.reason, suppressed: true };
+  }
   const header = `📝 **CONTENT DRAFTS — OWNER ONLY — ${meta.category}** · ${meta.symbol}\n_Deterministic template drafts for MANUAL review. Never auto-posted. Not financial advice._\n_Result type: ${meta.resultType}_ · _Session: ${meta.sessionDate}_`;
   const draftBlocks = pending.map((draft) => [
     `**Draft** (${draft.char_count} chars) · CTA: ${draft.cta_type}`,
@@ -611,7 +679,10 @@ async function deliverDrafts(
     draft.draft_text,
     "```",
   ].join("\n"));
-  const body = [header, ...draftBlocks].join("\n\n").slice(0, 1900);
+  const deliveryLabel = policy.policy === "DELIVER_HISTORICAL_REPORT_CARD"
+    ? "**HISTORICAL REPORT CARD - NON-ACTIONABLE**\n_Option results below are frozen historical evidence, not a current entry or current quote._"
+    : null;
+  const body = [deliveryLabel, header, ...draftBlocks].filter(Boolean).join("\n\n").slice(0, 1900);
   let res: ContentDeliverResult;
   try {
     res = await send(body);

@@ -266,6 +266,6 @@ test("journal version is stamped on every row", { skip }, () => {
   recordNotifyDecisionOnDb(db, entry());
   const v = db.prepare("SELECT journal_version v FROM asymmetry_notify_decisions").get().v;
   assert.equal(v, NOTIFY_JOURNAL_VERSION);
-  assert.equal(v, "ASYM_NOTIFY_JOURNAL_V2");
+  assert.equal(v, "ASYM_NOTIFY_JOURNAL_V3");
   db.close();
 });

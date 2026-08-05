@@ -525,6 +525,7 @@ export async function captureZeroDte(sig: ZeroDteSignal): Promise<number | null>
         optionVolume: sideContract?.volume ?? null,
         openInterest: sideContract?.openInterest ?? null,
         delta: sideContract?.delta ?? null,
+        optionQuoteAtMs: sideContract?.providerTimestamp ?? null,
         alertTime: new Date(nowMs).toISOString(),
         captureAction: "TRADE",
       });

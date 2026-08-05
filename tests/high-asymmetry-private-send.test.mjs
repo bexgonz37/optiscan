@@ -86,6 +86,8 @@ function candidate() {
   return {
     fingerprint: "fp-1", sessionDate: "2026-07-30", symbol: "NVDA", direction: "CALL",
     optionSymbol: "O:NVDA260807C00200000", state: "HIGH_ASYMMETRY", observedAtMs: Date.parse("2026-07-30T14:00:00Z"),
+    quoteAtMs: Date.parse("2026-07-30T13:59:55Z"), underlyingQuoteAtMs: Date.parse("2026-07-30T13:59:55Z"),
+    maxQuoteAgeMs: 10_000, maxUnderlyingQuoteAgeMs: 10_000, strategySessions: ["regular"],
     whyEarly: "test", premiumChasePct: 2, bid: 1.9, ask: 2.0, spreadPct: 5,
     openInterest: 1000, contractVolume: 500, trigger: null, invalidation: null,
     missingEvidence: [], setupFamilyLabel: null,

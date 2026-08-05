@@ -18,6 +18,11 @@ import {
 } from "@/lib/alert-format";
 import { containsBannedPublicLanguage } from "@/lib/language-modes";
 import { assertSubscriberDeliveryAllowed } from "@/lib/market-session-guard";
+import {
+  parseOptionsDeliveryContext,
+  revalidateOptionsDelivery,
+  type OptionsDeliveryContext,
+} from "@/lib/options-delivery-revalidation";
 import { supervisorOptionsDiscordBlocked } from "@/lib/subscriber-discord-owner";
 import { isOptionsSession } from "@/lib/trading-session";
 import {
@@ -59,6 +64,24 @@ export type DiscordWebhookKind =
 
 const WATCH_DEDUP_MS = 30 * 60_000;
 const LIVE_OPTIONS_MAX_AGE_MS = Number(process.env.DISCORD_OPTIONS_MAX_ALERT_AGE_MS ?? 90_000);
+
+function optionsDeliveryContextFromAlert(alertLike: any): OptionsDeliveryContext | null {
+  const symbol = String(alertLike?.ticker ?? "").trim().toUpperCase();
+  const optionSymbol = String(alertLike?.optionSymbol ?? alertLike?.option_symbol ?? "").trim().toUpperCase();
+  const candidateAtMs = Date.parse(String(alertLike?.alertTime ?? alertLike?.alert_time ?? ""));
+  const quoteAtMs = Number(alertLike?.optionQuoteAtMs ?? alertLike?.option_quote_at_ms);
+  if (!symbol || !optionSymbol || !Number.isFinite(candidateAtMs) || !Number.isFinite(quoteAtMs)) return null;
+  return {
+    symbol,
+    optionSymbol,
+    expiration: alertLike?.expiration == null ? null : String(alertLike.expiration),
+    candidateAtMs,
+    quoteAtMs,
+    strategySessions: ["regular"],
+    maxCandidateAgeMs: LIVE_OPTIONS_MAX_AGE_MS,
+    maxQuoteAgeMs: LIVE_OPTIONS_MAX_AGE_MS,
+  };
+}
 
 /** True when extended-hours stock notify is disabled (default). */
 export function extendedStockNotifyEnabled(): boolean {
@@ -249,6 +272,7 @@ export async function sendTrackedDiscord(input: {
   opportunityCaseId?: string | null;
   thesisFingerprint?: string | null;
   openingState?: string | null;
+  deliveryContext?: OptionsDeliveryContext | null;
 }) {
   const deliveryId = createDiscordDelivery({
     alertId: input.alertId ?? null,
@@ -260,6 +284,7 @@ export async function sendTrackedDiscord(input: {
     opportunityCaseId: input.opportunityCaseId ?? null,
     thesisFingerprint: input.thesisFingerprint ?? null,
     openingState: input.openingState ?? null,
+    deliveryContext: input.deliveryContext ?? null,
   });
   updateDiscordDelivery(deliveryId, { status: "SENDING", attempted: true });
   try {
@@ -493,6 +518,7 @@ export async function notifyNewAlert(alertId: number, alertLike: any): Promise<v
       return;
     }
     const isStock = alertLike?.assetClass === "stock" || alertLike?.asset_class === "stock";
+    const optionsDeliveryContext = isStock ? null : optionsDeliveryContextFromAlert(alertLike);
     // Coexistence rule: when the Supervisor is the canonical callout path, the
     // LEGACY options Discord sender stands down so the same opportunity is never
     // sent twice. Stock alerts always use the legacy stock path (the supervisor
@@ -654,7 +680,10 @@ export async function notifyNewAlert(alertId: number, alertLike: any): Promise<v
     if (s.discord_requires_manual_confirm) {
       insertNotificationEvent({
         alertId, channel: "discord_webhook", status: "pending_confirm",
-        payloadJson: JSON.stringify({ payload, skipPublicCheck: true, webhook: isStock ? "stocks" : "options" }),
+        payloadJson: JSON.stringify({
+          payload, skipPublicCheck: true, webhook: isStock ? "stocks" : "options",
+          deliveryContext: optionsDeliveryContext,
+        }),
       });
       return;
     }
@@ -700,12 +729,29 @@ export async function notifyNewAlert(alertId: number, alertLike: any): Promise<v
       });
       return;
     }
+    if (!isStock) {
+      const revalidation = revalidateOptionsDelivery(optionsDeliveryContext);
+      if (!revalidation.ok) {
+        createDiscordDelivery({
+          alertId, channelType: "discord_webhook", webhookName: webhook,
+          payloadType: "options_buy", payload, status: "SUPPRESSED",
+          failureReason: `${revalidation.primaryCause}:${revalidation.reason}`,
+          deliveryContext: optionsDeliveryContext,
+        });
+        insertNotificationEvent({
+          alertId, channel: "discord_webhook", status: "skipped",
+          error: `${revalidation.primaryCause}:${revalidation.reason}`,
+        });
+        return;
+      }
+    }
     const { messageId, webhookUrl } = await sendTrackedDiscord({
       alertId,
       payload,
       webhook,
       payloadType: isStock ? "stock_buy" : "options_buy",
       idempotencyKey: `${alertId}:${webhook}:buy`,
+      deliveryContext: optionsDeliveryContext,
     });
     insertNotificationEvent({
       alertId,
@@ -732,6 +778,15 @@ export async function confirmAndSendPending(eventId: number): Promise<{ ok: bool
   const payload = parsed.payload ?? { content: parsed.content ?? "" };
   const webhook = (parsed.webhook ?? "default") as DiscordWebhookKind;
   if (!payload || (!payload.content && !payload.embeds)) return { ok: false, error: "empty payload" };
+  const deliveryContext = webhook === "options" ? parseOptionsDeliveryContext(parsed.deliveryContext) : null;
+  if (webhook === "options") {
+    const revalidation = revalidateOptionsDelivery(deliveryContext);
+    if (!revalidation.ok) {
+      const error = `${revalidation.primaryCause}:${revalidation.reason}`;
+      markNotificationEvent(eventId, "skipped", error);
+      return { ok: false, error };
+    }
+  }
   try {
     const { messageId, webhookUrl } = await sendTrackedDiscord({
       alertId: e.alert_id,
@@ -739,6 +794,7 @@ export async function confirmAndSendPending(eventId: number): Promise<{ ok: bool
       webhook,
       payloadType: "manual_confirm",
       idempotencyKey: `event:${eventId}:${webhook}`,
+      deliveryContext,
     });
     markNotificationEvent(eventId, "sent");
     insertNotificationEvent({
@@ -770,9 +826,26 @@ export async function deliverCalloutDiscord(input: {
   webhook: "options" | "stocks";
   payload: any;
   idempotencyKey: string;
+  deliveryContext?: OptionsDeliveryContext | null;
+  nonActionableSystemTest?: boolean;
 }): Promise<{ sent: boolean; skipped?: boolean; deliveryId?: string; reason?: string; status: string }> {
   const { webhook, payload, idempotencyKey } = input;
   if (webhook === "options") {
+    if (!input.nonActionableSystemTest) {
+      const revalidation = revalidateOptionsDelivery(input.deliveryContext);
+      if (!revalidation.ok) {
+        const deliveryId = createDiscordDelivery({
+          alertId: null, channelType: "discord_webhook", webhookName: webhook,
+          payloadType: "callout", payload, idempotencyKey,
+          status: "SUPPRESSED", failureReason: `${revalidation.primaryCause}:${revalidation.reason}`,
+          deliveryContext: input.deliveryContext,
+        });
+        return {
+          sent: false, skipped: true, deliveryId,
+          reason: revalidation.reason, status: "SUPPRESSED",
+        };
+      }
+    }
     if (supervisorOptionsDiscordBlocked()) {
       const deliveryId = createDiscordDelivery({
         alertId: null, channelType: "discord_webhook", webhookName: webhook,
@@ -805,7 +878,10 @@ export async function deliverCalloutDiscord(input: {
     return { sent: false, skipped: true, deliveryId: existing.delivery_id, reason: "already sent", status: "SENT" };
   }
   try {
-    const res = await sendTrackedDiscord({ alertId: null, payload, webhook, payloadType: "callout", idempotencyKey });
+    const res = await sendTrackedDiscord({
+      alertId: null, payload, webhook, payloadType: "callout", idempotencyKey,
+      deliveryContext: input.deliveryContext ?? null,
+    });
     return { sent: true, deliveryId: (res as any).deliveryId, status: "SENT" };
   } catch (err: any) {
     const failed = getDiscordDeliveryByIdempotencyKey(idempotencyKey);
@@ -843,6 +919,17 @@ export async function retryDiscordDelivery(deliveryId: string): Promise<{ ok: bo
   const d = getDiscordDelivery(deliveryId);
   if (!d) return { ok: false, error: "delivery not found" };
   if (!d.payload_json) return { ok: false, error: "delivery has no stored payload" };
+  if (d.webhook_name === "options") {
+    const context = parseOptionsDeliveryContext(d.delivery_context_json);
+    const revalidation = revalidateOptionsDelivery(context);
+    if (!revalidation.ok) {
+      const error = `${revalidation.primaryCause}:${revalidation.reason}`;
+      updateDiscordDelivery(deliveryId, {
+        status: "SUPPRESSED", failureReason: error, nextRetryAt: null,
+      });
+      return { ok: false, error };
+    }
+  }
   if (d.webhook_name === "options") {
     const guard = assertSubscriberDeliveryAllowed();
     if (!guard.ok) return { ok: false, error: `session_guard:${guard.guard.state} — ${guard.guard.reason}` };

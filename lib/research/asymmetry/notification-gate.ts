@@ -27,7 +27,7 @@
  * only ever makes notification STRICTER than the state machine already did.
  */
 import type { AsymmetryResearchState } from "./states.ts";
-import { OPTIONS_STRATEGIES, getStrategy, tenorBand, type OptionSide, type TenorBand } from "../options/strategy-catalog.ts";
+import { OPTIONS_STRATEGIES, getStrategy, tenorBand, type OptionSide, type Session, type TenorBand } from "../options/strategy-catalog.ts";
 
 export const NOTIFICATION_GATE_VERSION = "ASYM_NOTIFY_V3" as const;
 
@@ -42,6 +42,7 @@ export interface NotificationStrengthConfig {
   strategyKey: string | null;
   freshnessSource: "LEGACY_GLOBAL" | "STRATEGY_CATALOG" | "UNKNOWN_STRATEGY";
   strategySide: OptionSide | null;
+  strategySessions: readonly Session[];
   /** Spread above this is never worth surfacing, whatever else is true. */
   maxSpreadPct: number;
   /** Premium expansion at or above this means the early entry is gone. */
@@ -76,6 +77,7 @@ export const DEFAULT_NOTIFICATION_STRENGTH: Readonly<NotificationStrengthConfig>
   strategyKey: null,
   freshnessSource: "LEGACY_GLOBAL",
   strategySide: null,
+  strategySessions: Object.freeze(["regular"] as Session[]),
   maxSpreadPct: 15,
   maxPremiumChasePct: 20,
   minOpenInterest: 250,
@@ -117,6 +119,7 @@ export function resolveNotificationStrength(env: NodeJS.ProcessEnv = process.env
     strategyKey: null,
     freshnessSource: "LEGACY_GLOBAL",
     strategySide: null,
+    strategySessions: ["regular"],
     maxUnderlyingMoveBeforeEntryPct: null,
     minRewardRemainingPct: null,
     minDistanceFromInvalidationPct: null,
@@ -155,6 +158,7 @@ export function resolveStrategyNotificationStrength(
     strategyKey: strategy.key,
     freshnessSource: "STRATEGY_CATALOG",
     strategySide: strategy.side,
+    strategySessions: strategy.sessions,
     maxSpreadPct: Math.min(base.maxSpreadPct, strategy.optionsLiquidity.maxSpreadPct),
     minOpenInterest: Math.max(base.minOpenInterest, strategy.optionsLiquidity.minOpenInterest),
     minContractVolume: Math.max(base.minContractVolume, strategy.optionsLiquidity.minContractVolume),

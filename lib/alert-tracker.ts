@@ -24,6 +24,7 @@ import { withProviderConsumer } from "@/lib/provider-context";
 import { isFalsePositive } from "@/lib/alert-scoring";
 import { etCloseMs, tradingDay } from "@/lib/db";
 import { computeOptionOutcome } from "@/lib/signal-outcomes";
+import { verifiedOptionMilestoneSnapshots } from "@/lib/option-milestone-evidence";
 import {
   trackingAlerts,
   existingCheckpoints,
@@ -37,6 +38,7 @@ import {
   tradeSignalAccuracy,
 } from "@/lib/alert-store";
 import { scheduleDiscordResultEdit, postScoreboardEmbed } from "@/lib/notifications";
+import { evaluateInstrumentSession } from "@/lib/instrument-session-authority";
 
 const CHECKPOINTS: { key: string; mins: number | null }[] = [
   { key: "1m", mins: 1 },
@@ -56,8 +58,9 @@ const FP_MIN_FAVORABLE_PCT = Number(process.env.ALERT_FP_MIN_FAVORABLE_PCT ?? 1.
  * measure entry mid -> best mid across all snapshots. Best-effort — a missing
  * EOD quote (expired 0DTE after close) still measures from live snapshots.
  */
-async function finalizeOptionOutcome(a: { id: number; ticker: string; option_symbol: string | null }) {
-  if (a.option_symbol) {
+async function finalizeOptionOutcome(a: { id: number; ticker: string; option_symbol: string | null }, nowMs: number) {
+  const session = evaluateInstrumentSession({ symbol: a.ticker, optionSymbol: a.option_symbol }, nowMs);
+  if (a.option_symbol && session.optionsState !== "OPTIONS_CLOSED" && session.optionsState !== "SESSION_UNKNOWN") {
     try {
       // Exact OCC — one request. This used to read the whole 0-5 DTE chain (up to
       // 2 pages / 500 contracts) to find one row, the same defect measured on the
@@ -158,19 +161,24 @@ async function barsForAlert(ticker: string, alertDay: string, cache: Map<string,
   return bars;
 }
 
-function discordEditAfterCheckpoint(a: any, key: string, cp: { percentMoveFromAlert: number | null }) {
+export { verifiedOptionMilestoneSnapshots };
+
+function discordEditAfterCheckpoint(a: any, key: string, cp: { percentMoveFromAlert: number | null }, nowMs: number) {
   const isStock = a.asset_class === "stock";
+  const instrumentSession = isStock ? null : evaluateInstrumentSession({ symbol: a.ticker, optionSymbol: a.option_symbol }, nowMs);
+  const verified = isStock || instrumentSession?.optionsState === "OPTIONS_CLOSED" || instrumentSession?.optionsState === "SESSION_UNKNOWN"
+    ? null
+    : verifiedOptionMilestoneSnapshots(alertOptionSnapshots(a.id), a.option_symbol, nowMs);
   if (key === "5m" && !isStock) {
-    const snaps = alertOptionSnapshots(a.id);
-    const live = snaps.filter((s) => s.checkpoint === "live" || s.checkpoint === "alert");
-    const entry = snaps.find((s) => s.checkpoint === "alert")?.mid;
-    const best = live.length ? Math.max(...live.map((s) => s.mid ?? 0)) : null;
+    if (!verified) return;
+    const entry = verified.entry.mid;
+    const best = Math.max(...verified.live.map((s) => s.mid ?? 0));
     const returnPct = entry && best ? +(((best - entry) / entry) * 100).toFixed(1) : null;
     scheduleDiscordResultEdit(a.id, "5m", { mid: best, returnPct, paid: false });
     return;
   }
   if (key === "10m") {
-    const outcome = computeOptionOutcome(alertOptionSnapshots(a.id));
+    const outcome = verified ? computeOptionOutcome([verified.entry, ...verified.live]) : null;
     if (outcome) {
       scheduleDiscordResultEdit(a.id, "10m", {
         mid: outcome.bestMid,
@@ -290,7 +298,7 @@ async function runTrackerSweepInner(nowMs: number) {
             priceAtCheckpoint: null, percentMoveFromAlert: null, maxPriceAfterAlert: null,
             maxPercentMoveAfterAlert: null, drawdownAfterAlert: null, isFalsePositive: null });
           finalizeAlert(a.id, false);
-          await finalizeOptionOutcome(a).catch(() => { /* option P&L is best-effort */ });
+          await finalizeOptionOutcome(a, nowMs).catch(() => { /* option P&L is best-effort */ });
           finalized++;
         }
         continue;
@@ -312,7 +320,7 @@ async function runTrackerSweepInner(nowMs: number) {
       });
       recorded++;
       if (key === "5m" || key === "10m") {
-        try { discordEditAfterCheckpoint(a, key, cp); } catch { /* discord never blocks sweep */ }
+        try { discordEditAfterCheckpoint(a, key, cp, nowMs); } catch { /* discord never blocks sweep */ }
       }
       if (key === "eod") {
         finalizeAlert(a.id, Boolean(fp));
@@ -332,7 +340,7 @@ async function runTrackerSweepInner(nowMs: number) {
             });
           }
         } catch { /* outcome bookkeeping never blocks finalize */ }
-        await finalizeOptionOutcome(a).catch(() => { /* option P&L is best-effort */ });
+        await finalizeOptionOutcome(a, nowMs).catch(() => { /* option P&L is best-effort */ });
         finalized++;
       }
     }

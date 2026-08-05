@@ -20,7 +20,7 @@
  * the conservative direction on both sides and it is asserted by test.
  */
 import { listCasesOnDb } from "./case-store.ts";
-import { isOptionsQuoteSession } from "../../market-session-guard.ts";
+import { evaluateInstrumentSession } from "../../instrument-session-authority.ts";
 import { tradingDay } from "../../trading-session.ts";
 import { horizonWindow, evaluateIndependence } from "./horizon-windows.ts";
 import { recordMarkEvidenceOnDb } from "./mark-evidence-store.ts";
@@ -72,13 +72,18 @@ export function validateMark(
   expectedOcc: string,
   entrySessionDate: string,
   nowMs: number,
+  underlyingSymbol?: string,
+  env: NodeJS.ProcessEnv = process.env,
 ): MarkRejection | null {
   if (String(quote.optionSymbol ?? "").toUpperCase() !== expectedOcc.toUpperCase()) return "WRONG_OCC";
   const at = num(quote.quoteAtMs);
   if (at == null) return "NO_QUOTE";
   if (at > nowMs) return "FUTURE_QUOTE";
   if (nowMs - at > MAX_MARK_QUOTE_AGE_MS) return "STALE_QUOTE";
-  if (!isOptionsQuoteSession(at)) return "WRONG_SESSION";
+  const session = evaluateInstrumentSession(
+    { symbol: underlyingSymbol, optionSymbol: expectedOcc }, at, env,
+  );
+  if (session.optionsState === "OPTIONS_CLOSED" || session.optionsState === "SESSION_UNKNOWN") return "WRONG_SESSION";
   if (tradingDay(at) !== entrySessionDate) return "WRONG_SESSION";
   const bid = num(quote.bid);
   const ask = num(quote.ask);
@@ -138,15 +143,21 @@ export async function runDueAsymmetryMarks(db: MarkDb, deps: MarkDeps): Promise<
       out.reason = `${MARKS_ENABLED_ENV} is not set`;
       return out;
     }
-    if (!isOptionsQuoteSession(deps.nowMs, env)) {
+    const cases = listCasesOnDb(db, deps.sessionDate, 500);
+    out.casesRead = cases.length;
+    const openCases = cases.filter((c) => {
+      const session = evaluateInstrumentSession(
+        { symbol: c.symbol, optionSymbol: c.optionSymbol }, deps.nowMs, env,
+      );
+      return session.optionsState !== "OPTIONS_CLOSED" && session.optionsState !== "SESSION_UNKNOWN";
+    });
+    if (!openCases.length) {
       out.reason = "OPTIONS_SESSION_CLOSED";
       return out;
     }
     out.ran = true;
-    const cases = listCasesOnDb(db, deps.sessionDate, 500);
-    out.casesRead = cases.length;
 
-    for (const c of cases) {
+    for (const c of openCases) {
       try {
         const marked = existingHorizons(db, c.sessionDate, c.fingerprint);
         const due = dueHorizons(c.firstDetectedAtMs, deps.nowMs, marked);
@@ -179,7 +190,7 @@ export async function runDueAsymmetryMarks(db: MarkDb, deps: MarkDeps): Promise<
             ? "PROVIDER_BUDGET"
             : fetched.providerError
               ? "PROVIDER_ERROR"
-              : q ? validateMark(q, c.optionSymbol, c.sessionDate, observedAtMs) : "NO_QUOTE";
+              : q ? validateMark(q, c.optionSymbol, c.sessionDate, observedAtMs, c.symbol, env) : "NO_QUOTE";
           const returnPct = !rejection && c.earlyAsk && c.earlyAsk > 0 && q?.bid != null
             ? round2(((q.bid - c.earlyAsk) / c.earlyAsk) * 100)
             : null;

@@ -25,6 +25,8 @@
 export interface WebhookSendResult {
   ok: boolean;
   reason?: string;
+  messageId?: string | null;
+  acceptedAtMs?: number | null;
 }
 
 const SEND_TIMEOUT_MS = 10_000;
@@ -44,7 +46,9 @@ export async function sendAsymmetryWebhook(webhook: string, content: string): Pr
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SEND_TIMEOUT_MS);
   try {
-    const res = await fetch(webhook, {
+    const target = new URL(webhook);
+    target.searchParams.set("wait", "true");
+    const res = await fetch(target, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -58,7 +62,12 @@ export async function sendAsymmetryWebhook(webhook: string, content: string): Pr
       // Status only. The response body can echo the webhook token.
       return { ok: false, reason: `discord http ${res.status}` };
     }
-    return { ok: true };
+    let messageId: string | null = null;
+    try {
+      const body = await res.json() as { id?: unknown };
+      messageId = body?.id == null ? null : String(body.id);
+    } catch { /* Discord acceptance still counts when the response body is absent. */ }
+    return { ok: true, messageId, acceptedAtMs: Date.now() };
   } catch (err: any) {
     const message = String(err?.message ?? err);
     // Defence in depth: a fetch error can embed the request URL.

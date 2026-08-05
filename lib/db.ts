@@ -242,7 +242,8 @@ CREATE TABLE IF NOT EXISTS discord_deliveries (
   next_retry_at TEXT,
   opportunity_case_id TEXT,
   thesis_fingerprint TEXT,
-  lifecycle_state TEXT
+  lifecycle_state TEXT,
+  delivery_context_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_discord_deliveries_status ON discord_deliveries(status, next_retry_at);
 CREATE INDEX IF NOT EXISTS idx_discord_deliveries_alert ON discord_deliveries(alert_id);
@@ -2516,6 +2517,7 @@ function migrate(db: Database.Database) {
       ["opportunity_case_id", "ALTER TABLE discord_deliveries ADD COLUMN opportunity_case_id TEXT"],
       ["thesis_fingerprint", "ALTER TABLE discord_deliveries ADD COLUMN thesis_fingerprint TEXT"],
       ["lifecycle_state", "ALTER TABLE discord_deliveries ADD COLUMN lifecycle_state TEXT"],
+      ["delivery_context_json", "ALTER TABLE discord_deliveries ADD COLUMN delivery_context_json TEXT"],
     ] as [string, string][]) if (!dd.has(col)) db.exec(sql);
     db.prepare(
       "CREATE INDEX IF NOT EXISTS idx_discord_deliveries_thesis ON discord_deliveries(thesis_fingerprint, lifecycle_state, status)",

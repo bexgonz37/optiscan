@@ -42,6 +42,8 @@ export interface Callout {
   contract: AgentResult["selectedContract"];
   /** Underlying stock price at alert time (verified spot from the chain snapshot). */
   underlyingPrice: number | null;
+  /** Provider timestamp for the selected chain/contract evidence. */
+  optionQuoteAtMs: number | null;
   /** DETERMINISTIC compact-card fields (lib/callouts/confidence.ts). Confidence is
    * a setup-quality tier (HIGH/MEDIUM/LOW), NEVER a win probability; estimatedEntry
    * is the realistic paper-fill entry, null when no valid entry is available now. */
@@ -157,6 +159,9 @@ export function buildCallout(r: AgentResult, extras: BuildCalloutExtras = {}): C
     management: null,
     contract: r.selectedContract,
     underlyingPrice: typeof (r.verifiedInputs as any)?.spot === "number" ? (r.verifiedInputs as any).spot : null,
+    optionQuoteAtMs: typeof (r.verifiedInputs as any)?.chainAsOfMs === "number"
+      ? (r.verifiedInputs as any).chainAsOfMs
+      : null,
     // Compact-card fields are filled in just below (they read the built callout).
     confidenceTier: "LOW",
     estimatedEntry: null,

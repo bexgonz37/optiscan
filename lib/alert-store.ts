@@ -1039,10 +1039,14 @@ export function alertSpreadHistory(alertId: number): { atAlert: number | null; m
   return { atAlert: first?.spread_pct ?? null, maxLive: live?.m ?? null };
 }
 
-/** All mid quotes for an alert's contract, for option-P&L measurement. */
-export function alertOptionSnapshots(alertId: number): { checkpoint: string; mid: number | null }[] {
+/** Exact timestamped quotes for an alert's contract, for option-P&L measurement. */
+export function alertOptionSnapshots(alertId: number): {
+  checkpoint: string; optionSymbol: string | null; bid: number | null; ask: number | null;
+  mid: number | null; takenAt: string;
+}[] {
   return getDb().prepare(
-    "SELECT checkpoint, mid FROM options_snapshots WHERE alert_id=? ORDER BY taken_at",
+    `SELECT checkpoint, option_symbol AS optionSymbol, bid, ask, mid, taken_at AS takenAt
+       FROM options_snapshots WHERE alert_id=? ORDER BY taken_at`,
   ).all(alertId) as any[];
 }
 
@@ -1641,6 +1645,7 @@ export function createDiscordDelivery(input: {
   thesisFingerprint?: string | null;
   openingState?: string | null;
   lifecycleState?: string | null;
+  deliveryContext?: unknown;
 }): string {
   const deliveryId = `dd_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
   const payloadJson = JSON.stringify(input.payload ?? {});
@@ -1651,8 +1656,9 @@ export function createDiscordDelivery(input: {
   getDb().prepare(
     `INSERT INTO discord_deliveries
        (delivery_id, alert_id, channel_type, webhook_name, payload_type, payload_preview, payload_json,
-        idempotency_key, status, failure_reason, opportunity_case_id, thesis_fingerprint, lifecycle_state)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        idempotency_key, status, failure_reason, opportunity_case_id, thesis_fingerprint, lifecycle_state,
+        delivery_context_json)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     deliveryId,
     input.alertId ?? null,
@@ -1667,6 +1673,7 @@ export function createDiscordDelivery(input: {
     input.opportunityCaseId ?? null,
     input.thesisFingerprint ?? null,
     input.lifecycleState ?? input.openingState ?? null,
+    input.deliveryContext == null ? null : JSON.stringify(input.deliveryContext),
   );
   return deliveryId;
 }

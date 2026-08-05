@@ -24,6 +24,7 @@
  */
 import type { AsymmetryResearchState } from "./states.ts";
 import { contractDisplay, entryDisplay, contractFooter } from "./contract-format.ts";
+import { evaluateInstrumentSession, optionsSessionAllowsStrategy } from "../../instrument-session-authority.ts";
 
 /** The only states worth an owner's attention. Everything else stays silent. */
 export const PRIVATE_NOTIFIABLE_STATES: readonly AsymmetryResearchState[] = Object.freeze([
@@ -68,6 +69,8 @@ export type PrivateNotifyOutcome =
   | "NOT_CONFIGURED"
   | "REFUSED_SUBSCRIBER_WEBHOOK"
   | "SUPPRESSED_STATE"
+  | "SUPPRESSED_SESSION"
+  | "SUPPRESSED_STALE"
   | "SUPPRESSED_UNCHANGED"
   | "SUPPRESSED_RATE_LIMIT"
   | "SENT"
@@ -83,6 +86,11 @@ export interface PrivateCandidate {
   optionSymbol: string;
   state: AsymmetryResearchState;
   observedAtMs: number;
+  quoteAtMs: number | null;
+  underlyingQuoteAtMs: number | null;
+  maxQuoteAgeMs: number;
+  maxUnderlyingQuoteAgeMs: number;
+  strategySessions: readonly string[];
   /** Why this is early, in one plain sentence. */
   whyEarly: string;
   /** Premium expansion from the earliest valid executable quote, percent. */
@@ -112,6 +120,8 @@ export interface PrivateNotifyResult {
   state: AsymmetryResearchState;
   /** Always false. This path has no subscriber authority. */
   subscriberSendCreated: false;
+  discordMessageId: string | null;
+  acceptedAtMs: number | null;
 }
 
 /** Per-session, per-fingerprint memory. Injected so it is testable and bounded. */
@@ -248,9 +258,12 @@ export function riskLine(c: PrivateCandidate): string {
 
 export interface PrivateSendDeps {
   /** Injected sender. Receives the resolved private webhook ONLY. */
-  send?: (webhook: string, content: string) => Promise<{ ok: boolean; reason?: string }>;
+  send?: (webhook: string, content: string) => Promise<{
+    ok: boolean; reason?: string; messageId?: string | null; acceptedAtMs?: number | null;
+  }>;
   memory: PrivateCaseMemory;
   env?: NodeJS.ProcessEnv;
+  now?: () => number;
   maxPerSymbolSession?: number;
   maxPerSession?: number;
 }
@@ -268,6 +281,8 @@ export async function notifyPrivateAsymmetry(
     fingerprint: candidate.fingerprint,
     state: candidate.state,
     subscriberSendCreated: false as const,
+    discordMessageId: null,
+    acceptedAtMs: null,
   };
   try {
     // Gate 1 — state. Chased/failed/invalid candidates are never surfaced.
@@ -287,6 +302,34 @@ export async function notifyPrivateAsymmetry(
     }
     if (cfg.refusedReason) {
       return { ...base, outcome: "REFUSED_SUBSCRIBER_WEBHOOK", reason: cfg.refusedReason, content: null };
+    }
+
+    // Recheck actionability at the final network boundary. A transition sweep
+    // may take long enough for its sweep-start decision to cross the close.
+    const sendNowMs = deps.now?.() ?? candidate.observedAtMs;
+    const session = evaluateInstrumentSession(
+      { symbol: candidate.symbol, optionSymbol: candidate.optionSymbol },
+      sendNowMs,
+      deps.env ?? process.env,
+    );
+    if (!optionsSessionAllowsStrategy(session, candidate.strategySessions)) {
+      return {
+        ...base,
+        outcome: "SUPPRESSED_SESSION",
+        reason: `${session.optionsState}: ${session.reason}`,
+        content: null,
+      };
+    }
+    const optionAge = candidate.quoteAtMs == null ? null : sendNowMs - candidate.quoteAtMs;
+    const underlyingAge = candidate.underlyingQuoteAtMs == null ? null : sendNowMs - candidate.underlyingQuoteAtMs;
+    if (optionAge == null || optionAge < 0 || optionAge > candidate.maxQuoteAgeMs
+      || underlyingAge == null || underlyingAge < 0 || underlyingAge > candidate.maxUnderlyingQuoteAgeMs) {
+      return {
+        ...base,
+        outcome: "SUPPRESSED_STALE",
+        reason: `delivery quote freshness failed (option=${optionAge ?? "missing"}ms, underlying=${underlyingAge ?? "missing"}ms)`,
+        content: null,
+      };
     }
 
     // Gate 4 — state change only. An unchanged repeat is silence.
@@ -316,7 +359,14 @@ export async function notifyPrivateAsymmetry(
     deps.memory.record(candidate.fingerprint, candidate.state);
     deps.memory.incrementSymbol(candidate.sessionDate, candidate.symbol);
     deps.memory.incrementSession(candidate.sessionDate);
-    return { ...base, outcome: "SENT", reason: null, content };
+    return {
+      ...base,
+      outcome: "SENT",
+      reason: null,
+      content,
+      discordMessageId: res.messageId ?? null,
+      acceptedAtMs: res.acceptedAtMs ?? sendNowMs,
+    };
   } catch (err: any) {
     return { ...base, outcome: "SEND_FAILED", reason: String(err?.message ?? err), content: null };
   }

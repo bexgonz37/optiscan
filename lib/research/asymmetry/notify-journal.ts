@@ -39,7 +39,7 @@ type JournalDb = {
   exec: (sql: string) => unknown;
 };
 
-export const NOTIFY_JOURNAL_VERSION = "ASYM_NOTIFY_JOURNAL_V2" as const;
+export const NOTIFY_JOURNAL_VERSION = "ASYM_NOTIFY_JOURNAL_V3" as const;
 
 export function ensureNotifyJournalSchema(db: JournalDb): void {
   db.exec(`
@@ -92,6 +92,12 @@ export function ensureNotifyJournalSchema(db: JournalDb): void {
       notify_outcome TEXT,
       sent_at_ms INTEGER,
       send_latency_ms INTEGER,
+      delivery_rechecked_at_ms INTEGER,
+      delivery_action TEXT,
+      delivery_reason TEXT,
+      options_session_state TEXT,
+      underlying_session_state TEXT,
+      discord_message_id TEXT,
 
       journal_version TEXT NOT NULL,
       PRIMARY KEY (session_date, fingerprint, to_state, decided_at_ms)
@@ -111,6 +117,12 @@ export function ensureNotifyJournalSchema(db: JournalDb): void {
   addColumnIfMissing(db, "asymmetry_notify_decisions", "delivery_level", "TEXT");
   addColumnIfMissing(db, "asymmetry_notify_decisions", "strategy_policy_json", "TEXT");
   addColumnIfMissing(db, "asymmetry_notify_decisions", "decision_metrics_json", "TEXT");
+  addColumnIfMissing(db, "asymmetry_notify_decisions", "delivery_rechecked_at_ms", "INTEGER");
+  addColumnIfMissing(db, "asymmetry_notify_decisions", "delivery_action", "TEXT");
+  addColumnIfMissing(db, "asymmetry_notify_decisions", "delivery_reason", "TEXT");
+  addColumnIfMissing(db, "asymmetry_notify_decisions", "options_session_state", "TEXT");
+  addColumnIfMissing(db, "asymmetry_notify_decisions", "underlying_session_state", "TEXT");
+  addColumnIfMissing(db, "asymmetry_notify_decisions", "discord_message_id", "TEXT");
 }
 
 function hasTable(db: JournalDb, name: string): boolean {
@@ -230,6 +242,7 @@ export function recordNotifyDecisionOnDb(db: JournalDb, e: NotifyJournalEntry): 
         strategyKey: e.config.strategyKey,
         freshnessSource: e.config.freshnessSource,
         strategySide: e.config.strategySide,
+        strategySessions: e.config.strategySessions,
         maxUnderlyingQuoteAgeAtNotifyMs: e.config.maxUnderlyingQuoteAgeAtNotifyMs,
         maxUnderlyingMoveBeforeEntryPct: e.config.maxUnderlyingMoveBeforeEntryPct,
         minRewardRemainingPct: e.config.minRewardRemainingPct,
@@ -266,7 +279,16 @@ export function recordNotifyDecisionOnDb(db: JournalDb, e: NotifyJournalEntry): 
 export function attachNotifyOutcomeOnDb(
   db: JournalDb,
   key: { sessionDate: string; fingerprint: string; toState: string; decidedAtMs: number },
-  outcome: { notifyOutcome: string; sentAtMs: number | null },
+  outcome: {
+    notifyOutcome: string;
+    sentAtMs: number | null;
+    deliveryRecheckedAtMs?: number | null;
+    deliveryAction?: string | null;
+    deliveryReason?: string | null;
+    optionsSessionState?: string | null;
+    underlyingSessionState?: string | null;
+    discordMessageId?: string | null;
+  },
 ): JournalResult {
   try {
     if (!hasTable(db, "asymmetry_notify_decisions")) return { ok: true, created: false, error: null };
@@ -274,10 +296,22 @@ export function attachNotifyOutcomeOnDb(
       UPDATE asymmetry_notify_decisions
          SET notify_outcome = ?,
              sent_at_ms = ?,
-             send_latency_ms = CASE WHEN ? IS NULL THEN NULL ELSE ? - decided_at_ms END
+             send_latency_ms = CASE WHEN ? IS NULL THEN NULL ELSE ? - decided_at_ms END,
+             delivery_rechecked_at_ms = ?,
+             delivery_action = ?,
+             delivery_reason = ?,
+             options_session_state = ?,
+             underlying_session_state = ?,
+             discord_message_id = ?
        WHERE session_date=? AND fingerprint=? AND to_state=? AND decided_at_ms=?
     `).run(
       outcome.notifyOutcome, outcome.sentAtMs, outcome.sentAtMs, outcome.sentAtMs,
+      outcome.deliveryRecheckedAtMs ?? null,
+      outcome.deliveryAction ?? null,
+      outcome.deliveryReason ?? null,
+      outcome.optionsSessionState ?? null,
+      outcome.underlyingSessionState ?? null,
+      outcome.discordMessageId ?? null,
       key.sessionDate, key.fingerprint, key.toState, key.decidedAtMs,
     );
     return { ok: true, created: Number(res.changes ?? 0) > 0, error: null };
@@ -305,6 +339,8 @@ export interface JournalRow {
   strategyPolicy: Record<string, unknown> | null;
   decisionMetrics: Record<string, unknown> | null;
   notifyOutcome: string | null; sentAtMs: number | null; sendLatencyMs: number | null;
+  deliveryRecheckedAtMs: number | null; deliveryAction: string | null; deliveryReason: string | null;
+  optionsSessionState: string | null; underlyingSessionState: string | null; discordMessageId: string | null;
 }
 
 /** Read decisions for a session, oldest first. Read-only; issues no provider call. */
@@ -374,6 +410,12 @@ function mapRow(r: any): JournalRow {
     decisionMetrics: json(r.decision_metrics_json),
     notifyOutcome: r.notify_outcome == null ? null : String(r.notify_outcome),
     sentAtMs: n(r.sent_at_ms), sendLatencyMs: n(r.send_latency_ms),
+    deliveryRecheckedAtMs: n(r.delivery_rechecked_at_ms),
+    deliveryAction: r.delivery_action == null ? null : String(r.delivery_action),
+    deliveryReason: r.delivery_reason == null ? null : String(r.delivery_reason),
+    optionsSessionState: r.options_session_state == null ? null : String(r.options_session_state),
+    underlyingSessionState: r.underlying_session_state == null ? null : String(r.underlying_session_state),
+    discordMessageId: r.discord_message_id == null ? null : String(r.discord_message_id),
   };
 }
 

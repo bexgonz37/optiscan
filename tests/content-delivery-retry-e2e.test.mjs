@@ -9,6 +9,8 @@ import { runContentDraftsScan } from "../lib/content/content-drafts-runtime.ts";
 
 const ENV = { CONTENT_EVENTS_ENABLED: "1", DISCORD_RECAP_ENABLED: "1", DISCORD_WEBHOOK_RECAP: "https://example/webhook" };
 const vars = () => ({ confidence: 0.72, relativeVolume: 4.2, callFlow: 1200 });
+const CONTENT_EVENT_MS = Date.parse("2026-08-04T14:58:20Z");
+const CONTENT_NOW_MS = Date.parse("2026-08-04T15:00:00Z");
 
 function makeDb(eventId) {
   const db = new Database(":memory:");
@@ -41,8 +43,8 @@ function makeDb(eventId) {
     `INSERT INTO opportunity_content_events
       (id,opportunity_case_id,event_type,symbol,occurred_at_ms,frozen_entry,direction,option_type,strike,expiration,
        original_thesis_json,evidence_summary_json,strategy_key,content_status,created_at_ms)
-     VALUES (?,'oc_1','OPPORTUNITY_OPENED','AMD',1700000000000,5.2,'bullish','call',400,'08/27',
-       ?,?,'sr_reclaim','PENDING',1700000000000)`,
+     VALUES (?,'oc_1','OPPORTUNITY_OPENED','AMD',${CONTENT_EVENT_MS},5.2,'bullish','call',400,'2026-08-07',
+       ?,?,'sr_reclaim','PENDING',${CONTENT_EVENT_MS})`,
   ).run(
     eventId,
     JSON.stringify(["Reclaimed VWAP on rising call flow"]),
@@ -61,7 +63,7 @@ test("REGRESSION E2E: a rate-limited bundle survives and delivers on a later swe
   const s1 = await runContentDraftsScan(db, {
     send: async () => ({ ok: false, suppressed: true, messageId: null, error: "recap suppressed: rate_limited" }),
     loadCaseVars: vars,
-    now: () => 1_700_000_100_000,
+    now: () => CONTENT_NOW_MS,
   }, ENV);
   assert.ok(s1.persisted > 0, "drafts were written");
 
@@ -81,7 +83,7 @@ test("REGRESSION E2E: a rate-limited bundle survives and delivers on a later swe
   const s2 = await runContentDraftsScan(db, {
     send: async (c) => { sent.push(c); return { ok: true, suppressed: false, messageId: "m1", error: null }; },
     loadCaseVars: vars,
-    now: () => 1_700_000_200_000,
+    now: () => CONTENT_NOW_MS + 100_000,
   }, ENV);
   assert.equal(s2.deferredDelivered, 1, "the rate-limited bundle is recovered");
   assert.equal(sent.length, 1);
@@ -101,7 +103,7 @@ test("REGRESSION E2E: a DUPLICATE bundle is terminal and is never resent", async
   await runContentDraftsScan(db, {
     send: async () => ({ ok: false, suppressed: true, messageId: null, error: "recap suppressed: duplicate" }),
     loadCaseVars: vars,
-    now: () => 1_700_000_100_000,
+    now: () => CONTENT_NOW_MS,
   }, ENV);
 
   for (const row of db.prepare("SELECT discord_delivery_status s, discord_delivery_reason r FROM content_drafts").all()) {
@@ -113,7 +115,7 @@ test("REGRESSION E2E: a DUPLICATE bundle is terminal and is never resent", async
   const again = await runContentDraftsScan(db, {
     send: async (c) => { sent.push(c); return { ok: true, suppressed: false, messageId: "m", error: null }; },
     loadCaseVars: vars,
-    now: () => 1_700_000_200_000,
+    now: () => CONTENT_NOW_MS + 100_000,
   }, ENV);
   assert.equal(sent.length, 0, "a duplicate is never resent");
   assert.equal(again.deferredDelivered, 0);
@@ -126,7 +128,7 @@ test("REGRESSION E2E: the kill switch defers drafts and names itself as the reas
   const res = await runContentDraftsScan(db, {
     send: async () => { throw new Error("must not send while the kill switch is on"); },
     loadCaseVars: vars,
-    now: () => 1_700_000_100_000,
+    now: () => CONTENT_NOW_MS,
   }, killed);
   assert.equal(res.skippedNoWebhook, 1);
 

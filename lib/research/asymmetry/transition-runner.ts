@@ -22,6 +22,7 @@ import { resolvePaperPermission } from "./paper/activation.ts";
 import { decideNotification, resolveStrategyNotificationStrength } from "./notification-gate.ts";
 import { recordNotifyDecisionOnDb, attachNotifyOutcomeOnDb } from "./notify-journal.ts";
 import { isOptionsQuoteSession } from "../../market-session-guard.ts";
+import { evaluateInstrumentSession, optionsSessionAllowsStrategy } from "../../instrument-session-authority.ts";
 
 export const TRANSITIONS_ENABLED_ENV = "HIGH_ASYMMETRY_CAPTURE_ENABLED";
 
@@ -152,6 +153,38 @@ export function nextState(
 
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
+function decisionFor(
+  c: ActiveCase,
+  obs: CaseObservation,
+  to: AsymmetryResearchState,
+  peakAsk: number | null,
+  chase: number | null,
+  nowMs: number,
+  strength: ReturnType<typeof resolveStrategyNotificationStrength>,
+) {
+  return decideNotification({
+    state: to, setupFamily: c.setupFamily, direction: c.direction,
+    optionSymbol: c.optionSymbol,
+    bid: obs.bid, ask: obs.ask, quoteAtMs: obs.quoteAtMs,
+    underlyingPrice: c.underlyingPrice,
+    spreadPct: obs.spreadPct, premiumChasePct: chase,
+    openInterest: obs.openInterest, contractVolume: obs.contractVolume ?? null,
+    missingEvidence: c.missingEvidence, trigger: null, invalidation: null,
+    nowMs,
+    entryAskAtCapture: c.earlyAsk,
+    peakAskSinceCapture: peakAsk,
+    firstDetectedAtMs: c.firstDetectedAtMs,
+    dte: obs.dte ?? null,
+    delta: obs.delta ?? c.capturedDelta,
+    currentUnderlyingPrice: obs.currentUnderlyingPrice ?? null,
+    underlyingQuoteAtMs: obs.underlyingQuoteAtMs ?? null,
+    underlyingMoveBeforeDetectionPct: c.priorMovePct,
+    roomToNextLevelPct: c.roomToNextLevelPct,
+    targetT1: c.targetT1,
+    targetStop: c.targetStop,
+  }, strength);
+}
+
 export interface TransitionDeps {
   /** Live evidence per fingerprint. ASYNC. Null = no re-evaluation this tick. */
   observe: (c: ActiveCase) => Promise<CaseObservation | null> | CaseObservation | null;
@@ -159,6 +192,8 @@ export interface TransitionDeps {
   send?: Parameters<typeof notifyPrivateAsymmetry>[1]["send"];
   env?: NodeJS.ProcessEnv;
   nowMs: number;
+  /** Wall clock used again at each final send boundary. */
+  clock?: () => number;
   sessionDate: string;
   /** Overrides the env-resolved per-sweep quote budget. For tests. */
   maxQuotesPerSweep?: number;
@@ -307,22 +342,47 @@ export async function runAsymmetryTransitions(
         if (journal.error) out.errors.push(`${c.fingerprint}: journal ${journal.error}`);
         const eligible = gate.notify && PRIVATE_NOTIFIABLE_STATES.includes(to);
         let notifyOutcome: string | null = null;
+        let sentAtMs: number | null = null;
+        let discordMessageId: string | null = null;
+        const deliveryNowMs = deps.clock?.() ?? deps.nowMs;
+        const deliverySession = evaluateInstrumentSession(
+          { symbol: c.symbol, optionSymbol: c.optionSymbol }, deliveryNowMs, env,
+        );
+        const deliveryGate = decisionFor(c, obs, to, peakAsk, chase, deliveryNowMs, strength);
         if (eligible) {
-          const res = await notifyPrivateAsymmetry({
-            fingerprint: c.fingerprint, sessionDate: c.sessionDate, symbol: c.symbol,
-            direction: c.direction, optionSymbol: c.optionSymbol, state: to,
-            observedAtMs: deps.nowMs,
-            whyEarly: `State advanced to ${to.replace(/_/g, " ").toLowerCase()} on live evidence.`,
-            premiumChasePct: chasePct(c.earlyAsk, obs.ask),
-            bid: obs.bid, ask: obs.ask, spreadPct: obs.spreadPct,
-            openInterest: obs.openInterest, contractVolume: obs.contractVolume ?? null,
-            trigger: null, invalidation: null,
-            missingEvidence: c.missingEvidence, setupFamilyLabel: c.setupFamily,
-            underlyingPrice: c.underlyingPrice, paperStatus,
-          }, { memory: deps.memory ?? sharedMemory, send: deps.send, env });
-          notifyOutcome = res.outcome;
-          if (res.outcome === "SENT") out.notified += 1;
-          else out.suppressed += 1;
+          if (!optionsSessionAllowsStrategy(deliverySession, strength.strategySessions)) {
+            notifyOutcome = `SUPPRESSED_SESSION:${deliverySession.optionsState}`;
+            out.suppressed += 1;
+          } else if (!deliveryGate.notify) {
+            notifyOutcome = `DELIVERY_REVALIDATION:${deliveryGate.action}:${deliveryGate.reason}`;
+            out.suppressed += 1;
+          } else {
+            const res = await notifyPrivateAsymmetry({
+              fingerprint: c.fingerprint, sessionDate: c.sessionDate, symbol: c.symbol,
+              direction: c.direction, optionSymbol: c.optionSymbol, state: to,
+              observedAtMs: deliveryNowMs,
+              quoteAtMs: obs.quoteAtMs,
+              underlyingQuoteAtMs: obs.underlyingQuoteAtMs ?? null,
+              maxQuoteAgeMs: strength.maxQuoteAgeAtNotifyMs,
+              maxUnderlyingQuoteAgeMs: strength.maxUnderlyingQuoteAgeAtNotifyMs,
+              strategySessions: strength.strategySessions,
+              whyEarly: `State advanced to ${to.replace(/_/g, " ").toLowerCase()} on live evidence.`,
+              premiumChasePct: chasePct(c.earlyAsk, obs.ask),
+              bid: obs.bid, ask: obs.ask, spreadPct: obs.spreadPct,
+              openInterest: obs.openInterest, contractVolume: obs.contractVolume ?? null,
+              trigger: null, invalidation: null,
+              missingEvidence: c.missingEvidence, setupFamilyLabel: c.setupFamily,
+              underlyingPrice: c.underlyingPrice, paperStatus,
+            }, {
+              memory: deps.memory ?? sharedMemory, send: deps.send, env,
+              now: () => deliveryNowMs,
+            });
+            notifyOutcome = res.outcome;
+            sentAtMs = res.outcome === "SENT" ? (res.acceptedAtMs ?? deliveryNowMs) : null;
+            discordMessageId = res.discordMessageId;
+            if (res.outcome === "SENT") out.notified += 1;
+            else out.suppressed += 1;
+          }
         } else {
           out.suppressed += 1;
           notifyOutcome = gate.reason;
@@ -336,7 +396,13 @@ export async function runAsymmetryTransitions(
           toState: to, decidedAtMs: deps.nowMs,
         }, {
           notifyOutcome: notifyOutcome ?? "UNKNOWN",
-          sentAtMs: notifyOutcome === "SENT" ? Date.now() : null,
+          sentAtMs,
+          deliveryRecheckedAtMs: deliveryNowMs,
+          deliveryAction: deliveryGate.action,
+          deliveryReason: deliveryGate.reason,
+          optionsSessionState: deliverySession.optionsState,
+          underlyingSessionState: deliverySession.underlyingState,
+          discordMessageId,
         });
 
         const rec = recordTransitionOnDb(db, {
