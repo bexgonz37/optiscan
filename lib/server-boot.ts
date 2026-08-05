@@ -2,13 +2,20 @@
  * server-boot.ts — start background scanner + alert tracker once per Node process.
  * Called from server routes (not instrumentation) so dev webpack never bundles sqlite.
  */
-let started = false;
-let bootScheduled = false;
+// PROCESS-level, not module-level. Webpack inlines this module into more than one
+// server chunk (instrumentation boots it, and API routes call deferServerBoot), so
+// module-scoped flags can exist more than once in a single process — which would
+// start the scanner, scheduler, paper engine and graders twice. A symbol on
+// globalThis is shared no matter how many times the module body is evaluated.
+const BOOT_STATE = Symbol.for("optiscan.serverBoot");
+type BootState = { started: boolean; bootScheduled: boolean };
+const bootState: BootState =
+  ((globalThis as any)[BOOT_STATE] ??= { started: false, bootScheduled: false });
 
 /** Schedule background boot after the HTTP response — never block read-only API handlers. */
 export function deferServerBoot(): void {
-  if (started || bootScheduled) return;
-  bootScheduled = true;
+  if (bootState.started || bootState.bootScheduled) return;
+  bootState.bootScheduled = true;
   setImmediate(() => {
     try {
       ensureServerBoot();
@@ -19,8 +26,8 @@ export function deferServerBoot(): void {
 }
 
 export function ensureServerBoot(): void {
-  if (started) return;
-  started = true;
+  if (bootState.started) return;
+  bootState.started = true;
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { validateSubscriberConfigWithSchema, persistSubscriberConfigValidation } = require("@/lib/subscriber-config-validator");
