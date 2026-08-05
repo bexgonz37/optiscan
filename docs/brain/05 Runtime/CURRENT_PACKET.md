@@ -1,5 +1,116 @@
 # Current Task Packet
 
+## Packet update — 2026-08-05 deployed-image module resolution fixed
+
+### Verified state
+
+- Local HEAD = `origin/main` = production: `a10ed2bb0dbe2231464278fa804cf4eb6af36fae` (`a10ed2b`)
+- `/api/healthz`: `ok: true`, db writable, `schemaMissing: []`, lifecycle enabled/ready/active
+- `/api/health`: `ok: true`, provider `polygon`, loop running (`lastTickAgeMs` 500), session `regular`, `quotaExceeded: false`
+- `PAPER_0DTE_RESEARCH_ENABLED` remains unset
+
+### Root cause — one defect, two symptoms
+
+The Docker runner copies **only** `.next/standalone`. Anything the bundler does not trace, and
+that `outputFileTracingIncludes` does not literally name, is absent at runtime. Two entry points
+are invisible to the bundler, and both were broken while every build stayed green.
+
+**`outputFileTracingIncludes` is a literal file list.** Next copies what the globs match; it does
+NOT parse those files and follow their imports. That is why `./lib/data-freshness.ts`,
+`./lib/timestamps.ts` and `./lib/trading-session.ts` were already enumerated by hand — they are
+`polygon-provider`'s dependencies. When `lib/provider-timestamp.js` was added (a4a7f31,
+2026-07-31) as a new dependency of the already-listed `lib/polygon-provider.js`, nothing pulled
+it in.
+
+`provider-timestamp.js` was only the FIRST missing file. The worker's real closure also needed
+`provider-accounting-sink.ts`, `provider-accounting.ts`, `provider-budget.ts` and
+`provider-context.ts` — all absent. Naming one file would have moved the crash, not fixed it.
+
+**Server boot** resolved `lib/server-boot.ts` through a runtime path marked so the bundler would
+skip it. Untraceable, so the `.ts` never reached the image. Loading it as raw `.ts` could not have
+worked anyway: `server-boot` calls `require("@/lib/...")`, which only the bundler resolves.
+Broken since standalone deploys began; `595973c` (2026-07-22, *"restore autonomous boot"*)
+changed the path but kept it untraceable, so that fix never took effect.
+
+### Fix
+
+- `next.config.mjs`: added `./lib/provider-*.ts` and `./lib/provider-*.js` to the seed-route
+  includes. Targeted, not a whole-repo copy.
+- `instrumentation.ts`: `await import("@/lib/server-boot")` — a literal specifier webpack traces
+  deterministically.
+- `lib/server-boot.ts`: webpack inlines the module into more than one server chunk (verified:
+  `chunks/7851.js` and `chunks/9478.js`), so module-scoped `started`/`bootScheduled` could exist
+  twice in one process and start the scanner, scheduler, paper engine and graders **twice**.
+  Moved that state behind `Symbol.for("optiscan.serverBoot")` on `globalThis`, which is shared
+  across duplicate module instances. Production logs confirm boot ran exactly once.
+
+### Regression coverage
+
+`scripts/runtime-module-closure.mjs` recomputes the real import closure of both runtime entry
+points from source. `tests/runtime-artifact-modules.test.mjs` (7 tests) fails if any file in that
+closure is not covered by the tracing globs, and — when a build is present — asserts the built
+artifact actually contains them. Verified by importing `worker/seed-worker.ts` and
+`lib/polygon-provider.js` from **inside** `.next/standalone`; both load.
+
+### Production log verification (not healthz alone)
+
+Across the full container lifetime from volume mount:
+
+- `Cannot find module` — **0**
+- `server boot skipped` — **0**
+- `[optiscan] scanner + alert tracker started at process boot` — **1** (present, and not doubled)
+- scanner loop start — 1
+- seed-worker `error` / `worker_exit` / `worker_respawn` — **0**
+
+Note on reading seed silence: `slog` only prints `worker_start`/`worker_poll` when `SEED_LOG=1`,
+but `error`, `worker_exit` and `worker_respawn` ALWAYS print. Their absence is positive evidence
+the crashloop is gone. To positively confirm the worker is polling, set `SEED_LOG=1` or read the
+authenticated seed status endpoint.
+
+### Historical impact
+
+- **Seed worker** (broken since 2026-07-31): scope is Analog Engine historical-replay seeding
+  only. It does not touch live candidate discovery, direction, contract selection, lifecycle,
+  grading, or alert timing — those run in the web process. Impact is bounded to replay/research
+  seeding.
+- **Server boot** (broken far longer, since standalone deploys began): the background runtime did
+  NOT start at process boot. It started only when something hit `/api/health` (which calls
+  `ensureServerBoot`) or one of the 34 routes calling `deferServerBoot`. The Railway healthcheck
+  hits `/api/healthz`, which does **neither**. So after every deploy or restart, a container could
+  sit with no scanner, scheduler, paper engine or graders until a human opened the dashboard.
+  This is a plausible contributor to the "alerts arrive late" complaint and should be re-examined
+  once latency data is available.
+
+No backfill has been performed. Missed seed runs and the exact per-deploy boot delay are not
+determinable from logs alone and need the authenticated seed-run tables.
+
+### Diagnostics authentication — solved without exposing the token
+
+Owner token env var: `SCAN_API_TOKEN`, sent as the `x-scan-token` header (`lib/auth.ts`).
+
+`scripts/prod-diag-fetch.mjs` reads it from the environment only — never from argv, never printed,
+and it redacts the value from any response body. Run it with the production environment injected:
+
+```
+railway run -- node scripts/prod-diag-fetch.mjs api/diagnostics/content-delivery
+```
+
+(Use paths WITHOUT a leading slash under Git Bash, which rewrites `/api/...` into a Windows path.)
+
+Verified working — HTTP 200. First real finding from it: `SUPPRESSED_STALE_RESEARCH: 87`,
+confirming the previous concern's after-hours archiving is live in production. Also visible:
+1027 SENT, 1708 SUPPRESSED, 0 failed, 968 awaiting delivery across 318 events.
+
+### Exact resume point
+
+Run the Priority 3 audits through `railway run -- node scripts/prod-diag-fetch.mjs`: the
+after-hours options-message audit, the end-to-end latency trace, the High-Asymmetry TOO_LATE /
+PAPER_ONLY production verification, and queue/Discord delay attribution. Then Priority 4 — rename
+and extend the existing LIVE_AND_CONNECTED advisory-chat stack into Ask OptiScan at
+`/ask-optiscan`, and retire `app/copilot/page.tsx`. Do not build a second chatbot.
+
+---
+
 ## Packet update — 2026-08-05 instrument session authority shipped (Codex handoff completed)
 
 ### Verified state
