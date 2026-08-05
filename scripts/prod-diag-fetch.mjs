@@ -34,7 +34,7 @@ for (const p of paths) {
   try {
     const res = await fetch(url, {
       headers: { "x-scan-token": TOKEN, accept: "application/json" },
-      signal: AbortSignal.timeout(45_000),
+      signal: AbortSignal.timeout(Number(process.env.DIAG_TIMEOUT_MS ?? 45_000)),
     });
     const body = await res.text();
     // Defence in depth: never echo the secret even if an endpoint reflects it.

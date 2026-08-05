@@ -20,10 +20,16 @@ export const dynamic = "force-dynamic";
  * It never waits on background boot, never exposes secrets, and never fails for normal states (market
  * closed, model inactive, Discord not configured, Polygon rate-limited, nothing actionable).
  *
- * Autonomous-boot note: the standalone build cannot import the .ts boot module from instrumentation, so
- * the background runtime (scanner/scheduler/paper/options monitor/grader/AI worker) is started here —
- * DEFERRED via setImmediate so it runs AFTER this response is sent and can never slow or fail the probe.
- * Idempotent (server-boot's own `started` guard) and isolated, so repeated Railway probes cost nothing.
+ * Autonomous-boot note: instrumentation.register() now starts the background runtime at process boot
+ * (it imports server-boot by a literal specifier webpack can trace into the standalone build). This
+ * probe remains the SAFETY NET: if that path ever regresses, the Railway liveness check still brings
+ * the runtime up on its first poll. Historically that safety net was doing all the work, because the
+ * instrumentation import was untraceable and the module never reached the image.
+ *
+ * DEFERRED via setImmediate so boot runs AFTER this response is sent and can never slow or fail the
+ * probe. Idempotent through lib/boot-guard's process-level claim (not a module-scoped flag — webpack
+ * inlines server-boot into more than one chunk), so repeated probes can never start a second scanner,
+ * scheduler, paper engine or grader. tests/boot-guard-idempotency.test.mjs pins that.
  */
 export async function GET() {
   let dbOk = false;
