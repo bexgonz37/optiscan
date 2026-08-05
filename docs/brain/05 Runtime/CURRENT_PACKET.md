@@ -1,5 +1,88 @@
 # Current Task Packet
 
+## Packet update — 2026-08-05 High-Asymmetry evidence arithmetic + Quant Lab false failure
+
+### Verified state
+
+- Local HEAD = `origin/main` = production: `a37e81b`
+- Commits this session: `ecb5d36`, `a6c451c`, `a37e81b` (+ `2b2be45` baseline)
+- `/api/healthz`: `ok: true`, db writable, `schemaMissing: []`, lifecycle active
+- `PAPER_0DTE_RESEARCH_ENABLED` remains unset
+
+### Root cause: why High-Asymmetry has never alerted
+
+Not thresholds — **arithmetic**. `initialStateFor` grades on the COUNT of missing-evidence
+labels (0 → HIGH_ASYMMETRY, ≤3 → CONFIRMING) and the gate refuses above
+`maxMissingEvidenceForConfirming` (2). But `lib/research/options/loop.ts` passes a hardcoded
+`null` for seven capture inputs, firing six labels on **every** candidate regardless of setup
+quality:
+
+`NO_CATALYST`, `NO_MARKET_ALIGNMENT`, `NO_SECTOR_ALIGNMENT`, `NO_VOLUME_ACCELERATION`,
+`NO_COMPRESSION_STATE`, `NO_LEVEL_DISTANCE`
+
+With a floor of six, ≤3 and 0 are unreachable. Production confirms it exactly: across 200
+candidates, **CONFIRMING 0 and HIGH_ASYMMETRY 0** — every case sat at EARLY_ASYMMETRY (143) or
+INSUFFICIENT_EVIDENCE (49). The observed `CONFIRMING_EVIDENCE_INCOMPLETE_9` is six structural
+labels plus ~three genuine absences. No case has ever reached a notifiable state.
+
+### Fix (a6c451c) — grade on evidence that was sought
+
+`lib/research/asymmetry/evidence-requirements.ts` classifies every label by whether the capture
+path supplies it; grading and the score's completeness term use the blocking subset.
+
+**This is not a relaxation.** Every hard blocker in live-intake (exact OCC, contract identity,
+executable quote, spread, liquidity) and every gate check (spread, OI, contract volume, premium
+chase, entry timing, session authority, quote freshness, future-timestamp guards) is untouched.
+Unsupplied labels are persisted separately so the wiring debt stays visible, and an unrecognised
+label counts as blocking so a new one must be classified deliberately. As each field is wired
+into `loop.ts`, moving it to `supplied` makes the gate **stricter** again.
+
+Also carried `gamma` through `mapOptionContracts` — live-deps mapped `iv` and `delta` but dropped
+gamma entirely, so `NO_GREEKS` fired even when the snapshot carried it. Absent greeks stay null.
+
+### Quant Lab root cause (a37e81b) — FRONTEND_RESPONSE_MISMATCH, not a backend fault
+
+The API is healthy. Read authenticated in production, `/api/research/options/quant-lab` returns
+HTTP 200, `ok:true`, **sampleSize 102**, full metrics and per-strategy breakdowns.
+
+The page mounts with `report=null` and `loadError=null`, and `decideQuantZeroState` mapped that to
+`LOAD_FAILED`. The wording proves it: the message shown is the `report == null` branch, not the
+`loadError` branch — nothing had failed because no request had finished. Every visit accused a
+working backend before the first fetch resolved.
+
+Added a `LOADING` kind. It still refuses metrics and a sample size and still says UNKNOWN rather
+than zero; a real `loadError` still outranks it, and a settled-but-empty response is still
+`LOAD_FAILED`.
+
+### Test-suite fragility fixed (ecb5d36, a37e81b)
+
+`analog-seed-worker`'s "API stays responsive" test asserted an absolute `maxLag < 250ms`. That
+measures host load as much as worker behaviour: it passed alone, passed serially (3503/3503), and
+failed only as `node --test` scheduled more files alongside it — so **adding any test file looked
+like a regression**. Verified against a stashed baseline before changing it. Now asserts p95
+against a host-relative budget with a 3s absolute ceiling. 3510/3510 on three consecutive runs.
+
+### Not done
+
+Priorities 3 (future timestamps), 4 (re-measure), 5 (provider pressure), 7 (Quant/Paper
+reconciliation), 8 (full page/pipeline audit), 9 (Ask OptiScan), 10 (Create Claude Task),
+11 (UI redesign), 12 (smoke test) were not started.
+
+The 13 future-dated timestamps remain unfixed. `lib/research/asymmetry/*` never imports
+`providerTimestampMs`, though `lib/polygon-provider.js` normalizes at its boundary — so a
+non-provider path is supplying raw values. Note `polygon-provider.js` also does
+`openInterest: numOrNull(r.open_interest) ?? 0`, a null→zero conversion worth auditing.
+
+### Exact resume point
+
+Re-measure the High-Asymmetry funnel during the next RTH session and confirm whether cases now
+reach CONFIRMING/HIGH_ASYMMETRY and whether any genuinely qualified case alerts — the fix removes
+the arithmetic blocker but does not by itself prove a good setup exists. Then Priority 3
+(future timestamps), then wire `marketAlignment` from `lib/research/context/market-context.ts`
+(zero provider cost) to shrink the unsupplied set.
+
+---
+
 ## Packet update — 2026-08-05 boot safety net proven, after-hours content fixed, production audit
 
 ### Verified state
