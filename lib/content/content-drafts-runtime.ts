@@ -104,7 +104,26 @@ export function contentEventsEnabled(env: NodeJS.ProcessEnv = process.env): bool
 export type ContentDeliveryPolicy =
   | "DELIVER_CURRENT_RESEARCH"
   | "DELIVER_HISTORICAL_REPORT_CARD"
+  | "DELIVER_NEXT_SESSION_WATCH"
   | "ARCHIVE_STALE_RESEARCH";
+
+/**
+ * Categories whose whole purpose is to be read when the market is NOT open. They
+ * make no claim about a current executable quote, so "the session is closed" is
+ * their normal condition rather than a reason to suppress them.
+ *
+ * Found by auditing the 87 SUPPRESSED_STALE_RESEARCH rows in production: the
+ * original rule treated any draft outside underlying RTH as stale, which archived
+ * NEXT_SESSION_WATCH — the one message that exists specifically to be sent after
+ * the close. Being genuinely stale (cross-session, expired contract, or past its
+ * delivery window) still archives these; only the closed-session condition is
+ * forgiven.
+ */
+const AFTER_HOURS_DELIVERABLE_CATEGORIES = new Set([
+  "NEXT_SESSION_WATCH",
+  "EDUCATIONAL_BREAKDOWN",
+  "MARKET_OBSERVATION",
+]);
 
 export function classifyContentDeliveryPolicy(input: {
   category: string;
@@ -123,14 +142,26 @@ export function classifyContentDeliveryPolicy(input: {
   const maxAgeRaw = Number(env.CONTENT_RESEARCH_MAX_DELIVERY_AGE_MS ?? 15 * 60_000);
   const maxAgeMs = Number.isFinite(maxAgeRaw) ? Math.max(30_000, Math.min(60 * 60_000, maxAgeRaw)) : 15 * 60_000;
   const ageMs = input.eventOccurredAtMs == null ? null : input.nowMs - input.eventOccurredAtMs;
-  const historical = input.sessionDate !== nowDay
+  // Separate the two reasons a draft can be "not current". Being outside RTH is a
+  // property of the CLOCK; being cross-session, expired or past its delivery window
+  // is a property of the DRAFT. Only the second makes an after-hours category stale.
+  const sessionClosed = session.underlyingState !== "UNDERLYING_RTH_OPEN";
+  const draftIsStale = input.sessionDate !== nowDay
     || (input.expiration != null && input.expiration < nowDay)
-    || ageMs == null || ageMs < 0 || ageMs > maxAgeMs
-    || session.underlyingState !== "UNDERLYING_RTH_OPEN";
+    || ageMs == null || ageMs < 0 || ageMs > maxAgeMs;
+  const historical = draftIsStale || sessionClosed;
   if (isPerformanceCategory(input.category)) {
     return historical
       ? { policy: "DELIVER_HISTORICAL_REPORT_CARD", reason: "verified performance content is historical and non-actionable" }
       : { policy: "DELIVER_CURRENT_RESEARCH", reason: "verified performance content is current" };
+  }
+  if (AFTER_HOURS_DELIVERABLE_CATEGORIES.has(input.category) && !draftIsStale) {
+    return {
+      policy: "DELIVER_NEXT_SESSION_WATCH",
+      reason: sessionClosed
+        ? "non-actionable after-hours category delivered for the next session"
+        : "non-actionable category delivered inside its window",
+    };
   }
   if (historical) {
     return { policy: "ARCHIVE_STALE_RESEARCH", reason: "live-looking research is stale, expired, cross-session, or outside underlying RTH" };
@@ -681,7 +712,9 @@ async function deliverDrafts(
   ].join("\n"));
   const deliveryLabel = policy.policy === "DELIVER_HISTORICAL_REPORT_CARD"
     ? "**HISTORICAL REPORT CARD - NON-ACTIONABLE**\n_Option results below are frozen historical evidence, not a current entry or current quote._"
-    : null;
+    : policy.policy === "DELIVER_NEXT_SESSION_WATCH"
+      ? "**NEXT-SESSION WATCH - NON-ACTIONABLE**\n_The options market is closed. Nothing below is a live entry and no quote below is current._"
+      : null;
   const body = [deliveryLabel, header, ...draftBlocks].filter(Boolean).join("\n\n").slice(0, 1900);
   let res: ContentDeliverResult;
   try {
