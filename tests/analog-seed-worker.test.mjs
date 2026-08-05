@@ -72,6 +72,22 @@ test("API stays responsive (low event-loop lag + fast status reads) during an ac
   let child;
   try {
     const { runId } = createSeedRun(db, { symbols: ["S1", "S2", "S3", "S4", "S5", "S6"], from: "2024-01-02", to: "2024-03-31", rateLimitMs: 0, universeSource: "x", survivorshipBias: true }, ENABLED);
+
+    // Control sample BEFORE the worker exists. The claim under test is comparative
+    // — "the worker's CPU is off this thread" — so the bound has to be relative to
+    // this host's own scheduling noise. Asserting a bare wall-clock ceiling instead
+    // measured how busy the machine was: this test passed alone and failed only when
+    // `node --test` ran more files in parallel, which made adding an unrelated test
+    // file look like a regression here.
+    const baselineLags = [];
+    {
+      let prev = Date.now();
+      const t = setInterval(() => { const n = Date.now(); baselineLags.push(n - prev - 20); prev = n; }, 20);
+      await sleep(400);
+      clearInterval(t);
+    }
+    const baselineMaxLag = Math.max(0, ...baselineLags);
+
     child = spawnWorker(dbFile);
 
     // Sample this (parent = "API") thread's event-loop lag and status-read latency WHILE the
@@ -91,7 +107,12 @@ test("API stays responsive (low event-loop lag + fast status reads) during an ac
 
     const maxLag = Math.max(0, ...lags);
     const p95Read = pct(readMs, 0.95);
-    assert.ok(maxLag < 250, `event-loop lag stayed low (max ${maxLag}ms) — worker CPU is off this thread`);
+    // On a quiet machine baselineMaxLag is ~0 and this is the original 250ms bound.
+    // Under parallel test load both rise together, which is exactly the point: the
+    // worker must not add lag beyond what the host is already imposing on us.
+    const lagBudget = Math.max(250, baselineMaxLag * 3);
+    assert.ok(maxLag <= lagBudget,
+      `event-loop lag stayed low (max ${maxLag}ms vs budget ${lagBudget}ms, host baseline ${baselineMaxLag}ms) — worker CPU is off this thread`);
     assert.ok(p95Read < 50, `status-read p95 fast (${p95Read}ms for a 10-read burst)`);
 
     const final = await waitFor(db, runId, ["COMPLETED", "FAILED", "PARTIAL"], 20000);
