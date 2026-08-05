@@ -298,6 +298,8 @@ function QuantLabInner() {
 
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** False until the first fetch attempt finishes, however it finishes. */
+  const [settled, setSettled] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
@@ -319,6 +321,7 @@ function QuantLabInner() {
       setError(e?.message ?? "load failed");
     } finally {
       setRefreshing(false);
+      setSettled(true);
     }
   }, []);
 
@@ -376,8 +379,9 @@ function QuantLabInner() {
       report,
       verification: snap?.verification ?? null,
       lane: laneParam,
+      pending: !settled,
     }),
-    [error, report, snap, laneParam],
+    [error, report, snap, laneParam, settled],
   );
   const showMetrics = zeroState.metricsRenderable;
   const nLabel = zeroState.sampleSizeKnown ? String(sampleSize) : "Unknown";

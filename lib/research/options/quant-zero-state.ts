@@ -20,6 +20,8 @@
 export type QuantZeroStateKind =
   /** Rows were read and there are some. Metric tiles may render numbers. */
   | "DATA_PRESENT"
+  /** The request has not resolved yet. NOT a failure — no attempt has finished. */
+  | "LOADING"
   /** The snapshot never loaded. NOT a statistical zero — nothing was measured. */
   | "LOAD_FAILED"
   /** The lane read 0 official rows, but its underlying population is non-empty:
@@ -69,6 +71,12 @@ export interface QuantZeroStateInput {
   verification?: VerificationCensus | null;
   /** The lane being displayed, for message accuracy. */
   lane?: string;
+  /**
+   * True while no fetch attempt has completed yet. Distinguishes "not loaded"
+   * from "load failed" — without it the first paint reports a failure that never
+   * happened. Ignored once loadError is set, since a real fault outranks it.
+   */
+  pending?: boolean;
 }
 
 /**
@@ -87,8 +95,25 @@ export function exclusionReasons(
 }
 
 export function decideQuantZeroState(input: QuantZeroStateInput): QuantZeroState {
-  const { loadError, report, verification, lane } = input;
+  const { loadError, report, verification, lane, pending } = input;
   const laneLabel = lane ? `the ${lane} lane` : "this lane";
+
+  // "Not finished" is not "failed". The page mounts with report=null and
+  // loadError=null, so without this branch the very first render reported
+  // "Could not load Quant Lab — the snapshot request returned no data" on every
+  // visit, before any request had resolved. The API was healthy the whole time
+  // (verified in production: HTTP 200, sampleSize 102), so the page was accusing
+  // a working backend. Only claim a failure once an attempt has actually ended.
+  if (pending && loadError == null) {
+    return {
+      kind: "LOADING",
+      metricsRenderable: false,
+      sampleSizeKnown: false,
+      headline: "Loading Quant Lab…",
+      detail: "Reading the verified outcome snapshot. These figures are UNKNOWN until it returns — not zero.",
+      exclusions: [],
+    };
+  }
 
   // A fault outranks everything. Nothing was read, so nothing may be reported —
   // not a sample size, not a win rate, and above all not a zero.
