@@ -35,7 +35,7 @@ import { tradingDay } from "../../trading-session.ts";
 import { selectContractWithEvidence, type ContractFunnelEvidence } from "./contract-discovery.ts";
 import { recordContractFunnelOnDb } from "./contract-funnel-store.ts";
 
-export interface ChainContract { optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number; bid: number | null; ask: number | null; spreadPct: number | null; volume: number | null; openInterest: number | null; iv: number | null; delta: number | null; providerTimestamp: number | null }
+export interface ChainContract { optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number; bid: number | null; ask: number | null; spreadPct: number | null; volume: number | null; openInterest: number | null; iv: number | null; delta: number | null; gamma: number | null; providerTimestamp: number | null }
 
 /**
  * Why a chain fetch returned what it did — never a bare array.
@@ -334,7 +334,7 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
         openInterest: res.contract.openInterest ?? null,
         impliedVolatility: (res.contract as any).iv ?? null,
         delta: res.contract.delta ?? null,
-        gamma: (res.contract as any).gamma ?? null,
+        gamma: res.contract.gamma ?? null,
         underlyingPrice: input.underlying.price ?? null,
         vwap: (input.underlying as any).vwap ?? null,
         stockVolume: (input.underlying as any).volume ?? null,

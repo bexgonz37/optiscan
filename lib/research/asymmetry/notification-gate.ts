@@ -27,6 +27,7 @@
  * only ever makes notification STRICTER than the state machine already did.
  */
 import type { AsymmetryResearchState } from "./states.ts";
+import { splitMissingEvidence } from "./evidence-requirements.ts";
 import { OPTIONS_STRATEGIES, getStrategy, tenorBand, type OptionSide, type Session, type TenorBand } from "../options/strategy-catalog.ts";
 
 export const NOTIFICATION_GATE_VERSION = "ASYM_NOTIFY_V3" as const;
@@ -392,8 +393,15 @@ export function decideNotification(
 
   // 4. CONFIRMING must additionally be well described. HIGH_ASYMMETRY and
   //    TRIGGERED already cleared a higher bar in the state machine itself.
-  if (gated && e.missingEvidence.length > cfg.maxMissingEvidenceForConfirming) {
-    return no(`CONFIRMING_EVIDENCE_INCOMPLETE_${e.missingEvidence.length}`);
+  // Count only evidence the capture path actually sought. Six labels fire on every
+  // candidate because loop.ts hardcodes their inputs to null, which made this check
+  // unsatisfiable and produced CONFIRMING_EVIDENCE_INCOMPLETE_9 as the single
+  // largest suppression reason in production. The unsupplied labels are reported in
+  // the reason string so the wiring debt is never hidden. Every other check in this
+  // gate is unchanged.
+  const evidence = splitMissingEvidence(e.missingEvidence);
+  if (gated && evidence.blockingCount > cfg.maxMissingEvidenceForConfirming) {
+    return no(`CONFIRMING_EVIDENCE_INCOMPLETE_${evidence.blockingCount}`);
   }
 
   // 5. CURRENT VALIDITY. A promoted state is a record of the past; sending is a
@@ -546,7 +554,10 @@ function notificationQualityScore(
     + floorRatio(num(e.contractVolume), cfg.minContractVolume) * 4;
   const extension = ratio(metrics.underlyingMoveBeforeEntryPct, cfg.maxUnderlyingMoveBeforeEntryPct) * 8;
   const reward = floorRatio(metrics.rewardRemainingPct, cfg.minRewardRemainingPct ?? 1) * 8;
-  const completeness = Math.max(0, 5 - Math.min(5, e.missingEvidence.length));
+  // Same like-with-like rule as the CONFIRMING check: score the evidence that was
+  // sought. Counting the six permanently-unsupplied labels pinned this term to 0 for
+  // every candidate, so it measured the wiring rather than the setup.
+  const completeness = Math.max(0, 5 - Math.min(5, splitMissingEvidence(e.missingEvidence).blockingCount));
   return Math.round(Math.max(0, Math.min(100,
     state + freshness + optionFreshness + underlyingFreshness + premium
     + spread + liquidity + extension + reward + completeness,

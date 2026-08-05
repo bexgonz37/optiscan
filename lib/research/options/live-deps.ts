@@ -90,7 +90,11 @@ function mapOptionContracts(raw: any[]): ChainContract[] {
     optionSymbol: c.optionSymbol ?? c.symbol ?? c.ticker ?? "", side: String(c.side ?? c.contract_type ?? "").toLowerCase() === "put" ? "put" : "call",
     strike: Number(c.strike ?? c.strike_price), expiration: c.expiration ?? c.expiration_date ?? "", dte: Number(c.dte ?? 0),
     bid: c.bid ?? null, ask: c.ask ?? null, spreadPct: c.spreadPct ?? null, volume: c.volume ?? null, openInterest: c.openInterest ?? c.open_interest ?? null,
-    iv: c.iv ?? c.implied_volatility ?? null, delta: c.delta ?? null, providerTimestamp: c.providerTimestamp ?? null,
+    // gamma comes back on the same contracts as iv/delta (probed 2026-07-31: greeks
+    // present on 160/250 NVDA rows) but was never mapped, so NO_GREEKS fired even
+    // when the snapshot carried it. Absent on deep ITM/OTM rows — stays null, never 0.
+    iv: c.iv ?? c.implied_volatility ?? null, delta: c.delta ?? null, gamma: c.gamma ?? null,
+    providerTimestamp: c.providerTimestamp ?? null,
   })).filter((c: ChainContract) => c.optionSymbol && Number.isFinite(c.strike));
 }
 

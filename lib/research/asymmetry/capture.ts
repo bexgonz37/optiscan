@@ -27,6 +27,7 @@
  * HIGH_ASYMMETRY_PRIVATE_ENABLED and a dedicated webhook.
  */
 import { decideLiveIntake, type LiveIntakeInput } from "./live-intake.ts";
+import { splitMissingEvidence } from "./evidence-requirements.ts";
 import { hasActiveAsymmetryCase, openAsymmetryCaseOnDb } from "./case-store.ts";
 import { deriveResearchState } from "./states.ts";
 import type { AsymmetryResearchState } from "./states.ts";
@@ -104,7 +105,7 @@ export function captureAsymmetryCandidate(
     }
 
     // Deterministic initial state. AI has no involvement at any point.
-    const state = initialStateFor(decision.labels.length);
+    const state = initialStateForLabels(decision.labels);
 
     const persisted = openAsymmetryCaseOnDb(db, {
       sessionDate: input.sessionDate,
@@ -178,6 +179,19 @@ export function initialStateFor(missingCount: number): AsymmetryResearchState {
   if (missingCount <= 3) return "CONFIRMING";
   if (missingCount <= 9) return "EARLY_ASYMMETRY";
   return "INSUFFICIENT_EVIDENCE";
+}
+
+/**
+ * Grade a case on the evidence that was actually SOUGHT.
+ *
+ * Six labels fire on every candidate because the live capture path hardcodes their
+ * inputs to null (see evidence-requirements.ts). Counting those made <=3 and 0
+ * unreachable, so no case ever reached CONFIRMING or HIGH_ASYMMETRY in production.
+ * Grading on the blocking subset compares like with like; the unsupplied labels are
+ * still persisted on the case, so the wiring debt stays visible.
+ */
+export function initialStateForLabels(labels: readonly string[]): AsymmetryResearchState {
+  return initialStateFor(splitMissingEvidence(labels).blockingCount);
 }
 
 /** Re-exported so callers never import the state module directly. */
