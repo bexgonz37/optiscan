@@ -1,5 +1,122 @@
 # Current Task Packet
 
+## Packet update — 2026-08-05 boot safety net proven, after-hours content fixed, production audit
+
+### Verified state
+
+- Local HEAD = `origin/main` = production: `00861fb`
+- Prior SHAs this session: `1808cfd` (boot guard), `b3a630e` (runtime fix baseline)
+- `/api/healthz`: `ok: true`, db writable, `schemaMissing: []`, lifecycle active
+- Production logs on `1808cfd`: boot ran **exactly once**, 0 `Cannot find module`, 0 `server boot skipped`, 0 seed errors
+- `PAPER_0DTE_RESEARCH_ENABLED` remains unset
+
+### CORRECTION to the previous packet entry
+
+The previous entry claimed the server-boot defect meant a fresh container "could sit with no
+scanner, scheduler, paper engine or graders until a human opened the dashboard," and offered that
+as a candidate cause of late alerts. **That was wrong.**
+
+`/api/healthz` has called `ensureServerBoot()` — deferred via `setImmediate` — since `e9d2cc8`
+(2026-07-12), which is before and throughout the entire period instrumentation was broken. The
+Railway liveness probe was starting the background runtime all along. That is why the service kept
+working while instrumentation silently failed.
+
+The real impact of the boot defect was therefore **much smaller**: runtime start moved from
+process boot to the first healthz probe — seconds, not hours. It is NOT a plausible cause of
+chronically late alerts. The earlier claim was made by grepping only for `deferServerBoot` and
+missing the `ensureServerBoot` call in the same file.
+
+### Priority 1 — healthcheck boot safety net
+
+Already present; it needed proving, not adding. Three paths race for boot (instrumentation,
+healthz every 60s, 34 routes via `deferServerBoot`) and webpack inlines server-boot into two
+server chunks, so correctness rests entirely on the guard being process-level.
+
+Extracted it to `lib/boot-guard.ts` with `claimBootStart` / `claimBootSchedule` (test-and-set in
+one step, injectable scope). Previously it was a module-scoped object literal inside `server-boot`,
+which no test could import without also importing the `require("@/lib/...")` graph and really
+starting the scanner. `tests/boot-guard-idempotency.test.mjs` now proves: only the first caller
+boots, 100 simulated probes start nothing, two module copies share one state object via the
+`Symbol.for` registry, and healthz keeps its deferred / try-caught / always-200 shape.
+
+### Priority 2 — the 87 SUPPRESSED_STALE_RESEARCH, reconciled
+
+They are **non-performance (SAFE_CATEGORIES) drafts archived by `1884fd8`'s delivery policy**.
+That policy collapsed two different conditions into one `historical` flag: the draft being stale
+(cross-session, expired contract, past its delivery window) and the market simply being closed.
+
+This over-suppressed: it archived `NEXT_SESSION_WATCH`, the one category whose entire purpose is
+to be read after the close, plus `EDUCATIONAL_BREAKDOWN` and `MARKET_OBSERVATION`. None of them
+claims a current executable quote.
+
+**Answer to "should a valid next-session watch have been created instead": yes — and it was
+created, then wrongly archived.** Fixed in `00861fb`: a closed session no longer makes those three
+categories stale, but genuine staleness still archives them (including a missing timestamp, since
+freshness that cannot be proven must not be delivered). They now deliver through a
+`DELIVER_NEXT_SESSION_WATCH` lane labelled `NEXT-SESSION WATCH - NON-ACTIONABLE`. Live-looking
+research (`HIGH_CONVICTION` etc.) is unchanged — the close still suppresses it.
+
+No historical evidence was deleted or rewritten; the fix is prospective.
+
+### Priority 5 — High-Asymmetry production verification (2026-08-05 session)
+
+From `api/research/asymmetry/timing`, read token-safely:
+
+- decisions: **738 suppressed, 0 notified**
+- `byAction`: OWNER_WATCH 358 · REJECTED 256 · **TOO_LATE 77** · **PAPER_ONLY 47**
+- `byTiming`: ON_TIME 646 · ENTRY_TOO_LATE 72 · INSUFFICIENT_TIMING_EVIDENCE 13 · STALE_EVIDENCE 5 · PREMIUM_CHASE 2
+- `immediateAlerts`: **0** · ownerWatches 1 · digestCases 0
+
+Confirms prospectively: old captures do become TOO_LATE, premium-expanded cases do become
+PAPER_ONLY, and **none of them pings Discord** (0 immediate alerts).
+
+**The 40-message/session cap is not the binding constraint — actual immediate alerts are 0.**
+Lowering the ceiling would change nothing. Do not tune it; tune what is blocking.
+
+### Priority 3 — latency could NOT be measured, and why
+
+Latency distributions are **n = 1**. `captureToNotifyMsBucket` has a single `<60000` entry.
+There is essentially no delivery-latency data because almost nothing is being delivered.
+
+**The reframed diagnosis: for High-Asymmetry the alerts are not late, they are absent.** Top
+blockers today:
+
+- `CONFIRMING_EVIDENCE_INCOMPLETE_9` — **91** (9 missing evidence fields against a threshold of 2)
+- `UNUSABLE_SPREAD_*` — ~54 across many spread values
+- `STATE_NOT_NOTIFIABLE_PREMIUM_CHASE` — 45
+- `ENTRY_TOO_LATE_*` — ~26
+- `INVALID_FUTURE_OPTION_QUOTE_TIMESTAMP` 6 + `INVALID_FUTURE_UNDERLYING_QUOTE_TIMESTAMP` 7
+
+No pre-fix vs post-fix latency comparison was possible, and none is claimed. Causation is not
+asserted where timestamps are missing.
+
+### Two concrete leads for the next session
+
+1. **The largest blocker is missing evidence the provider already returns.** The endpoint's own
+   `fieldLineage` reports `derivationGaps: ["trigger", "invalidation"]` and
+   `freeWins: ["marketAlignment", "impliedVolatility", "delta", "gamma", "optionVolume"]`, and
+   `massiveCapability.blockers` states greeks/IV are "fetched and then dropped before persistence."
+   So `CONFIRMING_EVIDENCE_INCOMPLETE_9` — 91 suppressions, the single biggest cause of nothing
+   alerting — is substantially self-inflicted. Persisting the free wins is the highest-value fix.
+2. **13 future-dated quote timestamps.** `lib/research/asymmetry/*` never imports
+   `providerTimestampMs`, the normalizer written for exactly this nanosecond-vs-millisecond bug.
+   `lib/polygon-provider.js` normalizes at its boundary, so some other path is supplying raw
+   timestamps.
+
+### Not done
+
+Priorities 4, 6, 7, 8, 9 were not started: delayed-alert re-evaluation hardening, High-Asymmetry
+provider-pressure reduction, Ask OptiScan, Create Claude Task, and the Options page redesign.
+
+### Exact resume point
+
+Persist the five `freeWins` evidence fields so `CONFIRMING_EVIDENCE_INCOMPLETE` stops being the
+dominant suppression, then re-measure whether anything alerts and whether latency data finally
+exists. Then Ask OptiScan: extend the LIVE_AND_CONNECTED advisory-chat stack at `/ask-optiscan`
+and retire `app/copilot/page.tsx`. Do not build a second chatbot.
+
+---
+
 ## Packet update — 2026-08-05 deployed-image module resolution fixed
 
 ### Verified state
