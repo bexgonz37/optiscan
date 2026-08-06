@@ -1,5 +1,158 @@
 # Current Task Packet
 
+## Packet update — 2026-08-06 the digest consumer, and High-Asymmetry alerts for the first time
+
+### Verified state
+
+- Local HEAD = `origin/main` = production: `c5b5e41`. Read from git and `/api/healthz`,
+  not assumed. Three deploys this session: `2047e8e` → `d0e30b6` → `c5b5e41`.
+- `/api/healthz`: `ok: true`, db writable, `schemaMissing: []`, lifecycle active.
+- Full suite 3568/3568 twice. `tsc --noEmit --incremental false` clean.
+  `next build` exit 0. `git diff --check` clean.
+- `PAPER_0DTE_RESEARCH_ENABLED` remains unset.
+- New env, all OFF/bounded by default: `CONTENT_DIGEST_DISCORD_ENABLED`,
+  `CONTENT_DIGEST_MIN_INTERVAL_MS` (24h), `CONTENT_DIGEST_MAX_OUTCOMES` (12).
+
+### HIGH-ASYMMETRY HAS ALERTED. The arithmetic fix worked.
+
+Measured live at 14:22Z on 2026-08-06, **52 minutes into a real RTH session** —
+the clean post-fix RTH cohort the last two packets could not obtain.
+
+```
+decisions 151 · distinctCases 130 · notified 1
+byAction   HIGH_ASYMMETRY_ALERT 1 · OWNER_WATCH 2 · PAPER_ONLY 19
+           TOO_LATE 30 · REJECTED 99
+byTiming   ON_TIME 121 · ENTRY_TOO_LATE 25 · STALE_EVIDENCE 5
+notified   state HIGH_ASYMMETRY · strategy sr_reclaim · premium chase <10%
+           capture→notify <60s · staleness <30s
+```
+
+Three things this settles, none of which the cumulative counts could:
+
+1. **`CONFIRMING_EVIDENCE_INCOMPLETE_9` is GONE from the blocker list.** It was
+   111 and top of the list at `a757342`. It does not appear at all in today's
+   `byReason`. The six structural unsupplied labels are no longer making
+   notifiable states unreachable — exactly what `a6c451c` predicted, and what the
+   91→111 rise was wrongly feared to disprove.
+2. **A genuinely qualified fresh case reached HIGH_ASYMMETRY and alerted.** One,
+   not a forced one: 130 distinct cases produced exactly one alert.
+3. **The gates still refuse everything they should.** AVGO
+   `O:AVGO260810P00415000` reached `toState: HIGH_ASYMMETRY` and was still
+   REJECTED on `UNUSABLE_SPREAD_26.0` (bid 6.35 / ask 8.25). Premium-expanded
+   cases went PAPER_ONLY (19, `STATE_NOT_NOTIFIABLE_PREMIUM_CHASE`), late ones
+   TOO_LATE (30), wide spreads and thin OI REJECTED. Reaching the state is not
+   the same as passing the gate, and the gate held.
+
+**Counter disagreement, unresolved:** `ratio.notified` is 1 and
+`byAction.HIGH_ASYMMETRY_ALERT` is 1, but `suppression.notifiedCaptures` is 0 and
+`suppression.immediateAlerts` is 0 with `silentCaptures: 1`. Two counters over the
+same session disagree about whether a notification happened. The alert is
+corroborated by `byAction` and `distributions.stateAtNotification`, so the likely
+fault is in the suppression counter's source, not in the alert. NOT chased this
+session — recorded so it is not later read as evidence either way.
+
+### `fieldLineage` already answers Priorities 8 and 9
+
+The endpoint reports, per field, where it can come from and what it costs:
+
+```
+marketAlignment         CACHE                 freeToFix: true   providerCallJustified: false
+delta/gamma/IV          FETCHED_OPTION_CHAIN  freeToFix: true   providerCallJustified: false
+optionVolume            FETCHED_OPTION_CHAIN  freeToFix: true   providerCallJustified: false
+bid/ask/quoteTimestamp  LIVE_SCANNER_PAYLOAD  "already satisfied from a free source"
+```
+
+Every remaining unsupplied field is "already fetched and then dropped. Fix the
+mapping; zero additional calls." No new provider request is needed for any of
+them. That is the wiring instruction for the next session, with its cost already
+proven to be zero.
+
+### The held drafts had no reader (Priorities 1–3, done and verified)
+
+`a29688b` stopped the flood by rerouting old events and writing
+`HELD_FOR_HISTORICAL_DIGEST`. Production confirmed that half working:
+`eventsAwaitingRecovery: 0`, `SENT` flat at 1083. But the reason code was named
+for a digest **that did not exist** — 30 drafts held, nothing reading them. A
+terminal status pointing at an absent consumer is a silent queue loss.
+
+`lib/content/historical-digest.ts` (pure) + `historical-digest-runtime.ts` (db)
+collapse held drafts to one summary per canonical outcome. Verified against the
+real 30 rows in production at `c5b5e41`:
+
+| | value |
+|---|---|
+| held digest rows | 30 |
+| unique canonical outcomes | **5** |
+| digest-ready | 3 |
+| excluded ALREADY_DELIVERED_INDIVIDUALLY | 2 |
+| duplicate variants collapsed | 22 |
+| Discord messages prevented | 24 |
+| verified winners / losers / unresolved | 2 / 1 / 0 |
+| verified root causes | 1 (`PROFIT_GIVEN_BACK`) |
+| contradictory outcomes | 0 |
+| `SENT` before / after | 1083 / **1083** |
+| total drafts before / after | 3784 / **3784** |
+
+Grouping keys on `outcomeFingerprint` and deliberately EXCLUDES the close event
+id — `EXIT_HIT` and `OPPORTUNITY_CLOSED` are two event ids for one closure, so
+keying on it would preserve the duplication the collapse exists to remove.
+
+Discord delivery is OFF by default. Generation is in-app and always available;
+delivery needs `CONTENT_DIGEST_DISCORD_ENABLED` or a manual
+`POST /api/content-digest {"deliver":true}`, and the scheduled path yields
+entirely whenever the live scan delivered in the same tick.
+
+Diagnostics: `GET /api/diagnostics/historical-digest` (read-only, zero provider
+calls). Owner surface: `GET /api/content-digest`, `?preview=1` for the next
+digest without persisting.
+
+### Two defects found by verifying production, not by tests
+
+**`d0e30b6` — an undelivered digest buried the outcomes it never reported.**
+The scheduled path generated `dig_xhf3b4` over 3 outcomes and correctly refused to
+send it. The next candidate then excluded all three as `ALREADY_IN_PRIOR_DIGEST`.
+A digest the owner never received was suppressing the one they would have — the
+same silent loss, one layer up. Coverage is now defined as DELIVERY, and the
+digest id derives from its outcome set rather than the clock so a three-minute job
+upserts one pending row instead of accumulating hundreds.
+
+**`c5b5e41` — "cLOSed" turned two winners into losers.**
+The first real digest reported two outcomes as `LOSER` with `returnPercent` of
+**+45.1** and **+48.8**. The data was right and the classifier was wrong: draft
+`cd_jpfsgi` is a CLOSED_WINNER that closed +45.1% ($2.77 → $4.02), and its
+`result_type` is `REALIZED_CLOSED_RETURN` — the name of the MEASUREMENT, not a
+verdict. A substring test for `LOS` matched the LOS inside `cLOSed`.
+
+Win/loss now comes from the content CATEGORY corroborated by the recorded return.
+When they disagree neither is asserted: UNRESOLVED plus a data-quality warning.
+Winners are also excluded from the failure-cause counters — they had inflated
+"insufficient evidence" to 2 and printed "No verified root cause has been
+established" directly underneath a +45% close.
+
+### Not done
+
+Priorities 4 (cohort VERSION tagging — today's data is clean post-fix RTH, but
+`LEGACY_PRE_FIX` / `POST_FIX_RTH` interpretation states are not persisted), 6–7
+(future-timestamp lineage; `INVALID_FUTURE_*` did NOT appear in today's blockers,
+so live samples were not available to trace), 8–9 (wire the free fields — lineage
+above says zero provider cost), 10 (provider pressure), 11 (Quant/Paper
+reconciliation), 12 (page audit), 13 (pipeline audit), 14 (Ask OptiScan), 15
+(Create Claude Task), 16 (UI redesign), 17 (smoke test).
+
+### Exact resume point
+
+1. Re-read `/api/research/asymmetry/timing` at the CLOSE of 2026-08-06 for the
+   full-session post-fix RTH funnel, and capture the notified case's complete
+   lineage (case id, OCC, first-eligible / capture / decision / quote timestamps,
+   entry ask, spread, Discord message id).
+2. Resolve the `notified: 1` vs `notifiedCaptures: 0` counter disagreement.
+3. Wire `marketAlignment` from cache and `delta` / `gamma` / `IV` / `optionVolume`
+   from the already-fetched chain. `fieldLineage` proves all are zero-cost.
+4. Future timestamps: `INVALID_FUTURE_*` did not fire today. Collect real samples
+   before assuming a source; do not chase it from the old cumulative counts.
+
+---
+
 ## Packet update — 2026-08-06 the Recaps flood, inverted failure causes, null-to-zero
 
 ### Verified state
