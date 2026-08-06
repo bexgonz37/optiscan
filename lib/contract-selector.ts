@@ -326,8 +326,11 @@ export interface SelectionSuccess {
     mid: number | null;
     spreadPct: number | null;
     delta: number | null;
-    openInterest: number;
-    volume: number;
+    // Nullable on purpose: `?? 0` here re-created the provider-boundary defect
+    // one layer down, handing every consumer of marketData a measured zero the
+    // provider never reported.
+    openInterest: number | null;
+    volume: number | null;
     iv: number | null;
     breakevenPct: number | null;
     distFromSpotPct: number | null;
@@ -345,6 +348,14 @@ export interface SelectionRejection {
   reason: string;
   evaluated: number;
   blockedByGate: Record<string, number>;
+  /**
+   * Why the best-ranked candidate failed, in words. `blockedByGate` counts
+   * gates but cannot distinguish "open interest 0 < 500" from "open interest
+   * unavailable" — a measured illiquid contract from a provider data gap. The
+   * owner needs that difference: one is a contract to avoid, the other is a
+   * feed to chase.
+   */
+  gateFailures?: { gate: string; msg: string }[];
 }
 
 export type SelectionResult = SelectionSuccess | SelectionRejection;
@@ -391,11 +402,25 @@ function evaluateTradability(
   if (absDelta == null || absDelta < profile.deltaMin || absDelta > profile.deltaMax) {
     fails.push({ gate: "delta", msg: `delta ${absDelta == null ? "unknown" : absDelta.toFixed(2)} outside ${profile.deltaMin}-${profile.deltaMax}` });
   }
-  if (profile.minOpenInterest > 0 && (c.openInterest ?? 0) < profile.minOpenInterest) {
-    fails.push({ gate: "open_interest", msg: `open interest ${c.openInterest ?? 0} < ${profile.minOpenInterest} minimum` });
+  // An UNAVAILABLE liquidity figure must fail the gate and must say so. It
+  // previously read as `0` — which also failed, but reported a measurement the
+  // provider never made. Unavailable and zero are different owner problems:
+  // one is a data gap to chase, the other is a contract to avoid.
+  if (profile.minOpenInterest > 0) {
+    const oi = isNum(c.openInterest) ? c.openInterest : null;
+    if (oi == null) {
+      fails.push({ gate: "open_interest", msg: `open interest unavailable — cannot clear the ${profile.minOpenInterest} minimum` });
+    } else if (oi < profile.minOpenInterest) {
+      fails.push({ gate: "open_interest", msg: `open interest ${oi} < ${profile.minOpenInterest} minimum` });
+    }
   }
-  if (profile.minVolume > 0 && (c.volume ?? 0) < profile.minVolume) {
-    fails.push({ gate: "volume", msg: `volume ${c.volume ?? 0} < ${profile.minVolume} minimum` });
+  if (profile.minVolume > 0) {
+    const vol = isNum(c.volume) ? c.volume : null;
+    if (vol == null) {
+      fails.push({ gate: "volume", msg: `option volume unavailable — cannot clear the ${profile.minVolume} minimum` });
+    } else if (vol < profile.minVolume) {
+      fails.push({ gate: "volume", msg: `volume ${vol} < ${profile.minVolume} minimum` });
+    }
   }
   if (isNum(c.dte) && (c.dte < profile.dteMin || c.dte > profile.dteMax)) {
     fails.push({ gate: "dte", msg: `${c.dte} DTE outside ${profile.dteMin}-${profile.dteMax} window` });
@@ -448,8 +473,14 @@ export function selectContract(input: SelectInput, profileRef: string | Contract
   if (!profile) throw new Error(`unknown contract profile: ${String(profileRef)}`);
   const nowMs = input.nowMs ?? Date.now();
 
-  const reject = (rejectionCode: RejectionCode, reason: string, evaluated = 0, blockedByGate: Record<string, number> = {}): SelectionRejection =>
-    ({ ok: false, profile: profile.name, rejectionCode, reason, evaluated, blockedByGate });
+  const reject = (
+    rejectionCode: RejectionCode,
+    reason: string,
+    evaluated = 0,
+    blockedByGate: Record<string, number> = {},
+    gateFailures?: { gate: string; msg: string }[],
+  ): SelectionRejection =>
+    ({ ok: false, profile: profile.name, rejectionCode, reason, evaluated, blockedByGate, gateFailures });
 
   // Chain-level availability + freshness first (req 14: chain freshness AND per-contract).
   if (!input.chainAvailable) return reject("CHAIN_UNAVAILABLE", `Options chain for ${input.underlying} is unavailable from the provider.`);
@@ -476,6 +507,9 @@ export function selectContract(input: SelectInput, profileRef: string | Contract
   const blockedByGate: Record<string, number> = {};
   let firstClean: ChainContract | null = null;
   let evaluated = 0;
+  // Keep the best-ranked candidate's reasons verbatim so a rejection can say
+  // WHAT failed, not merely how many gates did.
+  let topCandidateFailures: { gate: string; msg: string }[] = [];
   // For near_money research we still surface the picked (possibly non-tradable)
   // contract, marked non-actionable. For zero_dte/swing we require a clean pick.
   const researchPick = candidates[0] ?? null;
@@ -484,6 +518,7 @@ export function selectContract(input: SelectInput, profileRef: string | Contract
     evaluated += 1;
     const fails = evaluateTradability(c, profile, ctx);
     if (!fails.length) { firstClean = c; break; }
+    if (!topCandidateFailures.length) topCandidateFailures = fails;
     for (const f of fails) blockedByGate[f.gate] = (blockedByGate[f.gate] ?? 0) + 1;
   }
 
@@ -507,7 +542,11 @@ export function selectContract(input: SelectInput, profileRef: string | Contract
     }
     const code = GATE_TO_CODE[primary] ?? "NO_LIQUID_CONTRACT";
     const summary = Object.entries(blockedByGate).map(([g, n]) => `${g}×${n}`).join(", ");
-    return reject(code, `No safe/tradable ${input.side} contract for ${input.underlying}: ${evaluated} evaluated, blocked by ${summary || "gates"}.`, evaluated, blockedByGate);
+    return reject(
+      code,
+      `No safe/tradable ${input.side} contract for ${input.underlying}: ${evaluated} evaluated, blocked by ${summary || "gates"}.`,
+      evaluated, blockedByGate, topCandidateFailures,
+    );
   }
 
   // Bearish safety: a put is never marked actionable by the selector.
@@ -536,8 +575,8 @@ export function selectContract(input: SelectInput, profileRef: string | Contract
       mid: chosen.mid ?? null,
       spreadPct: chosen.spreadPct ?? null,
       delta: chosen.delta ?? null,
-      openInterest: chosen.openInterest ?? 0,
-      volume: chosen.volume ?? 0,
+      openInterest: chosen.openInterest ?? null,
+      volume: chosen.volume ?? null,
       iv: chosen.iv ?? null,
       breakevenPct,
       distFromSpotPct,
