@@ -29,6 +29,20 @@ function db() {
           CREATE VIEW options_paper_delivered AS SELECT * FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER';
           CREATE VIEW options_paper_research AS SELECT * FROM options_paper_trades WHERE paper_kind='RESEARCH_ONLY_PAPER';
           CREATE TABLE options_candidates (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, tier INTEGER, session TEXT, selected_strategy TEXT, direction TEXT, side TEXT, research_only INTEGER NOT NULL DEFAULT 0, score REAL, considered_json TEXT, state TEXT NOT NULL, why TEXT, option_symbol TEXT, chain_fetch_ms INTEGER, freshness_state TEXT, callout_message TEXT, latency_json TEXT, earliness_phase TEXT, escalated_by TEXT, feature_snapshot_json TEXT, created_at_ms INTEGER NOT NULL);`);
+  d.exec(`
+    CREATE TABLE IF NOT EXISTS strategy_readiness_state (strategy_key TEXT PRIMARY KEY, strategy TEXT NOT NULL, strategy_version TEXT NOT NULL, state TEXT NOT NULL, classification TEXT, reason TEXT NOT NULL, sample_size INTEGER, expectancy_pct REAL, profit_factor REAL, evidence_snapshot_json TEXT, actor TEXT NOT NULL, deployment_sha TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS strategy_readiness_transitions (id INTEGER PRIMARY KEY AUTOINCREMENT, strategy_key TEXT NOT NULL, strategy TEXT NOT NULL, strategy_version TEXT NOT NULL, prior_state TEXT, new_state TEXT NOT NULL, reason TEXT NOT NULL, classification TEXT, sample_size INTEGER, metrics_json TEXT, evidence_snapshot_json TEXT, actor TEXT NOT NULL, deployment_sha TEXT, at_ms INTEGER NOT NULL);
+  `);
+  // This file tests the BEARISH authority, not readiness. Subscriber openings now also
+  // require an approved strategy/version, so the strategy under test is approved up front
+  // to keep the bearish gate the only thing being exercised.
+  for (const s of ["momentum_breakdown", "vwap_rejection", "lower_high_continuation", "sr_reclaim"]) {
+    d.prepare(
+      `INSERT OR IGNORE INTO strategy_readiness_state
+         (strategy_key, strategy, strategy_version, state, reason, actor, created_at_ms, updated_at_ms)
+       VALUES (?,?,?,?,?,?,?,?)`,
+    ).run(`${s}@1`, s, "1", "SUBSCRIBER_APPROVED", "test fixture", "owner:test", 0, 0);
+  }
   return d;
 }
 

@@ -1879,6 +1879,79 @@ CREATE INDEX IF NOT EXISTS idx_opportunity_thesis_cooldown_until
 CREATE INDEX IF NOT EXISTS idx_opportunity_thesis_cooldown_symbol
   ON opportunity_thesis_reopen_cooldown(symbol, direction, option_type, session_date);
 
+-- Subscriber eligibility used to be IMPLIED: a strategy reached subscribers because it won
+-- selection and cleared a quality bar, never because anything established it was worth
+-- sending. Expectancy -7.2% / profit factor 0.49 is what that produced. Readiness is now
+-- explicit and REQUIRED, and absence of a row means RESEARCH_ONLY - absence of a record is
+-- absence of permission, so a legacy database fails closed rather than open.
+CREATE TABLE IF NOT EXISTS strategy_readiness_state (
+  strategy_key TEXT PRIMARY KEY,            -- "<strategy>@<version>"
+  strategy TEXT NOT NULL,
+  strategy_version TEXT NOT NULL,
+  state TEXT NOT NULL,
+  classification TEXT,
+  reason TEXT NOT NULL,
+  sample_size INTEGER,
+  expectancy_pct REAL,
+  profit_factor REAL,
+  evidence_snapshot_json TEXT,
+  actor TEXT NOT NULL,
+  deployment_sha TEXT,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_readiness_state ON strategy_readiness_state(state);
+
+-- Every promotion and demotion, with the evidence that motivated it, so a later reader can
+-- audit not just WHAT changed but on what basis and by whom.
+CREATE TABLE IF NOT EXISTS strategy_readiness_transitions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  strategy_key TEXT NOT NULL,
+  strategy TEXT NOT NULL,
+  strategy_version TEXT NOT NULL,
+  prior_state TEXT,
+  new_state TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  classification TEXT,
+  sample_size INTEGER,
+  metrics_json TEXT,
+  evidence_snapshot_json TEXT,
+  actor TEXT NOT NULL,
+  deployment_sha TEXT,
+  at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_strategy_readiness_transitions_key
+  ON strategy_readiness_transitions(strategy_key, at_ms);
+
+-- The persisted ranking breakdown. Opportunity cases recorded rank=null,
+-- rankExplanation=null and rejectedContracts=[] , so "why did 774P beat 770P" was
+-- structurally unanswerable from stored evidence. One row per ranked candidate per
+-- decision, winner and runners-up alike.
+CREATE TABLE IF NOT EXISTS opportunity_rank_breakdown (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  decision_id TEXT NOT NULL,
+  ranking_version TEXT NOT NULL,
+  symbol TEXT NOT NULL,
+  session_date TEXT,
+  strategy TEXT,
+  direction TEXT,
+  option_symbol TEXT,
+  rank INTEGER NOT NULL,
+  is_selected INTEGER NOT NULL DEFAULT 0,
+  total_score REAL,
+  components_json TEXT,
+  penalties_json TEXT,
+  unavailable_json TEXT,
+  hard_blockers_json TEXT,
+  outranked_reason TEXT,
+  rejected_reason TEXT,
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_opportunity_rank_decision
+  ON opportunity_rank_breakdown(decision_id, rank);
+CREATE INDEX IF NOT EXISTS idx_opportunity_rank_symbol
+  ON opportunity_rank_breakdown(symbol, created_at_ms);
+
 CREATE TABLE IF NOT EXISTS opportunity_contract_candidates (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   thesis_fingerprint TEXT NOT NULL,

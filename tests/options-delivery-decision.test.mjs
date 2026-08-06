@@ -15,7 +15,21 @@ function db() {
           CREATE TABLE options_paper_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, option_symbol TEXT NOT NULL, side TEXT, strike REAL, expiration TEXT, dte INTEGER, result_class TEXT NOT NULL, bid REAL, ask REAL, mid REAL, spread_pct REAL, entry_fill REAL, volume REAL, open_interest REAL, iv REAL, delta REAL, underlying_price REAL, strategy TEXT, target REAL, invalidation REAL, provenance TEXT, status TEXT NOT NULL, exit_fill REAL, pnl REAL, return_pct REAL, exit_reason TEXT, entered_at_ms INTEGER, exit_at_ms INTEGER, session TEXT, core_broad TEXT, feature_snapshot_json TEXT, paper_kind TEXT, alert_id TEXT, entry_source TEXT, experiment_id TEXT, experiment_variant TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
           CREATE VIEW options_paper_delivered AS SELECT * FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER';
           CREATE VIEW options_paper_research AS SELECT * FROM options_paper_trades WHERE paper_kind='RESEARCH_ONLY_PAPER';
-          CREATE TABLE options_candidates (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, tier INTEGER, session TEXT, selected_strategy TEXT, direction TEXT, side TEXT, research_only INTEGER NOT NULL DEFAULT 0, score REAL, considered_json TEXT, state TEXT NOT NULL, why TEXT, option_symbol TEXT, chain_fetch_ms INTEGER, freshness_state TEXT, callout_message TEXT, latency_json TEXT, earliness_phase TEXT, escalated_by TEXT, feature_snapshot_json TEXT, created_at_ms INTEGER NOT NULL);`);
+          CREATE TABLE options_candidates (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, tier INTEGER, session TEXT, selected_strategy TEXT, direction TEXT, side TEXT, research_only INTEGER NOT NULL DEFAULT 0, score REAL, considered_json TEXT, state TEXT NOT NULL, why TEXT, option_symbol TEXT, chain_fetch_ms INTEGER, freshness_state TEXT, callout_message TEXT, latency_json TEXT, earliness_phase TEXT, escalated_by TEXT, feature_snapshot_json TEXT, created_at_ms INTEGER NOT NULL);
+          CREATE TABLE strategy_readiness_state (strategy_key TEXT PRIMARY KEY, strategy TEXT NOT NULL, strategy_version TEXT NOT NULL, state TEXT NOT NULL, classification TEXT, reason TEXT NOT NULL, sample_size INTEGER, expectancy_pct REAL, profit_factor REAL, evidence_snapshot_json TEXT, actor TEXT NOT NULL, deployment_sha TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+          CREATE TABLE strategy_readiness_transitions (id INTEGER PRIMARY KEY AUTOINCREMENT, strategy_key TEXT NOT NULL, strategy TEXT NOT NULL, strategy_version TEXT NOT NULL, prior_state TEXT, new_state TEXT NOT NULL, reason TEXT NOT NULL, classification TEXT, sample_size INTEGER, metrics_json TEXT, evidence_snapshot_json TEXT, actor TEXT NOT NULL, deployment_sha TEXT, at_ms INTEGER NOT NULL);`);
+  // These tests are about RANKING, CORRELATION and BATCH COMPETITION, not about readiness.
+  // Subscriber openings now require an explicitly approved strategy/version, so the
+  // strategies used here are approved up front to isolate what is under test. The gate
+  // itself is covered in tests/strategy-performance-quarantine.test.mjs, and the
+  // fails-closed default is asserted below.
+  for (const s of ["sr_reclaim", "pullback_continuation", "momentum_acceleration", "breakout_forming", "vwap_rejection", "lower_high_continuation"]) {
+    d.prepare(
+      `INSERT INTO strategy_readiness_state
+         (strategy_key, strategy, strategy_version, state, reason, actor, created_at_ms, updated_at_ms)
+       VALUES (?,?,?,?,?,?,?,?)`,
+    ).run(`${s}@1`, s, "1", "SUBSCRIBER_APPROVED", "test fixture", "owner:test", NOW, NOW);
+  }
   return d;
 }
 const dIn = (sym) => ({ candidateSymbol: sym, strategy: "sr_reclaim", researchOnly: false, contract: { optionSymbol: `O:${sym}260724C00100000`, side: "call", strike: 100, expiration: "2026-07-24", bid: 1.0, ask: 1.1, spreadPct: 5, quoteAgeMs: 1000 }, message: "x", observedUnderlyingPrice: 100, currentUnderlyingPrice: 100, chaseLimitPct: 5, underlyingPrice: 100, decisionMs: NOW });
@@ -218,4 +232,41 @@ test("decision config is env-tunable and clamped", () => {
   assert.equal(c.maxPerFlush, 3);
   assert.equal(decisionConfig({ OPTIONS_QUALITY_DELIVER_BAR: "7" }).deliverBar, 0.70, "out-of-range falls back to default");
   assert.equal(decisionConfig({}).maxPerFlush, 1, "default flush cap prefers fewer, higher-conviction alerts");
+});
+
+// ── The readiness gate, in the real decision path ───────────────────────────
+
+test("an unapproved strategy cannot produce a subscriber opening, however good the setup", async () => {
+  const d = db();
+  // Remove the fixture approval: this strategy is now unassessed.
+  d.prepare("DELETE FROM strategy_readiness_state WHERE strategy=?").run("breakout_forming");
+  const { sent, deliver } = okDeliver();
+  const out = await decideDeliveryBatch([EXCELLENT("NVDA")], { getDb: () => d, now: () => NOW, deliver }, ENV);
+  assert.notEqual(out[0].outcome, "DELIVER_TO_DISCORD", "an unassessed strategy must not reach subscribers");
+  assert.match(out[0].reason, /readiness_gate:NOT_SUBSCRIBER_APPROVED:RESEARCH_ONLY/);
+  assert.match(out[0].finalDeliveryReason, /subscriber openings require SUBSCRIBER_APPROVED/);
+  assert.equal(sent.length, 0, "nothing was sent");
+});
+
+test("a DEMOTED strategy is quarantined from subscriber openings", async () => {
+  const d = db();
+  d.prepare("UPDATE strategy_readiness_state SET state='DEMOTED' WHERE strategy=?").run("breakout_forming");
+  const { sent, deliver } = okDeliver();
+  const out = await decideDeliveryBatch([EXCELLENT("NVDA")], { getDb: () => d, now: () => NOW, deliver }, ENV);
+  assert.notEqual(out[0].outcome, "DELIVER_TO_DISCORD");
+  assert.match(out[0].reason, /readiness_gate:NOT_SUBSCRIBER_APPROVED:DEMOTED/);
+  assert.equal(sent.length, 0);
+});
+
+test("readiness shadow mode reports without blocking, so the refusal rate can be measured first", async () => {
+  const d = db();
+  d.prepare("DELETE FROM strategy_readiness_state WHERE strategy=?").run("breakout_forming");
+  const { sent, deliver } = okDeliver();
+  const out = await decideDeliveryBatch(
+    [EXCELLENT("NVDA")],
+    { getDb: () => d, now: () => NOW, deliver },
+    { ...ENV, STRATEGY_READINESS_MODE: "shadow" },
+  );
+  assert.equal(out[0].outcome, "DELIVER_TO_DISCORD");
+  assert.equal(sent.length, 1);
 });

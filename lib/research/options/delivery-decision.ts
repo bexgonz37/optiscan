@@ -19,6 +19,7 @@ import {
   type BearishAuthorityDecision,
 } from "./bearish-authority.ts";
 import { openBearishResearchPaperOnDb } from "./bearish-research-paper.ts";
+import { subscriberEligibility } from "./strategy-readiness.ts";
 import {
   attachEvidenceToOpportunityOnDb,
   claimOpportunityOpenOnDb,
@@ -81,6 +82,15 @@ export function decisionConfig(env: NodeJS.ProcessEnv = process.env): DecisionCo
 
 const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
 const TIER0_SET = new Set<string>([...OPTIONS_TIER0, "DIA"]);
+
+/**
+ * The strategy version a submission was produced by. The catalog does not yet version
+ * strategies individually, so "1" is the single live version — named explicitly rather
+ * than left implicit, so readiness records key on something stable and a future real
+ * version bump is a one-line change here.
+ */
+export const CURRENT_STRATEGY_VERSION = "1";
+const strategyVersionOf = (_s: DeliverySubmission): string => CURRENT_STRATEGY_VERSION;
 
 export function clusterKey(symbol: string, side: string): string {
   return TIER0_SET.has(symbol.toUpperCase()) ? `index:${side}` : `${symbol.toUpperCase()}:${side}`;
@@ -609,8 +619,19 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
       decisions.push(base);
       continue;
     }
+    // Subscriber eligibility must be EXPLICIT. Clearing a quality bar says a setup looked
+    // good right now; it says nothing about whether this strategy VERSION has ever been
+    // worth sending. The audited population (expectancy -7.2%, profit factor 0.49) is what
+    // implied eligibility produced. Fails closed: an unassessed version is RESEARCH_ONLY.
+    const readiness = subscriberEligibility(db as any, x.s.strategy, strategyVersionOf(x.s), env);
+    if (!readiness.allowed) {
+      base.reason = `readiness_gate:${readiness.reasonCode}`;
+      base.finalDeliveryReason = `strategy ${x.s.strategy} is ${readiness.state}; subscriber openings require SUBSCRIBER_APPROVED`;
+      decisions.push(base);
+      continue;
+    }
     base.outcome = "DELIVER_TO_DISCORD";
-    base.reason = `subscriber_worthy: quality ${x.quality} >= bar ${deliverBar}${excellent ? " (independently excellent)" : ""}; rank ${rank + 1}/${batch.length}; cluster ${ck}`;
+    base.reason = `subscriber_worthy: quality ${x.quality} >= bar ${deliverBar}${excellent ? " (independently excellent)" : ""}; rank ${rank + 1}/${batch.length}; cluster ${ck}; readiness ${readiness.state}`;
     base.finalDeliveryReason = "selected_for_delivery";
     takenClusters.add(ck);
     selected += 1;
