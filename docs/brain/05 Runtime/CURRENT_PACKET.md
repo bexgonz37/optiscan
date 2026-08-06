@@ -1,5 +1,118 @@
 # Current Task Packet
 
+## Packet update — 2026-08-06 (2) the called-versus-missed audit
+
+### Verified state
+
+- Local HEAD = `origin/main` = production: `e8ea895`. Read from git and
+  `/api/healthz`. Three commits: `f9758fd` → `7285829` → `e8ea895`.
+- Full suite 3623/3623 twice. `tsc --noEmit --incremental false` clean.
+  `next build` exit 0. `git diff --check` clean. No migrations touched.
+- **`HIGH_ASYMMETRY_IMMEDIATE_ALERTS_ENABLED=0` is SET in Railway.** Verified in
+  production: `immediateAlertsPaused: true`. Capture, marks, grading, paper,
+  lifecycle and subscriber behaviour all untouched.
+- `PAPER_0DTE_RESEARCH_ENABLED` remains unset.
+- `ASYM_LATE_ENTRY_REPRIEVE_ENABLED` unset → OFF.
+
+### The counter disagreement was a QUERY-PARAMETER BUG, not a counter bug
+
+`Number(url.searchParams.get("limit"))` is 0 when absent and `Number.isFinite(0)`
+is true, so the documented default of 200 was unreachable and
+`/api/research/asymmetry/timing` read **one row**. `ratio.*` is SQL over the
+session and was right; `suppression.*` and `distributions.*` are built from the
+row LIST and described a one-row session. Proven against production at one
+instant: `?limit=1` → notifiedCaptures 0, immediateAlerts 0; `?limit=1000` → 1
+and 1, `ratio.decisions` 199 in both. Now fixed and verified live: default
+returns all 269 rows and **`ratio.notified` = `notifiedCaptures` =
+`immediateAlerts` = 1.**
+
+**This corrected the last packet.** The surviving row was AVGO
+`O:AVGO260810P00415000` (REJECTED, `UNUSABLE_SPREAD_26.0`), and because
+`distributions` was built from it the alert was described as `sr_reclaim`. The
+alert was **NFLX `O:NFLX260807P00074000`, `pullback_continuation`**, 09:47:28 ET,
+ask 0.74, spread 2.7%, quality 88, chase 0%, capture→notify 10.8s, send latency
+1.87s, `notify_outcome=SENT` with a matching `notified=1` transition.
+**NBBO-verified: +70.3% MFE within 25 minutes against -17.6% MAE. A good alert.**
+
+### The owner's three concerns, answered with measurements
+
+**"OptiScan missed SPY calls that made huge returns" — there were no calls to
+miss.** SPY on 2026-08-05: open 775.85, high 776.85 at 09:39, close 769.79. Best
+UP leg **+0.30%**; best DOWN leg -0.94%. Of 292 contracts screened, 34 showed an
+apparent gain ≥200%. NBBO-verified from a fixed no-hindsight 10:30 ET entry:
+**12 VERIFIED_EXECUTABLE_WINNER — all PUTS, zero calls.** Plus 8 BAD_PRINT,
+4 ZERO_BID_ARTIFACT, 8 HINDSIGHT_ONLY (7 of them calls), 2 TINY_CAPACITY.
+Best real trade **+203%**. The "+3,450%" SPY 770P is **+194%** from a payable
+ask — the headline compares a 0.02 low in the last 15 minutes to a 0.71 high.
+**No contract anywhere near +10,000% survived verification.**
+
+**"Discord surfaces poor-quality ideas" — confirmed, with numbers.** 181 alerts
+sampled by even stride from 862 across 07-31/08-03/08-04/08-06, priced
+ask-to-bid: **60% never gained more than 5%**, median MFE **+1.6%**, median MAE
+-15.8%, median EOD -9.0%, profit factor **0.49**, expectancy **-7.2%**.
+Alert-to-capture was 53.3% / 39.8% / 44.5% on those three sessions.
+
+**"Alerts arrive late" — the opposite is the bigger problem.** 111 decisions were
+rejected as ENTRY_TOO_LATE on candidate age alone; **82% still had ≥10% reward
+remaining and 91% had seen premium expand ≤10%** by the system's own measures.
+
+### The dominant root cause is UNFIXED and named as such
+
+**The 0DTE chain is never requested.** Across 5,562 journal rows over five
+sessions, 19 decisions (0.3%) involved a contract expiring that day. On
+2026-08-05: **ZERO across 165 symbols and 1,056 decisions.** 11 of the 12
+verified missed winners were 0DTE — never fetched, never ranked, never quoted.
+
+Partitions come only from bands the matched strategy permits. SPY matched
+`pullback_continuation`, `sr_reclaim`, `reversal_bounce`, `breakout_forming`,
+`longer_dated_swing` — none permit 0DTE. **8 of the 12 0DTE-permitting
+strategies have never matched a candidate in any session with data**, including
+`zero_dte_index` and `index_intraday_momentum`, both written for SPY/QQQ, and
+the put-side breakdown strategies that describe exactly what SPY did.
+
+### One good entry was found and refused
+
+SPY `O:SPY260806P00774000`, 2026-08-05. Seen 10:05:47 → OWNER_WATCH
+(`CONFIRMING_EVIDENCE_INCOMPLETE_9`). Rejected 10:09:01 on **`ENTRY_TOO_LATE_6M`**
+at ask 2.58, spread 1.16%, ask size 222. NBBO-verified from that instant: peak
+bid **5.08** at 12:09, size 70. **+97% MFE, -15% MAE.** The ceiling it breached
+was **30 seconds**, taken from `strategy.freshnessMaxMs` — a QUOTE-staleness
+constant — for a strategy declaring a "hours–2 days" holding horizon.
+
+`7285829` adds a narrow reprieve (chase < half the limit AND not extended AND
+reward above minimum AND under 15 minutes; any missing measure = no reprieve;
+staleness/spread/OI/volume untouched; journaled as `NOTIFY_AGE_REPRIEVED`).
+
+**It is OFF and must stay off.** Replay recovers 55 of 111. Priced ask-to-bid
+they beat the sent alerts on immediate failure (35% vs 60%) and median MFE
+(+9.9% vs +1.6%) but barely on +25% rate (20% vs 18.6%) and are worse on
+drawdown (-29% vs -15.8%). The motivating case went +97%; the median goes +9.9%.
+One winner is not repeated evidence.
+
+### Owner surface
+
+`GET /api/research/asymmetry/spy-audit` — token-gated, read-only, zero provider
+calls, `actionable: false`, own `asOf`. Frozen evidence in
+`lib/research/asymmetry/spy-audit-2026-08-05.ts`.
+
+### Exact resume point
+
+1. **Fix 0DTE coverage — this is where the missed winners are.** Either give the
+   index/breakdown strategies a matcher that can actually fire, or let a
+   0DTE partition be requested for index symbols independently of strategy band.
+   Measure with the 19-of-5,562 baseline above.
+2. Diagnose why `zero_dte_index`, `index_intraday_momentum`,
+   `momentum_breakdown`, `support_break_retest`, `bearish_opening_range_break`,
+   `failed_breakout_reversal`, `failed_breakout`, `premarket_level_break` never
+   match. Eight dead strategies is a detection defect, not a market fact.
+3. Shadow the late-entry reprieve; demote it if reprieved alerts underperform
+   unreprieved ones over 30 decisions.
+4. Backfill `decisionMetrics` reasoning for pre-08-05 sessions, or accept the
+   replay can never reach them.
+5. Lift the alert pause only after 1 and 2 land.
+
+---
+
 ## Packet update — 2026-08-06 the digest consumer, and High-Asymmetry alerts for the first time
 
 ### Verified state
