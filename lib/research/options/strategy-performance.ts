@@ -112,6 +112,30 @@ export interface SegmentMetrics {
   evidenceQuality: EvidenceQuality;
   /** Fields that were absent, so a reader can see WHY a metric is null. */
   unavailable: string[];
+  /** Integrity problems found in the rows themselves, named rather than absorbed. */
+  evidenceWarnings: string[];
+  /** Rows whose MFE/MAE could not be trusted and were excluded from excursion metrics. */
+  degenerateExcursionRows: number;
+}
+
+/**
+ * MFE is the PEAK favorable excursion and MAE the worst adverse one, so over a position
+ * with more than one mark MFE must exceed MAE. When they are exactly equal the position
+ * was marked once and both fields were filled from that single mark — which is a final
+ * return wearing an excursion's name.
+ *
+ * This matters because those rows otherwise manufacture a headline: production carries
+ * segments whose "median MFE" is -99.45% and identical to their median MAE. Reading that
+ * as "74% of alerts failed immediately" would be reporting a marking gap as a trading
+ * result. Such rows keep their RETURN (that part is real) and are excluded from
+ * excursion-derived metrics.
+ */
+export function hasDegenerateExcursion(row: OutcomeRow): boolean {
+  return row.mfePct != null
+    && row.maePct != null
+    && Number.isFinite(row.mfePct)
+    && Number.isFinite(row.maePct)
+    && row.mfePct <= row.maePct;
 }
 
 /**
@@ -228,11 +252,30 @@ export function computeSegmentMetrics(rows: OutcomeRow[]): SegmentMetrics {
   else evidenceQuality = "RESEARCH_EXECUTABLE";
 
   const returns = priced.map((r) => r.returnPct!).filter((x) => Number.isFinite(x));
-  const mfes = priced.map((r) => r.mfePct).filter((x): x is number => x != null && Number.isFinite(x));
-  const maes = priced.map((r) => r.maePct).filter((x): x is number => x != null && Number.isFinite(x));
+  // Excursion metrics use only rows whose MFE/MAE are real excursions. Returns are kept
+  // for every priced row, because the return is trustworthy even when the marks are thin.
+  const degenerate = priced.filter(hasDegenerateExcursion);
+  const excursionRows = priced.filter((r) => !hasDegenerateExcursion(r));
+  const mfes = excursionRows.map((r) => r.mfePct).filter((x): x is number => x != null && Number.isFinite(x));
+  const maes = excursionRows.map((r) => r.maePct).filter((x): x is number => x != null && Number.isFinite(x));
   const lats = priced.map((r) => r.alertLatencyMs).filter((x): x is number => x != null && Number.isFinite(x));
   const chases = priced.map((r) => r.premiumExpansionPct).filter((x): x is number => x != null && Number.isFinite(x));
 
+  const evidenceWarnings: string[] = [];
+  const degenerateShare = priced.length ? degenerate.length / priced.length : 0;
+  if (degenerate.length) {
+    evidenceWarnings.push(
+      `DEGENERATE_EXCURSION_ROWS:${degenerate.length}/${priced.length}`
+      + " (MFE <= MAE, i.e. a single mark filled both fields; excluded from excursion metrics)",
+    );
+  }
+  // When most rows are degenerate the excursion picture is a marking artifact, not a
+  // trading result, and must not be allowed to drive a promotion or a quarantine.
+  if (degenerateShare > 0.5) {
+    evidenceWarnings.push(
+      `EXCURSION_EVIDENCE_UNUSABLE: ${(degenerateShare * 100).toFixed(0)}% of priced rows lack real excursions`,
+    );
+  }
   if (!mfes.length) unavailable.add("mfePct");
   if (!maes.length) unavailable.add("maePct");
   if (!lats.length) unavailable.add("alertLatencyMs");
@@ -279,8 +322,10 @@ export function computeSegmentMetrics(rows: OutcomeRow[]): SegmentMetrics {
     medianAlertLatencyMs: median(lats),
     medianPremiumExpansionPct: median(chases),
     maxAdverseSequence,
-    evidenceQuality,
+    evidenceQuality: degenerateShare > 0.5 ? "CONTAMINATED" : evidenceQuality,
     unavailable: [...unavailable].sort(),
+    evidenceWarnings,
+    degenerateExcursionRows: degenerate.length,
   };
 }
 

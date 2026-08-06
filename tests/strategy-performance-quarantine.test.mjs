@@ -324,3 +324,78 @@ test("classification thresholds are documented constants, not magic numbers", ()
   // The measured baseline was 59.9%; the ceiling must be below it to be an improvement.
   assert.ok(DEFAULT_CLASSIFICATION.maxImmediateFailureRate < 0.599);
 });
+
+// ── Data-integrity defects found by the FIRST production run ────────────────
+
+test("MFE equal to MAE is a single-mark artifact, not an excursion, and is excluded", async () => {
+  const { hasDegenerateExcursion } = await import("../lib/research/options/strategy-performance.ts");
+  // Production carried segments with median MFE -99.4511 EXACTLY equal to median MAE.
+  // Peak-favorable can never sit below worst-adverse over a multi-mark position: both
+  // fields were filled from one mark. Reading that as "74% failed immediately" would be
+  // reporting a marking gap as a trading result.
+  const degenerate = rows(10, -99.4511, { mfePct: -99.4511, maePct: -99.4511 });
+  assert.equal(hasDegenerateExcursion(degenerate[0]), true);
+
+  const healthy = rows(10, 20, { mfePct: 40, maePct: -10 });
+  assert.equal(hasDegenerateExcursion(healthy[0]), false);
+
+  const m = computeSegmentMetrics([...degenerate, ...healthy]);
+  assert.equal(m.degenerateExcursionRows, 10);
+  assert.ok(m.evidenceWarnings.some((w) => w.startsWith("DEGENERATE_EXCURSION_ROWS")));
+  // Excursion metrics come only from the healthy rows.
+  assert.equal(m.medianMfePct, 40);
+  assert.equal(m.medianMaePct, -10);
+  assert.equal(m.immediateFailureRate, 0, "the degenerate rows must not manufacture failures");
+  // Returns are still counted from every priced row — the return is real.
+  assert.equal(m.pricedSampleSize, 20);
+});
+
+test("a segment that is mostly degenerate is CONTAMINATED, so it can neither promote nor condemn", () => {
+  const m = computeSegmentMetrics([
+    ...rows(18, -99, { mfePct: -99, maePct: -99 }),
+    ...rows(2, 20, { mfePct: 40, maePct: -10 }),
+  ]);
+  assert.equal(m.evidenceQuality, "CONTAMINATED");
+  assert.ok(m.evidenceWarnings.some((w) => w.startsWith("EXCURSION_EVIDENCE_UNUSABLE")));
+  assert.equal(classifySegment(m).classification, "DATA_CONTAMINATED");
+});
+
+test("REGRESSION: the research lane must not overwrite the delivered lane's verdict", async () => {
+  const { governingSegments } = await import("../lib/research/options/readiness-assessment.ts");
+  // The exact production collision: pullback_continuation was -35.7% on delivered alerts
+  // and +0.50% in research. Keyed only on strategy@version, the research row won and
+  // promoted it to SUBSCRIBER_CANDIDATE while it was losing 35.7% on real subscriber alerts.
+  const delivered = computeSegmentMetrics([
+    ...rows(5, 40, { lane: "DELIVERED_ALERT_PAPER" }),
+    ...rows(22, -53, { lane: "DELIVERED_ALERT_PAPER" }).map((r, i) => ({ ...r, tradeId: 900 + i })),
+  ]);
+  const research = computeSegmentMetrics([
+    ...rows(30, 20, { lane: "RESEARCH_ONLY_PAPER" }),
+    ...rows(22, -18, { lane: "RESEARCH_ONLY_PAPER" }).map((r, i) => ({ ...r, tradeId: 950 + i })),
+  ]);
+  const segs = [
+    { key: { lane: "RESEARCH_ONLY_PAPER", strategy: "pullback_continuation", strategyVersion: "1" }, keyString: "r", metrics: research, ...classifySegment(research) },
+    { key: { lane: "DELIVERED_ALERT_PAPER", strategy: "pullback_continuation", strategyVersion: "1" }, keyString: "d", metrics: delivered, ...classifySegment(delivered) },
+  ];
+  const governing = governingSegments(segs);
+  assert.equal(governing.length, 1, "one verdict per strategy/version");
+  assert.equal(governing[0].classification, "NEGATIVE_EXPECTANCY",
+    "the lane subscribers actually receive must govern");
+  assert.match(governing[0].rationale, /governed by DELIVERED_ALERT_PAPER/);
+  assert.equal(governing[0].researchOnlyEvidence, false);
+});
+
+test("research-only evidence is flagged so it cannot carry a strategy to subscriber candidacy", async () => {
+  const { governingSegments } = await import("../lib/research/options/readiness-assessment.ts");
+  const research = computeSegmentMetrics([
+    ...rows(30, 40, { lane: "RESEARCH_ONLY_PAPER" }),
+    ...rows(10, -10, { lane: "RESEARCH_ONLY_PAPER" }).map((r, i) => ({ ...r, tradeId: 980 + i })),
+  ]);
+  const governing = governingSegments([
+    { key: { lane: "RESEARCH_ONLY_PAPER", strategy: "momentum_acceleration", strategyVersion: "1" }, keyString: "r", metrics: research, ...classifySegment(research) },
+  ]);
+  assert.equal(governing[0].researchOnlyEvidence, true);
+  assert.match(governing[0].rationale, /research-lane evidence only/);
+  // The classification itself may be strong; the CAP is applied when it is written.
+  assert.equal(governing[0].classification, "FORWARD_VALIDATED");
+});

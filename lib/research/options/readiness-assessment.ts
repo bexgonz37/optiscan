@@ -20,6 +20,7 @@ import {
   autoAssessOnDb,
   listReadinessOnDb,
   readinessSchemaReady,
+  setReadinessOnDb,
   type AutoAssessResult,
   type ReadinessDb,
   type ReadinessRecord,
@@ -45,6 +46,77 @@ export interface AssessmentResult {
   quarantined: string[];
   readiness: ReadinessRecord[];
   note: string;
+}
+
+export interface GoverningSegment {
+  strategy: string;
+  strategyVersion: string;
+  classification: SegmentReport["classification"];
+  rationale: string;
+  metrics: SegmentReport["metrics"];
+  /** True when the only evidence comes from a lane subscribers never see. */
+  researchOnlyEvidence: boolean;
+}
+
+const DELIVERED_LANE = "DELIVERED_ALERT_PAPER";
+
+/**
+ * Collapse per-lane segments to ONE governing verdict per strategy/version.
+ *
+ * This exists because of a real defect the first production run exposed. Readiness is
+ * keyed on strategy@version, but segmentation is per LANE, so two rows collided and the
+ * last write won. Measured on production evidence, the same strategies perform wildly
+ * differently by lane:
+ *
+ *     pullback_continuation   delivered -35.7%  |  research  +0.50%   (36.2pp gap)
+ *     momentum_acceleration   delivered -33.2%  |  research +16.74%   (49.9pp gap)
+ *     reversal_bounce         delivered -32.9%  |  research  +6.49%   (39.4pp gap)
+ *     lower_high_continuation delivered -27.8%  |  research +35.99%   (63.8pp gap)
+ *
+ * The research row was overwriting the delivered row, which promoted
+ * pullback_continuation to SUBSCRIBER_CANDIDATE while it was losing 35.7% on the alerts
+ * subscribers actually received. Exactly backwards.
+ *
+ * DELIVERED_ALERT_PAPER is the subscriber's real experience and therefore governs. Where
+ * both lanes exist and disagree, the WORSE verdict is taken: a strategy is not rehabilitated
+ * by performing better somewhere nobody is trading it.
+ */
+export function governingSegments(segments: SegmentReport[]): GoverningSegment[] {
+  const byKey = new Map<string, SegmentReport[]>();
+  for (const s of segments) {
+    const strategy = s.key.strategy;
+    if (!strategy || strategy === "unknown" || strategy === "*") continue;
+    const version = s.key.strategyVersion === "*" ? "1" : s.key.strategyVersion;
+    const k = `${strategy}@${version}`;
+    if (!byKey.has(k)) byKey.set(k, []);
+    byKey.get(k)!.push(s);
+  }
+
+  const severity: Record<string, number> = {
+    NEGATIVE_EXPECTANCY: 0, DEGRADED: 1, DATA_CONTAMINATED: 2, INSUFFICIENT_EVIDENCE: 3,
+    UNPROVEN: 4, PROMISING_INSUFFICIENT_SAMPLE: 5, FORWARD_VALIDATED: 6,
+  };
+
+  const out: GoverningSegment[] = [];
+  for (const [k, group] of byKey) {
+    const [strategy, strategyVersion] = k.split("@");
+    const delivered = group.filter((s) => s.key.lane === DELIVERED_LANE);
+    // Prefer the delivered lane; among candidates take the least favourable verdict.
+    const pool = delivered.length ? delivered : group;
+    const worst = pool.reduce((a, b) =>
+      (severity[a.classification] ?? 9) <= (severity[b.classification] ?? 9) ? a : b);
+    out.push({
+      strategy,
+      strategyVersion,
+      classification: worst.classification,
+      rationale: delivered.length
+        ? `${worst.rationale} [governed by ${DELIVERED_LANE}]`
+        : `${worst.rationale} [research-lane evidence only]`,
+      metrics: worst.metrics,
+      researchOnlyEvidence: delivered.length === 0,
+    });
+  }
+  return out;
 }
 
 export function runReadinessAssessment(
@@ -74,20 +146,35 @@ export function runReadinessAssessment(
   const applied: AutoAssessResult[] = [];
   const quarantined: string[] = [];
   if (schemaReady && input.persist !== false) {
-    for (const s of segments) {
-      // "unknown" strategy is the bucket for rows with no attribution at all; assessing it
-      // would create a readiness row for a strategy that does not exist.
-      if (!s.key.strategy || s.key.strategy === "unknown" || s.key.strategy === "*") continue;
+    for (const g of governingSegments(segments)) {
       const r = autoAssessOnDb(db, {
-        strategy: s.key.strategy,
-        strategyVersion: s.key.strategyVersion === "*" ? "1" : s.key.strategyVersion,
-        classification: s.classification,
-        rationale: s.rationale,
-        metrics: s.metrics,
+        strategy: g.strategy,
+        strategyVersion: g.strategyVersion,
+        classification: g.classification,
+        rationale: g.rationale,
+        metrics: g.metrics,
         deploymentSha: input.deploymentSha ?? null,
         nowMs: input.nowMs,
       });
-      applied.push(r);
+      // Research evidence describes a lane subscribers never see. It can inform, and it
+      // can demote, but it must not carry a strategy toward subscriber standing.
+      const capped = g.researchOnlyEvidence && r.appliedState === "SUBSCRIBER_CANDIDATE";
+      if (capped) {
+        setReadinessOnDb(db, {
+          strategy: g.strategy,
+          strategyVersion: g.strategyVersion,
+          state: "PAPER_VALIDATION",
+          reason: `research-lane evidence only — capped below subscriber candidacy; ${g.rationale}`,
+          classification: g.classification,
+          metrics: g.metrics,
+          actor: "system:auto-assess",
+          deploymentSha: input.deploymentSha ?? null,
+          nowMs: input.nowMs,
+        });
+        applied.push({ ...r, appliedState: "PAPER_VALIDATION", reason: `capped: research-lane evidence only` });
+      } else {
+        applied.push(r);
+      }
       if (r.quarantined) quarantined.push(`${r.strategy}@${r.strategyVersion}`);
     }
   }
