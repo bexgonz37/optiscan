@@ -43,6 +43,7 @@ export interface MarkEvidenceRow extends MarkEvidence {
   enteredAtMs: number | null;
   exitAtMs: number | null;
   status: string | null;
+  dte: number | null;
 }
 
 export function loadMarkEvidenceOnDb(
@@ -72,7 +73,7 @@ export function loadMarkEvidenceOnDb(
     trades = db.prepare(
       `SELECT id, option_symbol, ${pick("strategy")}, ${pick("paper_kind")}, ${pick("status")}, ${pick("entry_fill")},
               ${pick("entered_at_ms")}, ${pick("exit_at_ms")}, ${pick("mfe_pct")}, ${pick("mae_pct")},
-              ${pick("return_pct")}, ${pick("exit_reason")}
+              ${pick("return_pct")}, ${pick("exit_reason")}, ${pick("dte")}
          FROM options_paper_trades
         WHERE ${[
           ...where,
@@ -141,6 +142,7 @@ export function loadMarkEvidenceOnDb(
       enteredAtMs: num(t.entered_at_ms),
       exitAtMs: num(t.exit_at_ms),
       status: t.status == null ? null : String(t.status),
+      dte: num(t.dte),
     };
   });
 }

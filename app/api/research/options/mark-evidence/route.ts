@@ -58,6 +58,11 @@ export async function GET(req: Request) {
         medianDistinctObservations: s.medianDistinctObservations,
         medianCoverage: s.medianCoverage,
         byState: s.byState,
+        // Distinguishes a legacy bulk import from a live marking defect.
+        enteredFirst: (() => { const t = (list as any[]).map((r) => r.enteredAtMs).filter(Boolean); return t.length ? new Date(Math.min(...t)).toISOString().slice(0, 10) : null; })(),
+        enteredLast: (() => { const t = (list as any[]).map((r) => r.enteredAtMs).filter(Boolean); return t.length ? new Date(Math.max(...t)).toISOString().slice(0, 10) : null; })(),
+        medianDte: (() => { const v = (list as any[]).map((r) => r.dte).filter((x) => x != null).sort((a, b) => a - b); return v.length ? v[v.length >> 1] : null; })(),
+        exitReasons: (() => { const m: Record<string, number> = {}; for (const r of list as any[]) m[r.exitReason ?? "<none>"] = (m[r.exitReason ?? "<none>"] ?? 0) + 1; return m; })(),
       };
     }).sort((a, b) => b.total - a.total);
 
