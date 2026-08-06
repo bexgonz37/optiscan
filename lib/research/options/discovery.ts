@@ -7,7 +7,7 @@
  *   strongest valid strategy + direction + DTE, recording every considered strategy + rejection.
  * Nothing here is actionable, sends an alert, or changes a threshold. Puts stay RESEARCH_ONLY.
  */
-import { OPTIONS_STRATEGIES, tenorBand, type StrategyDef, type TenorBand } from "./strategy-catalog.ts";
+import { OPTIONS_STRATEGIES, getStrategy, tenorBand, type StrategyDef, type TenorBand } from "./strategy-catalog.ts";
 
 /** Tier-0 CORE INDEX fast lane — highest priority, scanned more often, with reserved provider budget so
  *  broad-universe work can never starve it. DIA is opt-in (OPTIONS_TIER0_DIA=1). */
@@ -91,19 +91,71 @@ export function activeSignals(c: OptionsCandidateInput): Set<string> {
 
 export interface StrategyScore { key: string; label: string; applicable: boolean; score: number; matched: string[]; rejection: string | null }
 
+/** Index ETFs. Index-scoped strategies are only meaningful on these. */
+const INDEX_SYMBOLS = new Set<string>([...OPTIONS_TIER0, "DIA"]);
+
+export function isIndexSymbol(symbol: string): boolean {
+  return INDEX_SYMBOLS.has(String(symbol ?? "").trim().toUpperCase());
+}
+
 /** Score every strategy against the candidate (decision-time only). */
 export function scoreStrategies(c: OptionsCandidateInput, minMatch = 0.5): StrategyScore[] {
   const active = activeSignals(c);
   const sessionOk = (st: StrategyDef) => st.sessions.includes("any") || st.sessions.includes(c.session as any);
+  const indexSymbol = isIndexSymbol(c.symbol);
   return OPTIONS_STRATEGIES.map((st) => {
     const matched = st.earlySignals.filter((sig) => active.has(sig));
     const score = st.earlySignals.length ? matched.length / st.earlySignals.length : 0;
     let rejection: string | null = null;
     if (!sessionOk(st)) rejection = `session ${c.session} not allowed`;
+    else if (st.symbolScope === "index" && !indexSymbol) rejection = `index-scoped strategy on non-index symbol ${c.symbol}`;
     else if (score < minMatch) rejection = `insufficient early signals (${matched.length}/${st.earlySignals.length})`;
     return { key: st.key, label: st.label, applicable: rejection == null, score: +score.toFixed(3), matched, rejection };
   });
 }
+
+/**
+ * Deterministic strategy ordering.
+ *
+ * WHY THIS IS NOT JUST `sort((a,b) => b.score - a.score)`.
+ *
+ * Selection takes ONE winner — `applicable[0]`. Score is `matched / earlySignals.length`,
+ * so it is a RATIO, and Array#sort is stable in V8. Ties therefore resolved by CATALOG
+ * ARRAY POSITION, which is arbitrary. A strategy whose signal set is a superset (or a
+ * duplicate) of an earlier entry's could never strictly out-score it, so it could never
+ * be selected — at ANY market state, for ANY symbol.
+ *
+ * That silently killed both index strategies:
+ *   zero_dte_index         ["opening_range_development","above_vwap","price_acceleration"]
+ *   index_intraday_momentum["above_vwap","price_acceleration"]
+ * both dominated by pullback_continuation ["price_acceleration","above_vwap"] at index 5.
+ * Because DTE partitions are planned ONLY from the selected strategy's preferredDte,
+ * SPY/QQQ resolved to pullback_continuation (1-7dte, 8-14dte) and a 0DTE partition was
+ * never requested — which is why same-day expirations were 0.3% of the journal.
+ *
+ * The tie-breaks below are explicit and justified rather than positional:
+ *   1. higher ratio wins (unchanged)
+ *   2. more matched signals wins — 3-of-3 is strictly more evidence than 2-of-2
+ *   3. on an index symbol, an index-scoped strategy wins — it was written for it
+ *   4. catalog order, last, so ordering stays total and stable
+ */
+export function compareStrategyCandidates(
+  a: StrategyScore,
+  b: StrategyScore,
+  indexSymbol: boolean,
+): number {
+  if (b.score !== a.score) return b.score - a.score;
+  if (b.matched.length !== a.matched.length) return b.matched.length - a.matched.length;
+  if (indexSymbol) {
+    const aIdx = getStrategy(a.key)?.symbolScope === "index" ? 1 : 0;
+    const bIdx = getStrategy(b.key)?.symbolScope === "index" ? 1 : 0;
+    if (aIdx !== bIdx) return bIdx - aIdx;
+  }
+  return catalogIndex(a.key) - catalogIndex(b.key);
+}
+
+const CATALOG_ORDER = new Map(OPTIONS_STRATEGIES.map((s, i) => [s.key, i]));
+const catalogIndex = (key: string) => CATALOG_ORDER.get(key) ?? Number.MAX_SAFE_INTEGER;
 
 export type OptionSide = "call" | "put";
 export interface StrategySelection {
@@ -115,8 +167,12 @@ export interface StrategySelection {
 }
 
 /** Select the strongest valid strategy + direction + DTE. Records every considered strategy. */
-export function selectOptionsStrategy(c: OptionsCandidateInput, opts: { bearishActionable?: boolean } = {}): StrategySelection {
-  const considered = scoreStrategies(c).sort((a, b) => b.score - a.score);
+export function selectOptionsStrategy(
+  c: OptionsCandidateInput,
+  opts: { bearishActionable?: boolean; env?: NodeJS.ProcessEnv } = {},
+): StrategySelection {
+  const indexSymbol = isIndexSymbol(c.symbol);
+  const considered = scoreStrategies(c).sort((a, b) => compareStrategyCandidates(a, b, indexSymbol));
   const applicable = considered.filter((s) => s.applicable);
   if (applicable.length === 0) return { symbol: c.symbol, selected: null, direction: null, considered, reason: "no applicable strategy at decision time" };
   const top = applicable[0];
@@ -126,7 +182,15 @@ export function selectOptionsStrategy(c: OptionsCandidateInput, opts: { bearishA
   let side: OptionSide = def.side === "call" ? "call" : def.side === "put" ? "put" : vel >= 0 ? "call" : "put";
   const direction: "bullish" | "bearish" = side === "call" ? "bullish" : "bearish";
   // puts are RESEARCH_ONLY for public actionable output unless bearish is actionable (default off).
-  const researchOnly = side === "put" && !opts.bearishActionable;
+  const putResearchOnly = side === "put" && !opts.bearishActionable;
+  // The index strategies were UNREACHABLE until the tie-break above was made explicit, so
+  // they have no forward record at all. Making them selectable connects 0DTE discovery for
+  // SPY/QQQ, but an unproven strategy must not reach subscribers on the strength of a
+  // wiring fix. They stay RESEARCH_ONLY until INDEX_STRATEGY_ACTIONABLE_ENABLED=1 is set
+  // deliberately, after forward evidence exists. Default off.
+  const env = opts.env ?? process.env;
+  const indexResearchOnly = def.symbolScope === "index" && env.INDEX_STRATEGY_ACTIONABLE_ENABLED !== "1";
+  const researchOnly = putResearchOnly || indexResearchOnly;
   return {
     symbol: c.symbol,
     selected: { key: def.key, label: def.label, score: top.score, side, researchOnly, preferredDte: def.preferredDte[0] },
