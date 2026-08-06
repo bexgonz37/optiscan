@@ -110,6 +110,33 @@ function retryableFilter(db: RtDb): string {
   return hasRetryableColumn(db) ? " AND discord_delivery_retryable IS NOT 0" : "";
 }
 
+/**
+ * Contract columns on `opportunity_content_events`, selected only when they
+ * exist.
+ *
+ * Referencing a column SQLite does not have is an ERROR, not a NULL — it fails
+ * the whole statement, and both readers here swallow errors and return empty.
+ * So naming these unconditionally does not degrade on an older database file,
+ * it silently blanks the drafts list entirely. Probed once per call, mirroring
+ * `hasRetryableColumn` above.
+ */
+const EVENT_CONTRACT_COLUMNS = [
+  "strike", "expiration", "option_type", "direction",
+  "strategy_key", "return_percent", "max_return_percent",
+] as const;
+
+function eventContractSelect(db: RtDb): string {
+  let present: string[] = [];
+  try {
+    const cols = new Set(
+      (db.prepare("PRAGMA table_info(opportunity_content_events)").all() as { name?: string }[])
+        .map((c) => String(c.name ?? "")),
+    );
+    present = EVENT_CONTRACT_COLUMNS.filter((c) => cols.has(c));
+  } catch { present = []; }
+  return present.length ? `, ${present.map((c) => `e.${c} AS ${c}`).join(", ")}` : "";
+}
+
 function djb2(s: string): string {
   let h = 5381;
   for (let i = 0; i < s.length; i++) h = (((h << 5) + h) ^ s.charCodeAt(i)) >>> 0;
@@ -957,7 +984,7 @@ export function listContentDraftsOnDb(
   if (filters.eventType) { w.push("e.event_type=?"); a.push(filters.eventType); }
   a.push(limit);
   const sql = `
-    SELECT d.*, e.symbol AS symbol, e.event_type AS event_type, e.occurred_at_ms AS occurred_at_ms
+    SELECT d.*, e.symbol AS symbol, e.event_type AS event_type, e.occurred_at_ms AS occurred_at_ms${eventContractSelect(db)}
     FROM content_drafts d
     LEFT JOIN opportunity_content_events e ON e.id = d.content_event_id
     ${w.length ? `WHERE ${w.join(" AND ")}` : ""}
@@ -974,7 +1001,8 @@ export function getContentDraftOnDb(db: RtDb, id: string): Record<string, unknow
   if (!hasTable(db, "content_drafts")) return null;
   try {
     const row = db.prepare(
-      `SELECT d.*, e.symbol AS symbol, e.event_type AS event_type, e.occurred_at_ms AS occurred_at_ms, e.payload_json AS event_payload_json
+      `SELECT d.*, e.symbol AS symbol, e.event_type AS event_type, e.occurred_at_ms AS occurred_at_ms${eventContractSelect(db)},
+              e.payload_json AS event_payload_json
        FROM content_drafts d
        LEFT JOIN opportunity_content_events e ON e.id = d.content_event_id
        WHERE d.id=?`,

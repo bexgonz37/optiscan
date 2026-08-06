@@ -15,6 +15,8 @@ import Database from "better-sqlite3";
 import {
   runContentDraftsScan,
   varsForEventRow,
+  listContentDraftsOnDb,
+  getContentDraftOnDb,
 } from "../lib/content/content-drafts-runtime.ts";
 import {
   classifyDeliveryLane,
@@ -347,4 +349,63 @@ test("milestone categories are not collapsed into the closure", () => {
   assert.equal(isOutcomeReportCategory("WHY_THIS_FAILED"), true);
   assert.equal(isOutcomeReportCategory("RETURN_MILESTONE"), false);
   assert.equal(isOutcomeReportCategory("NEW_HIGH"), false);
+});
+
+test("the drafts API exposes the contract a report card claims", async () => {
+  // Without these fields an audit cannot ask "does the displayed contract match
+  // the persisted one?" — the question any realized-return claim must survive.
+  // Discord renders the contract from the bundle at generation time, so the API
+  // omitting it left no way to cross-check an unusual-looking strike.
+  const db = makeDb();
+  seedClose(db, { id: "ce_occ", caseId: "oc_occ", eventType: "OPPORTUNITY_CLOSED" });
+  const { deps } = capture();
+  await runContentDraftsScan(db, deps, ENV);
+
+  const [row] = listContentDraftsOnDb(db, { limit: 5 });
+  assert.ok(row, "a draft exists");
+  assert.equal(row.strike, 305);
+  assert.equal(row.expiration, "2026-08-03");
+  assert.equal(String(row.option_type).toUpperCase(), "PUT");
+  assert.equal(row.direction, "bearish");
+  assert.equal(row.strategy_key, "lower_high_continuation");
+  assert.equal(Math.round(row.return_percent * 100) / 100, -48.57);
+
+  const detail = getContentDraftOnDb(db, String(row.id));
+  assert.equal(detail.strike, 305, "the detail endpoint carries it too");
+  assert.equal(detail.max_return_percent, null, "and absence is still absence");
+});
+
+test("a LEGACY events schema still lists drafts instead of blanking them", () => {
+  // Referencing a column SQLite does not have fails the whole statement, and
+  // both readers swallow errors and return empty. Naming the contract columns
+  // unconditionally therefore did not degrade on an older database file — it
+  // blanked the drafts list completely. Caught by the census suite, which seeds
+  // exactly this minimal schema.
+  const db = new Database(":memory:");
+  db.exec(`
+    -- No strike/expiration/option_type/direction/strategy_key/return_percent.
+    -- payload_json IS present because the detail reader has always selected it;
+    -- leaving it out would test a pre-existing gap rather than this change.
+    CREATE TABLE opportunity_content_events (
+      id TEXT PRIMARY KEY, symbol TEXT, event_type TEXT, occurred_at_ms INTEGER, payload_json TEXT
+    );
+    CREATE TABLE content_drafts (
+      id TEXT PRIMARY KEY, fingerprint TEXT UNIQUE, content_event_id TEXT, opportunity_case_id TEXT,
+      category TEXT, template_family TEXT, template_version TEXT, platform TEXT,
+      draft_text TEXT, char_count INTEGER, cta_type TEXT, status TEXT,
+      discord_delivery_status TEXT, created_at_ms INTEGER, updated_at_ms INTEGER
+    );
+  `);
+  db.prepare("INSERT INTO opportunity_content_events (id,symbol,event_type,occurred_at_ms,payload_json) VALUES ('e1','AAPL','OPPORTUNITY_CLOSED',1,'{}')").run();
+  db.prepare(
+    `INSERT INTO content_drafts (id,fingerprint,content_event_id,category,template_family,template_version,platform,draft_text,char_count,cta_type,status,discord_delivery_status,created_at_ms,updated_at_ms)
+     VALUES ('d1','d1','e1','CLOSED_LOSER','CLOSED_LOSER_0','v1','twitter','text',4,'NONE','GENERATED','SENT',1,1)`,
+  ).run();
+
+  const rows = listContentDraftsOnDb(db, { limit: 10 });
+  assert.equal(rows.length, 1, "the pre-migration schema still returns its drafts");
+  assert.equal(rows[0].id, "d1");
+  assert.equal(rows[0].strike, undefined, "the absent column is simply not selected");
+
+  assert.equal(getContentDraftOnDb(db, "d1")?.id, "d1", "the detail reader survives it too");
 });

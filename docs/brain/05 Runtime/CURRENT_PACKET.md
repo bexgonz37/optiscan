@@ -1,5 +1,172 @@
 # Current Task Packet
 
+## Packet update — 2026-08-06 the Recaps flood, inverted failure causes, null-to-zero
+
+### Verified state
+
+- Local HEAD = `origin/main` = production. Verified from git and `/api/healthz`, not assumed.
+- Commits this session: `a29688b` (flood + grounding), `a757342` (null preservation),
+  plus the drafts-API contract columns.
+- `/api/healthz`: `ok: true`, db writable, `schemaMissing: []`, lifecycle active.
+- Full suite 3539/3539 twice. `tsc --noEmit` clean. `next build` exit 0.
+- `PAPER_0DTE_RESEARCH_ENABLED` remains unset.
+
+### The owner-reported defect, measured
+
+Read from production at `cb1fc98` via `/api/diagnostics/content-delivery` and
+`/api/content-drafts` (new script: `scripts/audit-historical-content.mjs`):
+
+- 449 undelivered drafts across **148 events**, draining ONE event per scan
+- 63 canonical outcomes had already produced **265 delivered drafts**
+- `oc_4pu17q` (IWM): 9 drafts, **9 consecutive Discord snowflakes**, one closure
+- `oc_kmzobp` (NVDA): CLOSED_LOSER 02:38:30Z then WHY_THIS_FAILED 02:44:48Z
+
+Three independent multipliers, all fixed in `a29688b`:
+
+1. `EXIT_HIT` and `OPPORTUNITY_CLOSED` BOTH map to `CLOSED_LOSER` in
+   `eligibleCategories` — two content events per closure.
+2. `OPPORTUNITY_REPORT_CARD_READY` adds `WHY_THIS_FAILED` — a third.
+3. Three template variants per event; historically each its own message.
+
+New `lib/content/outcome-delivery-lane.ts` adds the lane
+(LIVE_CURRENT / RECENT_RECOVERY / HISTORICAL_DIGEST / ARCHIVE_ONLY) derived from
+the AGE OF THE EVENT, and the canonical-outcome fingerprint. Dedup keys on the
+opportunity CASE, not the event. Only the recommended variant goes to Discord.
+
+**Live outranks backlog in both directions**, which needed two changes, not one:
+the PENDING scan now orders live-window events first (plain `occurred_at_ms ASC`
+queued a 30-second-old closure behind every older event — found by a regression
+test, not by reading), and the recovery sweep yields entirely on any run that
+already delivered live content.
+
+Rerouting an old event costs no Discord post, so the sweep examines up to 50 per
+run instead of one. Otherwise 148 events take 148 scans just to stop dripping.
+
+### Production verification of the fix (on `a29688b`)
+
+| | before `cb1fc98` | after `a29688b` |
+|---|---|---|
+| drafts awaiting delivery | 449 | **124** |
+| events awaiting recovery | 148 | **41** |
+| scans to drain | 148 | **41** |
+| messages sent in the sweep | 1/scan | **0** (50 examined, all rerouted) |
+
+`SENT` stayed at 1083 — nothing new was posted. New reason code
+`HELD_FOR_HISTORICAL_DIGEST` appears with 17. No draft, evidence id, timestamp
+or delivery record was deleted or rewritten.
+
+### The failure explanations were INVERTED, not merely generic
+
+`varsForEventRow` filled `reason` from `original_thesis_json` — the ENTRY thesis —
+and the WHY_THIS_FAILED templates printed it as the cause. Draft `cd_ew04f1`,
+event `ce_1k0xr40`:
+
+```
+originalThesis: ["Lower high continuation with bearish structure intact."]
+strategyKey:    "lower_high_continuation"
+optionType:     PUT        returnPercent:    -48.5714
+direction:      bearish    maxReturnPercent:  55.5556
+
+draft_text: "Why $AAPL failed:
+             - Lower high continuation with bearish structure intact.
+             Closed -48.6%. Lessons > hype."
+```
+
+A bearish structure staying intact is the condition under which that PUT WINS.
+The sibling template read "the setup broke when Lower high continuation with
+bearish structure intact.." — the setup broke by holding.
+
+The row also carried the REAL cause and discarded it: up 55.6% at its best
+recorded mark, closed -48.6%. That is PROFIT_GIVEN_BACK, arithmetic on two
+persisted marks.
+
+`lib/content/failure-cause.ts` derives only what evidence establishes
+(PROFIT_GIVEN_BACK, THESIS_FAILED_IMMEDIATELY), says "a verified root cause has
+not yet been established" otherwise, and `validateFailureExplanation` rejects
+both the contradictory and the bare-condition forms. Direction quality, entry
+timing, spread, liquidity and contract selection are deliberately NOT derived —
+that evidence lives in the alert and asymmetry records, not on this row, and
+inventing them from a strategy name is the defect being replaced.
+
+### Null is not zero (`a757342`)
+
+`parseOptionsSnapshot` had `volume: numOrNull(day.volume) ?? 0` and
+`openInterest: numOrNull(r.open_interest) ?? 0`. Absence now survives. A real
+reported 0 still reads as 0 — both directions are pinned by tests.
+
+The gates were already conservative with null, so nothing that passed now fails.
+What changed is what they SAY: "open interest unavailable — cannot clear the 500
+minimum" instead of "open interest 0 < 500", a measurement never taken.
+
+Three adjacent defects surfaced while proving it:
+
+- `numOrNull("n/a")` returned **NaN**, not null. `?? 0` does not catch NaN, so it
+  flowed through — JSON `null`, the string "NaN", and false against every
+  threshold. Three wrong answers from one value.
+- `SelectionRejection` discarded per-gate messages, keeping only counts — exactly
+  the granularity at which "unavailable" and "zero" are indistinguishable. Added
+  `gateFailures`.
+- `deriveFailureCause` initially made the SAME mistake: `Number(null) === 0` made
+  an unrecorded peak read as THESIS_FAILED_IMMEDIATELY. Caught by its own test.
+
+### Drafts API now exposes the contract (unblocks contract verification)
+
+`listContentDraftsOnDb` selected only `symbol`, `event_type`, `occurred_at_ms` —
+so the API could not answer "does the displayed contract match the persisted
+one?", the exact question a realized-return claim must survive. **This is why the
+NFLX 2026-08-07 $71 PUT could not be verified this session.** Contract columns are
+now selected, schema-aware: referencing a column SQLite lacks fails the WHOLE
+statement, and both readers swallow errors and return empty — so naming them
+unconditionally blanked the drafts list on a legacy schema rather than degrading.
+Caught by the census suite; pinned by a legacy-schema regression test.
+
+### High-Asymmetry: what the data does and does NOT show
+
+From `/api/research/asymmetry/timing` at `a757342`:
+
+- decisions 1056, **notified 0**, distinctCases 502
+- byAction: OWNER_WATCH 513 · REJECTED 393 · TOO_LATE 91 · PAPER_ONLY 59
+- byTiming: ON_TIME 947 · ENTRY_TOO_LATE 86 · INSUFFICIENT_TIMING_EVIDENCE 16 ·
+  STALE_EVIDENCE 5 · PREMIUM_CHASE 2
+- top blocker still `CONFIRMING_EVIDENCE_INCOMPLETE_9` at **111** (was 91)
+- `INVALID_FUTURE_OPTION_QUOTE_TIMESTAMP` 9 · `INVALID_FUTURE_UNDERLYING_...` 7
+
+**The rise from 91 to 111 does NOT prove `a6c451c` failed, and must not be
+reported as though it did.** These are session-cumulative counts that include
+pre-fix decisions. `recentDecisions` holds exactly ONE row, at 13:31Z, reason
+`WEAK_OPEN_INTEREST_87` — the market has been closed since. There is no post-fix
+RTH sample. The question is open and can only be settled by measuring during a
+live session.
+
+The future-timestamp GUARDS are working as designed — they refuse those 16 cases.
+What is unproven is why the timestamps are future in the first place.
+`live-quote.ts` reads `c.providerTimestamp`, which IS normalized by
+`providerTimestampMs` at the polygon boundary, so the raw-value path claimed in
+the previous packet was not confirmed this session.
+
+### Not done
+
+Priorities 3 (contract/OCC verification — now unblocked), 6 (digest BUILDER;
+the routing and reason codes exist, the digest message itself does not), 7
+(future-timestamp root cause), 9 (marketAlignment wiring), 10 (RTH re-measure),
+11 (Quant/Paper reconciliation), 12 (page audit), 13 (pipeline audit), 14 (Ask
+OptiScan), 15 (Create Claude Task), 16 (UI redesign), 17 (smoke test).
+
+### Exact resume point
+
+1. Re-run `railway run -- node scripts/audit-historical-content.mjs` now that the
+   drafts API returns strike/expiration/option_type, and verify the displayed
+   contracts — starting with the NFLX 2026-08-07 $71 PUT — against the persisted
+   exact OCC on `options_alerts.option_symbol`.
+2. Build the HISTORICAL LEARNING DIGEST reader over
+   `discord_delivery_reason='HELD_FOR_HISTORICAL_DIGEST'`. The routing is live and
+   rows are accumulating; nothing consumes them yet.
+3. Re-measure the High-Asymmetry funnel during the next RTH session and settle
+   whether `CONFIRMING_EVIDENCE_INCOMPLETE_9` still fires post-`a6c451c`.
+4. Only then chase the future-timestamp root cause, with live samples in hand.
+
+---
+
 ## Packet update — 2026-08-05 High-Asymmetry evidence arithmetic + Quant Lab false failure
 
 ### Verified state
