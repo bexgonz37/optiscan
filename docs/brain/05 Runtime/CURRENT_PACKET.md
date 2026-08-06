@@ -133,6 +133,39 @@ remains OFF.)
 contract beat another, so questions of this shape are structurally unanswerable
 from stored evidence. **Not fixed this session.**
 
+### LIMIT OF THE REACHABILITY FIX: both index strategies are bullish-only
+
+Making them selectable does NOT mean they would have caught the 2026-08-05 misses,
+and this must not be claimed. Their early signals are:
+
+```
+zero_dte_index          opening_range_development, above_vwap, price_acceleration
+index_intraday_momentum above_vwap, price_acceleration
+```
+
+`activeSignals` only adds `price_acceleration` when `accelPct > 0`, and `above_vwap`
+when the underlying is above VWAP. **Neither strategy has a single bearish early
+signal, despite both declaring `side: "either"`.** Measured on a bearish SPY
+(velPct -0.5, accelPct -0.4, below VWAP, LOD break):
+
+```
+zero_dte_index          applicable=false  score=0.333  matched=[opening_range_development]
+index_intraday_momentum applicable=false  score=0      matched=[]
+```
+
+All 12 verified winners on 2026-08-05 were PUTS. These two strategies could not
+have produced any of them, before or after this fix. They are a coverage gain for
+bullish index days only. Giving them bearish counterpart signals is a catalog
+change and is NOT done.
+
+**The genuinely useful discovery from the same test:** on that bearish SPY input
+the selector returns **`momentum_breakdown`, `preferredDte 0dte`**. That strategy
+is one of the eight reported "dead" ones, it is reachable, it is put-side, and it
+DOES plan a same-day partition. So bearish index 0DTE coverage does exist when the
+bearish signals actually fire — which reframes the remaining question from "why is
+this strategy dead" to "why did its signals not fire on 2026-08-05". That is the
+next measurement, and it is not answered here.
+
 ### Provider budget is a live constraint on any 0DTE widening
 
 2026-08-06 funnel: 976 candidates, terminal reasons `CONTRACT_SELECTED` 794,
