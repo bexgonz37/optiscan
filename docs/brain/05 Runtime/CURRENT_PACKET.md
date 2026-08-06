@@ -1,5 +1,130 @@
 # Current Task Packet
 
+## Packet update — 2026-08-06 (4) readiness, ranking, learning, cohorts
+
+### Verified state
+
+- local = `origin/main` = production = `7940311`. Read from git and `/api/healthz`.
+- Three deploys this continuation: `415f4b6` → `3f25c96` → `7940311`.
+- `/api/healthz`: `ok:true`, db writable, **`schemaMissing: []`** (the two new tables
+  migrated onto the real production database), lifecycle active.
+- Full suite **3707/3707 twice**. `tsc --noEmit --incremental false` clean.
+  `next build` exit 0. `git diff --check` clean.
+- Gates confirmed live via `api/research/options/readiness-board`:
+  `immediateAlertsPaused: true`, `directionalAuthorityMode: enforce`,
+  `strategyReadinessMode: enforce`, `indexStrategyActionable: false`,
+  `paper0dteResearchEnabled: false`.
+
+### Subscriber eligibility is now EXPLICIT, and nothing is eligible
+
+Assessed against **799 real outcomes** from the paper-trade store:
+
+```
+SUBSCRIBER_APPROVED   []          <- nothing may send a subscriber opening
+SUBSCRIBER_CANDIDATE  []          <- nothing auto-promoted
+DEMOTED               2           lower_high_continuation, vwap_rejection
+RESEARCH_ONLY         9
+```
+
+Every delivered-lane strategy measured negative:
+
+```
+premarket_level_break    n=179  exp -36.4%  PF 0.383
+pullback_continuation    n= 27  exp -35.7%  PF 0.248
+momentum_acceleration    n= 25  exp -33.2%  PF 0.094
+reversal_bounce          n= 30  exp -32.9%  PF 0.031
+lower_high_continuation  n= 54  exp -27.8%  PF 0.311   DEMOTED
+vwap_rejection           n= 28  exp -26.2%  PF 0.378   DEMOTED
+sr_reclaim               n= 19  exp  -3.7%  PF 0.870
+```
+
+The gate fails CLOSED: absence of a record is absence of permission, so a legacy
+database does not silently grant delivery. `SUBSCRIBER_APPROVED` is reachable only
+through `recordHumanApproval`, which refuses an empty or system-looking actor.
+
+### TWO DEFECTS THE FIRST PRODUCTION RUN EXPOSED — both fixed in `7940311`
+
+**1. The research lane was overwriting the delivered lane.** Readiness keys on
+strategy@version but segmentation is per lane, so the last write won:
+
+```
+pullback_continuation   delivered -35.7%  |  research  +0.50%   (36.2pp)
+momentum_acceleration   delivered -33.2%  |  research +16.74%   (49.9pp)
+reversal_bounce         delivered -32.9%  |  research  +6.49%   (39.4pp)
+lower_high_continuation delivered -27.8%  |  research +35.99%   (63.8pp)
+```
+
+The research row won, promoting `pullback_continuation` to SUBSCRIBER_CANDIDATE
+while it was losing 35.7% on alerts subscribers actually received. Exactly backwards.
+`DELIVERED_ALERT_PAPER` now governs; where both lanes exist the WORSE verdict is
+taken; research-only evidence is capped below subscriber candidacy.
+
+**2. MFE equal to MAE is a marking gap, not a trading result.** Peak-favorable cannot
+sit below worst-adverse over a multi-mark position — both fields were filled from a
+single mark. Production scale of this:
+
+```
+pullback_continuation    89% of priced rows lack real excursions
+momentum_acceleration    84%
+reversal_bounce          83%
+sr_reclaim               79%
+opening_range_breakout   75%
+premarket_level_break    55%  (98 of 179 rows)
+```
+
+Those rows keep their RETURN and are excluded from excursion metrics; above 50% the
+segment is CONTAMINATED so it can neither promote nor condemn. **This is why only 2
+strategies are DEMOTED rather than 7** — the rest are not subscriber-eligible either
+way, but they have not been condemned on evidence that does not exist.
+
+**This materially qualifies the -7.2% / 59.9% baseline.** Any immediate-failure or
+MFE figure computed over these rows was partly measuring absent marks.
+
+### Ranking, learning, cohorts
+
+`opportunity-ranking@1` — 17 weighted components, 10 penalties. Missing data is
+excluded from the weighted mean, never scored zero. Execution weight 0.34 vs setup
+0.33, because the audited population failed on execution. Hard blockers and
+directional conflicts are fatal, never scored around. The whole comparison persists
+to `opportunity_rank_breakdown` — winner, runners-up and blocked, with per-runner-up
+reasons.
+
+Learning proposals are inert by construction: no `apply()`, no threshold field any
+runtime reads, no `promote()`, lane restricted to SHADOW/PAPER_VALIDATION/
+RESEARCH_ONLY. A test asserts those levers are absent.
+
+Cohorts require improvement across 3 independent sessions; expectancy up AND
+immediate failure not worse; an incomplete hindsight fence is `LEAKAGE_RISK`.
+
+### Production reachability and 0DTE, confirmed live
+
+All 12 0DTE-permitting strategies are selectable and plan a `0-0dte` partition,
+including `zero_dte_index` and `index_intraday_momentum`. Only `trend_continuation`
+remains unselectable — the acknowledged catalog duplicate.
+
+### Exact prospective RTH resume point
+
+Everything below needs an OPEN regular session and could not be observed now.
+
+1. **Confirm no symbol holds two actionable directions.** Watch
+   `api/diagnostics/contract-funnel?symbol=SPY` and the delivery decisions for
+   `readiness_gate:` and `OPPOSITE_DIRECTION_ACTIVE` refusals.
+2. **Observe an index strategy actually planning a 0DTE partition.** Needs a bullish
+   index leg: both index strategies require `above_vwap` + `price_acceleration` and
+   cannot fire on a down day.
+3. **Confirm zero subscriber openings are sent** while every strategy is
+   non-approved, and that scanning, capture, journaling, lifecycle, grading, paper
+   and owner watches all continue.
+4. **Fix the marking gap** (`options_paper_marks` coverage) before trusting any MFE,
+   MAE or immediate-failure number. This is now the top data-quality blocker.
+5. Re-run `api/research/options/readiness-board?persist=1` after marks improve; the
+   DEMOTED set will likely grow beyond 2.
+6. Decide `trend_continuation`: distinct signals or retire.
+7. Give the index strategies bearish counterpart signals, or accept bullish-only.
+8. Alert pause stays ON. Subscriber promotion still requires human approval.
+
+---
+
 ## Packet update — 2026-08-06 (3) directional authority and the unreachable strategies
 
 ### Verified state
