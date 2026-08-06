@@ -375,17 +375,63 @@ test("a peak far above entry closing red is reported as PROFIT_GIVEN_BACK", () =
   assert.equal(digest.stats.verifiedRootCauses, 1);
 });
 
-test("an unrecorded return stays UNRESOLVED instead of being coerced to a loss", () => {
+test("an unrecorded return falls back to the category, not to a loss", () => {
   const db = makeDb();
   seedCase(db, "oc_u", "AAPL260803P00305000");
   seedEvent(db, { id: "ce_u", caseId: "oc_u", eventType: "EXIT_HIT", ret: null, maxReturn: null });
-  db.prepare("UPDATE content_drafts SET result_type=NULL").run();
-  seedHeldDraft(db, { id: "cd_u", eventId: "ce_u", caseId: "oc_u", category: "CLOSED_LOSER", family: "a_0", createdAtMs: CLOSED_AT });
-  db.prepare("UPDATE content_drafts SET result_type=NULL WHERE id='cd_u'").run();
+  seedHeldDraft(db, { id: "cd_u", eventId: "ce_u", caseId: "oc_u", category: "MARKET_OBSERVATION", family: "a_0", createdAtMs: CLOSED_AT });
   const digest = buildHistoricalDigest({ rows: readHeldDraftRows(db), nowMs: NOW, env: {} });
   assert.equal(digest.included[0].result, "UNRESOLVED");
   assert.equal(digest.stats.unresolvedOutcomes, 1);
   assert.equal(digest.stats.verifiedLosers, 0);
+});
+
+/**
+ * Measured in production at 2047e8e. Draft cd_jpfsgi is a CLOSED_WINNER that
+ * closed +45.1% ($2.77 -> $4.02), and its result_type is
+ * "REALIZED_CLOSED_RETURN" — the MEASUREMENT, not the verdict. A substring test
+ * for "LOS" matches the LOS inside "cLOSed", so two winners were both reported
+ * as LOSER.
+ */
+test("result_type naming a measurement never decides win or loss", () => {
+  const db = makeDb();
+  seedCase(db, "oc_w", "AAPL260805P00305000");
+  seedEvent(db, { id: "ce_w", caseId: "oc_w", eventType: "EXIT_HIT", ret: 45.1264, maxReturn: 87.7256 });
+  seedHeldDraft(db, { id: "cd_w", eventId: "ce_w", caseId: "oc_w", category: "CLOSED_WINNER", family: "a_0", createdAtMs: CLOSED_AT });
+  db.prepare("UPDATE content_drafts SET result_type='REALIZED_CLOSED_RETURN' WHERE id='cd_w'").run();
+
+  const digest = buildHistoricalDigest({ rows: readHeldDraftRows(db), nowMs: NOW, env: {} });
+  assert.equal(digest.included[0].result, "WINNER");
+  assert.equal(digest.stats.verifiedWinners, 1);
+  assert.equal(digest.stats.verifiedLosers, 0);
+});
+
+test("a winner is never given a failure cause or counted as unexplained", () => {
+  const db = makeDb();
+  seedCase(db, "oc_w2", "AAPL260805P00305000");
+  seedEvent(db, { id: "ce_w2", caseId: "oc_w2", eventType: "EXIT_HIT", ret: 48.8372, maxReturn: 51.1628 });
+  seedHeldDraft(db, { id: "cd_w2", eventId: "ce_w2", caseId: "oc_w2", category: "CLOSED_WINNER", family: "a_0", createdAtMs: CLOSED_AT });
+  const digest = buildHistoricalDigest({ rows: readHeldDraftRows(db), nowMs: NOW, env: {} });
+  assert.equal(digest.included[0].causeApplicable, false);
+  assert.equal(digest.stats.insufficientEvidenceRootCauses, 0, "a winner is not an unexplained loss");
+  assert.equal(digest.stats.verifiedRootCauses, 0);
+  assert.deepEqual(digest.stats.repeatedFailureCauses, {});
+  const text = renderHistoricalDigest(digest);
+  assert.ok(!/No verified root cause/.test(text), "no failure narrative under a profitable close");
+});
+
+test("a category contradicting the recorded return claims no result at all", () => {
+  const db = makeDb();
+  seedCase(db, "oc_c", "AAPL260805P00305000");
+  seedEvent(db, { id: "ce_c", caseId: "oc_c", eventType: "EXIT_HIT", ret: 45.1264, maxReturn: 87.7256 });
+  seedHeldDraft(db, { id: "cd_c", eventId: "ce_c", caseId: "oc_c", category: "CLOSED_LOSER", family: "a_0", createdAtMs: CLOSED_AT });
+  const digest = buildHistoricalDigest({ rows: readHeldDraftRows(db), nowMs: NOW, env: {} });
+  assert.equal(digest.included[0].result, "UNRESOLVED");
+  assert.match(digest.included[0].dataQualityWarning, /disagree/);
+  assert.equal(digest.stats.contradictoryOutcomes, 1);
+  assert.equal(digest.stats.verifiedWinners, 0);
+  assert.equal(digest.stats.verifiedLosers, 0);
+  assert.match(renderHistoricalDigest(digest), /Records disagree/);
 });
 
 test("the label survives a character budget that truncates the outcome list", () => {

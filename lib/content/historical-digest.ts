@@ -127,6 +127,14 @@ export interface DigestOutcome {
   causeCode: FailureCauseCode;
   causeStatement: string;
   causeProvable: boolean;
+  /**
+   * Whether a FAILURE cause applies at all. A winner has no failure to explain,
+   * and counting one as "insufficient evidence" would inflate a number that is
+   * supposed to measure unexplained losses.
+   */
+  causeApplicable: boolean;
+  /** Set when persisted records contradict each other. Never silently resolved. */
+  dataQualityWarning: string | null;
   earliestEventMs: number | null;
   latestEventMs: number | null;
   contentVersion: string;
@@ -158,6 +166,8 @@ export interface HistoricalDigest {
     verifiedWinners: number;
     verifiedLosers: number;
     unresolvedOutcomes: number;
+    /** Outcomes whose persisted records contradict each other. */
+    contradictoryOutcomes: number;
     verifiedRootCauses: number;
     insufficientEvidenceRootCauses: number;
     repeatedFailureCauses: Record<string, number>;
@@ -225,18 +235,42 @@ export function contractLabelFor(row: {
   return parts.length > 1 ? parts.join(" ") : null;
 }
 
-function resultOf(resultType: string | null, returnPercent: number | null): OutcomeResult {
-  const rt = str(resultType)?.toUpperCase() ?? "";
-  if (rt.includes("WIN")) return "WINNER";
-  if (rt.includes("LOS")) return "LOSER";
-  // Absence of a result type is not a loss. Fall back to arithmetic only when a
-  // return was actually recorded; an unrecorded return stays UNRESOLVED rather
-  // than being coerced to 0 and read as a break-even loser.
+/**
+ * Win or loss, from the CATEGORY and the recorded return — never from
+ * `result_type`.
+ *
+ * Measured in production at `2047e8e`: draft `cd_jpfsgi` carries
+ * `result_type: "REALIZED_CLOSED_RETURN"`, and a substring test for "LOS"
+ * matches the LOS inside "cLOSed". Two CLOSED_WINNER outcomes closing +45.1% and
+ * +48.8% were both reported as LOSER. `result_type` names the MEASUREMENT, not
+ * the outcome, and must not be read as a verdict at all.
+ *
+ * The category and the arithmetic are corroborating sources. When they disagree,
+ * neither is asserted: the outcome is UNRESOLVED and carries a data-quality
+ * warning, because a digest that picks a winner from contradictory records is
+ * stating something its evidence does not establish.
+ */
+function resultOf(category: string | null, returnPercent: number | null): {
+  result: OutcomeResult;
+  dataQualityWarning: string | null;
+} {
+  const cat = str(category)?.toUpperCase() ?? "";
+  const byCategory: OutcomeResult | null =
+    cat === "CLOSED_WINNER" || cat === "WHY_THIS_WORKED" ? "WINNER"
+      : cat === "CLOSED_LOSER" || cat === "WHY_THIS_FAILED" ? "LOSER"
+        : null;
+  // An unrecorded return stays absent rather than being coerced to 0 and read as
+  // a break-even loser.
   const r = num(returnPercent);
-  if (r == null) return "UNRESOLVED";
-  if (r > 0) return "WINNER";
-  if (r < 0) return "LOSER";
-  return "UNRESOLVED";
+  const byReturn: OutcomeResult | null = r == null ? null : r > 0 ? "WINNER" : r < 0 ? "LOSER" : null;
+
+  if (byCategory && byReturn && byCategory !== byReturn) {
+    return {
+      result: "UNRESOLVED",
+      dataQualityWarning: `the recorded category (${cat}) and the recorded return (${r}%) disagree`,
+    };
+  }
+  return { result: byCategory ?? byReturn ?? "UNRESOLVED", dataQualityWarning: null };
 }
 
 function evidenceQualityOf(row: HeldDraftRow): EvidenceQuality {
@@ -302,6 +336,7 @@ export function groupHeldDraftsIntoOutcomes(rows: HeldDraftRow[]): DigestOutcome
   for (const [outcomeId, group] of byOutcome) {
     const rep = pickRepresentative(group);
     const times = group.map((r) => r.eventOccurredAtMs).filter((t): t is number => num(t) != null);
+    const verdict = resultOf(rep.category, rep.returnPercent);
     const cause = deriveFailureCause({
       returnPercent: rep.returnPercent,
       maxReturnPercent: rep.maxReturnPercent,
@@ -317,7 +352,8 @@ export function groupHeldDraftsIntoOutcomes(rows: HeldDraftRow[]): DigestOutcome
       occ: str(rep.occ),
       contractLabel: contractLabelFor(rep),
       resultType: str(rep.resultType),
-      result: resultOf(rep.resultType, rep.returnPercent),
+      result: verdict.result,
+      dataQualityWarning: verdict.dataQualityWarning,
       returnPercent: num(rep.returnPercent),
       maxReturnPercent: num(rep.maxReturnPercent),
       evidenceQuality: evidenceQualityOf(rep),
@@ -328,7 +364,8 @@ export function groupHeldDraftsIntoOutcomes(rows: HeldDraftRow[]): DigestOutcome
       collapsedVariantCount: Math.max(0, group.length - 1),
       causeCode: cause.code,
       causeStatement: cause.statement,
-      causeProvable: cause.provable,
+      causeProvable: cause.provable && verdict.result === "LOSER",
+      causeApplicable: verdict.result === "LOSER",
       earliestEventMs: times.length ? Math.min(...times) : null,
       latestEventMs: times.length ? Math.max(...times) : null,
       contentVersion: str(rep.templateVersion) ?? "v1",
@@ -413,15 +450,20 @@ export function buildHistoricalDigest(input: BuildDigestInput): HistoricalDigest
 
   const repeated: Record<string, number> = {};
   const quality: Record<EvidenceQuality, number> = { COMPLETE: 0, PARTIAL: 0, MINIMAL: 0 };
-  let winners = 0, losers = 0, unresolved = 0, verifiedCauses = 0, insufficientCauses = 0;
+  let winners = 0, losers = 0, unresolved = 0, verifiedCauses = 0, insufficientCauses = 0, contradictory = 0;
   let collapsed = 0, messagesPrevented = 0;
 
   for (const o of included) {
     if (o.result === "WINNER") winners += 1;
     else if (o.result === "LOSER") losers += 1;
     else unresolved += 1;
-    if (o.causeProvable) verifiedCauses += 1; else insufficientCauses += 1;
-    if (o.result === "LOSER") repeated[o.causeCode] = (repeated[o.causeCode] ?? 0) + 1;
+    if (o.dataQualityWarning) contradictory += 1;
+    // Only a LOSS has a failure cause. Counting winners as "insufficient
+    // evidence" would report unexplained losses that do not exist.
+    if (o.causeApplicable) {
+      if (o.causeProvable) verifiedCauses += 1; else insufficientCauses += 1;
+      repeated[o.causeCode] = (repeated[o.causeCode] ?? 0) + 1;
+    }
     quality[o.evidenceQuality] += 1;
     collapsed += o.collapsedVariantCount;
     // Every held draft would have been its own Discord message before the lane
@@ -459,6 +501,7 @@ export function buildHistoricalDigest(input: BuildDigestInput): HistoricalDigest
       verifiedWinners: winners,
       verifiedLosers: losers,
       unresolvedOutcomes: unresolved,
+      contradictoryOutcomes: contradictory,
       verifiedRootCauses: verifiedCauses,
       insufficientEvidenceRootCauses: insufficientCauses,
       repeatedFailureCauses: repeated,
@@ -501,7 +544,10 @@ export function renderHistoricalDigest(
     `_${HISTORICAL_DIGEST_EXPLANATION}_`,
     `Covering ${fmtDate(digest.coveredFromMs)} → ${fmtDate(digest.coveredToMs)} · ${s.includedOutcomes} outcome${s.includedOutcomes === 1 ? "" : "s"} · digest \`${digest.digestId}\``,
     `Verified winners ${s.verifiedWinners} · verified losers ${s.verifiedLosers} · unresolved ${s.unresolvedOutcomes}`,
-    `Root causes: ${s.verifiedRootCauses} evidence-backed · ${s.insufficientEvidenceRootCauses} insufficient evidence`,
+    s.contradictoryOutcomes > 0
+      ? `⚠️ ${s.contradictoryOutcomes} outcome${s.contradictoryOutcomes === 1 ? " has" : "s have"} contradictory records and claim no result.`
+      : null,
+    `Loss root causes: ${s.verifiedRootCauses} evidence-backed · ${s.insufficientEvidenceRootCauses} insufficient evidence`,
     `Evidence quality: ${s.evidenceQuality.COMPLETE} complete · ${s.evidenceQuality.PARTIAL} partial · ${s.evidenceQuality.MINIMAL} minimal`,
     s.duplicateVariantsCollapsed > 0
       ? `${s.duplicateVariantsCollapsed} duplicate draft variant${s.duplicateVariantsCollapsed === 1 ? "" : "s"} collapsed into these outcomes.`
@@ -511,10 +557,17 @@ export function renderHistoricalDigest(
   const lines: string[] = [];
   for (const o of digest.included) {
     const contract = o.contractLabel ?? o.symbol ?? "contract unrecorded";
-    const cause = o.causeProvable ? o.causeStatement : "No verified root cause has been established.";
-    lines.push(
-      `• **${contract}** — ${o.result} · closed ${fmtPct(o.returnPercent)} · best mark ${fmtPct(o.maxReturnPercent)}\n  ${cause}`,
-    );
+    // A winner has no failure to explain. Printing "no verified root cause" under
+    // a +45% close would read as a defect report on a profitable trade.
+    const note = o.dataQualityWarning
+      ? `⚠️ Records disagree: ${o.dataQualityWarning}. No result is claimed.`
+      : o.causeApplicable
+        ? (o.causeProvable ? o.causeStatement : "No verified root cause has been established.")
+        : null;
+    lines.push([
+      `• **${contract}** — ${o.result} · closed ${fmtPct(o.returnPercent)} · best mark ${fmtPct(o.maxReturnPercent)}`,
+      note ? `  ${note}` : null,
+    ].filter(Boolean).join("\n"));
   }
 
   const repeatedEntries = Object.entries(s.repeatedFailureCauses)
