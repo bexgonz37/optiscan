@@ -434,13 +434,18 @@ export function buildHistoricalDigest(input: BuildDigestInput): HistoricalDigest
     .filter((t): t is number => t != null);
 
   const overflow = excluded.filter((e) => e.reason === "EXCEEDS_DIGEST_SIZE_CAP").length;
-  const digestId = `dig_${djb2(`${input.nowMs}|${included.map((o) => o.outcomeId).join(",")}`)}`;
+  // Derived from the CONTENT, not the clock. The scheduled path runs every three
+  // minutes; a clock-seeded id made every run a new digest row, so an undelivered
+  // digest would accumulate hundreds of near-identical records. Same outcomes →
+  // same id → the persist is an idempotent upsert of one pending digest.
+  const evidenceVersion = input.evidenceVersion ?? "v1";
+  const digestId = `dig_${djb2(`${evidenceVersion}|${[...included].map((o) => o.outcomeId).sort().join(",")}`)}`;
 
   return {
     digestId,
     generatedAtMs: input.nowMs,
     trigger: input.trigger ?? "SCHEDULED",
-    evidenceVersion: input.evidenceVersion ?? "v1",
+    evidenceVersion,
     coveredFromMs: times.length ? Math.min(...times) : null,
     coveredToMs: times.length ? Math.max(...times) : null,
     included,

@@ -31,6 +31,7 @@ import {
   buildDigestDiagnostics,
   digestDiscordEnabled,
   casesWithDeliveredReportCard,
+  priorDigestOutcomeIds,
 } from "../lib/content/historical-digest-runtime.ts";
 import { describeReason } from "../lib/content/delivery-reason.ts";
 
@@ -258,18 +259,85 @@ test("the size cap defers overflow rather than dropping it", () => {
   assert.equal(digestSizeCap({ CONTENT_DIGEST_MAX_OUTCOMES: "2" }), 2);
 });
 
-test("a prior digest's outcomes are not repeated in the next one", () => {
+test("a DELIVERED digest's outcomes are not repeated in the next one", async () => {
   const db = makeDb();
   seedFloodCase(db);
   const first = generateHistoricalDigest(db, { nowMs: NOW, env: {} });
   assert.equal(first.ok, true);
   assert.equal(first.digest.included.length, 1);
-  // Second run WITHOUT delivery: the held rows are untouched, but the outcome
-  // is already a member of a persisted digest.
-  const second = generateHistoricalDigest(db, { nowMs: NOW + 60_000, env: {} });
+  const { deps } = capture();
+  assert.equal((await deliverHistoricalDigest(db, first.digest, first.renderedText, deps)).ok, true);
+  // Delivery consumes every held row of the included outcome, so the ordinary
+  // next run finds nothing at all.
+  assert.equal(generateHistoricalDigest(db, { nowMs: NOW + 60_000, env: {} }).reason, "NO_HELD_DRAFTS");
+
+  // A LATE variant of the same closure arrives after the digest went out. The
+  // prior-digest guard is what stops it becoming a second report of one outcome.
+  seedHeldDraft(db, {
+    id: "cd_late", eventId: "ce_exit", caseId: "oc_flood", category: "WHY_THIS_FAILED",
+    family: "d_3", createdAtMs: NOW,
+  });
+  const second = generateHistoricalDigest(db, { nowMs: NOW + 120_000, env: {} });
   assert.equal(second.ok, false);
   assert.equal(second.reason, "ALL_HELD_OUTCOMES_ALREADY_COVERED");
   assert.equal(second.digest.excluded[0].reason, "ALREADY_IN_PRIOR_DIGEST");
+});
+
+/**
+ * Measured in production at 2047e8e: the scheduled path generated dig_xhf3b4
+ * covering 3 outcomes, correctly refused to send it (Discord delivery disabled),
+ * and the NEXT candidate then excluded all three as ALREADY_IN_PRIOR_DIGEST. A
+ * digest the owner never received was suppressing the one they would have.
+ */
+test("a generated-but-undelivered digest never locks its outcomes out", () => {
+  const db = makeDb();
+  seedFloodCase(db);
+  const first = generateHistoricalDigest(db, { nowMs: NOW, env: {} });
+  assert.equal(first.ok, true);
+  assert.equal(
+    db.prepare("SELECT delivery_status FROM content_digests WHERE id=?").get(first.digest.digestId).delivery_status,
+    "GENERATED",
+  );
+  assert.deepEqual(priorDigestOutcomeIds(db), [], "an undelivered digest reports nothing as covered");
+
+  const second = generateHistoricalDigest(db, { nowMs: NOW + 60_000, env: {} });
+  assert.equal(second.ok, true, "the outcome is still reachable");
+  assert.equal(second.digest.included.length, 1);
+});
+
+test("regenerating the same outcome set upserts one pending digest, not many", () => {
+  const db = makeDb();
+  seedFloodCase(db);
+  const a = generateHistoricalDigest(db, { nowMs: NOW, env: {} });
+  const b = generateHistoricalDigest(db, { nowMs: NOW + 3 * 60_000, env: {} });
+  const c = generateHistoricalDigest(db, { nowMs: NOW + 6 * 60_000, env: {} });
+  assert.equal(a.digest.digestId, b.digest.digestId);
+  assert.equal(b.digest.digestId, c.digest.digestId);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM content_digests").get().n, 1);
+  assert.equal(
+    db.prepare("SELECT generated_at_ms AS t FROM content_digests WHERE id=?").get(a.digest.digestId).t,
+    NOW,
+    "the original generation time survives a re-persist",
+  );
+});
+
+test("a delivered digest is never overwritten by a later regeneration", async () => {
+  const db = makeDb();
+  seedFloodCase(db);
+  const gen = generateHistoricalDigest(db, { nowMs: NOW, env: {} });
+  const { deps } = capture();
+  await deliverHistoricalDigest(db, gen.digest, gen.renderedText, deps);
+  const before = db.prepare("SELECT * FROM content_digests WHERE id=?").get(gen.digest.digestId);
+  assert.equal(before.delivery_status, "DELIVERED");
+  assert.equal(before.discord_message_id, "msg_1");
+
+  // Force the same content back through persistence.
+  db.prepare("UPDATE content_drafts SET discord_delivery_reason='HELD_FOR_HISTORICAL_DIGEST'").run();
+  generateHistoricalDigest(db, { nowMs: NOW + 60_000, env: {} });
+  const after = db.prepare("SELECT * FROM content_digests WHERE id=?").get(gen.digest.digestId);
+  assert.equal(after.delivery_status, "DELIVERED", "delivery evidence survives");
+  assert.equal(after.discord_message_id, "msg_1");
+  assert.equal(after.delivered_at_ms, NOW);
 });
 
 // ── truthful copy ───────────────────────────────────────────────────────────

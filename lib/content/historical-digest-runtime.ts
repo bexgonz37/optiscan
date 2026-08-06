@@ -153,12 +153,25 @@ export function casesWithDeliveredReportCard(db: RtDb): string[] {
   } catch { return []; }
 }
 
-/** Canonical outcome IDs any previous digest already included. */
+/**
+ * Canonical outcome IDs a previous digest already REPORTED.
+ *
+ * Only DELIVERED digests count. Measured in production at `2047e8e`: the
+ * scheduled path generated `dig_xhf3b4` covering 3 outcomes and correctly did
+ * not send it (`DIGEST_DISCORD_DELIVERY_DISABLED`) — and the next candidate then
+ * excluded all 3 as ALREADY_IN_PRIOR_DIGEST. A digest the owner never received
+ * was suppressing the one they would. That is the same silent queue loss this
+ * consumer exists to end, one layer up, so "covered" is defined as delivered.
+ */
 export function priorDigestOutcomeIds(db: RtDb): string[] {
   if (!hasTable(db, "content_digest_members")) return [];
+  if (!hasTable(db, "content_digests")) return [];
   try {
     const rows = db.prepare(
-      "SELECT DISTINCT outcome_id AS id FROM content_digest_members WHERE included=1",
+      `SELECT DISTINCT m.outcome_id AS id
+         FROM content_digest_members m
+         JOIN content_digests d ON d.id = m.digest_id
+        WHERE m.included=1 AND d.delivery_status='DELIVERED'`,
     ).all() as { id?: unknown }[];
     return rows.map((r) => String(r.id)).filter(Boolean);
   } catch { return []; }
@@ -166,6 +179,19 @@ export function priorDigestOutcomeIds(db: RtDb): string[] {
 
 function persistDigest(db: RtDb, digest: HistoricalDigest, renderedText: string): boolean {
   if (!hasTable(db, "content_digests")) return false;
+  // The id is content-derived, so regenerating the same outcome set upserts one
+  // pending row instead of accumulating one per scan. A DELIVERED digest is
+  // never rewritten: its message id and delivery time are the evidence that the
+  // owner received it, and an upsert would erase exactly that.
+  const existing = (() => {
+    try {
+      return db.prepare(
+        "SELECT delivery_status, generated_at_ms FROM content_digests WHERE id=?",
+      ).get(digest.digestId) as Record<string, unknown> | undefined;
+    } catch { return undefined; }
+  })();
+  if (existing && String(existing.delivery_status ?? "") === "DELIVERED") return true;
+  const generatedAtMs = num(existing?.generated_at_ms) ?? digest.generatedAtMs;
   try {
     db.prepare(
       `INSERT OR REPLACE INTO content_digests
@@ -175,7 +201,7 @@ function persistDigest(db: RtDb, digest: HistoricalDigest, renderedText: string)
           stats_json, rendered_text)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(
-      digest.digestId, digest.generatedAtMs, null, null, "GENERATED",
+      digest.digestId, generatedAtMs, null, null, "GENERATED",
       null, digest.trigger, digest.evidenceVersion, digest.coveredFromMs, digest.coveredToMs,
       digest.stats.includedOutcomes, digest.stats.excludedOutcomes,
       digest.stats.duplicateVariantsCollapsed, digest.stats.messagesPrevented,
