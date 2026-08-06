@@ -72,6 +72,16 @@ export interface NotificationStrengthConfig {
   preferredDelta: readonly [number, number] | null;
   requireStrategyEvidence: boolean;
   minImmediateScore: number;
+  /**
+   * Owner audit pause. When true, a candidate that passes EVERY gate is still
+   * held back from IMMEDIATE_OWNER_ALERT and routed to OWNER_WATCH instead.
+   *
+   * This is deliberately the LAST thing that happens, after the full decision
+   * has been computed, so the journal keeps recording which cases WOULD have
+   * alerted. A pause that suppressed the evaluation would destroy the very
+   * evidence the audit needs. Capture, marks, grading and paper are untouched.
+   */
+  immediateAlertsPaused: boolean;
 }
 
 export const DEFAULT_NOTIFICATION_STRENGTH: Readonly<NotificationStrengthConfig> = Object.freeze({
@@ -95,7 +105,26 @@ export const DEFAULT_NOTIFICATION_STRENGTH: Readonly<NotificationStrengthConfig>
   preferredDelta: null,
   requireStrategyEvidence: false,
   minImmediateScore: 80,
+  immediateAlertsPaused: false,
 });
+
+/**
+ * The owner-facing kill switch for immediate High-Asymmetry alerts.
+ *
+ * Set `HIGH_ASYMMETRY_IMMEDIATE_ALERTS_ENABLED=0` to pause. UNSET means
+ * ENABLED, so this cannot silently disable a working system on a fresh deploy
+ * — a pause has to be asked for.
+ */
+export const IMMEDIATE_ALERTS_ENABLED_ENV = "HIGH_ASYMMETRY_IMMEDIATE_ALERTS_ENABLED";
+
+/** Reason recorded on a decision that qualified but was held by the pause. */
+export const IMMEDIATE_ALERTS_PAUSED_REASON = "IMMEDIATE_ALERTS_PAUSED_FOR_AUDIT";
+
+export function immediateAlertsPaused(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = String(env[IMMEDIATE_ALERTS_ENABLED_ENV] ?? "").trim().toLowerCase();
+  if (raw === "") return false; // unset = enabled = not paused
+  return raw === "0" || raw === "false" || raw === "off" || raw === "no";
+}
 
 export function resolveNotificationStrength(env: NodeJS.ProcessEnv = process.env): NotificationStrengthConfig {
   const n = (raw: string | undefined, d: number, lo: number, hi: number): number => {
@@ -129,6 +158,7 @@ export function resolveNotificationStrength(env: NodeJS.ProcessEnv = process.env
     requireStrategyEvidence: false,
     minImmediateScore: n(env.ASYM_NOTIFY_MIN_IMMEDIATE_SCORE,
       DEFAULT_NOTIFICATION_STRENGTH.minImmediateScore, 0, 100),
+    immediateAlertsPaused: immediateAlertsPaused(env),
   };
 }
 
@@ -504,6 +534,20 @@ export function decideNotification(
       "HIGH_ASYMMETRY_OWNER_WATCH",
       qualityScore,
       digest ? "PERIODIC_DIGEST" : "OWNER_WATCH",
+    );
+  }
+
+  // LAST. The candidate has passed every gate and would alert. The audit pause
+  // demotes it to OWNER_WATCH without altering anything above, so the journal
+  // still records a fully-qualified case and the audit can count exactly what
+  // the pause cost.
+  if (cfg.immediateAlertsPaused) {
+    return no(
+      IMMEDIATE_ALERTS_PAUSED_REASON,
+      "ON_TIME",
+      "HIGH_ASYMMETRY_OWNER_WATCH",
+      qualityScore,
+      "OWNER_WATCH",
     );
   }
 

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { checkApiToken, unauthorized } from "@/lib/auth";
 import { deferServerBoot } from "@/lib/server-boot";
 import { jsonFromRouteError } from "@/lib/api-response";
+import { intParam } from "@/lib/query-params";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,8 +22,7 @@ export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
     const date = url.searchParams.get("date") || undefined;
-    const limitParam = Number(url.searchParams.get("limit"));
-    const recentLimit = Number.isFinite(limitParam) ? Math.max(1, Math.min(100, limitParam)) : 25;
+    const recentLimit = intParam(url.searchParams, "limit", 25, 1, 100);
 
     const { getDb } = await import("@/lib/db");
     const { loadAsymmetryCohortOnDb } = await import("@/lib/research/asymmetry/loader");

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { checkApiToken, unauthorized } from "@/lib/auth";
 import { deferServerBoot } from "@/lib/server-boot";
 import { jsonFromRouteError } from "@/lib/api-response";
+import { intParam } from "@/lib/query-params";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,8 +45,11 @@ export async function GET(req: Request) {
     const db = getDb() as any;
     const sessionDate = url.searchParams.get("date") || tradingDay();
     const symbol = url.searchParams.get("symbol");
-    const limitParam = Number(url.searchParams.get("limit"));
-    const limit = Number.isFinite(limitParam) ? Math.max(1, Math.min(1000, limitParam)) : 200;
+    // Every `suppression` and `distributions` counter below is computed from
+    // the `decisions` ARRAY, not from SQL, so this bound is load-bearing: an
+    // under-read here does not truncate a listing, it silently changes the
+    // reported answer. Defaults to the whole session for that reason.
+    const limit = intParam(url.searchParams, "limit", 1000, 1, 5000);
 
     const decisions = listNotifyDecisionsOnDb(db, sessionDate, { symbol, limit });
     const ratio = journalRatioOnDb(db, sessionDate);
