@@ -670,11 +670,17 @@ test("exact IWM production contract roll stays one active thesis and one opening
     { getDb: () => d, send, now: () => flipAt },
     bearishEnv,
   );
-  assert.equal(callFlip.state, "SENT", "CALL direction owns a separate thesis");
-  assert.equal(sends, 2);
+  // CHANGED 2026-08-06: this previously asserted "CALL direction owns a separate thesis"
+  // and expected TWO simultaneous active IWM theses. That encoded the defect the owner
+  // reported on SPY — a CALL and a PUT actionable at the same moment with no reversal and
+  // no authoritative direction. Symbol-level directional authority now refuses the flip,
+  // so the opposite direction must NOT open while the put thesis is live.
+  assert.equal(callFlip.state, "REJECTED", "the opposite direction must not open alongside the put");
+  assert.equal(sends, 1, "no second Discord send for a contradicting direction");
   assert.equal(
     Number(d.prepare("SELECT COUNT(*) n FROM opportunity_thesis_active_index WHERE symbol='IWM'").get().n),
-    2,
+    1,
+    "one symbol holds exactly one actionable direction",
   );
 
   closeOpportunityOnDb(d, {
@@ -700,7 +706,7 @@ test("exact IWM production contract roll stays one active thesis and one opening
   );
   assert.equal(reopenedPut.state, "SENT", "closed PUT thesis permits a fresh PUT opening");
   assert.notEqual(reopenedPut.opportunityCaseId, first.opportunityCaseId);
-  assert.equal(sends, 3);
+  assert.equal(sends, 2);
 });
 
 test("AVGO oc_17814os fails closed before Discord when ot_hbldh7 has research exposure", async () => {

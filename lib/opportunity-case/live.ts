@@ -50,6 +50,10 @@ import {
   syncThesisLifecycleOnDb,
   type ThesisOpeningSource,
 } from "./thesis-live.ts";
+import type {
+  DirectionalAuthorityDecision,
+  ReversalAuthorization,
+} from "./directional-authority.ts";
 import { recordThesisReopenCooldownOnDb, type ThesisReopenCooldown } from "./reopen-cooldown.ts";
 
 export interface LiveDb {
@@ -239,6 +243,12 @@ export interface ClaimOpenResult {
   reason: string;
   /** Set only when the claim was refused because this thesis closed recently. */
   cooldown?: ThesisReopenCooldown | null;
+  /**
+   * Symbol-level directional verdict. Present whenever the authority ran, including
+   * when it allowed the claim, so callers can journal near-misses and shadow-mode
+   * conflicts rather than only hard refusals.
+   */
+  directionalAuthority?: DirectionalAuthorityDecision | null;
 }
 
 /** Atomic open claim. Only the winner may send the opening Discord alert. */
@@ -276,6 +286,12 @@ export function claimOpportunityOpenOnDb(
       openInterest?: number | null;
       volume?: number | null;
     } | null;
+    /**
+     * Explicit licence to supersede an active opposite-direction thesis for this symbol.
+     * Absent it, an opposite-direction claim is refused by the directional authority.
+     */
+    reversal?: ReversalAuthorization | null;
+    env?: NodeJS.ProcessEnv;
   },
 ): ClaimOpenResult {
   const identity = buildOpportunityIdentity(input);
@@ -291,6 +307,8 @@ export function claimOpportunityOpenOnDb(
     sessionDate: identity.sessionDate,
     opportunityCaseId,
     openingSource: input.openingSource ?? "canonical",
+    reversal: input.reversal ?? null,
+    env: input.env,
   });
   if (!thesisClaim.claimed) {
     const activeCaseId = thesisClaim.active?.opportunityCaseId ?? opportunityCaseId;
@@ -323,6 +341,7 @@ export function claimOpportunityOpenOnDb(
       existing: Boolean(thesisClaim.active),
       reason: thesisClaim.reason,
       cooldown: thesisClaim.cooldown ?? null,
+      directionalAuthority: thesisClaim.directionalAuthority ?? null,
     };
   }
   if (!opportunityLifecycleSchemaReady(db)) {

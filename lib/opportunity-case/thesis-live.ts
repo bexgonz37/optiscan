@@ -15,6 +15,11 @@ import type {
   OpportunityCase,
 } from "./schema.ts";
 import { findThesisReopenCooldownOnDb, type ThesisReopenCooldown } from "./reopen-cooldown.ts";
+import {
+  evaluateDirectionalAuthority,
+  type DirectionalAuthorityDecision,
+  type ReversalAuthorization,
+} from "./directional-authority.ts";
 import type { LiveDb } from "./live.ts";
 
 export type ThesisOpeningSource = "canonical" | "owner_actionable";
@@ -305,6 +310,8 @@ export function claimThesisIndexOnDb(
     opportunityCaseId: string;
     openingSource: ThesisOpeningSource;
     env?: NodeJS.ProcessEnv;
+    /** Explicit, evidenced licence to replace an active opposite-direction thesis. */
+    reversal?: ReversalAuthorization | null;
   },
 ): {
   claimed: boolean;
@@ -313,6 +320,7 @@ export function claimThesisIndexOnDb(
   active: ActiveThesis | null;
   reason: string;
   cooldown?: ThesisReopenCooldown | null;
+  directionalAuthority?: DirectionalAuthorityDecision | null;
 } {
   const identity = buildOpportunityThesisIdentity(input);
   const thesisFingerprint = opportunityThesisFingerprint(identity);
@@ -329,6 +337,28 @@ export function claimThesisIndexOnDb(
   }
   if (!opportunityThesisSchemaReady(db)) {
     return { claimed: false, identity, thesisFingerprint, active: null, reason: "THESIS_SCHEMA_UNAVAILABLE" };
+  }
+  // A symbol may hold only ONE outward actionable direction at a time. The thesis
+  // fingerprint above encodes direction, so it can only ever detect a same-direction
+  // duplicate; an active CALL does not block a PUT. This is the symbol-scoped check
+  // that does, and both opening paths (canonical delivery and the owner-actionable
+  // bearish review) reach it because both claim through here.
+  const directionalAuthority = evaluateDirectionalAuthority(db, {
+    symbol: identity.symbol,
+    sessionDate: identity.sessionDate,
+    direction: identity.direction,
+    reversal: input.reversal ?? null,
+    env: input.env,
+  });
+  if (!directionalAuthority.allowed) {
+    return {
+      claimed: false,
+      identity,
+      thesisFingerprint,
+      active: null,
+      reason: directionalAuthority.reasonCode,
+      directionalAuthority,
+    };
   }
   // This thesis already ran to a close (target, stop, time stop, expiration). Re-opening it
   // immediately would send a second opening alert for a play the subscriber was just told
