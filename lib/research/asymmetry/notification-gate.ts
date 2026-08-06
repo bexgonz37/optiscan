@@ -82,6 +82,28 @@ export interface NotificationStrengthConfig {
    * evidence the audit needs. Capture, marks, grading and paper are untouched.
    */
   immediateAlertsPaused: boolean;
+  /**
+   * Allow a candidate that is OLD to still speak when every INDEPENDENT measure
+   * of earliness says the entry has not gone anywhere.
+   *
+   * `maxCaptureToNotifyMs` is derived from `strategy.freshnessMaxMs`, which is a
+   * QUOTE-STALENESS constant (10–120s). Using it as a candidate-AGE ceiling
+   * means a `pullback_continuation` setup — declared holding horizon "hours–2
+   * days" — is disqualified 30 seconds after it is first noticed. Measured over
+   * 5,562 journal rows across five sessions, that rule produced 111
+   * ENTRY_TOO_LATE rejections of which 82% still had >=10% reward remaining and
+   * 91% had seen premium expand <=10%: the clock was rejecting entries the
+   * system's own measurements called early.
+   *
+   * OFF BY DEFAULT. Quote staleness is NOT relaxed by this — only the age rule,
+   * and only when chase, extension and reward-remaining all independently agree.
+   */
+  lateEntryReprieveEnabled: boolean;
+  /**
+   * Absolute candidate-age ceiling that the reprieve may never cross. A setup
+   * first seen an hour ago is a different setup, whatever the other measures say.
+   */
+  maxCandidateAgeHardMs: number;
 }
 
 export const DEFAULT_NOTIFICATION_STRENGTH: Readonly<NotificationStrengthConfig> = Object.freeze({
@@ -106,7 +128,20 @@ export const DEFAULT_NOTIFICATION_STRENGTH: Readonly<NotificationStrengthConfig>
   requireStrategyEvidence: false,
   minImmediateScore: 80,
   immediateAlertsPaused: false,
+  lateEntryReprieveEnabled: false,
+  maxCandidateAgeHardMs: 15 * 60_000,
 });
+
+/** Shadow flag for the late-entry reprieve. Unset = OFF = today's behaviour. */
+export const LATE_ENTRY_REPRIEVE_ENV = "ASYM_LATE_ENTRY_REPRIEVE_ENABLED";
+
+/** Reason recorded when a candidate notified only because of the reprieve. */
+export const LATE_ENTRY_REPRIEVED_REASON = "NOTIFY_AGE_REPRIEVED";
+
+const flagOn = (raw: string | undefined): boolean => {
+  const v = String(raw ?? "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
+};
 
 /**
  * The owner-facing kill switch for immediate High-Asymmetry alerts.
@@ -159,6 +194,9 @@ export function resolveNotificationStrength(env: NodeJS.ProcessEnv = process.env
     minImmediateScore: n(env.ASYM_NOTIFY_MIN_IMMEDIATE_SCORE,
       DEFAULT_NOTIFICATION_STRENGTH.minImmediateScore, 0, 100),
     immediateAlertsPaused: immediateAlertsPaused(env),
+    lateEntryReprieveEnabled: flagOn(env[LATE_ENTRY_REPRIEVE_ENV]),
+    maxCandidateAgeHardMs: n(env.ASYM_NOTIFY_MAX_CANDIDATE_AGE_HARD_MS,
+      DEFAULT_NOTIFICATION_STRENGTH.maxCandidateAgeHardMs, 60_000, 60 * 60_000),
   };
 }
 
@@ -450,8 +488,28 @@ export function decideNotification(
       return no(`LATE_OR_ROLLOVER_SUPPRESSION_STALE_${Math.round(optionQuoteAgeMs / 1000)}S`, "STALE_EVIDENCE");
     }
   }
-  if (candidateAgeMs != null) {
-    if (candidateAgeMs > cfg.maxCaptureToNotifyMs) {
+  // AGE IS NOT STALENESS. The quote-freshness check above has already run and
+  // is never relaxed. This check asks a different question — how long ago the
+  // setup was first noticed — and answers it with a constant borrowed from the
+  // freshness policy. The reprieve lets three INDEPENDENT measures overrule that
+  // borrowed constant, and only when all three are present and all three agree.
+  let ageReprieved = false;
+  if (candidateAgeMs != null && candidateAgeMs > cfg.maxCaptureToNotifyMs) {
+    const chase = num(e.premiumChasePct);
+    const stillCheap = chase != null && chase <= cfg.maxPremiumChasePct / 2;
+    const notExtended = cfg.maxUnderlyingMoveBeforeEntryPct == null
+      ? false // no extension policy means no independent second opinion
+      : underlyingMoveBeforeEntryPct != null
+        && underlyingMoveBeforeEntryPct <= cfg.maxUnderlyingMoveBeforeEntryPct;
+    const rewardLeft = cfg.minRewardRemainingPct == null
+      ? false
+      : rewardRemainingPct != null && rewardRemainingPct >= cfg.minRewardRemainingPct;
+    const withinHardCeiling = candidateAgeMs <= cfg.maxCandidateAgeHardMs;
+
+    ageReprieved = cfg.lateEntryReprieveEnabled
+      && stillCheap && notExtended && rewardLeft && withinHardCeiling;
+
+    if (!ageReprieved) {
       const ageLabel = candidateAgeMs >= 60_000
         ? `${Math.round(candidateAgeMs / 60_000)}M`
         : `${Math.round(candidateAgeMs / 1000)}S`;
@@ -555,7 +613,9 @@ export function decideNotification(
     notify: true,
     timing: "ON_TIME",
     action: "HIGH_ASYMMETRY_ALERT",
-    reason: "NOTIFY",
+    // Named distinctly so the journal can count reprieved alerts separately and
+    // the rule can be demoted on its own evidence rather than on impression.
+    reason: ageReprieved ? LATE_ENTRY_REPRIEVED_REASON : "NOTIFY",
     version: NOTIFICATION_GATE_VERSION,
     silentCapture: false,
     qualityScore,
