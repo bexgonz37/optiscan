@@ -1,5 +1,163 @@
 # Current Task Packet
 
+## Packet update — 2026-08-06 (3) directional authority and the unreachable strategies
+
+### Verified state
+
+- Start of session: local = `origin/main` = production = `80e5bf5`. Read from git
+  and `/api/healthz`, not assumed.
+- Two deploys this session: `2a57a34` → `8779c33`.
+- `/api/healthz`: `ok:true`, db writable, `schemaMissing: []`, lifecycle active.
+  `/api/health`: `loopRunning:true`, `quotaExceeded:false`, session `regular`.
+- Full suite 3647/3647 twice. `tsc --noEmit --incremental false` clean.
+  `next build` exit 0. `git diff --check` clean. **No migrations touched.**
+- **`HIGH_ASYMMETRY_IMMEDIATE_ALERTS_ENABLED=0` untouched.** Confirmed live in
+  `/api/research/asymmetry/timing`: `immediateAlertsPaused: true`.
+- `PAPER_0DTE_RESEARCH_ENABLED` remains unset. Not needed by either fix.
+- New env, both defaulting to the SAFE value:
+  `DIRECTIONAL_AUTHORITY_MODE` (default `enforce`),
+  `INDEX_STRATEGY_ACTIONABLE_ENABLED` (default off → RESEARCH_ONLY).
+
+### The contradictory SPY alert is traced to exact production evidence
+
+`api/opportunity-cases/oc_x5r3u9`, read through `railway run`:
+
+```
+caseId   oc_x5r3u9      alertId oa_16dpkke     thesisFp ot_l73wt8
+symbol   SPY            direction bearish      setupFamily lower_high_continuation
+detected 2026-08-06 11:11:08 ET               lifecycle CLOSED
+contract O:SPY260807P00770000  bid 2.21 / ask 2.22  spread 0.45%
+         delta -0.456  OI 10,786  volume 42,816
+```
+
+`bid 2.21 / ask 2.22` is exactly the owner's reported "$2.21–$2.22". The call leg
+is corroborated by the SPY-scoped contract funnel in the same window:
+`breakout_forming` → **call**, expirations including **2026-08-11**, and
+`lower_high_continuation` → **put**, expirations including **2026-08-07**. Both
+`CONTRACT_SELECTED`. The two Discord reason strings map to those two strategies
+verbatim in `plainEnglishAlertReason` (`format.ts:156,164`).
+
+**Root cause: every exclusion key encoded DIRECTION, so nothing could see it.**
+
+- `clusterKey(symbol, side)` yields `index:call` / `index:put` as separate
+  clusters. The delivered put's own recorded reason was literally
+  `subscriber_worthy: quality 0.7806 >= bar 0.7 …; cluster index:put`.
+- `opportunityThesisFingerprint` is `symbol|direction|optionType|sessionDate`,
+  and that is the PRIMARY KEY of `opportunity_thesis_active_index` — the table
+  whose whole job is "one open thesis". Per-direction, so a CALL claim and a PUT
+  claim both succeed.
+- A second path: `maybeSendBearishOwnerReview` (`delivery-decision.ts:519`) sends
+  via `sendOwnerResearchNotify` BEFORE and independently of the main gating.
+
+The case recorded `auditAnswers.strategiesConflicted: []` while
+`strategiesApplicable` held BOTH `breakout_forming` and `lower_high_continuation`.
+The conflict existed and nothing watched for it.
+
+`2a57a34` adds a symbol-scoped authority that ignores direction, checked inside
+`claimThesisIndexOnDb` — the single choke point BOTH opening paths reach. An
+opposite direction is refused unless it arrives as an explicit reversal naming the
+active case it supersedes, explaining what changed, with evidence post-dating that
+case. Uses `idx_opportunity_thesis_symbol`; no migration.
+`tests/directional-authority.test.mjs` (15 tests) reproduces the SPY incident.
+
+**`tests/opportunity-lifecycle-dedup.test.mjs` had asserted the defect** — "CALL
+direction owns a separate thesis", expecting TWO simultaneous active IWM theses.
+Corrected to assert one actionable direction per symbol.
+
+### The 8 dead strategies: 2 proven unselectable, and it is the same defect as 0DTE
+
+`selectOptionsStrategy` takes ONE winner, `applicable[0]`, ordered by
+`matched/earlySignals.length` — a RATIO — and `Array#sort` is stable in V8, so
+ties resolved by **catalog array position**. A strategy's score depends only on
+its own signals, so activating exactly its own set is the provably optimal
+witness, which makes reachability **decidable**:
+
+> S is unselectable ⟺ some EARLIER catalog entry's signal set is a subset of S's.
+
+Exactly three qualified, including both strategies written for SPY/QQQ 0DTE:
+
+```
+trend_continuation        ← pullback_continuation
+index_intraday_momentum   ← pullback_continuation, trend_continuation
+zero_dte_index            ← all three above
+```
+
+Verified against the real selector: a perfect SPY 0DTE candidate scored
+`zero_dte_index` **1.0, applicable=true**, and the selector still returned
+`pullback_continuation` (`preferredDte 1-7dte`).
+
+`planPartitions` reads ONLY the selected strategy's `preferredDte`, so SPY/QQQ
+never emitted a 0dte partition. `8779c33` makes the tie-break explicit
+(ratio → matched count → index scope on index symbols → catalog order) and adds
+`symbolScope: "index"`. The perfect SPY candidate now selects `zero_dte_index`
+with `preferredDte 0dte`, and `planPartitions` emits a `0-0dte` partition.
+
+**These strategies stay RESEARCH_ONLY** (`INDEX_STRATEGY_ACTIONABLE_ENABLED`
+default off): they were unreachable, so they have no forward record, and a wiring
+fix must not put an unproven strategy in front of subscribers.
+
+`trend_continuation` is NOT fixed: its signals are identical to
+`pullback_continuation`'s and both are core-scoped, so nothing at decision time
+distinguishes them. That needs a catalog decision, not an invented discriminator.
+A guard test fails if the unselectable set ever grows.
+
+### CORRECTION: 0DTE is NOT globally unfetched, and 774P was not the wrong strike
+
+Two claims carried into this session did not survive production evidence.
+
+**1. "The 0DTE chain is never requested" is too strong.** The 2026-08-06 funnel
+shows `momentum_acceleration`, `vwap_rejection` and `opening_range_breakout` all
+fetching `0-0dte` with expiration `2026-08-06` present. 0DTE IS fetched whenever a
+0DTE-permitting strategy is selected. The real defect is narrower and matches the
+above: for SPY/QQQ the *index* 0DTE strategies were unselectable, so index 0DTE
+coverage depended on accidentally matching a core strategy that happens to permit
+it. On SPY that day, only `vwap_rejection` did.
+
+**2. The 770P/774P pair does not show a wrong strike.** From the frozen audit:
+
+```
+                  decisionAsk  spread   MFE    MAE   classification
+O:SPY260806P00770000   1.48    1.35%   +87%   -13%  VERIFIED_EXECUTABLE_WINNER
+O:SPY260806P00774000   2.58    1.16%   +97%   -15%  REJECTED_BUT_GOOD
+```
+
+The 774P had the **higher** MFE and the **tighter** spread. Ranking picked the
+better executable contract. It was then refused on `ENTRY_TOO_LATE_6M` — a
+30-second ceiling taken from `freshnessMaxMs`, a QUOTE-staleness constant, applied
+to candidate age, for a strategy declaring an "hours–2 days" horizon. **The loss
+was a clock rule, not strike selection.** (That reprieve exists in `7285829` and
+remains OFF.)
+
+**What IS a real ranking defect:** `oc_x5r3u9` persists `rank: null`,
+`rankExplanation: null`, `rejectedContracts: []`. The system cannot explain why one
+contract beat another, so questions of this shape are structurally unanswerable
+from stored evidence. **Not fixed this session.**
+
+### Provider budget is a live constraint on any 0DTE widening
+
+2026-08-06 funnel: 976 candidates, terminal reasons `CONTRACT_SELECTED` 794,
+**`PROVIDER_QUOTA_EXCEEDED` 108**, `NO_CONTRACTS_RETURNED` 74. Quota at read time:
+`callsToday 9,157` against `dailyCap 200,000` but `minuteCap 280`. The binding
+constraint is the **per-minute** cap, not the daily one. 11% of candidates already
+die on it before any 0DTE widening. No caps were changed this session.
+
+### Exact resume point
+
+1. **Measure the two fixes in RTH.** Both are deployed but neither has forward
+   evidence. Confirm no symbol holds two directions, and that SPY/QQQ now request
+   a 0DTE partition, via `api/diagnostics/contract-funnel?symbol=SPY`.
+2. **Persist the contract rank breakdown** (`rank`, `rankExplanation`,
+   `rejectedContracts`). Until then no 770P-vs-774P question is answerable.
+3. **Quarantine by strategy version.** Expectancy -7.2% / PF 0.49 is still a
+   POPULATION number; it has not been segmented per strategy/version, so nothing
+   has been quarantined yet.
+4. Decide `trend_continuation`: give it distinct signals or retire it.
+5. Deterministic opportunity-ranking objective — not started.
+6. Learning/experiment wiring, cohort replays — not started.
+7. Alert pause stays ON. Subscriber promotion still requires human approval.
+
+---
+
 ## Packet update — 2026-08-06 (2) the called-versus-missed audit
 
 ### Verified state
