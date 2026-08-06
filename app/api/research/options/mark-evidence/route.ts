@@ -92,6 +92,50 @@ export async function GET(req: Request) {
           })),
         },
         byStrategy: strategies,
+
+        // Why a position was never marked is usually answered by how long it stayed open
+        // and how it closed. A trade that exits inside one grader tick cannot be marked.
+        diagnosis: (() => {
+          const byLane: Record<string, any> = {};
+          for (const r of rows) {
+            const lane = r.lane ?? "unknown";
+            const b = (byLane[lane] ??= {
+              lane, total: 0, holdMinutes: [] as number[], exitReasons: {} as Record<string, number>,
+              enteredMin: null as number | null, enteredMax: null as number | null,
+              closedWithinOneGraderTick: 0, neverMarked: 0,
+            });
+            b.total += 1;
+            if (r.enteredAtMs != null && r.exitAtMs != null) {
+              const mins = (r.exitAtMs - r.enteredAtMs) / 60_000;
+              b.holdMinutes.push(mins);
+              if (r.exitAtMs - r.enteredAtMs <= graderIntervalMs()) b.closedWithinOneGraderTick += 1;
+            }
+            if (r.distinctObservationTimes === 0) b.neverMarked += 1;
+            const reason = r.exitReason ?? "<none>";
+            b.exitReasons[reason] = (b.exitReasons[reason] ?? 0) + 1;
+            if (r.enteredAtMs != null) {
+              b.enteredMin = b.enteredMin == null ? r.enteredAtMs : Math.min(b.enteredMin, r.enteredAtMs);
+              b.enteredMax = b.enteredMax == null ? r.enteredAtMs : Math.max(b.enteredMax, r.enteredAtMs);
+            }
+          }
+          const med = (xs: number[]) => {
+            if (!xs.length) return null;
+            const s2 = [...xs].sort((a, b2) => a - b2);
+            return +s2[s2.length >> 1].toFixed(2);
+          };
+          return Object.values(byLane).map((b: any) => ({
+            lane: b.lane,
+            total: b.total,
+            neverMarked: b.neverMarked,
+            closedWithinOneGraderTick: b.closedWithinOneGraderTick,
+            medianHoldMinutes: med(b.holdMinutes),
+            enteredFirst: b.enteredMin ? new Date(b.enteredMin).toISOString() : null,
+            enteredLast: b.enteredMax ? new Date(b.enteredMax).toISOString() : null,
+            exitReasons: Object.fromEntries(
+              Object.entries(b.exitReasons).sort((a: any, b2: any) => b2[1] - a[1]).slice(0, 12),
+            ),
+          }));
+        })(),
       },
       { status: 200, headers: { "content-type": "application/json" } },
     );

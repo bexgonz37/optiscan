@@ -38,6 +38,11 @@ export interface MarkEvidenceRow extends MarkEvidence {
   storedMfePct: number | null;
   storedMaePct: number | null;
   returnPct: number | null;
+  /** Why the position closed - the fastest route to "why was it never marked". */
+  exitReason: string | null;
+  enteredAtMs: number | null;
+  exitAtMs: number | null;
+  status: string | null;
 }
 
 export function loadMarkEvidenceOnDb(
@@ -56,7 +61,7 @@ export function loadMarkEvidenceOnDb(
   try {
     trades = db.prepare(
       `SELECT id, option_symbol, strategy, paper_kind, status, entry_fill,
-              entered_at_ms, exit_at_ms, mfe_pct, mae_pct, return_pct
+              entered_at_ms, exit_at_ms, mfe_pct, mae_pct, return_pct, exit_reason
          FROM options_paper_trades
         WHERE ${where.join(" AND ")}
         ORDER BY entered_at_ms DESC
@@ -114,6 +119,10 @@ export function loadMarkEvidenceOnDb(
       storedMfePct: num(t.mfe_pct),
       storedMaePct: num(t.mae_pct),
       returnPct: num(t.return_pct),
+      exitReason: t.exit_reason == null ? null : String(t.exit_reason),
+      enteredAtMs: num(t.entered_at_ms),
+      exitAtMs: num(t.exit_at_ms),
+      status: t.status == null ? null : String(t.status),
     };
   });
 }
