@@ -50,6 +50,7 @@ export type DeliveryReasonCode =
   | "SUPPRESSED_STALE_RESEARCH"
   | "SUPPRESSED_DUPLICATE_OUTCOME"
   | "HELD_FOR_HISTORICAL_DIGEST"
+  | "DELIVERED_IN_HISTORICAL_DIGEST"
   | "ARCHIVED_IN_APP_ONLY"
   | "VARIANT_HELD_IN_APP"
   | "DISABLED_BY_KILL_SWITCH"
@@ -110,6 +111,11 @@ const BY_CODE: Record<DeliveryReasonCode, Omit<DeliveryReason, "code" | "explana
   // Not rejected — rerouted. Terminal for INDIVIDUAL delivery only; the digest
   // builder selects on this reason code, so the content is still owner-visible.
   HELD_FOR_HISTORICAL_DIGEST: { retryable: false, status: "SUPPRESSED" },
+  // The digest CONSUMED this draft. Deliberately NOT `SENT`: the draft itself
+  // was never posted as an individual message, and letting SENT rise because a
+  // digest ran would make the delivered count untrue and hide whether the
+  // historical drip had actually stopped.
+  DELIVERED_IN_HISTORICAL_DIGEST: { retryable: false, status: "SUPPRESSED" },
   ARCHIVED_IN_APP_ONLY: { retryable: false, status: "SUPPRESSED" },
   // The recommended variant went to Discord; its alternates stay in the app.
   VARIANT_HELD_IN_APP: { retryable: false, status: "SUPPRESSED" },
@@ -136,6 +142,7 @@ const EXPLANATION: Record<DeliveryReasonCode, string> = {
   SUPPRESSED_STALE_RESEARCH: "The draft remains archived in the app, but its live-looking research window has passed. Not sent to Discord.",
   SUPPRESSED_DUPLICATE_OUTCOME: "This closed outcome already has a report card in Discord. The draft stays in the app.",
   HELD_FOR_HISTORICAL_DIGEST: "Too old for an individual message. Included in the historical learning digest and kept in the app.",
+  DELIVERED_IN_HISTORICAL_DIGEST: "Reported in a historical learning digest, not as an individual message. The draft stays in the app.",
   ARCHIVED_IN_APP_ONLY: "Older than the digest window. Kept in the app archive and searchable, never sent to Discord.",
   VARIANT_HELD_IN_APP: "An alternate phrasing of a draft already delivered. Available in the app, not sent separately.",
   DISABLED_BY_KILL_SWITCH: "DISCORD_RECAP_ENABLED is off. Held until the owner turns it back on.",

@@ -242,12 +242,28 @@ async function contentDraftsJob(): Promise<void> {
   }
   try {
     const result = await runContentDraftsScan(db(), {}, process.env);
+    // The digest CONSUMES drafts the lane fix held back. It runs after the live
+    // scan and is told whether that scan delivered, because live content always
+    // outranks historical: the recap budget is 2 posts / 10 min, so a digest
+    // taking a slot ahead of a live closure would recreate the original harm.
+    // A throw here must not lose the live scan's result, so it is isolated.
+    let digest: unknown = null;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { runHistoricalDigestScan } = require("@/lib/content/historical-digest-runtime");
+      digest = await runHistoricalDigestScan(
+        db(), { liveDeliveredThisRun: result.delivered > 0 || result.deferredDelivered > 0 }, process.env,
+      );
+    } catch (e: any) {
+      digest = { ran: false, error: String(e?.message ?? e).slice(0, 300) };
+    }
     state().lastContentDrafts = {
       ran: true,
       reason: null,
       ranAtMs,
       webhookConfigured: contentWebhookConfigured(process.env),
       result,
+      digest,
       error: null,
     };
   } catch (e: any) {

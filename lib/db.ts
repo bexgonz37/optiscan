@@ -2015,6 +2015,58 @@ CREATE INDEX IF NOT EXISTS idx_content_drafts_status ON content_drafts(status, d
 CREATE INDEX IF NOT EXISTS idx_content_drafts_symbol_cat ON content_drafts(category, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_content_drafts_case ON content_drafts(opportunity_case_id, created_at_ms);
 
+-- Historical learning digests: the CONSUMER for drafts held under
+-- HELD_FOR_HISTORICAL_DIGEST. One row per generated digest. Nothing here
+-- replaces a draft — the drafts stay exactly where they are, and these rows
+-- record which canonical outcomes a digest covered and which it deliberately
+-- left out, so "held" can be distinguished from "consumed" and an exclusion can
+-- never read as "no data".
+CREATE TABLE IF NOT EXISTS content_digests (
+  id TEXT PRIMARY KEY,
+  generated_at_ms INTEGER NOT NULL,
+  delivered_at_ms INTEGER,
+  discord_message_id TEXT,
+  delivery_status TEXT NOT NULL DEFAULT 'GENERATED',
+  delivery_reason TEXT,
+  trigger_source TEXT NOT NULL DEFAULT 'SCHEDULED',
+  evidence_version TEXT NOT NULL DEFAULT 'v1',
+  covered_from_ms INTEGER,
+  covered_to_ms INTEGER,
+  included_count INTEGER NOT NULL DEFAULT 0,
+  excluded_count INTEGER NOT NULL DEFAULT 0,
+  duplicates_collapsed INTEGER NOT NULL DEFAULT 0,
+  messages_prevented INTEGER NOT NULL DEFAULT 0,
+  stats_json TEXT,
+  rendered_text TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_content_digests_generated ON content_digests(generated_at_ms);
+
+-- One row per canonical outcome considered for a digest, included or not.
+-- Exclusions are persisted WITH their reason: an outcome that was left out
+-- because it already reached Discord is a different fact from one deferred by
+-- the size cap, and only the second is owed a later digest.
+CREATE TABLE IF NOT EXISTS content_digest_members (
+  digest_id TEXT NOT NULL,
+  outcome_id TEXT NOT NULL,
+  included INTEGER NOT NULL DEFAULT 1,
+  exclusion_reason TEXT,
+  opportunity_case_id TEXT,
+  symbol TEXT,
+  occ TEXT,
+  result TEXT,
+  return_percent REAL,
+  cause_code TEXT,
+  cause_provable INTEGER,
+  evidence_quality TEXT,
+  collapsed_variants INTEGER NOT NULL DEFAULT 0,
+  representative_draft_id TEXT,
+  draft_ids_json TEXT,
+  content_event_ids_json TEXT,
+  created_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (digest_id, outcome_id)
+);
+CREATE INDEX IF NOT EXISTS idx_content_digest_members_outcome ON content_digest_members(outcome_id, included);
+
 CREATE TABLE IF NOT EXISTS opportunity_suppression_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   symbol TEXT NOT NULL,
