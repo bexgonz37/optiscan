@@ -54,19 +54,37 @@ export function loadMarkEvidenceOnDb(
 
   const where: string[] = ["result_class='REAL_OPTION_PAPER'"];
   const params: unknown[] = [];
-  if (opts.sinceMs != null) { where.push("entered_at_ms >= ?"); params.push(opts.sinceMs); }
-  if (opts.lane) { where.push("paper_kind = ?"); params.push(opts.lane); }
+
+  // Legacy databases may lack any of the newer columns. Select each only when it exists,
+  // so a long-lived database still loads rather than throwing and reporting "no rows" -
+  // which would look exactly like "nothing was ever marked".
+  const cols = (() => {
+    try {
+      return new Set((db.prepare("PRAGMA table_info(options_paper_trades)").all() as any[]).map((c) => String(c.name)));
+    } catch {
+      return new Set<string>();
+    }
+  })();
+  const pick = (c: string) => (cols.has(c) ? c : `NULL AS ${c}`);
 
   let trades: any[] = [];
   try {
     trades = db.prepare(
-      `SELECT id, option_symbol, strategy, paper_kind, status, entry_fill,
-              entered_at_ms, exit_at_ms, mfe_pct, mae_pct, return_pct, exit_reason
+      `SELECT id, option_symbol, ${pick("strategy")}, ${pick("paper_kind")}, ${pick("status")}, ${pick("entry_fill")},
+              ${pick("entered_at_ms")}, ${pick("exit_at_ms")}, ${pick("mfe_pct")}, ${pick("mae_pct")},
+              ${pick("return_pct")}, ${pick("exit_reason")}
          FROM options_paper_trades
-        WHERE ${where.join(" AND ")}
-        ORDER BY entered_at_ms DESC
+        WHERE ${[
+          ...where,
+          ...(opts.sinceMs != null && cols.has("entered_at_ms") ? ["entered_at_ms >= ?"] : []),
+          ...(opts.lane && cols.has("paper_kind") ? ["paper_kind = ?"] : []),
+        ].join(" AND ")}
+        ${cols.has("entered_at_ms") ? "ORDER BY entered_at_ms DESC" : ""}
         LIMIT ${Math.max(1, Math.min(20_000, opts.limit ?? 5_000))}`,
-    ).all(...params) as any[];
+    ).all(
+      ...(opts.sinceMs != null && cols.has("entered_at_ms") ? [opts.sinceMs] : []),
+      ...(opts.lane && cols.has("paper_kind") ? [opts.lane] : []),
+    ) as any[];
   } catch {
     return [];
   }
