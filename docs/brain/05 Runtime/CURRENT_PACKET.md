@@ -1,5 +1,114 @@
 # Current Task Packet
 
+## Packet update — 2026-08-06 (5) the marking gap is a legacy artifact, and the strategies are still negative
+
+### Verified state
+
+- local = `origin/main` = production = `9b94e35`. Read from git and `/api/healthz`.
+- Six deploys this session: `acbe8b9` → `a8bb45c` → `9bb05af` → `f76327e` → `9b94e35`.
+- `/api/healthz`: `ok:true`, db writable, `schemaMissing: []`, lifecycle active.
+- Full suite **3723/3723**. `tsc` clean. `next build` exit 0. `git diff --check` clean.
+- Gates unchanged: `immediateAlertsPaused: true`, `directionalAuthorityMode: enforce`,
+  `strategyReadinessMode: enforce`, `indexStrategyActionable: false`,
+  `paper0dteResearchEnabled: false`. No provider caps changed.
+
+### ROOT CAUSE PROVEN: the marking gap is a LEGACY IMPORT, not a live defect
+
+`api/research/options/mark-evidence` over 60 days, 799 positions:
+
+```
+COMPLETE_TO_EXIT        301     MULTI_MARK_PARTIAL       52
+SINGLE_POST_ENTRY_MARK  175     ENTRY_ONLY              271
+excursion trustworthy   353     untrustworthy           446
+realized usable         779     immediate-failure usable 276
+```
+
+The decisive discriminator is the ENTRY DATE, not the strategy:
+
+```
+DELIVERED lane
+  premarket_level_break  n=320  medObs=  0  100% untrust  entered 2026-07-22 .. 2026-07-22
+  pullback_continuation  n= 44  medObs=  1   82% untrust  entered 2026-07-22 .. 2026-07-28
+  reversal_bounce        n= 39  medObs=  1   56% untrust  entered 2026-07-22 .. 2026-07-28
+  opening_range_breakout n= 11  medObs=  0   91% untrust  entered 2026-07-22 .. 2026-07-29
+  ---- marking starts working ----
+  lower_high_continuation n=58  medObs=131   12% untrust  entered 2026-07-29 .. 2026-08-06
+  breakout_forming       n= 20  medObs=14.5  45% untrust  entered 2026-07-22 .. 2026-08-06
+
+RESEARCH lane (began 2026-07-27)
+  every strategy          0% untrust, medObs 62 - 650
+```
+
+**`premarket_level_break` alone is 320 of 575 delivered rows, ALL entered on
+2026-07-22, none ever marked.** It is also the strategy P3 proved never matches live.
+These are legacy rows from a superseded creation path, not current behaviour.
+
+Exit reasons corroborate: `expiration_no_quote` is 190 in the delivered lane and
+**0** in research. Nothing closed inside one grader tick, so the 30s grader cadence is
+not the cause. The marking subsystem became reliable around 2026-07-27/29 and has
+worked since.
+
+### THE STRATEGIES ARE STILL NEGATIVE ON TRUSTWORTHY EVIDENCE
+
+This is the part that matters. Removing the corrupted rows did NOT rescue anything:
+
+```
+DELIVERED lane, re-graded on real observation series
+  momentum_acceleration   n=25  exp -33.2%  PF 0.094   DEMOTED
+  reversal_bounce         n=30  exp -32.9%  PF 0.031   DEMOTED
+  lower_high_continuation n=54  exp -27.8%  PF 0.311   DEMOTED   (MFE 8.5, immFail 38%)
+  vwap_rejection          n=28  exp -26.2%  PF 0.378   DEMOTED   (MFE 16.7, immFail 20%)
+  premarket_level_break   n=179 exp -36.4%  PF 0.383   DATA_CONTAMINATED (179/179 degenerate)
+  pullback_continuation   n=27  exp -35.7%  PF 0.248   DATA_CONTAMINATED (19/27)
+```
+
+The marking gap qualified the MFE/immediate-failure numbers. It did not qualify the
+LOSSES — realized returns never depended on excursion history, which is exactly why
+that separation was built. **Delivered alerts really were losing money.**
+
+### THE OPEN QUESTION: delivered vs research is real, not a marking artifact
+
+Research-lane rows have ZERO degenerate excursions, so this gap cannot be explained
+away by missing marks:
+
+```
+                        delivered            research
+pullback_continuation   -35.7%  PF 0.248     +0.50%  PF 1.019   FORWARD_VALIDATED
+reversal_bounce         -32.9%  PF 0.031     +6.49%  PF 1.246   FORWARD_VALIDATED
+momentum_acceleration   -33.2%  PF 0.094    +16.74%  PF 1.749   PROMISING
+```
+
+Same strategies, same window, opposite outcomes. The difference must be in ENTRY
+BASIS or exit policy between the two lanes. **This is now the single highest-value
+investigation** — if the research lane's entry convention is achievable, it is worth
+more than any strategy change.
+
+### Readiness after re-grading
+
+```
+DEMOTED         4   lower_high_continuation, momentum_acceleration,
+                    reversal_bounce, vwap_rejection
+RESEARCH_ONLY   7
+SUBSCRIBER_APPROVED    []      SUBSCRIBER_CANDIDATE   []
+```
+
+### Exact next-session resume point
+
+1. **Diagnose the delivered-vs-research entry basis.** Compare `entry_fill` against
+   contemporaneous ask for the same strategy in both lanes. This is the top item.
+2. Prospective RTH: confirm new delivered positions now accrue multiple distinct
+   observations (recent rows already do — `lower_high_continuation` medObs 131).
+3. Persist strategy/version attribution at creation. Still `unknown` everywhere;
+   nothing may be back-filled, legacy stays `UNKNOWN_LEGACY_VERSION`.
+4. Historical reconstruction of the 2026-07-22 batch is **NOT_RECONSTRUCTABLE** — no
+   contemporaneous option quote series was persisted. Do not interpolate.
+5. Cohorts still not run; they need per-session replay data the current store does
+   not carry with a complete leakage fence.
+6. `trend_continuation` and index bullish-only remain open from the prior packet.
+7. Alert pause stays ON. Nothing is subscriber-approved.
+
+---
+
 ## Packet update — 2026-08-06 (4) readiness, ranking, learning, cohorts
 
 ### Verified state
