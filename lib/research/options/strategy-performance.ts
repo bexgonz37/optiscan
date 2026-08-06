@@ -71,6 +71,16 @@ export interface OutcomeRow {
   /** % the premium had already expanded before the alert was sent. */
   premiumExpansionPct: number | null;
   marketRegime: string | null;
+  /**
+   * Authoritative excursion-evidence verdict from mark-evidence.ts, when the caller
+   * computed it. When present it OVERRIDES the MFE<=MAE heuristic below, because it is
+   * derived from the actual observation series rather than inferred from two summary
+   * fields.
+   */
+  excursionTrustworthy?: boolean | null;
+  /** Whether enough EARLY observations exist to claim what happened early. */
+  immediateFailureUsable?: boolean | null;
+  markEvidenceState?: string | null;
 }
 
 export interface SegmentKey {
@@ -131,6 +141,8 @@ export interface SegmentMetrics {
  * excursion-derived metrics.
  */
 export function hasDegenerateExcursion(row: OutcomeRow): boolean {
+  // Prefer the observation-series verdict when the caller supplied one.
+  if (row.excursionTrustworthy != null) return !row.excursionTrustworthy;
   return row.mfePct != null
     && row.maePct != null
     && Number.isFinite(row.mfePct)
@@ -308,9 +320,16 @@ export function computeSegmentMetrics(rows: OutcomeRow[]): SegmentMetrics {
     reached25Pct: mfes.length ? rate(mfes.filter((x) => x >= 25).length, mfes.length) : null,
     reached50Pct: mfes.length ? rate(mfes.filter((x) => x >= 50).length, mfes.length) : null,
     reached100Pct: mfes.length ? rate(mfes.filter((x) => x >= 100).length, mfes.length) : null,
-    immediateFailureRate: mfes.length
-      ? rate(mfes.filter((x) => x < IMMEDIATE_FAILURE_MFE_PCT).length, mfes.length)
-      : null,
+    // "Never gained 5%" is a claim about the EARLY life of a trade. Rows without enough
+    // early observations cannot answer it, so they are excluded rather than counted as
+    // failures - counting them would turn a marking gap into a performance number.
+    immediateFailureRate: (() => {
+      const eligible = excursionRows.filter((r) =>
+        r.immediateFailureUsable !== false && r.mfePct != null && Number.isFinite(r.mfePct));
+      return eligible.length
+        ? rate(eligible.filter((r) => (r.mfePct as number) < IMMEDIATE_FAILURE_MFE_PCT).length, eligible.length)
+        : null;
+    })(),
     medianReturnPct: median(returns),
     medianMfePct: median(mfes),
     medianMaePct: median(maes),

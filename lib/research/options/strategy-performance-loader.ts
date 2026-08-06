@@ -11,6 +11,8 @@
  */
 import type { OutcomeRow } from "./strategy-performance.ts";
 import { isIndexSymbol } from "./discovery.ts";
+import { loadMarkEvidenceOnDb } from "./mark-evidence-loader.ts";
+import { excursionIsTrustworthy } from "./mark-evidence.ts";
 
 export interface PerfDb {
   prepare(sql: string): { all(...a: unknown[]): unknown[]; get(...a: unknown[]): unknown };
@@ -105,6 +107,21 @@ export function loadOutcomeRowsOnDb(db: PerfDb, opts: LoadOptions = {}): Outcome
   let rows: any[] = [];
   try { rows = db.prepare(sql).all(...params) as any[]; } catch { return []; }
 
+  // Join the OBSERVATION-SERIES verdict. Without this, excursion trustworthiness is
+  // inferred from two summary fields; with it, it is derived from how many distinct
+  // post-entry observations actually exist. That distinction is the whole reason the
+  // earlier performance numbers could not be trusted.
+  const evidenceByTrade = new Map<number, { trustworthy: boolean; immediateFailureUsable: boolean; state: string }>();
+  try {
+    for (const e of loadMarkEvidenceOnDb(db as any, { sinceMs: opts.sinceMs ?? null, limit: 20_000 })) {
+      evidenceByTrade.set(e.tradeId, {
+        trustworthy: excursionIsTrustworthy(e.state),
+        immediateFailureUsable: e.permissions.immediateFailure,
+        state: e.state,
+      });
+    }
+  } catch { /* absent evidence falls back to the summary-field heuristic */ }
+
   return rows.map((r) => {
     // Latency and premium expansion live in the feature snapshot when they were captured
     // at all. Absent means absent — it is never defaulted to zero.
@@ -143,6 +160,9 @@ export function loadOutcomeRowsOnDb(db: PerfDb, opts: LoadOptions = {}): Outcome
       alertLatencyMs: num(snap?.alertLatencyMs) ?? num(snap?.captureToNotifyMs),
       premiumExpansionPct: num(snap?.premiumExpansionPct) ?? num(snap?.premiumChasePct),
       marketRegime: str(snap?.marketRegime) ?? str(snap?.regime),
+      excursionTrustworthy: evidenceByTrade.get(Number(r.id))?.trustworthy ?? null,
+      immediateFailureUsable: evidenceByTrade.get(Number(r.id))?.immediateFailureUsable ?? null,
+      markEvidenceState: evidenceByTrade.get(Number(r.id))?.state ?? null,
     } satisfies OutcomeRow;
   });
 }
