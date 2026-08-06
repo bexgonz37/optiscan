@@ -59,6 +59,15 @@ export interface ContentVars {
   maxReturnPct?: number | null;
   elapsed?: string | null;
   reason?: string | null;
+  /**
+   * The evidence-grounded loss explanation from `deriveFailureCause`. Failure
+   * templates render THIS, never `reason`: `reason` carries the ENTRY thesis,
+   * and printing it after "why this failed" produced the inverted claims found
+   * in production (see lib/content/failure-cause.ts).
+   */
+  failureCause?: string | null;
+  /** The entry thesis, rendered only where it is explicitly labelled as such. */
+  entryThesis?: string | null;
 }
 
 export interface DraftMeta {
@@ -144,6 +153,8 @@ function resolve(token: string, v: ContentVars): string | null {
     case "maxReturnPct": return fmtSignedPct(v.maxReturnPct);
     case "elapsed": return v.elapsed ? String(v.elapsed) : null;
     case "reason": return v.reason ? String(v.reason) : null;
+    case "failureCause": return v.failureCause ? String(v.failureCause) : null;
+    case "entryThesis": return v.entryThesis ? String(v.entryThesis) : null;
     // "contract" = a composite convenience token used in several templates.
     case "contract": {
       const parts = [resolve("expiration", v), resolve("strike", v), resolve("optionType", v)].filter(Boolean);
@@ -495,21 +506,32 @@ const TEMPLATES: Record<ContentCategory, CategoryTemplates> = {
     chartAnnotation: "Label the signal ({{reason}}), the entry, and the exit.",
     ctaTypes: ["PROOF_RECAP", "EDUCATIONAL", "SOFT_FOLLOW"],
   },
+  // Every template here renders `{{failureCause}}` — the derived, evidence-graded
+  // explanation — and NEVER `{{reason}}`. `reason` is the ENTRY thesis; rendering
+  // it after "why this failed" is what produced "Why $AAPL failed: Lower high
+  // continuation with bearish structure intact." for a PUT that lost 48.6%.
+  // The thesis still appears, but only under an explicit "Entry thesis was:" label,
+  // where it is a true statement about the entry rather than a claimed cause.
   WHY_THIS_FAILED: {
     templates: [
       [
         "Why {{symbol}} failed:",
         "",
-        "• {{reason}}",
-        "• Lost {{support}}",
+        "{{failureCause}}",
         "",
         "Closed {{returnPct}}. Lessons > hype.",
       ],
       [
-        "{{symbol}} didn't work and here's the honest read: {{reason}}.",
+        "{{symbol}} didn't work. Here's the honest read:",
+        "",
+        "{{failureCause}}",
       ],
       [
-        "Post-mortem — {{symbol}} ({{returnPct}}): the setup broke when {{reason}}.",
+        "Post-mortem — {{symbol}} ({{returnPct}}).",
+        "",
+        "{{failureCause}}",
+        "",
+        "Entry thesis was: {{entryThesis}}",
       ],
     ],
     screenshot: "Annotated chart showing where the {{symbol}} thesis broke.",

@@ -34,6 +34,13 @@ import { evaluateMarketSessionGuard } from "../market-session-guard.ts";
 import { evaluateInstrumentSession } from "../instrument-session-authority.ts";
 import { recapDeliveryEnabled } from "../notifications/recap-delivery-guard.ts";
 import { classifyDeliveryResult, describeReason, redactForPersistence } from "./delivery-reason.ts";
+import { deriveFailureCause } from "./failure-cause.ts";
+import {
+  classifyDeliveryLane,
+  isOutcomeReportCategory,
+  laneWindows,
+  OUTCOME_REPORT_CATEGORIES,
+} from "./outcome-delivery-lane.ts";
 
 interface RtDb {
   prepare(sql: string): {
@@ -48,6 +55,12 @@ export interface ContentDeliverResult {
   messageId: string | null;
   error: string | null;
   suppressed?: boolean;
+  /**
+   * True when the bundle was rerouted (lane, dedup) WITHOUT any Discord call,
+   * so it cost nothing against the channel budget. The recovery sweep uses this
+   * to tell "keep scanning" from "the channel refused us, stop".
+   */
+  reroutedWithoutPosting?: boolean;
 }
 export interface ContentDraftsDeps {
   send?: (content: string) => Promise<ContentDeliverResult>;
@@ -55,6 +68,12 @@ export interface ContentDraftsDeps {
   loadCaseVars?: (db: RtDb, opportunityCaseId: string) => Partial<ContentVars>;
   now?: () => number;
   maxPerScan?: number;
+  /**
+   * How many deferred events one sweep may EXAMINE. Rerouting an old event to
+   * the digest costs no Discord post, so examining many per run drains the
+   * reclassification backlog quickly while still sending at most one message.
+   */
+  maxDeferredExaminedPerScan?: number;
 }
 
 /**
@@ -258,7 +277,27 @@ function outsideRegularSession(nowMs: number, env: NodeJS.ProcessEnv): boolean {
   }
 }
 
-export function varsForEventRow(row: Record<string, unknown>, caseVars: Partial<ContentVars> = {}): ContentVars {
+export function varsForEventRow(
+  row: Record<string, unknown>,
+  caseVars: Partial<ContentVars> = {},
+  env: NodeJS.ProcessEnv = process.env,
+): ContentVars {
+  // `reason` is the ENTRY thesis. It is kept for the categories that legitimately
+  // describe why a setup was TAKEN, and mirrored to `entryThesis` so a failure
+  // template can quote it under an explicit label. It must never reach a
+  // "why this failed" slot — see lib/content/failure-cause.ts.
+  const entryThesis = firstOf(row.original_thesis_json) ?? firstOf(row.evidence_summary_json);
+  const failure = deriveFailureCause(
+    {
+      returnPercent: row.return_percent != null ? Number(row.return_percent) : null,
+      maxReturnPercent: row.max_return_percent != null ? Number(row.max_return_percent) : null,
+      frozenEntry: row.frozen_entry != null ? Number(row.frozen_entry) : null,
+      currentMark: row.current_mark != null ? Number(row.current_mark) : null,
+      optionType: row.option_type != null ? String(row.option_type) : null,
+      direction: row.direction != null ? String(row.direction) : null,
+    },
+    env,
+  );
   return {
     symbol: row.symbol != null ? String(row.symbol) : null,
     optionType: row.option_type != null ? String(row.option_type) : null,
@@ -268,7 +307,9 @@ export function varsForEventRow(row: Record<string, unknown>, caseVars: Partial<
     returnPct: row.return_percent != null ? Number(row.return_percent) : null,
     milestonePercent: row.milestone_percent != null ? Number(row.milestone_percent) : null,
     maxReturnPct: row.max_return_percent != null ? Number(row.max_return_percent) : null,
-    reason: firstOf(row.original_thesis_json) ?? firstOf(row.evidence_summary_json),
+    reason: entryThesis,
+    entryThesis,
+    failureCause: failure.statement,
     ...caseVars,
   };
 }
@@ -282,7 +323,7 @@ export function bundleForEventRow(
 ): ContentDraftBundle | null {
   const loadCaseVars = deps.loadCaseVars ?? defaultLoadCaseVars;
   const caseVars = row.opportunity_case_id ? loadCaseVars(db, String(row.opportunity_case_id)) : {};
-  const vars = varsForEventRow(row, caseVars);
+  const vars = varsForEventRow(row, caseVars, env);
   const cats = filterCategoriesForClaim(
     eligibleCategories(String(row.event_type), vars, eligibilityThresholds(env)),
     claimVerified,
@@ -499,11 +540,21 @@ export async function runContentDraftsScan(
   // Recap message. Additional events remain queued for the next bounded run.
   const cap = Math.min(deps.maxPerScan ?? 20, 1);
 
+  // LIVE FIRST, then oldest-first within each group.
+  //
+  // Plain `occurred_at_ms ASC` meant a closure that happened 30 seconds ago
+  // queued behind every older PENDING event. At one event per scan that is not
+  // a small delay — it is the live message losing its slot to backlog, which is
+  // precisely what made the Recaps channel useless on 2026-08-05.
+  const liveCutoffMs = now() - laneWindows(env).liveMs;
   let rows: Record<string, unknown>[] = [];
   try {
     rows = db.prepare(
-      "SELECT * FROM opportunity_content_events WHERE content_status='PENDING' ORDER BY occurred_at_ms ASC LIMIT ?",
-    ).all(cap) as Record<string, unknown>[];
+      `SELECT * FROM opportunity_content_events
+        WHERE content_status='PENDING'
+        ORDER BY CASE WHEN occurred_at_ms >= ? THEN 0 ELSE 1 END, occurred_at_ms ASC
+        LIMIT ?`,
+    ).all(liveCutoffMs, cap) as Record<string, unknown>[];
   } catch { return out; }
 
   // Events the PENDING pass already acted on this run. The recovery sweep below
@@ -523,7 +574,7 @@ export async function runContentDraftsScan(
     // Peek categories to know if claim is required
     const loadCaseVars = deps.loadCaseVars ?? defaultLoadCaseVars;
     const caseVars = caseId ? loadCaseVars(db, caseId) : {};
-    const vars = varsForEventRow(row, caseVars);
+    const vars = varsForEventRow(row, caseVars, env);
     const rawCats = eligibleCategories(String(row.event_type), vars, eligibilityThresholds(env));
     if (!rawCats.length) { out.skipped += 1; markEventProcessed(db, eventId, { contentSkipReason: "no_eligible_category" }); continue; }
 
@@ -612,7 +663,7 @@ export async function runContentDraftsScan(
       resultType: claim.resultType, sessionDate, nowMs,
       expiration: row.expiration == null ? null : String(row.expiration),
       eventOccurredAtMs: row.occurred_at_ms == null ? null : Number(row.occurred_at_ms),
-      env,
+      env, eventId, caseId,
     });
     if (res.ok) out.delivered += 1;
     else if (res.suppressed) out.skipped += 1;
@@ -629,18 +680,42 @@ export async function runContentDraftsScan(
   // same one-message-per-run cap, so recovery can never burst a backlog into the
   // channel. Nothing here regenerates or re-dates content: it delivers exactly the
   // persisted draft text, and makes no provider call.
+  //
+  // Two rules govern this sweep, both added after the 2026-08-05 flood:
+  //
+  // 1. LIVE OUTRANKS BACKLOG. If the PENDING pass above delivered something this
+  //    run, recovery yields. The channel budget is 2 posts / 10 min and the job
+  //    runs every 3 minutes, so a recovery message competing with live content
+  //    does not merely arrive alongside it — it can consume the budget the live
+  //    message needs.
+  // 2. HISTORICAL DRAFTS DO NOT SPEND A SLOT. Rerouting an old event to the
+  //    digest is a database write, not a Discord post, so the sweep keeps
+  //    scanning until it either delivers one message or exhausts its examine
+  //    budget. Otherwise 148 historical events would take 148 scans just to be
+  //    reclassified, which is the same drip in slower clothing.
   if (webhookOk) {
-    for (const eventId of deferredDraftEventIds(db, cap)) {
-      if (handledThisRun.has(eventId)) continue;
-      try {
-        const pending = unsentDrafts(db, eventId);
-        if (!pending.length) continue;
-        const meta = deferredEventMeta(db, eventId);
-        const res = await deliverDrafts(db, send, pending, { ...meta, nowMs: now(), env });
-        if (res.ok) out.deferredDelivered += 1;
-        else if (res.suppressed) out.skipped += 1;
-        else out.failed += 1;
-      } catch { out.failed += 1; }
+    const liveDeliveredThisRun = out.delivered > 0;
+    if (!liveDeliveredThisRun) {
+      const examineBudget = Math.max(cap, Math.min(deps.maxDeferredExaminedPerScan ?? 50, 200));
+      let sentOne = false;
+      for (const eventId of deferredDraftEventIds(db, examineBudget)) {
+        if (sentOne) break;
+        if (handledThisRun.has(eventId)) continue;
+        try {
+          const pending = unsentDrafts(db, eventId);
+          if (!pending.length) continue;
+          const meta = deferredEventMeta(db, eventId);
+          const res = await deliverDrafts(db, send, pending, { ...meta, nowMs: now(), env, eventId });
+          if (res.ok) { out.deferredDelivered += 1; sentOne = true; }
+          else if (res.suppressed) {
+            out.skipped += 1;
+            // A lane/dedup reroute costs no Discord post, so keep looking. A
+            // transport-level suppression (rate limit, in-flight) means the
+            // channel refused us and the sweep must stop.
+            if (!res.reroutedWithoutPosting) sentOne = true;
+          } else { out.failed += 1; sentOne = true; }
+        } catch { out.failed += 1; sentOne = true; }
+      }
     }
   }
   return out;
@@ -649,17 +724,18 @@ export async function runContentDraftsScan(
 /** Header facts for a deferred bundle, read from persisted rows only. */
 function deferredEventMeta(db: RtDb, eventId: string): {
   category: string; symbol: string; resultType: string; sessionDate: string;
-  expiration: string | null; eventOccurredAtMs: number | null;
+  expiration: string | null; eventOccurredAtMs: number | null; caseId: string | null;
 } {
   const fallback = {
     category: "CONTENT", symbol: "", resultType: "UNKNOWN", sessionDate: "",
-    expiration: null, eventOccurredAtMs: null,
+    expiration: null, eventOccurredAtMs: null, caseId: null,
   };
   try {
     const r = db.prepare(
       `SELECT d.category AS category, d.result_type AS result_type,
               d.trading_session_date AS session_date, e.symbol AS symbol,
-              e.expiration AS expiration, e.occurred_at_ms AS occurred_at_ms
+              e.expiration AS expiration, e.occurred_at_ms AS occurred_at_ms,
+              d.opportunity_case_id AS case_id
          FROM content_drafts d
          LEFT JOIN opportunity_content_events e ON e.id = d.content_event_id
         WHERE d.content_event_id=? ORDER BY d.created_at_ms ASC LIMIT 1`,
@@ -672,8 +748,70 @@ function deferredEventMeta(db: RtDb, eventId: string): {
       sessionDate: r.session_date == null ? fallback.sessionDate : String(r.session_date),
       expiration: r.expiration == null ? null : String(r.expiration),
       eventOccurredAtMs: r.occurred_at_ms == null ? null : Number(r.occurred_at_ms),
+      caseId: r.case_id == null ? null : String(r.case_id),
     };
   } catch { return fallback; }
+}
+
+/** Write one terminal, non-retryable outcome across a set of drafts. Never throws. */
+function markDrafts(
+  db: RtDb,
+  draftIds: string[],
+  code: Parameters<typeof describeReason>[0],
+  detail: string,
+  nowMs: number,
+): void {
+  const reason = describeReason(code);
+  for (const id of draftIds) {
+    try {
+      db.prepare(
+        `UPDATE content_drafts
+           SET discord_delivery_status=?, updated_at_ms=?,
+               discord_delivery_reason=?, discord_delivery_explanation=?,
+               discord_delivery_retryable=?, discord_delivery_detail=?,
+               discord_last_attempt_at_ms=?
+         WHERE id=?`,
+      ).run(
+        reason.status, nowMs, reason.code, reason.explanation,
+        reason.retryable ? 1 : 0, detail, nowMs, id,
+      );
+    } catch {
+      // A pre-migration database lacks the reason columns. Preserve the status
+      // so the draft still leaves the retry pool rather than looping forever.
+      try {
+        db.prepare(`UPDATE content_drafts SET discord_delivery_status=?, updated_at_ms=? WHERE id=?`)
+          .run(reason.status, nowMs, id);
+      } catch { /* isolated */ }
+    }
+  }
+}
+
+/**
+ * Has this canonical outcome already been reported to Discord?
+ *
+ * Keyed on the opportunity case, NOT the content event, because one closure
+ * emits up to three events — `EXIT_HIT` and `OPPORTUNITY_CLOSED` both produce
+ * CLOSED_*, and `OPPORTUNITY_REPORT_CARD_READY` adds WHY_THIS_*. Matching on the
+ * event id is what let one closure send three messages.
+ *
+ * Returns false (report it) whenever the question cannot be answered, so a read
+ * failure delays nothing; the dedup guard is an optimisation for the owner's
+ * attention, never a gate on truthful content.
+ */
+function outcomeAlreadyReported(db: RtDb, caseId: string | null, excludeEventId: string): boolean {
+  if (!caseId) return false;
+  try {
+    const cats = [...OUTCOME_REPORT_CATEGORIES].map((c) => `'${c}'`).join(",");
+    const row = db.prepare(
+      `SELECT 1 AS hit FROM content_drafts
+        WHERE opportunity_case_id=? AND content_event_id<>?
+          AND category IN (${cats}) AND discord_delivery_status='SENT'
+        LIMIT 1`,
+    ).get(caseId, excludeEventId) as { hit?: number } | undefined;
+    return Boolean(row?.hit);
+  } catch {
+    return false;
+  }
 }
 
 /** Render and send one bundle, then record the outcome on each draft. Never throws. */
@@ -684,32 +822,56 @@ async function deliverDrafts(
   meta: {
     category: string; symbol: string; resultType: string; sessionDate: string; nowMs: number;
     expiration: string | null; eventOccurredAtMs: number | null; env: NodeJS.ProcessEnv;
+    eventId?: string; caseId?: string | null;
   },
 ): Promise<ContentDeliverResult> {
+  const ids = pending.map((d) => d.id);
   const policy = classifyContentDeliveryPolicy(meta);
   if (policy.policy === "ARCHIVE_STALE_RESEARCH") {
-    const reason = describeReason("SUPPRESSED_STALE_RESEARCH");
-    for (const draft of pending) {
-      try {
-        db.prepare(
-          `UPDATE content_drafts
-             SET discord_delivery_status='SUPPRESSED', updated_at_ms=?,
-                 discord_delivery_reason=?, discord_delivery_explanation=?,
-                 discord_delivery_retryable=0, discord_delivery_detail=?,
-                 discord_last_attempt_at_ms=?
-           WHERE id=?`,
-        ).run(meta.nowMs, reason.code, reason.explanation, policy.reason, meta.nowMs, draft.id);
-      } catch { /* The persisted draft remains available even on a legacy schema. */ }
-    }
-    return { ok: false, messageId: null, error: policy.reason, suppressed: true };
+    markDrafts(db, ids, "SUPPRESSED_STALE_RESEARCH", policy.reason, meta.nowMs);
+    return { ok: false, messageId: null, error: policy.reason, suppressed: true, reroutedWithoutPosting: true };
   }
+
+  // ── lane: may this be an individual Discord message at all? ─────────────
+  // Old content is not rejected, it is rerouted. The digest builder selects on
+  // these reason codes, so nothing becomes unreachable.
+  const lane = classifyDeliveryLane({
+    eventOccurredAtMs: meta.eventOccurredAtMs, nowMs: meta.nowMs, env: meta.env,
+  });
+  if (!lane.individualDeliveryAllowed) {
+    markDrafts(
+      db, ids,
+      lane.lane === "ARCHIVE_ONLY" ? "ARCHIVED_IN_APP_ONLY" : "HELD_FOR_HISTORICAL_DIGEST",
+      lane.reason, meta.nowMs,
+    );
+    return { ok: false, messageId: null, error: lane.reason, suppressed: true, reroutedWithoutPosting: true };
+  }
+
+  // ── one canonical outcome, one owner interrupt ──────────────────────────
+  if (isOutcomeReportCategory(meta.category)
+      && outcomeAlreadyReported(db, meta.caseId ?? null, meta.eventId ?? "")) {
+    const detail = "another content event already delivered a report card for this closed outcome";
+    markDrafts(db, ids, "SUPPRESSED_DUPLICATE_OUTCOME", detail, meta.nowMs);
+    return { ok: false, messageId: null, error: detail, suppressed: true, reroutedWithoutPosting: true };
+  }
+
+  // ── one recommended variant to Discord; alternates stay in the app ──────
+  // `unsentDrafts` orders by created_at_ms ASC, so the first row is template
+  // family _0 — the recommended phrasing. Sending all three made one closure
+  // occupy three code blocks of the owner's channel for no added information.
+  const [recommended, ...alternates] = pending;
+  if (!recommended) return { ok: false, messageId: null, error: "no pending drafts", suppressed: true, reroutedWithoutPosting: true };
+
   const header = `📝 **CONTENT DRAFTS — OWNER ONLY — ${meta.category}** · ${meta.symbol}\n_Deterministic template drafts for MANUAL review. Never auto-posted. Not financial advice._\n_Result type: ${meta.resultType}_ · _Session: ${meta.sessionDate}_`;
-  const draftBlocks = pending.map((draft) => [
-    `**Draft** (${draft.char_count} chars) · CTA: ${draft.cta_type}`,
+  const draftBlocks = [[
+    `**Recommended draft** (${recommended.char_count} chars) · CTA: ${recommended.cta_type}`,
     "```",
-    draft.draft_text,
+    recommended.draft_text,
     "```",
-  ].join("\n"));
+    alternates.length
+      ? `_${alternates.length} alternate phrasing${alternates.length === 1 ? "" : "s"} available in the app._`
+      : null,
+  ].filter(Boolean).join("\n")];
   const deliveryLabel = policy.policy === "DELIVER_HISTORICAL_REPORT_CARD"
     ? "**HISTORICAL REPORT CARD - NON-ACTIONABLE**\n_Option results below are frozen historical evidence, not a current entry or current quote._"
     : policy.policy === "DELIVER_NEXT_SESSION_WATCH"
@@ -727,7 +889,18 @@ async function deliverDrafts(
   // transient, and writing SUPPRESSED for those dropped the draft out of
   // RETRYABLE_DELIVERY_STATES permanently. See lib/content/delivery-reason.ts.
   const reason = classifyDeliveryResult(res);
-  for (const draft of pending) {
+  // Only the delivered draft carries the delivery outcome. On a TRANSIENT
+  // refusal every draft must stay retryable together, or the next sweep would
+  // send the recommended one while its alternates were already parked; so the
+  // alternates are retired only once the recommended one is genuinely SENT.
+  if (reason.code === "SENT") {
+    markDrafts(
+      db, alternates.map((d) => d.id), "VARIANT_HELD_IN_APP",
+      `alternate phrasing of delivered draft ${recommended.id}`, meta.nowMs,
+    );
+  }
+  const recordFor = reason.code === "SENT" ? [recommended] : pending;
+  for (const draft of recordFor) {
     try {
       db.prepare(
         `UPDATE content_drafts

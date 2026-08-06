@@ -48,6 +48,10 @@ export type DeliveryReasonCode =
   | "SUPPRESSED_RETRY_EXHAUSTED"
   | "SUPPRESSED_PERSISTENCE_FAILED"
   | "SUPPRESSED_STALE_RESEARCH"
+  | "SUPPRESSED_DUPLICATE_OUTCOME"
+  | "HELD_FOR_HISTORICAL_DIGEST"
+  | "ARCHIVED_IN_APP_ONLY"
+  | "VARIANT_HELD_IN_APP"
   | "DISABLED_BY_KILL_SWITCH"
   | "SKIPPED_NO_WEBHOOK"
   | "FAILED_DISCORD_REJECTED"
@@ -100,6 +104,15 @@ const BY_CODE: Record<DeliveryReasonCode, Omit<DeliveryReason, "code" | "explana
   SUPPRESSED_RETRY_BACKOFF: { retryable: true, status: "PENDING" },
   SUPPRESSED_PERSISTENCE_FAILED: { retryable: true, status: "PENDING" },
   SUPPRESSED_STALE_RESEARCH: { retryable: false, status: "SUPPRESSED" },
+  // One closure, one owner interrupt. Terminal: the outcome HAS been reported,
+  // and re-queueing would restore the very duplication this prevents.
+  SUPPRESSED_DUPLICATE_OUTCOME: { retryable: false, status: "SUPPRESSED" },
+  // Not rejected — rerouted. Terminal for INDIVIDUAL delivery only; the digest
+  // builder selects on this reason code, so the content is still owner-visible.
+  HELD_FOR_HISTORICAL_DIGEST: { retryable: false, status: "SUPPRESSED" },
+  ARCHIVED_IN_APP_ONLY: { retryable: false, status: "SUPPRESSED" },
+  // The recommended variant went to Discord; its alternates stay in the app.
+  VARIANT_HELD_IN_APP: { retryable: false, status: "SUPPRESSED" },
   // The owner can turn the kill switch back on; the draft must survive that.
   DISABLED_BY_KILL_SWITCH: { retryable: true, status: "SKIPPED_NO_WEBHOOK" as DeliveryStatus },
   SKIPPED_NO_WEBHOOK: { retryable: true, status: "SKIPPED_NO_WEBHOOK" as DeliveryStatus },
@@ -121,6 +134,10 @@ const EXPLANATION: Record<DeliveryReasonCode, string> = {
   SUPPRESSED_RETRY_BACKOFF: "Waiting out a delivery backoff. Queued for a later sweep.",
   SUPPRESSED_PERSISTENCE_FAILED: "The delivery claim could not be recorded, so no send was attempted. Queued for a later sweep.",
   SUPPRESSED_STALE_RESEARCH: "The draft remains archived in the app, but its live-looking research window has passed. Not sent to Discord.",
+  SUPPRESSED_DUPLICATE_OUTCOME: "This closed outcome already has a report card in Discord. The draft stays in the app.",
+  HELD_FOR_HISTORICAL_DIGEST: "Too old for an individual message. Included in the historical learning digest and kept in the app.",
+  ARCHIVED_IN_APP_ONLY: "Older than the digest window. Kept in the app archive and searchable, never sent to Discord.",
+  VARIANT_HELD_IN_APP: "An alternate phrasing of a draft already delivered. Available in the app, not sent separately.",
   DISABLED_BY_KILL_SWITCH: "DISCORD_RECAP_ENABLED is off. Held until the owner turns it back on.",
   SKIPPED_NO_WEBHOOK: "No recap webhook is configured. Held until one exists.",
   FAILED_DISCORD_REJECTED: "Discord rejected the message. Not retried without repair.",

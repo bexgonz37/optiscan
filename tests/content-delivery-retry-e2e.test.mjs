@@ -88,12 +88,20 @@ test("REGRESSION E2E: a rate-limited bundle survives and delivers on a later swe
   assert.equal(s2.deferredDelivered, 1, "the rate-limited bundle is recovered");
   assert.equal(sent.length, 1);
 
-  for (const row of db.prepare(
+  // CONTRACT CHANGE (2026-08-05 flood fix): one bundle delivers ONE message
+  // carrying the recommended phrasing. The alternates are retired to
+  // VARIANT_HELD_IN_APP once — and only once — the recommended draft is really
+  // SENT, so a rate limit still returns the whole bundle to the queue intact.
+  const rows = db.prepare(
     "SELECT discord_delivery_status s, discord_delivery_reason r, discord_attempt_count a FROM content_drafts",
-  ).all()) {
-    assert.equal(row.s, "SENT");
-    assert.equal(row.r, "SENT");
-    assert.equal(row.a, 2, "both attempts counted");
+  ).all();
+  const delivered = rows.filter((r) => r.s === "SENT");
+  assert.equal(delivered.length, 1, "exactly one draft is delivered");
+  assert.equal(delivered[0].r, "SENT");
+  assert.equal(delivered[0].a, 2, "both attempts counted on the delivered draft");
+  for (const row of rows.filter((r) => r.s !== "SENT")) {
+    assert.equal(row.r, "VARIANT_HELD_IN_APP", "alternates are held in the app");
+    assert.equal(row.s, "SUPPRESSED", "and are not left in a retryable state");
   }
 });
 

@@ -274,10 +274,27 @@ test("REGRESSION: drafts skipped for want of a webhook are RECOVERED once one ex
   assert.equal(warm.deferredDelivered, 1, "the deferred bundle is delivered");
   assert.equal(sent.length, 1);
 
+  // CONTRACT CHANGE (2026-08-05 flood fix). One bundle now yields ONE Discord
+  // message carrying the recommended phrasing; the alternates are retired to
+  // VARIANT_HELD_IN_APP rather than each becoming a visible item. The invariant
+  // this test exists to protect is unchanged and still asserted: nothing stays
+  // stranded in a retryable state after recovery.
   const after = db.prepare(
-    "SELECT discord_delivery_status s, COUNT(*) n FROM content_drafts WHERE content_event_id='ce_strand' GROUP BY s",
+    `SELECT discord_delivery_status s, discord_delivery_reason r, COUNT(*) n
+       FROM content_drafts WHERE content_event_id='ce_strand' GROUP BY s, r ORDER BY s`,
   ).all();
-  assert.deepEqual(after.map((r) => r.s), ["SENT"], "every stranded draft is now SENT");
+  const sentRows = after.filter((r) => r.s === "SENT");
+  assert.equal(sentRows.length, 1, "exactly one delivery status group is SENT");
+  assert.equal(sentRows[0].n, 1, "and exactly one draft carries it");
+  for (const row of after.filter((r) => r.s !== "SENT")) {
+    assert.equal(row.r, "VARIANT_HELD_IN_APP", "alternates are held in the app, not stranded");
+  }
+  const stillRetryable = db.prepare(
+    `SELECT COUNT(*) n FROM content_drafts
+      WHERE content_event_id='ce_strand'
+        AND discord_delivery_status IN ('PENDING','FAILED','SKIPPED_NO_WEBHOOK')`,
+  ).get().n;
+  assert.equal(stillRetryable, 0, "nothing remains stranded after recovery");
 });
 
 test("recovery delivers the PERSISTED text — it never regenerates or re-dates content", async () => {
@@ -306,9 +323,17 @@ test("recovery delivers the PERSISTED text — it never regenerates or re-dates 
     before.map((r) => [r.id, r.draft_text, r.created_at_ms, r.original_alert_at_ms]),
     "recovery must not rewrite text, creation time, or the original alert timestamp",
   );
-  for (const row of before) {
-    assert.ok(sent[0].includes(row.draft_text), "the delivered body carries the persisted draft verbatim");
-  }
+  // The delivered message now carries the RECOMMENDED draft (the oldest row,
+  // template family _0) verbatim. The point of this test — recovery replays
+  // persisted text and never regenerates or re-dates it — is asserted above on
+  // every row, and here on the text that actually went out.
+  const recommended = db.prepare(
+    "SELECT draft_text FROM content_drafts WHERE content_event_id='ce_verbatim' ORDER BY created_at_ms ASC LIMIT 1",
+  ).get();
+  assert.ok(
+    sent[0].includes(recommended.draft_text),
+    "the delivered body carries the persisted recommended draft verbatim",
+  );
 });
 
 test("recovery stays bounded — a backlog cannot burst into the channel", async () => {
@@ -369,10 +394,19 @@ test("a failed recovery send stays retryable rather than being lost again", asyn
   const recovered = await runContentDraftsScan(db, deps, ENV);
   assert.equal(recovered.deferredDelivered, 1, "a retryable FAILED draft is recovered by the sweep");
   assert.equal(sent.length, 1);
+  // Note the FAILED pass above wrote FAILED to EVERY draft, not just the
+  // recommended one: on a transient refusal the whole bundle must stay
+  // retryable together, or the next sweep would deliver the recommended draft
+  // while its alternates had already been retired. Only a genuine SEND retires
+  // them.
   const after = db.prepare(
-    "SELECT DISTINCT discord_delivery_status s FROM content_drafts WHERE content_event_id='ce_fail'",
-  ).all().map((r) => r.s);
-  assert.deepEqual(after, ["SENT"], "and ends up delivered");
+    `SELECT discord_delivery_status s, discord_delivery_reason r
+       FROM content_drafts WHERE content_event_id='ce_fail' ORDER BY s`,
+  ).all();
+  assert.equal(after.filter((r) => r.s === "SENT").length, 1, "one draft is delivered");
+  for (const row of after.filter((r) => r.s !== "SENT")) {
+    assert.equal(row.r, "VARIANT_HELD_IN_APP", "the rest are alternates held in the app");
+  }
 });
 
 test("a NON-retryable failure is not swept up again", async () => {
