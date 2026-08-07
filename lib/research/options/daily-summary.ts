@@ -19,6 +19,17 @@ export interface DailySummary {
   callsEvaluated: number; putsEvaluated: number;
   calloutsSent: number; calloutsFailed: number; tooLate: number; rejected: number; rejectionReasons: Record<string, number>;
   paperOpened: number; paperClosed: number; wins: number; losses: number; openPositions: number;
+  /**
+   * OWNER PRIVATE VALIDATION — a separate audience from subscriber callouts and never blended
+   * into them. Owner openings are delivered via owner_research_notify and land in
+   * discord_deliveries + OWNER_VALIDATION_PAPER; they never write an options_alerts row, so
+   * every subscriber-population count above is structurally blind to them. On 2026-08-07 that
+   * blindness printed "Callouts: sent 0" on a day with three delivered owner openings.
+   */
+  owner: {
+    sent: number; failed: number; calls: number; puts: number;
+    mirrored: number; open: number; closed: number; wins: number; losses: number;
+  };
   earliness: { early: number; during: number; late: number };
   providerFailures: number; monitorHealthy: boolean; note: string;
 }
@@ -60,6 +71,23 @@ export function buildDailySummaryOnDb(db: SumDb, nowMs: number, env: NodeJS.Proc
   const tooLate = alertTable ? n("SELECT COUNT(*) n FROM options_alerts WHERE created_at_ms>=? AND created_at_ms<? AND state='TOO_LATE'", start, end) : 0;
   const rejected = alertTable ? n("SELECT COUNT(*) n FROM options_alerts WHERE created_at_ms>=? AND created_at_ms<? AND state='REJECTED'", start, end) : 0;
 
+  // OWNER PRIVATE VALIDATION — counted from its own tables, never from options_alerts.
+  const deliveryTable = has(db, "discord_deliveries");
+  const ownerWhere = "payload_type='owner_intraday_actionable' AND lifecycle_state='OPENING' AND created_at>=? AND created_at<?";
+  const startIso = new Date(start).toISOString();
+  const endIso = new Date(end).toISOString();
+  const ownerSent = deliveryTable ? n(`SELECT COUNT(*) n FROM discord_deliveries WHERE ${ownerWhere} AND status='SENT'`, startIso, endIso) : 0;
+  const ownerFailed = deliveryTable ? n(`SELECT COUNT(*) n FROM discord_deliveries WHERE ${ownerWhere} AND status='FAILED'`, startIso, endIso) : 0;
+  const ownerCalls = deliveryTable ? n(`SELECT COUNT(*) n FROM discord_deliveries WHERE ${ownerWhere} AND status='SENT' AND option_side='call'`, startIso, endIso) : 0;
+  const ownerPuts = deliveryTable ? n(`SELECT COUNT(*) n FROM discord_deliveries WHERE ${ownerWhere} AND status='SENT' AND option_side='put'`, startIso, endIso) : 0;
+
+  const O = "paper_kind='OWNER_VALIDATION_PAPER'";
+  const ownerMirrored = paperTable ? n(`SELECT COUNT(*) n FROM options_paper_trades WHERE ${O} AND entered_at_ms>=? AND entered_at_ms<?`, start, end) : 0;
+  const ownerOpen = paperTable ? n(`SELECT COUNT(*) n FROM options_paper_trades WHERE ${O} AND status='ENTERED'`) : 0;
+  const ownerClosed = paperTable ? n(`SELECT COUNT(*) n FROM options_paper_trades WHERE ${O} AND exit_at_ms>=? AND exit_at_ms<? AND status='EXITED'`, start, end) : 0;
+  const ownerWins = paperTable ? n(`SELECT COUNT(*) n FROM options_paper_trades WHERE ${O} AND exit_at_ms>=? AND exit_at_ms<? AND status='EXITED' AND return_pct>0`, start, end) : 0;
+  const ownerLosses = paperTable ? n(`SELECT COUNT(*) n FROM options_paper_trades WHERE ${O} AND exit_at_ms>=? AND exit_at_ms<? AND status='EXITED' AND return_pct<=0`, start, end) : 0;
+
   // SUBSCRIBER-facing paper stats use ONLY DELIVERED_ALERT_PAPER — research trades never blend in.
   const D = "paper_kind='DELIVERED_ALERT_PAPER'";
   const paperOpened = paperTable ? n(`SELECT COUNT(*) n FROM options_paper_trades WHERE ${D} AND entered_at_ms>=? AND entered_at_ms<?`, start, end) : 0;
@@ -75,13 +103,19 @@ export function buildDailySummaryOnDb(db: SumDb, nowMs: number, env: NodeJS.Proc
   const monitorHealthy = Boolean(hb?.updatedAtMs != null && nowMs - hb.updatedAtMs < 24 * 3_600_000 && (hb.value?.running));
   const providerFailures = Number(hb?.value?.providerFailures ?? 0);
 
-  const anyActivity = candidatesFound + symbolsScanned + paperOpened + paperClosed + calloutsSent > 0;
+  // Owner activity is real activity: a day with owner openings is never "did nothing".
+  const anyActivity = candidatesFound + symbolsScanned + paperOpened + paperClosed + calloutsSent + ownerSent > 0;
   if (!enabled && !anyActivity) return null; // system was disabled and did nothing → no summary
 
   return {
     day, symbolsScanned, candidatesFound, callsEvaluated, putsEvaluated,
     calloutsSent, calloutsFailed, tooLate, rejected, rejectionReasons,
     paperOpened, paperClosed, wins, losses, openPositions, earliness,
+    owner: {
+      sent: ownerSent, failed: ownerFailed, calls: ownerCalls, puts: ownerPuts,
+      mirrored: ownerMirrored, open: ownerOpen, closed: ownerClosed,
+      wins: ownerWins, losses: ownerLosses,
+    },
     providerFailures, monitorHealthy,
     note: enabled ? "Options scanner ran (paper/research only)." : "Scanner flag was off but prior activity existed.",
   };
@@ -93,8 +127,11 @@ export function formatDailySummaryMessage(s: DailySummary): string {
   return [
     `📊 **DAILY RECAP — OptiScan Options ${s.day}**`,
     `Scanned ${s.symbolsScanned} sym's · candidates ${s.candidatesFound} · calls ${s.callsEvaluated}/puts ${s.putsEvaluated} evaluated`,
-    `Callouts: sent ${s.calloutsSent}, failed ${s.calloutsFailed}, too-late ${s.tooLate}, rejected ${s.rejected}`,
-    `Paper: opened ${s.paperOpened}, closed ${s.paperClosed} (W ${s.wins} / L ${s.losses}), open now ${s.openPositions}`,
+    `SUBSCRIBER callouts: sent ${s.calloutsSent}, failed ${s.calloutsFailed}, too-late ${s.tooLate}, rejected ${s.rejected}`,
+    `SUBSCRIBER paper (delivered mirrors): opened ${s.paperOpened}, closed ${s.paperClosed} (W ${s.wins} / L ${s.losses}), open now ${s.openPositions}`,
+    `OWNER validation: sent ${s.owner.sent} (${s.owner.calls} CALL / ${s.owner.puts} PUT), failed ${s.owner.failed}`,
+    `OWNER paper (exact mirrors): ${s.owner.mirrored} of ${s.owner.sent} mirrored, closed ${s.owner.closed} (W ${s.owner.wins} / L ${s.owner.losses}), open now ${s.owner.open}`
+      + (s.owner.sent > s.owner.mirrored ? ` ⚠️ ${s.owner.sent - s.owner.mirrored} owner opening(s) left NO paper evidence` : ""),
     `Earliness: early ${s.earliness.early} · during ${s.earliness.during} · late ${s.earliness.late}`,
     `Provider failures ${s.providerFailures} · monitor ${s.monitorHealthy ? "healthy ✅" : "degraded ⚠️"}`,
     `Top rejections: ${rej}`,
