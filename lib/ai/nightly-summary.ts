@@ -212,6 +212,20 @@ export interface NightlySummary {
   signalCorrectExitFailed: number;
   /** Both the signal and the trade failed (opportunity NONE and realized LOSS). */
   bothFailed: number;
+  /**
+   * Losses whose peak favorable excursion never got above the entry — the only
+   * population for which "the setup never worked" is a true statement.
+   *
+   * `bothFailed` is NOT that population: opportunityGrade is NONE whenever the trade
+   * missed the +25% opportunity threshold, so it also contains trades that ran to
+   * +5%/+12%/+20% before losing. Reporting those as "never worked" mis-diagnoses an
+   * exit problem as a signal problem.
+   */
+  neverProfitable: number;
+  /** Losses that DID trade above entry at some point but still closed red. */
+  profitableThenLost: number;
+  /** Losses with no usable excursion evidence — never claimed either way. */
+  lossesWithoutExcursionEvidence: number;
   /** Deterministic patterns + the single prioritized issue for review. */
   patterns: string[];
   prioritizedIssue: string | null;
@@ -236,6 +250,9 @@ export function buildNightlySummary(input: NightlySummaryInput): NightlySummary 
   const opportunityGrade: Record<string, number> = {};
   let signalCorrectExitFailed = 0;
   let bothFailed = 0;
+  let neverProfitable = 0;
+  let profitableThenLost = 0;
+  let lossesWithoutExcursionEvidence = 0;
 
   for (const o of input.outcomes) {
     addOutcome(overall, o);
@@ -257,6 +274,13 @@ export function buildNightlySummary(input: NightlySummaryInput): NightlySummary 
 
     if (og === "HIT" && (g === "LOSS" || g === "BREAKEVEN")) signalCorrectExitFailed += 1;
     if (og === "NONE" && g === "LOSS") bothFailed += 1;
+    if (g === "LOSS") {
+      // Prefer the recorded peak; fall back to MFE. Both absent ⇒ we cannot say.
+      const peak = isNum(o.peakFavorablePct) ? o.peakFavorablePct : null;
+      if (peak == null) lossesWithoutExcursionEvidence += 1;
+      else if (peak > 0) profitableThenLost += 1;
+      else neverProfitable += 1;
+    }
   }
 
   // Candidate rejections / wait-watch states.
@@ -297,6 +321,13 @@ export function buildNightlySummary(input: NightlySummaryInput): NightlySummary 
   if (topReason && topReason[1] >= 2) patterns.push(`Most common rejection: "${topReason[0]}" (${topReason[1]}×).`);
   if (signalCorrectExitFailed >= 2) patterns.push(`${signalCorrectExitFailed} trades where the signal was right (opportunity HIT) but exit management gave it back.`);
   if (bothFailed >= 2) patterns.push(`${bothFailed} trades where both the signal and the trade failed.`);
+  // Split the losses by whether they ever traded above entry. "Never worked" and
+  // "worked then gave it back" are different defects and must not share one line.
+  if (neverProfitable > 0 || profitableThenLost > 0) {
+    const parts = [`${neverProfitable} never traded above entry`, `${profitableThenLost} were profitable before closing red`];
+    if (lossesWithoutExcursionEvidence > 0) parts.push(`${lossesWithoutExcursionEvidence} had no excursion evidence`);
+    patterns.push(`Loss breakdown: ${parts.join(", ")}.`);
+  }
   if (isNum(live?.crossingRescues) && (live!.crossingRescues as number) > 0) patterns.push(`${live!.crossingRescues} breakout-crossing rescues fired.`);
   if (contractDataRejections >= 1) patterns.push(`${contractDataRejections} callouts blocked by incomplete contract data.`);
   if (liquidityRejections >= 1) patterns.push(`${liquidityRejections} callouts blocked by liquidity/spread.`);
@@ -366,6 +397,9 @@ export function buildNightlySummary(input: NightlySummaryInput): NightlySummary 
     opportunityGrade,
     signalCorrectExitFailed,
     bothFailed,
+    neverProfitable,
+    profitableThenLost,
+    lossesWithoutExcursionEvidence,
     patterns,
     prioritizedIssue,
     dataGaps,

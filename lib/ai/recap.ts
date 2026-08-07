@@ -19,6 +19,22 @@ export interface RecapContext {
   reportUrl?: string | null;
 }
 
+/**
+ * One evidence-grounded line splitting the day's losses into "never traded above
+ * entry" vs "was profitable then closed red". Returns null when the summary predates
+ * these counters or there were no losses — never guesses.
+ */
+function lossBreakdownLine(summary: NightlySummary): string | null {
+  const never = summary.neverProfitable;
+  const gaveBack = summary.profitableThenLost;
+  const unknown = summary.lossesWithoutExcursionEvidence ?? 0;
+  if (typeof never !== "number" || typeof gaveBack !== "number") return null;
+  if (never + gaveBack + unknown === 0) return null;
+  const parts = [`${never} never traded above entry`, `${gaveBack} were profitable then closed red`];
+  if (unknown > 0) parts.push(`${unknown} without excursion evidence`);
+  return `Losses: ${parts.join(" · ")}`;
+}
+
 /** Build the recap message from deterministic stored values only. PURE. */
 export function buildNightlyRecapMessage(summary: NightlySummary, ctx: RecapContext = {}): string {
   const o = summary.overall;
@@ -29,12 +45,21 @@ export function buildNightlyRecapMessage(summary: NightlySummary, ctx: RecapCont
   const optionsBlocked = summary.counts.rejected;
   const nearMisses = summary.momentum?.nearMisses ?? summary.counts.nearMisses;
 
+  // The counts below come from the internal paper portfolio, NOT from the alerts that
+  // were delivered to Discord — those are separate lanes with separate contracts. The
+  // label is explicit because an unlabelled "Trades: 5 | Wins: 0 | Losses: 5" reads as
+  // a verdict on the day's Discord alerts, which it is not.
   const lines = [
     "**OptiScan Nightly Review**",
-    `Trades: ${total} | Wins: ${wins} | Losses: ${losses} | Open/Ungradable: ${openUngradable}`,
+    `_Lane: internal paper portfolio (PRIMARY). Not the delivered Discord alert lane._`,
+    `Paper trades: ${total} | Wins: ${wins} | Losses: ${losses} | Open/Ungradable: ${openUngradable}`,
+  ];
+  const lossBreakdown = lossBreakdownLine(summary);
+  if (lossBreakdown) lines.push(lossBreakdown);
+  lines.push(
     `Options candidates blocked: ${optionsBlocked}`,
     `Momentum near misses: ${nearMisses ?? "n/a"}`,
-  ];
+  );
   // The single most important thing to surface if it happened: a mis-configured,
   // silent options delivery path (actionable callouts that physically could not send).
   if (summary.options && summary.options.configBlockedCycles > 0) {

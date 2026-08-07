@@ -49,15 +49,43 @@ export function deriveCandidateLessons(summary: NightlySummary, opts: LessonDeri
     });
   }
 
-  // 2. Both signal and trade failed.
-  if (summary.bothFailed >= minSample) {
-    const n = summary.bothFailed;
+  // 2. Signal quality — ONLY for losses that never traded above entry. A trade that
+  // ran to +12% before closing red is an exit defect, not a signal defect, so it gets
+  // its own lesson below instead of being folded into "never worked".
+  if ((summary.neverProfitable ?? 0) >= minSample) {
+    const n = summary.neverProfitable ?? 0;
     out.push({
       dedupKey: "signal_quality|all|all|all",
       findingType: "signal_quality",
-      title: "Setups that never worked and lost",
-      summary: `${n} trades never reached a profit opportunity and closed at a loss. Signal quality (not exit) is the leak here.`,
-      evidence: { bothFailed: n, opportunityGrade: summary.opportunityGrade, realizedGrade: summary.realizedGrade },
+      title: "Setups that never traded above entry and lost",
+      summary: `${n} trades never traded above their entry price and closed at a loss. Signal quality (not exit) is the leak here.`,
+      evidence: {
+        neverProfitable: n,
+        profitableThenLost: summary.profitableThenLost ?? 0,
+        lossesWithoutExcursionEvidence: summary.lossesWithoutExcursionEvidence ?? 0,
+        opportunityGrade: summary.opportunityGrade,
+        realizedGrade: summary.realizedGrade,
+      },
+      sampleSize: n,
+      dateRangeStart: day,
+      dateRangeEnd: day,
+      confidence: confidenceFor(n),
+    });
+  }
+
+  // 2b. Losses that WERE profitable at some point — an exit/profit-protection leak.
+  if ((summary.profitableThenLost ?? 0) >= minSample) {
+    const n = summary.profitableThenLost ?? 0;
+    out.push({
+      dedupKey: "profit_giveback|all|all|all",
+      findingType: "exit_management",
+      title: "Trades that traded above entry and still closed red",
+      summary: `${n} losing trades traded above their entry price before closing red. The setups worked; the exits did not protect them.`,
+      evidence: {
+        profitableThenLost: n,
+        neverProfitable: summary.neverProfitable ?? 0,
+        realizedGrade: summary.realizedGrade,
+      },
       sampleSize: n,
       dateRangeStart: day,
       dateRangeEnd: day,

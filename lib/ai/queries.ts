@@ -33,12 +33,47 @@ function canScopePortfolio(db: any): boolean {
   }
 }
 
+/** Does paper_trade_outcomes carry an option_symbol? Minimal test stubs may not. */
+function hasOutcomeColumn(db: any, column: string): boolean {
+  try {
+    const cols = new Set((db.prepare("PRAGMA table_info(paper_trade_outcomes)").all() as any[]).map((c) => c.name));
+    return cols.has(column);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Drop rows that describe the SAME position twice.
+ *
+ * The paper opener can race and write two rows for one fill (production rows 421/422
+ * on 2026-08-06 were created 6ms apart with identical contract, entry and exit), which
+ * inflated the nightly trade count and double-weighted that trade in every bucket.
+ * Two positions cannot share one contract at one entry millisecond, so that pair is
+ * the dedup key. Rows without an option_symbol are left untouched.
+ */
+function dedupeOutcomeRows(rows: any[]): any[] {
+  const seen = new Set<string>();
+  const out: any[] = [];
+  for (const r of rows) {
+    const occ = r.option_symbol == null ? null : String(r.option_symbol);
+    const entry = r.entry_time_ms == null ? null : String(r.entry_time_ms);
+    if (occ == null || occ === "" || entry == null) { out.push(r); continue; }
+    const key = `${occ}|${entry}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+  return out;
+}
+
 /** Build the SELECT + args for outcomes since `sinceMs`, optionally portfolio-scoped. */
 function outcomesQuery(db: any, sinceMs: number, portfolio: string): { sql: string; args: any[] } {
+  const occCol = hasOutcomeColumn(db, "option_symbol") ? ", o.option_symbol AS option_symbol" : "";
   const cols = `o.strategy AS strategy, o.direction AS direction, o.dte_at_entry AS dte_at_entry,
             o.entry_session AS entry_session, o.entry_time_ms AS entry_time_ms, o.terminal_kind AS terminal_kind,
             o.grade AS grade, o.grading_status AS grading_status, o.return_pct AS return_pct,
-            o.opportunity_grade AS opportunity_grade, o.peak_favorable_pct AS peak_favorable_pct`;
+            o.opportunity_grade AS opportunity_grade, o.peak_favorable_pct AS peak_favorable_pct${occCol}`;
   if (canScopePortfolio(db)) {
     return {
       sql: `SELECT ${cols} FROM paper_trade_outcomes o
@@ -62,7 +97,7 @@ export function gatherOutcomesForDay(day: string, nowMs: number = Date.now(), db
   // Scope to a single portfolio so Primary and Challenge stats are never mixed in
   // the AI analysis (the Challenge is analyzed separately).
   const q = outcomesQuery(db, nowMs - LOOKBACK_MS, portfolio);
-  const rows = db.prepare(q.sql).all(...q.args) as any[];
+  const rows = dedupeOutcomeRows(db.prepare(q.sql).all(...q.args) as any[]);
   return rows
     .filter((r) => tradingDay(Number(r.entry_time_ms)) === day)
     .map((r): OutcomeInput => ({
@@ -109,7 +144,7 @@ export function recentTradingDays(nowMs: number, days: number): Set<string> {
 /** Graded outcomes whose entry ET day is in `daySet` (weekly aggregation). */
 export function gatherOutcomesForDays(daySet: Set<string>, nowMs: number = Date.now(), db: any = lazyDb(), portfolio: string = "PRIMARY"): OutcomeInput[] {
   const q = outcomesQuery(db, nowMs - 9 * 24 * 3600_000, portfolio);
-  const rows = db.prepare(q.sql).all(...q.args) as any[];
+  const rows = dedupeOutcomeRows(db.prepare(q.sql).all(...q.args) as any[]);
   return rows
     .filter((r) => daySet.has(tradingDay(Number(r.entry_time_ms))))
     .map((r): OutcomeInput => ({

@@ -134,3 +134,28 @@ test("best-effort live instrumentation is surfaced honestly when unavailable", (
   assert.equal(s.timing.available, false);
   assert.ok(s.dataGaps.some((g) => /instrumentation unavailable/i.test(g)));
 });
+
+// opportunityGrade is NONE whenever a trade missed the +25% opportunity threshold, so
+// it also contains trades that ran to +12% before losing. Production 2026-08-06 counted
+// such a trade under "Setups that never worked and lost".
+test("losses are split by whether they ever traded above entry", () => {
+  const s = buildNightlySummary({
+    tradingDay: "2026-08-06", periodStartMs: null, periodEndMs: null, candidates: [], live: null,
+    outcomes: [
+      // Ran to +12.5% then lost — worked, then gave it back.
+      { strategy: "zero_dte_momentum", direction: "CALL", dteAtEntry: 1, entrySession: "regular", entryTimeMs: 1786026574476,
+        terminalKind: "SMART", grade: "LOSS", gradingStatus: "GRADED", returnPct: -9.53, opportunityGrade: "NONE", peakFavorablePct: 12.54 },
+      // Never traded above entry.
+      { strategy: "zero_dte_momentum", direction: "CALL", dteAtEntry: 0, entrySession: "regular", entryTimeMs: 1786027027643,
+        terminalKind: "SMART", grade: "LOSS", gradingStatus: "GRADED", returnPct: -6.34, opportunityGrade: "NONE", peakFavorablePct: 0 },
+      // No excursion evidence — must not be claimed either way.
+      { strategy: "zero_dte_momentum", direction: "CALL", dteAtEntry: 0, entrySession: "regular", entryTimeMs: 1786035243326,
+        terminalKind: "SMART", grade: "LOSS", gradingStatus: "GRADED", returnPct: -10.59, opportunityGrade: "NONE", peakFavorablePct: null },
+    ],
+  });
+  assert.equal(s.bothFailed, 3, "all three still count as opportunity-NONE losses");
+  assert.equal(s.neverProfitable, 1);
+  assert.equal(s.profitableThenLost, 1);
+  assert.equal(s.lossesWithoutExcursionEvidence, 1);
+  assert.ok(s.patterns.some((p) => /never traded above entry/.test(p)));
+});
