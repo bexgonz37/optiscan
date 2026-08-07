@@ -199,6 +199,19 @@ export async function runWeeklyProposals(opts: WeeklyJobOptions = {}): Promise<W
     const challenge = buildNightlySummary({ tradingDay: weekKey, periodStartMs: nowMs - 7 * 24 * 3600_000, periodEndMs: nowMs, outcomes: challengeOutcomes, candidates: [], live: null });
     const stockDayTrader = buildNightlySummary({ tradingDay: weekKey, periodStartMs: nowMs - 7 * 24 * 3600_000, periodEndMs: nowMs, outcomes: stockDayOutcomes, candidates: [], live: null });
     try { refreshEvidenceLearningOnDb(db, { nowMs }); } catch { /* evidence learning is advisory-only */ }
+    // Deterministic OptiScan weekly review. Computed and persisted before any AI call, and the
+    // ONLY place an experiment can reach PROMISING or READY_FOR_HUMAN_REVIEW. Isolated: a
+    // failure here must not cost the week its report.
+    let optiscanResearch: unknown = null;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { runWeeklyResearchOnDb } = require("@/lib/research/options/weekly-research");
+      optiscanResearch = runWeeklyResearchOnDb(db, {
+        weekKey,
+        nowMs,
+        monthlyBudgetUsd: Number.isFinite(Number(cfg.monthlyHardLimitUsd)) ? Number(cfg.monthlyHardLimitUsd) : null,
+      });
+    } catch { /* additive; never blocks the weekly report */ }
     summary = {
       ...primary,
       quantResearch: weeklyQuantResearchContext({
@@ -206,7 +219,8 @@ export async function runWeeklyProposals(opts: WeeklyJobOptions = {}): Promise<W
         metrics: weeklyQuantMetrics({ primary, challenge, stockDayTrader }),
         evidenceLearning: evidenceLearningSnapshotOnDb(db),
       }),
-    };
+      optiscanResearch,
+    } as typeof summary;
     summary = labelInternalResearchSummary(summary);
   } catch (err: any) {
     return { ...result, skippedReason: `weekly summary failed: ${err?.message ?? err}` };
