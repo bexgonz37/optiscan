@@ -7,8 +7,10 @@
 - Baseline `5bc4a68` verified from git, `origin/main` and `/api/runtime/status`
   (`commit 5bc4a688a3d8…`) BEFORE any change. Tracked tree clean, 19 untracked scratch
   files untouched.
-- Shipped `d73881c` → `50b2063` → `70ecb82` → `e7bdec0` → `f0ad29e` → `b7743bb`.
-- Full suite **3844/3844**, run twice (was 3764; **+80 new**).
+- Shipped `d73881c` → `50b2063` → `70ecb82` → `e7bdec0` → `f0ad29e` → `b7743bb` → `eab1eed`
+  → `2460dc3`. **Production verified at `2460dc3`** (`/api/healthz` commit
+  `2460dc3d781b14fd13a105e935b91d2e1ecf63ea`).
+- Full suite **3845/3845**, run twice (was 3764; **+81 new**).
   `tsc --noEmit --incremental false` clean. `next build` exit 0. `git diff --check` clean.
 - Production healthy: `ok:true`, `loopRunning:true`, `quotaExceeded:false`, `dbWritable:true`,
   `schemaOk:true`, `schemaMissing: []`, lifecycle active, scheduler owner.
@@ -122,9 +124,14 @@ experiment tracking — and a test fails if one ever appears in the skippable se
 ### Not done — next session starts here
 
 - **The prospective arm has recorded ZERO decisions.** It has never run during an open RTH
-  session. Everything above is machinery, not evidence.
+  session. Everything above is machinery, not evidence. Verified live at `2460dc3`:
+  `decisionCount 0`, `lifecycle.currentStatus null`, expectancy and PF `null`,
+  `immutability.frozen true`, 6 findings persisted, all with non-empty limitations.
 - `railway up` deploys without git metadata, so `deployInfo().commit` read null for one
-  deploy and any row written then stamps `UNKNOWN_LEGACY_VERSION`. Deploy via GitHub push.
+  deploy. **Deploy via GitHub push only** — `railway up` breaks SHA attribution.
+- Two defects were found by running against production rather than by the tests: the weekly
+  reported `findings 0` because seeding lived only in the nightly (fixed in `2460dc3`), and
+  the SHA stamp read null after a `railway up` deploy.
 - AMZN/TSLA/GOOGL/HOOD are still open and are NOT yet linked into the prospective arm — they
   pre-date it. Their outcomes must be read from the cohort endpoint, not the scoreboard.
 - The AI research context is built but not yet passed into the nightly narration prompt.
