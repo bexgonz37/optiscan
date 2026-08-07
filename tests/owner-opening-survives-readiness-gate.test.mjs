@@ -211,14 +211,14 @@ test("a fully-qualified PUT blocked only by readiness still reaches the owner", 
     assert.match(ownerPosts[0], /NOT SUBSCRIBER-APPROVED/);
     assert.match(ownerPosts[0], /NVDA/);
 
-    // The same unreachable BEARISH_READY state also disabled the research-paper mirror
-    // (openBearishResearchPaperOnDb refuses anything that is not BEARISH_READY), so these
-    // setups produced no forward evidence either. Restoring the state restores the mirror.
+    // A put that was DELIVERED to the owner is owner-validation evidence, not research.
+    // BEARISH_RESEARCH_PAPER means "the bearish authority qualified it but nothing was sent";
+    // once it is sent it belongs to the owner population, and it must not be counted twice.
     const paper = db
       .prepare("SELECT option_symbol, paper_kind FROM options_paper_trades WHERE option_symbol = ?")
       .all("O:NVDA260727P00200000");
-    assert.equal(paper.length, 1, "a qualified owner-only put must still be paper tracked");
-    assert.equal(paper[0].paper_kind, "BEARISH_RESEARCH_PAPER");
+    assert.equal(paper.length, 1, "exactly one mirror — never both an owner and a research row");
+    assert.equal(paper[0].paper_kind, "OWNER_VALIDATION_PAPER");
   } finally {
     cleanup(dir);
   }
@@ -241,6 +241,39 @@ test("a fully-qualified CALL blocked only by readiness still reaches the owner",
     assert.match(ownerPosts[0], /NOT SUBSCRIBER-APPROVED/);
   } finally {
     cleanup(dir);
+  }
+});
+
+/**
+ * 2026-08-07: the three delivered owner CALL openings (QQQ 10/16 $750C, META 08/14 $600C,
+ * SPY 08/21 $777C) existed only as a Discord row and an opportunity case. They appeared in
+ * ZERO paper populations, so the owner lane produced alerts that could never be measured.
+ * An owner opening without a mirror on the same exact OCC is not evidence.
+ */
+test("every delivered owner opening leaves a paper mirror on the SAME exact OCC", async () => {
+  for (const [side, strategy, input, occ] of [
+    ["call", "momentum_acceleration", callDeliveryInput(), "O:NVDA260727C00200000"],
+    ["put", "momentum_breakdown", putDeliveryInput(), "O:NVDA260727P00200000"],
+  ]) {
+    const { db, dir } = await freshDb();
+    try {
+      const { ownerPosts } = await runBatch(db, submission(input, side, strategy));
+      assert.equal(ownerPosts.length, 1, `${side}: owner opening must be delivered`);
+
+      const rows = db
+        .prepare("SELECT id, option_symbol, paper_kind, entry_source, status, entry_fill FROM options_paper_trades WHERE option_symbol = ?")
+        .all(occ);
+      assert.equal(rows.length, 1, `${side}: exactly one mirror for the alerted contract`);
+
+      // The mirror must carry its own audience label so owner performance is never blended
+      // into subscriber, research, shadow or experiment populations. Both sides land in the
+      // owner population once delivered — the side does not change the audience.
+      assert.equal(rows[0].paper_kind, "OWNER_VALIDATION_PAPER", `${side}: mirror carries the owner population`);
+      assert.equal(rows[0].entry_source, "owner_validation_opening", `${side}: mirror names its origin`);
+      assert.ok(rows[0].entry_fill > 0, `${side}: mirror froze a real entry`);
+    } finally {
+      cleanup(dir);
+    }
   }
 });
 

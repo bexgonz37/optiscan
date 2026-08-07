@@ -26,6 +26,7 @@ import {
   type BearishAuthorityDecision,
 } from "./bearish-authority.ts";
 import { openBearishResearchPaperOnDb } from "./bearish-research-paper.ts";
+import { openOwnerValidationPaperOnDb } from "./owner-validation-paper.ts";
 import { formatPrivateLiveAlert } from "./format.ts";
 import { subscriberEligibility } from "./strategy-readiness.ts";
 import {
@@ -210,6 +211,15 @@ function skipped(reason: string): Pick<DeliveryDecision, "deliveryAttempted" | "
   return { deliveryAttempted: false, deliverySent: false, deliveryState: null, finalDeliveryOutcome: "SKIPPED", deliveryFailureCategory: null, finalDeliveryReason: reason };
 }
 
+export interface OwnerOpeningResult {
+  sent: boolean;
+  reason: string;
+  opportunityCaseId: string | null;
+  /** The canonical mirror on the SAME exact OCC. Null means the opening left no evidence. */
+  paperTradeId?: number | null;
+  paperReason?: string;
+}
+
 /**
  * Emit an owner-private opening for a candidate the deterministic pipeline qualified but
  * subscribers will not receive.
@@ -230,9 +240,10 @@ async function sendOwnerPrivateOpening(
     env: NodeJS.ProcessEnv;
     buildContent: (claim: { opportunityCaseId: string; baseUrl: string }) => string;
     why: string | null;
+    readinessState?: string | null;
     postOverride?: DecisionDeps["ownerPostOverride"];
   },
-): Promise<{ sent: boolean; reason: string; opportunityCaseId: string | null }> {
+): Promise<OwnerOpeningResult> {
   const { side, direction, quality, nowMs, env } = opts;
   let claimedCaseId: string | null = null;
   try {
@@ -328,7 +339,32 @@ async function sendOwnerPrivateOpening(
       nowMs,
       quality,
     });
-    return { sent: true, reason: "sent", opportunityCaseId: claim.opportunityCaseId };
+    // An owner opening without a mirror on the SAME exact OCC produces no forward evidence,
+    // which is the failure this lane exists to avoid. Isolated: the alert is already sent and
+    // a mirror failure must never retract it, but it is reported so the gap stays visible.
+    let paper: { opened: boolean; reason: string; paperTradeId: number | null } = {
+      opened: false, reason: "not_attempted", paperTradeId: null,
+    };
+    try {
+      paper = openOwnerValidationPaperOnDb(db as any, {
+        deliveryInput: s.deliveryInput,
+        quality,
+        nowMs,
+        opportunityCaseId: claim.opportunityCaseId,
+        thesisFingerprint: claim.thesisFingerprint,
+        readinessState: opts.readinessState ?? null,
+        ownerReason: opts.why,
+      }, env);
+    } catch (err: any) {
+      paper = { opened: false, reason: String(err?.message ?? err).slice(0, 120), paperTradeId: null };
+    }
+    return {
+      sent: true,
+      reason: "sent",
+      opportunityCaseId: claim.opportunityCaseId,
+      paperTradeId: paper.paperTradeId,
+      paperReason: paper.reason,
+    };
   } catch (error: any) {
     if (claimedCaseId) {
       try {
@@ -352,7 +388,7 @@ export async function maybeSendBearishOwnerReview(
   nowMs: number,
   env: NodeJS.ProcessEnv,
   postOverride?: DecisionDeps["ownerPostOverride"],
-): Promise<{ sent: boolean; reason: string; opportunityCaseId: string | null }> {
+): Promise<OwnerOpeningResult> {
   if (!db || !shouldSendBearishOwnerReview(decision, env)) {
     return { sent: false, reason: "owner_review_not_enabled", opportunityCaseId: null };
   }
@@ -363,6 +399,7 @@ export async function maybeSendBearishOwnerReview(
     nowMs,
     env,
     why: decision.reasons[0] ?? null,
+    readinessState: decision.state,
     postOverride,
     buildContent: ({ baseUrl }) => formatBearishOwnerReview({
       symbol: s.symbol,
@@ -397,7 +434,7 @@ export async function maybeSendReadinessGatedOwnerOpening(
   nowMs: number,
   env: NodeJS.ProcessEnv,
   postOverride?: DecisionDeps["ownerPostOverride"],
-): Promise<{ sent: boolean; reason: string; opportunityCaseId: string | null }> {
+): Promise<OwnerOpeningResult> {
   if (!db || env.OWNER_RESEARCH_DISCORD_ENABLED !== "1") {
     return { sent: false, reason: "owner_research_discord_not_enabled", opportunityCaseId: null };
   }
@@ -410,6 +447,7 @@ export async function maybeSendReadinessGatedOwnerOpening(
     nowMs,
     env,
     why: `readiness_gate:NOT_SUBSCRIBER_APPROVED:${readinessState}`,
+    readinessState,
     postOverride,
     buildContent: ({ opportunityCaseId, baseUrl }) => formatPrivateLiveAlert({
       lane: "OWNER_ONLY",

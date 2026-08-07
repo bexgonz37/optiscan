@@ -64,7 +64,7 @@ interface PaperDb { prepare(sql: string): { get?: (...a: any[]) => any; run: (..
  *  shadow/experiment subscribers never see; ZERO_DTE_RESEARCH_PAPER is the Aggressive 0DTE Research
  *  $100k ledger (simulated only); BEARISH_RESEARCH_PAPER is a separately funded, qualified-PUT
  *  research lane. They are never combined in readiness or delivered stats. */
-export type PaperKind = "DELIVERED_ALERT_PAPER" | "RESEARCH_ONLY_PAPER" | "ZERO_DTE_RESEARCH_PAPER" | "BEARISH_RESEARCH_PAPER";
+export type PaperKind = "DELIVERED_ALERT_PAPER" | "RESEARCH_ONLY_PAPER" | "ZERO_DTE_RESEARCH_PAPER" | "BEARISH_RESEARCH_PAPER" | "OWNER_VALIDATION_PAPER";
 export interface PaperPersistExtra {
   session?: string | null; coreBroad?: string | null; featureSnapshotJson?: string;
   paperKind?: PaperKind; alertId?: string | null; entrySource?: string; experimentId?: string | null; experimentVariant?: string | null;
@@ -91,6 +91,7 @@ export function persistRealOptionPaperOnDb(
     kind === "DELIVERED_ALERT_PAPER" ? "discord_delivery"
       : kind === "ZERO_DTE_RESEARCH_PAPER" ? "zero_dte_research"
         : kind === "BEARISH_RESEARCH_PAPER" ? "bearish_research"
+        : kind === "OWNER_VALIDATION_PAPER" ? "owner_validation_opening"
         : "monitor_shadow"
   );
   const r = db.prepare(`INSERT INTO options_paper_trades (${PAPER_COLS}) VALUES (${PAPER_PLACEHOLDERS})`).run(...paperVals(e, extra, kind, entrySource, nowMs));
