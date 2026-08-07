@@ -29,6 +29,15 @@ export interface BearishAuthorityInput {
   fractionMove?: number | null;
   deliveryInput: DeliveryInput;
   nowMs: number;
+  /**
+   * Whether this strategy/version is actually subscriber-eligible right now.
+   *
+   * BEARISH_SEND means "subscribers are receiving this". If the readiness gate will refuse
+   * the opening anyway, calling it SEND is a lie that costs the owner the alert: SEND skips
+   * the owner-review path, and the gate then drops the candidate, so it reaches no channel.
+   * Undefined means the caller has not resolved readiness and the flag alone decides.
+   */
+  subscriberApproved?: boolean;
 }
 
 export interface BearishAuthorityDecision {
@@ -273,14 +282,19 @@ export function evaluateBearishAuthority(
   if (blockers.length) {
     return { state: "BEARISH_WATCH", maySubscriberSend: false, ownerReview: bearishOwnerAlertsEnabled(env), reasonCode: blockers[0], reasons, blockers, passed, actionableReason, invalidation };
   }
-  if (!bearishSubscriberDeliveryEnabled(env)) {
+  const deliveryFlagOff = !bearishSubscriberDeliveryEnabled(env);
+  if (deliveryFlagOff || input.subscriberApproved === false) {
     return {
       state: "BEARISH_READY",
       maySubscriberSend: false,
       ownerReview: bearishOwnerAlertsEnabled(env),
       reasonCode: "bearish_ready_owner_review_only",
-      reasons: ["Qualified bearish setup; subscriber PUT delivery disabled until explicit activation."],
-      blockers: ["BEARISH_SUBSCRIBER_DELIVERY_ENABLED!=1"],
+      reasons: [
+        deliveryFlagOff
+          ? "Qualified bearish setup; subscriber PUT delivery disabled until explicit activation."
+          : "Qualified bearish setup; strategy is not SUBSCRIBER_APPROVED, so this is owner validation only.",
+      ],
+      blockers: [deliveryFlagOff ? "BEARISH_SUBSCRIBER_DELIVERY_ENABLED!=1" : "NOT_SUBSCRIBER_APPROVED"],
       passed,
       actionableReason,
       invalidation,

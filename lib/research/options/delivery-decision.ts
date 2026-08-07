@@ -26,6 +26,7 @@ import {
   type BearishAuthorityDecision,
 } from "./bearish-authority.ts";
 import { openBearishResearchPaperOnDb } from "./bearish-research-paper.ts";
+import { formatPrivateLiveAlert } from "./format.ts";
 import { subscriberEligibility } from "./strategy-readiness.ts";
 import {
   attachEvidenceToOpportunityOnDb,
@@ -209,31 +210,42 @@ function skipped(reason: string): Pick<DeliveryDecision, "deliveryAttempted" | "
   return { deliveryAttempted: false, deliverySent: false, deliveryState: null, finalDeliveryOutcome: "SKIPPED", deliveryFailureCategory: null, finalDeliveryReason: reason };
 }
 
-export async function maybeSendBearishOwnerReview(
-  db: DDb | null,
+/**
+ * Emit an owner-private opening for a candidate the deterministic pipeline qualified but
+ * subscribers will not receive.
+ *
+ * Side-agnostic on purpose. Owner Discord openings were historically carried by the same
+ * DELIVER_TO_DISCORD path subscribers used, so when the readiness gate closed that path it
+ * silenced the owner on BOTH lanes at once. Restoring only puts would leave qualified calls
+ * invisible for the same reason.
+ */
+async function sendOwnerPrivateOpening(
+  db: DDb,
   s: DeliverySubmission,
-  decision: BearishAuthorityDecision,
-  quality: number,
-  threshold: number,
-  nowMs: number,
-  env: NodeJS.ProcessEnv,
-  postOverride?: DecisionDeps["ownerPostOverride"],
+  opts: {
+    side: "call" | "put";
+    direction: "bullish" | "bearish";
+    quality: number;
+    nowMs: number;
+    env: NodeJS.ProcessEnv;
+    buildContent: (claim: { opportunityCaseId: string; baseUrl: string }) => string;
+    why: string | null;
+    postOverride?: DecisionDeps["ownerPostOverride"];
+  },
 ): Promise<{ sent: boolean; reason: string; opportunityCaseId: string | null }> {
-  if (!db || !shouldSendBearishOwnerReview(decision, env)) {
-    return { sent: false, reason: "owner_review_not_enabled", opportunityCaseId: null };
-  }
+  const { side, direction, quality, nowMs, env } = opts;
   let claimedCaseId: string | null = null;
   try {
     const { sendOwnerResearchNotify } = await import("../../notifications/owner-research-notify.ts");
     const d = s.deliveryInput;
     const claim = claimOpportunityOpenOnDb(db as any, {
       symbol: s.symbol,
-      side: "put",
+      side,
       expiration: d.contract.expiration,
       strike: d.contract.strike,
       strategyKey: s.strategy,
       nowMs,
-      direction: "bearish",
+      direction,
       quality,
       frozenEntry: d.entry?.mid ?? null,
       frozenTrade: d.entry
@@ -258,7 +270,7 @@ export async function maybeSendBearishOwnerReview(
         openInterest: d.contract.openInterest,
         volume: d.contract.volume,
       },
-      why: decision.reasons[0] ?? null,
+      why: opts.why,
     });
     if (!claim.claimed) {
       if (claim.existing) {
@@ -292,20 +304,7 @@ export async function maybeSendBearishOwnerReview(
     }
     claimedCaseId = claim.opportunityCaseId;
     const baseUrl = String(env.PUBLIC_APP_URL ?? env.NEXT_PUBLIC_APP_URL ?? "").trim().replace(/\/$/, "");
-    const content = formatBearishOwnerReview({
-      symbol: s.symbol,
-      side: "put",
-      strategy: s.strategy,
-      researchOnly: s.researchOnly,
-      quality,
-      threshold,
-      matchedSignals: s.matchedSignals,
-      requiredSignals: s.requiredSignals,
-      strategyScore: s.strategyScore,
-      fractionMove: s.fractionMove,
-      deliveryInput: s.deliveryInput,
-      nowMs,
-    }, decision, `${baseUrl}/alerts?tab=history`);
+    const content = opts.buildContent({ opportunityCaseId: claim.opportunityCaseId, baseUrl });
     const sent = await sendOwnerResearchNotify({
       db: db as any,
       kind: "intraday_actionable",
@@ -317,7 +316,7 @@ export async function maybeSendBearishOwnerReview(
       lifecycleState: "OPENING",
       env: { ...env, OWNER_RESEARCH_DISCORD_ENABLED: "1", OWNER_RESEARCH_INTRADAY_ENABLED: "1" } as NodeJS.ProcessEnv,
       nowMs,
-      postOverride,
+      postOverride: opts.postOverride,
     });
     if (!sent.sent) {
       releaseOpportunityOpeningClaimOnDb(db as any, claim.opportunityCaseId);
@@ -342,6 +341,96 @@ export async function maybeSendBearishOwnerReview(
       opportunityCaseId: claimedCaseId,
     };
   }
+}
+
+export async function maybeSendBearishOwnerReview(
+  db: DDb | null,
+  s: DeliverySubmission,
+  decision: BearishAuthorityDecision,
+  quality: number,
+  threshold: number,
+  nowMs: number,
+  env: NodeJS.ProcessEnv,
+  postOverride?: DecisionDeps["ownerPostOverride"],
+): Promise<{ sent: boolean; reason: string; opportunityCaseId: string | null }> {
+  if (!db || !shouldSendBearishOwnerReview(decision, env)) {
+    return { sent: false, reason: "owner_review_not_enabled", opportunityCaseId: null };
+  }
+  return sendOwnerPrivateOpening(db, s, {
+    side: "put",
+    direction: "bearish",
+    quality,
+    nowMs,
+    env,
+    why: decision.reasons[0] ?? null,
+    postOverride,
+    buildContent: ({ baseUrl }) => formatBearishOwnerReview({
+      symbol: s.symbol,
+      side: "put",
+      strategy: s.strategy,
+      researchOnly: s.researchOnly,
+      quality,
+      threshold,
+      matchedSignals: s.matchedSignals,
+      requiredSignals: s.requiredSignals,
+      strategyScore: s.strategyScore,
+      fractionMove: s.fractionMove,
+      deliveryInput: s.deliveryInput,
+      nowMs,
+    }, decision, `${baseUrl}/alerts?tab=history`),
+  });
+}
+
+/**
+ * The owner opening for a candidate the readiness gate — and only the readiness gate — refused.
+ *
+ * By the time this runs the candidate has cleared session, research floor, late-phase, the
+ * subscriber quality bar, correlation, ranking and entry quality. The single remaining reason
+ * it is not being delivered is that the strategy/version is not SUBSCRIBER_APPROVED, which is
+ * a statement about SUBSCRIBERS. It must not also cost the owner the observation.
+ */
+export async function maybeSendReadinessGatedOwnerOpening(
+  db: DDb | null,
+  s: DeliverySubmission,
+  quality: number,
+  readinessState: string,
+  nowMs: number,
+  env: NodeJS.ProcessEnv,
+  postOverride?: DecisionDeps["ownerPostOverride"],
+): Promise<{ sent: boolean; reason: string; opportunityCaseId: string | null }> {
+  if (!db || env.OWNER_RESEARCH_DISCORD_ENABLED !== "1") {
+    return { sent: false, reason: "owner_research_discord_not_enabled", opportunityCaseId: null };
+  }
+  const c = s.deliveryInput.contract;
+  const e = s.deliveryInput.entry;
+  return sendOwnerPrivateOpening(db, s, {
+    side: s.side,
+    direction: s.side === "put" ? "bearish" : "bullish",
+    quality,
+    nowMs,
+    env,
+    why: `readiness_gate:NOT_SUBSCRIBER_APPROVED:${readinessState}`,
+    postOverride,
+    buildContent: ({ opportunityCaseId, baseUrl }) => formatPrivateLiveAlert({
+      lane: "OWNER_ONLY",
+      readinessState,
+      symbol: s.symbol,
+      side: s.side,
+      strike: c.strike,
+      expiration: c.expiration,
+      entryMid: e?.mid ?? ((c.bid ?? 0) + (c.ask ?? 0)) / 2,
+      t1: e?.t1 ?? 0,
+      t2: e?.t2 ?? 0,
+      stop: e?.stop ?? 0,
+      strategyKey: s.strategy,
+      dte: c.dte ?? null,
+      optionSymbol: c.optionSymbol,
+      bid: c.bid,
+      ask: c.ask,
+      opportunityCaseId,
+      detailUrl: `${baseUrl}/alerts?tab=history`,
+    }),
+  });
 }
 
 export function shouldSendBearishOwnerReview(
@@ -519,12 +608,18 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
       ...skipped("not_selected"),
     };
 
+    // Resolved BEFORE the bearish branch: the bearish authority must not call a candidate
+    // BEARISH_SEND when the readiness gate is going to refuse it, because SEND skips the
+    // owner path and the refusal would then silence every channel at once.
+    const readiness = subscriberEligibility(db as any, x.s.strategy, strategyVersionOf(x.s), env);
+
     if (x.s.side === "put") {
       const auth = evaluateBearishAuthority({
         symbol: x.s.symbol,
         side: "put",
         strategy: x.s.strategy,
         researchOnly: x.s.researchOnly,
+        subscriberApproved: readiness.allowed,
         quality: x.quality,
         threshold: deliverBar,
         matchedSignals: x.s.matchedSignals,
@@ -631,10 +726,22 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
     // good right now; it says nothing about whether this strategy VERSION has ever been
     // worth sending. The audited population (expectancy -7.2%, profit factor 0.49) is what
     // implied eligibility produced. Fails closed: an unassessed version is RESEARCH_ONLY.
-    const readiness = subscriberEligibility(db as any, x.s.strategy, strategyVersionOf(x.s), env);
     if (!readiness.allowed) {
       base.reason = `readiness_gate:${readiness.reasonCode}`;
       base.finalDeliveryReason = `strategy ${x.s.strategy} is ${readiness.state}; subscriber openings require SUBSCRIBER_APPROVED`;
+      // Subscribers stay gated; the owner still gets the observation. Puts never arrive here
+      // — an unapproved put is BEARISH_READY and was already mirrored above — so this is the
+      // call lane, which had no owner path of its own once DELIVER_TO_DISCORD closed.
+      const owner = await maybeSendReadinessGatedOwnerOpening(
+        db,
+        x.s,
+        x.quality,
+        readiness.state,
+        nowMs,
+        env,
+        deps.ownerPostOverride,
+      );
+      if (owner.sent) base.finalDeliveryReason += "; owner opening delivered";
       decisions.push(base);
       continue;
     }
