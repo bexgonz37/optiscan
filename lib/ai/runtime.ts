@@ -37,22 +37,27 @@ export interface AiRuntimeOptions {
 }
 
 /**
- * Run whichever AI job is due now. Nightly requires nightlyDiagnosisEnabled; weekly
- * requires weeklyProposalsEnabled (both imply AI_ENABLED + a key). When neither is
- * due/enabled this returns immediately with nothing run.
+ * Run whichever scheduled job is due now.
+ *
+ * NOT gated on the AI flags. Both jobs are deterministic-first: they compute and persist the
+ * session's evidence — the owner-lane aggregation, the experiment scoreboard, the lifecycle
+ * advance, the Evidence Learning findings — BEFORE any provider is contacted, and each AI call
+ * inside them is independently gated on its own flag and on the budget. Gating the whole job on
+ * `AI_ENABLED` meant that turning off narration, losing the API key, or exhausting the month
+ * silently stopped the deterministic aggregation too, which is precisely what the budget
+ * contract says may never happen. The AI flags now stop only the AI.
  */
 export async function runAiScheduledJobs(opts: AiRuntimeOptions = {}): Promise<AiScheduledResult> {
   const nowMs = opts.nowMs ?? Date.now();
   const cfg = aiConfig(opts.env);
   const out: AiScheduledResult = { ranNightly: false, ranWeekly: false };
-  if (!cfg.enabled) return out;
 
   let db: DbLike;
   try { db = opts.db ?? lazyDb(); } catch { return out; }
 
   // Nightly (after extended-hours finalization).
   try {
-    const nk = cfg.nightlyDiagnosisEnabled ? nightlyRunKey(nowMs) : null;
+    const nk = nightlyRunKey(nowMs);
     if (nk && !handled.nightly.has(nk) && !getReportOnDb(db, "nightly", nk)) {
       out.nightly = await runNightlyDiagnosis({ nowMs, day: nk, db, env: opts.env, config: cfg });
       out.ranNightly = true;
@@ -62,7 +67,7 @@ export async function runAiScheduledJobs(opts: AiRuntimeOptions = {}): Promise<A
 
   // Weekly (Friday night / Saturday).
   try {
-    const wk = cfg.weeklyProposalsEnabled ? weeklyRunKey(nowMs) : null;
+    const wk = weeklyRunKey(nowMs);
     if (wk && !handled.weekly.has(wk) && !getReportOnDb(db, "weekly", wk)) {
       out.weekly = await runWeeklyProposals({ nowMs, weekKey: wk, db, env: opts.env, config: cfg });
       out.ranWeekly = true;
