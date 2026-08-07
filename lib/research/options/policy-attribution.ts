@@ -25,6 +25,18 @@
 export const UNKNOWN_LEGACY_VERSION = "UNKNOWN_LEGACY_VERSION";
 
 /**
+ * A LIVE row whose deploy could not name its own commit.
+ *
+ * Distinct from `UNKNOWN_LEGACY_VERSION` on purpose. "This row predates attribution" and
+ * "this row was written today by a deploy that lost its git metadata" are different facts with
+ * different remedies: the first is permanent history, the second is a fixable deployment
+ * problem that must be visible while it is still happening. Collapsing them — which is what
+ * `deploymentSha ?? UNKNOWN_LEGACY_VERSION` did — makes a broken deploy look like old data and
+ * removes the only signal that would have caught it.
+ */
+export const RUNTIME_SHA_UNAVAILABLE = "RUNTIME_SHA_UNAVAILABLE";
+
+/**
  * The live policy versions, bumped BY HAND when the corresponding behaviour changes.
  *
  * A version here is a claim that everything stamped with it behaved identically. Bump the
@@ -100,7 +112,9 @@ export function freezeAttribution(i: AttributionInput): PolicyAttribution {
     exitPolicyVersion: POLICY_VERSIONS.exitPolicyVersion,
     experimentId: i.experimentId ?? null,
     cohortId: i.cohortId ?? null,
-    deploymentSha: i.deploymentSha ?? UNKNOWN_LEGACY_VERSION,
+    // NOT UNKNOWN_LEGACY_VERSION: this row is being created NOW. If the runtime could not name
+    // its commit, say exactly that, so a report can separate "old data" from "bad deploy".
+    deploymentSha: i.deploymentSha ?? RUNTIME_SHA_UNAVAILABLE,
   };
 }
 
@@ -128,6 +142,48 @@ export function isLegacyAttribution(a: Pick<PolicyAttribution, PolicyVersionKey>
   return (Object.keys(POLICY_VERSIONS) as PolicyVersionKey[]).some(
     (k) => a[k] === UNKNOWN_LEGACY_VERSION,
   );
+}
+
+/**
+ * True when the row has live policy versions but no commit identity. Such a row is usable for
+ * per-policy analysis and NOT usable for per-deploy analysis, which is a narrower defect than
+ * `isLegacyAttribution` and must not be reported as the same thing.
+ */
+export function isRuntimeShaUnavailable(a: Pick<PolicyAttribution, "deploymentSha">): boolean {
+  return a.deploymentSha === RUNTIME_SHA_UNAVAILABLE;
+}
+
+export interface ShaAttributionCensus {
+  total: number;
+  observed: number;
+  runtimeUnavailable: number;
+  legacy: number;
+  distinctShas: string[];
+  /** True when at least one row was written by a deploy that could not name its commit. */
+  hasDegradedRows: boolean;
+}
+
+/**
+ * Count how rows are attributed, keeping the three states apart. `runtimeUnavailable > 0` is
+ * an operational alarm about the CURRENT deployment path; `legacy > 0` is a permanent property
+ * of old data. A census that summed them would say nothing actionable.
+ */
+export function censusShaAttribution(
+  rows: readonly { deploymentSha?: string | null }[],
+): ShaAttributionCensus {
+  const distinct = new Set<string>();
+  let observed = 0, runtimeUnavailable = 0, legacy = 0;
+  for (const r of rows) {
+    const v = r.deploymentSha ?? null;
+    if (v === RUNTIME_SHA_UNAVAILABLE) runtimeUnavailable += 1;
+    else if (v === UNKNOWN_LEGACY_VERSION || v == null) legacy += 1;
+    else { observed += 1; distinct.add(v); }
+  }
+  return {
+    total: rows.length, observed, runtimeUnavailable, legacy,
+    distinctShas: [...distinct].sort(),
+    hasDegradedRows: runtimeUnavailable > 0,
+  };
 }
 
 /** Stable key for grouping outcomes by the exact system that produced them. */

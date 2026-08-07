@@ -15,6 +15,7 @@ import { markCandidatesBatchEntered } from "./instrumentation.ts";
 import { recordProposedShadowFromDelivery } from "./shadow-runner.ts";
 import { buildShadowRecord, isShadowEligible } from "./prospective-shadow.ts";
 import { LHC_SELECT_V1 } from "./experiment-registry.ts";
+import { deployInfo } from "../../build-info.ts";
 import {
   registerExperimentOnDb, recordShadowDecisionOnDb, linkPaperTradeOnDb,
   currentStatusOnDb, recordStatusOnDb, type ShadowDb,
@@ -763,12 +764,10 @@ function recordShadowArmForBatch(
     } catch { /* isolated */ }
   }
 
-  const sha = (() => {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      return require("@/lib/build-info").deployInfo().commit ?? null;
-    } catch { return null; }
-  })();
+  // Statically imported: a lazy `require` that fails to resolve would silently stamp every row
+  // in the batch RUNTIME_SHA_UNAVAILABLE, turning a resolution bug into what looks like a
+  // deployment problem.
+  const sha = (() => { try { return deployInfo().commit ?? null; } catch { return null; } })();
 
   for (const d of eligible) {
     try {

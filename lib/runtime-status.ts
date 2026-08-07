@@ -23,6 +23,16 @@ export interface RuntimeStatus {
   nowMs: number;
   /** Deployed build identity — confirm the live commit vs origin/main. */
   deploy: { commit: string | null; commitShort: string | null; branch: string | null };
+  /**
+   * Whether that identity is trustworthy, and why not when it is not. Separate from `deploy`
+   * because `commit: null` alone cannot tell an operator that every row being written right now
+   * is unattributable.
+   */
+  shaAttribution: {
+    sha: string | null; shaShort: string | null; branch: string | null;
+    state: "OBSERVED" | "RUNTIME_SHA_UNAVAILABLE"; source: string | null;
+    degraded: boolean; message: string;
+  };
   worker: {
     scanner: { holderPid: number | null; fresh: boolean; hostname: string | null; heartbeatAt: string | null; running: boolean };
     scheduler: { holderPid: number | null; fresh: boolean; hostname: string | null; heartbeatAt: string | null; started: boolean; isOwner: boolean; note: string };
@@ -358,9 +368,18 @@ export function buildRuntimeStatus(nowMs: number = Date.now()): RuntimeStatus {
 
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const deploy = safe(() => require("@/lib/build-info").deployInfo(), { commit: null, commitShort: null, branch: null });
+  // Attribution state is reported SEPARATELY from the SHA so a deploy that lost its git
+  // metadata is visible here while it is still running, rather than being discovered later as
+  // a column full of unattributable rows.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const shaAttribution = safe(() => require("@/lib/build-info").deploymentShaAttribution(), {
+    sha: null, shaShort: null, branch: null, state: "RUNTIME_SHA_UNAVAILABLE",
+    source: null, degraded: true, message: "attribution could not be resolved",
+  } as any);
   return {
     nowMs,
     deploy,
+    shaAttribution,
     worker: {
       scanner: {
         holderPid: scannerHolder.holder?.pid ?? null, fresh: scannerHolder.fresh,
