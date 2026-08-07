@@ -26,6 +26,7 @@ import { buildProspectiveScoreboard, weeklyVerdict, type ProspectiveScoreboard, 
 import { listShadowDecisionsOnDb, refreshShadowOutcomesOnDb, currentStatusOnDb, recordStatusOnDb, statusHistoryOnDb, type ShadowDb } from "./shadow-arm-store.ts";
 import { listFindingsOnDb, seedLhcFindingsOnDb, type FindingsDb } from "./findings-store.ts";
 import { LHC_SELECT_V1, checkFrozen, canTransition, type ExperimentStatus } from "./experiment-registry.ts";
+import { buildAiResearchContextOnDb, type AiResearchContext, type ResearchContextDb } from "./ai-research-context.ts";
 
 export interface WeeklyDb extends ShadowDb, FindingsDb {}
 
@@ -53,6 +54,7 @@ export const BUDGET_EXEMPT_SUBSYSTEMS: readonly string[] = Object.freeze([
 /** Optional AI reasoning — the only thing budget exhaustion is allowed to skip. */
 export const BUDGET_OPTIONAL_JOBS: readonly string[] = Object.freeze([
   "nightly_diagnosis",
+  "nightly_research_analysis",
   "weekly_proposals",
   "advisory_chat",
   "asymmetry_explain",
@@ -328,61 +330,19 @@ export function formatWeeklyResearchReport(i: {
 }
 
 /**
- * The compact evidence block handed to the existing AI. Deliberately small: the AI receives
- * values that already exist and is asked to interpret them, never to produce a figure. The
- * caveats travel with the numbers.
+ * The compact evidence block handed to the existing AI.
+ *
+ * The build itself lives in `ai-research-context.ts` so the nightly and the weekly receive the
+ * SAME object: they were previously reasoning from two partial views of one session, and two
+ * verdicts drawn from two different pictures cannot be compared. This wrapper stays because the
+ * weekly route and its tests are the established entry point.
  */
-export function buildAiResearchContext(db: WeeklyDb, opts: { nowMs?: number } = {}): {
-  experiment: Record<string, unknown>;
-  scoreboard: Record<string, unknown>;
-  findings: { findingId: string; statement: string; limitations: readonly string[]; mustNotBeSummarizedAs: string | null }[];
-  instructions: string[];
-} {
-  const rows = listShadowDecisionsOnDb(db, { experimentId: LHC_SELECT_V1.experimentId });
-  const s = buildProspectiveScoreboard(rows);
-  const findings = (() => {
-    try { return listFindingsOnDb(db, { strategy: "lower_high_continuation" }); } catch { return []; }
-  })();
-
-  return {
-    experiment: {
-      experimentId: LHC_SELECT_V1.experimentId,
-      version: LHC_SELECT_V1.experimentVersion,
-      status: currentStatusOnDb(db, LHC_SELECT_V1.experimentId, LHC_SELECT_V1.experimentVersion),
-      mode: LHC_SELECT_V1.mode,
-      historicalResult: LHC_SELECT_V1.historicalResult,
-      robustnessCaveats: LHC_SELECT_V1.robustnessCaveats,
-      statusHistory: statusHistoryOnDb(db, LHC_SELECT_V1.experimentId, LHC_SELECT_V1.experimentVersion),
-    },
-    scoreboard: {
-      sessionsObserved: s.sessionsObserved,
-      opportunitiesEvaluated: s.opportunitiesEvaluated,
-      arms: { bothAdmit: s.bothAdmit, baselineOnly: s.baselineOnly, experimentOnly: s.experimentOnly, bothReject: s.bothReject },
-      closedOutcomes: s.closedOutcomes,
-      openOutcomes: s.openOutcomes,
-      baseline: s.baseline,
-      experiment: s.experiment,
-      experimentExTopWinner: s.experimentExTopWinner,
-      tailDependence: s.tailDependence,
-      winnersRejected: s.winnersRejected,
-      evidenceQuality: s.evidenceQuality,
-      honestSummary: s.honestSummary,
-    },
-    findings: findings.map((f) => ({
-      findingId: f.findingId,
-      statement: f.statement,
-      limitations: f.limitations,
-      mustNotBeSummarizedAs: f.mustNotBeSummarizedAs,
-    })),
-    instructions: [
-      "Every figure above is already computed. Do not produce a number that is not in this payload.",
-      "Expectancy and profit factor are from CLOSED outcomes only. Open positions have no result.",
-      "Never describe LHC_SELECT_V1 as working, validated, or ready. It is PROMISING and UNVALIDATED.",
-      "If closedOutcomes is 0, there is no prospective result — say so rather than reporting the historical one as if it were prospective.",
-      "Report winners rejected before losses avoided.",
-      "You may propose SHADOW or PAPER_VALIDATION experiments. You may not change a live threshold, " +
-        "select a live trade, alter subscriber readiness, approve a subscriber strategy, send an alert, " +
-        "deploy code, or rewrite a historical outcome.",
-    ],
-  };
+export function buildAiResearchContext(
+  db: WeeklyDb,
+  opts: { nowMs?: number; sessionDate?: string | null } = {},
+): AiResearchContext {
+  return buildAiResearchContextOnDb(db as unknown as ResearchContextDb, {
+    nowMs: opts.nowMs,
+    sessionDate: opts.sessionDate ?? null,
+  });
 }

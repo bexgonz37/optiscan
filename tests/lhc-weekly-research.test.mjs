@@ -372,8 +372,8 @@ test("the AI context says so when nothing has closed, rather than reusing the hi
   registerExperimentOnDb(d, LHC_SELECT_V1, T0);
   recordShadowDecisionOnDb(d, buildShadowRecord(sub(), CTX), T0);
   const ctx = buildAiResearchContext(d, { nowMs: T0 });
-  assert.equal(ctx.scoreboard.closedOutcomes, 0);
-  assert.match(String(ctx.scoreboard.honestSummary), /NO prospective/);
+  assert.equal(ctx.experiment.scoreboard.closedOutcomes, 0);
+  assert.match(String(ctx.experiment.scoreboard.honestSummary), /NO prospective/);
   assert.match(ctx.instructions.join(" "), /If closedOutcomes is 0/);
   // The historical result is present but explicitly separated from the prospective one.
   assert.equal(ctx.experiment.historicalResult.experimentProfitFactor, 1.24);
