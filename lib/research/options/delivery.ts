@@ -754,6 +754,9 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
       readinessState: openingReadiness,
       strategyVersion: openingStrategyVersion,
       opportunityCaseId: livingCaseId,
+      // The mirror is reserved above, before the send, so an owner opening can state the exact
+      // position tracking it. Delivery aborts if the reservation failed, so this is always set.
+      paperTradeId: paperReservation.paperTradeId,
       symbol: finalInput.candidateSymbol,
       side: finalInput.contract.side,
       strike: finalInput.contract.strike,

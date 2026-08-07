@@ -103,6 +103,12 @@ export interface PrivateLiveAlertInput extends CompactAlertInput {
   strategyVersion?: string | null;
   /** Living Opportunity Case this opening belongs to. */
   opportunityCaseId?: string | null;
+  /** The mirrored paper position id, once reserved. Present => the exact trade is tracked. */
+  paperTradeId?: number | null;
+  /** Rank among the opportunities live at send time, e.g. "2 of 7". */
+  rankLabel?: string | null;
+  /** Evidence strength for the strategy at send time, where the readiness board has it. */
+  evidenceStrength?: string | null;
 }
 
 export type AlertLane = "OWNER_ONLY" | "PAPER" | "RESEARCH" | "SUBSCRIBER_APPROVED";
@@ -231,9 +237,14 @@ export function formatPrivateLiveAlert(i: PrivateLiveAlertInput): string {
   // message to say so.
   const subscriberGrade = openingIsSubscriberGrade(i.lane, i.readinessState);
   const laneLabel = i.lane ?? "OWNER_ONLY";
+  // Owner openings are live forward-validation, not silence and not a subscriber call. They say
+  // so, and they state that the exact contract below is the one being paper tracked.
+  const paperTracked = i.paperTradeId != null && i.paperTradeId > 0;
   const heading = subscriberGrade
     ? `${call ? "🟢" : "🔴"} ${sym} ${call ? "CALL" : "PUT"} ALERT`
-    : `🔬 ${sym} ${call ? "CALL" : "PUT"} · ${laneLabel} · NOT SUBSCRIBER-APPROVED`;
+    : paperTracked
+      ? `🔬 ${sym} ${call ? "CALL" : "PUT"} · OWNER VALIDATION — PAPER TRACKED`
+      : `🔬 ${sym} ${call ? "CALL" : "PUT"} · OWNER WATCH · ${laneLabel} · NOT SUBSCRIBER-APPROVED`;
   const lines = [
     heading,
     "",
@@ -247,7 +258,13 @@ export function formatPrivateLiveAlert(i: PrivateLiveAlertInput): string {
     lines.push(
       `Lane: ${laneLabel} · Readiness: ${i.readinessState ?? "UNKNOWN"}`,
       `Strategy: ${i.strategyKey ?? "unknown"}@${i.strategyVersion ?? "UNKNOWN_LEGACY_VERSION"}`,
+      ...(i.rankLabel ? [`Rank: ${i.rankLabel}${i.evidenceStrength ? ` · Evidence: ${i.evidenceStrength}` : ""}`]
+        : i.evidenceStrength ? [`Evidence: ${i.evidenceStrength}`] : []),
       ...(i.opportunityCaseId ? [`Case: ${i.opportunityCaseId}`] : []),
+      ...(i.optionSymbol ? [`Contract: ${i.optionSymbol}`] : []),
+      paperTracked
+        ? `Paper: tracking THIS contract from $${px(i.entryMid)} · position #${i.paperTradeId}`
+        : "Paper: NOT yet mirrored — this opening is not being tracked.",
       "Research/paper simulation — not a subscriber recommendation.",
       "",
     );
