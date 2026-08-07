@@ -1,5 +1,95 @@
 # Current Task Packet
 
+## Packet update — 2026-08-06 (7) the owner's winners were being excluded as duplicates, and the published stop could never be reached
+
+### Verified state
+
+- local = `origin/main` = `ac948b0` (was `41bac1e`, verified from git and origin before any change).
+- Production healthy before and after: `/api/health` `ok:true`, `loopRunning:true`, `session:closed`.
+- Full suite **3735/3735** (was 3729; +6 new tests). `tsc --noEmit --incremental false` clean.
+  `next build` exit 0. `git diff --check` clean. 19 untracked scratch files untouched.
+- Gates unchanged. No env var written. No provider caps changed. `SUBSCRIBER_APPROVED` still 0.
+- Evidence read from production over the authenticated `/api/research/options/paper-chain`
+  diagnostic via `railway run`, read-only. No secret printed.
+- One unexplained single-test failure in 1 of 9 full-suite runs; not reproduced in the other 8
+  and not identified. Pre-existing flake, unrelated to these changes. **Still outstanding.**
+
+### FINDING 1 — 10 of 40 owner alerts were written off as duplicates, and they skewed to the winners
+
+`buildPaperChainDiagnostic` decided duplication by unioning the mirrors linked to an alert
+with every mirror sharing its `thesis_fingerprint`. That fingerprint is deliberately broad:
+
+```
+thesis_fingerprint = symbol | direction | optionType | sessionDate
+```
+
+The lookup filtered on neither status nor session, so two *separate* owner alerts that
+re-entered the same session thesis each counted the other as a duplicate — even though
+each had exactly one mirror. The unique indexes (`status='ENTERED'`, and
+`status IN ('PENDING_DELIVERY','ENTERED')`) permit exactly this: a closed position frees
+the thesis for a legitimate second alert.
+
+Production impact, all 40 delivered alerts:
+
+```
+VERIFIED_REALIZED   26
+DUPLICATE_POSITION  10   <- false positives
+VERIFIED_OPEN_MARK   3
+STALE_MARK           1
+```
+
+Because a thesis is most likely to be re-entered after it worked, the excluded rows skewed
+to winners: **+50.27% (SPY 770P), +48.84% and +45.13% (AAPL 305P), +47.04% (GOOGL 360P)**.
+Owner performance was understated by construction.
+
+Duplicate now means more than one mirror for THIS alert. The separate check for two live
+positions on one opportunity case is untouched — that one is real.
+
+### FINDING 2 — the published stop was a level the position could never reach
+
+Two stop authorities existed and `decideOptionExit` closes on whichever comes first:
+
+```
+risk-model stop PRICE   targets.ts   mid * (1 - 0.45)          -> published to Discord
+premium safety band     grade.ts     returnPct <= -40 of fill  -> what actually fired
+```
+
+On a falling premium the higher price is reached first, so the -40% band always pre-empted
+the -45% stop. Confirmed in production: repeated `stop_hit` exits land on exactly
+**-40.0000%**, never near -45%. Every one of the 40 delivered alerts published a stop at
+-43.5% to -45.6%; none was ever the binding level.
+
+`resolveGoverningStop()` resolves the two into one and the opening publishes that. **Neither
+threshold moved and no exit behaviour changed** — only the number the owner reads. T1/T2 keep
+the risk model's levels, which do bind as computed (target_hit fires at +45% to +56%).
+
+### FINDING 3 — every delivered case claimed DTE 0
+
+`claimOpportunityOpenOnDb` hardcoded `selectedContract.dte = 0` while the frozen OCC and the
+decision timestamp were both in scope. Every delivered case looked like a 0DTE trade, so
+DTE-partitioned research was measuring a constant. Now derived from the OCC via
+`parseOccSymbol`. Legacy rows are not backfilled — historical DTE cannot be proven.
+
+### Commits
+
+```
+4c8cb31  Publish the stop that actually closes the position
+ac948b0  Stop writing off the owner's own winners as duplicates
+```
+
+### Not done this session
+
+Priorities 1-6 and 9-17 of the resume packet were **not** implemented. Priority 1 (canonical
+mirror) and 4 (reconciliation) were audited and found already satisfied: production reports
+`paperLinkRate: 1`, `sent24h: 9`, `linked24h: 9`, and `reserveDeliveredPaperOnDb` →
+Discord → `finalizeDeliveredPaperReservationOnDb` is already the single atomic opening path,
+with `delivery.ts` the only production caller. The remaining priorities — population renaming,
+immutable strategy/policy attribution, confirmation-cost capture, matched cohorts,
+break-even experiments, the canonical daily aggregator, the nightly recap rewrite, nightly and
+weekly AI research, and AI budget enforcement — are untouched.
+
+---
+
 ## Packet update — 2026-08-06 (6) the nightly review reported a lane the owner never traded, and case returns were priced across contracts
 
 ### Verified state
