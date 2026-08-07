@@ -1,5 +1,158 @@
 # Current Task Packet
 
+## Packet update — 2026-08-06 (6) the nightly review reported a lane the owner never traded, and case returns were priced across contracts
+
+### Verified state
+
+- local = `origin/main` = `d2f905d`. Production SHA verified separately below.
+- Prior packet baseline `1d999a8` confirmed from git and the Railway container before any change.
+- Full suite **3729/3729** (was 3723; +6 new tests). `tsc --noEmit` clean. `next build` exit 0.
+  `git diff --check` clean. 19 untracked scratch files untouched.
+- Gates unchanged. No env var written this session. No provider caps changed.
+  `immediateAlertsPaused: true`, `HIGH_ASYMMETRY_IMMEDIATE_ALERTS_ENABLED=0` still set.
+- Evidence read directly from the production SQLite volume over `railway ssh`, read-only.
+
+### FINDING 1 — the "5 losses" were never the owner's Discord alerts
+
+Two disjoint populations, both of size 5, sharing **zero contracts**:
+
+```
+LANE A  nightly review  (paper_trade_outcomes -> paper_trades, PRIMARY)
+  5 rows / 4 distinct trades  ALL zero_dte_momentum  alert_id NULL  lane NULL
+  0 wins / 5 losses      never delivered to Discord
+
+LANE B  delivered Discord alerts  (options_paper_trades, DELIVERED_ALERT_PAPER)
+  9 openings, 5 closed / 4 open
+  3 WINS  +47.04%  +46.35%  +50.27%   (all target_hit)
+  2 LOSSES -40.00%  -40.29%           (both the -40% safety band)
+  mean closed return +12.67%   profit factor 1.789
+```
+
+`buildNightlySummary.overall` is fed only by `gatherOutcomesForDay`, which reads the
+paper portfolio. The recap printed `Trades: 5 | Wins: 0 | Losses: 5` with no lane, so
+it read as a verdict on the delivered alerts. The delivered lane was **profitable**
+that day.
+
+Lane A also double-counted: `paper_trades` 421 and 422 are one IWM fill written twice
+6 ms apart, identical contract/entry/exit. 6 such duplicate groups exist historically.
+
+### FINDING 2 — case returns were priced on a contract the case never held
+
+`lib/research/options/loop.ts` passed `res.contract.bid` — the freshly RE-SELECTED
+contract — into `attachEvidenceToOpportunityOnDb`, which divided it by the ORIGINAL
+contract's frozen entry with no identity check. Five call sites, same defect.
+
+`oc_1a50klb` (the SPY CALL the owner received):
+
+```
+frozen  O:SPY260811C00772000  entry 3.44 (mid; bid 3.42 / ask 3.45)
+12:06   swap -> O:SPY260918C00782000  (+38 days, +10 strike)  bid 8.58
+        (8.58 - 3.44)/3.44 = +149.42%  <-- stored as maxReturnPct
+12:13   swap -> O:SPY260813C00771000  bid 3.87  -> +12.50%
+15:27   swap -> O:SPY260814C00771000  bid 4.50  -> +30.81%
+```
+
+The frozen contract was observed **exactly once, at entry**, and never marked again.
+Blast radius: 119 delivered cases, 41 re-selected a contract, **27 have no post-entry
+observation of the contract they recommended**. Today: 9/9 swapped, 7/9 with none.
+Evidence rows also show the *strategy* changing mid-case (`longer_dated_swing`,
+`reversal_bounce` attached to a case opened as `breakout_forming`).
+
+### FINDING 3 — the SPY -40.3% genuinely never worked (verified separately)
+
+The corrupted +149% MFE is not the trade's history. `options_paper_trades` #789 and its
+**529 same-contract marks** are contract-consistent and authoritative:
+
+```
+peak  -0.76%  at 11:11:27 ET (t+2.5m)     never reached +5%, ever
+exit  -40.29% at 15:50:01 ET  reason stop_hit  entry_quality_verdict EARLY
+```
+
+So for THIS trade "never worked" is true — but it is an `IMMEDIATE_SETUP_FAILURE`
+held 278 minutes from peak to exit, not a profit giveback. The other loss that day
+(`#766` SPY 0DTE P770) DID reach **+28.26%** at t+3.4m and gave back 68 pts — that one
+is the real `GOOD_SETUP_BAD_EXIT`.
+
+Also: the published stop was $1.89 (-45%) but the engine exits on the **-40% safety
+band** (`OPTIONS_PAPER_STOP_LOSS_PCT`), so the stop shown to the owner is unreachable.
+
+### FINDING 4 — the delivered/research gap is mostly evidence quality, not execution
+
+```
+                                  DELIVERED        RESEARCH
+all closed rows                   -31.04%  PF .351   +1.49%  PF 1.054
+excluding the 2026-07-22 bulk     -17.52%  PF .436   +1.49%  PF 1.054
+  ... and requiring >=20 marks     -9.99%            +0.53%
+```
+
+413 of 575 delivered rows come from **one day (2026-07-22) with avgMarks 0.3**; 189 of
+them exited `expiration_no_quote` with a NULL return. Gap decomposition: ~13.5 pts
+legacy bulk, ~7.5 pts residual low mark coverage, **~10.5 pts genuine residual**.
+
+The residual is a **win-rate / MFE** gap (24.3% vs 39.1%; avgMFE +15.0% vs +38.9%) at
+identical DTE, hold time, exit engine and entry convention — i.e. selection, not
+execution.
+
+**Research entry is NOT flattered** (Priority 5 answered): research avg fill is
+-0.94% below ask vs delivered -1.12%; delivered has 160 OPTIMISTIC_MIDPOINT entries,
+research has **zero**; forcing research to the ask still leaves it positive
+(+1.487% -> +0.535%).
+
+### FINDING 5 — a RESEARCH_ONLY strategy could look subscriber-ready
+
+The message the owner actually received, verbatim from `options_alerts.message`:
+
+```
+🟢 SPY CALL ALERT
+SPY 08/11 $772 Call
+Entry: $3.42–$3.45
+Why: SPY pressed against resistance as momentum increased.
+```
+
+`breakout_forming` was `RESEARCH_ONLY / INSUFFICIENT_EVIDENCE` at that moment. No lane,
+readiness, strategy, version or case id. All 9 openings that day were for strategies in
+`RESEARCH_ONLY` or `DEMOTED`, all with `research_only = 0`.
+
+### Profit protection — measured, and the naive policy is WRONG
+
+From 295 closed trades with >=20 same-contract marks, ex-bulk:
+
+```
++25% reached  n=135  avgPeak 62.7%  avgFinal 34.2%  35% ended red  giveback 28.5 pts
++50% reached  n= 84  avgPeak 78.8%  avgFinal 69.1%  10% ended red  giveback  9.8 pts
++100% reached n= 10  avgPeak 199.7% avgFinal 199.7%  0% ended red  giveback  0.0 pts
+
+CURRENT        expectancy -3.14%  PF 0.882
+TP@+25%        expectancy -7.35%  PF 0.628   (86 winners clipped)
+TP@+50%        expectancy -8.58%  PF 0.661
+BE-after-+20%  expectancy -1.76%  PF 0.899   <-- best candidate
+BE-after-+25%  expectancy -1.90%  PF 0.904
+```
+
+**Every hard take-profit makes realized expectancy worse.** Clipping winners costs more
+than the losers avoided. Only a break-even stop after +20-25% helps, and only by
+~1.2-1.4 pts — it does not make the lane profitable. Not implemented; evidence only.
+
+### Shipped this session
+
+- `320d651` price a case's return only on the contract it froze its entry on
+- `6d863c9` stop the nightly review calling a lane it does not measure "the day's trades"
+- `d2f905d` make every opening state its lane and readiness
+
+### NOT done — next session starts here
+
+- Strategy/version attribution is still not persisted; openings report
+  `UNKNOWN_LEGACY_VERSION` and readiness rows remain keyed `@unknown`.
+- The duplicate-open race in the paper engine (421/422) is diagnosed, not fixed.
+- Published stop (-45%) vs enforced band (-40%) mismatch not reconciled.
+- `selectedContract.dte` is hardcoded 0 in `claimOpportunityOpenOnDb` — DTE buckets on
+  opportunity cases are wrong (case showed dte 0 for a 5-DTE contract).
+- Break-even-after-+20% profit protection: not implemented, shadow experiment not built.
+- Matched delivered/research cohorts, confirmation-delay and premium-expansion buckets:
+  not built (delivered latency fields are NULL, so the inputs do not exist yet).
+- The autonomous nightly AI research cycle was not started.
+
+
 ## Packet update — 2026-08-06 (5) the marking gap is a legacy artifact, and the strategies are still negative
 
 ### Verified state
