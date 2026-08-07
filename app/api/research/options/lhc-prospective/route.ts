@@ -37,11 +37,13 @@ export async function GET(req: Request) {
     const { LHC_SELECT_V1, checkFrozen, describeExperiment } =
       await import("@/lib/research/options/experiment-registry");
     const { listFindingsOnDb } = await import("@/lib/research/options/findings-store");
-    const { POLICY_VERSIONS } = await import("@/lib/research/options/policy-attribution");
-    const { deployInfo } = await import("@/lib/build-info");
+    const { POLICY_VERSIONS, censusShaAttribution } = await import("@/lib/research/options/policy-attribution");
+    const { buildFirstRthReadiness } = await import("@/lib/research/options/first-rth-readiness");
+    const { deployInfo, deploymentShaAttribution } = await import("@/lib/build-info");
 
     const db = getDb() as never;
     const sha = (() => { try { return deployInfo().commit ?? null; } catch { return null; } })();
+    const shaAttribution = deploymentShaAttribution();
 
     const refreshed = doRefresh ? refreshShadowOutcomesOnDb(db).refreshed : 0;
 
@@ -64,6 +66,7 @@ export async function GET(req: Request) {
           "computed from CLOSED outcomes; a positive MFE is never counted as a win.",
         generatedAtMs: Date.now(),
         deploymentSha: sha,
+        shaAttribution,
         outcomesRefreshed: refreshed,
 
         experiment: {
@@ -88,7 +91,17 @@ export async function GET(req: Request) {
         weeklyVerdict: weeklyVerdict(scoreboard),
 
         policyVersions: POLICY_VERSIONS,
+        shaCensus: censusShaAttribution(
+          rows.map((r) => ({ deploymentSha: (r.attribution as any)?.deploymentSha ?? null })),
+        ),
         findings: listFindingsOnDb(db, { strategy: "lower_high_continuation" }),
+
+        // Everything the first real RTH session must prove, checked against what is actually
+        // persisted rather than asserted. Every check reports NOT_YET_OBSERVED before the
+        // session rather than passing vacuously.
+        firstRthReadiness: buildFirstRthReadiness(rows, {
+          frozen, shaAttribution, sessionDate: sessionDate ?? null,
+        }),
 
         decisionCount: rows.length,
         decisions: full ? rows : rows.slice(-50),
