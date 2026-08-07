@@ -40,8 +40,10 @@ Five losers reached +28% to +40% and closed between -22% and -45%. Ten reached
 ahead of `EXIT_TOO_SLOW` (11 combined with marginal gains), with only 2
 `STOP_TOO_WIDE` and 2 `THESIS_FAILED_IMMEDIATELY`.
 
-So the primary defect is **exit policy, not selection**: 12 of 26 losses were
-trades that worked and were not monetised.
+Twelve of 26 losses were trades that worked and were not monetised, so exits are a
+real and measurable opportunity. **They are not the whole answer** — see the post-fix
+measurement below, where the best evidenced exit policy still leaves the lane at
+PF 0.905, short of break-even. Selection has to improve too.
 
 ### FINDING 3 — the winners exit AT their peak, which is why they look untouchable
 
@@ -104,11 +106,39 @@ f770142  Let the trailing-stop backtest clip a winner
 4d60022  Say on the owner opening which paper position is tracking it
 ```
 
+Production verified at `ff163c7` and the policy table re-read from it.
+
+### FINDING 7 — post-fix measurement: the trailing stop was pure artifact
+
+Re-read from production at `ff163c7`, same 35-trade cohort, corrected simulator:
+
+```
+policy             n   mean%     PF     winnerValueDestroyed
+Current           35   -8.39   0.751    —
+Break-even +15%   35   -2.50   0.905    -54.8 pts   <- only candidate
+Break-even +10%   35   -4.29   0.823    
+Break-even +20%   35   -6.38   0.790
+Trail 15%         35   -6.32   0.685
+Trail 10%         35   -8.03   0.549   -628.8 pts   <- was +10.86 / 1.652
+Time stop 10m     35   -9.87   0.247
+Time stop 30m     35  -13.33   0.257
+```
+
+Trail 10% went from mean **+10.86% / PF 1.652** to **-8.03% / PF 0.549** — now WORSE
+than doing nothing. It clips 7 of the 9 winners, and takes the +343.93% AAPL run down
+to **-7.14%**. Every time-stop variant does the same. Long holds are load-bearing for
+the convex winners; any policy that caps duration or retracement destroys the tail
+that carries the lane.
+
+Break-even +15% is the only policy that improves both mean and PF, and it touches a
+single winner (GOOGL +47.04% -> -7.78%, -54.8 pts) leaving the other eight untouched.
+
+**But PF 0.905 < 1.0.** The best evidenced exit change does not make this lane
+profitable. It is worth a shadow experiment; it is not a fix.
+
 ### Not done this session
 
-The re-measurement of Trail/BE policies under the corrected simulator has **not** been
-read back from production yet — that is the immediate next step and the number that
-decides whether any exit experiment is worth running. Also untouched: the frozen audit
+Untouched: the frozen audit
 cohort table (P1), persisted loss taxonomy (P3), pre-entry winner/loser feature
 comparison (P5), contract-selection runner-up analysis (P10), the duplicate-delivery
 race (P14), confirmation-cost capture (P9/P17), strategy/policy attribution (P13),
