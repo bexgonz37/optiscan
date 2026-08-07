@@ -1,5 +1,187 @@
 # Current Task Packet
 
+## Packet update — 2026-08-06 (9) the lane bought more implied move than it could outrun, and the two best "predictors" were hindsight
+
+### Verified state
+
+- local = `origin/main` = production = `ad947f6` (baseline `d264f34` verified from git,
+  origin and `/api/runtime/status` before any change; production re-verified after deploy).
+- Production healthy: `ok:true`, `loopRunning:true`, `session:closed`, scheduler owner,
+  `quotaExceeded:false`, `schemaOk:true`.
+- Full suite **3764/3764** (was 3739; +25 new). `tsc --noEmit --incremental false` clean.
+  `next build` exit 0. `git diff --check` clean. 19 untracked scratch files untouched.
+- Subscriber readiness `NOT_READY`, `subscriberActive: 0`. No promotion has occurred.
+- Owner private Discord alerting remains ACTIVE. No gate, threshold, env var or provider
+  cap was changed. Every new surface is read-only and reports `productionBehaviorChanged: false`.
+- All evidence read from the production SQLite volume and the authenticated diagnostic path.
+  No secret printed.
+
+### FINDING 1 — the two strongest apparent predictors were hindsight
+
+Ranked naively over the delivered `lower_high_continuation` cohort, the best separators were
+`contractUpdateCount` (AUC 0.892) and `contractCandidateCount` (AUC 0.875) — ahead of every
+genuine feature. Both are lifetime accumulators on `opportunity_cases.case_json`:
+
+```
+contractCandidates[].observedAtMs    0 of 222 observed at or before entry
+contractUpdates[].changedAtMs        0 of 163 changed  at or before entry
+```
+
+They measure how long a position survived, not how it was chosen. A rule built on them
+would have backtested beautifully and done nothing live. They are on `HINDSIGHT_DENYLIST`
+and `assertNoLeakage` throws if either reaches a selection rule.
+
+### FINDING 2 — confirmation cost is not measurable historically
+
+`confirmationDelayMs` is **0 for all 58 rows** (`first_detected_at_ms` == `entered_at_ms`),
+`underlyingMoveBeforeEntryPct` is 0 for all 58, and premium expansion carries only bid/ask
+rounding (21/58 non-zero, median 0). The columns exist and production never wrote a
+distinguishing value. `degenerateFeatures()` reports this as **unmeasured**, so no packet can
+claim "confirmation delay did not matter". Priority 10 is prospective-only work.
+
+### FINDING 3 — the cohort, frozen
+
+`LHC_DELIVERED_V1` = every `DELIVERED_ALERT_PAPER` mirror of a `lower_high_continuation`
+owner opening. 58 members, 7 sessions, all with alert id, case id and Discord message id.
+
+```
+WINNER 8 | LOSS 46 | OPEN 4 | UNGRADABLE 0      trajectory-trustworthy 42/58 (>=20 same-contract marks)
+baseline  n=54  8W/46L  winRate 15%  mean -27.83%  median -41.7%  PF 0.311
+```
+
+Every member is a PUT. The 35-trade figure in packet (8) was the recent-40 slice across all
+strategies; this is the full delivered history for the strategy and supersedes it as the
+denominator for this lane.
+
+### FINDING 4 — one defect, seen four ways: the lane bought implied move it could not outrun
+
+Contract selection pins delta near 0.45, so at fixed delta the **strike distance measures the
+implied move already priced in**. A delta-0.45 put sits 0.24% from spot on low-vol AAPL and
+1.85% away on ACHR. The losing population is where the market had already priced a move large
+enough that the strike sat over 1% out — and the -40% premium safety band then fires on
+ordinary noise before the thesis resolves.
+
+Repeated across both halves of a date-separated split (development 07-29→08-03, validation
+08-04→08-06), winner median vs loser median:
+
+```
+feature                AUC     Wmed          Lmed          devAUC  valAUC  repeats
+contractVolume        0.815   5411          940            0.795   0.778    yes
+dte                   0.245   1             2              0.295   0.000    yes
+moneynessPct          0.750   -0.24%        -0.48%         0.780   0.611    yes
+vwapDistPct           0.745   -0.24%        -1.15%         0.770   0.611    yes
+spreadPct             0.283   1.52%         2.78%          0.260   0.222    yes
+dollarVolume          0.701   $20.2B        $9.5B          0.660   0.667    yes
+iv                    0.315   0.333         0.400          0.385   0.111    yes
+```
+
+Explicitly **not** discriminators — separated overall, reversed in validation:
+`callPutVolRatio`, `ivLevel`, `concurrentOpen`, `nearestResistanceDistPct`. Session crowding
+looked strong in development (AUC 0.23) and inverted in validation (0.86). It is not used.
+
+### FINDING 5 — `LHC_SELECT_V1`, and the number that says it is not a fix
+
+Four gates, each a view of Finding 4, each repeated across dates:
+`ATM_BAND` (strike within 0.5% of spot, not ITM) · `SHORT_DTE` (<=3) ·
+`UNDERLYING_LIQUIDITY` (>= $4B) · `IV_CEILING` (contract IV <= 0.55).
+
+```
+                     baseline                    experiment            winnersRejected
+OVERALL     n=54  8W/46L  mean -27.83  PF 0.311   n=20 8W/12L  +6.57  PF 1.240      0
+DEVELOPMENT n=45  5W/40L  mean -30.55  PF 0.280   n=14 5W/ 9L  +8.88  PF 1.303      0
+VALIDATION  n= 9  3W/ 6L  mean -14.22  PF 0.529   n= 6 3W/ 3L  +1.17  PF 1.051      0
+```
+
+**Zero winners rejected in every split.** All eight are retained, including +343.93% AAPL,
++50.27% SPY, +47.04% GOOGL and +46.35% IWM. 34 of 46 losses avoided (-1634 pts). Per-session
+hold-out: 3 BETTER, 0 WORSE, 4 neutral — no session is made worse.
+
+**And it is still not a profitable system.** Strip the single +343.93% run and cap the tail:
+
+```
+                   baseline PF   experiment PF
+headline              0.311          1.240
+ex-top-winner         0.153          0.611
+capped at +60%        0.181          0.721
+```
+
+The improvement is large and repeated in all three framings. The lane is still carried by one
+convex trade. This is a shadow experiment, not a promotion argument.
+
+### FINDING 6 — selection is not selectively better at the immediate failures
+
+Of 32 trustworthy losses: **14 never cleared +5%** (no post-entry policy could have saved
+them) and 18 worked first. The rule rejects 71% of never-worked and 78% of worked-then-lost —
+it is a general contract-quality filter, not a thesis filter. Four worked-then-lost trades
+survive it (531 NVDA peak +25→-41, 614 IWM +15→-41, 735 AMZN +17→-51, 758 AMZN +37→-43) and
+those are the remaining job for exit policy.
+
+Loss taxonomy: `INSUFFICIENT_EVIDENCE` 14, `WORKED_MARGINALLY_THEN_LOST` 11,
+`CONTRACT_TOO_FAR_OTM` 8, `PROFIT_GIVEN_BACK` 7, `IMMEDIATE_SETUP_FAILURE` 4,
+`PREMIUM_CHASE` 1, `WRONG_DTE` 1.
+
+### FINDING 7 — winners need room: worst drawdown before profit is -20.2%
+
+Winner paths (6 of 8 trustworthy): median drawdown before profit **-11.3%**, worst **-20.2%**
+(787 IWM). Time to +25% ranges 8m to 1431m. Any trailing stop tighter than -20%, and any time
+stop under ~24h, destroys at least one winner — consistent with packet (8)'s corrected
+simulator. `simulate()` reports `winnersRejected` before `lossesAvoided` so this cannot be
+hidden again.
+
+### FINDING 8 — the last "duplicate delivery" is a legitimate re-entry, and both legs won
+
+`duplicateDeliveredCount: 1` traces to fingerprint `of_odhrje` / `O:AAPL260805P00305000`:
+
+```
+oa_1u6xvui  2026-08-03 10:21 ET  case oc_1kevqxw  msg 1533842179284271104  -> paper 687  +48.84%
+oa_1u6xvjt  2026-08-03 13:57 ET  case oc_b3zulh   msg 1533896504371056650  -> paper 711  +45.13%
+```
+
+3.6 hours apart, distinct cases, distinct Discord messages, each with exactly one mirror, each
+graded, **both winners**. The first position had closed, which the unique indexes explicitly
+permit. The readiness gate counts "same fingerprint + same OCC ever delivered twice" and so
+flags a valid second entry. This is the same class of mistake as `ac948b0` — do not widen
+dedup. Recommended scope: same session **and** the prior position still open. Not changed here.
+
+### FINDING 9 — the 4 missing mirrors are all legacy
+
+`missingMirror: 4` = `oa_j7t1d4` (AMZN), `oa_1xnsw2d` (META), `oa_kb76c5` (TSLA),
+`oa_1byyt25` (AVGO), all sent **2026-07-29 13:56–15:14 ET**, all with a Discord message and
+`paper_reservation_state` NULL — the reservation was never attempted. Every one of the 115
+alerts sent after that timestamp is mirrored. Prospective owner-opening mirror rate is
+**100%**; the gate is reporting three-day-old rows that pre-date the atomic reservation path.
+
+### Shipped this session
+
+```
+ad947f6  Freeze the lower_high cohort and ask what was knowable before entry
+```
+
+`lib/research/options/pre-entry-features.ts` (feature set + leakage denylist + degeneracy
+report) · `lower-high-cohort.ts` (frozen `LHC_DELIVERED_V1`, trust gating, loss taxonomy) ·
+`lower-high-cohort-loader.ts` (read-only, same-contract marks only) ·
+`pre-entry-comparison.ts` (AUC + cross-date repetition gate) ·
+`selection-experiment.ts` (`LHC_SELECT_V1`, shadow-only, simulator that can clip a winner) ·
+`GET /api/research/options/lower-high-selection`.
+
+### Not done — next session starts here
+
+- `LHC_SELECT_V1` is measured but not yet **prospectively** paper-tracked alongside baseline;
+  it needs a shadow arm writing per-opportunity admit/reject rows during RTH.
+- Confirmation-cost capture (Priority 10) must be written prospectively — `firstEligibleAt`,
+  `confirmationStartedAt`, `contractSelectedAt`, `firstEligibleAsk`, `rewardRemainingAtEntry`.
+  The existing columns are degenerate and cannot be backfilled.
+- Strategy/policy attribution still stamps `UNKNOWN_LEGACY_VERSION`; freeze real versions at
+  case creation going forward.
+- Evidence Learning does not yet consume `LHC_SELECT_V1` findings; nightly/weekly rollup
+  unchanged.
+- Duplicate-delivery gate scope (Finding 8) and the legacy mirror rows (Finding 9) are
+  diagnosed, not changed.
+- 4 open positions carry a shadow decision: 770 AMZN, 779 TSLA, 795 GOOGL ADMIT;
+  796 HOOD REJECT (all four gates). Their outcomes are the first genuinely out-of-sample test.
+
+---
+
 ## Packet update — 2026-08-06 (8) the losses are an exit-policy failure, and the backtest that would have proved it could not clip a winner
 
 ### Verified state
