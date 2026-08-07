@@ -308,7 +308,11 @@ export function formatBearishOwnerReview(
   const e = input.deliveryInput.entry;
   const midpoint = e?.mid
     ?? (c.bid != null && c.ask != null ? (c.bid + c.ask) / 2 : 0);
+  // The bearish authority already decides whether this may reach subscribers; the
+  // message must carry that same verdict rather than looking approved by default.
   return formatPrivateLiveAlert({
+    lane: decision.maySubscriberSend ? "SUBSCRIBER_APPROVED" : "OWNER_ONLY",
+    readinessState: decision.maySubscriberSend ? "SUBSCRIBER_APPROVED" : "RESEARCH_ONLY",
     symbol: input.symbol,
     side: "put",
     strike: c.strike,

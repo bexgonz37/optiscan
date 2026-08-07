@@ -36,7 +36,10 @@ test("2/9. READY + valid call + flags on → ONE message; SENT only after succes
   const r = await deliverOptionsCallout(input(), { getDb: () => d, send, now: () => NOW }, ON);
   assert.equal(r.state, "SENT"); assert.equal(r.sent, true);
   assert.equal(spy.calls.length, 1);
-  assert.match(spy.calls[0].content, /🟢 HOOD CALL ALERT/);
+  // No readiness row ⇒ RESEARCH_ONLY, so the opening must declare itself rather than
+  // render as a subscriber-ready trade.
+  assert.match(spy.calls[0].content, /🔬 HOOD CALL · OWNER_ONLY · NOT SUBSCRIBER-APPROVED/);
+  assert.match(spy.calls[0].content, /Readiness: RESEARCH_ONLY/);
   assert.match(spy.calls[0].content, /HOOD 03\/20 \$101 Call/);
   assert.match(spy.calls[0].content, /Entry: \$1\.20–\$1\.30/);
   assert.match(spy.calls[0].content, /Why: HOOD pressed against resistance as momentum increased\./);

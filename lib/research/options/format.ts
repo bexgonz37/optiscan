@@ -95,6 +95,30 @@ export interface PrivateLiveAlertInput extends CompactAlertInput {
   detailUrl?: string | null;
   reasonSignals?: string[] | null;
   includeInternalLink?: boolean;
+  /** Which lane produced this opening — OWNER_ONLY, PAPER, RESEARCH, SUBSCRIBER_APPROVED. */
+  lane?: AlertLane | null;
+  /** Readiness state of the strategy at send time (strategy_readiness_state.state). */
+  readinessState?: string | null;
+  /** Strategy version, or UNKNOWN_LEGACY_VERSION when the row predates attribution. */
+  strategyVersion?: string | null;
+  /** Living Opportunity Case this opening belongs to. */
+  opportunityCaseId?: string | null;
+}
+
+export type AlertLane = "OWNER_ONLY" | "PAPER" | "RESEARCH" | "SUBSCRIBER_APPROVED";
+
+/**
+ * An opening may only present itself as a plain actionable trade when the strategy
+ * is subscriber-approved AND it is being sent on the subscriber lane. Everything else
+ * — owner testing, paper, research, a demoted or research-only strategy — has to say
+ * so in the message itself.
+ */
+export function openingIsSubscriberGrade(
+  lane: AlertLane | null | undefined,
+  readinessState: string | null | undefined,
+): boolean {
+  return lane === "SUBSCRIBER_APPROVED"
+    && String(readinessState ?? "").trim().toUpperCase() === "SUBSCRIBER_APPROVED";
 }
 
 export interface PlainEnglishAlertReasonInput {
@@ -201,16 +225,34 @@ export function formatPrivateLiveAlert(i: PrivateLiveAlertInput): string {
     conditionIds: i.reasonSignals,
     sourceReason: i.actionableReason,
   });
+  // A non-approved strategy must never read as a subscriber-ready trade. On
+  // 2026-08-06 an unlabelled "🟢 SPY CALL ALERT" went out for breakout_forming while
+  // that strategy was RESEARCH_ONLY / INSUFFICIENT_EVIDENCE, with nothing in the
+  // message to say so.
+  const subscriberGrade = openingIsSubscriberGrade(i.lane, i.readinessState);
+  const laneLabel = i.lane ?? "OWNER_ONLY";
+  const heading = subscriberGrade
+    ? `${call ? "🟢" : "🔴"} ${sym} ${call ? "CALL" : "PUT"} ALERT`
+    : `🔬 ${sym} ${call ? "CALL" : "PUT"} · ${laneLabel} · NOT SUBSCRIBER-APPROVED`;
   const lines = [
-    `${call ? "🟢" : "🔴"} ${sym} ${call ? "CALL" : "PUT"} ALERT`,
+    heading,
     "",
     `${sym} ${mmdd(i.expiration)} $${strikeStr(i.strike)} ${call ? "Call" : "Put"}`,
     `Entry: ${entryZone}`,
     "",
     `Why: ${reason}`,
     "",
-    "Educational purposes only. Options are high risk.",
   ];
+  if (!subscriberGrade) {
+    lines.push(
+      `Lane: ${laneLabel} · Readiness: ${i.readinessState ?? "UNKNOWN"}`,
+      `Strategy: ${i.strategyKey ?? "unknown"}@${i.strategyVersion ?? "UNKNOWN_LEGACY_VERSION"}`,
+      ...(i.opportunityCaseId ? [`Case: ${i.opportunityCaseId}`] : []),
+      "Research/paper simulation — not a subscriber recommendation.",
+      "",
+    );
+  }
+  lines.push("Educational purposes only. Options are high risk.");
   if (i.includeInternalLink === true && i.detailUrl) {
     lines.push("", `View details: ${i.detailUrl}`);
   }

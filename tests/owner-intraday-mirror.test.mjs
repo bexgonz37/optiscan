@@ -112,13 +112,16 @@ test("formatIntradayActionable uses compact trader-facing copy", () => {
   });
   payload.includeInternalLink = true;
   const msg = formatIntradayActionable(payload);
-  assert.match(msg, /🟢 SPY CALL ALERT/);
+  // The owner mirror is an OWNER_ONLY lane, so it says so instead of rendering as a
+  // subscriber-ready trade.
+  assert.match(msg, /🔬 SPY CALL · OWNER_ONLY · NOT SUBSCRIBER-APPROVED/);
   assert.match(msg, /SPY 07\/27 \$635 Call/);
   assert.match(msg, /Entry: \$1\.20–\$1\.30/);
   assert.match(msg, /Why:/);
+  assert.match(msg, /not a subscriber recommendation/);
   assert.match(msg, /Educational purposes only\. Options are high risk\./);
   assert.match(msg, /View details: \/intelligence\/oc_demo/);
-  assert.doesNotMatch(msg, /O:|Bid\/Ask|Trigger confirmed|Confidence|Spread|DTE|setup|subscriber|pipeline/i);
+  assert.doesNotMatch(msg, /O:|Bid\/Ask|Trigger confirmed|Confidence|Spread|DTE|pipeline/i);
 });
 
 test("regular-session SEND mirror skips because canonical options alert already posted", async () => {

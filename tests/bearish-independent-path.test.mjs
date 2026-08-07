@@ -155,11 +155,12 @@ test("qualified NVDA $200 PUT becomes READY in shadow mode and SEND only with su
   assert.equal(ready.ownerReview, true);
   assert.equal(ready.maySubscriberSend, false);
   const ownerMessage = formatBearishOwnerReview(base, ready);
-  assert.match(ownerMessage, /🔴 NVDA PUT ALERT/);
+  // Owner review is not a subscriber send, and the message has to say so.
+  assert.match(ownerMessage, /🔬 NVDA PUT · OWNER_ONLY · NOT SUBSCRIBER-APPROVED/);
   assert.match(ownerMessage, /NVDA 07\/27 \$200 Put/);
   assert.match(ownerMessage, /Entry: \$0\.49–\$0\.50/);
   assert.match(ownerMessage, /Why: NVDA broke support, stayed below VWAP, and bearish momentum increased\./);
-  assert.doesNotMatch(ownerMessage, /O:|DTE|Confidence|Spread|Setup|Delta|Passed|blocker|subscriber|pipeline/i);
+  assert.doesNotMatch(ownerMessage, /O:|DTE|Confidence|Spread|Setup|Delta|Passed|blocker|pipeline/i);
 
   const send = evaluateBearishAuthority(base, { BEARISH_PIPELINE_ENABLED: "1", BEARISH_SUBSCRIBER_DELIVERY_ENABLED: "1" });
   assert.equal(send.state, "BEARISH_SEND");
@@ -238,13 +239,17 @@ test("subscriber PUT message uses the compact trader-facing copy", async () => {
     },
   }, { ...ENV_ON, BEARISH_PIPELINE_ENABLED: "1", BEARISH_SUBSCRIBER_DELIVERY_ENABLED: "1" });
   const content = String(payloads[0]?.content ?? "");
-  assert.match(content, /🔴 NVDA PUT ALERT/);
+  // BEARISH_SUBSCRIBER_DELIVERY_ENABLED alone does not make a strategy subscriber-
+  // grade: with no readiness row the strategy is RESEARCH_ONLY, so the opening is
+  // labelled rather than rendered as an approved trade.
+  assert.match(content, /🔬 NVDA PUT · OWNER_ONLY · NOT SUBSCRIBER-APPROVED/);
+  assert.match(content, /Readiness: RESEARCH_ONLY/);
   assert.match(content, /NVDA 07\/27 \$200 Put/);
   assert.match(content, /Entry: \$0\.49–\$0\.50/);
   assert.match(content, /Why: NVDA broke support and bearish momentum increased\./);
   assert.match(content, /Educational purposes only\. Options are high risk\./);
   assert.doesNotMatch(content, /View details|\/alerts|\/intelligence|https?:\/\//);
-  assert.doesNotMatch(content, /O:|DTE|T1|T2|Stop|Confidence|Spread|Volume|OI|Delta|Freshness|Passed|blocker|subscriber|pipeline|Risk:/i);
+  assert.doesNotMatch(content, /O:|DTE|T1|T2|Confidence|Spread|Volume|OI|Delta|Freshness|Passed|blocker|pipeline|Risk:/i);
 });
 
 test("bearish strategy families and active signals are explicit", () => {

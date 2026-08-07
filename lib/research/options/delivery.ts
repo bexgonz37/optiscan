@@ -23,7 +23,13 @@ import { evaluateEntryQuality, entryQualityFromDelivery } from "../../entry-qual
 import { persistAlertInstrumentation, type AlertInstrumentation } from "./instrumentation.ts";
 import { recordProposedShadowFromDelivery } from "./shadow-runner.ts";
 import { revalidateBeforeDiscordSend } from "./final-delivery-revalidation.ts";
-import { formatPrivateLiveAlert } from "./format.ts";
+import { formatPrivateLiveAlert, type AlertLane } from "./format.ts";
+import {
+  DEFAULT_READINESS_STATE,
+  effectiveReadinessState,
+  maySendSubscriberOpening,
+  readReadinessOnDb,
+} from "./strategy-readiness.ts";
 import { tradingDay } from "../../trading-session.ts";
 import { evaluateBearishAuthority } from "./bearish-authority.ts";
 import {
@@ -727,8 +733,27 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
   }
 
   const appBaseUrl = String(env.PUBLIC_APP_URL ?? env.NEXT_PUBLIC_APP_URL ?? "").trim().replace(/\/$/, "");
+  // The opening must state its own lane and readiness. Without this an opening for a
+  // RESEARCH_ONLY / DEMOTED strategy is indistinguishable from a subscriber-approved
+  // trade (2026-08-06: "🟢 SPY CALL ALERT" for breakout_forming @ RESEARCH_ONLY).
+  // Strategy versions are not attributed yet, so readiness rows are keyed "unknown";
+  // the message reports UNKNOWN_LEGACY_VERSION rather than inferring one from code.
+  const openingReadinessVersion = "unknown";
+  const openingStrategyVersion = "UNKNOWN_LEGACY_VERSION";
+  const openingReadiness = (() => {
+    try {
+      return effectiveReadinessState(readReadinessOnDb(db as any, finalInput.strategy, openingReadinessVersion));
+    } catch {
+      return DEFAULT_READINESS_STATE;
+    }
+  })();
+  const openingLane: AlertLane = maySendSubscriberOpening(openingReadiness) ? "SUBSCRIBER_APPROVED" : "OWNER_ONLY";
   const liveMessage = finalInput.entry
     ? formatPrivateLiveAlert({
+      lane: openingLane,
+      readinessState: openingReadiness,
+      strategyVersion: openingStrategyVersion,
+      opportunityCaseId: livingCaseId,
       symbol: finalInput.candidateSymbol,
       side: finalInput.contract.side,
       strike: finalInput.contract.strike,

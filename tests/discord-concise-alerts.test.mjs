@@ -10,7 +10,11 @@ import {
   formatReturnMilestoneUpdate,
 } from "../lib/research/options/milestone-format.ts";
 
-const opening = (side) => formatPrivateLiveAlert({
+// These cases cover the SUBSCRIBER-FACING copy, so they state the approved lane
+// explicitly. An opening without an approved lane+readiness is deliberately rendered
+// with a provenance block instead — covered by its own test below.
+const opening = (side, provenance = { lane: "SUBSCRIBER_APPROVED", readinessState: "SUBSCRIBER_APPROVED" }) => formatPrivateLiveAlert({
+  ...provenance,
   symbol: side === "put" ? "NVDA" : "SPY",
   side,
   strike: side === "put" ? 200 : 640,
@@ -192,4 +196,24 @@ test("explicit private owner formatting may include an internal dossier link", (
     includeInternalLink: true,
   });
   assert.match(message, /View details: https:\/\/private\.example\/intelligence\/oc_private/);
+});
+
+// 2026-08-06: "🟢 SPY CALL ALERT" went to the owner for breakout_forming while that
+// strategy was RESEARCH_ONLY / INSUFFICIENT_EVIDENCE. Nothing in the message said so,
+// so a non-approved idea was indistinguishable from a subscriber-ready trade.
+test("an opening from a non-approved strategy cannot look subscriber-ready", () => {
+  const message = opening("call", { lane: "OWNER_ONLY", readinessState: "RESEARCH_ONLY", opportunityCaseId: "oc_1a50klb" });
+  assert.doesNotMatch(message, /🟢 SPY CALL ALERT/);
+  assert.match(message, /NOT SUBSCRIBER-APPROVED/);
+  assert.match(message, /Lane: OWNER_ONLY · Readiness: RESEARCH_ONLY/);
+  assert.match(message, /Strategy: sr_reclaim@UNKNOWN_LEGACY_VERSION/);
+  assert.match(message, /Case: oc_1a50klb/);
+  assert.match(message, /not a subscriber recommendation/);
+});
+
+test("a DEMOTED strategy is labelled even when sent on the subscriber lane", () => {
+  const message = opening("put", { lane: "SUBSCRIBER_APPROVED", readinessState: "DEMOTED" });
+  assert.doesNotMatch(message, /🔴 NVDA PUT ALERT/);
+  assert.match(message, /NOT SUBSCRIBER-APPROVED/);
+  assert.match(message, /Readiness: DEMOTED/);
 });
