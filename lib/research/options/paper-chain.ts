@@ -292,13 +292,12 @@ export function buildPaperChainDiagnostic(
       ).get(linkedPaperId) as Record<string, unknown> | undefined
       : undefined;
     const paper = linkedPaper ?? alertPaperRows[0];
-    const thesisPaperRows = paper?.thesis_fingerprint && hasTable(db, "options_paper_trades")
-      ? db.prepare(
-        "SELECT * FROM options_paper_trades WHERE thesis_fingerprint=? AND paper_kind='DELIVERED_ALERT_PAPER' ORDER BY id ASC",
-      ).all(paper.thesis_fingerprint) as Record<string, unknown>[]
-      : [];
+    // Mirrors attributable to THIS alert only. thesis_fingerprint is deliberately broad
+    // (symbol|direction|optionType|sessionDate), so it is shared by legitimate sequential
+    // re-entries on the same session thesis — joining on it would flag those distinct,
+    // correctly-mirrored owner alerts as duplicates of each other.
     const paperRows = [...new Map(
-      [...alertPaperRows, ...thesisPaperRows, ...(linkedPaper ? [linkedPaper] : [])]
+      [...alertPaperRows, ...(linkedPaper ? [linkedPaper] : [])]
         .map((row) => [Number(row.id), row]),
     ).values()];
     const paperMarks = paper?.id != null && hasTable(db, "options_paper_marks")

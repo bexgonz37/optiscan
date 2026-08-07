@@ -314,3 +314,76 @@ test("display row limit never changes full-cohort account equity", async () => {
   );
   assert.equal(allVisible.verifiedPnlBreakdown.validTrades, 2);
 });
+
+// Regression: thesis_fingerprint is deliberately broad (symbol|direction|optionType|sessionDate), so
+// two SEPARATE owner alerts that re-enter the same session thesis share it. Each still has exactly one
+// mirror, and neither may be written off as a duplicate — production was excluding 10 of 40 owner
+// alerts this way, disproportionately the winners.
+test("paper chain: sequential re-entries on one session thesis are not duplicates", async () => {
+  const d = new Database(":memory:");
+  install(d);
+  const now = Date.UTC(2026, 6, 22, 14, 30);
+
+  const first = await deliverOptionsCallout(input(now), {
+    getDb: () => d, now: () => now,
+    send: async () => ({ ok: true, status: 200, latencyMs: 12, messageId: "discord-first" }),
+  }, ENV);
+  assert.equal(first.sent, true);
+
+  // The first position closes and its case retires, which is what frees the thesis for a second
+  // owner alert later in the same session.
+  d.prepare(
+    `UPDATE options_paper_trades SET status='EXITED', exit_fill=1.6, return_pct=52.4, pnl=55,
+       exit_at_ms=?, updated_at_ms=? WHERE alert_id=?`,
+  ).run(now + 60_000, now + 60_000, first.alertId);
+  d.prepare("UPDATE opportunity_cases SET lifecycle_status='CLOSED', updated_at_ms=? WHERE alert_id=?")
+    .run(now + 60_000, first.alertId);
+  d.prepare("DELETE FROM opportunity_thesis_active_index").run();
+  d.prepare("DELETE FROM opportunity_active_index").run();
+
+  const second = await deliverOptionsCallout({
+    ...input(now + 120_000),
+    contract: { ...input(now + 120_000).contract, optionSymbol: "O:NVDA260725C00105000", strike: 105 },
+    message: "second alert",
+  }, {
+    getDb: () => d, now: () => now + 120_000,
+    send: async () => ({ ok: true, status: 200, latencyMs: 12, messageId: "discord-second" }),
+  }, ENV);
+  assert.equal(second.sent, true, "a closed thesis must accept a second owner alert");
+
+  const rows = d.prepare(
+    "SELECT thesis_fingerprint, COUNT(*) n FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER' GROUP BY thesis_fingerprint",
+  ).all();
+  assert.equal(rows.length, 1, "both mirrors share one session thesis fingerprint");
+  assert.equal(rows[0].n, 2, "each alert produced its own mirror");
+
+  const diag = buildPaperChainDiagnostic(d, ENV, 40);
+  assert.equal(diag.rows.length, 2);
+  for (const row of diag.rows) {
+    assert.ok(
+      !row.pnlExclusionReasons.includes("duplicate_position"),
+      `${row.alertId} was wrongly excluded as a duplicate`,
+    );
+    assert.notEqual(row.pnlClassification, "DUPLICATE_POSITION");
+  }
+  assert.equal(diag.verifiedPnlBreakdown.duplicatePositionsExcluded, 0);
+});
+
+// Regression: selectedContract.dte was hardcoded to 0, so every delivered case looked like a 0DTE
+// trade and DTE-partitioned research was measuring a constant.
+test("opportunity case records the contract's real DTE, not 0", async () => {
+  const d = new Database(":memory:");
+  install(d);
+  const now = Date.UTC(2026, 6, 22, 14, 30); // contract expires 2026-07-25
+
+  const out = await deliverOptionsCallout(input(now), {
+    getDb: () => d, now: () => now,
+    send: async () => ({ ok: true, status: 200, latencyMs: 12, messageId: "discord-dte" }),
+  }, ENV);
+  assert.equal(out.sent, true);
+
+  const row = d.prepare("SELECT case_json FROM opportunity_cases WHERE opportunity_id=?").get(out.opportunityCaseId);
+  const selected = JSON.parse(row.case_json).selectedContract;
+  assert.equal(selected.optionSymbol, "O:NVDA260725C00100000");
+  assert.equal(selected.dte, 4, "three-and-a-bit calendar days to the 2026-07-25 expiration");
+});

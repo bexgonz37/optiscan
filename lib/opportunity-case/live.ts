@@ -4,6 +4,7 @@
  * Deterministic only. AI must never modify these records.
  */
 import { setupSentence } from "../research/options/format.ts";
+import { parseOccSymbol } from "../broker/occ.ts";
 import {
   buildOpportunityIdentity,
   opportunityCaseIdForOpen,
@@ -452,7 +453,8 @@ export function claimOpportunityOpenOnDb(
           side: input.side,
           strike: identity.strike,
           expiration: identity.expiration,
-          dte: 0,
+          // Derived from the frozen OCC against the decision timestamp — never assumed 0DTE.
+          dte: parseOccSymbol(input.optionSymbol, input.nowMs).dte ?? 0,
           bid: input.contractSnapshot?.bid ?? null,
           ask: input.contractSnapshot?.ask ?? null,
           spreadPct: input.contractSnapshot?.spreadPct ?? null,
