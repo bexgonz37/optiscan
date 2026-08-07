@@ -1,5 +1,121 @@
 # Current Task Packet
 
+## Packet update — 2026-08-06 (8) the losses are an exit-policy failure, and the backtest that would have proved it could not clip a winner
+
+### Verified state
+
+- local = `origin/main` = `4d60022` (was `9a6c9f0`, verified from git and production first).
+- Production healthy throughout: `db:true`, `schemaMissing:[]`, lifecycle active, loop running.
+- Full suite **3739/3739**, run twice. `tsc --noEmit --incremental false` clean.
+  `next build` exit 0. `git diff --check` clean. 19 untracked scratch files untouched.
+- No env var written. No provider cap changed. No threshold changed.
+- Subscriber readiness still `NOT_READY`, `transitionId: 0` — no promotion has ever occurred.
+
+### FINDING 1 — the delivered lane holds directional options for days
+
+`mark-evidence`, lane `DELIVERED_ALERT_PAPER`, 45 days, n=575:
+
+```
+medianHoldMinutes   3188.84      (53 hours)
+exitReasons         stop_hit 265 | expiration_no_quote 190 | time_stop 61 | target_hit 55
+neverMarked         271
+```
+
+**25 of the 26 losses in the 35-trade cohort exited `stop_hit`; one `time_stop`.
+Not one loss was cut by a thesis or momentum rule.** Peak-to-exit gaps run to
+4,255 minutes — the position reached its best price and was still held for days.
+
+### FINDING 2 — over a third of the losses were profitable first
+
+Best gain actually reached on the frozen OCC, 26 losses:
+
+```
+never cleared +5%     14     mean final -46.36%
++5% to +20%            7     mean final -48.04%
+reached >= +20%        5     mean final -38.67%
+```
+
+Five losers reached +28% to +40% and closed between -22% and -45%. Ten reached
++10% or better. `PROFIT_GIVEN_BACK` is the single largest deterministic tag (10),
+ahead of `EXIT_TOO_SLOW` (11 combined with marginal gains), with only 2
+`STOP_TOO_WIDE` and 2 `THESIS_FAILED_IMMEDIATELY`.
+
+So the primary defect is **exit policy, not selection**: 12 of 26 losses were
+trades that worked and were not monetised.
+
+### FINDING 3 — the winners exit AT their peak, which is why they look untouchable
+
+All 9 winners closed `target_hit` with `profitCapturedPct` 100.5–102.2%. They did
+not give anything back. The largest, AAPL 260803P330 at **+343.93%**, took 1,431
+minutes to reach its MFE — a long hold is load-bearing for the convex winners,
+so a naive time-stop would destroy them.
+
+### FINDING 4 — the backtest could not have caught any of this
+
+`trailing()` in `exit-policy-research.ts` re-armed `armedAt` on **every** new high,
+so `twoConsecutiveExit` only scanned marks after the **global peak**. It could only
+exit after the best price of the whole trade — structurally unable to clip a winner.
+
+Measured on the 35-trade cohort before the fix:
+
+```
+policy            n   mean%     PF     W   worstClipVsCurrent
+Current          35   -8.39   0.751    9   —
+Break-even +15%  35   -2.50   0.905    8   GOOGL -54.81
+Trail 10%        35  +10.86   1.652   15   0.00   <- free lunch = the tell
+```
+
+All 9 winners returned "exit condition not confirmed; canonical result retained",
+while 17 of 26 losers were improved. A trailing stop that never costs anything is
+a broken measurement, not a good policy. Armed once at the first high above entry,
+it can now clip — which is the precondition for Priority 11 being answerable at all.
+
+**No production exit behaviour changed.** Exit-policy research is advisory and
+already reports `productionBehaviorChanged: false`.
+
+### FINDING 5 — evidence quality is strategy-dependent
+
+```
+strategy                  n    trustworthy  medianMarks  coverage
+lower_high_continuation   58      51            131        0.939
+breakout_forming          20      11             14.5      0.973
+vwap_rejection            28      17              4.5      0.018
+premarket_level_break    320       0              0        0
+```
+
+`premarket_level_break` (320 of 575 delivered rows) has **no marks at all** — it is
+the legacy import and cannot support any trajectory claim. `lower_high_continuation`,
+which dominates the cohort (20 of 26 losses, 6 of 9 winners), is densely marked and
+is the only strategy where policy simulation is currently trustworthy.
+
+### FINDING 6 — owner alerting is active and now says what is tracking it
+
+Owner Discord openings were never disabled: 9 sent in the last session, `paperLinkRate 1`.
+The gap was that the opening did not state whether the contract shown was the one being
+mirrored. An owner opening with a reserved mirror is now headed
+`OWNER VALIDATION — PAPER TRACKED` and carries the exact OCC and the paper position id;
+one without a mirror reads `OWNER WATCH` and says it is not tracked. Subscriber-grade
+copy is unchanged and still cannot show the OCC.
+
+### Commits
+
+```
+f770142  Let the trailing-stop backtest clip a winner
+4d60022  Say on the owner opening which paper position is tracking it
+```
+
+### Not done this session
+
+The re-measurement of Trail/BE policies under the corrected simulator has **not** been
+read back from production yet — that is the immediate next step and the number that
+decides whether any exit experiment is worth running. Also untouched: the frozen audit
+cohort table (P1), persisted loss taxonomy (P3), pre-entry winner/loser feature
+comparison (P5), contract-selection runner-up analysis (P10), the duplicate-delivery
+race (P14), confirmation-cost capture (P9/P17), strategy/policy attribution (P13),
+and the nightly aggregator + AI loop (P17-P20).
+
+---
+
 ## Packet update — 2026-08-06 (7) the owner's winners were being excluded as duplicates, and the published stop could never be reached
 
 ### Verified state
