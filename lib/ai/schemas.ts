@@ -435,8 +435,13 @@ export const WEEKLY_PROPOSALS_TOOL_SCHEMA = {
 /**
  * Validate the nightly narrative structure AND enforce the anti-fabrication guard
  * against typed deterministic evidence present in the summary.
+ *
+ * `research` widens the allowed evidence to the OptiScan research context when one was supplied
+ * to the prompt. It MUST be the same object the prompt received: a narrative citing an owner-lane
+ * profit factor would otherwise be rejected as fabricated purely because the validator was shown
+ * less than the model was.
  */
-export function validateNightlyNarrative(json: unknown, summary: unknown): NightlyNarrative {
+export function validateNightlyNarrative(json: unknown, summary: unknown, research?: unknown): NightlyNarrative {
   if (!json || typeof json !== "object") throw new Error("narrative must be a JSON object");
   const j = json as Record<string, unknown>;
   const narrative: NightlyNarrative = {
@@ -449,7 +454,7 @@ export function validateNightlyNarrative(json: unknown, summary: unknown): Night
     needsMoreEvidence: asStringArray(j.needsMoreEvidence ?? [], "needsMoreEvidence"),
     prioritizedIssue: asString(j.prioritizedIssue, "prioritizedIssue"),
   };
-  const allowed = buildQuantEvidenceRegistry(summary);
+  const allowed = buildQuantEvidenceRegistry(research == null ? summary : { summary, research });
   const allText = [
     narrative.headline, narrative.whatHappened, narrative.prioritizedIssue,
     ...narrative.repeatedPatterns, ...narrative.successPatterns, ...narrative.bottlenecks,

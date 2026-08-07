@@ -19,6 +19,7 @@ import {
   costGateOnDb, getReportOnDb, type AiReportRow, type DbLike,
 } from "./store.ts";
 import { deliverNightlyRecapOnDb } from "./recap.ts";
+import { deployInfo } from "../build-info.ts";
 import type { NightlyResearchResult } from "../research/options/nightly-research.ts";
 
 const INTERNAL_RESEARCH_BANNER = "INTERNAL RESEARCH — MARKET CLOSED";
@@ -45,6 +46,11 @@ export interface NightlyJobResult {
   diagnostic?: unknown;
   /** Deterministic OptiScan research aggregation. Null when it could not be computed. */
   research?: NightlyResearchResult | null;
+  /** Whether the AI actually received the structured research evidence. */
+  researchContextSupplied?: boolean;
+  /** Outcome of the reasoning pass that persists findings. */
+  analysisStatus?: string;
+  analysisFindingsPersisted?: number;
 }
 
 export interface NightlyJobOptions {
@@ -86,11 +92,24 @@ function aiFailureDiagnostic(call: Awaited<ReturnType<typeof runStructuredAiJob<
   };
 }
 
+/**
+ * Build the OptiScan research context for a session.
+ *
+ * Isolated and lazy: this is additive evidence for the narrator, and a failure to assemble it
+ * must degrade the narration to what it did before rather than cost the report entirely.
+ */
+export async function nightlyResearchContext(db: DbLike, sessionDate: string, nowMs: number): Promise<unknown> {
+  try {
+    const { buildAiResearchContextOnDb } = await import("../research/options/ai-research-context.ts");
+    return buildAiResearchContextOnDb(db as never, { sessionDate, nowMs });
+  } catch { return null; }
+}
+
 async function narrateStoredNightlyReport(
   db: DbLike,
   report: AiReportRow,
   cfg: AiConfig,
-  opts: { nowMs: number; provider?: ProviderDeps; jobType?: string },
+  opts: { nowMs: number; provider?: ProviderDeps; jobType?: string; research?: unknown },
 ): Promise<{ status: string; costUsd: number; diagnostic?: unknown; jobRunId?: number | null; skippedReason?: string }> {
   const jobType = opts.jobType ?? "nightly_diagnosis";
   if (report.narrativeStatus === "OK" && report.narrative) {
@@ -118,7 +137,8 @@ async function narrateStoredNightlyReport(
     return { status: "SKIPPED", costUsd: 0, diagnostic, jobRunId };
   }
 
-  const { system, user } = nightlyNarrationPrompt(report.summary);
+  const research = opts.research ?? null;
+  const { system, user } = nightlyNarrationPrompt(report.summary, research ?? undefined);
   const call = await runStructuredAiJob<NightlyNarrative>(
     {
       model: cfg.nightlyModel,
@@ -132,7 +152,7 @@ async function narrateStoredNightlyReport(
       validatorName: "validateNightlyNarrative",
       promptVersion: NIGHTLY_NARRATION_PROMPT_VERSION,
     },
-    (json) => validateNightlyNarrative(json, report.summary),
+    (json) => validateNightlyNarrative(json, report.summary, research ?? undefined),
     opts.provider,
   );
 
@@ -212,12 +232,7 @@ export async function runNightlyDiagnosis(opts: NightlyJobOptions = {}): Promise
   let research: NightlyResearchResult | null = null;
   try {
     const { runNightlyResearchOnDb } = await import("../research/options/nightly-research.ts");
-    const sha = (() => {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        return require("@/lib/build-info").deployInfo().commit ?? null;
-      } catch { return null; }
-    })();
+    const sha = (() => { try { return deployInfo().commit ?? null; } catch { return null; } })();
     research = runNightlyResearchOnDb(db as never, { sessionDate: day, deploymentSha: sha, nowMs });
   } catch {
     // Research aggregation is additive; a failure must never block the nightly report.
@@ -231,10 +246,34 @@ export async function runNightlyDiagnosis(opts: NightlyJobOptions = {}): Promise
     }
   }
 
-  const narrated = await narrateStoredNightlyReport(db, report, cfg, { nowMs, provider: opts.provider, jobType: "nightly_diagnosis" });
+  // The SAME context object goes to the narrator and to the analysis job, and the narrator's
+  // validator is shown exactly what the narrator was shown.
+  const researchContext = await nightlyResearchContext(db, day, nowMs);
+  result.researchContextSupplied = researchContext != null;
+
+  const narrated = await narrateStoredNightlyReport(db, report, cfg, {
+    nowMs, provider: opts.provider, jobType: "nightly_diagnosis", research: researchContext,
+  });
   result.costUsd = narrated.costUsd;
   result.narrativeStatus = narrated.status;
   result.diagnostic = narrated.diagnostic;
+
+  // Analysis, not narration: reason over the evidence and PERSIST what it concluded. Budget-gated
+  // and fully isolated — the deterministic aggregation, the recap and the narrative above have
+  // all already happened and none of them can be undone by a failure here.
+  try {
+    const { runNightlyResearchAnalysis } = await import("./research-analysis.ts");
+    const analysis = await runNightlyResearchAnalysis(db, cfg, {
+      sessionDate: day, research: researchContext, nowMs, provider: opts.provider,
+      deploymentSha: (() => { try { return deployInfo().commit ?? null; } catch { return null; } })(),
+    });
+    result.analysisStatus = analysis.status;
+    result.analysisFindingsPersisted = analysis.findingsPersisted;
+    result.costUsd += analysis.costUsd;
+  } catch {
+    result.analysisStatus = "ERROR";
+  }
+
   return result;
 }
 
