@@ -22,6 +22,9 @@ import { screenProposalSafety } from "./safety.ts";
 import { runStructuredAiJob, type ProviderDeps } from "./provider.ts";
 import { buildEvidencePacket, persistEvidencePacketOnDb } from "./evidence-packet.ts";
 import { estimateCostUsd, maxJobCostUsd } from "./pricing.ts";
+import { buildAiResearchContextOnDb } from "../research/options/ai-research-context.ts";
+import { runWeeklyResearchOnDb } from "../research/options/weekly-research.ts";
+import { deployInfo } from "../build-info.ts";
 import {
   insertReportOnDb, insertProposalOnDb, listReportsOnDb, listLessonsOnDb, listProposalsOnDb,
   recordAiJobRunOnDb, setReportNarrativeOnDb, costGateOnDb, getReportOnDb, type DbLike,
@@ -204,12 +207,13 @@ export async function runWeeklyProposals(opts: WeeklyJobOptions = {}): Promise<W
     // failure here must not cost the week its report.
     let optiscanResearch: unknown = null;
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { runWeeklyResearchOnDb } = require("@/lib/research/options/weekly-research");
-      optiscanResearch = runWeeklyResearchOnDb(db, {
+      optiscanResearch = runWeeklyResearchOnDb(db as never, {
         weekKey,
         nowMs,
         monthlyBudgetUsd: Number.isFinite(Number(cfg.monthlyHardLimitUsd)) ? Number(cfg.monthlyHardLimitUsd) : null,
+        // Findings seeded by the weekly must name their deploy too; omitting this wrote null
+        // into the column on every weekly-seeded row.
+        deploymentSha: (() => { try { return deployInfo().commit ?? null; } catch { return null; } })(),
       });
     } catch { /* additive; never blocks the weekly report */ }
     summary = {
@@ -293,6 +297,12 @@ async function generateWeeklyProposalsForReport(
   const periodStartMs = nowMs - 7 * 24 * 3600_000;
   const evidencePacket = buildEvidencePacket(db, { periodStartMs, periodEndMs: nowMs, env: args.env });
   persistEvidencePacketOnDb(db, evidencePacket);
+  // Cumulative by design — no sessionDate. The weekly question is whether a rule is working across
+  // independent sessions, which a single session's owner lane cannot answer.
+  const researchContext = (() => {
+    try { return buildAiResearchContextOnDb(db as never, { sessionDate: null, nowMs }); }
+    catch { return null; }
+  })();
   const { system, user } = weeklyProposalPrompt({
     weekKey,
     weeklySummary: summary,
@@ -305,6 +315,7 @@ async function generateWeeklyProposalsForReport(
     relevantFiles: CURATED_STRATEGY_FILES,
     strategyVersion: currentStrategyVersion(db),
     evidencePacket,
+    researchContext,
   });
 
   const call = await runStructuredAiJob<WeeklyProposalDraft[]>(

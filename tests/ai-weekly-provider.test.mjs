@@ -8,6 +8,7 @@ import { runStructuredAiJob } from "../lib/ai/provider.ts";
 import { validateWeeklyProposals, WEEKLY_PROPOSALS_TOOL_SCHEMA } from "../lib/ai/schemas.ts";
 import { screenProposalSafety } from "../lib/ai/safety.ts";
 import { runWeeklyProposals, retryWeeklyProposals } from "../lib/ai/weekly.ts";
+import { weeklyProposalPrompt } from "../lib/ai/prompts.ts";
 import { aiConfig } from "../lib/ai/config.ts";
 import { getReportOnDb, listProposalsOnDb } from "../lib/ai/store.ts";
 import { loadEvidencePacketOnDb } from "../lib/ai/evidence-packet.ts";
@@ -468,5 +469,65 @@ test("Export Cursor Prompt is advisory text only — no apply/deploy hooks", { s
   assert.match(prompt, /human approval/i);
   assert.doesNotMatch(prompt, /auto-deploy|AUTO_MERGE|apply now/i);
   assert.equal(row.status, "PENDING_APPROVAL");
+  db.close();
+});
+
+/**
+ * The weekly proposer must see the SAME experiment evidence the nightly does.
+ *
+ * Before this, the weekly received generic performance aggregates only: it could propose a
+ * change to `lower_high_continuation` while a frozen experiment on exactly that strategy was
+ * mid-flight, and nothing in its prompt said so. Its verdict ceiling is also bounded — no path
+ * through this job may produce subscriber approval.
+ */
+test("the weekly prompt carries the frozen experiment, its caveats and its findings", { skip }, () => {
+  const researchContext = {
+    contextVersion: "ai-research-context-v1",
+    readingRules: ["null means NOT MEASURED. It never means zero."],
+    experiment: {
+      experimentId: "LHC_SELECT_V1", frozen: true,
+      scoreboard: { sessionsObserved: 0, closedOutcomes: 0 },
+      robustnessCaveats: ["PF falls to 0.611 without one trade."],
+    },
+    findings: [{ findingId: "LHC_SELECT_V1_TAIL_DEPENDENCE", limitations: ["small sample"] }],
+    instructions: ["Never describe LHC_SELECT_V1 as working, validated, proven or ready."],
+  };
+  const { system, user } = weeklyProposalPrompt({
+    weekKey: "2026-W32", weeklySummary: {}, recentNightly: [], acceptedLessons: [],
+    rejectedLessons: [], priorProposals: [], currentConfig: {}, relevantFiles: [],
+    strategyVersion: "v1", researchContext,
+  });
+  assert.match(user, /LHC_SELECT_V1/);
+  assert.match(user, /sessionsObserved/);
+  assert.match(user, /LHC_SELECT_V1_TAIL_DEPENDENCE/);
+  assert.match(user, /readingRules/);
+  // And the rules that keep a frozen experiment frozen.
+  assert.match(system, /FROZEN experiment/);
+  assert.match(system, /NEW experiment version, never an edit/);
+  assert.match(system, /never propose promoting it to subscribers/);
+  assert.match(system, /UNAVAILABLE and must never be treated as zero/);
+});
+
+test("the running weekly job actually sends that context to the model", { skip }, async () => {
+  const db = freshDb();
+  let sentUser = "";
+  await runWeeklyProposals({
+    nowMs: NOW,
+    weekKey: "2026-W30",
+    db,
+    config: ENABLED,
+    provider: {
+      env: KEY_ENV,
+      fetchImpl: async (_url, init) => {
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        sentUser = String(body?.messages?.[0]?.content ?? "");
+        return { ok: true, status: 200, text: async () => anthropicBody([{ type: "tool_use", name: "submit_weekly_proposals", input: { proposals: [] } }]) };
+      },
+    },
+    env: {},
+  });
+  assert.match(sentUser, /OptiScan research context/);
+  assert.match(sentUser, /LHC_SELECT_V1/);
+  assert.match(sentUser, /contextVersion/);
   db.close();
 });
