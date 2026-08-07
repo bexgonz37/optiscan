@@ -1,5 +1,137 @@
 # Current Task Packet
 
+## Packet update — 2026-08-07 (1) LHC_SELECT_V1 is frozen and now has a real prospective arm — and it has proven nothing yet
+
+### Verified state
+
+- Baseline `5bc4a68` verified from git, `origin/main` and `/api/runtime/status`
+  (`commit 5bc4a688a3d8…`) BEFORE any change. Tracked tree clean, 19 untracked scratch
+  files untouched.
+- Shipped `d73881c` → `50b2063` → `70ecb82` → `e7bdec0` → `f0ad29e` → `b7743bb`.
+- Full suite **3844/3844**, run twice (was 3764; **+80 new**).
+  `tsc --noEmit --incremental false` clean. `next build` exit 0. `git diff --check` clean.
+- Production healthy: `ok:true`, `loopRunning:true`, `quotaExceeded:false`, `dbWritable:true`,
+  `schemaOk:true`, `schemaMissing: []`, lifecycle active, scheduler owner.
+- Subscriber readiness `NOT_READY`, 12 blocking gates, `subscriberActive: 0`.
+  **No promotion occurred and none is reachable automatically.**
+- Owner private Discord alerting remains ACTIVE. No gate, threshold, env var or provider cap
+  was changed. Every new surface reports `productionBehaviorChanged: false`.
+
+### The four open cases, re-verified from production before anything was built
+
+All four were still OPEN at `5bc4a68`, with exactly the decisions the prior packet recorded:
+
+```
+770 AMZN  O:AMZN260807P00272500  ADMIT   marks 737
+779 TSLA  O:TSLA260807P00320000  ADMIT   marks 677
+795 GOOGL O:GOOGL260807P00357500 ADMIT   marks 287
+796 HOOD  O:HOOD260814P00090000  REJECT  ATM_BAND, SHORT_DTE, UNDERLYING_LIQUIDITY, IV_CEILING
+```
+
+The frozen cohort also re-verified exactly: `LHC_DELIVERED_V1`, 58 members
+(8W/46L/4 open), 7 sessions, 42/58 trajectory-trustworthy, baseline n=54 mean **-27.83%**
+median **-41.67%** PF **0.311**; experiment n=20, 8W/12L, PF **1.240**, **0** winners
+rejected, 34 losses avoided. Three AMZN/TSLA/GOOGL puts expire 2026-08-07, so they resolve
+in the next session and become the first genuinely out-of-sample outcomes.
+
+### WHAT WAS BUILT — the decision is now written down before the outcome
+
+Everything known about V1 was measured on the 58 rows it was read from. `decideDeliveryBatch`
+is the choke point that already holds the baseline's decision, the frozen contract and the
+confirmation-timing inputs, so the arm READS that decision and writes a row beside it. It has
+no return value the caller acts on.
+
+`options_experiment_decisions` records **all four quadrants** — `BOTH_ADMIT`,
+`BASELINE_ONLY`, `EXPERIMENT_ONLY`, `BOTH_REJECT`. Recording only the admits is how the
+trailing-stop study produced a policy that never appeared to cost anything: its costs were
+never measured. `BASELINE_ONLY` is what puts V1's rejections on trial.
+
+### FINDING — the freeze has to be content-addressed, not a promise
+
+A rule read off a cohort gets quietly improved until it fits, and the improvement is
+unfalsifiable because rule and evidence moved together. `definitionHash()` probes every gate
+across a numeric sweep and hashes the RESULTS, so a moved threshold changes the hash even
+when the id and rationale are untouched. `LHC_SELECT_V1_DEFINITION_HASH` is
+`80e5c5d878f5f9e185661981c87afc63`. The registry write REFUSES to overwrite a differing hash
+rather than accepting it. **The remedy for a mismatch is never to update the constant — it is
+to register V2.**
+
+`ExperimentStatus` has **no `SUBSCRIBER_APPROVED` member**, and a test asserts it is
+unreachable from every status. The ceiling is `READY_FOR_HUMAN_REVIEW`, which is a request.
+
+### FINDING — confirmation cost is only answerable forward, and 0 is not "not observed"
+
+`first_detected_at_ms == entered_at_ms` for all 58 historical rows, so this cannot be
+backfilled. `captureConfirmation()` writes every timing field as **null when unobserved,
+never 0** — substituting 0 is precisely what made the historical columns degenerate — and
+carries a per-field `OBSERVED` / `DERIVED` / `UNAVAILABLE` basis so a report can say what it
+is entitled to use. `underlyingMoveBeforeEntryPct` is signed in the thesis direction, so both
+directions report "move already spent" as a positive number.
+
+### FINDING — two real defects the tests caught
+
+1. **`exTopWinner` deleted the whole winning side.** Dropping the top winner by VALUE removes
+   every trade tied at the maximum. On a flat return distribution that is all of them, turning
+   a robustness check into a far harsher test than it claims to be. It now drops exactly one.
+2. **The weekly verdict oscillated.** The intermediate promotion hop fired from
+   `READY_FOR_HUMAN_REVIEW` as well, walking the status BACK to `PROMISING` every week the
+   verdict held. The step is now forward-only; a five-week regression test pins it.
+
+### The honest state of the experiment
+
+```
+status                 PROPOSED (no prospective decision recorded yet)
+prospective sessions   0
+closed prospective     0
+expectancy / PF        UNAVAILABLE — not zero, unavailable
+```
+
+`buildProspectiveScoreboard` computes expectancy and PF from **CLOSED outcomes only**, never
+counts a positive MFE as a win, and computes `experimentExTopWinner` and `cappedAt60`
+unconditionally. `weeklyVerdict` returns FAILED when V1 rejects winners without improving PF,
+and caps a tail-carried arm at PROMISING.
+
+Six findings are persisted to `options_learning_findings`, each with a **required non-empty**
+`limitations` array and a `mustNotBeSummarizedAs` naming the specific wrong summary it invites.
+The improvement finding is rated **WEAK** (measured on its own source cohort); the
+tail-dependence finding is **STRONG**. `findingsForPrompt` renders both, so the model cannot
+receive `PF 1.240` without `0.611`.
+
+### Owner recap now leads with the owner's own alerts
+
+The recap opened with the internal paper portfolio — a disjoint population that has
+coincidentally been the same size as the delivered lane, so "Trades: 5 | Wins: 0 | Losses: 5"
+read as a verdict on the owner's alerts on a day the delivered lane was profitable.
+`OWNER DISCORD ALERTS` now leads; the paper block stays below and drops its "(PRIMARY)" label
+when it is no longer first. Session membership is computed in JS because SQLite's `localtime`
+is UTC on Railway, which would migrate every post-20:00 ET opening into the next day.
+
+### AI budget
+
+`AI_MONTHLY_HARD_LIMIT_USD` already defaults to **20** and `costGateOnDb` already gates
+nightly and weekly pre-flight. What was missing was the statement of scope:
+`BUDGET_EXEMPT_SUBSYSTEMS` names the nine that run regardless — scanner, owner Discord, paper
+mirror, marks, lifecycle, grading, Evidence Learning capture, readiness, deterministic
+experiment tracking — and a test fails if one ever appears in the skippable set.
+
+### New surfaces
+
+`GET /api/research/options/lhc-prospective` · `GET /api/research/options/lhc-weekly`
+(`?persist=1` for the lifecycle write). Both read-only, zero provider calls.
+
+### Not done — next session starts here
+
+- **The prospective arm has recorded ZERO decisions.** It has never run during an open RTH
+  session. Everything above is machinery, not evidence.
+- `railway up` deploys without git metadata, so `deployInfo().commit` read null for one
+  deploy and any row written then stamps `UNKNOWN_LEGACY_VERSION`. Deploy via GitHub push.
+- AMZN/TSLA/GOOGL/HOOD are still open and are NOT yet linked into the prospective arm — they
+  pre-date it. Their outcomes must be read from the cohort endpoint, not the scoreboard.
+- The AI research context is built but not yet passed into the nightly narration prompt.
+- Duplicate-delivery gate scope and the 4 legacy missing mirrors remain diagnosed, not changed.
+
+---
+
 ## Packet update — 2026-08-06 (9) the lane bought more implied move than it could outrun, and the two best "predictors" were hindsight
 
 ### Verified state
