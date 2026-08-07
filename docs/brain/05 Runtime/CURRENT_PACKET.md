@@ -1,5 +1,182 @@
 # Current Task Packet
 
+## Packet update — 2026-08-07 (2) The AI now receives the evidence, keeps what it concludes, and cannot be switched off by accident
+
+### Verified state (checked, not assumed)
+
+- Baseline re-verified from git, `origin/main` and production BEFORE any change:
+  local = `origin/main` = production = `62d1c80`
+  (`/api/runtime/status` → `deploy.commit 62d1c80af371550d310c6c75f6d7b5154e251c7f`).
+  Tracked tree clean, the 19 untracked scratch files untouched.
+- Production healthy at baseline: `ok:true`, `loopRunning:true`, `quotaExceeded:false`,
+  `dbWritable:true`, `schemaOk:true`, `schemaMissing:[]`, scheduler owner.
+- `LHC_SELECT_V1` frozen and unchanged: definition hash
+  `80e5c5d878f5f9e185661981c87afc63` expected == actual.
+- **`decisionCount: 0`.** Zero prospective RTH decisions. `sessionsObserved 0`,
+  `closedOutcomes 0`, expectancy and PF **unavailable** (not zero), verdict
+  `INSUFFICIENT_EVIDENCE`. Six deterministic findings persisted, each stamped `2460dc3`.
+- Subscriber readiness `NOT_READY`, 12 blocking gates, `subscriberActive: 0`.
+- AI budget verified from the ledger: **$0.0824 of $20.00**, 4 nightly requests,
+  0 skipped for budget.
+- Owner private Discord alerting ACTIVE. No gate, threshold, ranking or env var changed.
+
+**LHC_SELECT_V1 was not touched.** No gate, threshold, ranking, cohort reinterpretation or
+promotion. This packet is infrastructure only.
+
+### THE DEFECT — the evidence was built and then not handed over
+
+`buildAiResearchContext` existed, was tested, and was passed to nobody. The nightly narrator
+received a scanner funnel and described it while knowing nothing about the alerts the owner
+actually received or the experiment being tested. The weekly received the experiment but not
+the owner lane. Two models reasoning from two partial views of one session produce two
+verdicts and give the operator no way to tell which one was looking at less.
+
+`buildAiResearchContextOnDb` now assembles it **once** and both jobs receive the same object:
+owner Discord lane (openings, closed, wins, losses, expectancy, PF, best/worst, immediate
+failures, profit given back, per-strategy, per-policy-version), `LHC_SELECT_V1` (frozen state,
+sessions, admit/reject by arm, closed outcomes, winners retained, losses avoided, winners
+rejected, expectancy, PF, ex-top-winner and capped-return robustness, evidence limitations),
+confirmation cost, research/shadow lane, missed opportunities, and system/data quality.
+
+### FINDING — the payload has to carry the reading rules, not the prompt
+
+The arm has **zero** decisions. A model handed `profitFactor: null` and told nothing will
+write "profit factor 0", which reads as a catastrophic result rather than the truth, which is
+that nothing has been measured. `0` and `null` are the difference between "the lane lost
+everything" and "the lane has closed nothing".
+
+So `readingRules` and `unavailableMetrics` live **inside** the payload. A prompt is edited far
+more often than a data contract, and the rule must not depend on which edit came last. Every
+section names the fields whose null means "not measured", and a count of zero stays reportable
+as zero. Confirmation medians are computed only over rows whose per-field basis is `OBSERVED`
+or `DERIVED` — a row that never measured a delay must not pull the median toward zero, which
+is exactly the substitution that made the historical cohort unable to answer the question.
+
+### FINDING — the validator has to see what the model saw
+
+The anti-fabrication guard rejects any number the model was not shown. Passing new evidence to
+the prompt without passing it to `validateNightlyNarrative` would have made every accurate
+citation of an owner-lane figure look like a fabrication. Both now receive the same object.
+With no context supplied the prompt is byte-for-byte what it was: additive, not a rewrite.
+
+### WHAT WAS BUILT — analysis, not narration
+
+`nightly_research_analysis` reasons over that context against a fixed list of the questions an
+operator would otherwise open Claude Code to ask, and writes each conclusion into
+`options_learning_findings` — the store the NEXT night's context is built from.
+
+What a finding costs to make:
+
+- `limitations` is required and is **never defaulted in**. A claim whose qualification can be
+  omitted will be quoted without it.
+- A conclusion resting on 0 rows must be `INSUFFICIENT`. That is the `PF 0` error applied to
+  conclusions.
+- `{ findings: [] }` is a **successful** run, and the prompt says so, so the model is not
+  pushed to manufacture one.
+- Findings are namespaced `AI_NIGHTLY_` and cannot collide with a frozen deterministic
+  finding. An AI row able to overwrite `LHC_SELECT_V1_TAIL_DEPENDENCE` could delete the
+  sentence that keeps the experiment honest.
+- Each is screened for claims of validation, promotion, live execution or gate weakening
+  before storage, and the AI's authorship is appended to its own limitations, not substituted
+  for them.
+
+### FINDING — the AI flags were switching off the deterministic evidence
+
+`runAiScheduledJobs` returned immediately unless `AI_ENABLED` was set, and each job was gated
+on its own AI flag. Both jobs are deterministic-first — owner aggregation, experiment
+scoreboard, lifecycle advance and findings are computed and persisted **before** any provider
+is contacted — so turning off narration, losing the API key, or exhausting the month silently
+stopped all of it. The budget contract says exhaustion may stop optional reasoning and nothing
+else; this was the path that broke it.
+
+The jobs now run whenever the ET clock says they are due. Every AI call keeps its own flag and
+its own pre-flight cost reservation. `tests/after-close-autonomy.test.mjs` runs the whole
+chain from the scheduler's entry point with **AI fully off and no key present** and asserts the
+session's evidence still lands.
+
+### FINDING — a bad deploy and old data were the same string
+
+`railway up` carries no git metadata, so a deploy made that way sets no commit variable, and
+`freezeAttribution` collapsed that absence into `UNKNOWN_LEGACY_VERSION` — the value reserved
+for rows written before attribution existed. A live row from an unidentifiable deploy became
+indistinguishable from a July row, so the one signal that would have caught the deploy was the
+signal that hid it.
+
+`RUNTIME_SHA_UNAVAILABLE` is now a separate state stamped only on rows created now.
+`deploymentShaAttribution()` reports whether the process can name its commit and, when it
+cannot, names the remedy; it is surfaced in `/api/runtime/status.shaAttribution` and in
+`/api/research/options/lhc-prospective`. `censusShaAttribution` keeps `observed`,
+`runtimeUnavailable` and `legacy` apart, because "old data" and "the current deployment is
+broken" have different remedies. **No SHA is fabricated and no historical row is rewritten.**
+
+### SUPPORTED PRODUCTION DEPLOYMENT PATH
+
+**Deploy OptiScan through the GitHub/`main` path.** Railway builds from the pushed commit and
+injects `RAILWAY_GIT_COMMIT_SHA` / `RAILWAY_GIT_BRANCH`, which is what makes every row written
+by that deploy attributable to an exact commit.
+
+**Do not use `railway up` for a production deploy.** It uploads a directory, carries no git
+metadata, and every row written during that deployment is stamped `RUNTIME_SHA_UNAVAILABLE`.
+That is now visible rather than silent — but the row still cannot be attributed, and the loss
+is permanent, because attribution is frozen at creation and is never backfilled.
+
+To confirm a deploy: `/api/runtime/status` → `deploy.commit` must equal `git rev-parse HEAD`,
+and `shaAttribution.state` must be `OBSERVED`.
+
+### FIRST-RTH READINESS — proven from rows, not from tests
+
+Unit tests prove the code *can* write the row; they cannot prove the deployed process, against
+the live schema, with real market inputs, *did*. That gap is where this system has lost
+evidence before: the confirmation columns existed and were degenerate, the paper mirror
+existed and missed four rows, the SHA column existed and one deploy wrote null.
+
+`/api/research/options/lhc-prospective` now returns `firstRthReadiness`, checking each
+invariant against `options_experiment_decisions`: baseline decision recorded, V1 decision
+recorded, arms disagreeing without the baseline's delivery changing, no denylisted hindsight
+field in the feature vector, exact OCC, frozen experiment version, confirmation capture with a
+per-field `OBSERVED`/`DERIVED`/`UNAVAILABLE` basis, no `UNAVAILABLE` field carrying a value,
+full policy attribution, recorded deploy SHA, and the baseline still alerting.
+
+**A check with no rows reports `NOT_YET_OBSERVED`, never `PASS`.** Right now every row-based
+check is `NOT_YET_OBSERVED` and `awaitingFirstSession` is `true` — the board deliberately does
+not go green on an empty table.
+
+### WHAT SHOULD HAPPEN AUTOMATICALLY TOMORROW (2026-08-07 RTH)
+
+No Claude Code session is required for any of this.
+
+1. Each `lower_high_continuation` candidate reaching `decideDeliveryBatch` gets a baseline
+   decision **and** an `LHC_SELECT_V1` decision written side by side, in all four arms, with
+   the exact OCC, the frozen experiment version, the full policy attribution, the deploy SHA,
+   and the confirmation-cost capture.
+2. Owner private Discord alerts continue on the baseline path, unchanged. The experiment sends
+   nothing and changes nothing.
+3. After the close the scheduler runs the nightly: deterministic aggregation → Evidence
+   Learning findings → AI research context → AI narration → AI analysis → persisted findings →
+   owner recap led by **OWNER DISCORD ALERTS**.
+4. The weekly (Friday night) runs the multi-session review, whose ceiling is
+   `READY_FOR_HUMAN_REVIEW`. `SUBSCRIBER_APPROVED` does not exist as a status.
+
+**Verify after the session:** `/api/research/options/lhc-prospective` → `decisionCount > 0`,
+`firstRthReadiness.awaitingFirstSession: false`, every check `PASS`, and
+`shaCensus.runtimeUnavailable: 0`.
+
+### VALIDATION
+
+- Full suite **3910/3910**, run twice (was 3845; **+65 new**).
+- `npx tsc --noEmit --incremental false` clean. `npm run build` exit 0. `git diff --check` clean.
+- New: `tests/deployment-sha-attribution.test.mjs`, `tests/ai-research-context.test.mjs`,
+  `tests/ai-research-analysis.test.mjs`, `tests/lhc-first-rth-readiness.test.mjs`,
+  `tests/after-close-autonomy.test.mjs`.
+
+### WHAT IS STILL TRUE
+
+`LHC_SELECT_V1` is **PROMISING and UNVALIDATED**. Historical PF 1.240 falls to 0.611 without
+one +343.93% trade and to 0.721 capped at +60%. It has recorded **zero** prospective decisions.
+Nothing in this packet moved it, and no automatic path to subscriber approval exists.
+
+---
+
 ## Packet update — 2026-08-07 (1) LHC_SELECT_V1 is frozen and now has a real prospective arm — and it has proven nothing yet
 
 ### Verified state
