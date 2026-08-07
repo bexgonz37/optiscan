@@ -249,7 +249,11 @@ function trailing(trade: ExitResearchTrade, marks: ValidMark[], fallback: Policy
   for (const mark of marks) {
     if (mark.bid > high) {
       high = mark.bid;
-      armedAt = mark.markAtMs;
+      // Arm ONCE, at the first high above entry. Re-arming on every subsequent high moved the
+      // scan window forward to the global peak, so the simulation could only ever exit after the
+      // best price of the whole trade -- it could not clip a winner, and every winner came back
+      // "condition not confirmed". A real trail exits at the FIRST confirmed retracement.
+      armedAt ??= mark.markAtMs;
     }
     thresholds.set(mark.markAtMs, high * (1 - distancePct / 100));
   }
