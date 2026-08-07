@@ -151,8 +151,55 @@ function makeDb() {
       status TEXT, return_pct REAL, last_mark_return_pct REAL, mfe_pct REAL, mae_pct REAL,
       option_symbol TEXT, side TEXT, strike REAL, expiration TEXT, exit_reason TEXT
     );
+    CREATE TABLE opportunity_cases (
+      opportunity_id TEXT PRIMARY KEY, underlying_symbol TEXT, detected_at_ms INTEGER,
+      delivery_decision TEXT, case_json TEXT
+    );
+    CREATE TABLE options_paper_marks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, trade_id INTEGER, option_symbol TEXT,
+      mark_at_ms INTEGER, return_pct REAL
+    );
   `);
   return db;
+}
+
+const AMD_OCC = "AMD250827C00400000";
+
+/**
+ * Seed a trade whose identity is PROVABLE: one frozen contract, one mirror on that
+ * same contract, and a mark series on it that actually supports the peak being
+ * claimed. Performance copy requires all three — a SENT alert plus a mirror whose
+ * entry price happens to match is what let a re-selected contract's peak reach
+ * marketing.
+ */
+function seedProvableTrade(db, { occ = AMD_OCC, entry = 5.2, peakPct = 63, marks = [20, 63] } = {}) {
+  db.prepare(
+    `INSERT INTO opportunity_cases (opportunity_id, underlying_symbol, detected_at_ms, delivery_decision, case_json)
+     VALUES ('oc_1','AMD',?,'delivered',?)`,
+  ).run(CONTENT_EVENT_MS, JSON.stringify({
+    schemaVersion: 1,
+    opportunityId: "oc_1",
+    underlyingSymbol: "AMD",
+    alertId: "a1",
+    selectedContract: { optionSymbol: occ, strike: 400, expiration: "2026-08-27" },
+    frozenTrade: { entryMid: entry, immutable: true },
+    summary: {
+      frozenEntry: entry,
+      currentMark: entry * 1.5,
+      currentReturnPct: 50,
+      maxReturnPct: peakPct,
+      currentStatus: "RUNNING",
+    },
+    contractCandidates: [],
+    contractUpdates: [],
+  }));
+  const tradeId = db.prepare("SELECT id FROM options_paper_trades WHERE alert_id='a1' ORDER BY id DESC LIMIT 1")
+    .get()?.id;
+  for (const [i, pct] of marks.entries()) {
+    db.prepare(
+      "INSERT INTO options_paper_marks (trade_id, option_symbol, mark_at_ms, return_pct) VALUES (?,?,?,?)",
+    ).run(tradeId ?? 1, occ, CONTENT_EVENT_MS + i * 1000, pct);
+  }
 }
 
 function seedEvent(db, over = {}) {
@@ -489,10 +536,12 @@ test("verified performance drafts use frozen-entry claim path", async () => {
     `INSERT INTO options_paper_trades (alert_id, paper_kind, entry_fill, status, return_pct, last_mark_return_pct, mfe_pct, option_symbol, side, strike, expiration)
      VALUES ('a1','DELIVERED_ALERT_PAPER',5.2,'OPEN',null,50,63,'AMD250827C00400000','call',400,'08/27')`,
   ).run();
+  seedProvableTrade(db);
 
   const claim = verifyContentClaimForCase(db, "oc_1", "RETURN_MILESTONE");
   assert.equal(claim.ok, true);
   assert.equal(claim.alertId, "a1");
+  assert.equal(claim.identityVerdict, "SAME_OCC_VERIFIED");
 
   const { sent, deps } = captureDeps();
   const res = await runContentDraftsScan(db, deps, ENV);

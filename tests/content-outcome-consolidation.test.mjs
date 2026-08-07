@@ -63,9 +63,19 @@ function makeDb() {
       status TEXT, return_pct REAL, last_mark_return_pct REAL, mfe_pct REAL, mae_pct REAL,
       option_symbol TEXT, side TEXT, strike REAL, expiration TEXT, exit_reason TEXT
     );
+    CREATE TABLE opportunity_cases (
+      opportunity_id TEXT PRIMARY KEY, underlying_symbol TEXT, detected_at_ms INTEGER,
+      delivery_decision TEXT, case_json TEXT
+    );
+    CREATE TABLE options_paper_marks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, trade_id INTEGER, option_symbol TEXT,
+      mark_at_ms INTEGER, return_pct REAL
+    );
   `);
   return db;
 }
+
+const AAPL_OCC = "AAPL260803P00305000";
 
 /**
  * A verified subscriber claim for one case. Performance categories are
@@ -82,6 +92,35 @@ function seedClaim(db, caseId) {
     `INSERT INTO options_paper_trades (alert_id, paper_kind, entry_fill, status, return_pct, last_mark_return_pct, mfe_pct, option_symbol, side, strike, expiration)
      VALUES (?,'DELIVERED_ALERT_PAPER',3.15,'CLOSED',-48.5714,-48.5714,55.5556,'AAPL260803P00305000','put',305,'08/03')`,
   ).run(alertId);
+
+  // Performance copy is now also gated on trade identity: one frozen contract, a
+  // mirror on that same contract, and a mark series that actually reaches the peak
+  // being claimed. Without these the scan suppresses before the delivery logic these
+  // tests are about is ever reached.
+  db.prepare(
+    `INSERT INTO opportunity_cases (opportunity_id, underlying_symbol, detected_at_ms, delivery_decision, case_json)
+     VALUES (?,'AAPL',?,'delivered',?)`,
+  ).run(caseId, NOW - 3_600_000, JSON.stringify({
+    schemaVersion: 1,
+    opportunityId: caseId,
+    underlyingSymbol: "AAPL",
+    alertId,
+    selectedContract: { optionSymbol: AAPL_OCC, strike: 305, expiration: "2026-08-03" },
+    frozenTrade: { entryMid: 3.15, immutable: true },
+    summary: {
+      frozenEntry: 3.15, currentMark: 1.62, currentReturnPct: -48.5714,
+      maxReturnPct: 55.5556, currentStatus: "CLOSED",
+    },
+    contractCandidates: [],
+    contractUpdates: [],
+  }));
+  const tradeId = db.prepare("SELECT id FROM options_paper_trades WHERE alert_id=? ORDER BY id DESC LIMIT 1")
+    .get(alertId)?.id ?? 1;
+  for (const [i, pct] of [55.5556, -48.5714].entries()) {
+    db.prepare(
+      "INSERT INTO options_paper_marks (trade_id, option_symbol, mark_at_ms, return_pct) VALUES (?,?,?,?)",
+    ).run(tradeId, AAPL_OCC, NOW - 120_000 + i * 1000, pct);
+  }
 }
 
 /** Seed one closure event. Mirrors the real AAPL row ce_1k0xr40. */

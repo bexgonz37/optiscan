@@ -44,6 +44,12 @@ function hasTable(db: ClaimDb, name: string): boolean {
 
 const ENTRY_TOLERANCE = 0.01;
 
+/** Case/whitespace only — never rewrites a symbol, never fuzzy-matches a strike. */
+function normalizeOcc(occ: unknown): string | null {
+  const s = String(occ ?? "").trim().toUpperCase();
+  return s.length > 0 ? s : null;
+}
+
 export function buildSubscriberClaimPacket(db: ClaimDb, alertId: string): SubscriberClaimPacket {
   const fail = (reason: string, partial: Partial<SubscriberClaimPacket> = {}): SubscriberClaimPacket => ({
     ok: false,
@@ -104,6 +110,21 @@ export function buildSubscriberClaimPacket(db: ClaimDb, alertId: string): Subscr
     });
   }
 
+  // The mirror must be the SAME CONTRACT the alert named, not merely a position that
+  // happens to have cost the same. Matching entry price alone let a different strike
+  // or expiration stand in for the alerted trade, and every number below — the
+  // realized return, the MFE, the MAE — would then describe that other instrument.
+  const alertOcc = normalizeOcc(alert.option_symbol);
+  const paperOcc = normalizeOcc(paper.option_symbol);
+  if (alertOcc && paperOcc && alertOcc !== paperOcc) {
+    return fail(`paper mirror is on ${paperOcc}, but the alert named ${alertOcc}`, {
+      symbol: alert.candidate_symbol ?? null,
+      frozenEntry,
+      optionSymbol: alertOcc,
+      paperTradeId: paper.id,
+    });
+  }
+
   const milestones: SubscriberClaimPacket["milestoneHistory"] = [];
   const caseId = alert.opportunity_case_id ? String(alert.opportunity_case_id) : null;
   if (caseId && hasTable(db, "opportunity_milestones")) {
@@ -133,7 +154,8 @@ export function buildSubscriberClaimPacket(db: ClaimDb, alertId: string): Subscr
     alertId,
     opportunityCaseId: caseId,
     symbol: alert.candidate_symbol ?? null,
-    optionSymbol: alert.option_symbol ?? paper.option_symbol ?? null,
+    // Proven equal above when both are present, so this no longer masks a mismatch.
+    optionSymbol: alertOcc ?? paperOcc,
     side: alert.side ?? paper.side ?? null,
     strike: paper.strike != null ? Number(paper.strike) : null,
     expiration: paper.expiration ?? null,

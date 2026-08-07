@@ -8,13 +8,23 @@ import {
   buildSubscriberClaimPacket,
   type SubscriberClaimPacket,
 } from "../research/options/subscriber-claims.ts";
+import {
+  reconcileTradeIdentityOnDb,
+  type IdentityDefect,
+  type IdentityVerdict,
+} from "../opportunity-case/trade-identity.ts";
 
 export type ContentResultType =
   | "UNREALIZED_CURRENT_RETURN"
   | "REALIZED_CLOSED_RETURN"
   | "MAX_FAVORABLE_EXCURSION"
   | "HISTORICAL_RECAP"
-  | "NON_ACTIONABLE_RESEARCH";
+  | "NON_ACTIONABLE_RESEARCH"
+  /** Trade identity could not be proven — no numeric performance claim may be made. */
+  | "CONTENT_PERFORMANCE_UNVERIFIED";
+
+/** Categories whose copy quotes a peak/MFE rather than a realized or current return. */
+export const MFE_CATEGORIES = new Set(["NEW_HIGH", "CLOSED_WINNER", "WHY_THIS_WORKED"]);
 
 export const PERFORMANCE_CATEGORIES = new Set([
   "RETURN_MILESTONE",
@@ -62,6 +72,11 @@ export interface ContentClaimCheck {
   claim: SubscriberClaimPacket | null;
   resultType: ContentResultType;
   claimPacketId: string | null;
+  /** Trade-identity verdict, when one was required. */
+  identityVerdict?: IdentityVerdict | null;
+  identityDefects?: IdentityDefect[];
+  /** The frozen contract's own best mark — the only defensible MFE for this case. */
+  verifiedMaxReturnPct?: number | null;
 }
 
 /**
@@ -73,8 +88,12 @@ export function verifyContentClaimForCase(
   opportunityCaseId: string | null | undefined,
   category: string,
 ): ContentClaimCheck {
-  const fail = (reason: string, resultType: ContentResultType = "NON_ACTIONABLE_RESEARCH"): ContentClaimCheck => ({
-    ok: false, reason, alertId: null, claim: null, resultType, claimPacketId: null,
+  const fail = (
+    reason: string,
+    resultType: ContentResultType = "NON_ACTIONABLE_RESEARCH",
+    extra: Partial<ContentClaimCheck> = {},
+  ): ContentClaimCheck => ({
+    ok: false, reason, alertId: null, claim: null, resultType, claimPacketId: null, ...extra,
   });
 
   if (!isPerformanceCategory(category)) {
@@ -103,6 +122,34 @@ export function verifyContentClaimForCase(
   const claim = buildSubscriberClaimPacket(db, String(alert.alert_id));
   if (!claim.ok) return fail(claim.reason ?? "claim packet failed", "NON_ACTIONABLE_RESEARCH");
 
+  // Trade identity is the last gate before a number becomes public copy. A SENT alert
+  // with a price-matched mirror was never enough: a case keeps re-selecting preferred
+  // contracts while it lives, and the peak stored on the case can describe a strike
+  // and expiration the subscriber was never given. Prove it or say nothing.
+  const identity = reconcileTradeIdentityOnDb(db as any, String(opportunityCaseId));
+  const identityExtra = {
+    identityVerdict: identity.verdict as IdentityVerdict,
+    identityDefects: identity.defects,
+    verifiedMaxReturnPct: identity.frozenContractBestMarkPct,
+  };
+  if (identity.verdict !== "SAME_OCC_VERIFIED") {
+    return fail(
+      `trade identity ${identity.verdict}: ${identity.reasons.join("; ") || "not provable"}`,
+      "CONTENT_PERFORMANCE_UNVERIFIED",
+      identityExtra,
+    );
+  }
+
+  // A category whose copy quotes a peak needs that peak to be an observation on the
+  // frozen contract, not the running maximum the summary happened to accumulate.
+  if (MFE_CATEGORIES.has(category) && identity.maxReturnReproducibleOnFrozen === false) {
+    return fail(
+      `stated peak is not supported by marks on ${identity.frozenOptionSymbol}`,
+      "CONTENT_PERFORMANCE_UNVERIFIED",
+      identityExtra,
+    );
+  }
+
   let resultType: ContentResultType = "UNREALIZED_CURRENT_RETURN";
   if (category === "CLOSED_WINNER" || category === "CLOSED_LOSER" || category === "WHY_THIS_WORKED" || category === "WHY_THIS_FAILED") {
     resultType = "REALIZED_CLOSED_RETURN";
@@ -119,6 +166,7 @@ export function verifyContentClaimForCase(
     claim,
     resultType,
     claimPacketId: `claim_${alert.alert_id}`,
+    ...identityExtra,
   };
 }
 
@@ -135,5 +183,7 @@ export function resultTypeLabel(t: ContentResultType): string {
     case "MAX_FAVORABLE_EXCURSION": return "Maximum favorable excursion (MFE) — not a realized return";
     case "HISTORICAL_RECAP": return "Historical recap";
     case "NON_ACTIONABLE_RESEARCH": return "Non-actionable research / observation";
+    case "CONTENT_PERFORMANCE_UNVERIFIED":
+      return "Performance unverified — trade identity could not be proven on one contract";
   }
 }
