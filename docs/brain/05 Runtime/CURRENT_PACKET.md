@@ -38,9 +38,14 @@ VERIFIED_OPEN_MARK   3
 STALE_MARK           1
 ```
 
-Because a thesis is most likely to be re-entered after it worked, the excluded rows skewed
-to winners: **+50.27% (SPY 770P), +48.84% and +45.13% (AAPL 305P), +47.04% (GOOGL 360P)**.
-Owner performance was understated by construction.
+The discarded cohort held the four best percentage winners — **+50.27% (SPY 770P), +48.84%
+and +45.13% (AAPL 305P), +47.04% (GOOGL 360P)** — but also five losses. Measured after the
+fix, those 10 rows are 4 wins / 5 losses, mean **-2.59%**, net **-131.20 USD**.
+
+So the exclusion was not one-directional. It hid the headline winners while making the
+dollar total look **better** than reality: verified P&L moved from -4739.80 to **-4871.00**
+once the rows came back, and validTrades rose 101 -> 111. The defect was silent
+misrepresentation of a quarter of the owner's alerts, not a bias in one direction.
 
 Duplicate now means more than one mirror for THIS alert. The separate check for two live
 positions on one opportunity case is untouched — that one is real.
@@ -70,12 +75,34 @@ decision timestamp were both in scope. Every delivered case looked like a 0DTE t
 DTE-partitioned research was measuring a constant. Now derived from the OCC via
 `parseOccSymbol`. Legacy rows are not backfilled — historical DTE cannot be proven.
 
+### FINDING 4 — verified owner Discord performance is negative across the full history
+
+With the duplicate exclusion corrected, the 40 most recent delivered owner alerts read:
+
+```
+closed 35 | open 4 | ungradable 1
+wins 9  losses 26     win rate 25.7%
+mean closed return    -8.39%
+profit factor          0.811
+net realized          -647.60 USD
+best +343.93%   worst -96.76%
+```
+
+The prior packet's `PF 1.789 / mean +12.67%` was **one session of 9 openings**. Across the
+full delivered history the same lane is a losing system. This is evidence for the resume
+packet's own warning not to generalise a single profitable session into subscriber
+readiness — `SUBSCRIBER_APPROVED` must stay 0.
+
 ### Commits
 
 ```
 4c8cb31  Publish the stop that actually closes the position
 ac948b0  Stop writing off the owner's own winners as duplicates
+1d6a951  Packet (superseded by this entry)
 ```
+
+Production verified at `1d6a951`: `duplicatePositionsExcluded` 10 -> **0**,
+`DUPLICATE_POSITION` classifications 10 -> **0**, validTrades 101 -> **111**.
 
 ### Not done this session
 
