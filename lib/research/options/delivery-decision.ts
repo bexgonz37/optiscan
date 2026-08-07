@@ -269,6 +269,7 @@ export async function maybeSendBearishOwnerReview(
           },
           strengthen: true,
           currentMark: d.contract.bid,
+          markOptionSymbol: d.contract.optionSymbol,
         });
         return {
           sent: false,

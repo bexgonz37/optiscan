@@ -434,6 +434,7 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
             alertId,
           },
           currentMark: input.contract.bid,
+          markOptionSymbol: input.contract.optionSymbol,
         });
         const oc = loadCaseJsonOnDb(db, activeThesis.opportunityCaseId);
         logSuppressionOnDb(db, {
@@ -466,6 +467,7 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
             score: null,
             details: { strategy: input.strategy, optionSymbol: input.contract.optionSymbol, alertId },
             currentMark: input.contract.bid,
+            markOptionSymbol: input.contract.optionSymbol,
           });
           const oc = loadCaseJsonOnDb(db, active.opportunityCaseId);
           logSuppressionOnDb(db, {
@@ -581,6 +583,7 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
             score: null,
             details: { strategy: input.strategy, optionSymbol: input.contract.optionSymbol, alertId },
             currentMark: input.contract.bid,
+            markOptionSymbol: input.contract.optionSymbol,
           });
           const oc = loadCaseJsonOnDb(db, claim.opportunityCaseId);
           logSuppressionOnDb(db, {

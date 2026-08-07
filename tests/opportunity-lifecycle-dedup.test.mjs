@@ -25,6 +25,7 @@ import {
   findActiveOpportunityByFingerprintOnDb,
   loadCaseJsonOnDb,
   markOpportunityOpenedDeliveredOnDb,
+  markMatchesFrozenContract,
 } from "../lib/opportunity-case/live.ts";
 import { persistContentEventOnDb, contentEventId } from "../lib/opportunity-case/content-events.ts";
 import { persistCaseFromOptionsLive } from "../lib/opportunity-case/orchestrate.ts";
@@ -1500,4 +1501,86 @@ test("content event helper is idempotent by id", () => {
   };
   assert.equal(persistContentEventOnDb(d, payload), true);
   assert.equal(persistContentEventOnDb(d, payload), false);
+});
+
+// A case freezes its entry on ONE contract. The options loop keeps re-selecting a
+// "preferred" contract as the thesis lives on, so an unguarded mark priced a
+// different strike/expiration against the frozen entry. Reproduced from production
+// case oc_1a50klb (2026-08-06): frozen O:SPY260811C00772000 @ 3.44, then the loop
+// observed O:SPY260918C00782000 (bid 8.58, +38 days, +10 strike) and the case
+// recorded maxReturnPct 149.42% for a position that never traded above its entry.
+test("a mark from a re-selected contract never becomes a return on the frozen contract", () => {
+  const d = installLifecycleSchema(new Database(":memory:"));
+  const t = Date.parse("2026-08-06T15:09:01Z");
+  const claim = claimOpportunityOpenOnDb(d, {
+    symbol: "SPY", side: "call", expiration: "2026-08-11", strike: 772,
+    strategyKey: "breakout_forming", nowMs: t, frozenEntry: 3.44,
+    optionSymbol: "O:SPY260811C00772000",
+    contractSnapshot: { bid: 3.42, ask: 3.45, spreadPct: 0.87 },
+  });
+  assert.equal(claim.claimed, true);
+  markOpportunityOpenedDeliveredOnDb(d, {
+    opportunityCaseId: claim.opportunityCaseId, alertId: "oa_ce6nm4",
+    discordMessageId: "m1", frozenEntry: 3.44, nowMs: t,
+  });
+
+  // The loop re-selects a far-dated, higher-strike contract and reports its bid.
+  attachEvidenceToOpportunityOnDb(d, {
+    opportunityCaseId: claim.opportunityCaseId,
+    nowMs: t + 57 * 60_000,
+    source: "options_loop",
+    signalType: "repeat_ready_signal",
+    score: 1,
+    strengthen: true,
+    currentMark: 8.58,
+    markOptionSymbol: "O:SPY260918C00782000",
+  });
+  const afterForeign = loadCaseJsonOnDb(d, claim.opportunityCaseId);
+  assert.notEqual(afterForeign.summary.currentMark, 8.58,
+    "a foreign contract's bid must not become this case's mark");
+  assert.equal(afterForeign.summary.currentMark, 3.44,
+    "the case keeps its last mark on the frozen contract");
+  assert.equal(afterForeign.summary.maxReturnPct ?? 0, 0,
+    "a foreign contract's bid must not ratchet maxReturnPct");
+
+  // A mark on the frozen contract is still applied.
+  attachEvidenceToOpportunityOnDb(d, {
+    opportunityCaseId: claim.opportunityCaseId,
+    nowMs: t + 60 * 60_000,
+    source: "options_loop",
+    signalType: "repeat_ready_signal",
+    score: 1,
+    currentMark: 3.87,
+    markOptionSymbol: "O:SPY260811C00772000",
+  });
+  const afterOwn = loadCaseJsonOnDb(d, claim.opportunityCaseId);
+  assert.equal(afterOwn.summary.currentMark, 3.87);
+  assert.equal(Math.round((afterOwn.summary.currentReturnPct ?? 0) * 100) / 100, 12.5);
+});
+
+test("an unattributed mark is discarded rather than priced against the frozen entry", () => {
+  const d = installLifecycleSchema(new Database(":memory:"));
+  const t = Date.parse("2026-08-06T15:09:01Z");
+  const claim = claimOpportunityOpenOnDb(d, {
+    symbol: "SPY", side: "call", expiration: "2026-08-11", strike: 772,
+    strategyKey: "breakout_forming", nowMs: t, frozenEntry: 3.44,
+    optionSymbol: "O:SPY260811C00772000",
+  });
+  attachEvidenceToOpportunityOnDb(d, {
+    opportunityCaseId: claim.opportunityCaseId, nowMs: t + 1000,
+    source: "options_loop", signalType: "repeat_ready_signal", currentMark: 8.58,
+  });
+  const after = loadCaseJsonOnDb(d, claim.opportunityCaseId);
+  assert.equal(after.summary.currentMark, null);
+  assert.equal(after.summary.maxReturnPct ?? 0, 0);
+});
+
+test("markMatchesFrozenContract compares OCC identity only", () => {
+  const oc = { selectedContract: { optionSymbol: "O:SPY260811C00772000" } };
+  assert.equal(markMatchesFrozenContract(oc, "O:SPY260811C00772000"), true);
+  assert.equal(markMatchesFrozenContract(oc, " o:spy260811c00772000 "), true);
+  assert.equal(markMatchesFrozenContract(oc, "O:SPY260918C00782000"), false);
+  assert.equal(markMatchesFrozenContract(oc, null), false);
+  assert.equal(markMatchesFrozenContract({ selectedContract: null }, "O:SPY260811C00772000"), false);
+  assert.equal(markMatchesFrozenContract(null, "O:SPY260811C00772000"), false);
 });

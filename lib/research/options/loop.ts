@@ -452,6 +452,7 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
             },
             strengthen: res.state === "READY",
             currentMark: res.contract.bid,
+            markOptionSymbol: res.contract.optionSymbol,
           });
         }
       } catch { /* isolated */ }

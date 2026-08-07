@@ -589,6 +589,31 @@ export function claimOpportunityOpenOnDb(
   };
 }
 
+/** Normalise an OCC for identity comparison (case/whitespace only — never rewrites a symbol). */
+function normalizeOcc(occ: string | null | undefined): string | null {
+  const s = String(occ ?? "").trim().toUpperCase();
+  return s.length > 0 ? s : null;
+}
+
+/**
+ * True when `markOptionSymbol` is the contract this case froze its entry on.
+ *
+ * The frozen contract is `selectedContract.optionSymbol` — it is written once at
+ * acceptance and is NOT rewritten when the loop re-selects a preferred contract
+ * (those land in `contractUpdates`). When the caller does not say which contract it
+ * observed we return false: an unattributed mark is exactly the ambiguity that let a
+ * different strike/expiration be priced against this case's frozen entry.
+ */
+export function markMatchesFrozenContract(
+  oc: { selectedContract?: { optionSymbol?: string | null } | null } | null | undefined,
+  markOptionSymbol: string | null | undefined,
+): boolean {
+  const frozen = normalizeOcc(oc?.selectedContract?.optionSymbol);
+  const mark = normalizeOcc(markOptionSymbol);
+  if (frozen == null || mark == null) return false;
+  return frozen === mark;
+}
+
 export function attachEvidenceToOpportunityOnDb(
   db: LiveDb,
   input: {
@@ -601,6 +626,12 @@ export function attachEvidenceToOpportunityOnDb(
     strengthen?: boolean;
     weaken?: boolean;
     currentMark?: number | null;
+    /**
+     * OCC of the contract `currentMark` was observed on. A case keeps its frozen
+     * entry for ONE contract, so a mark from any other contract is not a return on
+     * this position and is discarded (see `markMatchesFrozenContract`).
+     */
+    markOptionSymbol?: string | null;
   },
 ): { attached: boolean; eventType?: LifecycleEventType } {
   const ev = buildEvidenceEvent({
@@ -637,7 +668,13 @@ export function attachEvidenceToOpportunityOnDb(
       });
     }
     const frozenEntry = oc.summary?.frozenEntry ?? oc.frozenTrade?.entryMid ?? null;
-    const currentMark = input.currentMark != null && Number.isFinite(input.currentMark) && input.currentMark > 0
+    // A mark only becomes a return when it was observed on the SAME contract the
+    // entry was frozen on. The options loop re-selects a preferred contract as the
+    // thesis lives on (different strike AND expiration), so an unguarded mark would
+    // price a different instrument against this case's entry.
+    const markOnFrozenContract = markMatchesFrozenContract(oc, input.markOptionSymbol);
+    const currentMark = markOnFrozenContract
+      && input.currentMark != null && Number.isFinite(input.currentMark) && input.currentMark > 0
       ? input.currentMark
       : null;
     const currentReturnPct = frozenEntry != null && currentMark != null
