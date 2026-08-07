@@ -19,6 +19,7 @@ import {
   costGateOnDb, getReportOnDb, type AiReportRow, type DbLike,
 } from "./store.ts";
 import { deliverNightlyRecapOnDb } from "./recap.ts";
+import type { NightlyResearchResult } from "../research/options/nightly-research.ts";
 
 const INTERNAL_RESEARCH_BANNER = "INTERNAL RESEARCH — MARKET CLOSED";
 
@@ -42,6 +43,8 @@ export interface NightlyJobResult {
   lessonsCreated: number;
   costUsd: number;
   diagnostic?: unknown;
+  /** Deterministic OptiScan research aggregation. Null when it could not be computed. */
+  research?: NightlyResearchResult | null;
 }
 
 export interface NightlyJobOptions {
@@ -203,8 +206,26 @@ export async function runNightlyDiagnosis(opts: NightlyJobOptions = {}): Promise
     // Lessons are best-effort; never block the report.
   }
 
+  // Deterministic OptiScan research aggregation. Runs BEFORE the recap and before any AI, so
+  // the owner section, the experiment scoreboard and the persisted findings exist whether or
+  // not a provider is reachable. Zero provider calls; isolated from the report either way.
+  let research: NightlyResearchResult | null = null;
+  try {
+    const { runNightlyResearchOnDb } = await import("../research/options/nightly-research.ts");
+    const sha = (() => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        return require("@/lib/build-info").deployInfo().commit ?? null;
+      } catch { return null; }
+    })();
+    research = runNightlyResearchOnDb(db as never, { sessionDate: day, deploymentSha: sha, nowMs });
+  } catch {
+    // Research aggregation is additive; a failure must never block the nightly report.
+  }
+  result.research = research;
+
   if (cfg.recapEnabled) {
-    try { await deliverNightlyRecapOnDb(db, summary, cfg, { env: opts.env, nowMs }); }
+    try { await deliverNightlyRecapOnDb(db, summary, cfg, { env: opts.env, nowMs, research }); }
     catch {
       // Recap is best-effort; never block the report.
     }

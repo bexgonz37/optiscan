@@ -11,12 +11,18 @@
 import type { NightlySummary } from "./nightly-summary.ts";
 import type { AiConfig } from "./config.ts";
 import { recordAiJobRunOnDb, listLessonsOnDb, type DbLike } from "./store.ts";
+import type { NightlyResearchResult } from "../research/options/nightly-research.ts";
 
 export interface RecapContext {
   /** Newest deterministic lesson title for the day, if any. */
   topLesson?: string | null;
   /** Absolute AI Lab URL (PUBLIC_APP_URL + /ai) when configured, else null. */
   reportUrl?: string | null;
+  /**
+   * Pre-formatted deterministic sections from the OptiScan research aggregation, led by
+   * OWNER DISCORD ALERTS. Rendered above the paper-portfolio block.
+   */
+  researchSections?: string[];
 }
 
 /**
@@ -35,7 +41,15 @@ function lossBreakdownLine(summary: NightlySummary): string | null {
   return `Losses: ${parts.join(" · ")}`;
 }
 
-/** Build the recap message from deterministic stored values only. PURE. */
+/**
+ * Build the recap message from deterministic stored values only. PURE.
+ *
+ * When the OptiScan research aggregation is available, its OWNER DISCORD ALERTS section leads
+ * the message. That ordering is the fix for a real defect: the internal paper portfolio and the
+ * delivered Discord lane are disjoint populations that have coincidentally been the same size,
+ * and an unlabelled paper-portfolio line at the top read as a verdict on the owner's alerts on a
+ * day when the delivered lane was profitable. The paper-portfolio block is kept, below, labelled.
+ */
 export function buildNightlyRecapMessage(summary: NightlySummary, ctx: RecapContext = {}): string {
   const o = summary.overall;
   const total = o.n;
@@ -49,11 +63,22 @@ export function buildNightlyRecapMessage(summary: NightlySummary, ctx: RecapCont
   // were delivered to Discord — those are separate lanes with separate contracts. The
   // label is explicit because an unlabelled "Trades: 5 | Wins: 0 | Losses: 5" reads as
   // a verdict on the day's Discord alerts, which it is not.
-  const lines = [
-    "**OptiScan Nightly Review**",
-    `_Lane: internal paper portfolio (PRIMARY). Not the delivered Discord alert lane._`,
+  const lines = ["**OptiScan Nightly Review**"];
+
+  // PRIMARY section: the alerts the owner actually received. Everything below it is a
+  // different population and says so.
+  if (ctx.researchSections?.length) {
+    lines.push(...ctx.researchSections, "");
+  }
+
+  lines.push(
+    // "PRIMARY" only holds when this block leads. Once the owner section is above it, this is
+    // the secondary lane and says so — the label has to track the actual ordering.
+    ctx.researchSections?.length
+      ? `_Lane: internal paper portfolio. Not the delivered Discord alert lane above._`
+      : `_Lane: internal paper portfolio (PRIMARY). Not the delivered Discord alert lane._`,
     `Paper trades: ${total} | Wins: ${wins} | Losses: ${losses} | Open/Ungradable: ${openUngradable}`,
-  ];
+  );
   const lossBreakdown = lossBreakdownLine(summary);
   if (lossBreakdown) lines.push(lossBreakdown);
   lines.push(
@@ -90,6 +115,8 @@ export interface DeliverRecapOptions {
   notif?: RecapNotif;
   env?: NodeJS.ProcessEnv;
   nowMs?: number;
+  /** Deterministic OptiScan research aggregation, when it was computed. */
+  research?: NightlyResearchResult | null;
 }
 
 export interface DeliverRecapResult {
@@ -130,7 +157,15 @@ export async function deliverNightlyRecapOnDb(
   const topLesson = (() => {
     try { return listLessonsOnDb(db, 1)[0]?.title ?? null; } catch { return null; }
   })();
-  const content = buildNightlyRecapMessage(summary, { topLesson });
+  const researchSections = (() => {
+    if (!opts.research) return undefined;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { formatNightlyResearchSections } = require("@/lib/research/options/nightly-research");
+      return formatNightlyResearchSections(opts.research) as string[];
+    } catch { return undefined; }
+  })();
+  const content = buildNightlyRecapMessage(summary, { topLesson, researchSections });
   const sent: any = await notif.postToDiscord(
     { content },
     {
