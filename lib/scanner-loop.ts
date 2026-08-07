@@ -62,6 +62,7 @@ import { classifyStockMomentum, freshMoverGateAllowed } from "@/lib/stock-moment
 import { rankDiscovery, promotionSet, type DiscoveryQuote } from "@/lib/discovery-ranking";
 import { broadStockEligibility, fastStockMomentumEligibility, stockMomentumPolicyConfig } from "@/lib/stock-momentum-policy";
 import { withProviderConsumer } from "@/lib/provider-context";
+import { runWatchedTick, sideEffectAllowed, loopHealth } from "@/lib/scanner-watchdog";
 
 const OPP_INGEST_MS = Number(process.env.OPP_INGEST_MS ?? 5000);
 const OPPORTUNITY_TRACKING = process.env.OPPORTUNITY_TRACKING !== "0";
@@ -627,6 +628,11 @@ async function handleTrigger(ticker: string, st: SymState, read: any, quote: any
   // (contractEntryGate) for the actionable TRADE tier.
   const bestCall = rankZeroDteContracts(chain.contracts, "call", { minsToClose, expRemainPct, max: 1, underlying: quote.price } as any)[0]?.contract ?? null;
   const bestPut = rankZeroDteContracts(chain.contracts, "put", { minsToClose, expRemainPct, max: 1, underlying: quote.price } as any)[0]?.contract ?? null;
+
+  // Fence. If the watchdog abandoned this tick while it was suspended above, the
+  // loop has already started a fresh one and this call would be a duplicate send on
+  // stale quotes. Refusing here is what makes timeout recovery safe.
+  if (!sideEffectAllowed()) return;
 
   const { captureZeroDte } = await import("@/lib/alert-capture");
   const id = await captureZeroDte({
@@ -1324,26 +1330,39 @@ export function startScannerLoop() {
   }
 
   s.running = true;
-  let busy = false;
   let lastLockBeatAt = 0;
+
+  // The busy flag used to live here as a plain boolean that only cleared when
+  // `await tick()` settled, so one never-settling tick stopped the loop for the life
+  // of the process while the timer kept firing and health kept reporting "running".
+  // The watchdog owns that state now: it bounds each tick, fences an abandoned one
+  // out of every guarded side effect, and reports the wedge instead of hiding it.
   const beat = async () => {
-    if (!busy) {
-      busy = true;
-      try { await tick(); } catch (err: any) { s.errors++; console.warn("[0dte-loop] tick failed:", err?.message); }
-      // Keep the advisory lock fresh (throttled; never breaks the heartbeat).
-      const hbNow = Date.now();
-      if (hbNow - lastLockBeatAt >= LOCK_HEARTBEAT_MS) {
-        lastLockBeatAt = hbNow;
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const { getDb } = require("@/lib/db");
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const { heartbeatScannerLock } = require("@/lib/instance-lock");
-          heartbeatScannerLock(getDb(), process.pid, hbNow);
-        } catch { /* lock heartbeat is best-effort */ }
+    try {
+      const outcome = await runWatchedTick(() => tick());
+      if (outcome.skipped === "wedged") {
+        s.note = "scanner loop WEDGED — abandoned ticks never settled; not launching more work (see /api/diagnostics/loop-health)";
+        console.warn(`[0dte-loop] ${s.note}`);
       }
-      busy = false;
+    } catch (err: any) {
+      s.errors++;
+      console.warn("[0dte-loop] tick failed:", err?.message);
     }
+
+    // Keep the advisory lock fresh (throttled; never breaks the heartbeat). This must
+    // run even across a wedge — dropping the lock would invite a second loop.
+    const hbNow = Date.now();
+    if (hbNow - lastLockBeatAt >= LOCK_HEARTBEAT_MS) {
+      lastLockBeatAt = hbNow;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { getDb } = require("@/lib/db");
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { heartbeatScannerLock } = require("@/lib/instance-lock");
+        heartbeatScannerLock(getDb(), process.pid, hbNow);
+      } catch { /* lock heartbeat is best-effort */ }
+    }
+
     g.__optiscanLoopTimer = setTimeout(beat, s.intervalMs);
     (g.__optiscanLoopTimer as any)?.unref?.();
   };
@@ -1364,5 +1383,12 @@ export function loopState() {
     promotedSymbols: [...s.promoted.keys()],
     nearMisses: s.nearMisses.slice(0, 25),
     majorMoves: s.majorMoves.slice(0, 12),
+    // Liveness, not just existence. `running` alone was true throughout a 5.5 hour wedge.
+    health: loopHealth({ running: s.running }),
   };
+}
+
+/** Zero-provider loop health for diagnostics. Never reports HEALTHY from aliveness alone. */
+export function scannerLoopHealth() {
+  return loopHealth({ running: state().running });
 }
