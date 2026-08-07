@@ -60,6 +60,35 @@ export type IdentityVerdict =
   /** Not enough persisted evidence to prove identity either way. Never publishable. */
   | "IDENTITY_UNVERIFIABLE";
 
+/**
+ * Precise defect codes.
+ *
+ * These are deliberately NOT collapsed into one bucket. "The stated peak exceeds
+ * anything the frozen contract printed" and "the stated peak is the 0 it was
+ * initialised to" both make a case unpublishable, but they are different bugs with
+ * different fixes, and reporting the second as cross-contract contamination would be
+ * its own false claim.
+ */
+export type IdentityDefect =
+  /** A mark in the series was taken on a contract other than the frozen one. */
+  | "CROSS_CONTRACT_MARK"
+  /** Performance evidence spans more than one contract. */
+  | "MULTI_OCC_PERFORMANCE"
+  /** The SENT alert names a different contract than the case froze. */
+  | "ALERT_OCC_MISMATCH"
+  /** A linked mirror is on a different contract than the case froze. */
+  | "MIRROR_OCC_MISMATCH"
+  /** Stated peak is positive but above anything the frozen contract ever printed. */
+  | "UNSUPPORTED_MAX_RETURN"
+  /** Stated peak is the 0 seeded at open while the contract only ever traded down. */
+  | "MAX_FLOORED_AT_ZERO"
+  /** Stated return is not (stated mark vs frozen entry). */
+  | "RETURN_NOT_REPRODUCIBLE"
+  | "NO_FROZEN_OCC"
+  | "NO_FROZEN_ENTRY"
+  | "NO_PERFORMANCE_MIRROR"
+  | "CASE_NOT_FOUND";
+
 export interface LinkedPaperTrade {
   tradeId: number;
   optionSymbol: string | null;
@@ -114,7 +143,13 @@ export interface TradeIdentityReport {
   /** Can `caseCurrentReturnPct` be reproduced from a mark on the frozen contract? */
   realizedReturnReproducibleOnFrozen: boolean | null;
 
+  /** Best mark the FROZEN contract actually printed, across linked mirrors. */
+  frozenContractBestMarkPct: number | null;
+  /** Worst mark the FROZEN contract actually printed, across linked mirrors. */
+  frozenContractWorstMarkPct: number | null;
+
   verdict: IdentityVerdict;
+  defects: IdentityDefect[];
   reasons: string[];
   /** True only when a numeric performance claim may be published from this case. */
   publishable: boolean;
@@ -218,6 +253,8 @@ export function reconcileTradeIdentityOnDb(
   opportunityCaseId: string,
 ): TradeIdentityReport {
   const reasons: string[] = [];
+  const defects: IdentityDefect[] = [];
+  const flag = (d: IdentityDefect, why: string) => { defects.push(d); reasons.push(why); };
   const c = loadCase(db, opportunityCaseId);
 
   const base: TradeIdentityReport = {
@@ -242,13 +279,16 @@ export function reconcileTradeIdentityOnDb(
     linkedPaperTrades: [],
     maxReturnReproducibleOnFrozen: null,
     realizedReturnReproducibleOnFrozen: null,
+    frozenContractBestMarkPct: null,
+    frozenContractWorstMarkPct: null,
     verdict: "IDENTITY_UNVERIFIABLE",
+    defects,
     reasons,
     publishable: false,
   };
 
   if (!c) {
-    reasons.push("opportunity case not found");
+    flag("CASE_NOT_FOUND", "opportunity case not found");
     return base;
   }
 
@@ -283,53 +323,69 @@ export function reconcileTradeIdentityOnDb(
   base.linkedPaperTrades = loadLinkedPaperTrades(db, base.alertId, frozenOcc);
 
   // --- identity checks -------------------------------------------------------
-  if (!frozenOcc) reasons.push("case has no frozen selectedContract.optionSymbol");
-  if (frozenEntry == null || !(frozenEntry > 0)) reasons.push("case has no positive frozen entry");
+  if (!frozenOcc) flag("NO_FROZEN_OCC", "case has no frozen selectedContract.optionSymbol");
+  if (frozenEntry == null || !(frozenEntry > 0)) flag("NO_FROZEN_ENTRY", "case has no positive frozen entry");
 
   if (frozenOcc && base.alertOptionSymbol && base.alertOptionSymbol !== frozenOcc) {
-    reasons.push(`alert OCC ${base.alertOptionSymbol} != frozen OCC ${frozenOcc}`);
+    flag("ALERT_OCC_MISMATCH", `alert OCC ${base.alertOptionSymbol} != frozen OCC ${frozenOcc}`);
   }
 
   const performanceTrades = base.linkedPaperTrades.filter((t) => t.markCount > 0 || t.returnPct != null);
   for (const t of performanceTrades) {
     if (frozenOcc && t.optionSymbol && t.optionSymbol !== frozenOcc) {
-      reasons.push(`paper trade ${t.tradeId} is on ${t.optionSymbol}, not frozen OCC ${frozenOcc}`);
+      flag("MIRROR_OCC_MISMATCH", `paper trade ${t.tradeId} is on ${t.optionSymbol}, not frozen OCC ${frozenOcc}`);
     }
     if (t.marksOffFrozen > 0) {
-      reasons.push(`paper trade ${t.tradeId} has ${t.marksOffFrozen} mark(s) off the frozen contract`);
+      flag("CROSS_CONTRACT_MARK", `paper trade ${t.tradeId} has ${t.marksOffFrozen} mark(s) off the frozen contract`);
     }
   }
   const distinctPerfOccs = new Set(
     performanceTrades.flatMap((t) => [t.optionSymbol, ...t.markOptionSymbols]).filter((o): o is string => o != null),
   );
   if (distinctPerfOccs.size > 1) {
-    reasons.push(`performance evidence spans ${distinctPerfOccs.size} contracts: ${[...distinctPerfOccs].sort().join(", ")}`);
+    flag(
+      "MULTI_OCC_PERFORMANCE",
+      `performance evidence spans ${distinctPerfOccs.size} contracts: ${[...distinctPerfOccs].sort().join(", ")}`,
+    );
   }
 
-  // Can the stored case performance be reproduced from frozen-contract marks?
-  const frozenMfeCandidates = performanceTrades
-    .map((t) => t.frozenMfePct)
-    .filter((v): v is number => v != null);
-  const bestFrozenMfe = frozenMfeCandidates.length ? Math.max(...frozenMfeCandidates) : null;
+  // What the frozen contract ACTUALLY printed, from its own mark series.
+  const mfes = performanceTrades.map((t) => t.frozenMfePct).filter((v): v is number => v != null);
+  const maes = performanceTrades.map((t) => t.frozenMaePct).filter((v): v is number => v != null);
+  const bestFrozenMfe = mfes.length ? Math.max(...mfes) : null;
+  base.frozenContractBestMarkPct = bestFrozenMfe;
+  base.frozenContractWorstMarkPct = maes.length ? Math.min(...maes) : null;
 
   if (base.caseMaxReturnPct == null) {
     base.maxReturnReproducibleOnFrozen = null;
   } else if (bestFrozenMfe == null) {
     base.maxReturnReproducibleOnFrozen = false;
-    reasons.push(
-      `case maxReturnPct ${base.caseMaxReturnPct} has no supporting mark on the frozen contract`,
-    );
-  } else {
-    // The case max must not EXCEED what the frozen contract ever printed. A lower
-    // stored max is possible (marking started late); a higher one cannot come from
-    // this contract at all.
-    const ok = base.caseMaxReturnPct <= bestFrozenMfe + RETURN_TOLERANCE_PCT;
-    base.maxReturnReproducibleOnFrozen = ok;
-    if (!ok) {
-      reasons.push(
-        `case maxReturnPct ${base.caseMaxReturnPct} exceeds the frozen contract's best mark ${bestFrozenMfe}`,
+    if (base.caseMaxReturnPct !== 0) {
+      flag(
+        "UNSUPPORTED_MAX_RETURN",
+        `case maxReturnPct ${base.caseMaxReturnPct} has no supporting mark on the frozen contract`,
       );
     }
+  } else if (base.caseMaxReturnPct <= bestFrozenMfe + RETURN_TOLERANCE_PCT) {
+    // A stored max BELOW the observed best is fine: marking may have started late.
+    base.maxReturnReproducibleOnFrozen = true;
+  } else if (base.caseMaxReturnPct === 0) {
+    // The summary seeds maxReturnPct at 0 when the case opens, and a trade that only
+    // ever traded down never raises it. The 0 is an initialisation artifact, not an
+    // observed peak — it silently floors every loser's excursion at break-even. That
+    // is a real defect, but it is NOT a contract-identity problem, and calling it one
+    // would be its own false claim.
+    base.maxReturnReproducibleOnFrozen = false;
+    flag(
+      "MAX_FLOORED_AT_ZERO",
+      `case maxReturnPct is the 0 seeded at open; the frozen contract's best mark was ${bestFrozenMfe}`,
+    );
+  } else {
+    base.maxReturnReproducibleOnFrozen = false;
+    flag(
+      "UNSUPPORTED_MAX_RETURN",
+      `case maxReturnPct ${base.caseMaxReturnPct} exceeds the frozen contract's best mark ${bestFrozenMfe}`,
+    );
   }
 
   if (base.caseCurrentReturnPct == null) {
@@ -339,7 +395,8 @@ export function reconcileTradeIdentityOnDb(
     const ok = Math.abs(recomputed - base.caseCurrentReturnPct) <= RETURN_TOLERANCE_PCT;
     base.realizedReturnReproducibleOnFrozen = ok;
     if (!ok) {
-      reasons.push(
+      flag(
+        "RETURN_NOT_REPRODUCIBLE",
         `case return ${base.caseCurrentReturnPct}% does not equal (mark ${base.caseCurrentMark} vs entry ${frozenEntry})`,
       );
     }
@@ -348,24 +405,24 @@ export function reconcileTradeIdentityOnDb(
   }
 
   // --- verdict ---------------------------------------------------------------
-  const hasMismatch = reasons.some((r) => r.includes("!= frozen OCC") || r.includes("not frozen OCC"));
-  const hasContamination = reasons.some((r) =>
-    r.includes("off the frozen contract")
-    || r.includes("performance evidence spans")
-    || r.includes("exceeds the frozen contract's best mark")
-    || r.includes("has no supporting mark on the frozen contract"));
+  const has = (d: IdentityDefect) => defects.includes(d);
+  const crossContract = has("CROSS_CONTRACT_MARK") || has("MULTI_OCC_PERFORMANCE")
+    || has("UNSUPPORTED_MAX_RETURN") || has("RETURN_NOT_REPRODUCIBLE");
+  const mismatch = has("ALERT_OCC_MISMATCH") || has("MIRROR_OCC_MISMATCH");
 
   if (!frozenOcc || frozenEntry == null || !(frozenEntry > 0)) {
     base.verdict = "IDENTITY_UNVERIFIABLE";
-  } else if (hasContamination) {
-    base.verdict = "CROSS_CONTRACT_CONTAMINATION";
-  } else if (hasMismatch) {
-    base.verdict = "OCC_MISMATCH";
   } else if (performanceTrades.length === 0) {
+    flag("NO_PERFORMANCE_MIRROR", "no linked paper mirror carries marks or a realized return");
     base.verdict = "IDENTITY_UNVERIFIABLE";
-    reasons.push("no linked paper mirror carries marks or a realized return");
-  } else if (base.realizedReturnReproducibleOnFrozen === false) {
+  } else if (crossContract) {
     base.verdict = "CROSS_CONTRACT_CONTAMINATION";
+  } else if (mismatch) {
+    base.verdict = "OCC_MISMATCH";
+  } else if (has("MAX_FLOORED_AT_ZERO")) {
+    // Identity is sound; the peak is simply not an observation. The realized return
+    // is still same-OCC, so this is unverifiable-for-peak rather than contaminated.
+    base.verdict = "IDENTITY_UNVERIFIABLE";
   } else {
     base.verdict = "SAME_OCC_VERIFIED";
   }
@@ -421,7 +478,10 @@ export function reconcileRecentTradeIdentitiesOnDb(
 
 export interface IdentitySummary {
   examined: number;
+  /** Cases that actually state a return or a peak — the ones able to mislead. */
+  carryingPerformance: number;
   byVerdict: Record<IdentityVerdict, number>;
+  byDefect: Partial<Record<IdentityDefect, number>>;
   publishable: number;
   contaminated: string[];
 }
@@ -433,16 +493,22 @@ export function summarizeTradeIdentities(reports: TradeIdentityReport[]): Identi
     OCC_MISMATCH: 0,
     IDENTITY_UNVERIFIABLE: 0,
   };
+  const byDefect: Partial<Record<IdentityDefect, number>> = {};
   const contaminated: string[] = [];
+  let carryingPerformance = 0;
   for (const r of reports) {
     byVerdict[r.verdict] += 1;
+    for (const d of new Set(r.defects)) byDefect[d] = (byDefect[d] ?? 0) + 1;
+    if (r.caseMaxReturnPct != null || r.caseCurrentReturnPct != null) carryingPerformance += 1;
     if (r.verdict === "CROSS_CONTRACT_CONTAMINATION" || r.verdict === "OCC_MISMATCH") {
       contaminated.push(r.opportunityCaseId);
     }
   }
   return {
     examined: reports.length,
+    carryingPerformance,
     byVerdict,
+    byDefect,
     publishable: reports.filter((r) => r.publishable).length,
     contaminated,
   };

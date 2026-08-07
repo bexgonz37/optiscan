@@ -249,6 +249,57 @@ test("summary counts verdicts and names the contaminated cases", () => {
   assert.deepEqual(s.contaminated, ["oc_test"]);
 });
 
+// ── the two defects must not be collapsed into one ──────────────────────────
+
+test("a peak of 0 on a contract that only traded down is a floor artifact, not contamination", () => {
+  const d = db();
+  // The summary seeds maxReturnPct at 0 at open. A trade that never goes green keeps
+  // that 0, so every loser silently reports its excursion floored at break-even.
+  // Real defect, but the contract identity is sound — calling it cross-contract
+  // contamination would be its own false claim.
+  seedCase(d, {
+    summary: { frozenEntry: 2.33, currentMark: 1.4, currentReturnPct: -39.9142, maxReturnPct: 0, currentStatus: "CLOSED" },
+  });
+  seedTrade(d, { returnPct: -39.9142 });
+  seedMark(d, { returnPct: -12 });
+  seedMark(d, { atMs: T0 + 2000, returnPct: -39.9142 });
+
+  const r = reconcileTradeIdentityOnDb(d, "oc_test");
+  assert.ok(r.defects.includes("MAX_FLOORED_AT_ZERO"));
+  assert.ok(!r.defects.includes("UNSUPPORTED_MAX_RETURN"));
+  assert.notEqual(r.verdict, "CROSS_CONTRACT_CONTAMINATION");
+  assert.equal(r.publishable, false);
+  assert.equal(r.frozenContractBestMarkPct, -12);
+});
+
+test("a positive peak above anything the contract printed is UNSUPPORTED_MAX_RETURN", () => {
+  const d = db();
+  seedCase(d, {
+    summary: { frozenEntry: 2.33, currentMark: 3.43, currentReturnPct: 47.2103, maxReturnPct: 185.4077, currentStatus: "CLOSED" },
+  });
+  seedTrade(d);
+  seedMark(d, { returnPct: 47.2103 });
+
+  const r = reconcileTradeIdentityOnDb(d, "oc_test");
+  assert.ok(r.defects.includes("UNSUPPORTED_MAX_RETURN"));
+  assert.ok(!r.defects.includes("MAX_FLOORED_AT_ZERO"));
+  assert.equal(r.verdict, "CROSS_CONTRACT_CONTAMINATION");
+  assert.equal(r.frozenContractBestMarkPct, 47.2103);
+});
+
+test("a stored peak below the observed best is fine — marking can start late", () => {
+  const d = db();
+  seedCase(d, {
+    summary: { frozenEntry: 2.33, currentMark: 3.43, currentReturnPct: 47.2103, maxReturnPct: 30, currentStatus: "CLOSED" },
+  });
+  seedTrade(d);
+  seedMark(d, { returnPct: 47.2103 });
+
+  const r = reconcileTradeIdentityOnDb(d, "oc_test");
+  assert.equal(r.verdict, "SAME_OCC_VERIFIED");
+  assert.equal(r.maxReturnReproducibleOnFrozen, true);
+});
+
 test("a missing case is reported as not found, not as a clean bill of health", () => {
   const d = db();
   const r = reconcileTradeIdentityOnDb(d, "oc_missing");
