@@ -1609,6 +1609,124 @@ CREATE TABLE IF NOT EXISTS options_delivery_decisions (
 CREATE INDEX IF NOT EXISTS idx_options_delivery_decisions ON options_delivery_decisions(outcome, created_at_ms);
 -- idx_options_delivery_final_outcome is created after additive column migrations (legacy DBs may lack final_delivery_outcome until then).
 
+-- The frozen experiment registry. One row per (experiment, version), written ONCE and never
+-- updated: definition_hash pins the gate behaviour so a retuned rule cannot inherit the
+-- prospective sample of the rule it replaced. A changed rule is a NEW version, not an update.
+-- Status moves through the lifecycle in options_experiment_status; this table is the identity.
+CREATE TABLE IF NOT EXISTS options_experiment_registry (
+  experiment_id TEXT NOT NULL,
+  experiment_version INTEGER NOT NULL,
+  mode TEXT NOT NULL,                     -- SHADOW_PAPER_ONLY
+  hypothesis TEXT NOT NULL,
+  gates_json TEXT NOT NULL,               -- id/label/rationale per gate, as frozen
+  definition_hash TEXT NOT NULL,          -- content hash of gate BEHAVIOUR at freeze
+  creation_sha TEXT NOT NULL,             -- commit that introduced the rule; never recomputed
+  prospective_start_date TEXT NOT NULL,
+  activation_at_ms INTEGER NOT NULL,
+  source_cohort_id TEXT NOT NULL,
+  development_sessions_json TEXT NOT NULL,
+  validation_sessions_json TEXT NOT NULL,
+  historical_result_json TEXT NOT NULL,
+  robustness_caveats_json TEXT NOT NULL,  -- the framings under which it is NOT profitable
+  would_be_disproven_by TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (experiment_id, experiment_version)
+);
+
+-- Experiment lifecycle. Append-only: every status change is a row, so a demotion cannot erase
+-- the evidence that promoted it. There is deliberately no SUBSCRIBER_APPROVED status.
+CREATE TABLE IF NOT EXISTS options_experiment_status (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  experiment_id TEXT NOT NULL,
+  experiment_version INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  previous_status TEXT,
+  reason TEXT NOT NULL,
+  evidence_json TEXT,                     -- the counts/metrics that justified the move
+  actor TEXT NOT NULL,                    -- 'deterministic' | 'ai_proposal' | human actor id
+  created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_options_experiment_status ON options_experiment_status(experiment_id, experiment_version, created_at_ms);
+
+-- The prospective shadow arm: baseline and experiment decided on the SAME opportunity, written
+-- BEFORE the outcome is known. BOTH_REJECT rows are kept so the denominator is real, and
+-- BASELINE_ONLY rows are what put the experiment's rejections on trial. Nothing here authorizes
+-- a send: the baseline columns record a decision that was already made elsewhere.
+-- NOTE: distinct from options_shadow_decisions (the gate-comparison shadow runner) below.
+CREATE TABLE IF NOT EXISTS options_experiment_decisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  decision_key TEXT NOT NULL,             -- deterministic; makes a repeated batch idempotent
+  experiment_id TEXT NOT NULL,
+  experiment_version INTEGER NOT NULL,
+  session_date TEXT NOT NULL,
+  recorded_at_ms INTEGER NOT NULL,
+  symbol TEXT NOT NULL,
+  strategy TEXT NOT NULL,
+  side TEXT,
+  direction TEXT,
+  option_symbol TEXT NOT NULL,
+  opportunity_case_id TEXT,
+  alert_id TEXT,
+  -- arm
+  baseline_admitted INTEGER NOT NULL,
+  baseline_outcome TEXT,
+  baseline_reason TEXT,
+  baseline_quality REAL,
+  experiment_admitted INTEGER NOT NULL,
+  experiment_blocked_by_json TEXT,
+  experiment_unavailable_json TEXT,
+  experiment_score REAL,
+  experiment_components_json TEXT,
+  experiment_reason TEXT,
+  arm TEXT NOT NULL,                      -- BOTH_ADMIT | BASELINE_ONLY | EXPERIMENT_ONLY | BOTH_REJECT
+  -- inputs the decision was made on, so it can be re-derived without the provider
+  features_json TEXT,
+  confirmation_json TEXT,
+  attribution_json TEXT,
+  -- outcome linkage, filled LATER by the mirror/grader. Never written at decision time.
+  paper_trade_id INTEGER,
+  outcome_status TEXT,                    -- OPEN | CLOSED | UNGRADABLE
+  return_pct REAL,
+  exit_reason TEXT,
+  closed_at_ms INTEGER,
+  same_contract_marks INTEGER,
+  peak_pct REAL,
+  trough_pct REAL,
+  created_at_ms INTEGER NOT NULL,
+  UNIQUE(decision_key)
+);
+CREATE INDEX IF NOT EXISTS idx_options_experiment_decisions_session ON options_experiment_decisions(experiment_id, session_date);
+CREATE INDEX IF NOT EXISTS idx_options_experiment_decisions_arm ON options_experiment_decisions(experiment_id, arm, outcome_status);
+CREATE INDEX IF NOT EXISTS idx_options_experiment_decisions_paper ON options_experiment_decisions(paper_trade_id);
+
+-- Persisted Evidence Learning findings. A finding is a NAMED, checkable claim with its
+-- limitations attached: limitations_json is NOT NULL because a finding quoted without its
+-- limitations is how "PF 1.24" becomes "it works".
+CREATE TABLE IF NOT EXISTS options_learning_findings (
+  finding_id TEXT PRIMARY KEY,
+  strategy TEXT,
+  strategy_version TEXT,
+  population TEXT,
+  evidence_cohort_id TEXT,
+  sessions_json TEXT NOT NULL,
+  sample_size INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  statement TEXT NOT NULL,
+  baseline_metric_json TEXT,
+  experimental_metric_json TEXT,
+  evidence_strength TEXT NOT NULL,        -- STRONG | MODERATE | WEAK | INSUFFICIENT
+  limitations_json TEXT NOT NULL,
+  affected_opportunity_ids_json TEXT,
+  recommended_experiment TEXT,
+  experiment_id TEXT,
+  experiment_status TEXT,
+  must_not_be_summarized_as TEXT,
+  deployment_sha TEXT,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_options_learning_findings ON options_learning_findings(strategy, created_at_ms);
+
 -- Legacy bearish detections that were suppressed by the legacy Discord owner are kept as audit/escalation
 -- evidence for the independent bearish authority. These rows never authorize subscriber SEND by themselves.
 CREATE TABLE IF NOT EXISTS options_bearish_escalations (

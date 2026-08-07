@@ -13,6 +13,12 @@ import { assertOptionsOpeningSession, assertSubscriberDeliveryAllowed, evaluateM
 import { evaluateEntryQuality, entryQualityFromDelivery } from "../../entry-quality-gate.ts";
 import { markCandidatesBatchEntered } from "./instrumentation.ts";
 import { recordProposedShadowFromDelivery } from "./shadow-runner.ts";
+import { buildShadowRecord, isShadowEligible } from "./prospective-shadow.ts";
+import { LHC_SELECT_V1 } from "./experiment-registry.ts";
+import {
+  registerExperimentOnDb, recordShadowDecisionOnDb, linkPaperTradeOnDb,
+  currentStatusOnDb, recordStatusOnDb, type ShadowDb,
+} from "./shadow-arm-store.ts";
 import {
   evaluateBearishAuthority,
   formatBearishOwnerReview,
@@ -660,6 +666,13 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
     }
   }
 
+  // PROSPECTIVE SHADOW ARM — LHC_SELECT_V1 evaluated on the SAME opportunities the baseline
+  // just decided, recorded before any outcome exists. Reads `decisions`; changes nothing in
+  // them. Fully isolated: a failure here must never affect a delivery that already happened.
+  if (db) {
+    try { recordShadowArmForBatch(db, decisions, nowMs); } catch { /* isolated */ }
+  }
+
   if (db && hasTable(db, "options_delivery_decisions")) {
     const batchId = `bd_${nowMs}`;
     const competing = decisions.slice(0, 8).map((d) => ({ symbol: d.symbol, strategy: d.strategy, quality: d.quality, outcome: d.outcome, finalDeliveryOutcome: d.finalDeliveryOutcome, reason: d.reason.slice(0, 80) }));
@@ -712,6 +725,102 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
   }
 
   return decisions.map(({ sub: _sub, ...rest }) => rest);
+}
+
+/**
+ * Record the prospective shadow arm for every `lower_high_continuation` candidate in this
+ * batch.
+ *
+ * The baseline decision is READ, never influenced: `outcome === "DELIVER_TO_DISCORD"` is what
+ * the portfolio layer already chose, and the experiment's verdict is written beside it. Rows
+ * where BOTH arms reject are written too — without them the denominator is only the trades
+ * somebody already liked, and "losses avoided" becomes unmeasurable.
+ *
+ * Isolated per row: one malformed candidate must not cost the rest of the batch its evidence.
+ */
+function recordShadowArmForBatch(
+  db: DDb,
+  decisions: readonly (DeliveryDecision & { sub: DeliverySubmission })[],
+  nowMs: number,
+): void {
+  const eligible = decisions.filter((d) => isShadowEligible(d.strategy));
+  if (!eligible.length) return;
+
+  // Register the frozen experiment on first use. A hash conflict means the rule changed under
+  // a live sample; the row is refused rather than overwritten, and nothing is recorded against
+  // an experiment whose identity is in doubt.
+  const reg = registerExperimentOnDb(db as unknown as ShadowDb, LHC_SELECT_V1, nowMs);
+  if (!reg.ok) return;
+  if (currentStatusOnDb(db as unknown as ShadowDb, LHC_SELECT_V1.experimentId, LHC_SELECT_V1.experimentVersion) == null) {
+    try {
+      recordStatusOnDb(db as unknown as ShadowDb, {
+        experimentId: LHC_SELECT_V1.experimentId,
+        experimentVersion: LHC_SELECT_V1.experimentVersion,
+        status: "PROPOSED",
+        reason: "registered by the prospective shadow arm on first eligible candidate",
+        actor: "deterministic",
+      }, nowMs);
+    } catch { /* isolated */ }
+  }
+
+  const sha = (() => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      return require("@/lib/build-info").deployInfo().commit ?? null;
+    } catch { return null; }
+  })();
+
+  for (const d of eligible) {
+    try {
+      const i = d.sub.deliveryInput;
+      const c = i.contract;
+      const record = buildShadowRecord({
+        symbol: d.symbol,
+        strategy: d.strategy,
+        side: d.sub.side,
+        direction: d.sub.side === "put" ? "bearish" : "bullish",
+        optionSymbol: c.optionSymbol,
+        strike: c.strike ?? null,
+        expiration: c.expiration ?? null,
+        dte: c.dte ?? null,
+        bid: c.bid ?? null,
+        ask: c.ask ?? null,
+        spreadPct: d.sub.spreadPct ?? c.spreadPct ?? null,
+        volume: c.volume ?? null,
+        openInterest: c.openInterest ?? null,
+        iv: c.iv ?? null,
+        delta: c.delta ?? null,
+        underlyingPrice: i.underlyingPrice ?? null,
+        baselineOutcome: d.outcome,
+        baselineAdmitted: d.outcome === "DELIVER_TO_DISCORD",
+        baselineReason: d.reason,
+        baselineQuality: d.quality,
+        opportunityCaseId: null,
+        alertId: d.alertId,
+        sessionState: d.sessionState,
+        nowMs,
+        decisionMs: i.decisionMs ?? null,
+        firstDetectedAtMs: i.firstDetectedAtMs ?? null,
+        firstReadyAtMs: i.firstReadyAtMs ?? null,
+        underlyingAtFirstDetection: i.underlyingAtFirstDetection ?? null,
+        optionAtFirstDetection: i.optionAtFirstDetection ?? null,
+        featureSnapshot: i.featureSnapshot ?? null,
+      }, { deploymentSha: sha, population: "DELIVERED_ALERT_PAPER" });
+
+      const { decisionKey: key } = recordShadowDecisionOnDb(db as unknown as ShadowDb, record, nowMs);
+
+      // Link the canonical mirror when the baseline actually opened one, so the SAME contract
+      // trajectory serves both arms and no duplicate provider work is created.
+      if (d.deliverySent && d.alertId) {
+        try {
+          const row = db.prepare("SELECT paper_trade_id FROM options_alerts WHERE alert_id=?").get(d.alertId) as any;
+          if (row?.paper_trade_id != null) {
+            linkPaperTradeOnDb(db as unknown as ShadowDb, key, Number(row.paper_trade_id), nowMs);
+          }
+        } catch { /* isolated */ }
+      }
+    } catch { /* isolated per row */ }
+  }
 }
 
 export function deliveryDecisionMetricsOnDb(db: DDb): Record<string, unknown> {
