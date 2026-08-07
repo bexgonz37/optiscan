@@ -55,6 +55,7 @@ export async function GET(req: Request) {
       weekKey,
       nowMs,
       monthlyBudgetUsd: cfg.monthlyHardLimitUsd,
+      deploymentSha: sha,
     });
 
     return NextResponse.json({

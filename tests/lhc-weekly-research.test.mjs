@@ -325,6 +325,20 @@ test("the weekly report states what the budget may never stop", () => {
 
 // ── AI context ─────────────────────────────────────────────────────────────
 
+test("the weekly review seeds findings itself, not only via the nightly", () => {
+  const d = db();
+  registerExperimentOnDb(d, LHC_SELECT_V1, T0);
+  // No nightly has ever run against this database.
+  assert.equal(d.prepare("SELECT COUNT(*) n FROM options_learning_findings").get().n, 0);
+  const r = runWeeklyResearchOnDb(d, { weekKey: WEEK, nowMs: T0, monthlyBudgetUsd: 20, deploymentSha: "abc1234" });
+  assert.equal(r.findings, 6);
+  assert.equal(d.prepare("SELECT COUNT(*) n FROM options_learning_findings").get().n, 6);
+  // Still idempotent when both jobs run.
+  runWeeklyResearchOnDb(d, { weekKey: WEEK, nowMs: T0 + 1000, monthlyBudgetUsd: 20 });
+  assert.equal(d.prepare("SELECT COUNT(*) n FROM options_learning_findings").get().n, 6);
+  d.close();
+});
+
 test("the AI context carries limitations and forbids inventing numbers", () => {
   const d = db();
   registerExperimentOnDb(d, LHC_SELECT_V1, T0);

@@ -24,7 +24,7 @@
 
 import { buildProspectiveScoreboard, weeklyVerdict, type ProspectiveScoreboard, type WeeklyVerdict } from "./prospective-scoreboard.ts";
 import { listShadowDecisionsOnDb, refreshShadowOutcomesOnDb, currentStatusOnDb, recordStatusOnDb, statusHistoryOnDb, type ShadowDb } from "./shadow-arm-store.ts";
-import { listFindingsOnDb, type FindingsDb } from "./findings-store.ts";
+import { listFindingsOnDb, seedLhcFindingsOnDb, type FindingsDb } from "./findings-store.ts";
 import { LHC_SELECT_V1, checkFrozen, canTransition, type ExperimentStatus } from "./experiment-registry.ts";
 
 export interface WeeklyDb extends ShadowDb, FindingsDb {}
@@ -162,7 +162,7 @@ export interface WeeklyResearchResult {
  */
 export function runWeeklyResearchOnDb(
   db: WeeklyDb,
-  opts: { weekKey: string; nowMs?: number; monthlyBudgetUsd?: number | null },
+  opts: { weekKey: string; nowMs?: number; monthlyBudgetUsd?: number | null; deploymentSha?: string | null },
 ): WeeklyResearchResult {
   const nowMs = opts.nowMs ?? Date.now();
   const frozen = checkFrozen();
@@ -238,6 +238,10 @@ export function runWeeklyResearchOnDb(
   }
 
   const budget = buildAiBudgetReportOnDb(db, { nowMs, monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null });
+
+  // Seed the findings here too, not only in the nightly. A finding is a standing claim about
+  // the lane; whether it exists must not depend on which job happened to run last.
+  try { seedLhcFindingsOnDb(db, { deploymentSha: opts.deploymentSha ?? null }, nowMs); } catch { /* isolated */ }
   const findings = (() => { try { return listFindingsOnDb(db, { strategy: "lower_high_continuation" }).length; } catch { return 0; } })();
 
   return {
