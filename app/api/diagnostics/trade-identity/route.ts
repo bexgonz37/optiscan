@@ -15,8 +15,11 @@ export const dynamic = "force-dynamic";
  * never this trade's performance trajectory.
  *
  *   ?caseId=oc_x[,oc_y]  reconcile specific cases
- *   ?days=N              window of recent cases (default 7)
- *   ?limit=N             cap (default 100, max 500)
+ *   ?days=N              window (default 30)
+ *   ?limit=N             cap (default 200, max 2000)
+ *   ?scope=delivered|all delivered is the default — the scanner creates thousands of
+ *                        undelivered candidate cases a day, and auditing those reports
+ *                        a clean bill of health for rows that never carried a number
  *   ?only=contaminated   return only cases that fail the invariant
  *
  * Reads PERSISTED evidence only. No provider call, no quota spend, no send authority.
@@ -35,15 +38,17 @@ export async function GET(req: Request) {
     const caseIds = caseIdParam
       ? caseIdParam.split(",").map((s) => s.trim()).filter(Boolean)
       : undefined;
-    const days = Math.max(1, Math.min(90, Number(url.searchParams.get("days") ?? 7)));
-    const limit = Math.max(1, Math.min(500, Number(url.searchParams.get("limit") ?? 100)));
+    const days = Math.max(1, Math.min(365, Number(url.searchParams.get("days") ?? 30)));
+    const limit = Math.max(1, Math.min(2000, Number(url.searchParams.get("limit") ?? 200)));
     const only = url.searchParams.get("only");
+    const scope = url.searchParams.get("scope") === "all" ? "all" : "delivered";
 
     const db = getDb() as any;
     const all = reconcileRecentTradeIdentitiesOnDb(db, {
       caseIds,
       sinceMs: caseIds ? null : Date.now() - days * 86_400_000,
       limit,
+      scope,
     });
     const summary = summarizeTradeIdentities(all);
     const reports = only === "contaminated"
@@ -52,7 +57,7 @@ export async function GET(req: Request) {
 
     return NextResponse.json({
       ok: true,
-      scope: caseIds ? { caseIds } : { days, limit },
+      scope: caseIds ? { caseIds } : { days, limit, population: scope },
       summary,
       reports,
       note:

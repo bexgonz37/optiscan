@@ -374,25 +374,45 @@ export function reconcileTradeIdentityOnDb(
   return base;
 }
 
+/**
+ * Which cases to reconcile.
+ *
+ * `delivered` is the default and the population that matters: a case only reaches
+ * marketing copy, the nightly AI, or strategy grading once it was delivered. The
+ * scanner creates thousands of undelivered candidate cases a day, so scanning "recent
+ * cases" by detection time drowns the delivered handful and reports a clean audit of
+ * rows that never carried a number.
+ */
+export type IdentityScope = "delivered" | "all";
+
 /** Reconcile every case that has produced content, or a recent window of cases. */
 export function reconcileRecentTradeIdentitiesOnDb(
   db: IdentityDb,
-  opts: { sinceMs?: number | null; limit?: number; caseIds?: string[] } = {},
+  opts: {
+    sinceMs?: number | null;
+    limit?: number;
+    caseIds?: string[];
+    scope?: IdentityScope;
+  } = {},
 ): TradeIdentityReport[] {
   if (opts.caseIds?.length) {
     return opts.caseIds.map((id) => reconcileTradeIdentityOnDb(db, id));
   }
   if (!hasTable(db, "opportunity_cases")) return [];
-  const limit = Math.max(1, Math.min(500, opts.limit ?? 100));
+  const limit = Math.max(1, Math.min(2000, opts.limit ?? 200));
+  const scope: IdentityScope = opts.scope ?? "delivered";
+  const where: string[] = [];
+  const args: unknown[] = [];
+  if (scope === "delivered") where.push("delivery_decision='delivered'");
+  if (opts.sinceMs != null) { where.push("detected_at_ms >= ?"); args.push(opts.sinceMs); }
+  args.push(limit);
   let rows: { opportunity_id: string }[] = [];
   try {
-    rows = opts.sinceMs != null
-      ? db.prepare(
-        "SELECT opportunity_id FROM opportunity_cases WHERE detected_at_ms >= ? ORDER BY detected_at_ms DESC LIMIT ?",
-      ).all(opts.sinceMs, limit) as { opportunity_id: string }[]
-      : db.prepare(
-        "SELECT opportunity_id FROM opportunity_cases ORDER BY detected_at_ms DESC LIMIT ?",
-      ).all(limit) as { opportunity_id: string }[];
+    rows = db.prepare(
+      `SELECT opportunity_id FROM opportunity_cases
+        ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+        ORDER BY detected_at_ms DESC LIMIT ?`,
+    ).all(...args) as { opportunity_id: string }[];
   } catch {
     return [];
   }
