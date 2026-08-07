@@ -18,6 +18,33 @@ const STOP_PCT: Record<string, number> = {
 
 export interface OptionTargets { t1: number; t2: number; stop: number; rMultiple: number; methodology: string }
 
+/** The premium band the grader exits on, as a POSITIVE percent of the entry fill.
+ *  Mirrors defaultGradeConfig().stopLossPct in ./grade.ts — kept in sync via
+ *  the same env var so the published stop and the enforced stop cannot drift. */
+export function safetyBandStopPct(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.OPTIONS_PAPER_STOP_LOSS_PCT);
+  return Number.isFinite(raw) && raw >= 1 ? raw : 40;
+}
+
+export interface GoverningStop { price: number; source: "risk_model" | "safety_band"; bandPct: number }
+
+/**
+ * The stop that ACTUALLY governs a position, and therefore the only stop Discord may publish.
+ *
+ * decideOptionExit() closes on whichever comes first: the frozen risk-model stop PRICE, or the
+ * premium safety band measured against the entry fill. On a falling premium the HIGHER price is
+ * reached first, so that one is the binding authority. The risk model can freeze a stop at -45%
+ * while the band exits at -40%; publishing -45% would advertise a level the position can never
+ * reach. This resolves the two authorities into one without altering either threshold.
+ */
+export function resolveGoverningStop(entryFill: number, riskModelStop: number, env: NodeJS.ProcessEnv = process.env): GoverningStop {
+  const bandPct = safetyBandStopPct(env);
+  const bandPrice = round2(Math.max(0.01, entryFill * (1 - bandPct / 100)));
+  return bandPrice > riskModelStop
+    ? { price: bandPrice, source: "safety_band", bandPct }
+    : { price: riskModelStop, source: "risk_model", bandPct };
+}
+
 /** Deterministic T1/T2/Stop from the frozen midpoint. Always returns a valid, ordered set
  *  (stop < mid < T1 < T2), so an alert can never be published with a missing or "n/a" target. */
 export function computeOptionTargets(entryMid: number, strategyKey: string, env: NodeJS.ProcessEnv = process.env): OptionTargets {

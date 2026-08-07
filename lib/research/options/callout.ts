@@ -8,7 +8,7 @@ import { checkEntryFreshness } from "../forward/freshness.ts";
 import { realOptionEntryEligible, defaultRealOptionEntryGate, type RealOptionEntryGateCfg } from "./paper-class.ts";
 import { getStrategy } from "./strategy-catalog.ts";
 import { entryMidpoint, formatCompactAlert } from "./format.ts";
-import { computeOptionTargets } from "./targets.ts";
+import { computeOptionTargets, resolveGoverningStop } from "./targets.ts";
 
 export type CalloutState = "FORMING" | "READY" | "SENT" | "REJECTED" | "TOO_LATE" | "EXPIRED";
 
@@ -61,8 +61,15 @@ export function evaluateCallout(input: CalloutInput): CalloutResult {
   // If the spread is too wide for the midpoint to be credible, reject rather than publish a misleading entry.
   if (spreadPct > maxMidSpread) return rej("REJECTED", `spread_too_wide_for_credible_midpoint (${spreadPct.toFixed(1)}% > ${maxMidSpread}%)`);
   const tg = computeOptionTargets(mid, input.strategyKey);
-  const entry: FrozenEntry = { bid, ask, mid, spreadPct: +Number(spreadPct).toFixed(3), quoteAgeMs: c.quoteAgeMs, t1: tg.t1, t2: tg.t2, stop: tg.stop, methodology: tg.methodology };
-  const message = formatCompactAlert({ symbol: input.symbol, side: c.side, strike: c.strike, expiration: c.expiration, entryMid: mid, t1: tg.t1, t2: tg.t2, stop: tg.stop, strategyKey: input.strategyKey, underlyingPrice: input.observedUnderlyingPrice || null, keyLevel: input.keyLevel ?? null, dte: c.dte });
+  // Publish the stop that actually governs the mirrored paper position, not the risk-model stop the
+  // safety band would pre-empt. T1/T2 keep the risk model's levels — those bind as computed.
+  const governing = resolveGoverningStop(mid, tg.stop);
+  const stop = governing.price;
+  const methodology = governing.source === "safety_band"
+    ? `${tg.methodology}; governing stop=-${governing.bandPct}% safety band (${stop.toFixed(2)}) pre-empts risk-model stop ${tg.stop.toFixed(2)}`
+    : `${tg.methodology}; governing stop=risk model (${stop.toFixed(2)})`;
+  const entry: FrozenEntry = { bid, ask, mid, spreadPct: +Number(spreadPct).toFixed(3), quoteAgeMs: c.quoteAgeMs, t1: tg.t1, t2: tg.t2, stop, methodology };
+  const message = formatCompactAlert({ symbol: input.symbol, side: c.side, strike: c.strike, expiration: c.expiration, entryMid: mid, t1: tg.t1, t2: tg.t2, stop, strategyKey: input.strategyKey, underlyingPrice: input.observedUnderlyingPrice || null, keyLevel: input.keyLevel ?? null, dte: c.dte });
   return { state: "READY", message, reason: "ready — deterministic strategy valid, real liquid contract, still early", freshness: "fresh", entry };
 }
 
@@ -72,5 +79,5 @@ export function formatCallout(input: CalloutInput): string {
   const bid = c.bid ?? 0, ask = c.ask ?? 0;
   const mid = entryMidpoint(bid, ask);
   const tg = computeOptionTargets(mid, input.strategyKey);
-  return formatCompactAlert({ symbol: input.symbol, side: c.side, strike: c.strike, expiration: c.expiration, entryMid: mid, t1: tg.t1, t2: tg.t2, stop: tg.stop, strategyKey: input.strategyKey, underlyingPrice: input.observedUnderlyingPrice || null, keyLevel: input.keyLevel ?? null, dte: c.dte });
+  return formatCompactAlert({ symbol: input.symbol, side: c.side, strike: c.strike, expiration: c.expiration, entryMid: mid, t1: tg.t1, t2: tg.t2, stop: resolveGoverningStop(mid, tg.stop).price, strategyKey: input.strategyKey, underlyingPrice: input.observedUnderlyingPrice || null, keyLevel: input.keyLevel ?? null, dte: c.dte });
 }
