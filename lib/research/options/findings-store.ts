@@ -11,6 +11,8 @@
  */
 
 import { LHC_FINDINGS, type LearningFinding } from "./lhc-findings.ts";
+import { COHORT_ID, COHORT_STRATEGY } from "./lower-high-cohort.ts";
+import { POLICY_VERSIONS } from "./policy-attribution.ts";
 
 export interface FindingsDb {
   prepare(sql: string): {
@@ -91,6 +93,78 @@ export function seedLhcFindingsOnDb(
     } catch { /* isolated per finding */ }
   }
   return { written, created };
+}
+
+/**
+ * The namespace every AI-authored finding lives in.
+ *
+ * Deterministic findings (`LHC_…`) are the frozen record of an investigation; an AI conclusion is
+ * an interpretation of a session. They share a table because the next night's context reads one
+ * list, and they must never share an id — an AI finding that could overwrite
+ * `LHC_SELECT_V1_TAIL_DEPENDENCE` could delete the sentence that keeps the experiment honest.
+ */
+export const AI_FINDING_PREFIX = "AI_NIGHTLY_";
+
+export interface AiFindingInput {
+  /** Stable slug for a recurring conclusion. Namespaced here, never by the caller. */
+  key: string;
+  sessionDate: string;
+  title: string;
+  statement: string;
+  question: string;
+  evidenceStrength: LearningFinding["evidenceStrength"];
+  sampleSize: number;
+  limitations: readonly string[];
+  mustNotBeSummarizedAs: string | null;
+  recommendedExperiment: string | null;
+}
+
+/**
+ * Persist one AI-authored finding under the reserved namespace.
+ *
+ * Refuses an empty `limitations` (inherited from `upsertFindingOnDb`) and refuses any id that
+ * would land outside the namespace. The id deliberately excludes the session date: a conclusion
+ * the model reaches on three consecutive nights is ONE standing claim whose numbers move, not
+ * three claims — the same reason the deterministic findings upsert.
+ */
+export function upsertAiFindingOnDb(
+  db: FindingsDb,
+  f: AiFindingInput,
+  ctx: { deploymentSha?: string | null } = {},
+  nowMs: number = Date.now(),
+): { written: boolean; created: boolean; findingId: string } {
+  const slug = String(f.key ?? "").toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 48);
+  if (!slug) throw new Error("AI finding has no usable key");
+  const findingId = `${AI_FINDING_PREFIX}${slug}`;
+  if (!findingId.startsWith(AI_FINDING_PREFIX)) throw new Error(`refusing to write ${findingId} outside the AI namespace`);
+
+  const r = upsertFindingOnDb(db, {
+    findingId,
+    strategy: COHORT_STRATEGY,
+    // The AI reasons about the CURRENT system, so the live version is the honest stamp — but the
+    // deploy that produced it is carried separately and may be RUNTIME_SHA_UNAVAILABLE.
+    strategyVersion: POLICY_VERSIONS.strategyVersion,
+    population: "DELIVERED_ALERT_PAPER",
+    evidenceCohortId: COHORT_ID,
+    sessions: [f.sessionDate],
+    sampleSize: Math.max(0, Math.floor(f.sampleSize)),
+    title: f.title,
+    statement: f.statement,
+    baselineMetric: null,
+    experimentalMetric: null,
+    evidenceStrength: f.evidenceStrength,
+    limitations: [
+      ...f.limitations,
+      // Appended, never substituted: the provenance of the claim is itself a limitation.
+      `AI-authored interpretation of the ${f.sessionDate} session, answering: ${f.question}. It is not a deterministic measurement.`,
+    ],
+    affectedOpportunityIds: [],
+    recommendedExperiment: f.recommendedExperiment,
+    experimentId: null,
+    experimentStatus: null,
+    mustNotBeSummarizedAs: f.mustNotBeSummarizedAs,
+  }, ctx, nowMs);
+  return { ...r, findingId };
 }
 
 export interface StoredFinding extends LearningFinding {
