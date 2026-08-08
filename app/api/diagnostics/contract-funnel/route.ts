@@ -136,6 +136,10 @@ export async function GET(req: Request) {
           : "Share of SELECTED contracts that required the missing-data fallback.",
       },
       terminalReasons,
+      terminalReasonUnits:
+        "count = contract-selection ATTEMPTS (one per candidate evaluation); distinctSymbols = unique "
+        + "underlyings. A symbol blocked all session is re-attempted every cooldown, so attempts are "
+        + "many times distinct symbols. Quote both, never one as the other.",
       strategyStages,
       observedInWindow: recent.length,
       recentSample: recent.slice(0, 100).map((e) => ({

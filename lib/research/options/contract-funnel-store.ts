@@ -401,16 +401,24 @@ export function terminalReasonBreakdownOnDb(
   db: StoreDb,
   sessionDate: string,
   opts: FunnelScope = {},
-): { reason: string; count: number }[] {
+): { reason: string; count: number; distinctSymbols: number }[] {
   try {
     ensureContractFunnelSchema(db);
     const { sql: whereSql, args } = funnelWhere(sessionDate, opts);
+    // `count` is ATTEMPTS — one row per candidate evaluation that reached contract
+    // selection. The scanner re-evaluates the same symbol every cooldown, so a single
+    // symbol blocked by provider quota all session contributes many attempts. Reporting
+    // attempts beside distinct symbols is what makes "49" and "780" comparable instead
+    // of contradictory: they are the same event counted in two different units.
     return (db.prepare(
-      `SELECT terminal_reason AS reason, COUNT(*) AS count
+      `SELECT terminal_reason AS reason, COUNT(*) AS count,
+              COUNT(DISTINCT symbol) AS distinctSymbols
          FROM contract_funnel_evidence WHERE ${whereSql}
         GROUP BY terminal_reason ORDER BY count DESC`,
-    ).all(...args) as { reason: string; count: number }[]).map((r) => ({
-      reason: String(r.reason), count: Number(r.count ?? 0),
+    ).all(...args) as { reason: string; count: number; distinctSymbols: number }[]).map((r) => ({
+      reason: String(r.reason),
+      count: Number(r.count ?? 0),
+      distinctSymbols: Number(r.distinctSymbols ?? 0),
     }));
   } catch {
     return [];
