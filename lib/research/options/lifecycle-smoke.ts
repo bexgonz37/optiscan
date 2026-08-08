@@ -170,6 +170,7 @@ export async function runOpportunityLifecycleSmoke(deps: {
     returnPct: 50,
     nowMs: t0 + 60_000,
     env: smokeEnv,
+    markOptionSymbol: optionSymbol,
   });
   if (!applied.claimed || applied.deliverReturnMilestone !== 50 || !applied.summary) {
     return { ...base, reason: "milestone claim failed" };

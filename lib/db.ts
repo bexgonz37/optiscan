@@ -3102,6 +3102,25 @@ CREATE INDEX IF NOT EXISTS idx_journal_dedup ON trade_journal(dedup_key);
 
 type G = typeof globalThis & { __optiscanDb?: Database.Database };
 
+/**
+ * Build the EXACT production schema on an arbitrary database handle.
+ *
+ * `SCHEMA` alone is not the production shape — `migrate()` layers guarded ALTERs on
+ * top of it, and columns like `opportunity_cases.session_date` exist only after
+ * those run. A fixture built from half the shape is a fixture that tests a database
+ * production does not have.
+ *
+ * This is deliberately the only way out: `SCHEMA` stays private so no test can pick
+ * up the incomplete half by accident. Hand-copied `CREATE TABLE` fixtures are how a
+ * query for `discord_deliveries.option_side` — a column production has never had —
+ * passed its test and would have silenced Monday's recap.
+ *
+ * Intended for tests and offline tooling. `getDb()` remains the only production path.
+ */
+export function applyProductionSchemaOnDb(db: Database.Database): void {
+  migrate(db);
+}
+
 export function getDb(): Database.Database {
   const g = globalThis as G;
   if (g.__optiscanDb) return g.__optiscanDb;

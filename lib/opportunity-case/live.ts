@@ -985,9 +985,54 @@ export interface MarkUpdateResult {
   newHigh: boolean;
   claimed: boolean;
   claimToken: string | null;
+  /** False when the mark was refused because it could not be tied to the frozen contract. */
+  applied: boolean;
+  /** Why the mark was refused. `null` when it was applied. */
+  rejectedReason: MarkRejectionReason | null;
 }
 
-/** Apply a fresh mark to the living Opportunity Case. Claims at most one Discord milestone. */
+/**
+ * Why a mark was refused. Each is a distinct failure to PROVE identity — none of
+ * them means "the mark is on another contract"; they mean "we cannot show it is on
+ * this one", which is the same refusal for a different reason.
+ */
+export type MarkRejectionReason =
+  /** No `markOptionSymbol` supplied — identity is unprovable, not merely unknown. */
+  | "MARK_OCC_MISSING"
+  /** The case has no frozen `selectedContract.optionSymbol` to compare against. */
+  | "FROZEN_OCC_MISSING"
+  /** The mark was observed on a contract that is not the one this case froze. */
+  | "MARK_OCC_MISMATCH"
+  /** The case row could not be loaded, so nothing can be reconciled. */
+  | "CASE_NOT_FOUND";
+
+function rejectedMark(reason: MarkRejectionReason): MarkUpdateResult {
+  return {
+    summary: null,
+    deliverReturnMilestone: null,
+    newHigh: false,
+    claimed: false,
+    claimToken: null,
+    applied: false,
+    rejectedReason: reason,
+  };
+}
+
+/**
+ * Apply a fresh mark to the living Opportunity Case. Claims at most one Discord milestone.
+ *
+ * The mark MUST name the contract it was observed on, and that contract MUST be the
+ * one this case froze its entry against. A trade is one frozen OCC and one frozen
+ * entry; a price from any other instrument divided by this position's cost is not a
+ * return on anything. This is why the +185.4% GOOGL peak was published: the running
+ * maximum accumulated marks from re-selected strikes while the entry stayed frozen.
+ *
+ * The guard FAILS CLOSED. An absent or ambiguous OCC is refused exactly like a
+ * mismatched one — symbol-only identity is not identity, because a case observes many
+ * contracts on the same underlying. On refusal NOTHING is written: no milestone, no
+ * NEW_HIGH, no summary, no claim. Alternate contracts remain recorded as candidate
+ * evidence elsewhere; they simply never touch this trade's trajectory.
+ */
 export function applyOpportunityMarkOnDb(
   db: LiveDb,
   input: {
@@ -998,8 +1043,33 @@ export function applyOpportunityMarkOnDb(
     nowMs: number;
     eventAtMs?: number;
     env?: NodeJS.ProcessEnv;
+    /**
+     * OCC of the contract `currentMark` was observed on. Required: without it the
+     * mark cannot be proven to belong to this trade and is refused.
+     */
+    markOptionSymbol?: string | null;
   },
 ): MarkUpdateResult {
+  // Identity is settled BEFORE any row is written. Every early return below leaves the
+  // case exactly as it was found.
+  const oc = loadCaseJsonOnDb(db, input.opportunityCaseId);
+  if (!oc) return rejectedMark("CASE_NOT_FOUND");
+
+  const frozenOcc = normalizeOcc(oc?.selectedContract?.optionSymbol);
+  const markOcc = normalizeOcc(input.markOptionSymbol);
+  if (markOcc == null) {
+    bumpMetric(db, "lifecycle.marksRejectedUnidentified");
+    return rejectedMark("MARK_OCC_MISSING");
+  }
+  if (frozenOcc == null) {
+    bumpMetric(db, "lifecycle.marksRejectedUnidentified");
+    return rejectedMark("FROZEN_OCC_MISSING");
+  }
+  if (frozenOcc !== markOcc) {
+    bumpMetric(db, "lifecycle.marksRejectedCrossContract");
+    return rejectedMark("MARK_OCC_MISMATCH");
+  }
+
   const eventAtMs = input.eventAtMs ?? input.nowMs;
   const levels = returnMilestonesFromEnv(input.env);
   const prior = listMilestonesForCaseOnDb(db as any, input.opportunityCaseId)
@@ -1025,7 +1095,6 @@ export function applyOpportunityMarkOnDb(
     bumpMetric(db, "lifecycle.milestonesReached");
   }
 
-  const oc = loadCaseJsonOnDb(db, input.opportunityCaseId);
   const prevMax = oc?.summary?.maxReturnPct ?? null;
   const newHigh = prevMax == null || input.returnPct > prevMax + 1e-9;
   if (newHigh && input.returnPct > 0) {
@@ -1073,7 +1142,15 @@ export function applyOpportunityMarkOnDb(
     if (claimed) bumpMetric(db, "lifecycle.milestoneDeliveryClaimed");
   }
 
-  return { summary, deliverReturnMilestone: claimed ? deliverPercent : null, newHigh, claimed, claimToken };
+  return {
+    summary,
+    deliverReturnMilestone: claimed ? deliverPercent : null,
+    newHigh,
+    claimed,
+    claimToken,
+    applied: true,
+    rejectedReason: null,
+  };
 }
 
 export function completeMilestoneDeliveryOnDb(
@@ -1127,39 +1204,57 @@ export function closeOpportunityOnDb(
     currentMark?: number | null;
     invalidated?: boolean;
     env?: NodeJS.ProcessEnv;
+    /**
+     * OCC the closing mark was observed on. When supplied and it is not the frozen
+     * contract, the case still CLOSES — the position really did exit — but the exit
+     * price and return are dropped rather than written against a foreign contract.
+     */
+    exitOptionSymbol?: string | null;
   },
 ): void {
   const event: LifecycleEventType = input.invalidated ? "OPPORTUNITY_CLOSED" : "EXIT_HIT";
   const status: OpportunityLifecycleStatus = input.invalidated ? "INVALIDATED" : "CLOSED";
+
+  // Closing is a lifecycle fact and always happens. The NUMBERS attached to it are a
+  // performance claim and only survive if they can be tied to the frozen contract. When
+  // the caller names no contract at all we keep the legacy behaviour rather than
+  // silently voiding every close: absence of a claim is not a mismatched claim.
+  const closingOcc = normalizeOcc(input.exitOptionSymbol);
+  const identified = closingOcc == null
+    || markMatchesFrozenContract(loadCaseJsonOnDb(db, input.opportunityCaseId), closingOcc);
+  const exitMark = identified ? (input.currentMark ?? null) : null;
+  const exitReturnPct = identified ? (input.returnPct ?? null) : null;
+  if (!identified) bumpMetric(db, "lifecycle.closesRejectedCrossContract");
+
   persistReachedMilestoneOnDb(db as any, {
     opportunityCaseId: input.opportunityCaseId,
     eventType: event,
     reachedAtMs: input.nowMs,
-    contractMark: input.currentMark ?? null,
-    returnPercent: input.returnPct ?? null,
-    details: { exitReason: input.exitReason ?? null },
+    contractMark: exitMark,
+    returnPercent: exitReturnPct,
+    details: { exitReason: input.exitReason ?? null, exitIdentityVerified: identified },
   });
   markMilestoneDeliveredOnDb(db as any, input.opportunityCaseId, event, null, null, input.nowMs);
   persistReachedMilestoneOnDb(db as any, {
     opportunityCaseId: input.opportunityCaseId,
     eventType: "OPPORTUNITY_CLOSED",
     reachedAtMs: input.nowMs,
-    contractMark: input.currentMark ?? null,
-    returnPercent: input.returnPct ?? null,
+    contractMark: exitMark,
+    returnPercent: exitReturnPct,
   });
   markMilestoneDeliveredOnDb(db as any, input.opportunityCaseId, "OPPORTUNITY_CLOSED", null, null, input.nowMs);
   persistReachedMilestoneOnDb(db as any, {
     opportunityCaseId: input.opportunityCaseId,
     eventType: "REPORT_CARD_READY",
     reachedAtMs: input.nowMs,
-    returnPercent: input.returnPct ?? null,
+    returnPercent: exitReturnPct,
   });
 
   refreshCaseSummaryOnDb(db, input.opportunityCaseId, {
     status,
     nowMs: input.nowMs,
-    currentMark: input.currentMark,
-    currentReturnPct: input.returnPct,
+    currentMark: exitMark,
+    currentReturnPct: exitReturnPct,
   });
 
   if (hasTable(db, "opportunity_active_index")) {

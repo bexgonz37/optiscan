@@ -300,7 +300,15 @@ async function maybeUpdateOpportunityLifecycle(
       nowMs,
       eventAtMs: validatedQuote.eventAtMs,
       env,
+      // The quote was refreshed for THIS position's contract, so the position's OCC is
+      // the contract the mark was observed on. Naming it lets the case refuse the mark
+      // outright if the case froze a different contract.
+      markOptionSymbol: pos.option_symbol,
     });
+    if (!applied.applied) {
+      recordLifecycleSuppression(db, pos, quote, nowMs, `MARK_IDENTITY_REFUSED:${applied.rejectedReason}`);
+      return 0;
+    }
     if (!applied.claimed || applied.deliverReturnMilestone == null || !applied.summary) return 0;
 
     const content = formatReturnMilestoneUpdate({
@@ -442,6 +450,7 @@ async function gradeOpenOptionPositionsInner(db: GradeDb, deps: GradeDeps, env: 
               exitReason: d.reason,
               returnPct: d.returnPct,
               currentMark: d.exitFill,
+              exitOptionSymbol: pos.option_symbol,
             });
             try {
               if (await maybeDeliverOpportunityClosedDiscord(db, pos, caseId, {
