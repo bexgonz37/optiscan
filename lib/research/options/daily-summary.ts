@@ -14,6 +14,15 @@ import { readRuntimeKeyOnDb, writeRuntimeKeyOnDb } from "./runtime.ts";
 interface SumDb { prepare(sql: string): { get: (...a: any[]) => any; all: (...a: any[]) => any[]; run: (...a: any[]) => { changes: number } } }
 const has = (db: SumDb, t: string) => Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(t));
 
+/** Columns actually present on a table — the recap must query the schema that exists. */
+function columnsOf(db: SumDb, table: string): Set<string> {
+  try {
+    return new Set((db.prepare(`PRAGMA table_info(${table})`).all() as any[]).map((c) => String(c.name)));
+  } catch {
+    return new Set<string>();
+  }
+}
+
 export interface DailySummary {
   day: string; symbolsScanned: number; candidatesFound: number;
   callsEvaluated: number; putsEvaluated: number;
@@ -27,7 +36,13 @@ export interface DailySummary {
    * blindness printed "Callouts: sent 0" on a day with three delivered owner openings.
    */
   owner: {
-    sent: number; failed: number; calls: number; puts: number;
+    sent: number; failed: number;
+    /**
+     * null means the split could not be derived from persisted rows — NOT that zero
+     * calls were sent. A recap that prints 0 for an unknown is the failure this whole
+     * block exists to stop making.
+     */
+    calls: number | null; puts: number | null;
     mirrored: number; open: number; closed: number; wins: number; losses: number;
   };
   earliness: { early: number; during: number; late: number };
@@ -73,13 +88,49 @@ export function buildDailySummaryOnDb(db: SumDb, nowMs: number, env: NodeJS.Proc
 
   // OWNER PRIVATE VALIDATION — counted from its own tables, never from options_alerts.
   const deliveryTable = has(db, "discord_deliveries");
-  const ownerWhere = "payload_type='owner_intraday_actionable' AND lifecycle_state='OPENING' AND created_at>=? AND created_at<?";
+  const ownerWhereOn = (q: string) =>
+    `${q}payload_type='owner_intraday_actionable' AND ${q}lifecycle_state='OPENING' AND ${q}created_at>=? AND ${q}created_at<?`;
+  const ownerWhere = ownerWhereOn("");
   const startIso = new Date(start).toISOString();
   const endIso = new Date(end).toISOString();
   const ownerSent = deliveryTable ? n(`SELECT COUNT(*) n FROM discord_deliveries WHERE ${ownerWhere} AND status='SENT'`, startIso, endIso) : 0;
   const ownerFailed = deliveryTable ? n(`SELECT COUNT(*) n FROM discord_deliveries WHERE ${ownerWhere} AND status='FAILED'`, startIso, endIso) : 0;
-  const ownerCalls = deliveryTable ? n(`SELECT COUNT(*) n FROM discord_deliveries WHERE ${ownerWhere} AND status='SENT' AND option_side='call'`, startIso, endIso) : 0;
-  const ownerPuts = deliveryTable ? n(`SELECT COUNT(*) n FROM discord_deliveries WHERE ${ownerWhere} AND status='SENT' AND option_side='put'`, startIso, endIso) : 0;
+
+  // The call/put split has to come from a column that exists. discord_deliveries has
+  // never had `option_side` — createDiscordDelivery does not write one — so asking for
+  // it threw "no such column" and took the WHOLE recap down with it, not just this
+  // split. The side lives on the opportunity case the delivery already references.
+  const ownerSideSplit = ((): { calls: number | null; puts: number | null } => {
+    if (!deliveryTable || !has(db, "opportunity_cases")) return { calls: null, puts: null };
+    const dd = columnsOf(db, "discord_deliveries");
+    if (!dd.has("opportunity_case_id")) return { calls: null, puts: null };
+    try {
+      const rows = db.prepare(
+        `SELECT LOWER(COALESCE(
+                  json_extract(oc.case_json, '$.selectedContract.side'),
+                  CASE json_extract(oc.case_json, '$.direction')
+                    WHEN 'bullish' THEN 'call' WHEN 'bearish' THEN 'put' ELSE NULL END
+                )) AS side,
+                COUNT(*) AS c
+           FROM discord_deliveries dd
+           JOIN opportunity_cases oc ON oc.opportunity_id = dd.opportunity_case_id
+          WHERE ${ownerWhereOn("dd.")} AND dd.status='SENT'
+          GROUP BY side`,
+      ).all(startIso, endIso) as { side: string | null; c: number }[];
+      let calls = 0;
+      let puts = 0;
+      for (const r of rows) {
+        if (r.side === "call") calls += Number(r.c);
+        else if (r.side === "put") puts += Number(r.c);
+      }
+      return { calls, puts };
+    } catch {
+      // Unknown, not zero.
+      return { calls: null, puts: null };
+    }
+  })();
+  const ownerCalls = ownerSideSplit.calls;
+  const ownerPuts = ownerSideSplit.puts;
 
   const O = "paper_kind='OWNER_VALIDATION_PAPER'";
   const ownerMirrored = paperTable ? n(`SELECT COUNT(*) n FROM options_paper_trades WHERE ${O} AND entered_at_ms>=? AND entered_at_ms<?`, start, end) : 0;
@@ -129,7 +180,8 @@ export function formatDailySummaryMessage(s: DailySummary): string {
     `Scanned ${s.symbolsScanned} sym's · candidates ${s.candidatesFound} · calls ${s.callsEvaluated}/puts ${s.putsEvaluated} evaluated`,
     `SUBSCRIBER callouts: sent ${s.calloutsSent}, failed ${s.calloutsFailed}, too-late ${s.tooLate}, rejected ${s.rejected}`,
     `SUBSCRIBER paper (delivered mirrors): opened ${s.paperOpened}, closed ${s.paperClosed} (W ${s.wins} / L ${s.losses}), open now ${s.openPositions}`,
-    `OWNER validation: sent ${s.owner.sent} (${s.owner.calls} CALL / ${s.owner.puts} PUT), failed ${s.owner.failed}`,
+    `OWNER validation: sent ${s.owner.sent} (${s.owner.calls ?? "?"} CALL / ${s.owner.puts ?? "?"} PUT`
+      + `${s.owner.calls == null ? " — split unavailable, not zero" : ""}), failed ${s.owner.failed}`,
     `OWNER paper (exact mirrors): ${s.owner.mirrored} of ${s.owner.sent} mirrored, closed ${s.owner.closed} (W ${s.owner.wins} / L ${s.owner.losses}), open now ${s.owner.open}`
       + (s.owner.sent > s.owner.mirrored ? ` ⚠️ ${s.owner.sent - s.owner.mirrored} owner opening(s) left NO paper evidence` : ""),
     `Earliness: early ${s.earliness.early} · during ${s.earliness.during} · late ${s.earliness.late}`,
