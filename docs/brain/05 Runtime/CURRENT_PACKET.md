@@ -1,5 +1,331 @@
 # Current Task Packet
 
+## Packet update — 2026-08-07 (3) The realized numbers were true, the peaks beside them were not, and the recap was one trading day from silence
+
+### Verified state (checked, not assumed)
+
+- Baseline re-verified from git and production BEFORE any change:
+  local = `origin/main` = production = `653d465`, tracked tree clean, 19 untracked
+  scratch files untouched. Production `ok:true`, `loopRunning:true`,
+  `quotaExceeded:false`, session `afterhours`.
+- `LHC_SELECT_V1` re-verified frozen and **untouched by this session**:
+  `immutability.frozen true`, `definitionHashAtFreeze 80e5c5d878f5f9e185661981c87afc63`,
+  `experimentVersion 1`, shadow-only. Scoreboard exactly as reported:
+  67 decisions, 1 session (`2026-08-07`), baselineAdmits 0, experimentAdmits 3,
+  bothReject 64, closedOutcomes 0, unlinkedDecisions 67,
+  verdict `INSUFFICIENT_EVIDENCE` ("needs >= 20 closed outcomes over >= 5 sessions;
+  has 0 over 1"). Unlinked open observations are **not** performance.
+- No strategy, threshold, ranking weight, stop/exit policy or provider cap changed.
+  Nothing subscriber-approved. No real-money path enabled. No probability model built.
+
+### The GOOGL reconciliation — the draft was about a different case than the audit was
+
+The prior audit examined `oc_13p0wzs` and found seven OCCs across five expirations. The
+content draft was never built from that case. It came from **`oc_15gylwt`**, a separate
+GOOGL case. Both are real, both are contaminated, and conflating them hid which numbers
+were actually published.
+
+`oc_15gylwt` frozen contract: **`O:GOOGL260807P00357500`**, strike 357.50, expiry
+2026-08-07, frozen entry **$2.33**. The alert (`oa_1a0sp4l`, SENT) names that exact OCC.
+Its one mirror (trade 795, `DELIVERED_ALERT_PAPER`) is on that exact OCC with entry_fill
+2.33 and carries **427 marks, every one of them on the frozen contract, zero off-contract**.
+
+- **Realized +47.2103% — YES, same OCC.** `(3.43 − 2.33) / 2.33` exactly, on 427
+  same-contract marks. The contract, the entry and the realized return in the draft are
+  all correct.
+- **MFE +185.4077% — NO.** The frozen contract's best mark across all 427 observations is
+  **+47.2103%**. Nothing on this trade ever printed +185.4%. It is the running maximum the
+  case accumulated while the loop re-selected longer-dated strikes
+  (`O:GOOGL260812P00357500`, `O:GOOGL260819P00355000`, `O:GOOGL260817P00355000`, …),
+  priced against an entry those contracts were never bought at.
+
+`oc_13p0wzs` is the same shape: frozen `O:GOOGL260807P00360000` @ $2.70, realized
++47.037% correct on 278 same-contract marks, claimed peak +157.4074% against a true best
+mark of +47.037%.
+
+**Content draft status: INVALID for the peak, valid for the realized return.** Draft
+`cd_1lkfxsl` was not merely generated — it was **delivered to the recap channel as Discord
+message `1535296903401570365`**. Seven sibling drafts on the same case were suppressed as
+duplicates. No draft was retracted or rewritten by this session; the false peak stands in
+the historical record and the gate below stops the next one.
+
+### The contamination path
+
+`applyOpportunityMarkOnDb` (the milestone/`NEW_HIGH` writer) never took an OCC at all, and
+`refreshCaseSummaryOnDb` ratchets `maxReturnPct` upward from whatever
+`currentReturnPct` it is handed. Before `320d651`,
+`attachEvidenceToOpportunityOnDb` handed it marks from the freshly re-selected preferred
+contract. `320d651` ("Price a case's return only on the contract it froze its entry on",
+2026-08-06 18:01 PDT) added `markMatchesFrozenContract` and stopped new contamination —
+but the already-poisoned `maxReturnPct` persists on every case written before it, and the
+content engine read those stale values on 2026-08-07 and published one.
+
+### System-wide audit — 78 delivered cases carrying a performance number
+
+New `/api/diagnostics/trade-identity` reconciles each case against the contract it froze.
+
+| | |
+|---|---|
+| `SAME_OCC_VERIFIED` (publishable) | **22** |
+| `UNSUPPORTED_MAX_RETURN` (peak above anything the frozen contract printed) | **36** |
+| `MAX_FLOORED_AT_ZERO` (seeded 0 standing in for an unmeasured excursion) | **20** |
+| `NO_PERFORMANCE_MIRROR` | **4** |
+
+The reassuring half, and it is load-bearing:
+
+- **Realized returns: 78 of 78 reproducible on the frozen contract.** Zero contamination.
+- **Zero off-frozen marks anywhere.** Zero mirror-OCC mismatches. Zero alert-OCC
+  mismatches. Zero multi-OCC performance. The mirrors and mark series are clean.
+- The damage is confined to `summary.maxReturnPct`, and it correlates with re-selection:
+  **34 of the 41 cases that re-selected a contract** carry an inflated peak, versus **2**
+  of the 37 that did not.
+
+`MAX_FLOORED_AT_ZERO` is deliberately **not** reported as contamination. The summary seeds
+`maxReturnPct` at 0 at open and a trade that only ever traded down never raises it, so
+every loser's excursion is silently floored at break-even. Real defect, sound contract
+identity — calling it cross-contract would have been its own false claim and would have
+buried the 36 that are.
+
+### Content now fails closed
+
+`buildSubscriberClaimPacket` required a SENT alert and a mirror whose entry price matched
+the frozen entry. Neither question mentions the contract, so any price-matched position on
+any strike satisfied it, and the peak was never checked against anything. It now requires
+the mirror to be the **same OCC** the alert named, and performance categories must pass
+trade-identity reconciliation, with peak-quoting categories additionally requiring the
+stated peak be supported by marks on the frozen contract. Failures return
+`CONTENT_PERFORMANCE_UNVERIFIED` and carry the **truthful** peak beside the refusal. Loss
+copy and non-performance observations are unaffected.
+
+### The scanner wedge — root cause confirmed exactly
+
+```
+const beat = async () => {
+  if (!busy) { busy = true; try { await tick(); } catch {} busy = false; }
+  setTimeout(beat, intervalMs);          // outside the guard
+};
+```
+
+The reschedule is outside the guard so the timer fires forever, but `busy` only clears when
+`await tick()` **settles**. A rejection is caught; a promise that never settles is not.
+`busy` stays true for the life of the process, every later beat short-circuits, and
+`loopRunning: true` keeps reporting health throughout. That is the ~5.5 hour outage with
+`lastTickAgeMs` climbing monotonically and the session frozen at `regular` past the close.
+
+Clearing `busy` on a timer would have been worse: the hung tick is suspended, not gone, and
+on resume it still holds the same symbol state and can still reach `captureZeroDte`.
+
+Each tick now runs under a generation carried in `AsyncLocalStorage` — the same mechanism
+`provider-context` already uses, and the only one that survives an arbitrary chain of
+awaits. A tick past budget is abandoned so the loop continues, and abandoning it is what
+fences it: `sideEffectAllowed()` is false inside that tick forever, and the send site
+refuses if it ever wakes. Late settles are recorded (a hang that clears means the budget is
+too tight, not that the subsystem died). Abandoned ticks are capped; past the cap the loop
+stops launching work and reports `WEDGED` rather than stacking suspended ticks. The
+advisory lock keeps beating across a wedge so a wedged instance never invites a second loop.
+
+`/api/diagnostics/loop-health` separates `HEALTHY` / `DEGRADED` / `RECOVERING` / `WEDGED`
+from aliveness and retains timeout cause, counts and scheduler owner. **Verified live in
+production**: `HEALTHY`, 23/23 ticks completed, 272 ms last tick, 0 timeouts,
+`schedulerOwner.isThisProcess true`.
+
+### The recap was one trading day from silence
+
+`653d465` split the recap by audience and asked `discord_deliveries` for **`option_side`**.
+That column has never existed — `createDiscordDelivery` does not write it, no migration
+adds it, it appears nowhere in the table's history. SQLite raises *no such column* at
+prepare time, which does not degrade the CALL/PUT split: it throws out of
+`buildDailySummaryOnDb` and takes the **entire daily recap** with it.
+
+It had not fired only by timing. `653d465` deployed at 23:14Z on 2026-08-07, after that
+day's recap had already sent and written `last_summary_day`. **The first execution would
+have been Monday's recap, and it would have been silent.**
+
+The test did not catch it because the fixture created `discord_deliveries` with an
+`option_side` column of its own — it was testing a schema that does not exist. The fixture
+now mirrors `lib/db.ts` and a regression test asserts the column is absent before building
+the recap. The split now comes from the opportunity case the delivery already references;
+when it cannot be derived the count is `null` and the recap prints
+"split unavailable, not zero".
+
+### Owner validation paper — and a correction to the count
+
+`/api/diagnostics/owner-mirror` walks each delivered owner opening to its
+`OWNER_VALIDATION_PAPER` mirror and checks there is exactly one, on the exact OCC alerted,
+carrying marks.
+
+**Production shows 16 owner openings on 2026-08-07, not 3.** The three named previously
+(QQQ `oc_1m1p4bu` 15:22Z, META `oc_19hkuii` 15:25Z, SPY `oc_1jd0vu4` 15:28Z) are simply the
+earliest. The full set runs 15:22Z → 18:22Z and includes AAPL, NFLX, IWM, GOOGL, AMZN,
+DRAM, HOOD, XOM, NVDA, TSLA, IBIT, BAC, TLT.
+
+**All 16 have zero forward paper evidence.** All 16 predate the mirror fix (23:14Z), so all
+16 are permanently `DELIVERED_OWNER_ALERT_WITHOUT_FORWARD_PAPER_EVIDENCE`. Nothing was
+reconstructed and nothing may be. `prospective.mirrorRate` is **`null`** — no owner opening
+has occurred since the fix, so the fix remains **unproven in production**. The next owner
+opening is still the first true live verification.
+
+### The nightly AI was never contaminated by the recap — because it never reads it
+
+Audited directly rather than assumed. `buildDailySummaryOnDb` and
+`formatDailySummaryMessage` have **zero** callers in `lib/ai/` or
+`nightly-research.ts`. The nightly builds its own aggregate from `ai_reports.summary_json`
+(`buildNightlySummary`), `options_candidates`, `options_alerts`,
+`options_delivery_decisions` and `DELIVERED_ALERT_PAPER`. The recap's population semantics —
+before or after `653d465` — never reached it.
+
+**Therefore no nightly finding was contaminated by recap labelling, and none was
+invalidated.** Writing `INVALIDATED_BY_DATA_CORRECTION` onto findings that were not
+corrupted would itself be a false record. The latest report (`nightly:19`, tradingDay
+2026-08-06, generated 2026-08-08T00:05Z) carries
+`narrative.status: VALIDATION_FAILED` — the AI prose failed anti-fabrication validation and
+was not persisted; its deterministic findings stand.
+
+**But the AI is blind in the same way the recap was.** `evidence-learning.ts` includes
+`DELIVERED_ALERT_PAPER`, `RESEARCH_ONLY_PAPER`, `ZERO_DTE_RESEARCH_PAPER` and **excludes
+`OWNER_VALIDATION_PAPER`**. On a day whose only deliveries were 16 owner openings, the
+nightly AI sees nothing. That is an open defect, listed below — not fixed here, because it
+changes what the learning arm consumes.
+
+### Earliness — it does not measure what the name claims
+
+The recap's `early 1989 / during 3842 / late 1869` comes from
+`options_candidates.earliness_phase`, written in `monitor.ts` from exactly one line:
+
+```
+fractionMove   = (price − lod) / (hod − lod)      // position in today's range SO FAR
+earlinessPhase = fractionMove >= 0.75 ? "late" : fractionMove <= 0.4 ? "early" : "during"
+```
+
+What that is, precisely:
+
+- **Unit:** one contract-selection attempt (a candidate evaluation that reached stage 2),
+  not an opportunity and not a delivered alert. Heavily duplicated per symbol per session.
+  The three buckets sum to 7700 — the same population as "candidates".
+- **Pre-entry safe: yes.** `hod`/`lod` are session-to-date and known at decision time.
+  There is **no hindsight** in the live path.
+- **But it is not earliness.** It is the current price's percentile position inside the
+  session range observed so far. It is **direction-blind**: for a PUT, a low `fractionMove`
+  means the downmove has largely already happened, and it is labelled `"early"`. Its
+  denominator grows through the day, so it is unstable near the open. It says nothing about
+  acceleration, expected total move size, or reward remaining.
+
+**Mapping to the product states: the current system does not measure them.**
+`BEFORE_RUN`, `EARLY_IN_RUN`, `LATE`, `TOO_LATE` are statements about a move's lifecycle
+and remaining reward. `fractionMove` is a range-position ratio. It cannot distinguish "has
+not moved yet" from "round-tripped back to the low", and it labels both `"early"`.
+
+An equivalent-but-different grader already exists in `lib/alert-earliness.ts`
+(`EARLY`/`DEVELOPING`/`LATE`/`EXHAUSTED`/`UNGRADABLE`, from VWAP extension, day move and
+velocity), explicitly post-hoc and applied to stock alerts. **No second earliness system was
+built**, per the instruction. The next session should decide whether to extend
+`alert-earliness.ts` to options rather than reinterpret `fractionMove`.
+
+### Lead-time capture — mostly already present
+
+`options_candidates` already carries `first_detected_at_ms`,
+`underlying_at_first_detection`, `option_at_first_detection`, `first_ready_at_ms`,
+`underlying_at_ready`, `option_at_ready`, `session_state_at_detection`,
+`ready_expires_at_ms`, `trading_session_date`,
+`market_structure_snapshot_json`. With the owner mirror in place, alert-to-+10/+25/+50/+100
+becomes derivable from `options_paper_marks` (`mark_at_ms`, `return_pct`) against the frozen
+entry — **prospectively, for owner openings that occur after the mirror fix**. Nothing is
+backfilled. Missing stays missing.
+
+### Funnel population truth (2026-08-07)
+
+Measured, with the unit named:
+
+| Stage | Attempts | Distinct symbols |
+|---|---|---|
+| `CONTRACT_SELECTED` | 6513 | 1511 |
+| `PROVIDER_QUOTA_EXCEEDED` | 780 | 617 |
+| `NO_CONTRACTS_RETURNED` | 379 | 281 |
+| `NO_TWO_SIDED_MARKET` | 28 | 19 |
+| **total** | **7700** | — |
+
+- The recap's **"7700 candidates"** is **contract-selection attempts**, not opportunities.
+- The recap's **"1826 symbols scanned"** is `COUNT(DISTINCT symbol)` over
+  `options_candidates` — symbols that *produced a candidate row*, not symbols scanned.
+- The recap's **`rejected 0` / `too-late 0`** count `options_alerts.state` — the
+  **subscriber final delivery stage only**. They are structurally blind to the **1187**
+  attempts (780 + 379 + 28) that terminally failed *contract selection* and never reached
+  an alert row. `deltaSource.unselected` is 1187, matching exactly. The recap's zero was
+  arithmetically correct for its population and meaningless as a global claim.
+
+### Provider 49 vs ~780 — reconciled
+
+Both numbers are real and neither is a candidate count.
+
+- **780** = `PROVIDER_QUOTA_EXCEEDED` **attempts** across the whole 2026-08-07 session,
+  spanning **617 distinct symbols**.
+- Retry inflation is therefore only **780 / 617 = 1.26×** — it does **not** explain the gap.
+- The gap is the **time range**. The intraday reading of 49 came from the contract-funnel
+  endpoint's rolling window (`windowMs`, default 15 minutes), not a session total. A
+  ~6.5 hour session holds ~26 such windows, and 780 / 49 ≈ 16 — the same order.
+
+`terminalReasonBreakdownOnDb` now returns `distinctSymbols` beside `count` and the response
+states which unit is which, so a refusal total can no longer be quoted as a candidate total.
+**No provider cap was raised and no retry cadence changed.**
+
+### Provider efficiency
+
+Reviewed without changing anything. `withProviderConsumer` is attribution-only — it labels
+requests and never blocks, retries or budgets. Live scanner safety already holds priority
+(Gate B7) and options marking is attributed separately, so delivered-trade marking is not
+starved. **617 distinct symbols losing contract selection to quota in one session** is the
+signal worth acting on, but any change there is a provider-allocation change and is out of
+scope for a measurement session. Recorded, not acted on.
+
+### Commits (7, by concern)
+
+```
+052caae  Ask whether a case's numbers came from the contract it froze
+ae841b5  Audit the cases that can carry a claim, not the ones that never did
+afce8e8  Stop one hung tick from silently ending the scanner
+2ba0fb1  Tell an inflated peak apart from a peak that was never measured
+c6a1e1e  Refuse to publish a number that cannot be tied to one contract
+2c1a891  Keep Monday's recap from dying on a column that never existed
+924812e  Count provider refusals in both units so 49 and 780 can be compared
+```
+
+Validation: `npm test` twice → **3966/3966 pass** both runs.
+`npx tsc --noEmit --incremental false` clean. `npm run build` clean. `git diff --check`
+clean. No migration added; the two new columns read are existing ones.
+
+### Remaining defects (not fixed here, deliberately)
+
+1. **36 delivered cases still carry an inflated `summary.maxReturnPct` in the DB.** The
+   gate stops publication and the diagnostic reports the truthful peak, but the stored
+   values were not rewritten — correcting persisted history is a separate, auditable
+   operation and history is not edited silently.
+2. **20 cases report `maxReturnPct: 0` for trades that only ever traded down.** The seeded
+   0 should be `null` until a positive mark exists. Fixing it changes a persisted field's
+   meaning and belongs with (1).
+3. **`applyOpportunityMarkOnDb` still takes no `markOptionSymbol`.** It is currently safe
+   because its only production caller passes a position whose OCC is fixed at creation, but
+   the guard is circumstantial rather than structural.
+4. **The nightly AI excludes `OWNER_VALIDATION_PAPER`** and is blind to the owner lane.
+5. **The owner mirror fix is still unproven live** — 0 owner openings since it shipped.
+6. **`earliness_phase` does not measure earliness.** Decide whether to extend
+   `alert-earliness.ts` to options rather than reinterpret `fractionMove`.
+7. **617 distinct symbols/session lose contract selection to provider quota.**
+
+### Exact resume point
+
+The measurement foundation is now trustworthy in the ways that matter for the next phase:
+realized returns are proven same-OCC across all 78 delivered cases, unverifiable
+performance cannot be published, the scanner cannot silently wedge, and every recap number
+names its population. What is **not** yet trustworthy is **MFE/excursion** — 36 stored peaks
+are wrong and 20 are floored — so any work that consumes excursion (asymmetry, convexity,
+reward-remaining) must wait for defects 1–3.
+
+Do **not** start the historical-similarity or empirical-probability engine until (1)–(3) are
+closed, because both would train on excursion. The next session should:
+close (1)–(3) as one auditable correction pass; confirm `prospective.mirrorRate` reaches 1
+on the first post-fix owner opening; then decide the earliness question in (6).
+
+
 ## Packet update — 2026-08-07 (2) The AI now receives the evidence, keeps what it concludes, and cannot be switched off by accident
 
 ### Verified state (checked, not assumed)
