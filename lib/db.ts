@@ -2134,6 +2134,28 @@ CREATE TABLE IF NOT EXISTS opportunity_evidence_events (
 );
 CREATE INDEX IF NOT EXISTS idx_opportunity_evidence_case ON opportunity_evidence_events(opportunity_case_id, observed_at_ms);
 
+-- Excursion corrections. An AUDIT record, not an edit: opportunity_cases keeps its
+-- original summary.maxReturnPct verbatim so a wrong number that was once published
+-- stays visible, and this table records what the frozen contract actually printed,
+-- which evidence state condemned the original, and the SHA that computed it.
+-- corrected_max_return_pct is NULL whenever no value is provable — that null means
+-- "unknown" and must never be rendered as the original.
+CREATE TABLE IF NOT EXISTS opportunity_excursion_corrections (
+  opportunity_case_id TEXT PRIMARY KEY,
+  original_max_return_pct REAL,
+  original_source TEXT NOT NULL,
+  evidence_state TEXT NOT NULL,
+  corrected_max_return_pct REAL,
+  corrected_mae_pct REAL,
+  frozen_option_symbol TEXT,
+  marks_on_frozen INTEGER NOT NULL DEFAULT 0,
+  correction_sha TEXT,
+  corrected_at_ms INTEGER NOT NULL,
+  reason TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_excursion_corrections_state
+  ON opportunity_excursion_corrections(evidence_state);
+
 CREATE TABLE IF NOT EXISTS opportunity_content_events (
   id TEXT PRIMARY KEY,
   opportunity_case_id TEXT NOT NULL,
