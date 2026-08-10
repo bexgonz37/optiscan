@@ -1,5 +1,343 @@
 # Current Task Packet
 
+## Packet update — 2026-08-10 (2) The correction pass ran, earliness started measuring, and two metrics that always agreed with us were caught doing it
+
+### Verified state (checked, not assumed)
+
+- Baseline re-verified from git AND production BEFORE any change:
+  local = `origin/main` = production = `683411e`
+  (`/api/runtime/status` → `shaAttribution.state OBSERVED`, source `RAILWAY_GIT_COMMIT_SHA`).
+  Tracked tree clean, 19 untracked scratch files untouched — still 19 at the end.
+- Production healthy at baseline and throughout: `ok:true`, `loopRunning:true`,
+  `quotaExceeded:false`, session `regular`, scheduler owner = this process.
+- `LHC_SELECT_V1` **untouched**. Neither `selection-experiment.ts` nor
+  `experiment-registry.ts` was opened. Still frozen, still `SHADOW_PAPER_ONLY`.
+- No strategy threshold, ranking weight, stop, exit, provider cap, owner quality gate or
+  subscriber readiness criterion changed. No real-money path. Nothing subscriber-approved.
+
+### PART 1 — the correction pass ran against production, twice
+
+`runExcursionCorrectionPassOnDb` existed, was repeat-safe, and had **no caller**. It now
+has one, split by verb: `GET /api/diagnostics/excursion-correction` is a DRY RUN,
+`POST` applies. A GET that wrote would make the audit a side effect of reading it, and
+the guarantee that the pass cannot worsen the history it audits would depend on nobody
+curling it. A test asserts both produce an identical census.
+
+**Authoritative production census (delivered scope, 78 cases, applied at `abb74f1`):**
+
+| state | count |
+|---|---|
+| `VERIFIED_EXCURSION` | **20** |
+| `INSUFFICIENT_MARKS` | **15** |
+| `UNSUPPORTED_MAX_RETURN` | **31** |
+| `MAX_FLOORED_AT_ZERO` | **8** |
+| `NO_MIRROR` | **4** |
+| `OCC_IDENTITY_MISSING` | **0** |
+| `storedValuesWrong` | 39 |
+| publishable | 20 |
+
+Correction store: **78 recorded**, corrected canonical MFE **20**, corrected canonical
+MAE **20**, **unresolved (null) 58**, stored values condemned 58.
+
+`unresolved` is reported as its own number rather than folded into "corrected" or
+"clean". A correction can be recorded and still resolve to nothing: `UNSUPPORTED_MAX_RETURN`
+establishes the stored value is wrong without establishing the right one.
+
+**Repeat safety verified live**: the POST was run twice; identical census, 78 rows, keyed
+by case so the second pass updated rather than duplicated. `opportunity_cases` was never
+edited — the original `summary.maxReturnPct` survives verbatim beside the record that
+condemns it.
+
+*(The counts differ from the 2026-08-07 audit's 22/36/20/4 because marks have accrued
+since. The population is the same 78; the evidence under it moved.)*
+
+### PART 2 — two more doors the unverified peak was still walking through
+
+**The historical digest.** The individual draft renderer was fixed to supersede
+`opportunity_content_events.max_return_percent` with a claim check. The digest read the
+same column **raw** and rendered it as "best mark". Measured in production: the pending
+digest quoted +87.7256% and +64.4518% on two AAPL outcomes, neither resolved through any
+excursion evidence. `readHeldDraftRows` now resolves through
+`resolvePublishableExcursionOnDb` at the LOAD boundary, so the grouping,
+`deriveFailureCause` and the evidence-quality score all reason over the verified value —
+otherwise a withheld peak would still be narrating "gave profit back" one function later.
+
+**The trade-level column.** `options_paper_trades.mfe_pct` was aggregated
+`MAX(return_pct) WHERE trade_id=?` with **no contract predicate**, and the 0DTE lane
+ratcheted it off its own previous stored value. Both are the shape that produced the
++185.4% case peak. Both now derive from marks whose own `option_symbol` is the position's
+contract. No exit, stop or gate reads the column — the AI lanes, quant and the report
+cards do.
+
+A trade may be `REALIZED_RETURN_VERIFIED` + `EXCURSION_UNSUPPORTED`, and everywhere this
+session that state is preserved: the realized outcome is never discarded to avoid a peak.
+
+### PARTS 3–4 — NO NEW FAILURE OBSERVED (and that is not the same as "the fix holds")
+
+The audit reported ONE prospective rate measured from the mirror fix
+(2026-08-07T23:14:28Z). Reason capture shipped much later, in `683411e`, live on Railway
+at **2026-08-10T15:29:01.506Z** (CONFIGURE_NETWORK completed — the moment the container
+began serving, not the moment the deploy was created; the previous build served for the
+~3 minutes in between).
+
+Quoting one rate across both epochs lets three permanently undiagnosable failures keep
+describing a period in which the system can actually explain itself. `postInstrumentation`
+is now its own block, not a filter on the existing one.
+
+**Production, end of session:**
+
+```
+prospective        : openings 16, mirroredExact 13, mirrorRate 0.8125
+postInstrumentation: openings  5, mirroredExact  5, mirrorRate 1.0,
+                     failures [], verdict NO_NEW_FAILURE_OBSERVED
+```
+
+The three unmirrored openings — SPY 13:31:15Z, TLT 13:31:21Z, TSLA 14:21:24Z — **all
+predate reason capture**, all carry `mirrorAttemptReason: null`, and their causes are
+**unrecoverable**. Nothing was reconstructed for them. Every one of the 5 instrumented
+openings carries `mirrorAttemptReason: "opened"`.
+
+**A clean sample of 5 is NOT evidence the fix holds.** The verdict vocabulary says
+exactly that, in the payload rather than in a comment. An instrumented opening that fails
+WITHOUT a reason is flagged `reasonMissing` — a hole in the instrumentation, not an
+unexplainable event.
+
+### PARTS 5–8 — PRE_MOVE_DISCOVERY_V1 is live, and its first metric was lying
+
+The module was complete and tested and **nothing called it**. A classifier with no capture
+site is a function, not a measurement.
+
+Capture is wired at `persistCaseFromOptionsLive` in the options loop — the boundary where
+pre-entry evidence still exists. Every value is lifted from what the scan already had:
+the decision-time candidate, the selected contract, and the enriched feature block the
+monitor computed from bars it had already fetched. **No provider call.** A field the
+scanner did not compute is stored null and named in `missingFields`.
+
+`opportunity_pre_move_discovery` is additive, `IF NOT EXISTS`, repeat-safe. The invariant:
+
+> **DETECTION-STAGE EVIDENCE IS WRITE-ONCE.**
+
+The scanner re-evaluates the same living case many times a session. If a later observation
+could overwrite "the underlying when we first saw it", the stage would compare the alert
+price against a price taken moments earlier and report every alert as perfectly early.
+Three deliberate exceptions, each with a stated reason: session high/low use MAX/MIN so
+the day's extent can widen but never narrow (a shrinking denominator inflates the share
+consumed), and `underlying_at_latest` / `option_at_latest` are overwritten every scan
+because they are the honest current endpoint for a case that never alerted — most of the
+research and shadow population, which would otherwise measure detection against itself.
+
+`OWNER` is not assignable at capture. `recordPreMoveAlertOnDb` promotes the row only
+after an owner send actually succeeds, and the alert timestamp is write-once so a retry
+cannot shorten a measured lead.
+
+**Lead-time grading** (`pre-move-nightly.ts`, deterministic, no model call): ms from the
+alert to +10/25/50/100/200 on the frozen contract's own marks, post-alert MFE (VERIFIED
+excursion only), premium consumed before the alert, and `milestonesReachedBeforeAlert`
+counted separately. **REWARD_REMAINING** is advisory and null — never 0 — when the day
+offered no measurable favourable extent.
+
+#### The degenerate column, caught in production four hours after shipping
+
+At `9018ae5`: **174 of 174 captured rows classified `PRE_TRIGGER`**, evidence quality
+`COMPLETE` on every one. That is not a market observation.
+
+`triggerTaken` compared price to `nearestResistance` for a call and `nearestSupport` for a
+put. `features.ts` builds those by filtering candidate levels to those strictly **above**
+and strictly **below** the current price — so `price >= nearestResistance` is structurally
+impossible for every candidate that will ever be evaluated. The input was always false.
+
+The damage was larger than one field. `classifyDiscovery` checks `PRE_TRIGGER` first and
+short-circuits, deliberately, so an always-false trigger **silenced the consumed-fraction
+measurement for the entire population**. The system would have reported itself as
+perfectly early, on complete evidence, indefinitely.
+
+`triggerTaken` now comes from the direction-aware break flag (`hodBreak` for a call,
+`lodBreak` for a put) — taking out the session extreme in the direction the trade needs IS
+the trigger event, and unlike the comparison it varies. Absent flag ⇒ **null, not false**:
+a false asserts "the move has not begun" and skips the measurement. Two tests pin the
+class, not the instance: `PRE_TRIGGER` must be both earnable and losable from otherwise
+identical inputs, and an unknown trigger must not short-circuit a provably spent move.
+
+### PART 9 — the nightly can now ask whether we found it before it ran
+
+`buildPreMoveNightlyReport` is wired into `nightlyResearchContext`, so the narration
+prompt carries it, and exposed at `/api/diagnostics/pre-move`. Lane-separated —
+OWNER / RESEARCH / SHADOW / EXPERIMENT are never pooled. `OWNER_VALIDATION_PAPER` was
+already its own audience in Evidence Learning and was verified so.
+
+Rates are computed over GRADABLE rows only: including `UNGRADABLE` in the denominator
+would let a day of missing inputs read as a day of late discoveries — the opposite
+finding. The standing questions are emitted as question/answer pairs so a refusal stays
+legible; `INSUFFICIENT_EVIDENCE` is a finding, a silently omitted metric is not.
+
+### PART 10 — historical data truth (`/api/diagnostics/data-truth`)
+
+**A. Underlying.** There is **NO persisted bar/candle table.** Bars are fetched per scan,
+consumed by `computeOptionsFeatures`, and discarded. What survives is the derived feature
+snapshot at scanner cadence, not the price series. This is a STORAGE fact, not a provider
+limitation, and conflating the two sends the fix to the wrong place.
+
+| store | rows | range |
+|---|---|---|
+| `options_candidates` | 75,332 | 2026-07-22 → 2026-08-10 · 2,967 symbols · 15,195 contracts |
+| `options_research_observations` | 105,234 | 2026-07-31 → 2026-08-10 · 2,755 symbols · 7 sessions |
+| `market_context_snapshots` | **0** | empty — regime context has no rows at all |
+
+**B. Provider (probed 2026-07-31, not re-probed today — no quota spent).** 10 proven,
+0 not entitled, 1 unproven, **5 integrated, 5 entitled-but-UNINTEGRATED**. Per-OCC NBBO
+back to 2023-07-31 is `INTEGRATED_UNUSED`. Expired-contract reference is `NOT_INTEGRATED`
+and is the blocker for enumerating any historical cohort universe. Historical OI and
+Greeks are **not reconstructible** for a past session.
+
+**C. Actually ingested.**
+
+| store | rows | range | contracts |
+|---|---|---|---|
+| `options_paper_marks` | **228,120** | 2026-07-24 → 2026-08-10 | 422 |
+| `options_paper_trades` | 864 | 2026-07-22 → 2026-08-10 | 496 |
+| `options_snapshots` | 41,474 | legacy TEXT dates — id ordering only | 435 |
+| `opportunity_contract_candidates` | 724 | 2026-07-29 → 2026-08-10 | 448 |
+| `opportunity_cases` | 49,405 | 11 sessions | — |
+| `opportunity_excursion_corrections` | 78 | applied today | — |
+| `opportunity_pre_move_discovery` | 247+ | from 16:11:59Z today | 184 |
+
+**PROVIDER HAS IT != OPTISCAN HAS IT.** Local option history spans **17.02 days**.
+
+### PARTS 11–13 — the gate is open; the first result was a pooled fiction
+
+Gate evaluated live rather than asserted, and all five checks pass: correction pass
+applied (78 records), no raw-column excursion reader left, PRE_MOVE wired (rows
+accruing), exact OCC enforced, local option history present.
+
+`HISTORICAL_COHORT_V1` is deterministic, shadow only, and its whole purpose is making one
+refusal automatic: **AI confidence is not a probability, and neither is a small sample.**
+Two floors, required together because they fail for different reasons — 20 trades (too
+little data) and 5 independent sessions (too little independence). Counts are always
+reported; the RATE is withheld, because "3 of 4" cannot be misquoted and "75%" can.
+
+Two admission rules, deliberately different: trajectory claims need `VERIFIED_EXCURSION`;
+realized claims need only a verified closed outcome. Demanding the stronger evidence for
+the weaker claim would discard realized returns that reconcile perfectly.
+
+**First live run at `4beb355` — and it caught the module's own worst defect.** The ALL
+cohort reported profit factor **0.5246**, win rate 0.2757, over 642 "verified realized
+outcomes" across 9 sessions. Arithmetically correct; describes nothing. Those 642 spanned
+`DELIVERED_ALERT_PAPER`, `OWNER_VALIDATION_PAPER`, `RESEARCH_ONLY_PAPER` and
+`ZERO_DTE_RESEARCH_PAPER` — four disjoint lanes that have never coexisted as one tradeable
+population. The sample floors stop a rate computed from too few observations; they say
+nothing about whether the observations belong together, and **pooling is what makes the
+sample large**.
+
+`paperKind` is now the first field of `CohortKey` and part of the cohort id. A cohort
+spanning lanes sets `pooledAcrossLanes` and carries a limitation forbidding it being
+quoted as the system's performance. The route returns `byLane` **always, never behind a
+flag** — making the honest cut opt-in is how the pooled number ends up quoted.
+
+Pooled figures observed (DIAGNOSTIC ONLY, not a performance claim): P(+10) 0.5971,
+P(+25) 0.4248, P(+50) 0.2524, P(+100) 0.0267 on 412 verified excursions over 9 sessions;
+expected MFE +27.97%, expected MAE −29.33%.
+
+### PART 14 — HISTORICAL_EDGE_SHADOW_V1: NOT BUILT, deliberately
+
+Its stated inputs include discovery stage on historical rows. `opportunity_pre_move_discovery`
+holds **1 session**, all captured today, and historical cases have no prospective capture.
+Building a rank-comparison model on that would mean inventing the very field the model
+ranks on. Recorded as **engineering still incomplete**, not as done.
+
+### PARTS 16–17 — Ask OptiScan audited, not rebuilt
+
+The existing chat's grounding contract is sound: `validateAdvisoryAnswer` refuses any
+numeric claim not traceable to an `EvidenceItem`. The gap was never the validator — it was
+that `loadSupplementalEvidence` loaded only exit-policy and watchlist evidence, so "did
+you find this before it ran", "how early" and "how much reward was left" had no citable
+item and were **unanswerable rather than wrong**.
+
+It now also loads the owner lane and the PRE_MOVE owner-lane census, each in its own try
+block. The two mirror rates are carried as SEPARATE items with separate meanings — a chat
+that can cite a number will cite it, and one blended rate would let three undiagnosable
+failures describe an instrumented period. Each item's `meaning` states the trap: an
+unmarked alert is unmeasured, an open mirror is not a zero return, a realized win does
+not imply a verified excursion.
+
+**Explain This**: exact case identity already flows (`opportunityCaseId` is the join key
+across cases, alerts, mirrors, marks, corrections and now discovery rows). No trade is
+identified from ticker text. Not separately re-plumbed this session.
+
+### PART 18 — readiness architecture
+
+**Nothing subscriber-approved. Subscriber distribution remains BLOCKED.** Readiness stays
+strategy/version specific and human-gated. The new evidence (discovery stage, lead time,
+reward remaining, post-instrumentation mirror integrity, per-lane expectancy) is now
+computable and is deliberately NOT wired into the readiness gate — that is a live
+authority change and was out of scope.
+
+### Commits (12, by concern)
+
+```
+d6b5498  Give the correction pass a way to be read before it is applied
+68fe841  Price a trade's stored excursion on the contract the trade actually holds
+abb74f1  Give PRE_MOVE_DISCOVERY_V1 a capture site so it measures something
+1e78756  Stop one mirror rate from describing two different questions
+b7bbcaf  Close the second door the unverified peak was still reaching the owner through
+87bf45d  Separate what the provider would sell us from what we actually hold
+6bd58ee  Let the nightly ask whether we found it before it ran
+9018ae5  Keep the pre-move module inside the model-free boundary
+26bacc5  Make refusing to state a probability the automatic path
+4beb355  Give Ask OptiScan the evidence to answer the owner's actual questions
+ebc96c2  Stop PRE_TRIGGER being the only answer the capture could give
+bc3664f  Refuse to let one cohort describe four populations at once
+```
+
+Validation: `npm test` twice → **4094/4094** both runs (from 4048 at baseline; +46).
+`npx tsc --noEmit --incremental false` clean. `npm run build` clean. `git diff --check`
+clean. Two additive migrations (`opportunity_pre_move_discovery` + its two indexes),
+`CREATE TABLE IF NOT EXISTS`, no backfill, repeat-safe.
+
+**One flaky test observed and NOT fixed**: `options-monitor.test.mjs` #6 asserts a 10ms
+wall-clock budget on a synchronous prefix. It failed once in four full-suite runs and
+passed 3/3 in isolation on an unchanged tree. It is load-dependent, not a regression from
+this session, and rewriting a timing assertion was out of today's scope.
+
+### Remaining defects
+
+1. **58 of 78 delivered cases have no provable excursion.** By design — the correction
+   store records that the stored value is wrong without inventing a replacement. But it
+   means 74% of the delivered history cannot support a trajectory claim of any kind.
+2. **`market_context_snapshots` is EMPTY (0 rows).** Regime is a stated cohort
+   stratification dimension and there is no regime data to stratify on. Not investigated.
+3. **5 provider capabilities are entitled and unintegrated**, including expired-contract
+   reference — the blocker for any historical cohort universe beyond the local 17 days.
+4. **No persisted underlying bar store.** Pre-run winner research is limited to
+   scanner-cadence feature snapshots unless a re-fetch lane is built.
+5. **The three unmirrored owner openings stay ungradable forever.** Recorded, never
+   reconstructed.
+6. **Other hand-built test fixtures remain.** One more was converted this session
+   (`historical-digest`), and every new test file uses the real migration; others still
+   hand-copy.
+
+### Exact resume point
+
+The measurement foundation is **live and accruing** rather than designed: the correction
+pass has run and is repeat-safe, PRE_MOVE_DISCOVERY captures on every qualified candidate,
+lead time and reward remaining compute from same-contract marks, the nightly consumes all
+of it lane-separated, and the probability layer exists with its refusals wired in front of
+its numbers.
+
+Two metrics that always agreed with us were caught and killed **in production, by looking
+at the output rather than the tests** — the always-`PRE_TRIGGER` column and the
+lane-pooled cohort. Both had passing tests and complete-looking evidence.
+
+Next session, in order:
+(a) read `/api/diagnostics/pre-move?days=0` for the FIRST owner-lane discovery rows with a
+    real alert — none existed when this session ended, so every earliness figure is still
+    `INSUFFICIENT_EVIDENCE`;
+(b) cut the cohort `byLane` once each lane clears 20 trades / 5 sessions and see whether
+    the delivered lane's expectancy survives separation;
+(c) investigate why `market_context_snapshots` is empty before relying on regime anywhere;
+(d) integrate expired-contract reference if historical cohorts beyond 17 days are wanted;
+(e) only then consider `HISTORICAL_EDGE_SHADOW_V1`, which needs discovery stages that do
+    not exist on historical rows.
+
 ## Packet update — 2026-08-10 The peaks are quarantined, the owner lane is visible, and earliness now measures the move
 
 ### Verified state (checked, not assumed)
