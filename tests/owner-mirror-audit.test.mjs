@@ -17,6 +17,7 @@ import Database from "better-sqlite3";
 import {
   auditOwnerMirrorsOnDb,
   OWNER_MIRROR_FIX_AT_MS,
+  OWNER_MIRROR_REASON_CAPTURE_AT_MS,
 } from "../lib/research/options/owner-mirror-audit.ts";
 
 // The fixture is built by the SAME migration production runs. An earlier hand-copied
@@ -278,4 +279,77 @@ test("an opening that never recorded an attempt reports null, not a guess", () =
   seedOpening(d, { id: "dd_old2", atMs: BEFORE, caseId: "oc_old2" });
   const a = auditOwnerMirrorsOnDb(d, { sinceMs: BEFORE - 86_400_000, nowMs: NOW });
   assert.equal(a.openings[0].mirrorAttemptReason, null);
+});
+
+// ── the two epochs must never be quoted as one rate ─────────────────────────
+//
+// `prospective` asks whether the mirror FIX holds. `postInstrumentation` asks whether a
+// failure can EXPLAIN itself. The three failures of 2026-08-10 sit between the two
+// dates: they are real failures of the fix, and they are permanently undiagnosable.
+// Merging the rates would let them keep describing a period in which the system could
+// actually say why.
+
+const INSTRUMENTED = OWNER_MIRROR_REASON_CAPTURE_AT_MS + 3_600_000;
+const BETWEEN_EPOCHS = OWNER_MIRROR_REASON_CAPTURE_AT_MS - 3_600_000;
+const LATER = OWNER_MIRROR_REASON_CAPTURE_AT_MS + 24 * 3_600_000;
+
+test("an opening between the two epochs counts against the fix but not against diagnosability", () => {
+  const d = db();
+  // Post-fix, pre-instrumentation, and it left no mirror.
+  seedOpening(d, { id: "dd_between", atMs: BETWEEN_EPOCHS, caseId: "oc_between" });
+
+  const a = auditOwnerMirrorsOnDb(d, { sinceMs: BEFORE, nowMs: LATER });
+  assert.equal(a.prospective.openings, 1, "the fix is judged on it");
+  assert.equal(a.prospective.mirrorRate, 0, "and it failed");
+  assert.equal(a.postInstrumentation.openings, 0, "but it could never have said why");
+  assert.equal(a.postInstrumentation.mirrorRate, null, "so it contributes no diagnosability rate");
+  assert.equal(a.postInstrumentation.verdict, "NO_INSTRUMENTED_OPENINGS_YET");
+});
+
+test("a clean instrumented opening reports NO_NEW_FAILURE_OBSERVED, not a proven fix", () => {
+  const d = db();
+  seedOpening(d, { id: "dd_between2", atMs: BETWEEN_EPOCHS, caseId: "oc_between2" });
+  seedOpening(d, { id: "dd_inst", atMs: INSTRUMENTED, caseId: "oc_inst" });
+  seedMirror(d, { caseId: "oc_inst", marks: 4 });
+
+  const a = auditOwnerMirrorsOnDb(d, { sinceMs: BEFORE, nowMs: LATER });
+  // The undiagnosable failure still drags the fix's rate down, exactly as it should.
+  assert.equal(a.prospective.openings, 2);
+  assert.equal(a.prospective.mirrorRate, 0.5);
+  // But diagnosability is 1 of 1, and the verdict says only what that supports.
+  assert.equal(a.postInstrumentation.openings, 1);
+  assert.equal(a.postInstrumentation.mirrorRate, 1);
+  assert.equal(a.postInstrumentation.verdict, "NO_NEW_FAILURE_OBSERVED");
+  assert.deepEqual(a.postInstrumentation.failures, []);
+});
+
+test("an instrumented failure names its cause", () => {
+  const d = db();
+  seedOpening(d, { id: "dd_fail", atMs: INSTRUMENTED, caseId: "oc_fail" });
+  const row = d.prepare("SELECT case_json FROM opportunity_cases WHERE opportunity_id=?").get("oc_fail");
+  const c = JSON.parse(row.case_json);
+  c.ownerMirror = { opened: false, reason: "exact_occ_required", paperTradeId: null, attemptedAtMs: INSTRUMENTED };
+  d.prepare("UPDATE opportunity_cases SET case_json=? WHERE opportunity_id=?").run(JSON.stringify(c), "oc_fail");
+
+  const a = auditOwnerMirrorsOnDb(d, { sinceMs: BEFORE, nowMs: LATER });
+  assert.equal(a.postInstrumentation.verdict, "FAILURE_OBSERVED_WITH_REASON");
+  assert.equal(a.postInstrumentation.failures.length, 1);
+  assert.equal(a.postInstrumentation.failures[0].mirrorAttemptReason, "exact_occ_required");
+  assert.equal(a.postInstrumentation.failures[0].reasonMissing, false);
+});
+
+test("an instrumented failure with NO reason is itself flagged as a defect", () => {
+  const d = db();
+  // Instrumented code ran, the mirror is missing, and nothing recorded why. That is a
+  // gap in the instrumentation, not an unexplainable event, and must not read as one.
+  seedOpening(d, { id: "dd_silent", atMs: INSTRUMENTED, caseId: "oc_silent" });
+
+  const a = auditOwnerMirrorsOnDb(d, { sinceMs: BEFORE, nowMs: LATER });
+  assert.equal(a.postInstrumentation.failures.length, 1);
+  assert.equal(a.postInstrumentation.failures[0].mirrorAttemptReason, null);
+  assert.equal(
+    a.postInstrumentation.failures[0].reasonMissing,
+    true,
+    "an instrumented opening that failed silently is a defect in the instrumentation",
+  );
 });

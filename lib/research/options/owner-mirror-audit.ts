@@ -118,12 +118,52 @@ export interface OwnerMirrorAuditResult {
     excursionVerified: number;
     excursionInsufficient: number;
   };
+  /**
+   * Openings delivered after mirrorAttemptReason capture shipped — the only ones whose
+   * failures can be diagnosed. Separate from `prospective` because they answer different
+   * questions: does the fix hold, versus can a failure explain itself.
+   */
+  postInstrumentation: {
+    openings: number;
+    mirroredExact: number;
+    mirrorRate: number | null;
+    failures: Array<{
+      opportunityCaseId: string | null;
+      symbol: string | null;
+      sentAt: string | null;
+      openingOptionSymbol: string | null;
+      state: OwnerMirrorState;
+      mirrorAttemptReason: string | null;
+      /** True when an instrumented opening failed WITHOUT a reason — a defect in itself. */
+      reasonMissing: boolean;
+    }>;
+    verdict: "NO_INSTRUMENTED_OPENINGS_YET" | "NO_NEW_FAILURE_OBSERVED" | "FAILURE_OBSERVED_WITH_REASON";
+    note: string;
+  };
+  reasonCaptureAtMs: number;
   openings: OwnerOpeningAudit[];
   note: string;
 }
 
 /** 231784c — "Give every owner opening a paper mirror on the contract it alerted". */
 export const OWNER_MIRROR_FIX_AT_MS = Date.parse("2026-08-07T23:14:28Z");
+
+/**
+ * 683411e — "Make a missing owner mirror say why it is missing" — went live on Railway
+ * at this instant (CONFIGURE_NETWORK completed 2026-08-10T15:29:01.506Z).
+ *
+ * This is a SECOND and later epoch, and conflating it with the mirror fix is what this
+ * constant exists to stop. `prospective` measures whether the FIX holds. It cannot say
+ * anything about diagnosability, because every opening between the two dates failed
+ * without recording why and those reasons are permanently unrecoverable. Reporting one
+ * rate over both epochs lets three undiagnosable failures keep dragging down — and keep
+ * describing — a period during which the system could actually explain itself.
+ *
+ * The timestamp is the moment the container began serving, not the moment the deploy was
+ * created: the previous build kept serving for the ~3 minutes in between, and an opening
+ * in that window ran on code that could not record a reason.
+ */
+export const OWNER_MIRROR_REASON_CAPTURE_AT_MS = Date.parse("2026-08-10T15:29:01.506Z");
 
 export function auditOwnerMirrorsOnDb(
   db: OwnerAuditDb,
@@ -147,6 +187,12 @@ export function auditOwnerMirrorsOnDb(
       realizedVerified: 0, realizedStillOpen: 0, realizedUnavailable: 0,
       excursionVerified: 0, excursionInsufficient: 0,
     },
+    postInstrumentation: {
+      openings: 0, mirroredExact: 0, mirrorRate: null, failures: [],
+      verdict: "NO_INSTRUMENTED_OPENINGS_YET",
+      note: "no owner opening has been delivered since mirrorAttemptReason capture shipped",
+    },
+    reasonCaptureAtMs: OWNER_MIRROR_REASON_CAPTURE_AT_MS,
     openings: [],
     note: "",
   };
@@ -295,12 +341,23 @@ export function auditOwnerMirrorsOnDb(
   });
 
   const count = (s: OwnerMirrorState) => openings.filter((o) => o.state === s).length;
+  const isExact = (o: OwnerOpeningAudit) => o.state === "MIRRORED_EXACT" || o.state === "MIRRORED_UNMARKED";
   const after = openings.filter((o) => !o.predatesMirrorFix);
-  const afterExact = after.filter((o) => o.state === "MIRRORED_EXACT" || o.state === "MIRRORED_UNMARKED").length;
+  const afterExact = after.filter(isExact).length;
+
+  // The instrumented population: openings that ran on code able to say WHY a mirror was
+  // missing. Deliberately its own block rather than a filter on the one above, so the
+  // two rates can never be quoted as if they described the same thing.
+  const instrumented = openings.filter(
+    (o) => o.sentAtMs != null && o.sentAtMs >= OWNER_MIRROR_REASON_CAPTURE_AT_MS,
+  );
+  const instrumentedExact = instrumented.filter(isExact).length;
+  const instrumentedFailures = instrumented.filter((o) => !isExact(o));
 
   return {
     sinceMs,
     mirrorFixAtMs: OWNER_MIRROR_FIX_AT_MS,
+    reasonCaptureAtMs: OWNER_MIRROR_REASON_CAPTURE_AT_MS,
     ownerOpenings: openings.length,
     mirrored: openings.filter((o) => o.mirrorCount > 0).length,
     missingMirrors: count("NO_FORWARD_PAPER_EVIDENCE"),
@@ -319,9 +376,37 @@ export function auditOwnerMirrorsOnDb(
       excursionVerified: after.filter((o) => o.excursionState === "VERIFIED_EXCURSION").length,
       excursionInsufficient: after.filter((o) => o.excursionState === "INSUFFICIENT_MARKS").length,
     },
+    postInstrumentation: {
+      openings: instrumented.length,
+      mirroredExact: instrumentedExact,
+      mirrorRate: instrumented.length ? instrumentedExact / instrumented.length : null,
+      // Every failure here CAN name its cause, which is the whole point of the epoch.
+      // A null reason on an instrumented opening is itself a defect and is surfaced as
+      // one rather than being reported as an unexplained gap.
+      failures: instrumentedFailures.map((o) => ({
+        opportunityCaseId: o.opportunityCaseId,
+        symbol: o.symbol,
+        sentAt: o.sentAt,
+        openingOptionSymbol: o.openingOptionSymbol,
+        state: o.state,
+        mirrorAttemptReason: o.mirrorAttemptReason,
+        reasonMissing: o.mirrorAttemptReason == null,
+      })),
+      verdict: instrumented.length === 0
+        ? "NO_INSTRUMENTED_OPENINGS_YET"
+        : instrumentedExact === instrumented.length
+          ? "NO_NEW_FAILURE_OBSERVED"
+          : "FAILURE_OBSERVED_WITH_REASON",
+      note:
+        "Openings delivered AFTER mirrorAttemptReason capture shipped. A small sample here is "
+        + "NOT evidence the fix holds — NO_NEW_FAILURE_OBSERVED means exactly that and nothing "
+        + "more. This rate must never be merged with `prospective`, whose failures predate "
+        + "reason capture and can never be diagnosed.",
+    },
     openings,
     note:
       "Openings delivered before the mirror fix can never gain forward evidence; they are reported "
-      + "missing, never reconstructed. Only the prospective block judges the fix.",
+      + "missing, never reconstructed. `prospective` judges the FIX; `postInstrumentation` judges "
+      + "DIAGNOSABILITY. They are different populations and different questions.",
   };
 }
