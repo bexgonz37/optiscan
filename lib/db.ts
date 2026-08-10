@@ -2156,6 +2156,93 @@ CREATE TABLE IF NOT EXISTS opportunity_excursion_corrections (
 CREATE INDEX IF NOT EXISTS idx_excursion_corrections_state
   ON opportunity_excursion_corrections(evidence_state);
 
+-- PRE_MOVE_DISCOVERY_V1 — the prospective record of WHERE IN THE MOVE an opportunity was
+-- found. One row per opportunity case, progressively completed as the case advances
+-- through detection -> eligibility -> contract selection -> alert.
+--
+-- The detection-stage columns are WRITE-ONCE (filled with COALESCE, never overwritten).
+-- That is the whole point of the table: "the underlying when we first saw it" stops being
+-- true the moment a later scan overwrites it, and a discovery stage computed from an
+-- overwritten detection price would report every alert as perfectly early. Historical
+-- cases have no prospective capture and none is invented for them — a row exists only
+-- for a case observed after this table shipped.
+--
+-- Diagnostic only. No gate, threshold, ranking weight or exit reads any column here.
+CREATE TABLE IF NOT EXISTS opportunity_pre_move_discovery (
+  opportunity_case_id TEXT PRIMARY KEY,
+  session_date TEXT,
+  symbol TEXT,
+  direction TEXT,
+  option_side TEXT,
+  option_symbol TEXT,
+  strategy_key TEXT,
+  model_version TEXT NOT NULL,
+  deployment_sha TEXT,
+  lane TEXT,
+
+  first_detected_at_ms INTEGER,
+  first_eligible_at_ms INTEGER,
+  confirmation_started_at_ms INTEGER,
+  confirmation_completed_at_ms INTEGER,
+  contract_selected_at_ms INTEGER,
+  owner_notified_at_ms INTEGER,
+
+  underlying_at_detection REAL,
+  underlying_at_eligible REAL,
+  underlying_at_alert REAL,
+
+  option_at_detection REAL,
+  option_at_eligible REAL,
+  option_at_alert REAL,
+
+  -- The DELIBERATE opposite of the write-once rule above: these track the most recent
+  -- decision-time observation and are overwritten on every scan. They are the honest
+  -- "current" endpoint for a case that never alerted — most of the research and shadow
+  -- population. Without them such a case would measure detection against detection,
+  -- score 0% of the move consumed, and read as maximally early forever: a metric that
+  -- always flatters us. They are never used when an alert exists.
+  underlying_at_latest REAL,
+  option_at_latest REAL,
+  latest_observed_at_ms INTEGER,
+
+  trigger_level REAL,
+  trigger_taken INTEGER,
+  compression_pct REAL,
+  volume_acceleration REAL,
+  session_high REAL,
+  session_low REAL,
+  vwap REAL,
+  above_vwap INTEGER,
+  breakout_state TEXT,
+  market_alignment TEXT,
+  regime TEXT,
+  dte INTEGER,
+  delta REAL,
+  iv REAL,
+  spread_pct REAL,
+  open_interest INTEGER,
+  contract_volume INTEGER,
+  moneyness_pct REAL,
+
+  discovery_stage TEXT,
+  underlying_move_consumed_pct REAL,
+  premium_expansion_consumed_pct REAL,
+  move_consumed_fraction REAL,
+  reward_remaining_fraction REAL,
+  reward_remaining_band TEXT,
+  evidence_quality TEXT,
+  missing_fields_json TEXT,
+  classification_reason TEXT,
+
+  observations INTEGER NOT NULL DEFAULT 1,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pre_move_discovery_session
+  ON opportunity_pre_move_discovery(session_date, discovery_stage);
+CREATE INDEX IF NOT EXISTS idx_pre_move_discovery_lane
+  ON opportunity_pre_move_discovery(lane, first_detected_at_ms);
+
 CREATE TABLE IF NOT EXISTS opportunity_content_events (
   id TEXT PRIMARY KEY,
   opportunity_case_id TEXT NOT NULL,

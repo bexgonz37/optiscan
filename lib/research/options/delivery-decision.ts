@@ -36,6 +36,7 @@ import {
   recordOwnerMirrorOutcomeOnDb,
   releaseOpportunityOpeningClaimOnDb,
 } from "../../opportunity-case/live.ts";
+import { recordPreMoveAlertOnDb } from "./pre-move-store.ts";
 
 export interface DeliverySubmission {
   deliveryInput: DeliveryInput;
@@ -368,6 +369,23 @@ async function sendOwnerPrivateOpening(
       paperTradeId: paper.paperTradeId,
       nowMs,
     });
+    // PRE_MOVE_DISCOVERY_V1: the owner has now actually been notified, so this is the
+    // moment lead time is measured from and the moment the row becomes the OWNER lane.
+    // It runs AFTER the send, never before — a row claiming an alert that was not
+    // delivered would make every lead time measured against it a fiction. Isolated for
+    // the same reason as the mirror: the alert is out and no measurement may retract it.
+    try {
+      recordPreMoveAlertOnDb(db as any, {
+        opportunityCaseId: claim.opportunityCaseId,
+        ownerNotifiedAtMs: nowMs,
+        underlyingAtAlert: s.deliveryInput.underlyingPrice ?? s.deliveryInput.currentUnderlyingPrice ?? null,
+        // The ask at alert is what the owner would have paid, matching the ask recorded
+        // at detection. Comparing a frozen mid against a detection ask would report an
+        // expansion that is really just half a spread.
+        optionAtAlert: s.deliveryInput.contract?.ask ?? null,
+        lane: "OWNER",
+      });
+    } catch { /* isolated */ }
     return {
       sent: true,
       reason: "sent",

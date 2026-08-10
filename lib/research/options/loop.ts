@@ -34,6 +34,7 @@ import {
 import { tradingDay } from "../../trading-session.ts";
 import { selectContractWithEvidence, type ContractFunnelEvidence } from "./contract-discovery.ts";
 import { recordContractFunnelOnDb } from "./contract-funnel-store.ts";
+import { recordPreMoveObservationOnDb, type PreMoveLane } from "./pre-move-store.ts";
 
 export interface ChainContract { optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number; bid: number | null; ask: number | null; spreadPct: number | null; volume: number | null; openInterest: number | null; iv: number | null; delta: number | null; gamma: number | null; providerTimestamp: number | null }
 
@@ -207,6 +208,111 @@ export interface OptionsCandidateExtra {
   fractionMove?: number | null;
   /** How the chain fetch actually went, so an empty band can be attributed correctly. */
   chainOutcome?: ChainFetchOutcome | null;
+}
+
+/**
+ * Which population an opportunity belongs to AT CAPTURE TIME.
+ *
+ * OWNER is deliberately absent here. Whether an owner is notified is decided later, by
+ * the delivery layer, and stamping OWNER on a candidate that merely looked deliverable
+ * would inflate the one lane whose forward performance actually gates readiness.
+ * `recordPreMoveAlertOnDb` promotes the row when an owner is genuinely notified.
+ */
+function preMoveLaneAtCapture(res: OptionsEvalResult): PreMoveLane {
+  if (res.selection.selected?.researchOnly) return "RESEARCH";
+  return "SHADOW";
+}
+
+/**
+ * Turn the live evaluation into a PRE_MOVE_DISCOVERY_V1 observation.
+ *
+ * Every value is lifted from evidence the scan already had: `input` (the decision-time
+ * candidate), `res.contract` (the contract actually selected) and the enriched feature
+ * snapshot the monitor computed from bars it had already fetched. NOTHING here fetches
+ * anything — a field the scanner did not compute is stored null and named in
+ * `missingFields`, because paying for a quote in order to measure earliness would change
+ * what the scanner costs to observe it.
+ */
+function recordPreMoveObservation(
+  db: LoopDb,
+  input: OptionsCandidateInput,
+  res: OptionsEvalResult,
+  persistedCase: { opportunityId: string; sessionDate?: string | null; direction?: string | null } | null,
+  extra: OptionsCandidateExtra,
+  env: NodeJS.ProcessEnv,
+): void {
+  if (env.PRE_MOVE_DISCOVERY_CAPTURE_ENABLED === "0") return;
+  const caseId = persistedCase?.opportunityId;
+  const side = res.contract?.side ?? res.selection.selected?.side ?? null;
+  if (!caseId || !side) return;
+
+  // The enriched block the monitor already computed. Absent on the unenriched path, in
+  // which case the structural fields are simply null rather than guessed.
+  const f = (extra.featureSnapshot as { underlying?: Record<string, unknown> } | undefined)?.underlying ?? {};
+  const n = (v: unknown): number | null => {
+    const x = Number(v);
+    return v == null || v === "" || !Number.isFinite(x) ? null : x;
+  };
+
+  const isCall = side === "call";
+  const price = n(input.underlying.price);
+  // The level whose break defines THIS setup's trigger is direction-specific: a call is
+  // waiting on resistance above, a put on support below. Using one level for both would
+  // report every put as pre-trigger.
+  const triggerLevel = isCall ? n(f.nearestResistance) : n(f.nearestSupport);
+  const triggerTaken = triggerLevel == null || price == null
+    ? null
+    : (isCall ? price >= triggerLevel : price <= triggerLevel);
+  const strike = n(res.contract?.strike);
+
+  try {
+    recordPreMoveObservationOnDb(db as any, {
+      opportunityCaseId: caseId,
+      sessionDate: persistedCase?.sessionDate ?? null,
+      symbol: input.symbol,
+      direction: res.selection.direction ?? persistedCase?.direction ?? null,
+      side: isCall ? "CALL" : "PUT",
+      optionSymbol: res.contract?.optionSymbol ?? null,
+      strategyKey: res.selection.selected?.key ?? null,
+      deploymentSha: process.env.RAILWAY_GIT_COMMIT_SHA ?? null,
+      lane: preMoveLaneAtCapture(res),
+      nowMs: input.nowMs,
+      // Eligibility is confirmation COMPLETE, which is exactly what READY means here.
+      eligible: res.state === "READY",
+      underlyingPrice: price,
+      // The ask is what a buyer actually pays, so premium expansion is measured on the
+      // side of the book the trade would cross.
+      optionAsk: n(res.contract?.ask),
+      triggerLevel,
+      triggerTaken,
+      compressionPct: n(input.underlying.compressionPct) ?? n(f.compressionScore),
+      volumeAcceleration: n(f.volumeAccel) ?? n(input.underlying.accelPct),
+      sessionHigh: n(f.hod),
+      sessionLow: n(f.lod),
+      vwap: n(f.vwap),
+      aboveVwap: input.underlying.aboveVwap ?? null,
+      breakoutState: input.underlying.hodBreak
+        ? "HOD_BREAK"
+        : input.underlying.lodBreak
+          ? "LOD_BREAK"
+          : triggerTaken === true
+            ? "TRIGGER_TAKEN"
+            : triggerTaken === false
+              ? "PRE_TRIGGER"
+              : null,
+      marketAlignment: null,
+      regime: null,
+      dte: n(res.contract?.dte),
+      delta: n(res.contract?.delta),
+      iv: n(res.contract?.iv),
+      spreadPct: n(res.contract?.spreadPct),
+      openInterest: n(res.contract?.openInterest),
+      contractVolume: n(res.contract?.volume),
+      moneynessPct: strike != null && price != null && price > 0
+        ? +(((strike - price) / price) * 100).toFixed(4)
+        : null,
+    });
+  } catch { /* a measurement must never be able to fail a scan */ }
 }
 
 /** Fire-and-forget: run the candidate, persist it (with the enriched decision-time snapshot the AI/
@@ -460,7 +566,12 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
     // Enterprise Opportunity Case audit (additive, isolated — never blocks the live path).
     if (env.OPPORTUNITY_CASE_CAPTURE_ENABLED !== "0") {
       try {
-        persistCaseFromOptionsLive(db, { input, evalResult: res, chainLength: chain.length, livingOpportunityCaseId });
+        const persistedCase = persistCaseFromOptionsLive(db, { input, evalResult: res, chainLength: chain.length, livingOpportunityCaseId });
+        // PRE_MOVE_DISCOVERY_V1 capture. This is the boundary where PRE-ENTRY evidence
+        // still exists: `input` and `res` are the decision-time picture, and nothing
+        // here reads an outcome or issues a provider call. Isolated inside the same
+        // best-effort block — a measurement must never be able to fail a scan.
+        recordPreMoveObservation(db, input, res, persistedCase, extra, env);
       } catch { /* audit is best-effort */ }
     }
     // Real-option paper (separate flag). Public callout DELIVERY is NOT wired here (manual/gated).
