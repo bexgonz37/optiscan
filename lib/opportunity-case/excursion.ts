@@ -342,6 +342,57 @@ export interface ExcursionCensus {
   publishable: number;
 }
 
+/**
+ * Excursion for ONE paper mirror, judged on its own contract.
+ *
+ * The case-level path above needs an Opportunity Case. An owner validation mirror is
+ * a trade in its own right and may be read before any case reconciliation exists, so
+ * this asks the narrower question directly: of the marks recorded against this trade,
+ * how many were on the trade's OWN contract, and do they support an extreme?
+ *
+ * The separation this enables is the point. A trade can be a REALIZED winner —
+ * `return_pct` against `entry_fill`, one observation, sound — while its trajectory is
+ * unknown because only two marks were ever taken. Reporting `mfe_pct` there would
+ * assert the gaps held nothing larger. Realized performance and trajectory quality
+ * are different measurements and are answered separately.
+ */
+export function excursionForPaperTradeOnDb(
+  db: ExcursionDb,
+  tradeId: number,
+  optionSymbol: string | null | undefined,
+): { state: ExcursionEvidenceState; mfePct: number | null; maePct: number | null; marksOnContract: number } {
+  const occ = normalizeOcc(optionSymbol);
+  if (occ == null) {
+    return { state: "OCC_IDENTITY_MISSING", mfePct: null, maePct: null, marksOnContract: 0 };
+  }
+  if (!hasTable(db, "options_paper_marks")) {
+    return { state: "NO_MIRROR", mfePct: null, maePct: null, marksOnContract: 0 };
+  }
+  let rows: any[] = [];
+  try {
+    rows = db.prepare(
+      "SELECT return_pct FROM options_paper_marks WHERE trade_id=? AND UPPER(TRIM(option_symbol))=?",
+    ).all(tradeId, occ) as any[];
+  } catch {
+    return { state: "NO_MIRROR", mfePct: null, maePct: null, marksOnContract: 0 };
+  }
+  const vals = rows.map((r) => num(r.return_pct)).filter((v): v is number => v != null);
+  if (vals.length < MIN_MARKS_FOR_EXCURSION) {
+    return {
+      state: "INSUFFICIENT_MARKS",
+      mfePct: null,
+      maePct: null,
+      marksOnContract: vals.length,
+    };
+  }
+  return {
+    state: "VERIFIED_EXCURSION",
+    mfePct: Math.max(...vals),
+    maePct: Math.min(...vals),
+    marksOnContract: vals.length,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Correction policy
 // ---------------------------------------------------------------------------

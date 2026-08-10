@@ -7,6 +7,13 @@ export type FindingPipeline =
   | "SUPERVISOR_OPTIONS"
   | "STOCK_MOMENTUM"
   | "DELIVERED_ALERT_PAPER"
+  /**
+   * Owner validation openings. Its own pipeline, never merged with
+   * DELIVERED_ALERT_PAPER: an owner alert is a forward-validation trade the owner
+   * received, not a subscriber delivery, and a finding that pooled the two would
+   * describe a population that has never existed.
+   */
+  | "OWNER_VALIDATION_PAPER"
   | "ZERO_DTE_RESEARCH"
   | "SHADOW_REPLAY"
   | "LEGACY_AUDIT";

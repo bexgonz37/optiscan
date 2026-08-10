@@ -10,6 +10,7 @@
  * without forward evidence and are never reconstructed, and the prospective block —
  * the only one that can judge the fix — counts only openings delivered after it.
  */
+import "./helpers/register-alias.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
@@ -17,6 +18,12 @@ import {
   auditOwnerMirrorsOnDb,
   OWNER_MIRROR_FIX_AT_MS,
 } from "../lib/research/options/owner-mirror-audit.ts";
+
+// The fixture is built by the SAME migration production runs. An earlier hand-copied
+// version of this schema omitted options_paper_trades.return_pct, so the audit's query
+// threw and every mirror silently read as missing — a green test describing a database
+// production does not have.
+const { applyProductionSchemaOnDb } = await import("@/lib/db");
 
 const BEFORE = OWNER_MIRROR_FIX_AT_MS - 6 * 3_600_000;
 const AFTER = OWNER_MIRROR_FIX_AT_MS + 6 * 3_600_000;
@@ -26,50 +33,41 @@ const OTHER = "O:QQQ261016C00760000";
 
 function db() {
   const d = new Database(":memory:");
-  d.exec(`
-    CREATE TABLE discord_deliveries (
-      delivery_id TEXT PRIMARY KEY, payload_type TEXT NOT NULL, status TEXT NOT NULL,
-      created_at TEXT NOT NULL, sent_at TEXT, payload_json TEXT,
-      opportunity_case_id TEXT, thesis_fingerprint TEXT, lifecycle_state TEXT
-    );
-    CREATE TABLE opportunity_cases (
-      opportunity_id TEXT PRIMARY KEY, underlying_symbol TEXT, detected_at_ms INTEGER,
-      delivery_decision TEXT, case_json TEXT
-    );
-    CREATE TABLE options_paper_trades (
-      id INTEGER PRIMARY KEY AUTOINCREMENT, option_symbol TEXT, paper_kind TEXT,
-      entry_fill REAL, status TEXT, feature_snapshot_json TEXT
-    );
-    CREATE TABLE options_paper_marks (
-      id INTEGER PRIMARY KEY AUTOINCREMENT, trade_id INTEGER, option_symbol TEXT,
-      mark_at_ms INTEGER, return_pct REAL
-    );
-  `);
+  applyProductionSchemaOnDb(d);
   return d;
 }
 
 function seedOpening(d, { id, atMs, caseId, occ = QQQ }) {
   const iso = new Date(atMs).toISOString();
   d.prepare(
-    `INSERT INTO discord_deliveries (delivery_id, payload_type, status, created_at, sent_at, opportunity_case_id, lifecycle_state)
-     VALUES (?,'owner_intraday_actionable','SENT',?,?,?,'OPENING')`,
+    `INSERT INTO discord_deliveries
+       (delivery_id, channel_type, webhook_name, payload_type, status, created_at, sent_at, opportunity_case_id, lifecycle_state)
+     VALUES (?,'owner','owner_private','owner_intraday_actionable','SENT',?,?,?,'OPENING')`,
   ).run(id, iso, iso, caseId);
   d.prepare(
-    "INSERT INTO opportunity_cases (opportunity_id, underlying_symbol, detected_at_ms, delivery_decision, case_json) VALUES (?,?,?,?,?)",
-  ).run(caseId, "QQQ", atMs, "delivered", JSON.stringify({
+    `INSERT INTO opportunity_cases
+       (opportunity_id, underlying_symbol, detected_at_ms, source_path, acceptance_decision,
+        delivery_decision, case_json, created_at_ms, updated_at_ms)
+     VALUES (?,?,?,'owner_actionable','accepted','delivered',?,?,?)`,
+  ).run(caseId, "QQQ", atMs, JSON.stringify({
     opportunityId: caseId,
     selectedContract: occ ? { optionSymbol: occ, side: "call", strike: 750, expiration: "2026-10-16" } : null,
-  }));
+  }), atMs, atMs);
 }
 
-function seedMirror(d, { caseId, occ = QQQ, entry = 12.4, marks = 1 }) {
+function seedMirror(d, { caseId, occ = QQQ, entry = 12.4, marks = 1, status = "ENTERED", returnPct = null }) {
   const info = d.prepare(
-    `INSERT INTO options_paper_trades (option_symbol, paper_kind, entry_fill, status, feature_snapshot_json)
-     VALUES (?,'OWNER_VALIDATION_PAPER',?,'ENTERED',?)`,
-  ).run(occ, entry, JSON.stringify({ lane: "OWNER_ONLY", opportunityCaseId: caseId }));
+    `INSERT INTO options_paper_trades
+       (option_symbol, result_class, paper_kind, entry_fill, status, return_pct,
+        feature_snapshot_json, created_at_ms, updated_at_ms)
+     VALUES (?,'REAL_OPTION_PAPER','OWNER_VALIDATION_PAPER',?,?,?,?,?,?)`,
+  ).run(occ, entry, status, returnPct,
+    JSON.stringify({ lane: "OWNER_ONLY", opportunityCaseId: caseId }), AFTER, AFTER);
   for (let i = 0; i < marks; i++) {
-    d.prepare("INSERT INTO options_paper_marks (trade_id, option_symbol, mark_at_ms, return_pct) VALUES (?,?,?,?)")
-      .run(Number(info.lastInsertRowid), occ, AFTER + i * 1000, i * 3);
+    d.prepare(
+      `INSERT INTO options_paper_marks (trade_id, option_symbol, mark_at_ms, return_pct, created_at_ms)
+       VALUES (?,?,?,?,?)`,
+    ).run(Number(info.lastInsertRowid), occ, AFTER + i * 1000, i * 3, AFTER);
   }
   return Number(info.lastInsertRowid);
 }
@@ -178,4 +176,78 @@ test("a database with no deliveries table reports that, not a clean audit", () =
   assert.equal(a.ownerOpenings, 0);
   assert.match(a.note, /discord_deliveries table missing/);
   assert.equal(a.prospective.mirrorRate, null);
+});
+
+// ── realized vs trajectory evidence, answered separately ────────────────────
+
+test("a closed owner mirror reports a VERIFIED realized return", () => {
+  const d = db();
+  seedOpening(d, { id: "dd_win", atMs: AFTER, caseId: "oc_win" });
+  seedMirror(d, { caseId: "oc_win", status: "EXITED", returnPct: 47.2103, marks: 5 });
+
+  const a = auditOwnerMirrorsOnDb(d, { sinceMs: BEFORE, nowMs: NOW });
+  const o = a.openings[0];
+  assert.equal(o.realizedEvidence, "VERIFIED");
+  assert.equal(o.realizedReturnPct, 47.2103);
+  assert.equal(o.excursionState, "VERIFIED_EXCURSION");
+  assert.equal(a.prospective.realizedVerified, 1);
+  assert.equal(a.prospective.excursionVerified, 1);
+});
+
+test("a realized winner with two marks keeps the win and reports no peak", () => {
+  const d = db();
+  seedOpening(d, { id: "dd_thin", atMs: AFTER, caseId: "oc_thin" });
+  seedMirror(d, { caseId: "oc_thin", status: "EXITED", returnPct: 47.2103, marks: 2 });
+
+  const a = auditOwnerMirrorsOnDb(d, { sinceMs: BEFORE, nowMs: NOW });
+  const o = a.openings[0];
+  // This is the distinction the nightly must honour: a VERIFIED realized winner whose
+  // trajectory was never measured densely enough to place an extreme.
+  assert.equal(o.realizedEvidence, "VERIFIED");
+  assert.equal(o.realizedReturnPct, 47.2103);
+  assert.equal(o.excursionState, "INSUFFICIENT_MARKS");
+  assert.equal(o.excursionMfePct, null, "an unmeasured peak is null, never 0");
+  assert.equal(o.excursionMaePct, null);
+  assert.equal(a.prospective.realizedVerified, 1);
+  assert.equal(a.prospective.excursionVerified, 0);
+  assert.equal(a.prospective.excursionInsufficient, 1);
+});
+
+test("an open owner mirror is STILL_OPEN, not a zero return", () => {
+  const d = db();
+  seedOpening(d, { id: "dd_open", atMs: AFTER, caseId: "oc_open" });
+  seedMirror(d, { caseId: "oc_open", status: "ENTERED", marks: 4 });
+
+  const a = auditOwnerMirrorsOnDb(d, { sinceMs: BEFORE, nowMs: NOW });
+  assert.equal(a.openings[0].realizedEvidence, "STILL_OPEN");
+  assert.equal(a.openings[0].realizedReturnPct, null);
+  assert.equal(a.prospective.realizedStillOpen, 1);
+  assert.equal(a.prospective.realizedVerified, 0);
+});
+
+test("the prospective block separates marked from unmarked mirrors", () => {
+  const d = db();
+  seedOpening(d, { id: "dd_m", atMs: AFTER, caseId: "oc_m" });
+  seedMirror(d, { caseId: "oc_m", marks: 3 });
+  seedOpening(d, { id: "dd_n", atMs: AFTER, caseId: "oc_n" });
+  seedMirror(d, { caseId: "oc_n", marks: 0 });
+
+  const a = auditOwnerMirrorsOnDb(d, { sinceMs: BEFORE, nowMs: NOW });
+  assert.equal(a.prospective.openings, 2);
+  assert.equal(a.prospective.withMarks, 1);
+  assert.equal(a.prospective.withoutMarks, 1);
+});
+
+test("a mismatched mirror supplies neither realized nor excursion evidence", () => {
+  const d = db();
+  seedOpening(d, { id: "dd_bad", atMs: AFTER, caseId: "oc_bad" });
+  seedMirror(d, { caseId: "oc_bad", occ: OTHER, status: "EXITED", returnPct: 185.4077, marks: 6 });
+
+  const a = auditOwnerMirrorsOnDb(d, { sinceMs: BEFORE, nowMs: NOW });
+  const o = a.openings[0];
+  assert.equal(o.state, "MIRROR_OCC_MISMATCH");
+  assert.equal(o.realizedEvidence, "UNAVAILABLE");
+  assert.equal(o.realizedReturnPct, null, "a foreign contract's return is not this opening's");
+  assert.equal(o.excursionState, "NO_MIRROR");
+  assert.equal(o.excursionMfePct, null);
 });

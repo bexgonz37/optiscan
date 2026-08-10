@@ -16,6 +16,11 @@
  * Read-only. No provider call, no quota spend, no send authority.
  */
 
+import {
+  excursionForPaperTradeOnDb,
+  type ExcursionEvidenceState,
+} from "../../opportunity-case/excursion.ts";
+
 export interface OwnerAuditDb {
   prepare(sql: string): { get: (...a: any[]) => any; all: (...a: any[]) => any[] };
 }
@@ -61,6 +66,18 @@ export interface OwnerOpeningAudit {
   mirrorStatus: string | null;
   markCount: number;
   state: OwnerMirrorState;
+  /**
+   * Realized outcome, and whether it is evidenced. VERIFIED requires an EXITED mirror
+   * on the alerted contract carrying its own return_pct. Reported separately from the
+   * excursion below, because the two need different evidence and a trade can have a
+   * sound realized return with an unknowable trajectory.
+   */
+  realizedReturnPct: number | null;
+  realizedEvidence: "VERIFIED" | "STILL_OPEN" | "UNAVAILABLE";
+  /** Trajectory quality. Never inferred from the realized number. */
+  excursionState: ExcursionEvidenceState;
+  excursionMfePct: number | null;
+  excursionMaePct: number | null;
   /** True when this opening was delivered before the mirror fix shipped. */
   predatesMirrorFix: boolean;
   note: string | null;
@@ -81,6 +98,16 @@ export interface OwnerMirrorAuditResult {
     mirroredExact: number;
     /** 1.0 is the target. null when no owner opening has happened since the fix. */
     mirrorRate: number | null;
+    /** Mirrors carrying at least one mark, and those still unmarked. */
+    withMarks: number;
+    withoutMarks: number;
+    /** Realized evidence, counted separately from trajectory evidence. */
+    realizedVerified: number;
+    realizedStillOpen: number;
+    realizedUnavailable: number;
+    /** Trajectory evidence. A verified realized return does not imply a verified peak. */
+    excursionVerified: number;
+    excursionInsufficient: number;
   };
   openings: OwnerOpeningAudit[];
   note: string;
@@ -105,7 +132,12 @@ export function auditOwnerMirrorsOnDb(
     occMismatches: 0,
     duplicateMirrors: 0,
     unmarkedMirrors: 0,
-    prospective: { openings: 0, mirroredExact: 0, mirrorRate: null },
+    prospective: {
+      openings: 0, mirroredExact: 0, mirrorRate: null,
+      withMarks: 0, withoutMarks: 0,
+      realizedVerified: 0, realizedStillOpen: 0, realizedUnavailable: 0,
+      excursionVerified: 0, excursionInsufficient: 0,
+    },
     openings: [],
     note: "",
   };
@@ -160,7 +192,7 @@ export function auditOwnerMirrorsOnDb(
     if (paperReady && caseId) {
       try {
         mirrors = db.prepare(
-          `SELECT id, option_symbol, entry_fill, status
+          `SELECT id, option_symbol, entry_fill, status, return_pct
              FROM options_paper_trades
             WHERE paper_kind='OWNER_VALIDATION_PAPER'
               AND feature_snapshot_json LIKE ?
@@ -204,6 +236,26 @@ export function auditOwnerMirrorsOnDb(
       state = "MIRRORED_EXACT";
     }
 
+    // Realized and trajectory evidence are resolved INDEPENDENTLY.
+    //
+    // A realized return needs one thing: an exited mirror on the alerted contract with
+    // its own return_pct. An excursion needs a mark series dense enough to have seen
+    // the extremes. An owner trade can be a VERIFIED +47% realized winner whose MFE is
+    // simply unknown, and the diagnostic has to be able to say exactly that rather than
+    // downgrading the win or inventing a peak.
+    const onExactContract = mirrors.length === 1 && openingOcc != null && mirrorOccs[0] === openingOcc;
+    const mirrorStatus = mirrors[0]?.status == null ? null : String(mirrors[0].status);
+    const mirrorReturnPct = mirrors[0]?.return_pct == null ? null : Number(mirrors[0].return_pct);
+    let realizedEvidence: OwnerOpeningAudit["realizedEvidence"] = "UNAVAILABLE";
+    if (onExactContract && mirrorStatus === "EXITED" && mirrorReturnPct != null && Number.isFinite(mirrorReturnPct)) {
+      realizedEvidence = "VERIFIED";
+    } else if (onExactContract && mirrorStatus === "ENTERED") {
+      realizedEvidence = "STILL_OPEN";
+    }
+    const excursion = onExactContract
+      ? excursionForPaperTradeOnDb(db as any, Number(mirrors[0].id), mirrorOccs[0])
+      : { state: "NO_MIRROR" as ExcursionEvidenceState, mfePct: null, maePct: null, marksOnContract: 0 };
+
     return {
       deliveryId,
       sentAt,
@@ -215,9 +267,14 @@ export function auditOwnerMirrorsOnDb(
       mirrorTradeIds: mirrors.map((m) => Number(m.id)),
       mirrorOptionSymbols: mirrorOccs,
       mirrorEntryFill: mirrors[0]?.entry_fill == null ? null : Number(mirrors[0].entry_fill),
-      mirrorStatus: mirrors[0]?.status == null ? null : String(mirrors[0].status),
+      mirrorStatus,
       markCount,
       state,
+      realizedReturnPct: realizedEvidence === "VERIFIED" ? mirrorReturnPct : null,
+      realizedEvidence,
+      excursionState: excursion.state,
+      excursionMfePct: excursion.mfePct,
+      excursionMaePct: excursion.maePct,
       predatesMirrorFix,
       note,
     };
@@ -240,6 +297,13 @@ export function auditOwnerMirrorsOnDb(
       openings: after.length,
       mirroredExact: afterExact,
       mirrorRate: after.length ? afterExact / after.length : null,
+      withMarks: after.filter((o) => o.markCount > 0).length,
+      withoutMarks: after.filter((o) => o.mirrorCount > 0 && o.markCount === 0).length,
+      realizedVerified: after.filter((o) => o.realizedEvidence === "VERIFIED").length,
+      realizedStillOpen: after.filter((o) => o.realizedEvidence === "STILL_OPEN").length,
+      realizedUnavailable: after.filter((o) => o.realizedEvidence === "UNAVAILABLE").length,
+      excursionVerified: after.filter((o) => o.excursionState === "VERIFIED_EXCURSION").length,
+      excursionInsufficient: after.filter((o) => o.excursionState === "INSUFFICIENT_MARKS").length,
     },
     openings,
     note:

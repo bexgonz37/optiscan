@@ -7,6 +7,8 @@
  * live scanners, strategy gates, thresholds, or Discord delivery.
  */
 
+import { excursionForPaperTradeOnDb } from "../opportunity-case/excursion.ts";
+
 type Row = Record<string, any>;
 
 export interface EvidenceDb {
@@ -33,6 +35,12 @@ export interface EvidenceLearningSnapshot {
     total: number;
     delivered: number;
     researchOnly: number;
+    /**
+     * Owner validation openings — the primary forward-validation lane. Counted on its
+     * own line because it is neither a subscriber delivery nor research, and folding
+     * it into either would describe a population that does not exist.
+     */
+    ownerValidation: number;
     replayUnderlyingForward: number;
     latestCompletedAtMs: number | null;
   };
@@ -221,15 +229,26 @@ function missingMap(fields: Record<string, unknown>): string[] {
 
 function materializePaperExamples(db: EvidenceDb, nowMs: number, limit: number): number {
   if (!tableExists(db, "options_paper_trades")) return 0;
+  // OWNER_VALIDATION_PAPER is included as its OWN population, never blended.
+  //
+  // It was excluded, and on a day whose only deliveries were 16 owner openings the
+  // nightly AI saw an empty session and had nothing to learn from. Owner alerts are
+  // the primary forward-validation lane now, so excluding them means excluding the
+  // evidence the system is being validated on.
+  //
+  // Blending would be the opposite error: an owner validation trade is not a
+  // subscriber delivery and pooling their expectancies would describe a population
+  // that does not exist. The audience below keeps them separable at every read.
   const rows = db.prepare(
     `SELECT ${paperSelect(db)} FROM options_paper_trades
       WHERE status='EXITED' AND result_class='REAL_OPTION_PAPER'
-        AND COALESCE(paper_kind,'LEGACY_UNCLASSIFIED') IN ('DELIVERED_ALERT_PAPER','RESEARCH_ONLY_PAPER','ZERO_DTE_RESEARCH_PAPER')
+        AND COALESCE(paper_kind,'LEGACY_UNCLASSIFIED') IN ('DELIVERED_ALERT_PAPER','RESEARCH_ONLY_PAPER','ZERO_DTE_RESEARCH_PAPER','OWNER_VALIDATION_PAPER')
         AND NOT EXISTS (
           SELECT 1 FROM evidence_learning_examples e
            WHERE e.source_kind=CASE
              WHEN COALESCE(options_paper_trades.paper_kind,'')='DELIVERED_ALERT_PAPER' THEN 'delivered_alert'
              WHEN COALESCE(options_paper_trades.paper_kind,'')='ZERO_DTE_RESEARCH_PAPER' THEN 'zero_dte_research'
+             WHEN COALESCE(options_paper_trades.paper_kind,'')='OWNER_VALIDATION_PAPER' THEN 'owner_validation'
              ELSE 'research_only'
            END
              AND e.source_id=CAST(options_paper_trades.id AS TEXT)
@@ -251,9 +270,23 @@ function materializePaperExamples(db: EvidenceDb, nowMs: number, limit: number):
       ? "DELIVERED"
       : p.paper_kind === "ZERO_DTE_RESEARCH_PAPER"
         ? "ZERO_DTE_RESEARCH"
-        : "RESEARCH_ONLY";
+        : p.paper_kind === "OWNER_VALIDATION_PAPER"
+          ? "OWNER_VALIDATION"
+          : "RESEARCH_ONLY";
     const components = parseJson(decision?.components_json) ?? {};
     const levels = levelInteractions(feature);
+    // Realized performance and trajectory quality are answered separately. `return_pct`
+    // is one observation against the entry fill and stands on its own; `mfe_pct` /
+    // `mae_pct` are claims about every moment in between, and a trade marked twice
+    // cannot support one. Where the marks are too thin the excursion is withheld, and
+    // `missing` reports it as unmeasured — so the AI reads "not measured", never a
+    // number that quietly means "the best of the two times we looked".
+    //
+    // A weak excursion never demotes the realized result: an owner validation trade
+    // with a VERIFIED +47% and an unknown MFE is still a realized winner.
+    const excursion = excursionForPaperTradeOnDb(db as any, Number(p.id), p.option_symbol as string | null);
+    const mfePct = excursion.mfePct;
+    const maePct = excursion.maePct;
     const missing = missingMap({
       sector: mctx.sector,
       marketRegime: mctx.regime,
@@ -262,15 +295,17 @@ function materializePaperExamples(db: EvidenceDb, nowMs: number, limit: number):
       qualityScore: q,
       relativeVolume: relVol,
       vwapDistancePct: vwapDist,
-      mfePct: p.mfe_pct,
-      maePct: p.mae_pct,
+      mfePct,
+      maePct,
     });
     insert.run(
       audience === "DELIVERED"
         ? "delivered_alert"
         : audience === "ZERO_DTE_RESEARCH"
           ? "zero_dte_research"
-          : "research_only",
+          : audience === "OWNER_VALIDATION"
+            ? "owner_validation"
+            : "research_only",
       "options_paper_trades",
       String(p.id),
       p.alert_id ?? p.option_symbol ?? null,
@@ -297,8 +332,8 @@ function materializePaperExamples(db: EvidenceDb, nowMs: number, limit: number):
       round(num(p.entry_fill)),
       round(num(p.target)),
       round(num(p.invalidation)),
-      round(num(p.mfe_pct)),
-      round(num(p.mae_pct)),
+      round(mfePct),
+      round(maePct),
       round(returnPct),
       finalOutcome(returnPct),
       p.entered_at_ms != null && p.exit_at_ms != null ? Math.max(0, Number(p.exit_at_ms) - Number(p.entered_at_ms)) : null,
@@ -520,7 +555,7 @@ export function evidenceLearningSnapshotOnDb(db: EvidenceDb): EvidenceLearningSn
   if (!tableExists(db, "evidence_learning_examples") || !tableExists(db, "evidence_learning_patterns")) {
     return {
       available: false, advisoryOnly: true, productionAuthority: "none",
-      examples: { total: 0, delivered: 0, researchOnly: 0, replayUnderlyingForward: 0, latestCompletedAtMs: null },
+      examples: { total: 0, delivered: 0, researchOnly: 0, ownerValidation: 0, replayUnderlyingForward: 0, latestCompletedAtMs: null },
       patterns: { total: 0, actionableRecommendations: 0, byConfidence: {}, top: [] },
       missingFields: {},
       disclaimer: "Evidence Learning is advisory-only and never modifies production trading logic.",
@@ -552,6 +587,7 @@ export function evidenceLearningSnapshotOnDb(db: EvidenceDb): EvidenceLearningSn
       total: n("SELECT COUNT(*) n FROM evidence_learning_examples"),
       delivered: n("SELECT COUNT(*) n FROM evidence_learning_examples WHERE audience='DELIVERED'"),
       researchOnly: n("SELECT COUNT(*) n FROM evidence_learning_examples WHERE audience='RESEARCH_ONLY'"),
+      ownerValidation: n("SELECT COUNT(*) n FROM evidence_learning_examples WHERE audience='OWNER_VALIDATION'"),
       replayUnderlyingForward: n("SELECT COUNT(*) n FROM evidence_learning_examples WHERE audience='REPLAY_UNDERLYING_FORWARD'"),
       latestCompletedAtMs: latest == null ? null : Number(latest),
     },
