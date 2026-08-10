@@ -864,6 +864,47 @@ export function markOwnerActionableOpeningDeliveredOnDb(
   emitContentEventForCase(db, input.opportunityCaseId, "OPPORTUNITY_OPENED", input.nowMs);
 }
 
+/**
+ * Record what happened when an owner opening tried to create its paper mirror.
+ *
+ * The mirror attempt already returned a reason and then dropped it on the floor. The
+ * owner-mirror audit could therefore see WHICH openings had no forward evidence but
+ * never WHY — and "no mirror" has several very different causes (the entry gate
+ * refused the quote, the paper gate found the thesis already held, the OCC was
+ * missing, the insert failed). Without the reason each gap needs a live
+ * reconstruction that the data no longer supports.
+ *
+ * Written onto the case JSON rather than a new table: the audit already loads the
+ * case, and a mirror outcome is a fact about that opening. Isolated and never
+ * throwing — this is observability, and it must not be able to disturb an alert that
+ * has already been sent.
+ */
+export function recordOwnerMirrorOutcomeOnDb(
+  db: LiveDb,
+  input: {
+    opportunityCaseId: string;
+    opened: boolean;
+    reason: string;
+    paperTradeId: number | null;
+    nowMs: number;
+  },
+): void {
+  try {
+    const oc = loadCaseJsonOnDb(db, input.opportunityCaseId);
+    if (!oc) return;
+    (oc as unknown as Record<string, unknown>).ownerMirror = {
+      opened: input.opened,
+      reason: input.reason,
+      paperTradeId: input.paperTradeId,
+      attemptedAtMs: input.nowMs,
+    };
+    oc.updatedAtMs = input.nowMs;
+    persistOpportunityCaseOnDb(db as any, oc);
+    db.prepare("UPDATE opportunity_cases SET case_json=?, updated_at_ms=? WHERE opportunity_id=?")
+      .run(JSON.stringify(oc), input.nowMs, input.opportunityCaseId);
+  } catch { /* observability only — never disturbs a sent alert */ }
+}
+
 export function releaseOpportunityOpeningClaimOnDb(
   db: LiveDb,
   opportunityCaseId: string,

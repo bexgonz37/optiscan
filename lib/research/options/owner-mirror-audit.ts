@@ -78,6 +78,15 @@ export interface OwnerOpeningAudit {
   excursionState: ExcursionEvidenceState;
   excursionMfePct: number | null;
   excursionMaePct: number | null;
+  /**
+   * What the mirror attempt itself reported, when the opening recorded it.
+   *
+   * "No mirror" has several very different causes — the entry gate refused the quote,
+   * the paper gate found the thesis already held, the OCC was missing, the insert
+   * failed — and a gap that does not say which cannot be acted on. Null for openings
+   * delivered before the outcome was persisted.
+   */
+  mirrorAttemptReason: string | null;
   /** True when this opening was delivered before the mirror fix shipped. */
   predatesMirrorFix: boolean;
   note: string | null;
@@ -175,13 +184,17 @@ export function auditOwnerMirrorsOnDb(
     // references. Never inferred from ticker/strike text.
     let openingOcc: string | null = null;
     let symbol: string | null = null;
+    let mirrorAttemptReason: string | null = null;
     if (caseId && casesReady) {
       try {
         const c = db.prepare("SELECT underlying_symbol, case_json FROM opportunity_cases WHERE opportunity_id=?")
           .get(caseId) as { underlying_symbol?: string; case_json?: string } | undefined;
         symbol = c?.underlying_symbol == null ? null : String(c.underlying_symbol);
         if (c?.case_json) {
-          openingOcc = normalizeOcc(JSON.parse(c.case_json)?.selectedContract?.optionSymbol);
+          const parsed = JSON.parse(c.case_json);
+          openingOcc = normalizeOcc(parsed?.selectedContract?.optionSymbol);
+          const om = parsed?.ownerMirror;
+          if (om?.reason != null) mirrorAttemptReason = String(om.reason);
         }
       } catch { /* isolated */ }
     }
@@ -275,6 +288,7 @@ export function auditOwnerMirrorsOnDb(
       excursionState: excursion.state,
       excursionMfePct: excursion.mfePct,
       excursionMaePct: excursion.maePct,
+      mirrorAttemptReason,
       predatesMirrorFix,
       note,
     };

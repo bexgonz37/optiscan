@@ -1,5 +1,293 @@
 # Current Task Packet
 
+## Packet update — 2026-08-10 The peaks are quarantined, the owner lane is visible, and earliness now measures the move
+
+### Verified state (checked, not assumed)
+
+- Baseline re-verified from git AND production BEFORE any change:
+  local = `origin/main` = production = `d69a640`
+  (`/api/runtime/status` → `deploy.commit d69a640445646abc3ff8f1e074b5c9c982befedc`,
+  `shaAttribution.state OBSERVED`). Tracked tree clean, 19 untracked scratch files
+  untouched — and still 19 at the end.
+- Production healthy at baseline: `ok:true`, `loopRunning:true`, `quotaExceeded:false`.
+- **Scanner watchdog verified live**: `/api/diagnostics/loop-health` → `HEALTHY`,
+  1030/1030 ticks completed, 0 timeouts, 0 abandoned, `schedulerOwner.isThisProcess true`.
+- `LHC_SELECT_V1` **untouched**. `LHC_SELECT_V1_DEFINITION_HASH` still
+  `80e5c5d878f5f9e185661981c87afc63`, mode still `SHADOW_PAPER_ONLY`. Neither
+  `selection-experiment.ts` nor `experiment-registry.ts` was modified.
+- No strategy threshold, ranking weight, stop, exit, provider cap, subscriber readiness
+  criterion or owner alert quality gate changed. No real-money path. No probability
+  model built.
+
+### PRIORITY 1–2 — a mark must name its contract
+
+`applyOpportunityMarkOnDb` took **no OCC at all**. Every price handed to it was divided
+by the frozen entry and ratcheted into `maxReturnPct`, which is precisely how marks from
+re-selected strikes became the +185.4077% GOOGL peak.
+
+It now requires `markOptionSymbol` and refuses unless it equals the case's frozen OCC.
+**Absent and ambiguous fail exactly like mismatched** — a case observes many contracts on
+one underlying, so symbol-only identity is not identity. Refusal states are explicit:
+`MARK_OCC_MISSING`, `FROZEN_OCC_MISSING`, `MARK_OCC_MISMATCH`, `CASE_NOT_FOUND`.
+
+**A refusal writes nothing.** Identity is settled before any row is touched: no
+RETURN_MILESTONE, no NEW_HIGH, no summary, no Discord claim. A guard that rejected the
+return but still stamped a milestone would only have moved the contamination.
+
+`closeOpportunityOnDb` got the same guard with one deliberate difference: **closing is a
+lifecycle fact and still happens**. Only the exit price and return are dropped when they
+cannot be tied to the frozen contract — the position really did exit.
+
+The one production caller (`grade.ts`) passes `pos.option_symbol`; a refusal is recorded
+as a lifecycle suppression rather than swallowed.
+
+### PRIORITY 3–4 — excursion is a different claim from realized return
+
+`lib/opportunity-case/excursion.ts`. Realized return is ONE observation and reproduces on
+the frozen contract for all 78 delivered cases. An excursion is a claim about EVERY
+moment of the holding period, and a trade marked twice cannot support one.
+
+Canonical recomputation uses only the frozen OCC, the frozen entry, and marks whose own
+`option_symbol` is that OCC. States are explicit and uncollapsed:
+
+`VERIFIED_EXCURSION` · `INSUFFICIENT_MARKS` · `UNSUPPORTED_MAX_RETURN` ·
+`MAX_FLOORED_AT_ZERO` · `NO_MIRROR` · `OCC_IDENTITY_MISSING`
+
+**Ordering defect found and fixed during implementation.** A stored `0` on a losing trade
+is *also* numerically above the best mark, so a naive exceeds-check swallowed it and
+reported contamination. It is classified first. Reporting a seeded zero as cross-contract
+would be its own false claim and would have buried the 36 cases that genuinely are.
+
+`MIN_MARKS_FOR_EXCURSION = 3` — a floor on honesty, not a statistical result. Two marks
+show two moments; calling the better one "the maximum" asserts the gaps held nothing
+larger. A VERIFIED excursion is always stated as "the best mark observed", never "the high".
+
+**Corrections are added records, never edits.** `opportunity_cases` keeps its original
+`summary.maxReturnPct` verbatim so a number that was once published stays visible.
+`opportunity_excursion_corrections` (new table, additive, `IF NOT EXISTS`, repeat-safe,
+keyed by case so a re-run updates rather than duplicates) holds the original value, its
+source, the state that condemned it, the corrected value where provable, the SHA, the
+timestamp and the reason. **Where nothing is provable the corrected value is `null`** —
+knowing a value is wrong is not knowing the right one — and there is no code path back to
+the stored legacy number.
+
+### PRIORITY 5–6 — withhold the peak, not the trade
+
+Two defects in the content gate, pointing opposite ways.
+
+**It only refused a peak it could prove WRONG.** A case with no marks — nothing to
+contradict — passed and printed whatever the summary held. The gate now requires POSITIVE
+evidence: unprovable fails closed exactly like disproven.
+
+**It sank the whole draft for excursion-only defects.** That would suppress dozens of
+realized returns that reconcile perfectly in order to avoid one false peak.
+`realizedReturnIsPublishable` ignores `UNSUPPORTED_MAX_RETURN` and `MAX_FLOORED_AT_ZERO`,
+so realized and excursion are gated independently.
+
+**Passing the gate was never enough.** The renderer read
+`opportunity_content_events.max_return_percent` — a copy of the ratcheted summary and the
+literal source of the published figure. A claim check now supersedes that column: a
+verified peak replaces it, an unverified one blanks it, `renderLine` drops every line
+whose placeholder is missing, and `buildDraftBundle` drops any draft that discusses a
+maximum favourable move in prose without one. `deriveFailureCause` reads the same verified
+value, so a floored 0 can no longer narrate "never moved in our favour" for a trade that did.
+
+Net effect on the GOOGL case: **the draft publishes its realized +47.2103% and says
+nothing about a peak.** `observedBestMarkPct` reports the truthful +47.2103% for diagnosis
+and is never rendered.
+
+### PRIORITY 7–9 — the nightly can finally see the lane it validates
+
+Evidence Learning excluded `OWNER_VALIDATION_PAPER`, so on a day whose only deliveries
+were 16 owner openings the AI saw an empty session.
+
+It is now included **as its own audience and source_kind, never blended** — an owner
+validation trade is not a subscriber delivery, and pooling their expectancies describes a
+population that has never existed. Same reasoning gives it its own `FindingPipeline` and
+its own `examples.ownerValidation` count.
+
+**Realized and trajectory are now separate measurements at every meeting point.**
+`mfe_pct`/`mae_pct` come from `excursionForPaperTradeOnDb` — same-contract marks only,
+null unless there are enough — instead of the stored column, and `missing_fields` reports
+the peak as unmeasured. A VERIFIED +47% winner with two marks stays a WIN with no MFE.
+
+`/api/diagnostics/owner-mirror` now carries `realizedEvidence`
+(`VERIFIED`/`STILL_OPEN`/`UNAVAILABLE`) and `excursionState` per opening, and the
+prospective block counts `withMarks`, `withoutMarks`, `realizedVerified`,
+`realizedStillOpen`, `realizedUnavailable`, `excursionVerified`, `excursionInsufficient`.
+
+### Monday arrived DURING this session — and the mirror fix is 0.7, not 1
+
+Production moved from `afterhours` to `regular` mid-session, and 2026-08-10 produced
+**10 owner openings after the mirror fix**. This is the first live exercise of the chain,
+and it is a partial pass:
+
+```
+prospective: openings 10, mirroredExact 7, mirrorRate 0.70,
+             withMarks 7, withoutMarks 0,
+             realizedVerified 1, realizedStillOpen 6, realizedUnavailable 3,
+             excursionVerified 7, excursionInsufficient 0
+```
+
+**7 of 10 hold the full chain**: exactly one mirror, the exact alerted OCC, a frozen
+entry, same-contract marks (6–160 of them), and a VERIFIED excursion. QQQ 13:32Z has
+already closed with `realizedEvidence VERIFIED`.
+
+**3 left no mirror at all**: SPY 13:31:15Z, TLT 13:31:21Z, TSLA 14:21:24Z — all
+`NO_FORWARD_PAPER_EVIDENCE` / `NO_MIRROR`. Two of the three are in the first minute after
+the open. **`mirrorRate` is 0.70. The fix does NOT hold universally, and it is reported as
+0.70 rather than rounded up.**
+
+**Root cause is not yet known, and the reason it is not known was itself a defect.**
+`openOwnerValidationPaperOnDb` returns a precise reason — `entry_gate:*`,
+`paper_gate_rejected`, `exact_occ_required`, `quote_freshness_unavailable` — and the call
+site returned it to nobody and persisted nothing. The audit could see WHICH openings lost
+their mirror but never WHY, and "no mirror" has several very different causes with
+different fixes.
+
+`recordOwnerMirrorOutcomeOnDb` now writes the outcome onto the case JSON the audit already
+loads, and `mirrorAttemptReason` is surfaced per opening. **The three failures from this
+morning predate that capture and their reason is not recoverable** — nothing was
+reconstructed for them. The next owner opening that fails will say why.
+
+### PRIORITY 10 — the old metric was not earliness
+
+`earliness_phase` is `(price − LOD) / (HOD − LOD)`: where price sits inside the session
+range so far. Sound, pre-entry safe, and **not earliness**:
+
+- **Direction-blind.** For a PUT a low fraction means the downside move has largely
+  already happened — the latest possible entry — and it was bucketed `"early"`.
+- **Unstable.** The denominator grows through the day.
+- **No lifecycle.** It cannot tell "has not moved yet" from "round-tripped to the low".
+- **No reward remaining.** It cannot size how much of the move is left.
+
+**The stored column, buckets and thresholds are untouched.** Silently redefining old rows
+would make the record less trustworthy, not more. What changed is the name it is reported
+under: `SESSION_RANGE_POSITION`, carrying `SESSION_RANGE_POSITION_SEMANTICS` — including
+the PUT warning — **as data rather than as a caption**, because captions are edited more
+often than data contracts. The recap now prints
+`Session range position (not earliness): low · mid · high`.
+
+### PRIORITY 11–14 — PRE_MOVE_DISCOVERY_V1
+
+`lib/research/options/pre-move-discovery.ts`. **Diagnostic only** — no gate, threshold or
+ranking weight reads any of it.
+
+Favourable is defined by the contract: **up for a CALL, down for a PUT**, so "consumed"
+always means favourable move already spent. `favorableMovePct` returns POSITIVE for both
+when the move went the trade's way.
+
+Stages: `PRE_TRIGGER` → `EARLY_CONFIRMATION` → `EARLY_EXPANSION` → `MATURE_MOVE` →
+`TOO_LATE`, plus `UNGRADABLE` for absent inputs — a real answer, never 0. `PRE_TRIGGER` is
+checked first because a move that has not begun cannot be "25% spent".
+
+**No hindsight.** `classifyDiscovery` reads nothing dated after the alert. Outcomes exist
+only in `gradeDiscovery`, which asks the different question "was the label useful?". Fusing
+them yields a metric that grades itself perfectly in backtest and is worthless live.
+
+**Lead time keeps both answers apart.** `computeAlertLeadTime` reports ms-to-+10/25/50/
+100/200 measured FROM the alert, and separately `milestonesReachedBeforeAlert` and
+`premiumConsumedBeforeAlertPct`. A milestone reached before the alert is never counted as
+lead time. `postAlertMfePct` is withheld unless the excursion is VERIFIED.
+
+**REWARD_REMAINING** is advisory, uses only already-defensible inputs, and is `null` — not
+0 — when the day offered no measurable favourable extent. No probability engine: that needs
+VERIFIED excursion evidence that does not exist yet.
+
+### PRIORITY 15 — provider units
+
+49 and 780 were both right and neither carried its unit.
+`providerPressureAccountingOnDb` reports `attempts`, `distinctSymbols`, `retryRatio` and
+the `window` (`FULL_SESSION` vs `ROLLING_WINDOW`) together, with an explicit
+`warning: attempts and distinctSymbols are DIFFERENT UNITS`. Retry inflation is 1.26× —
+the time range was always the explanation. **No cap raised, no cadence changed.**
+
+### PRIORITY 16 — the recap, proven against the schema production has
+
+The `option_side` fix from `2c1a891` was verified present and correct. But its regression
+test **still built `discord_deliveries` by hand** — the very practice that let the broken
+query ship green.
+
+`applyProductionSchemaOnDb` is now exported from `lib/db.ts` and runs the real `migrate()`.
+`SCHEMA` stays private: it is only half the shape (`opportunity_cases.session_date` exists
+only after the ALTERs), and a fixture built from half a schema is the same class of bug.
+
+Converting three test files immediately surfaced columns the hand-copies never had —
+`discord_deliveries.channel_type`/`webhook_name`, `opportunity_cases.source_path`,
+`options_paper_trades.result_class`. **`owner-mirror-audit.test.mjs` was silently broken**:
+its fixture omitted `return_pct`, so the audit's query threw and every mirror read as
+missing, green.
+
+Proven: empty owner population builds AND formats without throwing; non-empty does too;
+every column the recap reads exists. `option_side` asserted absent so a future edit fails
+here rather than on a Monday morning.
+
+### PRIORITY 17 — Monday preflight
+
+`GET /api/diagnostics/monday-preflight` — zero provider calls, no writes, no send
+authority. Checks scanner loop + watchdog, owner routing, owner mirror, exact-OCC mark
+enforcement, excursion correction store, recap schema, LHC frozen/shadow-only, subscriber
+blocked, owner lane in the AI, PRE_MOVE_DISCOVERY_V1, provider accounting.
+
+**Biased toward UNKNOWN by design.** Every defect this session fixed was invisible because
+something reported healthy while having measured nothing. A subsystem that cannot be
+inspected reports `UNKNOWN`, `UNKNOWN` never rounds down to `PASS`, and the verdict is the
+**worst** check, not the average. **`BLOCKED` is the passing subscriber state**;
+`SUBSCRIBER_READY` is the WARNING. It states in its own payload that it predicts nothing.
+
+### Commits (6, by concern)
+
+```
+c99ce8d  Refuse a mark that cannot name the contract it was observed on
+f0aa269  Separate what a contract printed from what a case claims it printed
+9be20d7  Withhold the peak, not the trade
+11322a0  Let the nightly see the lane it is meant to be validating
+305e40e  Measure earliness by the move, not by the day's range
+d7106cf  Name the unit, prove the schema, and check before Monday opens
+```
+
+Validation: `npm test` twice → **4046/4046** both runs (from 3966 at baseline; +80).
+`npx tsc --noEmit --incremental false` clean. `npm run build` clean. `git diff --check`
+clean. One additive migration (`opportunity_excursion_corrections`), `CREATE TABLE IF NOT
+EXISTS`, no backfill, repeat-safe, ordered inside `SCHEMA` before its index.
+
+### Remaining defects
+
+1. **The 36 inflated and 20 floored values still sit in `opportunity_cases`.** By design —
+   corrections are recorded beside history. `runExcursionCorrectionPassOnDb` exists and is
+   repeat-safe but **has not been run against production**; every consumer already resolves
+   through `resolvePublishableExcursionOnDb`, which recomputes live, so nothing leaks
+   meanwhile.
+2. **The owner mirror fix holds 7 of 10 live (`mirrorRate` 0.70), not 1.** SPY, TLT and
+   TSLA left no mirror on 2026-08-10; two of the three within a minute of the open. Their
+   reason was not captured and cannot be reconstructed. `mirrorAttemptReason` now records
+   it prospectively — this is the first thing to read after the next owner opening.
+3. **PRE_MOVE_DISCOVERY_V1 is not yet wired to a capture site.** The module and its grading
+   are complete and tested; no scanner path calls `classifyDiscovery` yet, so no discovery
+   row is persisted. Historical rows have no prospective capture and none was invented.
+4. **617 distinct symbols/session still lose contract selection to provider quota.**
+   Measured, not acted on — any change there is a provider-allocation change.
+5. **Other hand-built fixtures remain.** Three were converted; others still hand-copy
+   schema and can drift the same way.
+
+### Exact resume point
+
+Excursion evidence is now **classified and quarantined** rather than trusted: 36 inflated
+peaks and 20 floored zeros cannot reach content, the AI, or grading, and realized returns —
+which were always sound — are no longer suppressed alongside them. The historical
+probability / similarity engine remains **not started**, per instruction, and may consume
+only `VERIFIED_EXCURSION` rows when it does.
+
+Next session, in order:
+(a) run `runExcursionCorrectionPassOnDb` against production and record the census;
+(b) diagnose the 0.70 mirror rate from `mirrorAttemptReason` on the next failing owner
+    opening — the open-minute clustering (SPY/TLT at 13:31Z) suggests the entry or paper
+    gate, but that is a hypothesis and the data to settle it did not exist this morning;
+(c) wire `classifyDiscovery` to a capture site so PRE_MOVE_DISCOVERY_V1 starts accruing
+    prospective rows — it grades nothing until it is called;
+(d) only then consider the probability engine.
+
+
 ## Packet update — 2026-08-07 (3) The realized numbers were true, the peaks beside them were not, and the recap was one trading day from silence
 
 ### Verified state (checked, not assumed)

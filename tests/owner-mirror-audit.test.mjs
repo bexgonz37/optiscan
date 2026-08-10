@@ -251,3 +251,31 @@ test("a mismatched mirror supplies neither realized nor excursion evidence", () 
   assert.equal(o.excursionState, "NO_MIRROR");
   assert.equal(o.excursionMfePct, null);
 });
+
+// ── why a mirror is missing, not just that it is ─────────────────────────────
+
+test("a missing mirror carries the reason the attempt reported", () => {
+  const d = db();
+  seedOpening(d, { id: "dd_why", atMs: AFTER, caseId: "oc_why" });
+  // The outcome the delivery path records after the attempt fails.
+  const row = d.prepare("SELECT case_json FROM opportunity_cases WHERE opportunity_id=?").get("oc_why");
+  const c = JSON.parse(row.case_json);
+  c.ownerMirror = { opened: false, reason: "entry_gate:spread_too_wide", paperTradeId: null, attemptedAtMs: AFTER };
+  d.prepare("UPDATE opportunity_cases SET case_json=? WHERE opportunity_id=?").run(JSON.stringify(c), "oc_why");
+
+  const a = auditOwnerMirrorsOnDb(d, { sinceMs: BEFORE, nowMs: NOW });
+  const o = a.openings[0];
+  assert.equal(o.state, "NO_FORWARD_PAPER_EVIDENCE");
+  assert.equal(
+    o.mirrorAttemptReason,
+    "entry_gate:spread_too_wide",
+    "a gap that cannot say why it happened cannot be acted on",
+  );
+});
+
+test("an opening that never recorded an attempt reports null, not a guess", () => {
+  const d = db();
+  seedOpening(d, { id: "dd_old2", atMs: BEFORE, caseId: "oc_old2" });
+  const a = auditOwnerMirrorsOnDb(d, { sinceMs: BEFORE - 86_400_000, nowMs: NOW });
+  assert.equal(a.openings[0].mirrorAttemptReason, null);
+});

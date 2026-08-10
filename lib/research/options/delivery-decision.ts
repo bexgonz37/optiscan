@@ -33,6 +33,7 @@ import {
   attachEvidenceToOpportunityOnDb,
   claimOpportunityOpenOnDb,
   markOwnerActionableOpeningDeliveredOnDb,
+  recordOwnerMirrorOutcomeOnDb,
   releaseOpportunityOpeningClaimOnDb,
 } from "../../opportunity-case/live.ts";
 
@@ -358,6 +359,15 @@ async function sendOwnerPrivateOpening(
     } catch (err: any) {
       paper = { opened: false, reason: String(err?.message ?? err).slice(0, 120), paperTradeId: null };
     }
+    // The reason used to be returned and then discarded, so a missing mirror was
+    // visible but not diagnosable. Persist it against the case the audit already reads.
+    recordOwnerMirrorOutcomeOnDb(db as any, {
+      opportunityCaseId: claim.opportunityCaseId,
+      opened: paper.opened,
+      reason: paper.reason,
+      paperTradeId: paper.paperTradeId,
+      nowMs,
+    });
     return {
       sent: true,
       reason: "sent",
