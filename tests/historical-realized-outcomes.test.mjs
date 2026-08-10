@@ -107,8 +107,9 @@ test("a proven identity yields a realized return recomputed from the fills", () 
   assert.equal(r.state, "WIN");
   assert.equal(r.paperTradeId, 1);
   assert.equal(r.realizedReturnPct, 20, "(3.0 - 2.5) / 2.5");
-  assert.equal(r.matchedOn.length, 4, "all four identity rules are recorded");
+  assert.equal(r.matchedOn.length, 3, "all three identity rules are recorded");
   assert.equal(r.refusal, null);
+  assert.equal(r.entryAgreement.agreement, "AGREES", "and the two sources corroborate each other");
 });
 
 test("a realized return is never the excursion", () => {
@@ -155,18 +156,44 @@ test("a mirror on a different contract is refused, never measured", () => {
   assert.equal(r.realizedReturnPct, null);
 });
 
-test("a different entry price is a different decision", () => {
-  const db = fakeDb({ cases: { oc_1: "al_1" }, trades: [trade({ entry_fill: 3.4 })] });
+test("a differing entry price annotates the join, it does not refuse it", () => {
+  // This was an identity rule at a two-cent tolerance and it refused 12 of 21 real joins,
+  // every one of them the historical NBBO ask against the live fill minutes later. Two
+  // measurements of one trade are not two trades, and the realized return comes from the
+  // mirror's own fills either way.
+  const db = fakeDb({ cases: { oc_1: "al_1" }, trades: [trade({ entry_fill: 2.95, exit_fill: 3.54 })] });
   const r = realizedOutcomeForEvent(db, event({ entryPrice: 2.5 }));
-  assert.equal(r.refusal, "ENTRY_FILL_MISMATCH");
-  assert.equal(r.realizedReturnPct, null);
+  assert.equal(r.evidenceState, "VERIFIED_REALIZED", "identity rests on OCC, case and instant");
+  assert.equal(r.entryAgreement.agreement, "DIFFERS");
+  assert.equal(r.entryAgreement.deltaAbs, 0.45);
+  assert.equal(r.entryAgreement.historicalAsk, 2.5);
+  assert.equal(r.entryAgreement.paperEntryFill, 2.95);
+  assert.equal(r.realizedReturnPct, 20, "computed from 2.95 -> 3.54, not from the historical ask");
+  assert.ok(/corroboration/.test(r.note), "the disagreement is surfaced, not hidden");
 
-  // Just inside tolerance still joins: a cent of rounding is not a different trade.
+  // Inside tolerance the row simply says the sources agree.
   const near = fakeDb({
     cases: { oc_1: "al_1" },
     trades: [trade({ entry_fill: 2.5 + ENTRY_MATCH_TOLERANCE / 2 })],
   });
-  assert.equal(realizedOutcomeForEvent(near, event()).evidenceState, "VERIFIED_REALIZED");
+  const n = realizedOutcomeForEvent(near, event());
+  assert.equal(n.entryAgreement.agreement, "AGREES");
+  assert.equal(n.evidenceState, "VERIFIED_REALIZED");
+});
+
+test("cross-source entry agreement is censused so systematic drift is visible", () => {
+  const db = fakeDb({
+    cases: { oc_1: "al_1", oc_2: "al_2" },
+    trades: [trade({ alert_id: "al_1" }), trade({ id: 2, alert_id: "al_2", entry_fill: 2.9 })],
+  });
+  const { census } = realizedOutcomesForEvents(db, [
+    event({ eventId: "a", opportunityCaseId: "oc_1" }),
+    event({ eventId: "b", opportunityCaseId: "oc_2" }),
+  ]);
+  assert.equal(census.verifiedRealized, 2);
+  assert.equal(census.entryAgreement.agrees, 1);
+  assert.equal(census.entryAgreement.differs, 1);
+  assert.equal(census.entryAgreement.medianAbsDelta, 0.2, "median of |0| and |0.4|");
 });
 
 test("a re-entry hours later is not this event's outcome", () => {

@@ -20,17 +20,33 @@
  *
  * ── Identity must be PROVEN, not guessed ─────────────────────────────────────
  *
- * A join is accepted only when all of these agree:
+ * A join is accepted only when all three of these agree:
  *
  *   1. the exact OCC matches — same contract, character for character
  *   2. the paper trade belongs to the SAME opportunity case
- *   3. the paper entry fill matches the event's executable entry within tolerance
- *   4. the paper entry instant is at or after the event's entry instant, close enough
- *      to be the same decision rather than a later re-entry on the same contract
+ *   3. the paper entry instant is at or after the event's entry instant, close enough to be
+ *      the same decision rather than a later re-entry on the same contract
  *
  * Rule 2 is the one that is tempting to drop, and dropping it is how a realized return
  * gets attached to the wrong decision: one liquid contract can be selected by several
  * cases across a week, and an OCC-only join would pick whichever row came back first.
+ * Together the three are unique — a case links to one alert, an alert to its mirrors.
+ *
+ * ── Why the entry PRICE is not an identity rule ──────────────────────────────
+ *
+ * It was one, at a two-cent tolerance, and it refused 12 of 21 real joins. Every refusal
+ * was the same shape: the historical NBBO ask at the detection instant against the live
+ * fill the mirror actually recorded, differing by a nickel. Those are two MEASUREMENTS of
+ * one trade taken from different sources minutes apart, not two different trades — and on
+ * a 0DTE contract inside the entry window the premium is expected to move, so any price
+ * bound is arbitrary in both directions.
+ *
+ * It also could not have earned its cost. The realized return is computed from the paper
+ * mirror's OWN entry and exit fills, which are internally consistent whatever the
+ * historical ask said. Disagreement between the two sources cannot make that return wrong.
+ * So the comparison is kept and REPORTED as corroboration — it is a genuine measure of
+ * cross-source price agreement, and a cohort where most rows disagree materially is worth
+ * seeing — but it no longer discards valid outcomes.
  *
  * Every refusal is reported with its reason. A join that cannot be proven is evidence
  * about our records, not about the trade, and it is counted separately.
@@ -44,7 +60,12 @@ import type { WinnerEvent } from "./winner-events.ts";
 
 export const REALIZED_OUTCOME_VERSION = "HIST_REALIZED_V1" as const;
 
-/** Entry fills must agree to within this to be the same decision. */
+/**
+ * Below this the two sources are treated as agreeing on the entry price.
+ *
+ * Corroboration only — a wider gap annotates the row, it does not refuse the join. See the
+ * header for why this stopped being an identity rule.
+ */
 export const ENTRY_MATCH_TOLERANCE = 0.02;
 /** A paper entry this far after the event's entry instant is a different decision. */
 export const ENTRY_TIME_TOLERANCE_MS = 15 * 60_000;
@@ -55,12 +76,27 @@ export type RealizedRefusal =
   | "NO_CASE_ID_ON_EVENT"
   | "NO_PAPER_TRADE_FOR_CASE"
   | "OCC_MISMATCH"
-  | "ENTRY_FILL_MISMATCH"
   | "ENTRY_TIME_MISMATCH"
   | "NO_ENTRY_FILL_RECORDED"
   | "CLOSED_WITHOUT_EXIT_FILL"
   | "AMBIGUOUS_MULTIPLE_MATCHES"
   | "PAPER_TABLE_ABSENT";
+
+/**
+ * How well the historical NBBO ask and the recorded paper fill agree.
+ *
+ * Reported, never gating. A cohort where most rows DIFFER is a real signal about
+ * cross-source consistency; it is not a reason to discard the realized returns, which come
+ * from the mirror's own fills.
+ */
+export interface EntryAgreement {
+  historicalAsk: number | null;
+  paperEntryFill: number;
+  deltaAbs: number | null;
+  deltaPct: number | null;
+  agreement: "AGREES" | "DIFFERS" | "UNKNOWN";
+  note: string;
+}
 
 export interface RealizedOutcome {
   version: typeof REALIZED_OUTCOME_VERSION;
@@ -89,6 +125,8 @@ export interface RealizedOutcome {
 
   /** Which identity rules were checked and passed. */
   matchedOn: string[];
+  /** Cross-source entry price corroboration. Null when no join was made. */
+  entryAgreement: EntryAgreement | null;
   note: string;
 }
 
@@ -134,7 +172,30 @@ function unavailable(
     exitReason: null, enteredAtMs: null, exitAtMs: null,
     sessionDate: event.sessionDate,
     matchedOn: [],
+    entryAgreement: null,
     note,
+  };
+}
+
+/** Compare the two sources' view of the entry price. Informational by design. */
+function entryAgreementOf(historicalAsk: number | null, paperEntryFill: number): EntryAgreement {
+  if (historicalAsk == null || !(historicalAsk > 0)) {
+    return {
+      historicalAsk, paperEntryFill, deltaAbs: null, deltaPct: null, agreement: "UNKNOWN",
+      note: "the event carries no executable ask to compare against",
+    };
+  }
+  const deltaAbs = +(paperEntryFill - historicalAsk).toFixed(4);
+  const deltaPct = +((deltaAbs / historicalAsk) * 100).toFixed(4);
+  const agrees = Math.abs(deltaAbs) <= ENTRY_MATCH_TOLERANCE;
+  return {
+    historicalAsk, paperEntryFill, deltaAbs, deltaPct,
+    agreement: agrees ? "AGREES" : "DIFFERS",
+    note: agrees
+      ? `both sources put the entry within ${ENTRY_MATCH_TOLERANCE} of each other`
+      : `the historical NBBO ask at the detection instant and the recorded fill differ by `
+        + `${deltaAbs} (${deltaPct}%). Two measurements of one trade taken minutes apart from `
+        + "different sources; the realized return uses the mirror's own fills and is unaffected",
   };
 }
 
@@ -203,32 +264,22 @@ export function realizedOutcomeForEvent(db: StoreDb, event: WinnerEvent): Realiz
     );
   }
 
-  // Rules 3 and 4: the same entry, at the same moment.
+  // An entry fill is required — not to prove identity, but because the realized return is
+  // computed from it. Without one there is no return to recover.
   const withFill = sameOcc.filter((r) => r.entry_fill != null && Number.isFinite(Number(r.entry_fill)));
   if (!withFill.length) {
     return unavailable(
       event,
       "NO_ENTRY_FILL_RECORDED",
-      "the mirror has no recorded entry fill, so the entry cannot be shown to be the same one",
+      "the mirror records no entry fill, so no realized return can be computed from it",
       sameOcc[0]?.id ?? null,
     );
   }
 
-  const entryMatches = event.entryPrice == null
-    ? withFill
-    : withFill.filter((r) => Math.abs(Number(r.entry_fill) - (event.entryPrice as number)) <= ENTRY_MATCH_TOLERANCE);
-  if (!entryMatches.length) {
-    const got = withFill.map((r) => Number(r.entry_fill).toFixed(2)).join(", ");
-    return unavailable(
-      event,
-      "ENTRY_FILL_MISMATCH",
-      `the event's executable entry was ${event.entryPrice} but the mirror(s) filled at ${got}; `
-      + "these are not the same decision and joining them would misattribute the return",
-      withFill[0]?.id ?? null,
-    );
-  }
-
-  const timeMatches = entryMatches.filter((r) => {
+  // Rule 3: the same moment. This is what separates one decision from a later re-entry on
+  // the same contract, and it is the last identity rule — the entry PRICE is corroboration,
+  // not identity, because two sources measuring one trade minutes apart legitimately differ.
+  const timeMatches = withFill.filter((r) => {
     const at = r.entered_at_ms == null ? null : Number(r.entered_at_ms);
     if (at == null || !Number.isFinite(at)) return false;
     const delta = at - event.entryAtMs;
@@ -241,7 +292,7 @@ export function realizedOutcomeForEvent(db: StoreDb, event: WinnerEvent): Realiz
       "ENTRY_TIME_MISMATCH",
       "no mirror was entered within the window around this event's entry instant; a later entry "
       + "on the same contract is a different decision",
-      entryMatches[0]?.id ?? null,
+      withFill[0]?.id ?? null,
     );
   }
   if (timeMatches.length > 1) {
@@ -254,7 +305,8 @@ export function realizedOutcomeForEvent(db: StoreDb, event: WinnerEvent): Realiz
   }
 
   const t = timeMatches[0];
-  const matchedOn = ["exact OCC", "same opportunity case", "entry fill within tolerance", "entry instant within window"];
+  const matchedOn = ["exact OCC", "same opportunity case", "entry instant within window"];
+  const agreement = entryAgreementOf(event.entryPrice, Number(t.entry_fill));
   const status = String(t.status ?? "").toUpperCase();
   const isClosed = status === "CLOSED" || status === "EXITED" || t.exit_at_ms != null;
 
@@ -272,6 +324,7 @@ export function realizedOutcomeForEvent(db: StoreDb, event: WinnerEvent): Realiz
       exitReason: null, enteredAtMs: t.entered_at_ms == null ? null : Number(t.entered_at_ms),
       exitAtMs: null, sessionDate: event.sessionDate,
       matchedOn,
+      entryAgreement: agreement,
       note: `identity proven against paper trade ${t.id}, but it has not closed`,
     };
   }
@@ -310,7 +363,11 @@ export function realizedOutcomeForEvent(db: StoreDb, event: WinnerEvent): Realiz
     exitAtMs: t.exit_at_ms == null ? null : Number(t.exit_at_ms),
     sessionDate: event.sessionDate,
     matchedOn,
-    note: `identity proven against paper trade ${t.id}; realized ${ret}% from ${entry} to ${exit}`,
+    entryAgreement: agreement,
+    note: `identity proven against paper trade ${t.id}; realized ${ret}% from ${entry} to ${exit}`
+      + (agreement.agreement === "DIFFERS"
+        ? ` (historical ask ${agreement.historicalAsk} differs by ${agreement.deltaAbs}; corroboration only)`
+        : ""),
   };
 }
 
@@ -320,6 +377,14 @@ export interface RealizedCensus {
   open: number;
   unavailable: number;
   byRefusal: Record<string, number>;
+  /**
+   * Cross-source entry price agreement across the joined rows.
+   *
+   * Reported because it is the diagnostic that used to be a refusal: if most joins DIFFER,
+   * the historical NBBO and the live fill path disagree systematically and that is worth
+   * knowing — but it is a statement about instrumentation, not about the returns.
+   */
+  entryAgreement: { agrees: number; differs: number; unknown: number; medianAbsDelta: number | null };
   note: string;
 }
 
@@ -333,6 +398,12 @@ export function realizedOutcomesForEvents(
   for (const o of outcomes) {
     if (o.refusal) byRefusal[o.refusal] = (byRefusal[o.refusal] ?? 0) + 1;
   }
+  const joined = outcomes.filter((o) => o.entryAgreement != null);
+  const deltas = joined
+    .map((o) => o.entryAgreement?.deltaAbs)
+    .filter((v): v is number => v != null)
+    .map((v) => Math.abs(v))
+    .sort((a, b) => a - b);
   return {
     outcomes,
     census: {
@@ -341,6 +412,16 @@ export function realizedOutcomesForEvents(
       open: outcomes.filter((o) => o.evidenceState === "OPEN_POSITION").length,
       unavailable: outcomes.filter((o) => o.evidenceState === "UNAVAILABLE").length,
       byRefusal,
+      entryAgreement: {
+        agrees: joined.filter((o) => o.entryAgreement?.agreement === "AGREES").length,
+        differs: joined.filter((o) => o.entryAgreement?.agreement === "DIFFERS").length,
+        unknown: joined.filter((o) => o.entryAgreement?.agreement === "UNKNOWN").length,
+        medianAbsDelta: deltas.length
+          ? +(deltas.length % 2
+            ? deltas[(deltas.length - 1) / 2]
+            : (deltas[deltas.length / 2 - 1] + deltas[deltas.length / 2]) / 2).toFixed(4)
+          : null,
+      },
       note:
         "Only VERIFIED_REALIZED rows may enter an expectancy or profit factor. OPEN positions have "
         + "no realized return and are not marked to market to manufacture one. UNAVAILABLE is a "
