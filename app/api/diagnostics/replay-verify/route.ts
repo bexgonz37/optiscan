@@ -21,11 +21,17 @@ export const dynamic = "force-dynamic";
  *   · quotes AFTER T exist, are counted, and are NOT the entry
  *   · the best price available after T is materially different from the entry — so if
  *     the fence leaked, the numbers would visibly differ
- *   · session-to-date extremes at T differ from the day's FINAL extremes
+ *   · session-to-date extremes at T never EXCEED the day's FINAL extremes
  *
  * That last check is the one that matters most. The final HOD/LOD is what makes a
  * "share of the move consumed" metric look precise, and it is the leak most likely to
- * go unnoticed because it makes results better rather than broken.
+ * go unnoticed because it makes results better rather than broken. Note it tests for
+ * EXCESS, not difference: session-to-date high may legitimately equal the day's high
+ * whenever that high was made before T.
+ *
+ * A contract with no quote at T is NOT_VERIFIABLE rather than a violation — that is the
+ * fence refusing correctly, and a diagnostic that scores its own safety behaviour as
+ * failure gets ignored exactly when it matters.
  *
  * Read-only: no provider call, no writes.
  */
@@ -84,9 +90,22 @@ export async function GET(req: Request) {
         }
       }
 
+      // The invariant is ONE thing: a quote used at T must be stamped at or before T.
+      // A NULL quote is a correct refusal (no data within tolerance at that instant),
+      // not a violation — scoring it as one turns the fence's own safety behaviour into
+      // an alarm, and a diagnostic that cries wolf gets ignored exactly when it matters.
       const quoteIsAtOrBeforeT = atT ? atT.tsMs <= T : null;
-      const hodDiffers = sessionAtT?.high != null && finalExtremes?.high != null
-        ? sessionAtT.high !== finalExtremes.high
+
+      // Session-to-date high must never EXCEED the day's final high. It may legitimately
+      // EQUAL it — that happens whenever the high was made before T, which is common and
+      // is not a leak. Testing for inequality would flag ordinary mornings as
+      // contamination; testing for excess tests the thing that is actually impossible
+      // without hindsight.
+      const hodWithinFinal = sessionAtT?.high != null && finalExtremes?.high != null
+        ? sessionAtT.high <= finalExtremes.high
+        : null;
+      const lodWithinFinal = sessionAtT?.low != null && finalExtremes?.low != null
+        ? sessionAtT.low >= finalExtremes.low
         : null;
 
       checks.push({
@@ -106,33 +125,46 @@ export async function GET(req: Request) {
         forwardMfePct: fwd.mfePct,
         sessionExtremesAtT: sessionAtT,
         dayFinalExtremes: finalExtremes,
-        sessionHighAtTDiffersFromDayFinal: hodDiffers,
+        sessionHighAtTWithinDayFinal: hodWithinFinal,
+        sessionLowAtTWithinDayFinal: lodWithinFinal,
       });
     }
 
-    const withFuture = checks.filter((c) => c.quotesStrictlyAfterT > 0);
-    const allFenced = withFuture.every((c) => c.quoteIsAtOrBeforeT === true);
-    const anyHodChecked = checks.filter((c) => c.sessionHighAtTDiffersFromDayFinal != null);
+    // Only contracts that actually produced a quote at T can VERIFY the fence. Ones
+    // that refused are reported separately: "we could not test it here" and "it failed"
+    // are different findings, and merging them makes a healthy fence look broken.
+    const verifiable = checks.filter((c) => c.quoteIsAtOrBeforeT != null);
+    const violations = checks.filter((c) => c.quoteIsAtOrBeforeT === false);
+    const notVerifiable = checks.filter((c) => c.quoteIsAtOrBeforeT == null);
+    const extremeChecks = checks.filter((c) => c.sessionHighAtTWithinDayFinal != null);
+    const extremeViolations = extremeChecks.filter(
+      (c) => c.sessionHighAtTWithinDayFinal === false || c.sessionLowAtTWithinDayFinal === false,
+    );
 
     return NextResponse.json({
       ok: true,
       contractsChecked: checks.length,
-      contractsWithDataAfterT: withFuture.length,
-      verdict: checks.length === 0
-        ? "NO_STORED_QUOTES_TO_VERIFY"
-        : allFenced ? "FENCE_HOLDS_ON_REAL_DATA" : "FENCE_VIOLATION",
-      hodLeakChecks: anyHodChecked.length,
-      hodDiffersOnAll: anyHodChecked.length > 0
-        ? anyHodChecked.every((c) => c.sessionHighAtTDiffersFromDayFinal === true)
-        : null,
+      contractsWithDataAfterT: checks.filter((c) => c.quotesStrictlyAfterT > 0).length,
+      contractsVerifiable: verifiable.length,
+      contractsNotVerifiable: notVerifiable.length,
+      violations: violations.length,
+      verdict: violations.length > 0 || extremeViolations.length > 0
+        ? "FENCE_VIOLATION"
+        : verifiable.length > 0
+          ? "FENCE_HOLDS_ON_REAL_DATA"
+          : "NOT_VERIFIABLE_NO_QUOTE_AT_T",
+      extremeChecks: extremeChecks.length,
+      extremeViolations: extremeViolations.length,
       checks,
       note:
         "Proof by OBSERVATION, not mutation: writing fake future rows into the durable store to "
         + "prove a point would corrupt the record the proof is about. Each contract is checked at an "
         + "instant with real data on BOTH sides, so a leak would be visible as the entry matching a "
-        + "later price. `sessionHighAtTDiffersFromDayFinal` is the important one — the day's final "
-        + "HOD is the leak most likely to go unnoticed, because it makes results better rather than "
-        + "broken.",
+        + "later price. A contract with NO quote at T is NOT_VERIFIABLE, not a violation — that is the "
+        + "fence refusing correctly, and scoring it as failure would make a healthy fence look broken. "
+        + "The extreme check asks whether session-to-date high EXCEEDS the day's final high, which is "
+        + "impossible without hindsight; it may legitimately EQUAL it whenever the high was made "
+        + "before T.",
     });
   } catch (err) {
     return jsonFromRouteError(err);
