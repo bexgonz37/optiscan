@@ -631,6 +631,15 @@ export function buildDraftBundle(
         text = `${text}\n\n${disc}`;
       }
     }
+    // Backstop. With no quotable peak, `renderLine` already drops any line whose
+    // {{maxReturnPct}} placeholder is null — the draft survives without its MFE line,
+    // which is what keeps a true realized return publishable when only the excursion
+    // is unprovable. This catches the other shape: copy that TALKS about a maximum
+    // favourable move without using the placeholder. Such a line would read as an
+    // excursion claim with no evidence behind it, so the draft is dropped entirely.
+    if (v.maxReturnPct == null && /max favorable|maximum favorable|MFE|peak favorable/i.test(text)) {
+      continue;
+    }
     const lang = validateSocialDraftLanguage(text, { outsideRegularSession: opts.outsideRegularSession === true });
     if (!lang.ok) continue;
     if (text.length > 280) continue;

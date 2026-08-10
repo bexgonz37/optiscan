@@ -100,19 +100,28 @@ function seedGoogl(db, {
 
 // ── the claim that reached Discord ──────────────────────────────────────────
 
-test("REPRODUCES IT: the GOOGL closed-winner draft is now refused", () => {
+test("REPRODUCES IT: the GOOGL peak is stripped, the realized return survives", () => {
   const db = makeDb();
   seedGoogl(db);
 
   const c = verifyContentClaimForCase(db, "oc_15gylwt", "CLOSED_WINNER");
-  assert.equal(c.ok, false, "a peak the contract never printed must not become copy");
-  assert.equal(c.resultType, "CONTENT_PERFORMANCE_UNVERIFIED");
+
+  // The peak is the thing that was false, and it is the thing that is withheld.
+  assert.equal(c.verifiedMaxReturnPct, null, "a peak the contract never printed cannot be printed");
+  assert.notEqual(c.verifiedMaxReturnPct, 185.4077);
   assert.ok(c.identityDefects.includes("UNSUPPORTED_MAX_RETURN"));
-  // The truthful number is reported alongside the refusal.
-  assert.equal(c.verifiedMaxReturnPct, 47.2103);
+
+  // The truthful number is still reported — for diagnosis, not for copy.
+  assert.equal(c.observedBestMarkPct, 47.2103);
+
+  // The realized return was never in doubt: it reproduces on the frozen contract, as
+  // it does for all 78 delivered cases. Suppressing it to punish the peak would be
+  // the same error pointed the other way.
+  assert.equal(c.realizedVerified, true);
+  assert.equal(c.ok, true, "a valid realized outcome is not discarded for a weak excursion");
 });
 
-test("the same trade with an honest peak is allowed through", () => {
+test("a verified excursion is quotable", () => {
   const db = makeDb();
   seedGoogl(db, { storedMax: 47.2103 });
 
@@ -120,6 +129,7 @@ test("the same trade with an honest peak is allowed through", () => {
   assert.equal(c.ok, true);
   assert.equal(c.identityVerdict, "SAME_OCC_VERIFIED");
   assert.equal(c.resultType, "REALIZED_CLOSED_RETURN");
+  assert.equal(c.realizedVerified, true);
 });
 
 // ── the identity failures ───────────────────────────────────────────────────
@@ -148,8 +158,26 @@ test("a case with no marks at all cannot support a peak", () => {
   seedGoogl(db, { marks: [] });
 
   const c = verifyContentClaimForCase(db, "oc_15gylwt", "CLOSED_WINNER");
-  assert.equal(c.ok, false);
+  // Nothing was ever observed along the way, so no excursion can be claimed. This is
+  // the hole the old gate had: it only refused a peak it could prove WRONG, so a case
+  // with no marks — nothing to contradict — passed and printed whatever it held.
+  assert.equal(c.verifiedMaxReturnPct, null);
+  assert.equal(c.excursionState, "INSUFFICIENT_MARKS");
+  // The realized return is still evidenced: the mirror is on the frozen contract and
+  // carries its own realized return_pct.
+  assert.equal(c.realizedVerified, true);
+});
+
+test("a mirror carrying neither marks nor a realized return blocks everything", () => {
+  const db = makeDb();
+  seedGoogl(db, { marks: [] });
+  db.prepare("UPDATE options_paper_trades SET return_pct=NULL WHERE id=795").run();
+
+  const c = verifyContentClaimForCase(db, "oc_15gylwt", "CLOSED_WINNER");
+  assert.equal(c.ok, false, "with no evidence at all, even the realized return is unprovable");
   assert.equal(c.resultType, "CONTENT_PERFORMANCE_UNVERIFIED");
+  assert.equal(c.realizedVerified, false);
+  assert.ok(c.identityDefects.includes("NO_PERFORMANCE_MIRROR"));
 });
 
 test("a missing opportunity case fails closed rather than defaulting to publishable", () => {

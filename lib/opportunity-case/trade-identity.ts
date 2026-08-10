@@ -486,6 +486,44 @@ export interface IdentitySummary {
   contaminated: string[];
 }
 
+/**
+ * Defects that break the REALIZED return specifically.
+ *
+ * The excursion defects are deliberately absent. `UNSUPPORTED_MAX_RETURN` and
+ * `MAX_FLOORED_AT_ZERO` are both properties of `summary.maxReturnPct` — a value the
+ * summary ratchets separately — and neither touches the realized identity, which is
+ * (last mark on the frozen contract) vs (frozen entry). All 78 delivered cases
+ * reproduce their realized return on the frozen contract, including every one of the
+ * 36 carrying an inflated peak.
+ *
+ * Treating a bad peak as a bad trade would throw away 56 sound realized outcomes to
+ * avoid one unsound number, which is its own way of misreporting the record.
+ */
+const REALIZED_BLOCKING_DEFECTS: IdentityDefect[] = [
+  "CROSS_CONTRACT_MARK",
+  "MULTI_OCC_PERFORMANCE",
+  "ALERT_OCC_MISMATCH",
+  "MIRROR_OCC_MISMATCH",
+  "RETURN_NOT_REPRODUCIBLE",
+  "NO_FROZEN_OCC",
+  "NO_FROZEN_ENTRY",
+  "NO_PERFORMANCE_MIRROR",
+  "CASE_NOT_FOUND",
+];
+
+/**
+ * May this case's REALIZED return be quoted?
+ *
+ * Separate from `publishable`, which is the stricter "everything about this case
+ * reconciles" answer. A trade can have a perfectly sound realized return and an
+ * unusable MFE, and a consumer that cannot express that difference will either
+ * publish a false peak or suppress a true return.
+ */
+export function realizedReturnIsPublishable(r: TradeIdentityReport): boolean {
+  if (r.realizedReturnReproducibleOnFrozen === false) return false;
+  return !r.defects.some((d) => REALIZED_BLOCKING_DEFECTS.includes(d));
+}
+
 export function summarizeTradeIdentities(reports: TradeIdentityReport[]): IdentitySummary {
   const byVerdict: Record<IdentityVerdict, number> = {
     SAME_OCC_VERIFIED: 0,

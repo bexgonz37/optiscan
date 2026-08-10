@@ -10,9 +10,14 @@ import {
 } from "../research/options/subscriber-claims.ts";
 import {
   reconcileTradeIdentityOnDb,
+  realizedReturnIsPublishable,
   type IdentityDefect,
   type IdentityVerdict,
 } from "../opportunity-case/trade-identity.ts";
+import {
+  resolvePublishableExcursionOnDb,
+  type ExcursionEvidenceState,
+} from "../opportunity-case/excursion.ts";
 
 export type ContentResultType =
   | "UNREALIZED_CURRENT_RETURN"
@@ -23,7 +28,14 @@ export type ContentResultType =
   /** Trade identity could not be proven — no numeric performance claim may be made. */
   | "CONTENT_PERFORMANCE_UNVERIFIED";
 
-/** Categories whose copy quotes a peak/MFE rather than a realized or current return. */
+/**
+ * Categories whose copy can quote a peak/MFE rather than a realized or current return.
+ *
+ * Informational: the peak is suppressed at the value, not by category, so a category
+ * in this set still publishes its realized return when only the excursion is
+ * unprovable. Kept because "which copy is capable of making an excursion claim" is
+ * worth stating explicitly.
+ */
 export const MFE_CATEGORIES = new Set(["NEW_HIGH", "CLOSED_WINNER", "WHY_THIS_WORKED"]);
 
 export const PERFORMANCE_CATEGORIES = new Set([
@@ -75,8 +87,23 @@ export interface ContentClaimCheck {
   /** Trade-identity verdict, when one was required. */
   identityVerdict?: IdentityVerdict | null;
   identityDefects?: IdentityDefect[];
-  /** The frozen contract's own best mark — the only defensible MFE for this case. */
+  /**
+   * The peak a draft is allowed to PRINT. Non-null only when the excursion evidence
+   * is VERIFIED. `null` means "say nothing numerical about the maximum favourable
+   * move" — never a licence to reach for the stored legacy value, which is what
+   * published +185.4%.
+   */
   verifiedMaxReturnPct?: number | null;
+  /**
+   * The best mark the frozen contract actually printed, reported for DIAGNOSIS even
+   * when it is not quotable — so a refusal can say "the real peak was +47.2103%"
+   * rather than only "no". Never rendered into copy.
+   */
+  observedBestMarkPct?: number | null;
+  /** Why the peak is or is not quotable. Reported even when the draft is allowed. */
+  excursionState?: ExcursionEvidenceState | null;
+  /** True when the realized return reconciles on the frozen contract. */
+  realizedVerified?: boolean;
 }
 
 /**
@@ -126,13 +153,28 @@ export function verifyContentClaimForCase(
   // with a price-matched mirror was never enough: a case keeps re-selecting preferred
   // contracts while it lives, and the peak stored on the case can describe a strike
   // and expiration the subscriber was never given. Prove it or say nothing.
+  //
+  // The two claims are gated INDEPENDENTLY. A realized return is one observation and
+  // reconciles on all 78 delivered cases; an excursion is a claim about the whole
+  // holding period and 56 of those cases cannot support theirs. Gating both on the
+  // stricter answer would suppress dozens of true realized returns to avoid one false
+  // peak — misreporting the record in the other direction.
   const identity = reconcileTradeIdentityOnDb(db as any, String(opportunityCaseId));
+  const excursion = resolvePublishableExcursionOnDb(db as any, String(opportunityCaseId));
+  const realizedVerified = realizedReturnIsPublishable(identity);
   const identityExtra = {
     identityVerdict: identity.verdict as IdentityVerdict,
     identityDefects: identity.defects,
-    verifiedMaxReturnPct: identity.frozenContractBestMarkPct,
+    // Carries a value ONLY when the excursion evidence is VERIFIED. There is
+    // deliberately no fallback to the stored summary — an unprovable peak is absent,
+    // not approximate.
+    verifiedMaxReturnPct: excursion.maxReturnPct,
+    observedBestMarkPct: identity.frozenContractBestMarkPct,
+    excursionState: excursion.state,
+    realizedVerified,
   };
-  if (identity.verdict !== "SAME_OCC_VERIFIED") {
+
+  if (!realizedVerified) {
     return fail(
       `trade identity ${identity.verdict}: ${identity.reasons.join("; ") || "not provable"}`,
       "CONTENT_PERFORMANCE_UNVERIFIED",
@@ -140,15 +182,14 @@ export function verifyContentClaimForCase(
     );
   }
 
-  // A category whose copy quotes a peak needs that peak to be an observation on the
-  // frozen contract, not the running maximum the summary happened to accumulate.
-  if (MFE_CATEGORIES.has(category) && identity.maxReturnReproducibleOnFrozen === false) {
-    return fail(
-      `stated peak is not supported by marks on ${identity.frozenOptionSymbol}`,
-      "CONTENT_PERFORMANCE_UNVERIFIED",
-      identityExtra,
-    );
-  }
+  // An unprovable peak does NOT sink the draft. `verifiedMaxReturnPct` is null, the
+  // renderer drops every line whose {{maxReturnPct}} placeholder it needs, and
+  // buildDraftBundle drops any draft that discusses a maximum favourable move without
+  // one. The realized return — which reconciles on the frozen contract for all 78
+  // delivered cases, including all 36 carrying an inflated peak — still publishes.
+  //
+  // Refusing the whole draft here would have been the mirror-image error: suppressing
+  // dozens of true realized outcomes in order to avoid one false peak.
 
   let resultType: ContentResultType = "UNREALIZED_CURRENT_RETURN";
   if (category === "CLOSED_WINNER" || category === "CLOSED_LOSER" || category === "WHY_THIS_WORKED" || category === "WHY_THIS_FAILED") {

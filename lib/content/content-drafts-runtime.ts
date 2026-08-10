@@ -304,20 +304,45 @@ function outsideRegularSession(nowMs: number, env: NodeJS.ProcessEnv): boolean {
   }
 }
 
+/**
+ * Where the peak a draft renders comes from.
+ *
+ * `opportunity_content_events.max_return_percent` is a copy of the case summary's
+ * ratcheted `maxReturnPct`, taken at the moment the event was emitted. That is the
+ * poisoned value — it is what the GOOGL draft rendered as +185.4077%. When a claim
+ * check has run it supersedes the row entirely: a verified peak replaces it, and an
+ * unverified one blanks it, so no template can reach a number the frozen contract
+ * never printed.
+ *
+ * `checked: false` (no claim check ran, i.e. a non-performance category) leaves the
+ * row's value alone — those templates never quote a peak.
+ */
+export interface VerifiedExcursionOverride {
+  checked: boolean;
+  maxReturnPct: number | null;
+}
+
 export function varsForEventRow(
   row: Record<string, unknown>,
   caseVars: Partial<ContentVars> = {},
   env: NodeJS.ProcessEnv = process.env,
+  excursion: VerifiedExcursionOverride = { checked: false, maxReturnPct: null },
 ): ContentVars {
   // `reason` is the ENTRY thesis. It is kept for the categories that legitimately
   // describe why a setup was TAKEN, and mirrored to `entryThesis` so a failure
   // template can quote it under an explicit label. It must never reach a
   // "why this failed" slot — see lib/content/failure-cause.ts.
   const entryThesis = firstOf(row.original_thesis_json) ?? firstOf(row.evidence_summary_json);
+  const maxReturnPct = excursion.checked
+    ? excursion.maxReturnPct
+    : (row.max_return_percent != null ? Number(row.max_return_percent) : null);
   const failure = deriveFailureCause(
     {
       returnPercent: row.return_percent != null ? Number(row.return_percent) : null,
-      maxReturnPercent: row.max_return_percent != null ? Number(row.max_return_percent) : null,
+      // The failure story reasons over "how far did it get before it turned", so it
+      // must read the same verified peak the copy does. A floored 0 would otherwise
+      // narrate "never moved in our favour" for a trade that did.
+      maxReturnPercent: maxReturnPct,
       frozenEntry: row.frozen_entry != null ? Number(row.frozen_entry) : null,
       currentMark: row.current_mark != null ? Number(row.current_mark) : null,
       optionType: row.option_type != null ? String(row.option_type) : null,
@@ -333,7 +358,7 @@ export function varsForEventRow(
     premium: row.frozen_entry != null ? Number(row.frozen_entry) : null,
     returnPct: row.return_percent != null ? Number(row.return_percent) : null,
     milestonePercent: row.milestone_percent != null ? Number(row.milestone_percent) : null,
-    maxReturnPct: row.max_return_percent != null ? Number(row.max_return_percent) : null,
+    maxReturnPct,
     reason: entryThesis,
     entryThesis,
     failureCause: failure.statement,
@@ -347,10 +372,11 @@ export function bundleForEventRow(
   deps: ContentDraftsDeps = {},
   env: NodeJS.ProcessEnv = process.env,
   claimVerified = false,
+  excursion: VerifiedExcursionOverride = { checked: false, maxReturnPct: null },
 ): ContentDraftBundle | null {
   const loadCaseVars = deps.loadCaseVars ?? defaultLoadCaseVars;
   const caseVars = row.opportunity_case_id ? loadCaseVars(db, String(row.opportunity_case_id)) : {};
-  const vars = varsForEventRow(row, caseVars, env);
+  const vars = varsForEventRow(row, caseVars, env, excursion);
   const cats = filterCategoriesForClaim(
     eligibleCategories(String(row.event_type), vars, eligibilityThresholds(env)),
     claimVerified,
@@ -619,7 +645,10 @@ export async function runContentDraftsScan(
       continue;
     }
 
-    const bundle = bundleForEventRow(db, row, deps, env, claim.ok);
+    const bundle = bundleForEventRow(db, row, deps, env, claim.ok, {
+      checked: needsClaim,
+      maxReturnPct: claim.verifiedMaxReturnPct ?? null,
+    });
     if (!bundle) {
       out.skipped += 1;
       markEventProcessed(db, eventId, { contentSkipReason: "bundle_empty_after_filters" });
@@ -1071,7 +1100,10 @@ export function regenerateContentDraftOnDb(
   const claim = verifyContentClaimForCase(db, existing.opportunity_case_id as string, String(existing.category));
   if (isPerformanceCategory(String(existing.category)) && !claim.ok) return null;
 
-  const bundle = bundleForEventRow(db, event, deps, env, claim.ok);
+  const bundle = bundleForEventRow(db, event, deps, env, claim.ok, {
+    checked: isPerformanceCategory(String(existing.category)),
+    maxReturnPct: claim.verifiedMaxReturnPct ?? null,
+  });
   if (!bundle) return null;
 
   // Prefer a template family different from the current one
