@@ -43,7 +43,7 @@ export function loadCanonicalReport(db: SourceDb): CanonicalFindingsReport {
 
 /** Exit-policy + Watchlist evidence. Any unavailable source stays null. */
 export function loadSupplementalEvidence(db: SourceDb, env: NodeJS.ProcessEnv = process.env): SupplementalEvidence {
-  const out: SupplementalEvidence = { exitPolicy: null, watchlist: null };
+  const out: SupplementalEvidence = { exitPolicy: null, watchlist: null, ownerLane: null, preMove: null };
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { buildPaperChainDiagnostic } = require("@/lib/research/options/paper-chain");
@@ -84,6 +84,48 @@ export function loadSupplementalEvidence(db: SourceDb, env: NodeJS.ProcessEnv = 
       };
     }
   } catch { /* no persisted plan ⇒ no Watchlist claims */ }
+
+  // The owner validation lane. Loaded separately from the pre-move block below because
+  // either can be absent on its own, and a chat that loses one must keep the other.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { auditOwnerMirrorsOnDb } = require("@/lib/research/options/owner-mirror-audit");
+    const a = auditOwnerMirrorsOnDb(db as never, {});
+    out.ownerLane = {
+      openings: a.prospective.openings,
+      mirroredExact: a.prospective.mirroredExact,
+      mirrorRate: a.prospective.mirrorRate,
+      postInstrumentationOpenings: a.postInstrumentation.openings,
+      postInstrumentationMirrorRate: a.postInstrumentation.mirrorRate,
+      postInstrumentationVerdict: a.postInstrumentation.verdict,
+      realizedVerified: a.prospective.realizedVerified,
+      realizedStillOpen: a.prospective.realizedStillOpen,
+      excursionVerified: a.prospective.excursionVerified,
+    };
+  } catch { /* audit unavailable ⇒ the chat simply cannot cite the owner lane */ }
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { buildPreMoveNightlyReport } = require("@/lib/research/options/pre-move-nightly");
+    const owner = buildPreMoveNightlyReport(db as never, { sinceMs: null })
+      .lanes.find((l: { lane: string }) => l.lane === "OWNER");
+    if (owner) {
+      const m25 = owner.milestoneAttainment["25"] ?? { reached: 0, of: 0 };
+      out.preMove = {
+        examined: owner.census.examined,
+        withOwnerAlert: owner.census.withOwnerAlert,
+        earlyRate: owner.census.earlyRate,
+        tooLateRate: owner.census.tooLateRate,
+        preTrigger: owner.census.byStage.PRE_TRIGGER,
+        tooLate: owner.census.byStage.TOO_LATE,
+        ungradable: owner.census.byStage.UNGRADABLE,
+        medianPremiumConsumedBeforeAlertPct: owner.medianPremiumConsumedBeforeAlertPct,
+        medianRewardRemainingFraction: owner.medianRewardRemainingFraction,
+        milestone25Reached: m25.reached,
+        milestone25Of: m25.of,
+      };
+    }
+  } catch { /* no pre-move capture yet ⇒ no earliness claims */ }
 
   return out;
 }

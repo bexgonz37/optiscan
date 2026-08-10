@@ -127,6 +127,44 @@ export interface SupplementalEvidence {
     marketContextAvailable: boolean;
     blockers: string[];
   } | null;
+  /**
+   * The owner validation lane and its pre-move discovery evidence.
+   *
+   * Without these the chat could describe exit policies and watchlists in detail and
+   * could not answer the questions the owner actually asks — "did you find this before
+   * it ran", "how early", "how much reward was left". It had no evidence item carrying
+   * a discovery stage or a lead time, and the validator correctly refuses any number it
+   * cannot cite, so those questions were unanswerable rather than wrong.
+   *
+   * The two mirror rates are carried SEPARATELY and deliberately: `mirrorRate` judges
+   * whether the mirror fix holds, `postInstrumentationMirrorRate` judges whether a
+   * failure can explain itself. They cover different populations and merging them would
+   * let three permanently undiagnosable failures describe an instrumented period.
+   */
+  ownerLane?: {
+    openings: number;
+    mirroredExact: number;
+    mirrorRate: number | null;
+    postInstrumentationOpenings: number;
+    postInstrumentationMirrorRate: number | null;
+    postInstrumentationVerdict: string;
+    realizedVerified: number;
+    realizedStillOpen: number;
+    excursionVerified: number;
+  } | null;
+  preMove?: {
+    examined: number;
+    withOwnerAlert: number;
+    earlyRate: number | null;
+    tooLateRate: number | null;
+    preTrigger: number;
+    tooLate: number;
+    ungradable: number;
+    medianPremiumConsumedBeforeAlertPct: number | null;
+    medianRewardRemainingFraction: number | null;
+    milestone25Reached: number;
+    milestone25Of: number;
+  } | null;
 }
 
 function supplementalItems(supp: SupplementalEvidence | undefined): EvidenceItem[] {
@@ -202,6 +240,82 @@ function supplementalItems(supp: SupplementalEvidence | undefined): EvidenceItem
       wl.marketContextAvailable ? "yes" : "no", null,
       "A qualified plan also requires usable persisted market context.");
   }
+
+  const ol = supp?.ownerLane;
+  if (ol) {
+    const o = (id: string, label: string, value: number | string | null, unit: string | null, sample: number | null, meaning: string) => {
+      items.push({
+        id, label, value, unit,
+        pipeline: "owner_validation_paper", lane: "owner_validation",
+        timeWindow: "prospective_since_mirror_fix", sampleSize: sample,
+        confidence: sample == null ? "LOW" : sample >= 30 ? "HIGH" : sample >= 10 ? "MEDIUM" : "LOW",
+        qualityStatus: value == null ? "MISSING_DATA" : "VALID", freshness: "current",
+        sourceRef: "discord_deliveries/auditOwnerMirrorsOnDb",
+        meaning, safeForTopLine: true,
+        numericForms: isNum(value) ? numericForms(value) : [],
+      });
+    };
+    o("owner.openings", "Owner openings delivered", ol.openings, "alerts", ol.openings,
+      "Private owner alerts actually sent. Never a subscriber figure.");
+    o("owner.mirroredExact", "Owner openings mirrored on the exact contract", ol.mirroredExact, "alerts", ol.openings,
+      "An opening without a same-OCC mirror produces no forward evidence at all.");
+    o("owner.mirrorRate", "Owner mirror rate since the mirror fix", ol.mirrorRate, "ratio", ol.openings,
+      "Judges whether the mirror FIX holds. Includes failures that predate reason capture.");
+    o("owner.postInstrumentation.openings", "Owner openings since reason capture shipped",
+      ol.postInstrumentationOpenings, "alerts", ol.postInstrumentationOpenings,
+      "Only these can name WHY a mirror was missing. A different population from the rate above.");
+    o("owner.postInstrumentation.mirrorRate", "Mirror rate since reason capture shipped",
+      ol.postInstrumentationMirrorRate, "ratio", ol.postInstrumentationOpenings,
+      "Judges DIAGNOSABILITY, not the fix. A small clean sample is not evidence the fix holds.");
+    o("owner.postInstrumentation.verdict", "Post-instrumentation verdict",
+      ol.postInstrumentationVerdict, null, ol.postInstrumentationOpenings,
+      "NO_NEW_FAILURE_OBSERVED means exactly that and nothing more.");
+    o("owner.realizedVerified", "Owner mirrors with a verified realized return", ol.realizedVerified, "trades", ol.openings,
+      "Closed on the frozen contract and priced against the frozen entry.");
+    o("owner.realizedStillOpen", "Owner mirrors still open", ol.realizedStillOpen, "trades", ol.openings,
+      "Not a zero return — an outcome that has not happened yet.");
+    o("owner.excursionVerified", "Owner mirrors with a VERIFIED excursion", ol.excursionVerified, "trades", ol.openings,
+      "Enough same-contract marks to state the observed extremes. A realized win does not imply this.");
+  }
+
+  const pm = supp?.preMove;
+  if (pm) {
+    const p = (id: string, label: string, value: number | string | null, unit: string | null, sample: number | null, meaning: string) => {
+      items.push({
+        id, label, value, unit,
+        pipeline: "pre_move_discovery_v1", lane: "owner_validation",
+        timeWindow: "since_capture_shipped", sampleSize: sample,
+        confidence: sample == null ? "LOW" : sample >= 30 ? "HIGH" : sample >= 10 ? "MEDIUM" : "LOW",
+        qualityStatus: value == null ? "MISSING_DATA" : "VALID", freshness: "current",
+        sourceRef: "opportunity_pre_move_discovery/classifyDiscovery",
+        meaning, safeForTopLine: true,
+        numericForms: isNum(value) ? numericForms(value) : [],
+      });
+    };
+    p("premove.examined", "Owner-lane discovery rows captured", pm.examined, "rows", pm.examined,
+      "Prospective only. Historical cases have no capture and none was invented.");
+    p("premove.earlyRate", "Share found PRE_TRIGGER or EARLY", pm.earlyRate, "ratio", pm.examined,
+      "Computed over GRADABLE rows only, so missing inputs cannot read as late discoveries.");
+    p("premove.tooLateRate", "Share found TOO_LATE", pm.tooLateRate, "ratio", pm.examined,
+      "The move was effectively complete when we alerted.");
+    p("premove.preTrigger", "Discoveries before the trigger was taken", pm.preTrigger, "rows", pm.examined,
+      "A statement about structure: the favourable move had not begun.");
+    p("premove.tooLate", "Discoveries after the move was spent", pm.tooLate, "rows", pm.examined,
+      "Buying here is buying what already happened.");
+    p("premove.ungradable", "Discoveries with insufficient inputs", pm.ungradable, "rows", pm.examined,
+      "An admission, not a stage. Excluded from every rate above.");
+    p("premove.medianPremiumConsumedBeforeAlertPct", "Median premium already paid for before the alert",
+      pm.medianPremiumConsumedBeforeAlertPct, "%", pm.withOwnerAlert,
+      "Large means the alert was late however good the realized return looked.");
+    p("premove.medianRewardRemainingFraction", "Median share of the session's favourable move still unspent",
+      pm.medianRewardRemainingFraction, "ratio", pm.withOwnerAlert,
+      "Advisory. Says how much of what the day already offered remained — never that the move will continue.");
+    p("premove.milestone25Reached", "Alerts reaching +25% AFTER the alert", pm.milestone25Reached, "trades", pm.milestone25Of,
+      "Measured from the alert. A milestone reached before it is never counted here.");
+    p("premove.milestone25Of", "Alerts with same-contract marks to measure", pm.milestone25Of, "trades", pm.milestone25Of,
+      "The denominator. An unmarked alert is unmeasured, not a failure to reach +25%.");
+  }
+
   return items;
 }
 
