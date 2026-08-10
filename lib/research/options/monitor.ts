@@ -18,6 +18,10 @@ import { computeOptionsFeatures, featuresToUnderlying, type Bar, type FeatureCon
 import { summarizeChainFeatures, chainFeaturesToActivity, type OptionContract } from "./chain-features.ts";
 import { assertSubscriberScanAllowed } from "../../market-session-guard.ts";
 import { bearishPipelineEnabled, latestPendingBearishEscalationForSymbol } from "./bearish-authority.ts";
+import {
+  classifySessionRangePosition,
+  SESSION_RANGE_POSITION_SEMANTICS,
+} from "./session-range-position.ts";
 
 export function portfolioDeliveryStatus(env: NodeJS.ProcessEnv = process.env): { required: boolean; enabled: boolean; healthy: boolean; reason: string | null } {
   const required = researchFlags(env).independentOptionsDiscovery;
@@ -284,7 +288,12 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
       // If we only reached here via escalation, require the chain to actually be abnormal.
       if (escalatedBy === "options_activity_probe") { if (!chainF.abnormal || chainF.direction === "ambiguous") { rejected += 1; s.metrics.candidatesRejected += 1; s.cooldownSymbol.set(symbol, n0 + cfg.symbolCooldownMs); return; } s.metrics.optionsActivityEscalations += 1; }
 
-      const earlinessPhase = fractionMove == null ? null : fractionMove >= 0.75 ? "late" : fractionMove <= 0.4 ? "early" : "during";
+      // Session RANGE POSITION, not earliness. The buckets and thresholds are
+      // unchanged so stored rows keep their meaning; only the name is now honest.
+      // It is direction-blind — for a PUT the "early" bucket is the moment the
+      // downside move has already happened — so it must not be read as pre-move
+      // discovery. See pre-move-discovery.ts for the metric that can be.
+      const earlinessPhase = classifySessionRangePosition(fractionMove);
       if (earlinessPhase === "early") s.metrics.phaseEarly += 1; else if (earlinessPhase === "during") s.metrics.phaseDuring += 1; else if (earlinessPhase === "late") s.metrics.phaseLate += 1;
 
       const res = runOptionsCandidate({ ...input }, chain, getDb ? { getDb } : {}, env, {
@@ -361,7 +370,11 @@ export function optionsMonitorMetrics(): Record<string, unknown> {
     stage1PassRate: m.symbolsScanned > 0 ? +((m.stage1Pass / m.symbolsScanned) * 100).toFixed(2) : null,
     providerCalls: { underlying: m.providerUnderlying, bars: m.providerBars, chain: m.providerChain, detailed: m.providerDetailed, total: totalCalls },
     providerFailures: m.providerFailures, throttles: m.throttles, cooldownSkips: m.cooldownSkips,
-    earliness: { early: m.phaseEarly, during: m.phaseDuring, late: m.phaseLate }, fractionMoveComplete: dist(m.fractionMoveSamples),
+    sessionRangePosition: {
+      early: m.phaseEarly, during: m.phaseDuring, late: m.phaseLate,
+      ...SESSION_RANGE_POSITION_SEMANTICS,
+    },
+    fractionMoveComplete: dist(m.fractionMoveSamples),
     // distributions summarize ALL NON-STALE Stage-1.5 enriched symbols (not just created candidates).
     // When stage15Stale ≈ stage15Enrich, n=0 means every enriched symbol had stale/empty bars (e.g. market closed).
     distributionsScope: "all_non_stale_enriched", distributions: { rvol: dist(m.rvolSamples), vwapDistPct: dist(m.vwapDistSamples), compression: dist(m.compressionSamples) },

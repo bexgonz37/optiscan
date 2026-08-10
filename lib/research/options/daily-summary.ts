@@ -45,6 +45,10 @@ export interface DailySummary {
     calls: number | null; puts: number | null;
     mirrored: number; open: number; closed: number; wins: number; losses: number;
   };
+  /**
+   * Session range position buckets. The field keeps its legacy name because the stored
+   * column does; the printed label says what it actually measures.
+   */
   earliness: { early: number; during: number; late: number };
   providerFailures: number; monitorHealthy: boolean; note: string;
 }
@@ -184,7 +188,11 @@ export function formatDailySummaryMessage(s: DailySummary): string {
       + `${s.owner.calls == null ? " — split unavailable, not zero" : ""}), failed ${s.owner.failed}`,
     `OWNER paper (exact mirrors): ${s.owner.mirrored} of ${s.owner.sent} mirrored, closed ${s.owner.closed} (W ${s.owner.wins} / L ${s.owner.losses}), open now ${s.owner.open}`
       + (s.owner.sent > s.owner.mirrored ? ` ⚠️ ${s.owner.sent - s.owner.mirrored} owner opening(s) left NO paper evidence` : ""),
-    `Earliness: early ${s.earliness.early} · during ${s.earliness.during} · late ${s.earliness.late}`,
+    // NOT earliness. This is where price sat inside the session's range-so-far at
+    // contract-selection time — direction-blind, and for a PUT the "low" bucket is the
+    // moment the downside move has already happened. Labelled for what it measures so
+    // no reader takes it for a claim about how early the opportunity was found.
+    `Session range position (not earliness): low ${s.earliness.early} · mid ${s.earliness.during} · high ${s.earliness.late}`,
     `Provider failures ${s.providerFailures} · monitor ${s.monitorHealthy ? "healthy ✅" : "degraded ⚠️"}`,
     `Top rejections: ${rej}`,
     BETA_LABEL,
