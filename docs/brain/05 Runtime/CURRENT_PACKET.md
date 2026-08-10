@@ -1,5 +1,228 @@
 # Current Task Packet
 
+## Packet update — 2026-08-10 (3) The historical record is now possessed rather than rented, and fenced so a backtest cannot cheat
+
+### Verified state (checked, not assumed)
+
+- Baseline re-verified from git AND production BEFORE any change:
+  local = `origin/main` = production = `5f7998d`, `shaAttribution.state OBSERVED`.
+  Tracked tree clean, 19 untracked scratch files untouched — still 19 at the end.
+- Production healthy throughout: `ok:true`, `loopRunning:true`, `quotaExceeded:false`,
+  scheduler owner = this process.
+- `LHC_SELECT_V1` **untouched** — neither experiment file opened.
+- No strategy threshold, ranking weight, stop, exit, provider cap, owner quality gate or
+  subscriber readiness rule changed. Subscriber distribution still BLOCKED. Owner private
+  alerts, OWNER_VALIDATION_PAPER, PRE_MOVE_DISCOVERY_V1 live capture, marks, lifecycle,
+  grading and the nightly/weekly lanes all continued uninterrupted.
+
+### The finding that reframed the session
+
+The previous audit reported "no durable underlying bar store" as a gap. Surveying the
+code first showed the gap was **larger and different**: the fetchers already existed and
+were good — `fetchHistoricalOptionQuotes`, `fetchHistoricalOptionTrades`,
+`fetchHistoricalBars`, `fetchQuoteAtInstant`, `fetchPremiumCurve`, and
+`fetchContractUniverse` (expired-inclusive) — along with a content-addressed cache and a
+per-run request accountant.
+
+What did not exist was **possession**. Every fetch was answered from the provider and
+discarded; the cache was in-memory. So "the provider has 2023 NBBO" kept being read as
+"we can build a 2023 cohort", when in fact every study was one process restart from
+having no data at all.
+
+`buildCohorts` confirmed the shape: it is called from a script and from tests, never from
+a live path, and it re-fetches from the provider on every run.
+
+### PART 1 — entitlement, corrected against the code
+
+The capability matrix was re-checked against the repo rather than re-read. One row was
+**materially stale**: expired-contract reference was recorded `providerMethod: null`,
+`NOT_INTEGRATED`, blocker "this is the next integration to build" — while
+`fetchContractUniverse` had already shipped **in the same module the rows above it cite**.
+A stale row here is expensive in a specific way: it sends a session off to rebuild a
+fetcher that exists, and makes an available dataset look unreachable.
+
+Corrected to `INTEGRATED_UNUSED` with the blocker that is actually true. **Entitled,
+integrated, and populated are three different states**, and the row now names which one
+we are in.
+
+Everything else in the matrix was probed on 2026-07-31 and was **not re-probed today** —
+no provider budget was spent on re-proving what runtime evidence already recorded.
+
+### PARTS 2, 4, 5, 6, 20 — the durable store and the lane that fills it
+
+Six additive tables (`CREATE TABLE IF NOT EXISTS`, no backfill, repeat-safe), all inert:
+no scanner, gate, alert, stop or exit reads any of them.
+
+```
+historical_underlying_bars       PK (symbol, timeframe, ts_ms)
+historical_option_quotes         PK (occ, ts_ms)            -- executable NBBO
+historical_option_trades         PK (occ, ts_ms, seq)       -- prints
+historical_contract_reference    PK (occ)                   -- expired-inclusive
+historical_ingestion_progress    PK (job_key)               -- resumability
+historical_market_context        PK (session_date, as_of_ms, origin)
+```
+
+Three rules hold across the store. **Identity is the primary key**, so re-ingesting a
+window is a no-op and dedupe cannot be forgotten by a caller. **Source and quality travel
+with the row.** **Nothing stored is derived** — these hold what the provider returned,
+normalized, so changing how we reason never requires rewriting history.
+
+Quotes and trades are separate **tables**, not one table with a `kind` column. A trade
+print says where the contract traded; an NBBO says what could have been paid. Two tables
+cannot be conflated by a forgotten filter.
+
+**The ingestion lane is fenced three ways, all enforced in the runner:**
+
+1. **A session gate that REFUSES** during `REGULAR_SESSION`, `OPENING_DISCOVERY` and
+   `POWER_HOUR`. A refusal, not a throttle — slowing mining down during RTH still
+   competes for the same minute-partition the scanner needs. A gate that cannot determine
+   the session also refuses; guessing "closed" would let a backfill run through the open.
+2. **The existing `RequestAccountant`, reused rather than duplicated.** A second budget
+   module would mean two ledgers and no real ceiling. Requests are counted *before* they
+   are issued, so a cap is a ceiling rather than a target.
+3. **A per-run wall clock.** A run that spends its time yields, leaving its cursor.
+
+**Resumable, not restartable.** Each job persists a cursor that advances BEFORE the next
+fetch, so a crash loses at most the window in flight. The completion watermark uses `MAX`
+so a narrower re-run cannot walk it backwards and re-spend budget on data already held.
+
+Ingestion is **target-driven**: `TIER_1_SYMBOLS` is what OptiScan actually scans, and
+option quotes are fetched for event-centred windows. Enumerating every contract's every
+day first is how a mining lane spends a month of budget on windows no study will open.
+
+**One real defect found while testing**: the session-state helper was loaded with a lazy
+`require` that failed to resolve under the test runner. The gate then refused everything —
+safe, but it silently disables the entire lane, and that failure mode is
+indistinguishable from "the market is open". Now a static import; the module is pure.
+
+### PARTS 7–8 — the replay engine, and proving it cannot cheat
+
+`HISTORICAL_REPLAY_V1`. The one rule:
+
+> **ONLY DATA TIMESTAMPED <= T MAY BE VISIBLE.**
+
+Every read is fenced by `asOfMs` **in SQL**, never post-filtered in TypeScript. A
+post-filter is a line someone can move, reorder or short-circuit, and the resulting leak
+produces a backtest that looks brilliant and predicts nothing. `WHERE ts_ms <= ?` cannot
+be bypassed by editing a caller. This is also why replay reads the STORE and not the
+provider: a live fetcher has no notion of "as of".
+
+Session extremes are **session-to-date through T**, computed from the fenced bars the
+module fetched itself. The day's final HOD/LOD is the most seductive leak in this
+codebase precisely because it is what makes a "share of the move consumed" metric look
+precise.
+
+Forward measurement lives in the same file, named so it cannot be mistaken for
+reconstruction, and is the **only** place hindsight is legitimate. Entry is the **ASK at
+T** (a buyer crosses); later observations are the **MID**. Using the ask for both
+understates every move; the bid for both overstates it.
+
+**The harness proves the fence by INVARIANCE, not inspection** — reconstruct at T, write
+the future, reconstruct again, assert byte-identical. A leaking replay also "looks right";
+it looks *better*. Only invariance distinguishes them. 14 tests, including:
+
+- the stock **doubles** after T → the session high at T is unchanged
+- a **+900% quote one second later** → not the quote in force at T
+- 300 later bars → the view at T is byte-identical
+- a trade print exists at T but no NBBO → `executableAsk: null`, `INSUFFICIENT`. Someone
+  traded there; that is not proof we could have.
+- no quote within tolerance → `null`, never the nearest one
+- another symbol's bars → cannot leak into this symbol's state
+- `settledOnly` excludes the bar still forming at T
+
+### PART 3 — why regime was empty, and what actually fixes it
+
+`market_context_snapshots` had 0 rows and **the writer is not broken**.
+`recordMarketContext` works; its only caller is an on-demand HTTP route, so a snapshot
+exists only if somebody loads a page. Nothing scheduled has ever called it. Meanwhile the
+scheduled watchlist job writes a **different** table (`watchlist_market_context`, keyed by
+trading day), which is why regime never looked missing from the product side.
+
+Scheduling the old writer would not fix the real gap. **Regime at an INSTANT** is what
+replay needs, and a once-a-day snapshot cannot answer it for 09:47 on a Tuesday.
+`deriveHistoricalMarketContext` computes it at any instant from stored bars, under the
+same time fence.
+
+`origin` is part of the **PRIMARY KEY**, not a comment: a reconstruction and a measurement
+written to one table with one shape become indistinguishable, so a derived row can never
+overwrite an observed one, and the reader prefers the measurement when both exist.
+
+Three states a lazy implementation collapses are kept apart, because a cohort stratified
+on a regime that silently means "no data" is stratified on nothing and will look like a
+real effect: **UNKNOWN** (could not see the indices), **MIXED** (saw them, they
+disagreed), **FLAT** (saw them, barely moved).
+
+### Production state of the new store
+
+Deployed and verified at `c0f166f`. All six tables exist and answer queries (0 rows, not
+errors). Ingestion gate: `allowed: false`, reason `HISTORICAL_INGESTION_ENABLED!=1`.
+
+**The store is EMPTY, and that is the honest headline.** An empty store and an absent one
+support exactly the same amount of research. Everything downstream of it — replay-derived
+discovery, winner events, cohorts v2, edge shadow — is built on data that does not exist
+yet and would produce `INSUFFICIENT_EVIDENCE` by construction.
+
+Ingestion was deliberately **not** switched on in this session: the flag change is a
+production configuration change that spends provider budget, and the session ran entirely
+during RTH, when the gate would have refused anyway.
+
+### Commits (5, by concern)
+
+```
+22ec77d  Possess the historical record instead of renting it, and fence it in time
+14c4d87  Let mining fill the store without ever competing with the scanner
+8dbd71d  Give regime a history, and say when it is a reconstruction
+c0f166f  Make possession of the historical record inspectable
+5c42f2e  Correct a capability row that had been overtaken by the code
+```
+
+Validation: `npm test` → **4128/4128** (from 4094 at baseline; +34). `tsc --noEmit` clean.
+`npm run build` clean. `git diff --check` clean. Six additive migrations, no backfill.
+
+**One intermittent failure** in one of four full-suite runs; three subsequent runs were
+clean and its name was not captured. The previous session identified
+`options-monitor.test.mjs` #6 (a 10ms wall-clock assertion) as flaky under load, and no
+other test has ever failed intermittently here — but this specific occurrence is
+**unconfirmed**, and it is recorded as unconfirmed rather than assumed.
+
+One commit (`8dbd71d`) was amended before push after `tsc` caught a `ProcessEnv` type
+error in it. Nothing broken was pushed.
+
+### NOT BUILT this session, and why
+
+Parts 9–19 were **not** built. They are the analysis layers — replay-derived
+`PRE_MOVE_DISCOVERY_REPLAY_V1`, the verified +25/+50/+100/+200 winner universe, pre-run
+winner research, cohort V2, `HISTORICAL_EDGE_SHADOW_V1`, the Ask OptiScan extension —
+and every one of them consumes the durable store.
+
+Building them against an empty store would produce modules whose every method returns
+`INSUFFICIENT_EVIDENCE`, tested only against synthetic fixtures, with no way to tell a
+correct implementation from a broken one. That is the same mistake as
+`PRE_MOVE_DISCOVERY_V1` shipping complete-and-uncalled, which cost a session to discover.
+
+They are recorded as **engineering still incomplete**, not as done, and they are
+**unblocked the moment ingestion runs**.
+
+### Exact resume point
+
+The foundation is deployed and inert. To unblock everything downstream, in order:
+
+(a) set `HISTORICAL_INGESTION_ENABLED=1` in Railway and run the first backfill **off-peak**
+    (the gate enforces this; a weekend is ideal). Start with `TIER_1_SYMBOLS`, `1m` bars,
+    a bounded window, and read `/api/diagnostics/historical-store` for cursors and
+    coverage. Verify the second run writes ~0 rows — that is idempotence working;
+(b) wire the real fetchers to the ingestion deps (`fetchBars`/`fetchContracts`/
+    `fetchQuotes` are injected and currently supplied by nothing scheduled);
+(c) backfill expired-contract reference for the symbols with historical opportunity cases,
+    then event-centred NBBO windows around them;
+(d) only then build `PRE_MOVE_DISCOVERY_REPLAY_V1` on top of the replay engine — keeping
+    its identity separate from live-observed `PRE_MOVE_DISCOVERY_V1`, and stamping every
+    row `REPLAY_DERIVED`;
+(e) then the winner universe, cohort V2, and `HISTORICAL_EDGE_SHADOW_V1` in shadow.
+
+The two hardest problems are already solved and tested: the store cannot double-count, and
+the replay cannot see the future.
+
 ## Packet update — 2026-08-10 (2) The correction pass ran, earliness started measuring, and two metrics that always agreed with us were caught doing it
 
 ### Verified state (checked, not assumed)
