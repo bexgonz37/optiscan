@@ -1,5 +1,297 @@
 # Current Task Packet
 
+## Packet update — 2026-08-10 (4) The historical intelligence phase is built end to end, and the first real backfill ran
+
+### Verified state (checked, not assumed)
+
+- Baseline re-verified from git AND production BEFORE any change:
+  local = `origin/main` = production = `eafa421`, `shaAttribution.state OBSERVED`.
+  Tracked tree clean, 19 untracked scratch files untouched — still 19 at the end.
+- Production healthy throughout: `ok:true`, `loopRunning:true`, `quotaExceeded:false`,
+  scheduler owner = this process.
+- `LHC_SELECT_V1` **untouched** — neither experiment file opened.
+- No strategy threshold, ranking weight, stop, exit, provider cap, owner quality gate or
+  subscriber readiness rule changed. Subscriber distribution still BLOCKED.
+- **Recaps, nightly AI and every live observation lane were left ENABLED.** Nothing was
+  disabled in `/config` or anywhere else.
+
+### The session had a hard constraint, and it shaped the order of work
+
+The whole engineering phase ran during RTH. Rather than idle until the close, every part
+that does not spend provider budget was built and tested first against fixtures and the
+empty store; only the backfill itself waited for the session to end.
+
+### PART 1 — real fetchers, and one stale claim corrected
+
+The ingestion framework took its fetchers as injected dependencies, which made it
+testable and left it inert: nothing in production supplied them. `adapters.ts` supplies
+them from the SAME provider and auth infrastructure the rest of OptiScan already trusts,
+rather than opening a second path with its own key handling and its own budget.
+
+An adapter does exactly two things: **shape translation and EVIDENCE LABELLING**. There
+is deliberately no adapter turning trades into quotes, no midpoint synthesis, no
+carry-forward across a gap. A period with only trades yields trades, and replay then
+reports no executable quote — which is true, and is what stops a backtest filling where
+nobody was showing.
+
+**Truncation is surfaced, not swallowed.** On a liquid contract 5,000 NBBO rows can span
+under a minute; the "peak" of a truncated window is the peak of an arbitrary prefix.
+
+### PART 2 — expired contract reference
+
+`fetchContractUniverse` already existed (the capability matrix had wrongly said
+otherwise, corrected in the previous session). It is now bound to a durable table with an
+upsert, a resolver, and a bounded ingestion job. Replay resolves an expired OCC from the
+local store and **never substitutes a current-chain contract for a historical one** — the
+survivorship error the whole store exists to avoid.
+
+### PARTS 3, 4, 6, 20, 21 — the miner, its plan, and its fences
+
+`planner.ts` makes ingestion **evidence-centred**. OptiScan already knows which moments
+mattered — thousands of cases with exact timestamps, symbols and frozen OCCs — so windows
+exist because a real case happened there, not because a symbol exists. Every window
+carries the reason that justifies it, so an expensive plan can be audited **before** the
+budget is gone.
+
+Underlying context is deliberately allowed to be broader than contract ingestion: bars
+cost one request per symbol per month, per-OCC NBBO one per contract per window. Pricing
+them the same would either starve regime reconstruction or bankrupt the contract lane.
+
+`miner.ts` runs phases in dependency order — **reference, then bars, then quotes** —
+because quotes are useless for a contract we cannot describe or place in a market
+context. All phases share ONE accountant; per-phase accountants would make the real
+ceiling the SUM of the caps, which is the quiet way a bounded lane stops being bounded.
+
+Scheduled every 15 minutes as `historicalMiner`, and **the gate lives in the runner**, not
+in the scheduler or the route: scheduling is not authorization, and a diagnostics POST
+hits the same refusal. Scheduler state records the REFUSAL as well as the run, because
+"the gate said no" and "it ran and found nothing" look identical in a row count.
+
+The diagnostics GET is zero-provider and reports **no ETA** — an estimate from a plan that
+has never executed against this provider would be a fabricated number in a diagnostics
+payload, and those get quoted.
+
+### PART 5 — PRE_MOVE_DISCOVERY_REPLAY_V1
+
+REUSES `classifyDiscovery` rather than reimplementing it. A second implementation would
+drift, and the whole point of comparing replay against live is that the same rule was
+applied to both. Only the inputs differ.
+
+> **REPLAY_DERIVED is never OBSERVED_LIVE** — and it is on the row, not in a comment.
+
+Detection and decision instants are kept apart: collapsing them scores every setup as
+instantly actionable, which is the flattering answer and makes "how much did we consume
+while confirming" unanswerable. An absent trigger level yields **null, not false** — a
+false asserts "the move has not begun" and short-circuits the measurement, which is
+precisely the degenerate column the live lane already had to fix once.
+
+### PART 6 — historical winner events
+
+The entry convention is the whole argument:
+
+```
+ENTRY = the ASK at T   (a buyer crosses the spread)
+LATER = the MID        (the conservative reading of what the position was worth)
+```
+
+Ask for both understates every move; bid for both overstates it; mid for entry claims a
+fill nobody was offering. The pairing is recorded ON the event.
+
+**No executable quote at T produces NO event**, not an event with an assumed entry. A
+contract that WAS executable and went nowhere **is** an event, because the control group
+depends on it — and the census counts that separately from `refusedNoEntry`. Pooling them
+would make missing data look like evidence of no edge.
+
+### PARTS 7–9 — HISTORICAL_COHORT_V2 and robustness
+
+A **new version**, not a widening of V1. V1 measures the local paper record; V2 measures
+the historical replay record. Different populations, different entry conventions, same
+vocabulary — merging them would produce a number meaning neither.
+
+V2 deliberately **inherits** V1's two floors, its counts-without-rates rule, and lane
+separation. Those are not conveniences; they are what stops a small or pooled sample
+becoming a probability, and re-deriving them differently would create two standards of
+evidence in one system.
+
+Robustness is attached to every result and is computed **even when the floors fail** — a
+six-event cohort that is 90% one symbol is worth seeing before more collection is
+planned. Best-winner-excluded, capped returns, per-session expectancy, symbol/strategy/
+regime concentration and tail frequency all travel together.
+
+### PART 10 — HISTORICAL_EDGE_SHADOW_V1
+
+> **MISSING EVIDENCE MUST NEVER BECOME A FAVOURABLE ZERO.**
+
+The easy implementation gives an absent component the neutral value and sums. Under that
+scheme a candidate with NO comparables outranks one with twenty bad ones: absence beats
+measured disadvantage, and the model learns to prefer the unknown. Components therefore
+score only where evidence exists, the mean is taken over what was available, and coverage
+is a first-class field.
+
+An insufficient cohort returns a **NULL score, not a low one**. A low score is a finding
+about the setup; a null is a finding about us. `UNGRADABLE` and `UNKNOWN` score null for
+the same reason — scoring them neutral rewards a blind spot.
+
+Weights are **declared, not fitted**. A weight vector learned over a handful of historical
+events would be an overfit dressed as a model, and this is explicitly a hypothesis
+generator whose job is to be tested forward.
+
+### PART 11 — prospective comparison
+
+`compareBaselineToShadow` pairs a live baseline rank with a shadow score. `UNCOMPARABLE`
+is its own outcome and is **never** counted as agreement — folding it in would make the
+shadow look more correct as its coverage got worse.
+
+### PART 12 — Ask OptiScan
+
+Extended the existing loader; no second chatbot. Every historical item declares pipeline
+`historical_replay`, separate from every live figure, because a chat that can cite a
+number will cite it — if they shared a label, "we have seen 40 setups like this" would
+silently mean "we reconstructed 40 from a backfill whose coverage we never stated".
+
+POSSESSION is loaded first and deliberately: every probability below it is meaningless if
+the store is empty.
+
+### Commits (5, by concern)
+
+```
+5d42de3  Give the mining lane real fetchers, a plan, and a place in the scheduler
+4310b14  Answer "where in the move was this" for the past, without cheating
+9751b23  Estimate a historical edge, and refuse to let absence look like strength
+ee7c371  Let Ask OptiScan cite history, and say how thin the history is
+```
+
+Validation: `npm test` twice → **4173/4173** both runs (from 4128; +45). `tsc` clean,
+`npm run build` clean, `git diff --check` clean. No new migrations this session — the six
+historical tables shipped in the prior one.
+
+### PARTS 13–19 — the first real backfill, after the close
+
+Production reported `session: afterhours` at 20:01Z. `HISTORICAL_INGESTION_ENABLED=1`
+was set then and not before; the gate had been refusing all afternoon
+(`POWER_HOUR` → `live scanner has provider priority`).
+
+**First bounded run** (defaults: 25 option windows, 15 symbols, 5-minute ceiling):
+
+```
+ran=true  session=AFTERHOURS  elapsed 27.6s
+plan: 25 option windows, 15 symbols, 18 reference targets, 73 estimated requests
+written 117,654   duplicates skipped 15,222   requests 43   blocked 0
+jobs completed 58   resumable 0
+```
+
+**Idempotence.** The naive check — run it again — did NOT test idempotence, and saying
+so matters: the planner correctly ADVANCED to the next 23 windows, so run 2 wrote 92,598
+genuinely new rows on 23 new contracts. That is resumability working, not duplication.
+
+The real test is running once the queue is exhausted:
+
+```
+RUN3  planWindows=0  written=0  duplicates=0  requests=0
+RUN4  planWindows=0  written=0  duplicates=0  requests=0
+RUN5  planWindows=0  written=0  duplicates=0  requests=0
+coverage unchanged at 326,461 quotes / 73 contracts
+```
+
+Zero rows AND **zero provider requests**. `underlying_bars` also reported
+`written=0 requests=0` from the very first explicit run, because the scheduler had
+already completed those jobs minutes earlier.
+
+**Coverage now possessed** (was zero at session start):
+
+| store | rows | detail |
+|---|---|---|
+| `historical_underlying_bars` | **60,164** | 15 symbols, 2026-08-03 → 2026-08-07 |
+| `historical_option_quotes` | **326,461** | 73 exact OCCs, 2026-07-27 → 2026-08-06 |
+| `historical_option_trades` | 0 | not ingested — reported as absent, not implied |
+| `historical_contract_reference` | **21,790** | 32 underlyings, expired-inclusive |
+| `historical_ingestion_progress` | 144 jobs | 100 COMPLETE, 0 resumable, no errors |
+| `historical_market_context` | 0 | derivable on demand; none persisted yet |
+
+**No-hindsight, proven on real data.** `/api/diagnostics/replay-verify` →
+`FENCE_HOLDS_ON_REAL_DATA`: 6 contracts checked, 3 verifiable, **0 violations**, 0 extreme
+violations. AVGO: quote at T stamped 9s before T, 4,248 quotes after T, entry 8.25 while
+the later best ask reached 11.05, forward MFE +27.88% measured only from what followed.
+
+**The verifier's first run said FENCE_VIOLATION, and it was wrong.** Two defects in the
+CHECK, not the fence. It scored a contract with no quote at T as a violation — that is the
+fence refusing correctly for a T in an overnight gap, and a diagnostic that reports its own
+safety behaviour as failure gets ignored exactly when it matters. And it tested that
+session-to-date high DIFFERS from the day's final high, which is legitimately equal
+whenever the high was made before T; AAPL showed exactly that (312.75 at T and at the
+close, while the low still moved). It now tests for EXCESS, which is the thing actually
+impossible without hindsight.
+
+**First historical winner events and cohort, on real evidence:**
+
+```
+78 delivered-case candidates → 21 events, 57 refusedNoEntry (a COVERAGE gap)
+quality: 19 VERIFIED, 0 THIN, 2 UNSUPPORTED
++10 reached 7/21   +25 reached 3/21   +50 0/21   +100 0/21   +200 0/21
+
+HISTORICAL_COHORT_V2:lane=REPLAY_HISTORICAL|replayVersion=PRE_MOVE_DISCOVERY_REPLAY_V1
+floors SUPPORTED — 21 events over 6 independent sessions, 2026-07-27 .. 2026-08-06
+P(+10) 0.3333    P(+25) 0.1429    P(+50) 0    P(+100) 0
+extremeSample INSUFFICIENT_EVIDENCE (19 < 20) → expected MFE/MAE withheld
+HISTORICAL_EDGE_SHADOW_V1: SCORED 0.1205, components 3/11, quality INSUFFICIENT
+```
+
+Three of those numbers deserve to be read carefully:
+
+- **57 of 78 candidates were refused for no executable entry quote.** Coverage is 27%, not
+  a finding about the market. It is counted apart from contracts that were executable and
+  went nowhere, precisely so it cannot be mistaken for evidence of no edge.
+- **P(+50) = 0 over 21 events is a real, sobering result** — no delivered-case contract in
+  the ingested window reached +50% from the ask within 6 hours of detection. It rests on
+  21 events over 6 sessions and nothing more.
+- **Expectancy, PF and win rate are null**, because a winner event knows its excursion and
+  not where the position was eventually closed. Inferring one from the other is the
+  peak-as-outcome error, so the module refuses. Joining realized outcomes onto events is a
+  named remaining gap.
+
+### Commits (7, by concern)
+
+```
+5d42de3  Give the mining lane real fetchers, a plan, and a place in the scheduler
+4310b14  Answer "where in the move was this" for the past, without cheating
+9751b23  Estimate a historical edge, and refuse to let absence look like strength
+ee7c371  Let Ask OptiScan cite history, and say how thin the history is
+a8ce4fc  Prove the time fence against real ingested data, by observation
+bf72111  Stop the fence verifier from failing the fence for behaving correctly
+```
+
+`npm test` twice → **4173/4173** both runs. `tsc` clean, build clean, `git diff --check`
+clean. No new migrations. **Recaps, nightly AI and every live lane were left enabled.**
+
+### Remaining gaps
+
+1. **Winner events carry no realized outcome.** Expectancy/PF/win-rate are null across V2
+   until events are joined to their closes. This is the single highest-value next step —
+   without it the cohort can describe trajectories but not results.
+2. **Option TRADES were never ingested** (0 rows). The adapter exists; no plan phase calls
+   it. Deliberate — quotes answer "what could have been paid" and trades do not — but it
+   means trade-based studies are unsupported.
+3. **`historical_market_context` is empty.** Derivation works and is tested; nothing
+   persists it on a schedule yet.
+4. **Coverage is 27% of delivered cases.** Windows exist for 73 contracts of 78 candidates,
+   but only 21 had an executable quote at their exact detection instant.
+5. **Replay-derived discovery rows are not persisted.** The classifier runs on demand;
+   there is no `pre_move_discovery_replay` table, so cohorts cannot yet stratify by
+   replay-derived stage.
+6. **The shadow score is not yet recorded beside live candidates.** The comparison function
+   exists and is tested; nothing calls it on the live path.
+
+### Exact resume point
+
+The lane is live, bounded, resumable and proven not to cheat. Next, in order:
+
+(a) join realized outcomes onto winner events so V2 can report expectancy and PF;
+(b) persist replay-derived discovery rows so cohorts can cut by stage;
+(c) let the miner widen — the queue is exhausted at 100 COMPLETE jobs, so raise
+    `maxOptionWindows`/lookback and let it keep running off-peak;
+(d) wire `compareBaselineToShadow` on the live path to start the prospective record;
+(e) schedule market-context derivation.
+
 ## Packet update — 2026-08-10 (3) The historical record is now possessed rather than rented, and fenced so a backtest cannot cheat
 
 ### Verified state (checked, not assumed)
