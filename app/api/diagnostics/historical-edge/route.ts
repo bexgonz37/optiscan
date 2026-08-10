@@ -36,6 +36,9 @@ export async function GET(req: Request) {
     const { historicalCoverageOnDb } = await import("@/lib/research/historical/store");
     const { PRE_MOVE_REPLAY_VERSION } = await import("@/lib/research/historical/pre-move-replay");
     const { realizedOutcomesForEvents } = await import("@/lib/research/historical/realized-outcomes");
+    const { coverageCensusOnDb, coverageBreakdownOnDb } = await import(
+      "@/lib/research/historical/coverage-diagnostics"
+    );
 
     const db = getDb() as any;
     const days = Math.max(1, Math.min(365, Number(url.searchParams.get("days") ?? 45)));
@@ -49,6 +52,10 @@ export async function GET(req: Request) {
       limit: 1000,
     });
     const { events, census } = extractWinnerEventsOnDb(db, candidates, { windowMs });
+
+    // Why each refused candidate was refused. Diagnostic only: it uses the SAME staleness
+    // tolerance as the replay engine, so it can never report coverage we do not have.
+    const { census: coverageCensus, diagnoses } = coverageCensusOnDb(db, candidates, { windowMs });
 
     // The REALIZED population, joined on provable identity. Kept apart from excursion at
     // every level: its own census, its own floor, its own block in the response.
@@ -70,6 +77,11 @@ export async function GET(req: Request) {
       ok: true,
       mode: "SHADOW_ONLY",
       coverage: historicalCoverageOnDb(db),
+      coverageBreakdown: coverageBreakdownOnDb(db),
+      executableEntryCoverage: {
+        census: coverageCensus,
+        unsupported: (verbose ? diagnoses : diagnoses.slice(0, 60)).filter((d) => !d.executable),
+      },
       candidates: {
         fromCases: candidates.length,
         scope,
