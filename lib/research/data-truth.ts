@@ -117,10 +117,13 @@ export interface DataTruthReport {
    * re-fetching from the provider.
    */
   underlying: {
-    dedicatedBarStore: null;
+    /** The durable bar store. Null ONLY when the table does not exist. */
+    dedicatedBarStore: StoreCoverage | null;
     dedicatedBarStoreNote: string;
     derivedStores: StoreCoverage[];
   };
+  /** The durable historical store: what has actually been ingested and possessed. */
+  durableHistorical: StoreCoverage[];
   /** Per-contract option observations actually stored locally. */
   optionsIngested: StoreCoverage[];
   /** The evidence lanes a cohort could be built from. */
@@ -131,14 +134,18 @@ export interface DataTruthReport {
 export function buildDataTruthReport(db: TruthDb): DataTruthReport {
   return {
     underlying: {
-      dedicatedBarStore: null,
+      dedicatedBarStore: coverage(db, "historical_underlying_bars", {
+        timeCol: "ts_ms", symbolCol: "symbol",
+        note:
+          "The durable bar store. Rows here are POSSESSED: they survive a restart and can be "
+          + "replayed at any past instant without re-spending provider budget.",
+      }),
       dedicatedBarStoreNote:
-        "NO persisted underlying bar/candle table exists. Bars are fetched per scan by "
-        + "deps.getBars, consumed by computeOptionsFeatures, and discarded. What survives is the "
-        + "DERIVED feature snapshot at scanner cadence, not the price series. Historical "
-        + "underlying work must either re-fetch from the provider (entitled and integrated — see "
-        + "capability-matrix 'Historical underlying aggregates') or accept scanner-cadence "
-        + "features. This is a storage fact, not a provider limitation.",
+        "A durable bar store now EXISTS (historical_underlying_bars) and is filled by the bounded "
+        + "off-peak ingestion lane. Its row count is what matters, not its existence: an empty "
+        + "store and an absent one support exactly the same amount of research. The LIVE scanner "
+        + "still fetches bars per scan and discards them — that path is unchanged, because "
+        + "persisting every scan's bars would change what the scanner costs.",
       derivedStores: [
         coverage(db, "options_candidates", {
           timeCol: "created_at_ms", symbolCol: "symbol", contractCol: "option_symbol",
@@ -154,6 +161,30 @@ export function buildDataTruthReport(db: TruthDb): DataTruthReport {
         }),
       ],
     },
+    durableHistorical: [
+      coverage(db, "historical_option_quotes", {
+        timeCol: "ts_ms", contractCol: "occ",
+        note: "Executable NBBO. The ONLY store that can answer what could have been paid at an instant.",
+      }),
+      coverage(db, "historical_option_trades", {
+        timeCol: "ts_ms", contractCol: "occ",
+        note: "Trade prints. Where the contract traded — never substituted for an executable quote.",
+      }),
+      coverage(db, "historical_contract_reference", {
+        timeCol: "ingested_at_ms", symbolCol: "underlying",
+        note:
+          "Expired-inclusive contract reference. Without it the historical universe is limited to "
+          + "contracts still listed today, which is survivorship bias of exactly the wrong kind.",
+      }),
+      coverage(db, "historical_market_context", {
+        timeCol: "as_of_ms", sessionCol: "session_date",
+        note: "Regime at an instant. `origin` distinguishes a reconstruction from a live measurement.",
+      }),
+      coverage(db, "historical_ingestion_progress", {
+        timeCol: "updated_at_ms",
+        note: "Per-job cursors. This is what makes a blocked or crashed run resumable rather than restartable.",
+      }),
+    ],
     optionsIngested: [
       coverage(db, "options_paper_marks", {
         timeCol: "mark_at_ms", contractCol: "option_symbol",
