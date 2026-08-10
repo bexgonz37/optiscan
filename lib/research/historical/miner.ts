@@ -30,7 +30,15 @@ import {
   type IngestDeps,
   type IngestRunResult,
 } from "./ingestion.ts";
+import {
+  deriveAndPersistMarketContext,
+  deriveAndPersistPreMoveReplay,
+  type DeriveContextResult,
+  type DeriveReplayResult,
+} from "./derive.ts";
 import { buildBackfillPlan, type BackfillPlan } from "./planner.ts";
+import { winnerCandidatesFromCasesOnDb } from "./winner-events.ts";
+import { resolveContractOnDb } from "./store.ts";
 import { RequestAccountant, resolveRequestCaps } from "../asymmetry/historical/request-accounting.ts";
 import { historicalCoverageOnDb, type StoreDb } from "./store.ts";
 
@@ -45,7 +53,7 @@ export interface MinerOptions {
   lookbackMs?: number;
   scope?: "delivered" | "all";
   /** Skip phases. Used by the first bounded backfill to exercise one at a time. */
-  phases?: Array<"reference" | "bars" | "quotes">;
+  phases?: Array<"reference" | "bars" | "quotes" | "derive">;
 }
 
 export interface MinerRunResult {
@@ -62,6 +70,16 @@ export interface MinerRunResult {
     estimatedRequests: number;
   };
   phases: IngestRunResult[];
+  /**
+   * Derived rows written from the store that now exists. Zero provider requests.
+   *
+   * Reported apart from `phases` because those are INGESTION results with a request budget,
+   * and folding a zero-cost derivation into them would make the budget accounting lie.
+   */
+  derived: {
+    preMoveReplay: DeriveReplayResult | null;
+    marketContext: DeriveContextResult | null;
+  };
   totals: {
     rowsWritten: number;
     rowsSkippedAsDuplicate: number;
@@ -114,7 +132,9 @@ export async function runHistoricalMinerOnDb(
     sessionState: gate.sessionState,
     startedAtMs, elapsedMs: 0,
     plan: { optionWindows: 0, underlyingSymbols: 0, contractReferenceTargets: 0, estimatedRequests: 0 },
-    phases: [], totals: emptyTotals(),
+    phases: [],
+    derived: { preMoveReplay: null, marketContext: null },
+    totals: emptyTotals(),
     coverageAfter: historicalCoverageOnDb(db),
     note: "",
   };
@@ -207,6 +227,39 @@ export async function runHistoricalMinerOnDb(
     );
     base.phases.push(r);
     accumulate(base.totals, r);
+  }
+
+  // DERIVE runs last, so it reconstructs from everything the run just stored rather than
+  // from the store as it was at the start. It issues no provider request and is therefore
+  // not charged against the accountant — but it is still inside the off-peak gate, because
+  // it holds the database even though it does not compete for the provider.
+  if (wanted.has("derive")) {
+    const anchors = winnerCandidatesFromCasesOnDb(db, {
+      sinceMs: startedAtMs - (opts.lookbackMs ?? 45 * 86_400_000),
+      scope: opts.scope ?? "delivered",
+      limit: 1000,
+    }).map((c) => {
+      // The frozen contract's own reference decides the side. Guessing CALL would mislabel
+      // every put and silently invert the discovery-stage measurement.
+      const ref = resolveContractOnDb(db, c.occ);
+      return {
+        occ: c.occ,
+        symbol: c.symbol,
+        side: (ref?.side === "put" ? "PUT" : "CALL") as "CALL" | "PUT",
+        detectedAtMs: c.entryAtMs,
+        opportunityCaseId: c.opportunityCaseId,
+      };
+    });
+    try {
+      base.derived.preMoveReplay = deriveAndPersistPreMoveReplay(db, anchors, { nowMs: startedAtMs });
+    } catch {
+      base.derived.preMoveReplay = null;
+    }
+    try {
+      base.derived.marketContext = deriveAndPersistMarketContext(db, { nowMs: startedAtMs });
+    } catch {
+      base.derived.marketContext = null;
+    }
   }
 
   base.elapsedMs = now() - startedAtMs;

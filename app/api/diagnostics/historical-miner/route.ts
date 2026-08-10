@@ -21,15 +21,21 @@ export const dynamic = "force-dynamic";
  *
  *   ?maxOptionWindows=N  cap contract windows (default 25)
  *   ?maxSymbols=N        cap underlying symbols
- *   ?phases=reference,bars,quotes   run a subset, to exercise one at a time
+ *   ?phases=reference,bars,quotes,derive   run a subset, to exercise one at a time
+ *                        `derive` is zero-provider: it reconstructs replay discovery and
+ *                        market-context rows from the store that already exists, so it can
+ *                        be re-run after a version change without spending budget
  *   ?maxRunMs=N          wall-clock ceiling for the whole run
  *   ?verbose=1           include the full plan and every job row
  */
 function parse(url: URL) {
   const phasesRaw = url.searchParams.get("phases");
+  // `derive` is zero-provider: it reconstructs replay and market-context rows from what is
+  // already stored. Runnable on its own, which is what makes it safe to re-derive after a
+  // version change without touching the request budget.
   const phases = phasesRaw
-    ? phasesRaw.split(",").map((s) => s.trim()).filter((s): s is "reference" | "bars" | "quotes" =>
-      s === "reference" || s === "bars" || s === "quotes")
+    ? phasesRaw.split(",").map((s) => s.trim()).filter((s): s is "reference" | "bars" | "quotes" | "derive" =>
+      s === "reference" || s === "bars" || s === "quotes" || s === "derive")
     : undefined;
   return {
     maxOptionWindows: Math.max(0, Math.min(500, Number(url.searchParams.get("maxOptionWindows") ?? 25))),

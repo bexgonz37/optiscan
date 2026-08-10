@@ -2384,6 +2384,62 @@ CREATE TABLE IF NOT EXISTS historical_market_context (
 CREATE INDEX IF NOT EXISTS idx_hist_market_context_date
   ON historical_market_context(session_date, as_of_ms);
 
+-- Replay-derived pre-move discovery. A RECONSTRUCTION, never a measurement.
+--
+-- The origin is in the PRIMARY KEY, not merely a column. A live discovery row is
+-- something the scanner really saw; a replay row is an inference from whatever a
+-- backfill happened to fetch, and its coverage moves as the store grows. Sharing
+-- one identity space would let a reconstruction of the past satisfy a lookup for
+-- a forward observation, and every prospective statistic would be quietly
+-- contaminated by history. The replay version is in the key for the same reason:
+-- re-running a NEW version must add rows, while re-running the SAME version must
+-- update in place rather than duplicate.
+--
+-- Component evidence and missing fields are stored, not just the verdict. A stage
+-- with four missing inputs and a stage with none are different claims, and a row
+-- that cannot say which it was will eventually be read as the confident one.
+CREATE TABLE IF NOT EXISTS historical_pre_move_replay (
+  occ TEXT NOT NULL,
+  decision_at_ms INTEGER NOT NULL,
+  replay_version TEXT NOT NULL,
+  origin TEXT NOT NULL,             -- REPLAY_DERIVED (never OBSERVED_LIVE)
+  opportunity_case_id TEXT,
+  event_id TEXT,
+  symbol TEXT NOT NULL,
+  side TEXT,
+  session_date TEXT,
+  detected_at_ms INTEGER,
+  stage TEXT NOT NULL,
+  underlying_move_consumed_pct REAL,
+  premium_expansion_consumed_pct REAL,
+  move_consumed_fraction REAL,
+  reward_remaining_fraction REAL,
+  reward_remaining_band TEXT,
+  entry_ask REAL,
+  spread_pct REAL,
+  dte INTEGER,
+  moneyness_pct REAL,
+  regime TEXT,
+  market_alignment TEXT,
+  underlying_bars_used INTEGER NOT NULL DEFAULT 0,
+  missing_fields_json TEXT,
+  evidence_quality TEXT NOT NULL,   -- COMPLETE | PARTIAL | INSUFFICIENT
+  -- Which store the reconstruction rested on, so a row's coverage is auditable
+  -- after the store has grown past it.
+  source_quote_rows INTEGER,
+  source_bar_rows INTEGER,
+  reason TEXT,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (occ, decision_at_ms, replay_version, origin)
+);
+CREATE INDEX IF NOT EXISTS idx_hist_pre_move_replay_session
+  ON historical_pre_move_replay(session_date, decision_at_ms);
+CREATE INDEX IF NOT EXISTS idx_hist_pre_move_replay_stage
+  ON historical_pre_move_replay(stage, evidence_quality);
+CREATE INDEX IF NOT EXISTS idx_hist_pre_move_replay_case
+  ON historical_pre_move_replay(opportunity_case_id);
+
 CREATE TABLE IF NOT EXISTS opportunity_content_events (
   id TEXT PRIMARY KEY,
   opportunity_case_id TEXT NOT NULL,
