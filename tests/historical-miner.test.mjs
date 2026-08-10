@@ -196,7 +196,13 @@ test("a second identical pass writes no new rows", async () => {
     fetchBars: async (symbol, fromMs) => [
       { symbol, timeframe: "1m", tsMs: fromMs, open: 1, high: 1, low: 1, close: 1, volume: 1, vwap: 1 },
     ],
-    fetchQuotes: async (occ, fromMs) => [{ occ, tsMs: fromMs + 1000, bid: 2.0, ask: 2.1 }],
+    // Covers the window to its end, so it legitimately COMPLETEs. A single row near the
+    // start would leave the window resumable — correctly — and idempotence is not the
+    // property being tested there.
+    fetchQuotes: async (occ, fromMs, toMs) => [
+      { occ, tsMs: fromMs + 1000, bid: 2.0, ask: 2.1 },
+      { occ, tsMs: toMs, bid: 2.0, ask: 2.1 },
+    ],
   };
   const first = await runHistoricalMinerOnDb(d, { nowMs: WEEKEND, maxRunMs: 60_000 }, deps, ON);
   assert.ok(first.totals.rowsWritten > 0);

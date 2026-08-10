@@ -241,16 +241,147 @@ test("an option-quote target already COMPLETE is not fetched again", async () =>
   };
   const deps = {
     now: () => WEEKEND,
-    fetchQuotes: async (occ, fromMs) => {
+    // Reaches the END of the requested window, which is what earns a COMPLETE. A fake that
+    // returned one row near the start would be asserting that a single quote covers a whole
+    // day — the bookkeeping error that left 54 of 78 real events without an entry.
+    fetchQuotes: async (occ, fromMs, toMs) => {
       spy.calls += 1;
-      return [{ occ, tsMs: fromMs + 1000, bid: 2.0, ask: 2.1 }];
+      return [{ occ, tsMs: fromMs + 1000, bid: 2.0, ask: 2.1 }, { occ, tsMs: toMs, bid: 2.0, ask: 2.1 }];
     },
   };
   const first = await ingestOptionQuotesOnDb(d, plan, deps, ON);
-  assert.equal(first.rowsWritten, 1);
+  assert.equal(first.rowsWritten, 2);
   assert.equal(spy.calls, 1);
 
   const second = await ingestOptionQuotesOnDb(d, plan, deps, ON);
   assert.equal(spy.calls, 1, "a COMPLETE window is never re-fetched");
   assert.equal(second.jobsCompleted, 1);
+});
+
+// ── truncated windows must stay resumable ────────────────────────────────────
+//
+// A provider returns a BOUNDED page — on a liquid contract roughly 4,500 NBBO updates,
+// which is minutes of a multi-hour window. The runner used to record
+// completed_through_ms = toMs after any successful call, so a window that held seven
+// minutes of a seven-hour span read COMPLETE, the planner never returned to it, and 54 of
+// 78 historical events had no executable entry while every job looked finished.
+//
+// COMPLETE now means "the stored rows reach the end of this window".
+
+test("a capped page leaves the window resumable, not complete", async () => {
+  const d = db();
+  const occ = "O:NVDA260807C00180000";
+  const fromMs = WEEKEND - DAY;
+  const plan = { targets: [{ occ, underlying: "NVDA", fromMs, toMs: WEEKEND }] };
+  // 500 rows covering the first ten minutes of a full day, then nothing.
+  const deps = {
+    now: () => WEEKEND,
+    fetchQuotes: async (o, f) =>
+      Array.from({ length: 500 }, (_, i) => ({ occ: o, tsMs: f + i * 1200, bid: 2, ask: 2.1 })),
+  };
+  const r = await ingestOptionQuotesOnDb(d, plan, deps, ON);
+  assert.equal(r.rowsWritten, 500);
+  assert.equal(r.jobsCompleted, 0, "a tenth of a window is not a completed window");
+  assert.equal(r.jobsResumable, 1);
+
+  const p = readIngestProgressOnDb(d, ingestJobKey("option_quotes", occ, `${fromMs}..${WEEKEND}`));
+  assert.equal(p.status, "IN_PROGRESS");
+  assert.equal(p.cursorMs, fromMs + 499 * 1200, "the cursor is the last instant actually stored");
+  assert.notEqual(p.completedThroughMs, WEEKEND, "coverage is never claimed past the data");
+  assert.ok(/truncated/.test(p.lastNote));
+});
+
+test("a resumed window continues from the last stored instant, not the window start", async () => {
+  const d = db();
+  const occ = "O:NVDA260807C00180000";
+  const fromMs = WEEKEND - DAY;
+  const plan = { targets: [{ occ, underlying: "NVDA", fromMs, toMs: WEEKEND }] };
+  const asked = [];
+  // Each pass returns one hour of quotes from wherever it was asked to start.
+  const deps = {
+    now: () => WEEKEND,
+    fetchQuotes: async (o, f, t) => {
+      asked.push(f);
+      const end = Math.min(f + 3600_000, t);
+      const out = [];
+      for (let ts = f + 1000; ts <= end; ts += 60_000) out.push({ occ: o, tsMs: ts, bid: 2, ask: 2.1 });
+      return out;
+    },
+  };
+
+  await ingestOptionQuotesOnDb(d, plan, deps, ON);
+  assert.equal(asked[0], fromMs, "the first pass starts at the window start");
+
+  await ingestOptionQuotesOnDb(d, plan, deps, ON);
+  assert.ok(asked[1] > fromMs, "the second pass resumes forward");
+  assert.ok(asked[1] >= fromMs + 3600_000 - 60_000, "and resumes from where the data ended");
+
+  // Drive it to completion; a day of one-hour pages needs a couple of dozen passes.
+  for (let i = 0; i < 40; i++) {
+    const r = await ingestOptionQuotesOnDb(d, plan, deps, ON);
+    if (r.jobsCompleted === 1 && r.jobs === 0) break;
+  }
+  const p = readIngestProgressOnDb(d, ingestJobKey("option_quotes", occ, `${fromMs}..${WEEKEND}`));
+  assert.equal(p.status, "COMPLETE", "it does finish, by advancing rather than restarting");
+  assert.equal(p.completedThroughMs, WEEKEND);
+});
+
+test("a window the provider cannot extend is closed rather than retried forever", async () => {
+  const d = db();
+  const occ = "O:QUIET260807C00180000";
+  const fromMs = WEEKEND - DAY;
+  const plan = { targets: [{ occ, underlying: "QUIET", fromMs, toMs: WEEKEND }] };
+  // A genuinely quiet contract: nothing at all in the span.
+  const deps = { now: () => WEEKEND, fetchQuotes: async () => [] };
+
+  const first = await ingestOptionQuotesOnDb(d, plan, deps, ON);
+  assert.equal(first.rowsWritten, 0);
+  assert.equal(first.jobsCompleted, 1, "an empty span is answered, not left open");
+
+  const p = readIngestProgressOnDb(d, ingestJobKey("option_quotes", occ, `${fromMs}..${WEEKEND}`));
+  assert.equal(p.status, "COMPLETE");
+  assert.ok(/no quotes returned/.test(p.lastNote), "and it says the window was empty");
+
+  const second = await ingestOptionQuotesOnDb(d, plan, deps, ON);
+  assert.equal(second.jobs, 0, "no infinite retry on a quiet contract");
+});
+
+test("a page that does not advance past the cursor closes the window", async () => {
+  const d = db();
+  const occ = "O:STUCK260807C00180000";
+  const fromMs = WEEKEND - DAY;
+  const plan = { targets: [{ occ, underlying: "STUCK", fromMs, toMs: WEEKEND }] };
+  // The same FIXED row every time, whatever it is asked for — a provider that has nothing
+  // beyond this instant. Without the no-advance guard this would re-fetch the identical
+  // page forever.
+  const deps = {
+    now: () => WEEKEND,
+    fetchQuotes: async (o) => [{ occ: o, tsMs: fromMs + 500, bid: 2, ask: 2.1 }],
+  };
+  await ingestOptionQuotesOnDb(d, plan, deps, ON);
+  const key = ingestJobKey("option_quotes", occ, `${fromMs}..${WEEKEND}`);
+  assert.equal(readIngestProgressOnDb(d, key).status, "IN_PROGRESS", "one row, so it advanced once");
+
+  await ingestOptionQuotesOnDb(d, plan, deps, ON);
+  const p = readIngestProgressOnDb(d, key);
+  assert.equal(p.status, "COMPLETE", "the second pass gained nothing, so the window is closed");
+  assert.ok(/exhausted short of its end/.test(p.lastNote), "and it records that it stopped short");
+  // COMPLETE here means the span was EXAMINED and everything available is stored — which is
+  // true. The old bug was claiming that after a CAPPED page, where more data existed and was
+  // never fetched. The guard against hiding a gap lives in the coverage diagnostic, which
+  // reads the rows rather than this table.
+  assert.equal(p.requestsSpent, 2, "and it stopped after proving there was nothing more");
+});
+
+test("a failed fetch never records coverage", async () => {
+  const d = db();
+  const occ = "O:FAIL260807C00180000";
+  const fromMs = WEEKEND - DAY;
+  const plan = { targets: [{ occ, underlying: "FAIL", fromMs, toMs: WEEKEND }] };
+  const deps = { now: () => WEEKEND, fetchQuotes: async () => { throw new Error("provider 500"); } };
+  const r = await ingestOptionQuotesOnDb(d, plan, deps, ON);
+  assert.equal(r.jobsResumable, 1);
+  const p = readIngestProgressOnDb(d, ingestJobKey("option_quotes", occ, `${fromMs}..${WEEKEND}`));
+  assert.equal(p.status, "FAILED");
+  assert.equal(p.completedThroughMs, null, "a failure claims nothing");
 });

@@ -46,12 +46,24 @@ import {
   writeOptionQuotesOnDb,
   type BarRow,
   type ContractRefRow,
+  type IngestStatus,
   type OptionQuoteRow,
   type StoreDb,
   type Timeframe,
 } from "./store.ts";
 
 export const INGESTION_VERSION = "HIST_INGEST_V1" as const;
+
+/**
+ * How close to a window's end the stored rows must reach to call it COMPLETE.
+ *
+ * A quote window rarely ends exactly on the requested millisecond — the last NBBO update
+ * before the boundary can be seconds or a minute earlier, and demanding an exact match
+ * would leave every window permanently resumable. Two minutes is comfortably inside the
+ * five-minute staleness tolerance the replay engine uses to judge executability, so a
+ * window that clears this bound cannot be short by enough to lose an entry quote.
+ */
+export const QUOTE_WINDOW_COVERAGE_TOLERANCE_MS = 2 * 60_000;
 
 /**
  * Which symbols matter, in the order they matter.
@@ -396,6 +408,16 @@ export async function ingestOptionQuotesOnDb(
     if (prior?.status === "COMPLETE") { res.jobsCompleted += 1; continue; }
     res.jobs += 1;
 
+    // Resume from where the last pass actually got to, not from the window start.
+    //
+    // This is what makes a truncated response recoverable. The provider returns a bounded
+    // page — on a liquid contract roughly 4,500 NBBO updates, which is MINUTES of a
+    // multi-hour window — and asking for the same span again would fetch the same page
+    // forever.
+    const resumeFromMs = prior?.cursorMs != null && prior.cursorMs > t.fromMs && prior.cursorMs < t.toMs
+      ? prior.cursorMs
+      : t.fromMs;
+
     const admission = accountant.admit(
       { kind: "HIST_QUOTE" as RequestKind, symbol: t.underlying, occ, windowKey: `${t.fromMs}-${t.toMs}` },
       now(),
@@ -415,7 +437,7 @@ export async function ingestOptionQuotesOnDb(
     let status: "COMPLETE" | "FAILED" = "COMPLETE";
     let note = "";
     try {
-      quotes = await deps.fetchQuotes(occ, t.fromMs, t.toMs);
+      quotes = await deps.fetchQuotes(occ, resumeFromMs, t.toMs);
       accountant.recordSuccess();
       res.requestsIssued += 1;
     } catch (err: any) {
@@ -428,13 +450,57 @@ export async function ingestOptionQuotesOnDb(
     res.rowsWritten += w.written;
     res.rowsSkippedAsDuplicate += w.skipped;
 
+    // COMPLETE must mean "the stored rows reach the end of this window", not "we asked for
+    // the whole window and the call did not throw".
+    //
+    // It used to mean the second, and that is why 54 of 78 historical events had no
+    // executable entry while every job read COMPLETE: each window recorded
+    // completed_through_ms = toMs after a single capped page, so the planner believed the
+    // span was covered and never came back, and the coverage diagnostic — which reads the
+    // ROWS — disagreed with the bookkeeping that was hiding it.
+    //
+    // Coverage is now derived from the data that actually landed. Truncation is inferred
+    // from the rows rather than read from an adapter flag, because the flag exists and was
+    // already being dropped on the way through `liveIngestDeps`; a value computed from what
+    // is in the table cannot be silently discarded by a caller.
+    const lastTsMs = quotes.length ? Math.max(...quotes.map((q) => q.tsMs)) : null;
+    let reachedEnd = true;
+    let progressStatus: IngestStatus = status;
+    if (status === "COMPLETE") {
+      if (lastTsMs == null) {
+        // Nothing at all in the remaining span. The provider has no more to give here, so
+        // the window is done — a quiet contract must not become an infinite retry.
+        note = note || `no quotes returned for ${new Date(resumeFromMs).toISOString()}..${new Date(t.toMs).toISOString()}`;
+      } else if (lastTsMs <= resumeFromMs) {
+        // The page did not advance past where we resumed, so the provider has nothing
+        // further in this span. Retrying would re-fetch the identical page forever.
+        //
+        // completed_through_ms still reaches toMs, and that is not the old lie: it means
+        // "this span has been EXAMINED and everything available from it is stored", which
+        // is now true. The distinction is preserved where it matters — the coverage
+        // diagnostic reads the ROWS, so an event inside this span with no executable quote
+        // is still reported as unsupported rather than hidden behind a completed job.
+        note = note || `provider returned no rows after ${new Date(resumeFromMs).toISOString()}; `
+          + "span examined and exhausted short of its end";
+      } else if (lastTsMs < t.toMs - QUOTE_WINDOW_COVERAGE_TOLERANCE_MS) {
+        // A capped page. Real, useful data — and NOT the whole window.
+        reachedEnd = false;
+        progressStatus = "IN_PROGRESS";
+        note = `truncated: ${w.written} rows through ${new Date(lastTsMs).toISOString()}, `
+          + `${Math.round((t.toMs - lastTsMs) / 60_000)}min of the window still unfetched`;
+      }
+    }
+
     advanceIngestProgressOnDb(db, {
       jobKey, dataset: "option_quotes", subject: occ, timeframe: `${t.fromMs}..${t.toMs}`,
-      cursorMs: t.toMs, completedThroughMs: status === "COMPLETE" ? t.toMs : null,
+      // The cursor is the last instant actually STORED, so the next pass continues from
+      // real data rather than from an assumption.
+      cursorMs: reachedEnd ? t.toMs : (lastTsMs as number),
+      completedThroughMs: status !== "COMPLETE" ? null : (reachedEnd ? t.toMs : lastTsMs),
       rowsIngested: w.written, requestsSpent: 1,
-      status, note: note || null, nowMs: now(),
+      status: progressStatus, note: note || null, nowMs: now(),
     });
-    if (status === "COMPLETE") res.jobsCompleted += 1; else res.jobsResumable += 1;
+    if (progressStatus === "COMPLETE") res.jobsCompleted += 1; else res.jobsResumable += 1;
   }
 
   res.elapsedMs = now() - startedMs;
