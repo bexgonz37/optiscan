@@ -65,6 +65,116 @@ export const INGESTION_VERSION = "HIST_INGEST_V1" as const;
  */
 export const QUOTE_WINDOW_COVERAGE_TOLERANCE_MS = 2 * 60_000;
 
+export interface QuoteJobRepairResult {
+  examined: number;
+  reopened: number;
+  alreadyCovered: number;
+  unparseable: number;
+  reopenedJobs: Array<{ jobKey: string; occ: string; storedThroughMs: number | null; windowToMs: number; shortByMs: number }>;
+  note: string;
+}
+
+/**
+ * Reopen option-quote windows that are marked COMPLETE but whose ROWS fall short.
+ *
+ * The coverage fix above changes what a FUTURE run records. It cannot help the windows
+ * already written: 73 jobs in production say COMPLETE with roughly 4,500 rows each after a
+ * single capped page, and both the planner and the runner skip a COMPLETE job — so the
+ * damage is self-preserving and the queue looks exhausted forever.
+ *
+ * This is the repair, and it deliberately trusts the DATA over the bookkeeping. A job is
+ * reopened only when the stored quotes for its own contract, inside its own window, stop
+ * more than the tolerance short of the window's end. The cursor is set to the last instant
+ * actually stored, so the refetch resumes rather than restarting and re-buying the page
+ * that is already there.
+ *
+ * Safe to run repeatedly. A window that genuinely holds everything available gets closed by
+ * the no-advance guard on its next pass and is not reopened again after that, because by
+ * then its rows reach its end — or its end has been proven unreachable.
+ */
+export function reopenUndercoveredOptionQuoteJobsOnDb(
+  db: StoreDb,
+  opts: { toleranceMs?: number; limit?: number; nowMs?: number } = {},
+): QuoteJobRepairResult {
+  const tol = Math.max(1000, opts.toleranceMs ?? QUOTE_WINDOW_COVERAGE_TOLERANCE_MS);
+  const limit = Math.max(1, Math.min(5000, opts.limit ?? 500));
+  const nowMs = opts.nowMs ?? Date.now();
+  const out: QuoteJobRepairResult = {
+    examined: 0, reopened: 0, alreadyCovered: 0, unparseable: 0, reopenedJobs: [],
+    note: "",
+  };
+
+  let rows: Array<{ job_key: string; subject: string; timeframe: string | null }> = [];
+  try {
+    rows = (db.prepare(
+      `SELECT job_key, subject, timeframe FROM historical_ingestion_progress
+        WHERE dataset='option_quotes' AND status='COMPLETE' LIMIT ?`,
+    ).all?.(limit) ?? []) as typeof rows;
+  } catch {
+    out.note = "no ingestion progress table; nothing to repair";
+    return out;
+  }
+
+  for (const r of rows) {
+    out.examined += 1;
+    const occ = String(r.subject ?? "").toUpperCase();
+    const m = /^(\d+)\.\.(\d+)$/.exec(String(r.timeframe ?? ""));
+    if (!occ || !m) { out.unparseable += 1; continue; }
+    const windowToMs = Number(m[2]);
+    if (!Number.isFinite(windowToMs)) { out.unparseable += 1; continue; }
+
+    // Coverage INSIDE this window only. A later job on the same contract may have stored
+    // newer rows, and counting those would declare this window covered by someone else's data.
+    let storedThroughMs: number | null = null;
+    try {
+      const q = db.prepare(
+        "SELECT MAX(ts_ms) AS ts FROM historical_option_quotes WHERE occ=? AND ts_ms <= ?",
+      ).get?.(occ, windowToMs) as { ts?: number | null } | undefined;
+      storedThroughMs = q?.ts == null ? null : Number(q.ts);
+    } catch {
+      storedThroughMs = null;
+    }
+
+    if (storedThroughMs != null && storedThroughMs >= windowToMs - tol) {
+      out.alreadyCovered += 1;
+      continue;
+    }
+
+    const shortByMs = windowToMs - (storedThroughMs ?? Number(m[1]));
+    advanceIngestProgressOnDb(db, {
+      jobKey: String(r.job_key),
+      dataset: "option_quotes",
+      subject: occ,
+      timeframe: String(r.timeframe),
+      // Resume from real data. Null falls back to the window start via the runner's own
+      // bounds check, which is correct when nothing was ever stored.
+      cursorMs: storedThroughMs,
+      // Left null on purpose. The watermark is monotonic by design — a narrower re-run must
+      // not make the store look less complete than it is — so this cannot be walked back,
+      // and STATUS is what the planner and the runner actually gate on.
+      completedThroughMs: null,
+      rowsIngested: 0,
+      requestsSpent: 0,
+      status: "IN_PROGRESS",
+      note: `reopened: rows stop ${Math.round(shortByMs / 60_000)}min short of the window end; `
+        + "COMPLETE had been recorded after a capped page",
+      nowMs,
+    });
+    out.reopened += 1;
+    if (out.reopenedJobs.length < 100) {
+      out.reopenedJobs.push({ jobKey: String(r.job_key), occ, storedThroughMs, windowToMs, shortByMs });
+    }
+  }
+
+  out.note =
+    `${out.reopened} of ${out.examined} COMPLETE quote windows had rows stopping more than `
+    + `${Math.round(tol / 60_000)}min short of their end and were reopened at the last instant `
+    + "actually stored. Trusts the ROWS over the progress table, because the progress table is "
+    + "what was wrong. Repeat-safe: a window whose data genuinely cannot be extended is closed "
+    + "by the no-advance guard on its next pass.";
+  return out;
+}
+
 /**
  * Which symbols matter, in the order they matter.
  *

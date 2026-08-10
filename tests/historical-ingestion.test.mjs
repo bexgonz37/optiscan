@@ -23,8 +23,9 @@ import {
   ingestUnderlyingBarsOnDb,
   ingestContractReferenceOnDb,
   ingestOptionQuotesOnDb,
+  reopenUndercoveredOptionQuoteJobsOnDb,
 } from "../lib/research/historical/ingestion.ts";
-import { readIngestProgressOnDb, ingestJobKey } from "../lib/research/historical/store.ts";
+import { readIngestProgressOnDb, ingestJobKey, advanceIngestProgressOnDb } from "../lib/research/historical/store.ts";
 
 const { applyProductionSchemaOnDb } = await import("@/lib/db");
 
@@ -384,4 +385,134 @@ test("a failed fetch never records coverage", async () => {
   const p = readIngestProgressOnDb(d, ingestJobKey("option_quotes", occ, `${fromMs}..${WEEKEND}`));
   assert.equal(p.status, "FAILED");
   assert.equal(p.completedThroughMs, null, "a failure claims nothing");
+});
+
+// ── repairing windows that already lied ──────────────────────────────────────
+//
+// The coverage fix governs what a FUTURE run records. It cannot help the 73 windows already
+// written as COMPLETE after a single capped page — and because BOTH the planner and the
+// runner skip a COMPLETE job, that damage is self-preserving and the queue reports itself
+// exhausted forever. The repair trusts the ROWS over the progress table, because the
+// progress table is what was wrong.
+
+test("a COMPLETE window whose rows fall short is reopened at the last stored instant", async () => {
+  const d = db();
+  const occ = "O:NVDA260807C00180000";
+  const fromMs = WEEKEND - DAY;
+  const plan = { targets: [{ occ, underlying: "NVDA", fromMs, toMs: WEEKEND }] };
+
+  // Simulate the historical damage exactly: rows covering ten minutes, job marked COMPLETE
+  // through the whole day.
+  const key = ingestJobKey("option_quotes", occ, `${fromMs}..${WEEKEND}`);
+  const ins = d.prepare(
+    `INSERT OR REPLACE INTO historical_option_quotes
+       (occ, ts_ms, bid, ask, bid_size, ask_size, source, ingest_version, ingested_at_ms)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+  );
+  for (let i = 0; i < 500; i++) ins.run(occ, fromMs + i * 1200, 2, 2.1, 1, 1, "t", "t", 1);
+  advanceIngestProgressOnDb(d, {
+    jobKey: key, dataset: "option_quotes", subject: occ, timeframe: `${fromMs}..${WEEKEND}`,
+    cursorMs: WEEKEND, completedThroughMs: WEEKEND, rowsIngested: 500, requestsSpent: 1,
+    status: "COMPLETE", nowMs: 1,
+  });
+  assert.equal(readIngestProgressOnDb(d, key).status, "COMPLETE");
+
+  const rep = reopenUndercoveredOptionQuoteJobsOnDb(d, { nowMs: WEEKEND });
+  assert.equal(rep.examined, 1);
+  assert.equal(rep.reopened, 1);
+  assert.equal(rep.alreadyCovered, 0);
+  assert.equal(rep.reopenedJobs[0].occ, occ);
+  assert.equal(rep.reopenedJobs[0].storedThroughMs, fromMs + 499 * 1200);
+
+  const p = readIngestProgressOnDb(d, key);
+  assert.equal(p.status, "IN_PROGRESS", "back in front of the planner");
+  assert.equal(p.cursorMs, fromMs + 499 * 1200, "resumes from real data, not from the start");
+  assert.ok(/capped page/.test(p.lastNote));
+
+  // And the runner now picks it up, resuming rather than re-buying the stored page.
+  const asked = [];
+  const deps = {
+    now: () => WEEKEND,
+    fetchQuotes: async (o, f, t) => { asked.push(f); return [{ occ: o, tsMs: t, bid: 2, ask: 2.1 }]; },
+  };
+  const r = await ingestOptionQuotesOnDb(d, plan, deps, ON);
+  assert.equal(r.jobs, 1, "the reopened window is fetched");
+  assert.equal(asked[0], fromMs + 499 * 1200, "from the cursor, not from the window start");
+  assert.equal(readIngestProgressOnDb(d, key).status, "COMPLETE", "and now genuinely completes");
+});
+
+test("a window whose rows really do reach its end is left alone", async () => {
+  const d = db();
+  const occ = "O:COVERED260807C00180000";
+  const fromMs = WEEKEND - DAY;
+  const key = ingestJobKey("option_quotes", occ, `${fromMs}..${WEEKEND}`);
+  d.prepare(
+    `INSERT OR REPLACE INTO historical_option_quotes
+       (occ, ts_ms, bid, ask, bid_size, ask_size, source, ingest_version, ingested_at_ms)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+  ).run(occ, WEEKEND - 1000, 2, 2.1, 1, 1, "t", "t", 1);
+  advanceIngestProgressOnDb(d, {
+    jobKey: key, dataset: "option_quotes", subject: occ, timeframe: `${fromMs}..${WEEKEND}`,
+    cursorMs: WEEKEND, completedThroughMs: WEEKEND, rowsIngested: 1, requestsSpent: 1,
+    status: "COMPLETE", nowMs: 1,
+  });
+
+  const rep = reopenUndercoveredOptionQuoteJobsOnDb(d, { nowMs: WEEKEND });
+  assert.equal(rep.alreadyCovered, 1);
+  assert.equal(rep.reopened, 0);
+  assert.equal(readIngestProgressOnDb(d, key).status, "COMPLETE", "no churn on a good window");
+});
+
+test("coverage is judged inside the window, not from a later job on the same contract", async () => {
+  // A newer window on the same OCC must not certify an older one. Counting all rows for the
+  // contract would declare the earlier window covered by data that postdates it entirely.
+  const d = db();
+  const occ = "O:SHARED260807C00180000";
+  const oldFrom = WEEKEND - 3 * DAY;
+  const oldTo = WEEKEND - 2 * DAY;
+  const key = ingestJobKey("option_quotes", occ, `${oldFrom}..${oldTo}`);
+  d.prepare(
+    `INSERT OR REPLACE INTO historical_option_quotes
+       (occ, ts_ms, bid, ask, bid_size, ask_size, source, ingest_version, ingested_at_ms)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+  ).run(occ, WEEKEND - 1000, 2, 2.1, 1, 1, "t", "t", 1);
+  advanceIngestProgressOnDb(d, {
+    jobKey: key, dataset: "option_quotes", subject: occ, timeframe: `${oldFrom}..${oldTo}`,
+    cursorMs: oldTo, completedThroughMs: oldTo, rowsIngested: 1, requestsSpent: 1,
+    status: "COMPLETE", nowMs: 1,
+  });
+
+  const rep = reopenUndercoveredOptionQuoteJobsOnDb(d, { nowMs: WEEKEND });
+  assert.equal(rep.reopened, 1, "the old window holds nothing of its own and is reopened");
+  assert.equal(rep.reopenedJobs[0].storedThroughMs, null, "no rows inside its own bounds");
+});
+
+test("repairing twice does not churn a window a second time", async () => {
+  const d = db();
+  const occ = "O:NVDA260807C00180000";
+  const fromMs = WEEKEND - DAY;
+  const key = ingestJobKey("option_quotes", occ, `${fromMs}..${WEEKEND}`);
+  advanceIngestProgressOnDb(d, {
+    jobKey: key, dataset: "option_quotes", subject: occ, timeframe: `${fromMs}..${WEEKEND}`,
+    cursorMs: WEEKEND, completedThroughMs: WEEKEND, rowsIngested: 0, requestsSpent: 1,
+    status: "COMPLETE", nowMs: 1,
+  });
+  assert.equal(reopenUndercoveredOptionQuoteJobsOnDb(d, { nowMs: WEEKEND }).reopened, 1);
+  // Now IN_PROGRESS, so it is no longer a COMPLETE window claiming coverage it lacks.
+  const second = reopenUndercoveredOptionQuoteJobsOnDb(d, { nowMs: WEEKEND });
+  assert.equal(second.examined, 0, "only COMPLETE windows are candidates for repair");
+  assert.equal(second.reopened, 0);
+});
+
+test("a job whose window bounds cannot be parsed is reported, not silently skipped", async () => {
+  const d = db();
+  advanceIngestProgressOnDb(d, {
+    jobKey: "option_quotes|O:WEIRD260807C00180000|not-a-range",
+    dataset: "option_quotes", subject: "O:WEIRD260807C00180000", timeframe: "not-a-range",
+    cursorMs: null, completedThroughMs: null, rowsIngested: 0, requestsSpent: 1,
+    status: "COMPLETE", nowMs: 1,
+  });
+  const rep = reopenUndercoveredOptionQuoteJobsOnDb(d, { nowMs: WEEKEND });
+  assert.equal(rep.unparseable, 1);
+  assert.equal(rep.reopened, 0);
 });

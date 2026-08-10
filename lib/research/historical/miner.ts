@@ -27,8 +27,10 @@ import {
   ingestContractReferenceOnDb,
   ingestOptionQuotesOnDb,
   ingestUnderlyingBarsOnDb,
+  reopenUndercoveredOptionQuoteJobsOnDb,
   type IngestDeps,
   type IngestRunResult,
+  type QuoteJobRepairResult,
 } from "./ingestion.ts";
 import {
   deriveAndPersistMarketContext,
@@ -80,6 +82,14 @@ export interface MinerRunResult {
     preMoveReplay: DeriveReplayResult | null;
     marketContext: DeriveContextResult | null;
   };
+  /**
+   * Windows that claimed COMPLETE but whose stored rows fell short, put back in the queue.
+   *
+   * Reported separately because it is the only part of a run that CHANGES what the store
+   * believes about itself, and a reader deciding whether the queue is genuinely exhausted
+   * needs to see whether it was exhausted or merely mislabelled.
+   */
+  repairedQuoteWindows: QuoteJobRepairResult | null;
   totals: {
     rowsWritten: number;
     rowsSkippedAsDuplicate: number;
@@ -134,6 +144,7 @@ export async function runHistoricalMinerOnDb(
     plan: { optionWindows: 0, underlyingSymbols: 0, contractReferenceTargets: 0, estimatedRequests: 0 },
     phases: [],
     derived: { preMoveReplay: null, marketContext: null },
+    repairedQuoteWindows: null,
     totals: emptyTotals(),
     coverageAfter: historicalCoverageOnDb(db),
     note: "",
@@ -214,7 +225,33 @@ export async function runHistoricalMinerOnDb(
     accumulate(base.totals, r);
   }
 
-  if (wanted.has("quotes") && plan.optionWindows.length && remaining() > 0) {
+  // Repair before planning quotes, not after. A window marked COMPLETE after a capped page
+  // is skipped by BOTH the planner and the runner, so the queue reports itself exhausted and
+  // the gap is self-preserving. Reopening on the evidence of the stored rows is what puts
+  // those windows back in front of the planner at all.
+  if (wanted.has("quotes") && remaining() > 0) {
+    try {
+      base.repairedQuoteWindows = reopenUndercoveredOptionQuoteJobsOnDb(db, { nowMs: startedAtMs });
+    } catch {
+      base.repairedQuoteWindows = null;
+    }
+  }
+
+  // Re-plan after the repair: the plan built at the top of the run was computed while those
+  // windows still claimed to be COMPLETE.
+  const quotePlan = base.repairedQuoteWindows?.reopened
+    ? buildBackfillPlan(db, {
+      nowMs: startedAtMs,
+      maxOptionWindows: opts.maxOptionWindows,
+      maxUnderlyingSymbols: opts.maxUnderlyingSymbols,
+      lookbackMs: opts.lookbackMs,
+      scope: opts.scope,
+    })
+    : plan;
+  if (quotePlan !== plan) base.plan.optionWindows = quotePlan.optionWindows.length;
+
+  if (wanted.has("quotes") && quotePlan.optionWindows.length && remaining() > 0) {
+    const plan = quotePlan;
     const r = await ingestOptionQuotesOnDb(
       db,
       {
