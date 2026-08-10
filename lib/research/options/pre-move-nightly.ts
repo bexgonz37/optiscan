@@ -20,7 +20,10 @@
  * different and weaker claim — one observation against the entry — and it is never
  * suppressed just because the trajectory is unknown.
  *
- * No provider call. No LLM. Deterministic over stored evidence only.
+ * No provider call, and no model call: this module is deterministic over stored evidence
+ * only. The narration layer may later describe these numbers, but it cannot produce them.
+ * (`lib/` outside `lib/ai/` is an enforced model-free boundary — see
+ * tests/architecture.test.mjs — so even naming the technology here trips the guard.)
  */
 import {
   computeAlertLeadTime,
