@@ -29,6 +29,11 @@ import {
   scoreHistoricalEdgeShadow,
   compareBaselineToShadow,
 } from "../lib/research/historical/edge-shadow.ts";
+import {
+  classifySessionDate,
+  countIndependentSessions,
+  tradingSessionsBetween,
+} from "../lib/research/historical/trading-sessions.ts";
 
 const MIN = 60_000;
 const KEY = { lane: "REPLAY_HISTORICAL" };
@@ -56,12 +61,20 @@ function member(over = {}) {
   };
 }
 
-/** N members spread across `sessions` distinct dates. */
+/**
+ * N members spread across `sessions` distinct REAL trading sessions.
+ *
+ * The naive version walked calendar days and silently produced 2026-08-08 and 08-09 — a
+ * Saturday and a Sunday — for any population wanting six or more sessions. A suite that
+ * asserts on independence counts must not itself invent sessions the market never held.
+ */
+const SESSION_POOL = tradingSessionsBetween("2026-08-03", "2026-10-30");
+
 function population({ n, sessions, make = () => ({}) }) {
+  assert.ok(sessions <= SESSION_POOL.length, "session pool exhausted");
   const out = [];
   for (let i = 0; i < n; i++) {
-    const day = `2026-08-${String(3 + (i % sessions)).padStart(2, "0")}`;
-    out.push(member({ sessionDate: day, ...make(i) }));
+    out.push(member({ sessionDate: SESSION_POOL[i % sessions], ...make(i) }));
   }
   return out;
 }
@@ -301,4 +314,166 @@ test("baseline and shadow disagreement is directional", () => {
   });
   const c = compareBaselineToShadow({ opportunityCaseId: "oc_2", symbol: "NVDA", baselineRank: 18, shadow: strong });
   assert.equal(c.agreement, "SHADOW_PREFERS", "baseline ranked it near the bottom; the shadow did not");
+});
+
+// ── session / calendar accounting ────────────────────────────────────────────
+//
+// The independence floor is the safeguard that stops twenty events from one frantic
+// afternoon reading as twenty independent confirmations. It is therefore the number most
+// worth attacking, and the attack does not have to be deliberate — a `new Set(dates).size`
+// over Eastern CALENDAR dates counts a Saturday as evidence.
+
+test("a calendar date is not automatically a trading session", () => {
+  assert.equal(classifySessionDate("2026-08-06").isTradingSession, true, "Thursday");
+  assert.equal(classifySessionDate("2026-08-08").reason, "WEEKEND", "Saturday");
+  assert.equal(classifySessionDate("2026-08-09").reason, "WEEKEND", "Sunday");
+  // 4 July 2026 is a Saturday, so the market closes on Friday the 3rd.
+  assert.equal(classifySessionDate("2026-07-03").reason, "MARKET_HOLIDAY");
+  assert.equal(classifySessionDate("2026-07-03").holiday, "Independence Day");
+  assert.equal(classifySessionDate("2026-01-01").reason, "MARKET_HOLIDAY");
+  assert.equal(classifySessionDate("2026-04-03").holiday, "Good Friday");
+  assert.equal(classifySessionDate("2026-11-26").holiday, "Thanksgiving Day");
+  // Corrupt inputs must not become sessions.
+  assert.equal(classifySessionDate("1970-01-01").reason, "OUT_OF_RANGE", "a zero epoch");
+  assert.equal(classifySessionDate("2026-02-30").reason, "MALFORMED_DATE", "not a real day");
+  assert.equal(classifySessionDate("not-a-date").reason, "MALFORMED_DATE");
+  assert.equal(classifySessionDate(null).reason, "MALFORMED_DATE");
+});
+
+test("non-trading dates cannot inflate an independent-session count", () => {
+  const real = ["2026-07-27", "2026-07-29", "2026-07-30", "2026-07-31", "2026-08-03", "2026-08-06"];
+  const clean = countIndependentSessions(real);
+  assert.equal(clean.independentSessions, 6, "all six are genuine weekday sessions");
+  assert.deepEqual(clean.rejected, []);
+
+  const padded = countIndependentSessions([
+    ...real, "2026-08-08", "2026-08-09", "2026-07-03", "1970-01-01", "", null,
+  ]);
+  assert.equal(padded.independentSessions, 6, "padding with junk must not raise the count");
+  assert.equal(padded.distinctDatesSeen, 10, "but the junk is still reported, not hidden");
+  assert.equal(padded.rejected.length, 4);
+  assert.ok(padded.warnings.some((w) => w.includes("NOT trading sessions")));
+});
+
+test("duplicate session dates count once", () => {
+  const r = countIndependentSessions(["2026-08-03", "2026-08-03", "2026-08-03", "2026-08-04"]);
+  assert.equal(r.independentSessions, 2);
+  assert.equal(r.distinctDatesSeen, 2);
+});
+
+test("the cohort floor counts verified trading sessions, not distinct strings", () => {
+  // Twenty-two events, but three of the five session dates are weekends.
+  const members = [];
+  const dates = ["2026-08-03", "2026-08-04", "2026-08-08", "2026-08-09", "2026-08-15"];
+  for (let i = 0; i < 22; i++) members.push(member({ sessionDate: dates[i % dates.length] }));
+  const r = computeCohortV2(members, KEY);
+  assert.equal(r.floors.events, 22);
+  assert.equal(r.floors.independentSessions, 2, "three of the five dates are weekends");
+  assert.equal(r.floors.verdict, "INSUFFICIENT_EVIDENCE", "a weekend must not clear the floor");
+  assert.ok(r.floors.reason.includes("WEEKEND"));
+  assert.deepEqual(r.sessions, ["2026-08-03", "2026-08-04"], "reported sessions are the verified ones");
+});
+
+test("the reported session list and the floor never disagree", () => {
+  const r = computeCohortV2(population({ n: 25, sessions: 5 }), KEY);
+  assert.equal(r.sessions.length, r.floors.independentSessions);
+  assert.equal(r.floors.sessionAudit.independentSessions, r.floors.independentSessions);
+  for (const d of r.sessions) assert.equal(classifySessionDate(d).isTradingSession, true);
+});
+
+test("a trading-session span is not a calendar-day span", () => {
+  // The exact confusion behind "6 sessions over a 5-day bars window": the bars range and
+  // the option-quote range are different datasets covering different spans.
+  assert.equal(tradingSessionsBetween("2026-08-03", "2026-08-07").length, 5);
+  assert.equal(tradingSessionsBetween("2026-07-27", "2026-08-06").length, 9);
+  assert.equal(tradingSessionsBetween("2026-08-08", "2026-08-09").length, 0, "a weekend spans none");
+});
+
+// ── zero observed vs evidence unavailable ────────────────────────────────────
+//
+// `probability: 0` is two completely different claims depending on what produced it, and
+// they print identically. This is especially load-bearing for +50/+100/+200, where a
+// coverage gap and a genuine absence of tail moves look the same.
+
+test("a contract with no post-entry quote is not counted as a miss", () => {
+  const witnessed = population({ n: 20, sessions: 5, make: () => ({ postEntryQuotes: 500 }) });
+  const blind = population({
+    n: 5, sessions: 5,
+    make: () => ({
+      postEntryQuotes: 0,
+      evidenceQuality: "UNSUPPORTED",
+      mfePct: null, maePct: null, finalReturnPct: null,
+      msToMilestone: { "10": null, "25": null, "50": null, "100": null, "200": null },
+    }),
+  });
+  const r = computeCohortV2([...witnessed, ...blind], KEY);
+  const p10 = r.milestones.find((m) => m.milestone === 10);
+  assert.equal(p10.of, 20, "the denominator is witnesses, not all 25 members");
+  assert.equal(p10.excludedNoWitness, 5);
+  assert.equal(p10.reached, 20);
+  assert.equal(p10.probability, 1, "20/20, not 20/25 — silence is not a miss");
+});
+
+test("an observed zero and an unobservable milestone are different rows", () => {
+  const r = computeCohortV2(
+    population({ n: 25, sessions: 5, make: () => ({ postEntryQuotes: 800 }) }),
+    KEY,
+  );
+  const p25 = r.milestones.find((m) => m.milestone === 25);
+  assert.equal(p25.observation, "OBSERVED", "the fixture reaches +25%");
+
+  const p100 = r.milestones.find((m) => m.milestone === 100);
+  assert.equal(p100.reached, 0);
+  assert.equal(p100.observation, "OBSERVED_ZERO", "witnesses existed and none reached it");
+  assert.ok(p100.upperBound95 > 0, "0-of-25 bounds the rate, it does not zero it");
+  assert.ok(p100.upperBound95 < 0.2);
+  assert.ok(p100.note.includes("not a"), "the row says what kind of zero it is");
+});
+
+test("no witnesses makes a milestone EVIDENCE_UNAVAILABLE, never a zero probability", () => {
+  const blind = population({
+    n: 25, sessions: 5,
+    make: () => ({
+      postEntryQuotes: 0,
+      evidenceQuality: "UNSUPPORTED",
+      mfePct: null, maePct: null,
+      msToMilestone: { "10": null, "25": null, "50": null, "100": null, "200": null },
+    }),
+  });
+  const r = computeCohortV2(blind, KEY);
+  for (const m of r.milestones) {
+    assert.equal(m.of, 0, "nothing could witness anything");
+    assert.equal(m.observation, "EVIDENCE_UNAVAILABLE");
+    assert.equal(m.probability, null, "absence of observation must never print as 0");
+    assert.equal(m.upperBound95, null);
+  }
+});
+
+test("an unobservable milestone is not scored as measured disadvantage", () => {
+  // The mirror of "missing evidence must not become a favourable zero": it must not become
+  // an UNFAVOURABLE one either, or candidates get penalised for our coverage gaps.
+  const base = population({ n: 25, sessions: 5, make: () => ({ postEntryQuotes: 800 }) });
+  const cohort = computeCohortV2(base, KEY);
+  const tailRow = cohort.milestones.find((m) => m.milestone === 100);
+  assert.equal(tailRow.observation, "OBSERVED_ZERO");
+
+  const observedZero = scoreHistoricalEdgeShadow({ cohort, discovery: null, contract: null });
+  const tail = observedZero.components.find((c) => c.name === "tailUpside");
+  assert.equal(tail.value, 0, "an observed zero IS a finding and is scored");
+  assert.ok(
+    observedZero.warnings.some((w) => w.includes("OBSERVED ZERO")),
+    "but the reader is told it is a bound, not an impossibility",
+  );
+
+  // The same cohort with the tail milestone genuinely unobservable.
+  const unavailable = {
+    ...cohort,
+    milestones: cohort.milestones.map((m) =>
+      m.milestone === 100
+        ? { ...m, observation: "EVIDENCE_UNAVAILABLE", probability: null, of: 0, upperBound95: null }
+        : m),
+  };
+  const s = scoreHistoricalEdgeShadow({ cohort: unavailable, discovery: null, contract: null });
+  const t = s.components.find((c) => c.name === "tailUpside");
+  assert.equal(t.value, null, "unobservable must be null, not 0");
 });

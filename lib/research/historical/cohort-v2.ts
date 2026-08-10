@@ -31,6 +31,7 @@
  * reads anything here.
  */
 import { FORWARD_MILESTONES } from "./replay.ts";
+import { countIndependentSessions, type IndependentSessionCount } from "./trading-sessions.ts";
 import type { WinnerEvent } from "./winner-events.ts";
 
 export const HISTORICAL_COHORT_V2_VERSION = "HISTORICAL_COHORT_V2" as const;
@@ -74,16 +75,34 @@ export interface CohortV2Member {
   maePct: number | null;
   msToMilestone: Record<string, number | null>;
   peakMilestone: number | null;
+  /**
+   * Post-entry quotes on THIS contract.
+   *
+   * The milestone denominator depends on it. A contract with zero post-entry quotes is
+   * not a contract that failed to reach +25% — it is a contract nobody watched, and
+   * counting it as a miss biases every probability downward by exactly the size of the
+   * coverage gap.
+   */
+  postEntryQuotes: number | null;
   evidenceQuality: WinnerEvent["evidenceQuality"];
 }
 
 export interface EvidenceFloorResult {
   verdict: "SUPPORTED" | "INSUFFICIENT_EVIDENCE";
   events: number;
+  /**
+   * VERIFIED trading sessions — never `new Set(dates).size`.
+   *
+   * A calendar date is not a trading session. Counting distinct strings lets a weekend, a
+   * market holiday or a corrupt epoch clear an independence floor, and by the time the
+   * value reaches a floor it is just a number that cannot be questioned.
+   */
   independentSessions: number;
   minEvents: number;
   minSessions: number;
   reason: string;
+  /** The calendar audit behind `independentSessions`, including what was rejected. */
+  sessionAudit: IndependentSessionCount;
 }
 
 export interface RobustnessReport {
@@ -113,10 +132,34 @@ export interface RobustnessReport {
 export interface MilestoneEstimate {
   milestone: number;
   reached: number;
+  /** Denominator: members that COULD have witnessed this milestone. Never total members. */
   of: number;
+  /** Members excluded from the denominator for having no post-entry quote at all. */
+  excludedNoWitness: number;
   probability: number | null;
+  /**
+   * What kind of statement this row is.
+   *
+   *   OBSERVED             — the milestone was reached at least once.
+   *   OBSERVED_ZERO        — witnesses existed and NONE reached it. A real finding.
+   *   EVIDENCE_UNAVAILABLE — nothing could witness it. Not a finding about the setup.
+   *
+   * The two zeros are the distinction this field exists for. A reported `probability: 0`
+   * is meaningless without knowing which one produced it, and "+100% never happens" and
+   * "we have never been able to look" are opposite claims that print identically.
+   */
+  observation: "OBSERVED" | "OBSERVED_ZERO" | "EVIDENCE_UNAVAILABLE";
+  /**
+   * One-sided 95% Wilson upper bound on the true rate.
+   *
+   * 0 of 19 is not evidence that the rate is zero; it is evidence the rate is below
+   * roughly 17%. Publishing the point estimate alone turns a thin sample into an
+   * impossibility claim, which is how +50/+100 get written off.
+   */
+  upperBound95: number | null;
   medianMsToReach: number | null;
   verdict: EvidenceFloorResult["verdict"];
+  note: string;
 }
 
 export interface CohortV2Result {
@@ -165,21 +208,72 @@ function median(xs: number[]): number | null {
 const mean = (xs: number[]): number | null =>
   xs.length ? +(xs.reduce((a, b) => a + b, 0) / xs.length).toFixed(4) : null;
 
+/**
+ * One-sided 95% Wilson upper bound on a binomial rate.
+ *
+ * Wilson rather than the normal approximation because the interesting cases here are
+ * exactly the ones the normal approximation breaks on: k = 0 and small n. Wald would
+ * return a zero-width interval at 0/19 and confirm the very error this bound exists to
+ * prevent.
+ */
+function wilsonUpper95(k: number, n: number): number | null {
+  if (!Number.isFinite(k) || !Number.isFinite(n) || n <= 0 || k < 0 || k > n) return null;
+  const z = 1.959964;
+  const z2 = z * z;
+  const p = k / n;
+  const centre = (p + z2 / (2 * n)) / (1 + z2 / n);
+  const half = (z / (1 + z2 / n)) * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n));
+  return +Math.min(1, centre + half).toFixed(4);
+}
+
+/**
+ * Can this member testify about milestones at all?
+ *
+ * A contract with no post-entry quote observed nothing. Treating its silence as "did not
+ * reach" is the coverage-gap-as-evidence error, applied one row at a time.
+ */
+function canWitnessMilestones(m: CohortV2Member): boolean {
+  if (m.postEntryQuotes != null) return m.postEntryQuotes > 0;
+  // Older members predate the field. UNSUPPORTED is precisely "zero post-entry quotes".
+  return m.evidenceQuality !== "UNSUPPORTED";
+}
+
 function profitFactor(returns: number[]): number | null {
   const win = returns.filter((r) => r > 0).reduce((a, b) => a + b, 0);
   const loss = Math.abs(returns.filter((r) => r <= 0).reduce((a, b) => a + b, 0));
   return loss > 0 ? +(win / loss).toFixed(4) : null;
 }
 
-function floors(events: number, sessions: number, what: string): EvidenceFloorResult {
+/**
+ * Evaluate a floor against events and a bag of SESSION DATES.
+ *
+ * Takes the dates rather than a pre-counted number on purpose: a caller that hands over a
+ * count has already made the decision this function exists to make, and the calendar
+ * check would be one refactor away from being skipped.
+ */
+function floors(
+  events: number,
+  sessionDates: ReadonlyArray<string | null | undefined>,
+  what: string,
+): EvidenceFloorResult {
+  const audit = countIndependentSessions(sessionDates);
+  const sessions = audit.independentSessions;
   const ok = events >= V2_MIN_EVENTS && sessions >= V2_MIN_SESSIONS;
+  const rejectedNote = audit.rejected.length
+    ? ` (${audit.rejected.length} non-trading date(s) excluded: `
+      + `${audit.rejected.map((r) => `${r.date}:${r.reason}`).join(", ")})`
+    : "";
   return {
     verdict: ok ? "SUPPORTED" : "INSUFFICIENT_EVIDENCE",
-    events, independentSessions: sessions,
-    minEvents: V2_MIN_EVENTS, minSessions: V2_MIN_SESSIONS,
+    events,
+    independentSessions: sessions,
+    minEvents: V2_MIN_EVENTS,
+    minSessions: V2_MIN_SESSIONS,
     reason: ok
-      ? `${events} ${what} over ${sessions} independent sessions`
-      : `needs >= ${V2_MIN_EVENTS} ${what} over >= ${V2_MIN_SESSIONS} sessions; has ${events} over ${sessions}`,
+      ? `${events} ${what} over ${sessions} independent trading sessions${rejectedNote}`
+      : `needs >= ${V2_MIN_EVENTS} ${what} over >= ${V2_MIN_SESSIONS} trading sessions; `
+        + `has ${events} over ${sessions}${rejectedNote}`,
+    sessionAudit: audit,
   };
 }
 
@@ -323,26 +417,54 @@ export function computeCohortV2(
   key: CohortV2Key,
   opts: { replayVersion?: string | null } = {},
 ): CohortV2Result {
-  const sessions = [...new Set(members.map((m) => m.sessionDate).filter((s): s is string => !!s))].sort();
-  const floorResult = floors(members.length, sessions.length, "historical events");
+  const floorResult = floors(members.length, members.map((m) => m.sessionDate), "historical events");
+  // The reported sessions are the VERIFIED ones, so `sessions` and the floor can never
+  // disagree about what counted.
+  const sessions = floorResult.sessionAudit.sessions;
 
   const extremeMembers = members.filter((m) => m.evidenceQuality === "VERIFIED" && m.mfePct != null);
-  const extremeSessions = new Set(extremeMembers.map((m) => m.sessionDate).filter(Boolean)).size;
-  const extremeFloors = floors(extremeMembers.length, extremeSessions, "verified extremes");
+  const extremeFloors = floors(extremeMembers.length, extremeMembers.map((m) => m.sessionDate), "verified extremes");
+
+  // Only members that could witness a milestone form its denominator.
+  const witnesses = members.filter(canWitnessMilestones);
+  const excludedNoWitness = members.length - witnesses.length;
 
   const milestones: MilestoneEstimate[] = FORWARD_MILESTONES.map((m) => {
-    const times = members
+    const times = witnesses
       .map((x) => x.msToMilestone[String(m)])
       .filter((v): v is number => v != null);
+    const reached = times.length;
+    const of = witnesses.length;
+
+    const observation: MilestoneEstimate["observation"] = of === 0
+      ? "EVIDENCE_UNAVAILABLE"
+      : reached > 0 ? "OBSERVED" : "OBSERVED_ZERO";
+
+    // A point estimate is published only when the floors hold AND something could witness.
+    const probability = floorResult.verdict === "SUPPORTED" && of > 0
+      ? +(reached / of).toFixed(4)
+      : null;
+    const upper = of > 0 ? wilsonUpper95(reached, of) : null;
+
+    const note = observation === "EVIDENCE_UNAVAILABLE"
+      ? "no member had a post-entry quote; this milestone was never observable and this row "
+        + "is NOT evidence the milestone is unreachable"
+      : observation === "OBSERVED_ZERO"
+        ? `${of} witnessed member(s) and none reached +${m}%. An observed zero, not a `
+          + `probability of zero: the true rate is only bounded below ${upper != null ? `${(upper * 100).toFixed(1)}%` : "an unknown ceiling"}`
+        : `${reached} of ${of} witnessed member(s) reached +${m}%`;
+
     return {
       milestone: m,
-      reached: times.length,
-      of: members.length,
-      probability: floorResult.verdict === "SUPPORTED" && members.length
-        ? +(times.length / members.length).toFixed(4)
-        : null,
+      reached,
+      of,
+      excludedNoWitness,
+      probability,
+      observation,
+      upperBound95: upper,
       medianMsToReach: median(times),
       verdict: floorResult.verdict,
+      note,
     };
   });
 
@@ -354,11 +476,14 @@ export function computeCohortV2(
   const losers = returns.filter((r) => r <= 0);
 
   // "Stopped before doing anything": reached no milestone at all and finished negative.
-  const stopped = members.filter(
-    (m) => FORWARD_MILESTONES.every((x) => m.msToMilestone[String(x)] == null) && (returnOf(m) ?? 0) <= 0,
+  // Witnesses only, and only members whose outcome is actually known — `returnOf(m) ?? 0`
+  // would score every unmeasured member as a non-positive outcome and inflate this.
+  const stopCandidates = witnesses.filter((m) => returnOf(m) != null);
+  const stopped = stopCandidates.filter(
+    (m) => FORWARD_MILESTONES.every((x) => m.msToMilestone[String(x)] == null) && (returnOf(m) as number) <= 0,
   ).length;
 
-  const peakTimes = members
+  const peakTimes = witnesses
     .map((m) => {
       const hit = [...FORWARD_MILESTONES]
         .reverse()
@@ -383,7 +508,10 @@ export function computeCohortV2(
     floors: floorResult,
     extremeSample: extremeFloors,
     milestones,
-    pStopBeforeFirstMilestone: supported(floorResult, members.length ? +(stopped / members.length).toFixed(4) : null),
+    pStopBeforeFirstMilestone: supported(
+      floorResult,
+      stopCandidates.length ? +(stopped / stopCandidates.length).toFixed(4) : null,
+    ),
     expectedMfePct: supported(extremeFloors, mean(extremeMembers.map((m) => m.mfePct as number))),
     expectedMaePct: supported(extremeFloors, mean(extremeMembers.filter((m) => m.maePct != null).map((m) => m.maePct as number))),
     expectedReturnPct: supported(floorResult, mean(returns)),
@@ -437,6 +565,7 @@ export function membersFromWinnerEvents(
       maePct: e.maePct,
       msToMilestone: e.msToMilestone,
       peakMilestone: e.peakMilestone,
+      postEntryQuotes: e.quotesUsed ?? null,
       evidenceQuality: e.evidenceQuality,
     };
   });

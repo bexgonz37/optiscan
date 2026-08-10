@@ -121,8 +121,32 @@ export function scoreHistoricalEdgeShadow(input: EdgeShadowInput): EdgeShadowRes
   }
 
   const supported = cohort.floors.verdict === "SUPPORTED";
-  const p25 = cohort.milestones.find((m) => m.milestone === 25)?.probability ?? null;
-  const p100 = cohort.milestones.find((m) => m.milestone === 100)?.probability ?? null;
+
+  /**
+   * A milestone rate, but only when something actually witnessed it.
+   *
+   * The module's rule cuts both ways. An absent component must not become a FAVOURABLE
+   * zero — and an unobservable milestone must not become an UNFAVOURABLE one either.
+   * `probability: 0` from a cohort where nothing could witness the milestone is not a
+   * measurement of a bad setup, it is a measurement of our coverage, and scoring it would
+   * penalise candidates for our own gaps.
+   */
+  const milestoneRate = (level: number): { value: number | null; observedZero: boolean; upper: number | null } => {
+    const m = cohort.milestones.find((x) => x.milestone === level);
+    if (!m || m.observation === "EVIDENCE_UNAVAILABLE") {
+      return { value: null, observedZero: false, upper: null };
+    }
+    return {
+      value: m.probability,
+      observedZero: m.observation === "OBSERVED_ZERO",
+      upper: m.upperBound95,
+    };
+  };
+
+  const m25 = milestoneRate(25);
+  const m100 = milestoneRate(100);
+  const p25 = m25.value;
+  const p100 = m100.value;
 
   const components: EdgeComponent[] = [
     {
@@ -136,13 +160,14 @@ export function scoreHistoricalEdgeShadow(input: EdgeShadowInput): EdgeShadowRes
       name: "milestoneProbability",
       value: supported ? scale(p25, 0, 0.6) : null,
       weight: 2,
-      basis: "cohort P(+25%) after entry",
+      basis: "cohort P(+25%) after entry, rescaled onto 0..1 across a 0..0.6 range",
     },
     {
       name: "tailUpside",
       value: supported ? scale(p100, 0, 0.25) : null,
       weight: 1,
-      basis: "cohort P(+100%) — asymmetric upside, weighted below the base rate",
+      basis: "cohort P(+100%) rescaled onto 0..1 across a 0..0.25 range — asymmetric upside, "
+        + "weighted below the base rate. Null when no member could witness +100%.",
     },
     {
       name: "expectedDownside",
@@ -255,6 +280,16 @@ export function scoreHistoricalEdgeShadow(input: EdgeShadowInput): EdgeShadowRes
   warnings.push(...cohort.robustness.warnings);
   if (cohort.robustness.survivesBestExcluded === false) {
     warnings.push("the cohort's edge does not survive removing its single best event");
+  }
+  // An observed zero is a real finding, but a thin one. Saying so keeps a reader from
+  // reading "tailUpside 0" as "this setup cannot reach +100%".
+  for (const [level, m] of [[25, m25], [100, m100]] as const) {
+    if (m.observedZero) {
+      warnings.push(
+        `P(+${level}%) is an OBSERVED ZERO, not a demonstrated impossibility`
+        + (m.upper != null ? ` — the sample only bounds the true rate below ${(m.upper * 100).toFixed(1)}%` : ""),
+      );
+    }
   }
 
   return {
