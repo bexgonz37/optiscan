@@ -33,6 +33,7 @@ import { listFindingsOnDb, type FindingsDb } from "./findings-store.ts";
 import { LHC_SELECT_V1, checkFrozen } from "./experiment-registry.ts";
 import { buildOwnerAlertSummaryOnDb, type NightlyDb } from "./nightly-research.ts";
 import { censusShaAttribution, POLICY_VERSIONS } from "./policy-attribution.ts";
+import { buildPreMoveNightlyReport, type PreMoveNightlyReport } from "./pre-move-nightly.ts";
 
 export interface ResearchContextDb extends ShadowDb, FindingsDb, NightlyDb {}
 
@@ -331,6 +332,8 @@ export interface AiResearchContext {
   confirmationCost: ConfirmationCostContext;
   researchLane: ResearchLaneContext;
   missedOpportunities: MissedOpportunityContext | null;
+  /** Pre-move discovery, per lane. Null when the store is unavailable, never {} . */
+  preMove: PreMoveNightlyReport | null;
   systemQuality: SystemQualityContext;
   findings: { findingId: string; statement: string; evidenceStrength: string; sampleSize: number; limitations: readonly string[]; mustNotBeSummarizedAs: string | null }[];
   instructions: string[];
@@ -504,6 +507,15 @@ export function buildAiResearchContextOnDb(
     confirmationCost: buildConfirmationCostContext(rows),
     researchLane,
     missedOpportunities: sessionDate ? buildMissedOpportunityContext(db, sessionDate) : null,
+    // PRE_MOVE_DISCOVERY_V1, lane-separated. This is what lets the nightly ask "did we
+    // find it before it ran" instead of only "did it work" — two questions that a good
+    // realized return can answer identically while meaning opposite things about the
+    // scanner. Isolated: the pre-move store is newer than every other section here and
+    // its absence must not cost the nightly the rest of its context.
+    preMove: (() => {
+      try { return buildPreMoveNightlyReport(db as any, { sinceMs: null }); }
+      catch { return null; }
+    })(),
     systemQuality,
     findings: findings.map((f) => ({
       findingId: f.findingId,
