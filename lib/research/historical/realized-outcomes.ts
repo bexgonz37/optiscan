@@ -528,11 +528,30 @@ export function realizedStats(
       + `>= ${minSessions} trading sessions; has ${closed.length} over ${sessions}`,
     );
   }
-  if (bestShare != null && bestShare >= 0.5) {
-    warnings.push(`one trade supplies ${Math.round(bestShare * 100)}% of realized gross profit`);
+  // A profit factor at or below 1 is the headline, not a footnote. The excursion population
+  // can look healthy — plenty of setups touching +10% — while the policy that traded them
+  // gave the gains back, and without saying so the two get read as one encouraging picture.
+  if (ok && pf != null && pf <= 1) {
+    warnings.push(
+      `realized profit factor is ${pf} — at or below 1, the governing exit policy did NOT capture `
+      + "a positive edge on this population, whatever the excursion probabilities suggest",
+    );
   }
-  if (pf != null && pfExBest != null && pf > 1 && pfExBest <= 1) {
-    warnings.push("realized profit factor falls to <= 1 without the single best trade");
+  if (ok && mean(returns) != null && (mean(returns) as number) <= 0) {
+    warnings.push(`realized mean return is ${mean(returns)}% — negative expectancy as traded`);
+  }
+  // A third of gross profit from one trade already decides the question of whether this is a
+  // measured edge; waiting for a majority share understates how concentrated thin lanes get.
+  if (bestShare != null && bestShare >= 0.33) {
+    warnings.push(
+      `one trade supplies ${Math.round(bestShare * 100)}% of realized gross profit — this is a tail, `
+      + "not a demonstrated edge",
+    );
+  }
+  if (pf != null && pfExBest != null && pfExBest <= 1 && pf > pfExBest) {
+    warnings.push(
+      `realized profit factor falls from ${pf} to ${pfExBest} without the single best trade`,
+    );
   }
   const openCount = outcomes.filter((o) => o.evidenceState === "OPEN_POSITION").length;
   if (openCount > closed.length && openCount > 0) {
