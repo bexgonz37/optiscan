@@ -2243,6 +2243,147 @@ CREATE INDEX IF NOT EXISTS idx_pre_move_discovery_session
 CREATE INDEX IF NOT EXISTS idx_pre_move_discovery_lane
   ON opportunity_pre_move_discovery(lane, first_detected_at_ms);
 
+-- ───────────────────────────────────────────────────────────────────────────
+-- DURABLE HISTORICAL STORE
+--
+-- Until now every historical fetch was answered from the provider and thrown
+-- away: bars were consumed by computeOptionsFeatures per scan and discarded,
+-- and the historical option fetchers cached in memory only. That is why
+-- "provider has it" kept being mistaken for "OptiScan has it" — nothing was
+-- ever possessed.
+--
+-- Three rules hold across every table here.
+--
+-- 1. IDENTITY IS THE PRIMARY KEY, so re-ingesting the same window is a no-op
+--    rather than a duplicate. Every ingestion path must be safe to re-run after
+--    a crash, and dedupe belongs in the schema rather than in each caller.
+-- 2. SOURCE AND QUALITY TRAVEL WITH THE ROW. A trade print and an executable
+--    NBBO answer different questions, and a row that cannot say which it is
+--    will eventually be read as the other one.
+-- 3. NOTHING HERE IS DERIVED. These tables hold what the provider returned,
+--    normalized. Anything computed from them is computed at read time by the
+--    replay engine, so a change to our reasoning never requires rewriting
+--    history.
+--
+-- Additive and inert: no live scanner, gate, alert, stop or exit reads any of
+-- these tables.
+-- ───────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS historical_underlying_bars (
+  symbol TEXT NOT NULL,
+  timeframe TEXT NOT NULL,          -- '1m' | '5m' | '1d'
+  ts_ms INTEGER NOT NULL,           -- bar OPEN time, epoch ms, UTC
+  open REAL, high REAL, low REAL, close REAL,
+  volume REAL,
+  vwap REAL,
+  trade_count INTEGER,
+  source TEXT NOT NULL,             -- provider + endpoint family
+  ingest_version TEXT NOT NULL,
+  quality TEXT NOT NULL,            -- OK | PARTIAL
+  ingested_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (symbol, timeframe, ts_ms)
+);
+CREATE INDEX IF NOT EXISTS idx_hist_bars_symbol_time
+  ON historical_underlying_bars(symbol, timeframe, ts_ms);
+
+-- Executable NBBO. The ONLY table that can answer "what could have been paid".
+CREATE TABLE IF NOT EXISTS historical_option_quotes (
+  occ TEXT NOT NULL,
+  ts_ms INTEGER NOT NULL,
+  bid REAL, ask REAL,
+  bid_size REAL, ask_size REAL,
+  source TEXT NOT NULL,
+  ingest_version TEXT NOT NULL,
+  ingested_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (occ, ts_ms)
+);
+CREATE INDEX IF NOT EXISTS idx_hist_opt_quotes_occ_time
+  ON historical_option_quotes(occ, ts_ms);
+
+-- Trade prints. Deliberately a SEPARATE table from quotes rather than one table
+-- with a kind column: a trade is where the contract traded, an NBBO is what
+-- could have been paid, and the whole failure this store exists to prevent is
+-- one being substituted for the other. Two tables cannot be conflated by a
+-- forgotten filter.
+CREATE TABLE IF NOT EXISTS historical_option_trades (
+  occ TEXT NOT NULL,
+  ts_ms INTEGER NOT NULL,
+  seq INTEGER NOT NULL DEFAULT 0,   -- disambiguates prints sharing a timestamp
+  price REAL,
+  size REAL,
+  source TEXT NOT NULL,
+  ingest_version TEXT NOT NULL,
+  ingested_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (occ, ts_ms, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_hist_opt_trades_occ_time
+  ON historical_option_trades(occ, ts_ms);
+
+-- Expired-contract reference. An expired OCC cannot be resolved any other way,
+-- and without it the historical universe is limited to contracts still listed
+-- today — a survivorship-biased sample of exactly the wrong kind.
+CREATE TABLE IF NOT EXISTS historical_contract_reference (
+  occ TEXT PRIMARY KEY,
+  underlying TEXT NOT NULL,
+  side TEXT NOT NULL,
+  strike REAL,
+  expiration TEXT,
+  expired INTEGER NOT NULL DEFAULT 1,
+  source TEXT NOT NULL,
+  ingest_version TEXT NOT NULL,
+  ingested_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hist_contract_ref_underlying
+  ON historical_contract_reference(underlying, expiration);
+
+-- Ingestion progress. The row that makes a job RESUMABLE rather than
+-- restartable: a run that dies halfway leaves its cursor, and the next run
+-- continues from it instead of re-spending the provider budget on windows
+-- already stored.
+CREATE TABLE IF NOT EXISTS historical_ingestion_progress (
+  job_key TEXT PRIMARY KEY,         -- dataset|symbol-or-occ|timeframe
+  dataset TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  timeframe TEXT,
+  cursor_ms INTEGER,                -- next window start; null = not started
+  completed_through_ms INTEGER,     -- everything at or before this is stored
+  rows_ingested INTEGER NOT NULL DEFAULT 0,
+  requests_spent INTEGER NOT NULL DEFAULT 0,
+  runs INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,             -- PENDING | IN_PROGRESS | COMPLETE | BLOCKED | FAILED
+  last_note TEXT,
+  last_run_at_ms INTEGER,
+  updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hist_ingestion_status
+  ON historical_ingestion_progress(dataset, status);
+
+-- Market context DERIVED from stored bars, kept apart from anything observed
+-- live. A derived row states the bars it was computed from; presenting it as a
+-- live observation would make a reconstruction indistinguishable from a
+-- measurement.
+CREATE TABLE IF NOT EXISTS historical_market_context (
+  session_date TEXT NOT NULL,
+  as_of_ms INTEGER NOT NULL,
+  context_version TEXT NOT NULL,
+  origin TEXT NOT NULL,             -- DERIVED_FROM_HISTORICAL_BARS | OBSERVED_LIVE
+  broad_direction TEXT,
+  spy_trend TEXT, qqq_trend TEXT,
+  spy_change_pct REAL, qqq_change_pct REAL,
+  spy_above_vwap INTEGER, qqq_above_vwap INTEGER,
+  volatility_state TEXT,
+  trend_state TEXT,
+  session_state TEXT,
+  bars_used INTEGER NOT NULL DEFAULT 0,
+  missing_fields_json TEXT,
+  quality TEXT NOT NULL,
+  ingest_version TEXT NOT NULL,
+  created_at_ms INTEGER NOT NULL,
+  PRIMARY KEY (session_date, as_of_ms, origin)
+);
+CREATE INDEX IF NOT EXISTS idx_hist_market_context_date
+  ON historical_market_context(session_date, as_of_ms);
+
 CREATE TABLE IF NOT EXISTS opportunity_content_events (
   id TEXT PRIMARY KEY,
   opportunity_case_id TEXT NOT NULL,
