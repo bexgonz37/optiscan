@@ -182,15 +182,21 @@ export const MASSIVE_CAPABILITY_MATRIX: readonly CapabilityRow[] = Object.freeze
   {
     dataType: "Contract reference, including expired contracts",
     endpoint: "GET /v3/reference/options/contracts?expired=true",
-    providerMethod: null,
+    // CORRECTED 2026-08-10. This row said `null` / NOT_INTEGRATED while
+    // fetchContractUniverse had already shipped in the same module the rows above
+    // cite. The matrix is only worth reading if it is re-checked against the code
+    // rather than against the last time someone remembered to edit it, and a row
+    // claiming "the next integration to build" for something already built is how a
+    // session gets spent rebuilding it.
+    providerMethod: "fetchContractUniverse (lib/research/asymmetry/historical/massive-historical.ts)",
     availability: "AVAILABLE_PROVEN",
-    integration: "NOT_INTEGRATED",
+    integration: "INTEGRATED_UNUSED",
     historicalDepth: "confirmed back to 2010 expirations",
     bidAskAvailable: false,
     requestCost: "1 request per 200-1,000 contracts",
-    paginationCost: "next_url; 1 request per page",
-    cacheStatus: "no wrapper, so no cache",
-    blocker: "Needed to enumerate the historical cohort universe — an expired OCC cannot be found any other way. This is the next integration to build.",
+    paginationCost: "explicit strike cursor, 1 request per page, capped at maxPages",
+    cacheStatus: "in-memory cache keyed [underlying|window|REFERENCE|...]; DURABLE rows now land in historical_contract_reference",
+    blocker: "The fetcher and the durable table both exist; nothing scheduled calls the ingestion lane yet, so the table stays empty until HISTORICAL_INGESTION_ENABLED=1 and a run happens off-peak.",
     evidence: "Probe 2026-07-31: 200. expired=true + expiration_date range returned 200 NVDA contracts per page for 2026, 2025, 2024 and 2023 windows. NOTE: combining as_of with an expiration_date range returned 0 rows — use the date range alone.",
   },
   {
