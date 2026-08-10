@@ -1,5 +1,227 @@
 # Current Task Packet
 
+## Packet update — 2026-08-10 (5) The session count was right, the bookkeeping was not, and the realized profit factor is 0.94
+
+### Verified state (checked, not assumed)
+
+- Baseline verified from git AND production BEFORE any change:
+  local = `origin/main` = production = `b28f04d`. Tracked tree clean, 19 untracked scratch
+  files untouched — still 19 at the end.
+- Production healthy throughout. Session `AFTERHOURS` for the whole engineering window, so
+  the historical miner gate allowed off-peak work and the live scanner kept provider priority.
+- `LHC_SELECT_V1` **untouched** — neither experiment file opened.
+- No strategy threshold, ranking weight, stop, exit, provider cap, owner quality gate or
+  subscriber readiness rule changed. Subscriber distribution still BLOCKED. No real money.
+- Recaps, nightly AI, owner alerts, `OWNER_VALIDATION_PAPER` and `PRE_MOVE_DISCOVERY_V1`
+  all left ENABLED. Nothing disabled anywhere.
+
+### PRIORITY 1 — the "6 sessions over a 5-day window" discrepancy: the count was CORRECT
+
+The premise was that 21 events across 6 independent sessions could not come from bars
+spanning 2026-08-03..08-07, which is five trading dates.
+
+The six sessions are `2026-07-27, 07-29, 07-30, 07-31, 08-03, 08-06` — six distinct
+genuine weekdays, none a holiday. Nothing was wrong.
+
+**The conflation was between two datasets.** Winner events are anchored on option NBBO
+coverage, which spans `2026-07-27..2026-08-06` (nine trading sessions). Bars span
+`2026-08-03..2026-08-07` (five). Comparing the event-session count against the BARS range
+is what made a correct number look inflated. `coverageBreakdown.datasetSpanMismatch` now
+states both spans side by side so the question cannot be asked the same way twice.
+
+**But the count was correct and UNGUARDED, which is a different finding.** Independence was
+`new Set(sessionDate).size` over Eastern CALENDAR dates, and a calendar date is not a
+trading session. A weekend, a market holiday or a corrupt epoch produces a well-formed
+`YYYY-MM-DD` that clears an independence floor, and by the time the value reaches the floor
+it is a number nobody can question.
+
+`trading-sessions.ts` now counts independence against a rule-based NYSE calendar — rules
+rather than a hardcoded table, because a table fails PERMISSIVELY the year it runs out.
+Verified against all ten published 2026 closures plus 2025 spot checks, including
+Independence Day 2026 falling on a Saturday and closing Friday 3 July. Rejected dates are
+REPORTED, not dropped: "your floor of 5 was cleared using a Saturday" is the most useful
+thing the count can say.
+
+The test suite's own `population()` helper was generating `2026-08-08` and `08-09` — a
+Saturday and a Sunday — for any fixture wanting six or more sessions. It now walks real
+trading sessions.
+
+### PRIORITY 17 — a milestone denominator that counted contracts nobody watched
+
+Two of the 21 events had **zero post-entry quotes** and were still sitting in every
+milestone denominator as though they had failed to reach the milestone. A contract nobody
+observed is not a contract that went nowhere, and counting its silence as a miss biases
+every probability down by exactly the size of the coverage gap.
+
+Denominators are now WITNESSES only, which moved the real numbers:
+
+| milestone | before | after |
+|---|---|---|
+| +10% | 7/21 = 0.3333 | 7/19 = **0.3684** |
+| +25% | 3/21 = 0.1429 | 3/19 = **0.1579** |
+
+`pStopBeforeFirstMilestone` had the same defect twice over: it counted unwatched members
+AND scored members with no known outcome as non-positive via `?? 0`.
+
+**And `probability: 0` was two opposite claims sharing one rendering.** Milestones now say
+which — `OBSERVED`, `OBSERVED_ZERO` (witnesses existed, none reached it) or
+`EVIDENCE_UNAVAILABLE` (nothing could look) — each carrying a Wilson 95% upper bound. 0 of
+19 bounds the true rate below ~16.8%; it does not zero it. This matters most at
++50/+100/+200, where a coverage gap and a genuine absence of tail moves are otherwise
+indistinguishable.
+
+`HISTORICAL_EDGE_SHADOW_V1` inherits the mirror of its own founding rule. It already
+refused to let an absent component become a FAVOURABLE zero; an unobservable milestone must
+not become an UNFAVOURABLE one either, or candidates get penalised for our coverage gaps.
+
+### PRIORITIES 2 and 3 — realized outcomes joined, and the answer is not flattering
+
+`HIST_REALIZED_V1` joins each event to the paper mirror that traded it. Identity is refused
+unless provable: exact OCC, same opportunity case, entry instant within the window. The
+case rule is the tempting one to drop and the reason not to — one liquid contract gets
+selected by several cases in a week, and an OCC-only join attaches a return to whichever
+decision the query returned first. Two equally valid matches are AMBIGUOUS, not resolved.
+
+**The entry-price rule was wrong and the data proved it.** At a two-cent tolerance it
+refused 12 of 21 real joins, every one the historical NBBO ask at the detection instant
+against the live fill minutes later, differing by a nickel (−0.05 to +0.50, median 0.02).
+Those are two MEASUREMENTS of one trade, not two trades — and the realized return is
+computed from the mirror's OWN fills, so cross-source disagreement cannot make it wrong.
+The comparison is kept and REPORTED as `entryAgreement` with its delta; it no longer
+discards outcomes. Joins went 9/21 → **21/21**.
+
+Realized returns are recomputed from the fills, never read from the stored `return_pct`
+(which can drift from its own prices unnoticed), and **never derived from MFE**. There is
+no code path from an excursion to a realized return. An open position stays OPEN rather
+than being marked to market, because marking an unclosed loser is how it becomes a statistic.
+
+**The realized record, now that it clears its floor at 21 closed trades over 6 sessions:**
+
+| | |
+|---|---|
+| win rate | 23.81% (5 of 21) |
+| mean return | **−2.07%** |
+| median return | −41.12% |
+| average winner | +139.44% |
+| average loser | −46.30% |
+| **profit factor** | **0.9412** |
+| payoff ratio | 3.01 |
+| PF excluding best trade | 0.4769 |
+| PF with returns capped at +100% | 0.4746 |
+| best trade share of gross profit | 49.3% |
+| survives best excluded | **false** |
+
+The excursion side looks healthy — a third of setups touch +10% — and the policy that
+traded them gave back slightly more than it captured. Those are the two numbers that must
+never be read as one picture, which is why they now live under separate keys with separate
+floors and separate denominators.
+
+**This printed with an EMPTY warnings array.** The tail warning only fired above PF 1, and
+the concentration warning only at a majority share — this cohort sits at 49.3%, just under.
+So the two most important facts about the population were the two it did not mention.
+Sub-1 PF and non-positive expectancy now warn explicitly, and the concentration threshold
+drops to a third.
+
+### PRIORITIES 9 and 18 — and the root cause of the 27% executable rate
+
+`HIST_COVERAGE_V1` attributes every refusal to a cause and, more usefully, to a REMEDY:
+MINEABLE (a window we have not fetched), NOT_MINEABLE (the provider had no executable
+quote), IDENTITY_DEFECT (the candidate does not identify a tradeable contract). Pooling
+those makes a solvable problem look permanent. It calls the SAME quote resolver the replay
+engine calls with the SAME staleness tolerance, so it can never report coverage we lack —
+it is a work list, not a relaxation.
+
+The verdict on 78 candidates: **21 SUPPORTED, 54 MINEABLE, 3 NOT_MINEABLE.** The 27%
+support rate was almost entirely a fetching gap.
+
+**Then the work list contradicted the job table, and the job table was lying.**
+
+Every option-quote job read COMPLETE with zero resumable work, so the planner planned 0
+windows. Meanwhile 54 events had no entry quote. The rows settled it:
+
+```
+O:SPY260807P00770000    requested 7h   stored 13:30:00 -> 13:37:22   4,477 rows
+O:GOOGL260807P00357500  requested 7h   stored 14:36:21 -> 15:11:41   4,165 rows
+O:IWM260807P00300000    requested 7h   stored 13:30:00 -> 13:40:15   4,468 rows
+```
+
+Every job stopped at roughly 4,200–4,600 rows. That is a bounded provider page, and on a
+liquid contract NBBO updates thousands of times a minute — so 4,500 rows is MINUTES of a
+seven-hour window. The runner issued one fetch, did not throw, and recorded
+`completed_through_ms = toMs`. **COMPLETE meant "the call succeeded", not "the data covers
+the window".**
+
+The previous packet had already written down the risk — *"Truncation is surfaced, not
+swallowed. On a liquid contract 5,000 NBBO rows can span under a minute"* — and the adapter
+did compute a `truncated` flag. `liveIngestDeps` dropped it on the way through by taking
+`.rows`. The hazard was identified, documented, and then lost in one destructuring.
+
+So coverage is now derived from the rows that actually landed rather than from a flag that
+had already proven droppable. A window is COMPLETE only when stored data reaches its end,
+within a two-minute tolerance that sits inside the five-minute staleness bound the replay
+engine uses. A capped page records IN_PROGRESS with the cursor at the last instant STORED,
+and the next pass resumes from there. Two guards prevent infinite retry: an empty response
+closes the window, and a page that does not advance past the cursor closes it too — each
+recording why, and those closures mean "examined and exhausted" rather than "assumed
+covered".
+
+Two existing tests asserted the old behaviour: their fakes returned one quote near the
+start of a full-day window and expected COMPLETE. They were encoding the bug.
+
+### PRIORITIES 7 and 8 — replay and context rows now persist
+
+`PRE_MOVE_DISCOVERY_REPLAY_V1` was computed and thrown away; `historical_market_context`
+had a table, a writer and a reader and 0 rows because nothing called them.
+
+`HIST_DERIVE_V1` persists both, and the load-bearing decision is that **origin is part of
+the PRIMARY KEY**, not a column beside it. A live discovery row is something the scanner
+really saw; a replay row is an inference from whatever a backfill happened to fetch. Shared
+identity would let a reconstruction of the past satisfy a lookup meant for a forward
+observation, and every prospective statistic downstream would be contaminated invisibly. A
+test writes both origins for the same instant and asserts two rows survive.
+
+Repeat safety comes from that key, not from bookkeeping — same version UPDATES, new version
+ADDS — and `created_at_ms` is deliberately untouched by the upsert so a reconstruction that
+changed once more history arrived is detectable.
+
+**First real run, zero provider requests:**
+
+- replay: 78 examined, **78 persisted**, 0 failed. Stages: 13 `EARLY_CONFIRMATION`,
+  6 `EARLY_EXPANSION`, 3 `MATURE_MOVE`, 4 `TOO_LATE`, **52 `UNGRADABLE`**.
+- market context: **0 → 70 rows** across 5 sessions (08-03..08-07), every one `COMPLETE`
+  quality.
+
+The 52 UNGRADABLE rows are the same contracts with no executable entry quote. Discovery
+staging and executable-entry coverage are bottlenecked on the SAME pagination defect, which
+is the strongest available argument for fixing it before reading anything into the stages.
+
+Context rows are only derived for sessions with SPY/QQQ bars, and an INSUFFICIENT
+reconstruction is NOT written — `readHistoricalMarketContextOnDb` would return it as the
+context in force, and an UNKNOWN regime would start looking like a measured one.
+
+### What did NOT get done, and why that matters
+
+This session did not reach: shadow live observation on ranked candidates (P12), the
+prospective baseline-vs-shadow scoreboard (P13), extending history toward the provider's
+earliest entitled date (P5), the option-trade entitlement question (P10), pre-run winner
+research (P11), nightly/weekly AI context (P14), Ask OptiScan exposure of the new evidence
+(P15/P16), and the owner forward-evidence reconciliation (P19).
+
+**P11 in particular should not be attempted yet.** Pre-run winner research compares setups
+that reached +50/+100/+200 against losers, and the current evidence has ZERO observed
+milestones above +25% — with an upper bound of 16.8% rather than a demonstrated zero. There
+is no winner population to characterise until the mineable windows are backfilled. Running
+it now would produce a characterisation of three or four events and read as a finding.
+
+### The number to watch next session
+
+`profitFactor 0.9412` on 21 closed trades, 49.3% of gross profit from one trade, not
+surviving best-excluded. That is the first realized measurement this lane has ever produced
+and it does NOT support a subscriber decision. Forward evidence remains the only thing that
+can validate the hypothesis; historical replay can only initialize one.
+
+---
+
 ## Packet update — 2026-08-10 (4) The historical intelligence phase is built end to end, and the first real backfill ran
 
 ### Verified state (checked, not assumed)
