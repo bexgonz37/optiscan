@@ -33,6 +33,7 @@ export interface SchedulerIntervals {
   asymmetryPaperMs: number;
   asymmetryPaperGateMs: number;
   asymmetryEodMs: number;
+  historicalMinerMs: number;
 }
 
 function clampInt(v: string | undefined, def: number, min: number, max: number): number {
@@ -86,6 +87,10 @@ export function schedulerIntervals(env: NodeJS.ProcessEnv = process.env): Schedu
     asymmetryPaperGateMs: clampInt(env.SCHED_ASYMMETRY_PAPER_GATE_MS, 120_000, 60_000, 30 * 60_000),
     // End-of-day review check. Hourly; the job itself is idempotent per day.
     asymmetryEodMs: clampInt(env.SCHED_ASYMMETRY_EOD_MS, 60 * 60_000, 5 * 60_000, 6 * 60 * 60_000),
+    // Historical mining. Checked every 15 minutes; the job itself refuses during RTH, so
+    // the interval only controls how soon after the close a backfill can begin. A short
+    // interval costs nothing when the gate says no — the check reads no provider.
+    historicalMinerMs: clampInt(env.SCHED_HISTORICAL_MINER_MS, 15 * 60_000, 60_000, 6 * 60 * 60_000),
   };
 }
 

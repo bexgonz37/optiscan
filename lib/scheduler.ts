@@ -22,7 +22,7 @@ import { isEarlyCloseDay } from "@/lib/market-session-guard";
 const LEASE_NAME = "scheduler";
 const BASE_TICK_MS = 15_000;
 
-type JobName = "maintenance" | "learning" | "supervisor" | "improvement" | "aiJobs" | "brokerReadiness" | "subscriberReadiness" | "contentDrafts" | "overnightResearch" | "watchlistPlanning" | "asymmetryTransitions" | "asymmetryMarks" | "asymmetryPaper" | "asymmetryPaperGate" | "asymmetryEod";
+type JobName = "maintenance" | "learning" | "supervisor" | "improvement" | "aiJobs" | "brokerReadiness" | "subscriberReadiness" | "contentDrafts" | "overnightResearch" | "watchlistPlanning" | "asymmetryTransitions" | "asymmetryMarks" | "asymmetryPaper" | "asymmetryPaperGate" | "asymmetryEod" | "historicalMiner";
 
 export interface SchedulerState {
   started: boolean;
@@ -33,6 +33,22 @@ export interface SchedulerState {
   runs: Record<JobName, number>;
   note: string;
   lastError: string | null;
+  /**
+   * Last historical mining pass. Records the REFUSAL as well as the run, because
+   * "the gate said no" and "it ran and found nothing" look identical in a row count
+   * and mean opposite things about the health of the lane.
+   */
+  lastHistoricalMiner?: {
+    ranAtMs: number;
+    ran: boolean;
+    skippedReason: string | null;
+    sessionState: string;
+    rowsWritten: number;
+    requestsIssued: number;
+    requestsBlocked: number;
+    jobsCompleted: number;
+    jobsResumable: number;
+  } | null;
   /** Last Watchlist planning outcome — makes context/plan failures visible. */
   lastWatchlistPlanning?: {
     ranAtMs: number;
@@ -105,9 +121,9 @@ function state(): SchedulerState {
   const g = globalThis as G;
   g.__optiscanScheduler ??= {
     started: false, isOwner: false, ownerPid: null, lastBeatAtMs: null,
-    lastRun: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null, brokerReadiness: null, subscriberReadiness: null, contentDrafts: null, overnightResearch: null, watchlistPlanning: null, asymmetryTransitions: null, asymmetryMarks: null, asymmetryPaper: null, asymmetryPaperGate: null, asymmetryEod: null },
-    runs: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0, subscriberReadiness: 0, contentDrafts: 0, overnightResearch: 0, watchlistPlanning: 0, asymmetryTransitions: 0, asymmetryMarks: 0, asymmetryPaper: 0, asymmetryPaperGate: 0, asymmetryEod: 0 },
-    note: "not started", lastError: null, lastWatchlistPlanning: null,
+    lastRun: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null, brokerReadiness: null, subscriberReadiness: null, contentDrafts: null, overnightResearch: null, watchlistPlanning: null, asymmetryTransitions: null, asymmetryMarks: null, asymmetryPaper: null, asymmetryPaperGate: null, asymmetryEod: null, historicalMiner: null },
+    runs: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0, subscriberReadiness: 0, contentDrafts: 0, overnightResearch: 0, watchlistPlanning: 0, asymmetryTransitions: 0, asymmetryMarks: 0, asymmetryPaper: 0, asymmetryPaperGate: 0, asymmetryEod: 0, historicalMiner: 0 },
+    note: "not started", lastError: null, lastWatchlistPlanning: null, lastHistoricalMiner: null,
     lastProfessionalWatchlist: { overnight: null, premarket: null },
   };
   // Pre-existing global state from an older build may lack the newer field.
@@ -725,6 +741,49 @@ async function beat(): Promise<void> {
   if (jobDue(s.lastRun.overnightResearch, iv.overnightResearchMs, nowMs)) {
     await runJob("overnightResearch", () => overnightResearchJob(nowMs), nowMs);
   }
+  if (jobDue(s.lastRun.historicalMiner, iv.historicalMinerMs, nowMs)) {
+    await runJob("historicalMiner", () => historicalMinerJob(nowMs), nowMs);
+  }
+}
+
+/**
+ * Historical mining. OFF-PEAK ONLY, and the gate that enforces that lives inside the
+ * runner rather than here — scheduling is not authorization, and a second caller
+ * (a diagnostics POST, a script) must hit the same refusal.
+ *
+ * Deliberately small per pass. This is a background lane filling a research store; a
+ * long-running job would hold the scheduler beat and delay work the live system needs.
+ * It resumes from persisted cursors, so many short passes reach the same place as one
+ * long one without ever competing.
+ *
+ * The whole job is a no-op unless HISTORICAL_INGESTION_ENABLED=1.
+ */
+async function historicalMinerJob(nowMs: number): Promise<void> {
+  if (process.env.HISTORICAL_INGESTION_ENABLED !== "1") return;
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { runHistoricalMinerOnDb } = require("@/lib/research/historical/miner");
+  const result = await runHistoricalMinerOnDb(
+    db(),
+    {
+      nowMs,
+      maxRunMs: Number(process.env.HISTORICAL_MINER_MAX_RUN_MS ?? 120_000),
+      maxOptionWindows: Number(process.env.HISTORICAL_MINER_MAX_OPTION_WINDOWS ?? 10),
+      maxUnderlyingSymbols: Number(process.env.HISTORICAL_MINER_MAX_SYMBOLS ?? 10),
+    },
+    {},
+    process.env,
+  );
+  state().lastHistoricalMiner = {
+    ranAtMs: nowMs,
+    ran: result.ran,
+    skippedReason: result.skippedReason,
+    sessionState: result.sessionState,
+    rowsWritten: result.totals.rowsWritten,
+    requestsIssued: result.totals.requestsIssued,
+    requestsBlocked: result.totals.requestsBlocked,
+    jobsCompleted: result.totals.jobsCompleted,
+    jobsResumable: result.totals.jobsResumable,
+  };
 }
 
 /** Start the scheduler once per process. Idempotent; safe to call from boot. */
