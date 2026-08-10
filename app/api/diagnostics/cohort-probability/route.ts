@@ -39,6 +39,7 @@ export async function GET(req: Request) {
     const sinceMs = days === 0 ? null : Date.now() - days * 86_400_000;
 
     const key = {
+      paperKind: url.searchParams.get("lane"),
       strategyKey: url.searchParams.get("strategy"),
       side: (url.searchParams.get("side") as "CALL" | "PUT" | null) ?? null,
       dteBucket: url.searchParams.get("dte"),
@@ -47,6 +48,18 @@ export async function GET(req: Request) {
 
     const members = loadCohortMembersOnDb(db, { sinceMs });
     const overall = computeCohortStatistics(selectCohort(members, key), key);
+
+    // Per-lane is ALWAYS returned, never opt-in. The lanes are disjoint populations, so
+    // the pooled figure above is a diagnostic and not a performance claim; making the
+    // honest cut something a caller has to remember to ask for is how the pooled number
+    // ends up quoted. Cheap: the members are already loaded.
+    const byLane = [...new Set(members.map((m) => m.paperKind ?? "UNCLASSIFIED"))]
+      .sort()
+      .map((lane) => {
+        const k = { ...key, paperKind: lane === "UNCLASSIFIED" ? null : lane };
+        const rows = members.filter((m) => (m.paperKind ?? "UNCLASSIFIED") === lane);
+        return computeCohortStatistics(selectCohort(rows, { ...k, paperKind: null }), k);
+      });
 
     // The Part-11 gate, evaluated rather than asserted. Each item is a fact this
     // deployment can check about itself right now.
@@ -104,9 +117,14 @@ export async function GET(req: Request) {
       floors: { minTrades: MIN_TRADES_FOR_PROBABILITY, minIndependentSessions: MIN_SESSIONS_FOR_PROBABILITY },
       population: { membersLoaded: members.length, windowDays: days === 0 ? "ALL" : days },
       cohort: overall,
+      byLane,
       breakdown,
       note:
-        "A null statistic means the sample did not clear the floors — it NEVER means zero. Raw counts are "
+        (overall.pooledAcrossLanes
+          ? "`cohort` POOLS " + overall.lanesIncluded.join(", ") + " and is a DIAGNOSTIC, not a performance "
+            + "claim — those lanes have never coexisted as one tradeable population. Read `byLane`. "
+          : "")
+        + "A null statistic means the sample did not clear the floors — it NEVER means zero. Raw counts are "
         + "reported alongside withheld rates so the evidence is visible without handing over a rate it "
         + "cannot support. Trajectory figures admit VERIFIED_EXCURSION only; realized figures admit "
         + "verified closed outcomes only. Nothing here has production authority.",

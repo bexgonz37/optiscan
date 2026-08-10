@@ -54,6 +54,17 @@ export const MILESTONES = [10, 25, 50, 100] as const;
 
 /** The dimensions a cohort may be cut on. Every one is knowable BEFORE entry. */
 export interface CohortKey {
+  /**
+   * THE LANE. `paper_kind` on the mirror: DELIVERED_ALERT_PAPER,
+   * OWNER_VALIDATION_PAPER, RESEARCH_ONLY_PAPER, ZERO_DTE_RESEARCH_PAPER.
+   *
+   * Listed first because omitting it is the most expensive mistake this module can
+   * make. The lanes are disjoint populations with different gates, different audiences
+   * and different selection rules; a pooled expectancy over all four describes a
+   * population that has never existed and cannot be traded. A cohort built without
+   * this key is marked `pooledAcrossLanes` and says so in its own limitations.
+   */
+  paperKind?: string | null;
   strategyKey?: string | null;
   side?: "CALL" | "PUT" | null;
   regime?: string | null;
@@ -66,6 +77,8 @@ export interface CohortKey {
 export interface CohortMember {
   opportunityCaseId: string;
   tradeId: number;
+  /** The lane this trade belongs to. Never blended with another. */
+  paperKind: string | null;
   sessionDate: string | null;
   symbol: string | null;
   optionSymbol: string | null;
@@ -114,6 +127,17 @@ export interface CohortStatistics {
   excursionSample: EvidenceStrength;
   /** Sample admitted for REALIZED claims — verified closed outcomes. */
   realizedSample: EvidenceStrength;
+
+  /**
+   * True when the cohort spans more than one paper lane.
+   *
+   * Not an error, but never a tradeable figure: a pooled expectancy over delivered
+   * alerts, owner validation, shadow research and 0DTE research describes a population
+   * that has never existed. Surfaced as a field rather than a footnote so a consumer
+   * must handle it.
+   */
+  pooledAcrossLanes: boolean;
+  lanesIncluded: string[];
 
   milestoneProbabilities: MilestoneProbability[];
   expectedMfePct: number | null;
@@ -240,7 +264,7 @@ export function loadCohortMembersOnDb(
     const params = opts.sinceMs != null ? [opts.sinceMs, limit] : [limit];
     rows = (db.prepare(
       `SELECT t.id, t.option_symbol, t.side, t.dte, t.status, t.return_pct, t.entry_fill,
-              t.strategy, t.alert_id, t.created_at_ms, t.entered_at_ms, t.underlying_price, t.strike,
+              t.strategy, t.paper_kind, t.alert_id, t.created_at_ms, t.entered_at_ms, t.underlying_price, t.strike,
               c.opportunity_id, c.underlying_symbol, c.session_date,
               p.discovery_stage
          FROM options_paper_trades t
@@ -270,6 +294,7 @@ export function loadCohortMembersOnDb(
       sessionDate: r.session_date == null ? null : String(r.session_date),
       symbol: r.underlying_symbol == null ? null : String(r.underlying_symbol),
       optionSymbol: occ,
+      paperKind: r.paper_kind == null ? null : String(r.paper_kind),
       strategyKey: r.strategy == null ? null : String(r.strategy),
       side: r.side == null ? null : (String(r.side).toUpperCase() === "PUT" ? "PUT" : "CALL"),
       dte: num(r.dte),
@@ -294,6 +319,7 @@ export function loadCohortMembersOnDb(
  */
 export function selectCohort(members: readonly CohortMember[], key: CohortKey): CohortMember[] {
   return members.filter((m) => {
+    if (key.paperKind != null && m.paperKind !== key.paperKind) return false;
     if (key.strategyKey != null && m.strategyKey !== key.strategyKey) return false;
     if (key.side != null && m.side !== key.side) return false;
     if (key.dteBucket != null && dteBucketOf(m.dte) !== key.dteBucket) return false;
@@ -309,6 +335,8 @@ export function computeCohortStatistics(
   key: CohortKey,
 ): CohortStatistics {
   const sessions = [...new Set(members.map((m) => m.sessionDate).filter((s): s is string => !!s))].sort();
+  const lanesIncluded = [...new Set(members.map((m) => m.paperKind ?? "UNCLASSIFIED"))].sort();
+  const pooledAcrossLanes = lanesIncluded.length > 1;
 
   const excursionRows = members.filter((m) => m.excursionVerified && m.mfePct != null);
   const excursionSessions = new Set(excursionRows.map((m) => m.sessionDate).filter(Boolean)).size;
@@ -365,6 +393,8 @@ export function computeCohortStatistics(
     sessions,
     excursionSample,
     realizedSample,
+    pooledAcrossLanes,
+    lanesIncluded,
     milestoneProbabilities,
     expectedMfePct: supported(excursionSample, mean(excursionRows.map((r) => r.mfePct as number))),
     expectedMaePct: supported(excursionSample, mean(excursionRows.filter((r) => r.maePct != null).map((r) => r.maePct as number))),
@@ -380,6 +410,14 @@ export function computeCohortStatistics(
     exitConvention: "realized: the closing exit fill on the SAME OCC. Excursion: best/worst same-contract mark.",
     memberCaseIds: members.map((m) => m.opportunityCaseId).filter(Boolean),
     limitations: [
+      ...(pooledAcrossLanes
+        ? [
+          `POOLED ACROSS ${lanesIncluded.length} LANES (${lanesIncluded.join(", ")}). These are disjoint `
+          + "populations with different gates, audiences and selection rules. This expectancy describes a "
+          + "population that has never existed and must NOT be quoted as the system's performance. Pass "
+          + "paperKind to get a figure that means something.",
+        ]
+        : [`Single lane: ${lanesIncluded[0] ?? "none"}.`]),
       "SHADOW ONLY. No gate, threshold, ranking weight, stop, exit or subscriber decision reads any of this.",
       "Trajectory figures admit VERIFIED_EXCURSION rows only; realized figures admit verified closed outcomes only. The two samples differ and are reported separately.",
       "A null figure means the sample did not clear the floors. It never means zero.",

@@ -236,3 +236,85 @@ test("bucket helpers are total: absent inputs bucket to null, never to a default
   assert.equal(moneynessBucketOf(-0.4), "ATM", "moneyness is bucketed by distance, not by sign");
   assert.equal(moneynessBucketOf(20), "FAR_OTM");
 });
+
+// ── the pooling trap ─────────────────────────────────────────────────────────
+//
+// Measured live at 4beb355: the ALL cohort reported profit factor 0.5246 over 642
+// "verified realized outcomes". Those 642 spanned DELIVERED_ALERT_PAPER,
+// OWNER_VALIDATION_PAPER, RESEARCH_ONLY_PAPER and ZERO_DTE_RESEARCH_PAPER — four lanes
+// with different gates, audiences and selection rules that have never coexisted as one
+// tradeable population. The number is arithmetically correct and describes nothing.
+
+function seedLaneTrade(d, { sessionDate, paperKind, returnPct }) {
+  seq += 1;
+  const alertId = `oa_lane_${seq}`;
+  const occ = `O:X2608${String(10 + (seq % 20)).padStart(2, "0")}C00${100 + seq}000`;
+  const atMs = T0 + seq * 60_000;
+  d.prepare(
+    `INSERT INTO opportunity_cases
+       (opportunity_id, underlying_symbol, detected_at_ms, source_path, acceptance_decision,
+        delivery_decision, case_json, created_at_ms, updated_at_ms, alert_id, session_date)
+     VALUES (?,?,?,'scanner','accepted','delivered','{}',?,?,?,?)`,
+  ).run(`oc_lane_${seq}`, "X", atMs, atMs, atMs, alertId, sessionDate);
+  d.prepare(
+    `INSERT INTO options_paper_trades
+       (option_symbol, side, strike, expiration, dte, result_class, entry_fill, status, return_pct,
+        strategy, paper_kind, alert_id, created_at_ms, updated_at_ms)
+     VALUES (?,'call',180,'2026-08-14',4,'REAL_OPTION_PAPER',2.0,'EXITED',?,'s',?,?,?,?)`,
+  ).run(occ, returnPct, paperKind, alertId, atMs, atMs);
+}
+
+test("a cohort spanning lanes says so, and the per-lane figures disagree with the pooled one", () => {
+  const d = db();
+  // A profitable delivered lane and an unprofitable research lane.
+  for (let i = 0; i < 25; i++) {
+    const day = new Date(T0 + (i % 5) * DAY).toISOString().slice(0, 10);
+    seedLaneTrade(d, { sessionDate: day, paperKind: "DELIVERED_ALERT_PAPER", returnPct: 60 });
+    seedLaneTrade(d, { sessionDate: day, paperKind: "RESEARCH_ONLY_PAPER", returnPct: -40 });
+  }
+  const all = loadCohortMembersOnDb(d, {});
+
+  const pooled = computeCohortStatistics(selectCohort(all, {}), {});
+  assert.equal(pooled.pooledAcrossLanes, true);
+  assert.equal(pooled.lanesIncluded.length, 2);
+  assert.ok(
+    pooled.limitations.some((l) => l.includes("POOLED ACROSS")),
+    "the pooled figure carries its own refutation",
+  );
+
+  const delivered = computeCohortStatistics(
+    selectCohort(all, { paperKind: "DELIVERED_ALERT_PAPER" }),
+    { paperKind: "DELIVERED_ALERT_PAPER" },
+  );
+  const research = computeCohortStatistics(
+    selectCohort(all, { paperKind: "RESEARCH_ONLY_PAPER" }),
+    { paperKind: "RESEARCH_ONLY_PAPER" },
+  );
+
+  assert.equal(delivered.pooledAcrossLanes, false);
+  assert.equal(delivered.winRate, 1, "the delivered lane never lost");
+  assert.equal(research.winRate, 0, "the research lane never won");
+  // The pooled win rate is 0.5 — a rate belonging to neither lane and to no strategy
+  // anyone could have traded.
+  assert.equal(pooled.winRate, 0.5);
+  assert.notEqual(pooled.winRate, delivered.winRate);
+  assert.notEqual(pooled.winRate, research.winRate);
+});
+
+test("a single-lane cohort states its lane instead of a pooling warning", () => {
+  const d = db();
+  for (let i = 0; i < 25; i++) {
+    seedLaneTrade(d, {
+      sessionDate: new Date(T0 + (i % 5) * DAY).toISOString().slice(0, 10),
+      paperKind: "OWNER_VALIDATION_PAPER", returnPct: 15,
+    });
+  }
+  const s = computeCohortStatistics(
+    selectCohort(loadCohortMembersOnDb(d, {}), { paperKind: "OWNER_VALIDATION_PAPER" }),
+    { paperKind: "OWNER_VALIDATION_PAPER" },
+  );
+  assert.equal(s.pooledAcrossLanes, false);
+  assert.deepEqual(s.lanesIncluded, ["OWNER_VALIDATION_PAPER"]);
+  assert.ok(s.limitations.some((l) => l.startsWith("Single lane:")));
+  assert.ok(s.cohortId.includes("paperKind=OWNER_VALIDATION_PAPER"), "the lane is part of the cohort identity");
+});
