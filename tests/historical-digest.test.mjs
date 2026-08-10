@@ -10,6 +10,7 @@
  *   2. consuming held rows can never raise SENT, resend a delivered outcome,
  *      delete a row, or outrank live content.
  */
+import "./helpers/register-alias.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
@@ -38,56 +39,17 @@ import { describeReason } from "../lib/content/delivery-reason.ts";
 const NOW = Date.parse("2026-08-06T02:00:00.000Z");
 const CLOSED_AT = NOW - 3 * 24 * 60 * 60_000;
 
+const { applyProductionSchemaOnDb } = await import("@/lib/db");
+
+/**
+ * The SAME migration production runs. An earlier hand-copied version of this schema had
+ * no options_paper_trades/options_paper_marks at all, so the digest's excursion check
+ * could only ever resolve to "unverified" — a fixture in which the verified path was
+ * unreachable and therefore untested.
+ */
 function makeDb() {
   const db = new Database(":memory:");
-  db.exec(`
-    CREATE TABLE opportunity_content_events (
-      id TEXT PRIMARY KEY, opportunity_case_id TEXT, event_type TEXT, symbol TEXT,
-      occurred_at_ms INTEGER, frozen_entry REAL, current_mark REAL, return_percent REAL,
-      milestone_percent REAL, max_return_percent REAL, direction TEXT, option_type TEXT,
-      strike REAL, expiration TEXT, original_thesis_json TEXT, evidence_summary_json TEXT,
-      strategy_key TEXT, content_status TEXT, label TEXT, payload_json TEXT, created_at_ms INTEGER
-    );
-    CREATE TABLE content_drafts (
-      id TEXT PRIMARY KEY, fingerprint TEXT UNIQUE, content_event_id TEXT, opportunity_case_id TEXT,
-      alert_id TEXT, claim_packet_id TEXT, category TEXT, template_family TEXT, template_version TEXT,
-      platform TEXT, draft_text TEXT, char_count INTEGER, hashtags_json TEXT, screenshot_suggestion TEXT,
-      chart_annotation TEXT, cta_type TEXT, result_type TEXT, frozen_entry REAL, mark_used REAL,
-      original_alert_at_ms INTEGER, trading_session_date TEXT, status TEXT,
-      discord_delivery_status TEXT, discord_message_id TEXT, final_copy TEXT,
-      created_at_ms INTEGER, updated_at_ms INTEGER, approved_at_ms INTEGER, rejected_at_ms INTEGER,
-      manually_posted_at_ms INTEGER, discord_delivery_reason TEXT, discord_delivery_explanation TEXT,
-      discord_delivery_retryable INTEGER, discord_delivery_detail TEXT,
-      discord_attempt_count INTEGER DEFAULT 0, discord_last_attempt_at_ms INTEGER
-    );
-    -- Real production shape: options_alerts has NO opportunity_case_id column,
-    -- the link runs through opportunity_cases.alert_id.
-    CREATE TABLE opportunity_cases (
-      opportunity_id TEXT PRIMARY KEY, underlying_symbol TEXT, direction TEXT, setup_family TEXT,
-      detected_at_ms INTEGER, market_session TEXT, source_path TEXT, acceptance_decision TEXT,
-      delivery_decision TEXT, rejection_reason_codes_json TEXT, alert_id TEXT, case_json TEXT,
-      created_at_ms INTEGER, updated_at_ms INTEGER
-    );
-    CREATE TABLE options_alerts (
-      alert_id TEXT PRIMARY KEY, candidate_symbol TEXT, strategy TEXT, option_symbol TEXT,
-      side TEXT, state TEXT, created_at_ms INTEGER, updated_at_ms INTEGER
-    );
-    CREATE TABLE content_digests (
-      id TEXT PRIMARY KEY, generated_at_ms INTEGER, delivered_at_ms INTEGER, discord_message_id TEXT,
-      delivery_status TEXT DEFAULT 'GENERATED', delivery_reason TEXT, trigger_source TEXT,
-      evidence_version TEXT, covered_from_ms INTEGER, covered_to_ms INTEGER,
-      included_count INTEGER DEFAULT 0, excluded_count INTEGER DEFAULT 0,
-      duplicates_collapsed INTEGER DEFAULT 0, messages_prevented INTEGER DEFAULT 0,
-      stats_json TEXT, rendered_text TEXT
-    );
-    CREATE TABLE content_digest_members (
-      digest_id TEXT, outcome_id TEXT, included INTEGER DEFAULT 1, exclusion_reason TEXT,
-      opportunity_case_id TEXT, symbol TEXT, occ TEXT, result TEXT, return_percent REAL,
-      cause_code TEXT, cause_provable INTEGER, evidence_quality TEXT, collapsed_variants INTEGER DEFAULT 0,
-      representative_draft_id TEXT, draft_ids_json TEXT, content_event_ids_json TEXT,
-      created_at_ms INTEGER, PRIMARY KEY (digest_id, outcome_id)
-    );
-  `);
+  applyProductionSchemaOnDb(db);
   return db;
 }
 
@@ -147,6 +109,38 @@ function seedFloodCase(db, caseId = "oc_flood") {
     }
   }
   return caseId;
+}
+
+/**
+ * Make a case's peak PROVABLE: give it the frozen contract identity it would really
+ * carry, a mirror on that exact contract, and enough same-contract marks to support an
+ * extreme. Without this the digest can only ever say "unverified", which is correct but
+ * is only half the behaviour worth pinning.
+ */
+function seedVerifiedPeak(db, caseId, occ, { entry = 3.15, marks = [-10, 55.5556, -48.5714] } = {}) {
+  db.prepare("UPDATE opportunity_cases SET case_json=? WHERE opportunity_id=?").run(
+    JSON.stringify({
+      opportunityId: caseId,
+      underlyingSymbol: "AAPL",
+      alertId: `a_${caseId}`,
+      selectedContract: { optionSymbol: occ, side: "put", strike: 305, expiration: "2026-08-03" },
+      frozenTrade: { entryMid: entry, immutable: true },
+      summary: { frozenEntry: entry, maxReturnPct: 55.5556 },
+    }),
+    caseId,
+  );
+  const info = db.prepare(
+    `INSERT INTO options_paper_trades
+       (option_symbol, side, strike, expiration, dte, result_class, entry_fill, status,
+        paper_kind, alert_id, created_at_ms, updated_at_ms)
+     VALUES (?,'put',305,'2026-08-03',0,'REAL_OPTION_PAPER',?,'EXITED','DELIVERED_ALERT_PAPER',?,?,?)`,
+  ).run(occ, entry, `a_${caseId}`, CLOSED_AT, CLOSED_AT);
+  marks.forEach((ret, i) => {
+    db.prepare(
+      `INSERT INTO options_paper_marks (trade_id, option_symbol, mark_at_ms, return_pct, created_at_ms)
+       VALUES (?,?,?,?,?)`,
+    ).run(Number(info.lastInsertRowid), occ, CLOSED_AT + (i + 1) * 60_000, ret, CLOSED_AT);
+  });
 }
 
 function capture(ok = true) {
@@ -366,13 +360,53 @@ test("an unprovable cause is stated as unproven, never as a story", () => {
   assert.equal(digest.stats.verifiedRootCauses, 0);
 });
 
-test("a peak far above entry closing red is reported as PROFIT_GIVEN_BACK", () => {
+test("a PROVEN peak far above entry closing red is reported as PROFIT_GIVEN_BACK", () => {
   const db = makeDb();
-  seedFloodCase(db);
+  const caseId = seedFloodCase(db);
+  seedVerifiedPeak(db, caseId, "AAPL260803P00305000");
   const digest = buildHistoricalDigest({ rows: readHeldDraftRows(db), nowMs: NOW, env: {} });
+  assert.equal(digest.included[0].maxReturnPercent, 55.5556, "the peak is on the frozen contract");
   assert.equal(digest.included[0].causeCode, "PROFIT_GIVEN_BACK");
   assert.equal(digest.included[0].causeProvable, true);
   assert.equal(digest.stats.verifiedRootCauses, 1);
+});
+
+test("an UNPROVEN peak cannot narrate PROFIT_GIVEN_BACK, and the loss still stands", () => {
+  const db = makeDb();
+  // Identical case with the same +55.5556% stored on the content event — but no mirror
+  // and no marks, so nothing the frozen contract printed supports it. This is the shape
+  // that published +185.4%: the digest read the ratcheted copy raw and called it
+  // "best mark".
+  seedFloodCase(db);
+  const digest = buildHistoricalDigest({ rows: readHeldDraftRows(db), nowMs: NOW, env: {} });
+  const o = digest.included[0];
+  assert.equal(o.maxReturnPercent, null, "an unsupported peak is withheld, never the original");
+  assert.equal(o.causeCode, "INSUFFICIENT_EVIDENCE");
+  assert.equal(o.causeProvable, false);
+  // Withholding the peak must not discard the outcome. The realized return is one
+  // observation against the frozen entry and reconciles on its own.
+  assert.equal(o.result, "LOSER");
+  assert.equal(o.returnPercent, -48.5714);
+  assert.equal(o.evidenceQuality, "PARTIAL", "less complete evidence, honestly scored");
+});
+
+test("a peak the frozen contract never printed is withheld, not quietly reduced", () => {
+  const db = makeDb();
+  const caseId = seedFloodCase(db);
+  // The mirror exists and is well marked, but its best mark is +12%. The case summary
+  // still claims +55.5556% — exactly the cross-contract inflation pattern.
+  seedVerifiedPeak(db, caseId, "AAPL260803P00305000", { marks: [-10, 12, -48.5714] });
+  const digest = buildHistoricalDigest({ rows: readHeldDraftRows(db), nowMs: NOW, env: {} });
+  // UNSUPPORTED_MAX_RETURN yields null, NOT the +12% the contract did print. That is the
+  // established policy and it is the conservative one: a case whose summary is provably
+  // wrong has an identity problem, and quietly swapping in a smaller number would
+  // publish a second unaudited figure while looking like a correction.
+  assert.equal(
+    digest.included[0].maxReturnPercent,
+    null,
+    "knowing the stored peak is wrong is not knowing the right one",
+  );
+  assert.notEqual(digest.included[0].maxReturnPercent, 55.5556, "and the inflated value never survives");
 });
 
 test("an unrecorded return falls back to the category, not to a loss", () => {

@@ -36,6 +36,7 @@ import {
 } from "./historical-digest.ts";
 import { describeReason, redactForPersistence } from "./delivery-reason.ts";
 import type { ContentDeliverResult } from "./content-drafts-runtime.ts";
+import { resolvePublishableExcursionOnDb } from "../opportunity-case/excursion.ts";
 
 interface RtDb {
   prepare(sql: string): {
@@ -110,6 +111,24 @@ export function readHeldDraftRows(
         ORDER BY e.occurred_at_ms DESC, d.created_at_ms ASC
         LIMIT ?`,
     ).all(...reasons, limit) as Record<string, unknown>[];
+    // `e.max_return_percent` is a COPY of the case summary's ratcheted maxReturnPct,
+    // taken when the event was emitted — the poisoned value, and the literal source of
+    // the +185.4% GOOGL figure. The individual draft renderer already supersedes it with
+    // a claim check; the digest read it raw and rendered it as "best mark", so the same
+    // unverified peaks reached the owner by the other door.
+    //
+    // Resolving here rather than at the render site means the grouping, the failure-cause
+    // derivation and the evidence-quality score all reason over the verified value too.
+    // An unverified peak becomes null, and null is rendered as unavailable — never as
+    // the original, which is the number known to be wrong.
+    const verifiedPeak = (caseId: string | null): number | null => {
+      if (!caseId) return null;
+      try {
+        return resolvePublishableExcursionOnDb(db as any, caseId).maxReturnPct;
+      } catch {
+        return null;
+      }
+    };
     return rows.map((r) => ({
       draftId: String(r.draft_id),
       contentEventId: String(r.content_event_id ?? ""),
@@ -131,7 +150,9 @@ export function readHeldDraftRows(
       frozenEntry: num(r.frozen_entry) ?? num(r.draft_frozen_entry),
       currentMark: num(r.current_mark),
       returnPercent: num(r.return_percent),
-      maxReturnPercent: num(r.max_return_percent),
+      // Realized return is one observation against the frozen entry and stands on its
+      // own. The peak is a claim about every moment of the hold and must be earned.
+      maxReturnPercent: verifiedPeak(str(r.opportunity_case_id)),
       eventOccurredAtMs: num(r.occurred_at_ms),
       draftCreatedAtMs: num(r.draft_created_at_ms),
     }));
