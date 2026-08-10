@@ -27,7 +27,7 @@ export async function GET(req: Request) {
     const { tradingDay } = await import("@/lib/trading-session");
     const {
       deltaSourceSplitOnDb, terminalReasonBreakdownOnDb, readRecentFunnelEvidenceOnDb,
-      strategyStageBreakdownOnDb,
+      strategyStageBreakdownOnDb, providerPressureAccountingOnDb,
     } = await import("@/lib/research/options/contract-funnel-store");
     const { evaluateDiscoveryHealth, rankAlerts } = await import("@/lib/research/options/discovery-monitor");
     const { getDb } = await import("@/lib/db");
@@ -46,6 +46,15 @@ export async function GET(req: Request) {
     const scope: { symbol?: string; side?: "call" | "put" } = { symbol, side };
     const split = deltaSourceSplitOnDb(db, date, scope);
     const terminalReasons = terminalReasonBreakdownOnDb(db, date, scope);
+    // Both units and both time ranges, side by side. Quoting a rolling-window refusal
+    // count against a full-session one is what made 49 and 780 look contradictory when
+    // they were the same event measured differently.
+    const providerPressure = {
+      fullSession: providerPressureAccountingOnDb(db, date, scope),
+      rollingWindow: providerPressureAccountingOnDb(db, date, {
+        ...scope, sinceMs: Date.now() - windowMs, windowMs,
+      }),
+    };
     const recent = readRecentFunnelEvidenceOnDb(db, date, Date.now() - windowMs, 2000, scope);
     const recentSinceMs = Date.now() - windowMs;
     const quoteByKey = (() => {
@@ -136,6 +145,7 @@ export async function GET(req: Request) {
           : "Share of SELECTED contracts that required the missing-data fallback.",
       },
       terminalReasons,
+      providerPressure,
       terminalReasonUnits:
         "count = contract-selection ATTEMPTS (one per candidate evaluation); distinctSymbols = unique "
         + "underlyings. A symbol blocked all session is re-attempted every cooldown, so attempts are "

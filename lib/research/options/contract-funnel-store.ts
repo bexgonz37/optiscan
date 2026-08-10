@@ -424,3 +424,119 @@ export function terminalReasonBreakdownOnDb(
     return [];
   }
 }
+
+/**
+ * Provider pressure, counted in every unit at once.
+ *
+ * The 49-versus-780 confusion was never a disagreement about facts. Both numbers were
+ * right and neither said which unit it was in: 49 was refusals in a 15-MINUTE ROLLING
+ * WINDOW, 780 was refusals across the FULL SESSION, and 617 was the DISTINCT SYMBOLS
+ * behind those 780. Quoting any of them without its unit invites the next reader to
+ * compare it against a different one.
+ *
+ * So every unit is reported together and named:
+ *
+ *   attempts        — one per candidate evaluation that reached contract selection.
+ *                     The scanner re-evaluates a symbol each cooldown, so one symbol
+ *                     blocked all session contributes many.
+ *   distinctSymbols — how many different underlyings were affected. The number that
+ *                     answers "how much opportunity did we lose".
+ *   retryRatio      — attempts / distinctSymbols. How much of the attempt count is
+ *                     re-evaluation rather than breadth. 1.26x for quota refusals,
+ *                     which is why retries do NOT explain the 49/780 gap — the time
+ *                     range does.
+ *
+ * Read-only. This changes no cap, no cadence and no allocation; it only stops a
+ * refusal total from being quotable as a candidate total.
+ */
+export interface ProviderPressureAccounting {
+  sessionDate: string;
+  /** The window these numbers cover, stated so it can never be inferred wrongly. */
+  window: {
+    unit: "FULL_SESSION" | "ROLLING_WINDOW";
+    sinceMs: number | null;
+    windowMs: number | null;
+  };
+  byReason: {
+    reason: string;
+    attempts: number;
+    distinctSymbols: number;
+    /** attempts / distinctSymbols, or null when nothing was refused. */
+    retryRatio: number | null;
+  }[];
+  totals: {
+    attempts: number;
+    distinctSymbols: number;
+    quotaAttempts: number;
+    quotaDistinctSymbols: number;
+  };
+  semantics: Record<string, string>;
+}
+
+export function providerPressureAccountingOnDb(
+  db: StoreDb,
+  sessionDate: string,
+  opts: FunnelScope & { sinceMs?: number | null; windowMs?: number | null } = {},
+): ProviderPressureAccounting {
+  const rolling = opts.sinceMs != null;
+  const empty: ProviderPressureAccounting = {
+    sessionDate,
+    window: {
+      unit: rolling ? "ROLLING_WINDOW" : "FULL_SESSION",
+      sinceMs: opts.sinceMs ?? null,
+      windowMs: opts.windowMs ?? null,
+    },
+    byReason: [],
+    totals: { attempts: 0, distinctSymbols: 0, quotaAttempts: 0, quotaDistinctSymbols: 0 },
+    semantics: {
+      attempts: "one contract-selection attempt; a symbol re-evaluated each cooldown contributes many",
+      distinctSymbols: "distinct underlyings affected — the unit that answers 'how much opportunity was lost'",
+      retryRatio: "attempts / distinctSymbols; how much of the attempt count is re-evaluation, not breadth",
+      window: "FULL_SESSION counts the whole trading day; ROLLING_WINDOW counts only the last windowMs",
+      warning: "attempts and distinctSymbols are DIFFERENT UNITS. Never compare one against the other.",
+    },
+  };
+  try {
+    ensureContractFunnelSchema(db);
+    const { sql: whereSql, args } = funnelWhere(
+      sessionDate, opts, opts.sinceMs != null ? { sinceMs: opts.sinceMs } : undefined,
+    );
+    const rows = db.prepare(
+      `SELECT terminal_reason AS reason, COUNT(*) AS attempts,
+              COUNT(DISTINCT symbol) AS distinctSymbols
+         FROM contract_funnel_evidence WHERE ${whereSql}
+        GROUP BY terminal_reason ORDER BY attempts DESC`,
+    ).all(...args) as { reason: string; attempts: number; distinctSymbols: number }[];
+
+    const byReason = rows.map((r) => {
+      const attempts = Number(r.attempts ?? 0);
+      const distinctSymbols = Number(r.distinctSymbols ?? 0);
+      return {
+        reason: String(r.reason),
+        attempts,
+        distinctSymbols,
+        // null, not 1: with nothing refused there is no ratio to state.
+        retryRatio: distinctSymbols > 0 ? +(attempts / distinctSymbols).toFixed(3) : null,
+      };
+    });
+
+    const total = db.prepare(
+      `SELECT COUNT(*) AS attempts, COUNT(DISTINCT symbol) AS distinctSymbols
+         FROM contract_funnel_evidence WHERE ${whereSql}`,
+    ).get(...args) as { attempts: number; distinctSymbols: number } | undefined;
+    const quota = byReason.find((r) => r.reason === "PROVIDER_QUOTA_EXCEEDED");
+
+    return {
+      ...empty,
+      byReason,
+      totals: {
+        attempts: Number(total?.attempts ?? 0),
+        distinctSymbols: Number(total?.distinctSymbols ?? 0),
+        quotaAttempts: quota?.attempts ?? 0,
+        quotaDistinctSymbols: quota?.distinctSymbols ?? 0,
+      },
+    };
+  } catch {
+    return empty;
+  }
+}
