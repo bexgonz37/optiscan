@@ -152,6 +152,54 @@ export interface SupplementalEvidence {
     realizedStillOpen: number;
     excursionVerified: number;
   } | null;
+  /**
+   * The historical lane: what the durable store holds, what the replay record found,
+   * and what the shadow model makes of it.
+   *
+   * Carried separately from every live figure above, and every item says so in its
+   * `pipeline`. A replay-derived statistic and a live measurement answer different
+   * questions, and a chat that can cite a number WILL cite it — so if the two ever
+   * shared a label, "we have seen 40 setups like this" would silently mean
+   * "we reconstructed 40 from a backfill whose coverage we did not state".
+   */
+  historical?: {
+    /** Possession, not entitlement. Zero rows here means no historical claim is supported. */
+    barRows: number;
+    barSymbols: number;
+    optionQuoteRows: number;
+    optionQuoteContracts: number;
+    optionTradeRows: number;
+    contractReferenceRows: number;
+    earliestIngestedMs: number | null;
+    latestIngestedMs: number | null;
+    /** Winner-event extraction over real cases. */
+    eventsExamined: number;
+    events: number;
+    /** No stored quote at the entry instant: a COVERAGE gap, not a flat trade. */
+    refusedNoEntry: number;
+    reached25: number;
+    reached50: number;
+    reached100: number;
+    /** Cohort V2. */
+    cohortId: string | null;
+    cohortLane: string | null;
+    cohortEvents: number;
+    cohortSessions: number;
+    cohortVerdict: string;
+    pReached25: number | null;
+    pReached50: number | null;
+    expectedReturnPct: number | null;
+    profitFactor: number | null;
+    profitFactorExBest: number | null;
+    survivesBestExcluded: boolean | null;
+    /** Shadow model. */
+    shadowState: string;
+    shadowScore: number | null;
+    shadowComponentsScored: number;
+    shadowComponentsDefined: number;
+    replayVersion: string | null;
+    warnings: string[];
+  } | null;
   preMove?: {
     examined: number;
     withOwnerAlert: number;
@@ -314,6 +362,69 @@ function supplementalItems(supp: SupplementalEvidence | undefined): EvidenceItem
       "Measured from the alert. A milestone reached before it is never counted here.");
     p("premove.milestone25Of", "Alerts with same-contract marks to measure", pm.milestone25Of, "trades", pm.milestone25Of,
       "The denominator. An unmarked alert is unmeasured, not a failure to reach +25%.");
+  }
+
+  const h = supp?.historical;
+  if (h) {
+    const hi = (id: string, label: string, value: number | string | boolean | null, unit: string | null, sample: number | null, meaning: string) => {
+      items.push({
+        id, label, value: typeof value === "boolean" ? (value ? "yes" : "no") : value, unit,
+        pipeline: "historical_replay", lane: h.cohortLane ?? "REPLAY_HISTORICAL",
+        timeWindow: "durable historical store", sampleSize: sample,
+        confidence: sample == null ? "LOW" : sample >= 100 ? "HIGH" : sample >= 20 ? "MEDIUM" : "LOW",
+        qualityStatus: value == null ? "MISSING_DATA" : "VALID", freshness: "historical",
+        sourceRef: "historical_option_quotes/forwardExcursionOnDb/HISTORICAL_COHORT_V2",
+        meaning, safeForTopLine: true,
+        numericForms: isNum(value) ? numericForms(value) : [],
+      });
+    };
+
+    // Possession first. Every figure below is meaningless if these are zero, and a
+    // reader must be able to see that before reading anything else.
+    hi("hist.barRows", "Historical underlying bars stored", h.barRows, "rows", h.barRows,
+      "POSSESSION, not entitlement. Zero means no historical reconstruction is possible at all.");
+    hi("hist.barSymbols", "Symbols with stored bars", h.barSymbols, "symbols", h.barRows, "Breadth of the reconstructable universe.");
+    hi("hist.optionQuoteRows", "Historical NBBO rows stored", h.optionQuoteRows, "rows", h.optionQuoteRows,
+      "Executable quotes. The ONLY store that can answer what could have been paid.");
+    hi("hist.optionQuoteContracts", "Exact contracts with stored NBBO", h.optionQuoteContracts, "contracts", h.optionQuoteRows, "Distinct OCCs.");
+    hi("hist.optionTradeRows", "Historical trade prints stored", h.optionTradeRows, "rows", h.optionTradeRows,
+      "Where the contract traded. NEVER substituted for an executable quote.");
+    hi("hist.contractReferenceRows", "Expired-inclusive contracts resolved", h.contractReferenceRows, "contracts", h.contractReferenceRows,
+      "Without these an expired OCC cannot be described at all.");
+
+    hi("hist.eventsExamined", "Historical candidates examined", h.eventsExamined, "candidates", h.eventsExamined,
+      "Real opportunity cases with a frozen OCC.");
+    hi("hist.events", "Historical events extracted", h.events, "events", h.eventsExamined,
+      "Candidates that had an executable entry quote. A contract that went nowhere IS an event.");
+    hi("hist.refusedNoEntry", "Candidates with no stored entry quote", h.refusedNoEntry, "candidates", h.eventsExamined,
+      "A COVERAGE gap, not evidence of no move. Never pooled with events that went nowhere.");
+    hi("hist.reached25", "Historical events reaching +25%", h.reached25, "events", h.events, "Measured from the ask at entry.");
+    hi("hist.reached50", "Historical events reaching +50%", h.reached50, "events", h.events, "Measured from the ask at entry.");
+    hi("hist.reached100", "Historical events reaching +100%", h.reached100, "events", h.events, "Measured from the ask at entry.");
+
+    hi("hist.cohortEvents", "Cohort sample size", h.cohortEvents, "events", h.cohortEvents, "Events in the comparable cohort.");
+    hi("hist.cohortSessions", "Cohort independent sessions", h.cohortSessions, "sessions", h.cohortEvents,
+      "Twenty events from one morning are ONE observation of one market.");
+    hi("hist.cohortVerdict", "Cohort evidence verdict", h.cohortVerdict, null, h.cohortEvents,
+      "INSUFFICIENT_EVIDENCE means the floors were not met — it does not mean no edge.");
+    hi("hist.pReached25", "P(+25%) from history", h.pReached25, "ratio", h.cohortEvents,
+      "Null unless BOTH floors are met. A null is not a low probability.");
+    hi("hist.pReached50", "P(+50%) from history", h.pReached50, "ratio", h.cohortEvents,
+      "Null unless BOTH floors are met.");
+    hi("hist.expectedReturnPct", "Historical expected return", h.expectedReturnPct, "%", h.cohortEvents,
+      "Last observed value per event, never the peak.");
+    hi("hist.profitFactor", "Historical profit factor", h.profitFactor, "ratio", h.cohortEvents, "Gross win over gross loss.");
+    hi("hist.profitFactorExBest", "Profit factor without the best event", h.profitFactorExBest, "ratio", h.cohortEvents,
+      "The tail-dependence check. A large gap between this and the headline means one trade carried it.");
+    hi("hist.survivesBestExcluded", "Edge survives removing the best event", h.survivesBestExcluded, null, h.cohortEvents,
+      "A cohort driven by one giant winner is a tail, not an edge.");
+
+    hi("hist.shadowState", "Historical Edge Shadow state", h.shadowState, null, h.cohortEvents,
+      "SHADOW ONLY. Never affects live ranking. INSUFFICIENT_HISTORICAL_EVIDENCE yields a NULL score, not a low one.");
+    hi("hist.shadowScore", "Historical Edge Shadow score", h.shadowScore, "0..1", h.cohortEvents,
+      "Advisory. Null when evidence is insufficient — absence must never read as a favourable zero.");
+    hi("hist.shadowComponentsScored", "Shadow components with evidence", h.shadowComponentsScored, "components", h.shadowComponentsDefined,
+      "How much of the model actually had inputs. A score from 2 components and one from 10 are different claims.");
   }
 
   return items;

@@ -127,5 +127,66 @@ export function loadSupplementalEvidence(db: SourceDb, env: NodeJS.ProcessEnv = 
     }
   } catch { /* no pre-move capture yet ⇒ no earliness claims */ }
 
+  // The historical lane. Its own try block: the durable store is the newest thing here
+  // and an empty or absent one must cost the chat nothing else. Loading it is
+  // zero-provider — every figure is read or recomputed from local rows.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { historicalCoverageOnDb } = require("@/lib/research/historical/store");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { extractWinnerEventsOnDb, winnerCandidatesFromCasesOnDb } = require("@/lib/research/historical/winner-events");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { computeCohortV2, membersFromWinnerEvents } = require("@/lib/research/historical/cohort-v2");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { scoreHistoricalEdgeShadow } = require("@/lib/research/historical/edge-shadow");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { PRE_MOVE_REPLAY_VERSION } = require("@/lib/research/historical/pre-move-replay");
+
+    const cov = historicalCoverageOnDb(db as never);
+    const candidates = winnerCandidatesFromCasesOnDb(db as never, { limit: 500 });
+    const { events, census } = extractWinnerEventsOnDb(db as never, candidates, {});
+    const key = { lane: "REPLAY_HISTORICAL" };
+    const cohort = computeCohortV2(membersFromWinnerEvents(events), key, {
+      replayVersion: PRE_MOVE_REPLAY_VERSION,
+    });
+    const shadow = scoreHistoricalEdgeShadow({ cohort, discovery: null, contract: null });
+    const p = (m: number): number | null =>
+      cohort.milestones.find((x: { milestone: number }) => x.milestone === m)?.probability ?? null;
+
+    out.historical = {
+      barRows: cov.bars.rows,
+      barSymbols: cov.bars.symbols,
+      optionQuoteRows: cov.optionQuotes.rows,
+      optionQuoteContracts: cov.optionQuotes.contracts,
+      optionTradeRows: cov.optionTrades.rows,
+      contractReferenceRows: cov.contractReference.rows,
+      earliestIngestedMs: cov.optionQuotes.earliestMs ?? cov.bars.earliestMs,
+      latestIngestedMs: cov.optionQuotes.latestMs ?? cov.bars.latestMs,
+      eventsExamined: census.examined,
+      events: census.events,
+      refusedNoEntry: census.refusedNoEntry,
+      reached25: census.byMilestone["25"] ?? 0,
+      reached50: census.byMilestone["50"] ?? 0,
+      reached100: census.byMilestone["100"] ?? 0,
+      cohortId: cohort.cohortId,
+      cohortLane: cohort.lane,
+      cohortEvents: cohort.floors.events,
+      cohortSessions: cohort.floors.independentSessions,
+      cohortVerdict: cohort.floors.verdict,
+      pReached25: p(25),
+      pReached50: p(50),
+      expectedReturnPct: cohort.expectedReturnPct,
+      profitFactor: cohort.profitFactor,
+      profitFactorExBest: cohort.robustness.profitFactorExBest,
+      survivesBestExcluded: cohort.robustness.survivesBestExcluded,
+      shadowState: shadow.state,
+      shadowScore: shadow.score,
+      shadowComponentsScored: shadow.componentsScored,
+      shadowComponentsDefined: shadow.componentsDefined,
+      replayVersion: cohort.replayVersion,
+      warnings: [...cohort.robustness.warnings, ...shadow.warnings].slice(0, 10),
+    };
+  } catch { /* no historical store ⇒ the chat simply cannot cite history */ }
+
   return out;
 }
