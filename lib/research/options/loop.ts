@@ -260,9 +260,24 @@ function recordPreMoveObservation(
   // waiting on resistance above, a put on support below. Using one level for both would
   // report every put as pre-trigger.
   const triggerLevel = isCall ? n(f.nearestResistance) : n(f.nearestSupport);
-  const triggerTaken = triggerLevel == null || price == null
-    ? null
-    : (isCall ? price >= triggerLevel : price <= triggerLevel);
+
+  // Whether the trigger is TAKEN cannot be derived by comparing price to that level.
+  // `nearestResistance` is built by filtering levels to those ABOVE price and
+  // `nearestSupport` to those BELOW it, so `price >= resistance` is structurally
+  // impossible and the comparison returns false for every candidate ever evaluated.
+  // Measured live: it made 174 of 174 captured rows PRE_TRIGGER — a column that always
+  // reports the flattering answer and therefore measures nothing.
+  //
+  // The break flag is the only real observation available here, and it is the right one:
+  // taking out the session extreme IS the trigger event for these setups, in the
+  // direction the trade needs. It genuinely varies, which the level comparison did not.
+  //
+  // When the flag is absent the answer is null — unknown — NOT false. classifyDiscovery
+  // checks PRE_TRIGGER first and short-circuits, so a false here asserts "the move has
+  // not begun" and skips the consumed-fraction measurement entirely. On the unenriched
+  // path, where no bars were fetched, that assertion has nothing behind it.
+  const brokeFavorably = isCall ? input.underlying.hodBreak : (input.underlying.lodBreak ?? null);
+  const triggerTaken = brokeFavorably == null ? null : brokeFavorably === true;
   const strike = n(res.contract?.strike);
 
   try {

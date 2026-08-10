@@ -264,3 +264,55 @@ test("an empty table censuses to zero rather than throwing", () => {
   assert.equal(c.earlyRate, null, "no gradable rows means no rate, not a rate of 0");
   assert.deepEqual(listPreMoveDiscoveriesOnDb(d, {}), []);
 });
+
+// ── the degenerate-column trap ───────────────────────────────────────────────
+//
+// Measured live at 9018ae5: 174 of 174 captured rows classified PRE_TRIGGER. The cause
+// was not the market. `triggerTaken` was derived by comparing price to
+// `nearestResistance`, a value features.ts builds by filtering levels to those ABOVE
+// price — so the comparison is structurally false for every candidate that will ever be
+// evaluated. classifyDiscovery checks PRE_TRIGGER first and short-circuits, so that one
+// always-false input silenced the entire consumed-fraction measurement.
+//
+// A column that always reports the flattering answer measures nothing, and it looks
+// exactly like a system that is brilliantly early.
+
+test("a stage that cannot vary is not a finding: PRE_TRIGGER must be earnable and losable", () => {
+  const d = db();
+  // Same setup twice, differing ONLY in whether the trigger was taken.
+  recordPreMoveObservationOnDb(d, obs({ opportunityCaseId: "oc_untaken", triggerTaken: false }));
+  recordPreMoveObservationOnDb(d, obs({
+    opportunityCaseId: "oc_taken", triggerTaken: true,
+    underlyingPrice: 100, sessionHigh: 100.2, sessionLow: 99,
+  }));
+  recordPreMoveAlertOnDb(d, {
+    opportunityCaseId: "oc_taken", ownerNotifiedAtMs: T0 + 60_000, underlyingAtAlert: 100.2, optionAtAlert: 2.4,
+  });
+
+  assert.equal(readPreMoveDiscoveryOnDb(d, "oc_untaken").discoveryStage, "PRE_TRIGGER");
+  assert.notEqual(
+    readPreMoveDiscoveryOnDb(d, "oc_taken").discoveryStage,
+    "PRE_TRIGGER",
+    "a taken trigger must reach a different stage, or the column is decorative",
+  );
+});
+
+test("an unknown trigger is null and does NOT short-circuit to PRE_TRIGGER", () => {
+  const d = db();
+  // No break flag available (the unenriched scan path). The move is in fact 100% spent.
+  recordPreMoveObservationOnDb(d, obs({
+    opportunityCaseId: "oc_unknown", triggerTaken: null,
+    underlyingPrice: 100, sessionHigh: 100, sessionLow: 99,
+  }));
+  recordPreMoveObservationOnDb(d, obs({
+    opportunityCaseId: "oc_unknown", nowMs: T0 + 600_000, triggerTaken: null,
+    underlyingPrice: 110, sessionHigh: 110, sessionLow: 99,
+  }));
+
+  const row = readPreMoveDiscoveryOnDb(d, "oc_unknown");
+  assert.equal(
+    row.discoveryStage,
+    "TOO_LATE",
+    "unknown structure must fall through to the consumed-fraction measurement, not assert earliness",
+  );
+});
