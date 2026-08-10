@@ -524,27 +524,101 @@ export function readExcursionCorrectionOnDb(
 }
 
 /**
+ * What the correction STORE now holds, as distinct from what the population looks like.
+ *
+ * `ExcursionCensus` counts cases. This counts the corrections written about them, and
+ * the two answer different questions. A case can be examined and produce no correction
+ * (it never carried a peak to correct); a correction can be recorded and still resolve
+ * to nothing (`UNSUPPORTED_MAX_RETURN` establishes the stored value is wrong without
+ * establishing the right one). `unresolved` is that second group, and it is reported
+ * rather than folded into either "corrected" or "clean" — a null correction is a real
+ * finding, not a missing one.
+ */
+export interface ExcursionCorrectionCensus {
+  recorded: number;
+  /** Corrections carrying a provable canonical value. Only VERIFIED can. */
+  correctedMfe: number;
+  correctedMae: number;
+  /** Recorded, but the evidence could not supply a replacement value. */
+  unresolved: number;
+  /** Corrections that condemned the value the case still stores. */
+  storedValuesCondemned: number;
+  byState: Record<ExcursionEvidenceState, number>;
+}
+
+export function summarizeCorrections(rows: ExcursionCorrection[]): ExcursionCorrectionCensus {
+  const byState: Record<ExcursionEvidenceState, number> = {
+    VERIFIED_EXCURSION: 0,
+    INSUFFICIENT_MARKS: 0,
+    UNSUPPORTED_MAX_RETURN: 0,
+    MAX_FLOORED_AT_ZERO: 0,
+    NO_MIRROR: 0,
+    OCC_IDENTITY_MISSING: 0,
+  };
+  let correctedMfe = 0;
+  let correctedMae = 0;
+  let unresolved = 0;
+  let condemned = 0;
+  for (const c of rows) {
+    byState[c.evidenceState] += 1;
+    if (c.correctedMaxReturnPct != null) correctedMfe += 1;
+    if (c.correctedMaePct != null) correctedMae += 1;
+    if (c.correctedMaxReturnPct == null) unresolved += 1;
+    if (!excursionIsPublishable(c.evidenceState) && c.originalMaxReturnPct != null) condemned += 1;
+  }
+  return { recorded: rows.length, correctedMfe, correctedMae, unresolved, storedValuesCondemned: condemned, byState };
+}
+
+/**
  * Reconcile a population and record what was found. Returns the census.
  *
  * Deliberately writes ONLY to the corrections table. It does not touch
  * `opportunity_cases`, so it can be re-run at any time and can never make the history
  * it is auditing worse.
+ *
+ * `dryRun` computes every correction and the identical census WITHOUT writing. It exists
+ * so the pass can be inspected against production before it is applied, and so a reader
+ * can confirm the two agree: a dry run whose census differs from the applied run would
+ * mean the write changed the finding, which it must never do.
  */
 export function runExcursionCorrectionPassOnDb(
   db: ExcursionDb,
-  opts: { nowMs: number; sha?: string | null; scope?: "delivered" | "all"; limit?: number } = { nowMs: Date.now() },
-): { census: ExcursionCensus; recorded: number; rows: CanonicalExcursion[] } {
+  opts: {
+    nowMs: number;
+    sha?: string | null;
+    scope?: "delivered" | "all";
+    limit?: number;
+    dryRun?: boolean;
+  } = { nowMs: Date.now() },
+): {
+  census: ExcursionCensus;
+  recorded: number;
+  rows: CanonicalExcursion[];
+  corrections: ExcursionCorrection[];
+  correctionCensus: ExcursionCorrectionCensus;
+  dryRun: boolean;
+} {
   const rows = recomputeExcursionsOnDb(db, { scope: opts.scope, limit: opts.limit });
+  const dryRun = opts.dryRun === true;
+  const corrections: ExcursionCorrection[] = [];
   let recorded = 0;
   for (const e of rows) {
     // Cases that never carried a peak have nothing to correct; writing a row for each
     // would bury the ones that do under thousands that never misled anyone.
     if (e.storedMaxReturnPct == null && !excursionIsPublishable(e.state)) continue;
-    if (persistExcursionCorrectionOnDb(db, correctionFromExcursion(e, { nowMs: opts.nowMs, sha: opts.sha }))) {
-      recorded += 1;
-    }
+    const correction = correctionFromExcursion(e, { nowMs: opts.nowMs, sha: opts.sha });
+    corrections.push(correction);
+    if (dryRun) continue;
+    if (persistExcursionCorrectionOnDb(db, correction)) recorded += 1;
   }
-  return { census: summarizeExcursions(rows), recorded, rows };
+  return {
+    census: summarizeExcursions(rows),
+    recorded,
+    rows,
+    corrections,
+    correctionCensus: summarizeCorrections(corrections),
+    dryRun,
+  };
 }
 
 /**

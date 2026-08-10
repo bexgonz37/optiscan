@@ -28,6 +28,7 @@ import {
   readExcursionCorrectionOnDb,
   runExcursionCorrectionPassOnDb,
   resolvePublishableExcursionOnDb,
+  summarizeCorrections,
   MIN_MARKS_FOR_EXCURSION,
 } from "../lib/opportunity-case/excursion.ts";
 
@@ -259,4 +260,61 @@ test("summarizeExcursions counts every state without collapsing them", () => {
   assert.equal(census.byState.NO_MIRROR, 1);
   assert.equal(census.byState.INSUFFICIENT_MARKS, 1);
   assert.equal(census.publishable, 0);
+});
+
+/** Three cases: one contaminated, one floored, one clean. */
+function seedCensusPopulation(d) {
+  seed(d, { caseId: "oc_a", storedMax: 185.4077, marks: [[-5, FROZEN], [12, FROZEN], [47.2103, FROZEN], [185.4077, RESELECTED]] });
+  seed(d, { caseId: "oc_b", storedMax: 0, marks: [[-12, FROZEN], [-30, FROZEN], [-55, FROZEN]] });
+  seed(d, { caseId: "oc_c", marks: [[-5, FROZEN], [12, FROZEN], [47.2103, FROZEN]] });
+}
+
+test("a dry run reports the identical census and writes nothing", () => {
+  const d = db();
+  seedCensusPopulation(d);
+
+  const dry = runExcursionCorrectionPassOnDb(d, { nowMs: T0, sha: "sha1", dryRun: true });
+  assert.equal(dry.dryRun, true);
+  assert.equal(dry.recorded, 0, "a dry run records nothing");
+  assert.equal(
+    d.prepare("SELECT COUNT(*) n FROM opportunity_excursion_corrections").get().n,
+    0,
+    "a dry run leaves the correction store empty",
+  );
+
+  const applied = runExcursionCorrectionPassOnDb(d, { nowMs: T0, sha: "sha1" });
+  // The write must not change the finding. If these ever diverge, the pass is deciding
+  // something at persist time that it should have decided while reading.
+  assert.deepEqual(applied.census, dry.census);
+  assert.deepEqual(applied.correctionCensus, dry.correctionCensus);
+  assert.equal(applied.recorded, 3);
+});
+
+test("the correction census separates a provable value from a condemned one", () => {
+  const d = db();
+  seedCensusPopulation(d);
+  const { correctionCensus: c } = runExcursionCorrectionPassOnDb(d, { nowMs: T0, sha: "sha1" });
+
+  assert.equal(c.recorded, 3);
+  // Only the VERIFIED case can supply a replacement value.
+  assert.equal(c.correctedMfe, 1);
+  assert.equal(c.correctedMae, 1);
+  // The contaminated and the floored are both recorded WITHOUT a corrected value:
+  // knowing the stored number is wrong is not knowing the right one.
+  assert.equal(c.unresolved, 2);
+  assert.equal(c.storedValuesCondemned, 2);
+  assert.equal(c.byState.UNSUPPORTED_MAX_RETURN, 1);
+  assert.equal(c.byState.MAX_FLOORED_AT_ZERO, 1);
+  assert.equal(c.byState.VERIFIED_EXCURSION, 1);
+});
+
+test("an unresolved correction is never counted as a corrected value", () => {
+  const rows = [
+    { opportunityCaseId: "a", originalMaxReturnPct: 185, evidenceState: "UNSUPPORTED_MAX_RETURN", correctedMaxReturnPct: null, correctedMaePct: null },
+    { opportunityCaseId: "b", originalMaxReturnPct: 47, evidenceState: "VERIFIED_EXCURSION", correctedMaxReturnPct: 47, correctedMaePct: -5 },
+  ];
+  const c = summarizeCorrections(rows);
+  assert.equal(c.correctedMfe, 1);
+  assert.equal(c.unresolved, 1);
+  assert.equal(c.correctedMfe + c.unresolved, c.recorded, "every recorded correction is one or the other");
 });
