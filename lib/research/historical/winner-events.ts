@@ -46,6 +46,14 @@ export interface WinnerEvent {
   strike: number | null;
   expiration: string | null;
   sessionDate: string | null;
+  /**
+   * The opportunity case this event was anchored on, when it came from one.
+   *
+   * Carried so a REALIZED outcome can be joined on provable identity later. Without it
+   * the only available join key is the OCC, and one contract can appear in several cases
+   * across a week — which is how a realized return gets attached to the wrong decision.
+   */
+  opportunityCaseId: string | null;
 
   entryAtMs: number;
   entryConvention: string;
@@ -80,7 +88,14 @@ function eventIdFor(occ: string, entryAtMs: number): string {
  */
 export function extractWinnerEventOnDb(
   db: StoreDb,
-  input: { occ: string; symbol?: string | null; entryAtMs: number; windowMs?: number; maxStalenessMs?: number },
+  input: {
+    occ: string;
+    symbol?: string | null;
+    entryAtMs: number;
+    windowMs?: number;
+    maxStalenessMs?: number;
+    opportunityCaseId?: string | null;
+  },
 ): WinnerEvent | null {
   const occ = String(input.occ).toUpperCase();
   const windowMs = Math.max(60_000, input.windowMs ?? 6 * 3600_000);
@@ -112,6 +127,7 @@ export function extractWinnerEventOnDb(
     strike: ref?.strike ?? null,
     expiration: ref?.expiration ?? null,
     sessionDate: sessionDateOf(input.entryAtMs),
+    opportunityCaseId: input.opportunityCaseId ?? null,
     entryAtMs: input.entryAtMs,
     entryConvention: fwd.entryConvention,
     entryPrice: fwd.entry,
@@ -149,7 +165,12 @@ export interface WinnerEventCensus {
  */
 export function extractWinnerEventsOnDb(
   db: StoreDb,
-  candidates: ReadonlyArray<{ occ: string; symbol?: string | null; entryAtMs: number }>,
+  candidates: ReadonlyArray<{
+    occ: string;
+    symbol?: string | null;
+    entryAtMs: number;
+    opportunityCaseId?: string | null;
+  }>,
   opts: { windowMs?: number; maxStalenessMs?: number } = {},
 ): { events: WinnerEvent[]; census: WinnerEventCensus } {
   const events: WinnerEvent[] = [];

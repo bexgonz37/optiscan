@@ -35,6 +35,7 @@ export async function GET(req: Request) {
     const { scoreHistoricalEdgeShadow } = await import("@/lib/research/historical/edge-shadow");
     const { historicalCoverageOnDb } = await import("@/lib/research/historical/store");
     const { PRE_MOVE_REPLAY_VERSION } = await import("@/lib/research/historical/pre-move-replay");
+    const { realizedOutcomesForEvents } = await import("@/lib/research/historical/realized-outcomes");
 
     const db = getDb() as any;
     const days = Math.max(1, Math.min(365, Number(url.searchParams.get("days") ?? 45)));
@@ -49,9 +50,16 @@ export async function GET(req: Request) {
     });
     const { events, census } = extractWinnerEventsOnDb(db, candidates, { windowMs });
 
+    // The REALIZED population, joined on provable identity. Kept apart from excursion at
+    // every level: its own census, its own floor, its own block in the response.
+    const { outcomes, census: realizedCensus } = realizedOutcomesForEvents(db, events);
+
     const key = { lane: "REPLAY_HISTORICAL" as const };
     const members = membersFromWinnerEvents(events);
-    const cohort = computeCohortV2(members, key, { replayVersion: PRE_MOVE_REPLAY_VERSION });
+    const cohort = computeCohortV2(members, key, {
+      replayVersion: PRE_MOVE_REPLAY_VERSION,
+      realizedOutcomes: outcomes,
+    });
 
     // A shadow score for a neutral candidate: with no discovery evidence supplied this
     // exercises the cohort-derived components only, which is exactly the state the live
@@ -71,6 +79,15 @@ export async function GET(req: Request) {
       winnerEvents: {
         census,
         events: verbose ? events : events.slice(0, 25),
+      },
+      realizedOutcomes: {
+        census: realizedCensus,
+        outcomes: verbose ? outcomes : outcomes.slice(0, 25),
+        note:
+          "EXCURSION and REALIZED are separate populations. `winnerEvents` answers 'how often did "
+          + "these setups run'; this answers 'how profitable was the governing exit policy'. Only "
+          + "VERIFIED_REALIZED rows reach cohort.realized, and a realized return is never derived "
+          + "from MFE. Each refusal names the identity rule that failed.",
       },
       cohort: verbose ? cohort : { ...cohort, sessions: cohort.sessions.slice(0, 20) },
       edgeShadow: shadow,

@@ -31,6 +31,7 @@
  * reads anything here.
  */
 import { FORWARD_MILESTONES } from "./replay.ts";
+import { realizedStats, type RealizedOutcome, type RealizedStats } from "./realized-outcomes.ts";
 import { countIndependentSessions, type IndependentSessionCount } from "./trading-sessions.ts";
 import type { WinnerEvent } from "./winner-events.ts";
 
@@ -189,6 +190,17 @@ export interface CohortV2Result {
   medianMsToPeak: number | null;
 
   robustness: RobustnessReport;
+
+  /**
+   * The REALIZED population, when one was joined. Deliberately a separate object.
+   *
+   * Everything above this line is EXCURSION evidence and answers "how often did these
+   * setups run". This answers "how profitable was the governing policy". The two have
+   * different denominators and different verdicts, and nesting the realized numbers under
+   * their own key with their own floor is what stops a reader — or a later refactor —
+   * treating `profitFactor` and `realized.profitFactor` as the same claim.
+   */
+  realized: RealizedStats | null;
 
   priceConvention: string;
   replayVersion: string | null;
@@ -415,7 +427,16 @@ export function selectCohortV2(members: readonly CohortV2Member[], key: CohortV2
 export function computeCohortV2(
   members: readonly CohortV2Member[],
   key: CohortV2Key,
-  opts: { replayVersion?: string | null } = {},
+  opts: {
+    replayVersion?: string | null;
+    /**
+     * Realized outcomes for these members, when they have been joined.
+     *
+     * Passed in rather than looked up: this module is pure, and a cohort that could reach
+     * a database would eventually be given a different one than the members came from.
+     */
+    realizedOutcomes?: readonly RealizedOutcome[] | null;
+  } = {},
 ): CohortV2Result {
   const floorResult = floors(members.length, members.map((m) => m.sessionDate), "historical events");
   // The reported sessions are the VERIFIED ones, so `sessions` and the floor can never
@@ -498,6 +519,17 @@ export function computeCohortV2(
 
   const robustness = robustnessFor(members);
 
+  // Restricted to THIS cohort's members. Handing the full batch straight through would let
+  // a cut on side or regime narrow the excursion population while the realized numbers
+  // silently kept measuring everything.
+  const memberIds = new Set(members.map((m) => m.eventId));
+  const realized = opts.realizedOutcomes
+    ? realizedStats(
+      opts.realizedOutcomes.filter((o) => memberIds.has(o.eventId)),
+      { minTrades: V2_MIN_EVENTS, minSessions: V2_MIN_SESSIONS, returnCapPct: V2_RETURN_CAP_PCT },
+    )
+    : null;
+
   return {
     version: HISTORICAL_COHORT_V2_VERSION,
     cohortId: cohortV2IdFor({ ...key, replayVersion: opts.replayVersion ?? key.replayVersion ?? null }),
@@ -522,6 +554,7 @@ export function computeCohortV2(
     winRate: supported(floorResult, returns.length ? +(winners.length / returns.length).toFixed(4) : null),
     medianMsToPeak: supported(floorResult, median(peakTimes)),
     robustness,
+    realized,
     priceConvention:
       "entry = ASK at the replay instant (a buyer crosses); later observations = MID. "
       + "Final return is the LAST observed value, never the peak.",
@@ -532,6 +565,13 @@ export function computeCohortV2(
       `Lane is ${key.lane} and is part of the cohort identity. Lanes are never pooled.`,
       "Milestone TIMES admit every member; EXTREMES admit only VERIFIED evidence. The two samples "
       + "are gated separately and reported separately.",
+      "Milestone denominators count WITNESSES — members with a post-entry quote. A contract nobody "
+      + "observed is not a contract that failed to reach a milestone.",
+      "EXCURSION and REALIZED are different populations answering different questions. The top-level "
+      + "profitFactor/winRate/expectedReturnPct describe excursion behaviour under this module's "
+      + "entry convention; `realized` describes what the governing exit policy actually captured, "
+      + "from closed identity-proven mirrors only. They have different denominators and are never "
+      + "pooled. A realized return is NEVER derived from MFE.",
       "A null statistic means the sample did not clear the floors. It never means zero.",
       "Robustness is computed even when the floors fail: a 6-event cohort that is 90% one symbol is "
       + "worth seeing before more collection is planned.",
