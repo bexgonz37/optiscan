@@ -235,7 +235,16 @@ function recordObservedMark(
       ).run(pos.id, pos.option_symbol, eventAtMs, quote.bid, quote.ask, mark.exitFill, mark.returnPct, quote.quoteAgeMs ?? null, observedAtMs);
     }
     if (hasCol(db, "options_paper_trades", "mfe_pct") && hasTable(db, "options_paper_marks")) {
-      const mm = db.prepare("SELECT MAX(return_pct) mfe, MIN(return_pct) mae FROM options_paper_marks WHERE trade_id=?").get(pos.id) as any;
+      // The aggregate is filtered on the MARK's own contract, not merely on trade_id.
+      // Aggregating every mark under a trade id is exactly the shape that produced the
+      // +185.4% case peak: a price observed on one contract, divided by an entry paid on
+      // another. A mirror is normally single-contract, so this changes nothing in the
+      // healthy case — which is the point. It removes the path, not a symptom.
+      const mm = db.prepare(
+        `SELECT MAX(return_pct) mfe, MIN(return_pct) mae
+           FROM options_paper_marks
+          WHERE trade_id=? AND UPPER(TRIM(option_symbol))=UPPER(TRIM(?))`,
+      ).get(pos.id, pos.option_symbol) as any;
       db.prepare("UPDATE options_paper_trades SET last_mark_return_pct=?, mfe_pct=?, mae_pct=?, updated_at_ms=? WHERE id=?")
         .run(mark.returnPct, mm?.mfe ?? mark.returnPct, mm?.mae ?? mark.returnPct, observedAtMs, pos.id);
     }

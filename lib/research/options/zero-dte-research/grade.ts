@@ -105,17 +105,31 @@ export async function gradeZeroDteResearchOnDb(
 
     if (quote?.bid != null && quote?.ask != null) {
       const ex = realOptionExit(pos.entry_fill, quote.bid, quote.ask);
-      const mfe = row.mfe_pct != null ? Math.max(Number(row.mfe_pct), ex.returnPct) : ex.returnPct;
-      const mae = row.mae_pct != null ? Math.min(Number(row.mae_pct), ex.returnPct) : ex.returnPct;
-      db.prepare(
-        `UPDATE options_paper_trades SET last_mark_return_pct=?, mfe_pct=?, mae_pct=?, updated_at_ms=? WHERE id=?`,
-      ).run(ex.returnPct, mfe, mae, nowMs, pos.id);
+      // Record the observation FIRST, then derive the extremes from the mark series on
+      // this position's own contract. The previous order ratcheted `mfe_pct` off its own
+      // stored value, so a peak printed on one contract survived into a row that had
+      // moved to another — the same carry-forward that inflated the case summaries.
+      // Recomputing from OCC-filtered marks has no memory to carry.
       try {
         db.prepare(
           `INSERT INTO options_paper_marks (trade_id, option_symbol, mark_at_ms, bid, ask, exit_fill, return_pct, quote_age_ms, created_at_ms)
            VALUES (?,?,?,?,?,?,?,?,?)`,
         ).run(pos.id, pos.option_symbol, nowMs, quote.bid, quote.ask, ex.exitFill, ex.returnPct, quote.quoteAgeMs ?? null, nowMs);
       } catch { /* unique/optional */ }
+      let mfe = ex.returnPct;
+      let mae = ex.returnPct;
+      try {
+        const mm = db.prepare(
+          `SELECT MAX(return_pct) mfe, MIN(return_pct) mae
+             FROM options_paper_marks
+            WHERE trade_id=? AND UPPER(TRIM(option_symbol))=UPPER(TRIM(?))`,
+        ).get(pos.id, pos.option_symbol) as any;
+        if (mm?.mfe != null) mfe = Number(mm.mfe);
+        if (mm?.mae != null) mae = Number(mm.mae);
+      } catch { /* fall back to this single observation, never to a stored peak */ }
+      db.prepare(
+        `UPDATE options_paper_trades SET last_mark_return_pct=?, mfe_pct=?, mae_pct=?, updated_at_ms=? WHERE id=?`,
+      ).run(ex.returnPct, mfe, mae, nowMs, pos.id);
       marked += 1;
       if (exitReason && exitFill == null) {
         exitFill = ex.exitFill;
