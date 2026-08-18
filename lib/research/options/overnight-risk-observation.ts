@@ -381,6 +381,14 @@ export function buildOvernightObservation(cases: readonly OvernightCase[]): Over
     },
     limitations: Object.freeze([
       "Every figure is IN-SAMPLE on the owner lane's current window and gates nothing.",
+      // The single most misleading thing about this report, stated first among the caveats
+      // because the arms LOOK like a treatment and a control and are nothing of the kind.
+      "THE TWO ARMS ARE OUTCOME-SELECTED, NOT RANDOMLY ASSIGNED. A trade exits same-day " +
+      "precisely BECAUSE it hit Target 1 or its stop intraday; it is held overnight precisely " +
+      "because it did neither. So the same-day arm is enriched with trades that already " +
+      "resolved well, and comparing the two arms' profit factors measures that selection at " +
+      "least as much as it measures overnight risk. The difference between the arms is NOT an " +
+      "estimate of what closing before the bell would have earned.",
       "`requiredTheHold` is conservative: a trade already at or above its realized return by the " +
       "first close is not counted, so this is a FLOOR on what a flat close rule would destroy.",
       "The gap is measured between the last mark of the entry session and the first mark after " +

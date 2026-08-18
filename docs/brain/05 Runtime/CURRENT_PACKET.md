@@ -133,6 +133,34 @@ gap distribution cannot be obtained without also obtaining what a flat close-bef
 rule would destroy. It is deliberately a FLOOR — a trade already at its realized return by the
 close is not counted.
 
+### First real output of the overnight study, and the trap inside it
+
+Run against production on 67 closed callouts:
+
+```
+SAME_DAY        n=25  win 60.0%  mean +11.43%  PF 1.6816
+HELD_OVERNIGHT  n=42  win 28.6%  mean -21.46%  PF 0.3656
+gaps: median -12.62%, worst -79.39%, best +73.99%, 28 adverse vs 14 favourable,
+      10 gapped through the frozen stop, 13 material stop breaches
+```
+
+That looks like an overwhelming case for closing before the bell. **It is not, for two
+separate reasons, and both are now stated in the report itself.**
+
+1. **11 winners worth 511.8 return points REQUIRED the hold** — 11 of the 12 overnight
+   winners were not yet at their eventual result by the first close. A flat close rule
+   removes essentially every overnight winner the lane has ever produced.
+2. **The two arms are OUTCOME-SELECTED, not randomly assigned.** A trade exits same-day
+   precisely BECAUSE it hit Target 1 or its stop intraday, and is held precisely because it
+   did neither. The same-day arm is therefore enriched with trades that already resolved
+   well. The PF gap measures that selection at least as much as it measures overnight risk,
+   and it is **not** an estimate of what closing before the bell would have earned.
+
+Profit protection, same run: 45 callouts reached +10% and **40% of them still ended
+non-positive**; by +25% that is 27%, by +35% it is 11%. Supported winner/reversed contrasts
+exist at +10 through +25 and run out of sample above that (only 3 reversals reach +35%).
+No rule proposed.
+
 ### Content drafts were sharing the owner's recap channel
 
 Production: `contentEventsEnabled: true`, **1209 drafts SENT** — all into

@@ -274,6 +274,18 @@ test("the report refuses the flat conclusion and names what it would destroy", (
   assert.equal(r.productionBehaviorChanged, false);
 });
 
+test("the report labels its arms as outcome-selected, not as a treatment and a control", () => {
+  // The arms look like an experiment and are not one: a trade exits same-day BECAUSE it hit
+  // T1 or its stop intraday. Reading the PF difference as the value of closing before the
+  // bell is the single most available wrong conclusion from this report.
+  const r = buildOvernightObservation([observeOvernight(ocase(), day, minuteOfSession)]);
+  assert.ok(
+    r.limitations.some((l) => /OUTCOME-SELECTED, NOT RANDOMLY ASSIGNED/.test(l)),
+    "the selection effect must be stated, not left for the reader to notice",
+  );
+  assert.ok(r.limitations.some((l) => /NOT an estimate of what closing before the bell/.test(l)));
+});
+
 test("same-day and overnight arms are separate populations, never summed", () => {
   const sd = observeOvernight(ocase({
     opportunityCaseId: "oc_s", realizedReturnPct: 30, exitSessionDate: "2026-08-20",
