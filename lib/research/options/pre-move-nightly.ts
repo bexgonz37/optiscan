@@ -31,12 +31,20 @@ import {
   type DiscoveryStage,
 } from "./pre-move-discovery.ts";
 import {
+  censusFromPreMoveRows,
+  listPreMoveDiscoveriesByCaseIdsOnDb,
   listPreMoveDiscoveriesOnDb,
   summarizePreMoveDiscoveryOnDb,
   type PreMoveLane,
+  type PreMoveRow,
   type PreMoveStageCensus,
 } from "./pre-move-store.ts";
 import { excursionForPaperTradeOnDb } from "../../opportunity-case/excursion.ts";
+import {
+  loadOwnerMirrorPopulationOnDb,
+  type OwnerMirrorPopulation,
+  type OwnerMirrorRecord,
+} from "../../opportunity-case/owner-mirror-identity.ts";
 
 export interface PreMoveNightlyDb {
   prepare(sql: string): { get?: (...a: any[]) => any; all?: (...a: any[]) => any[] };
@@ -45,11 +53,17 @@ export interface PreMoveNightlyDb {
 export const PRE_MOVE_NIGHTLY_VERSION = "PRE_MOVE_NIGHTLY_V1" as const;
 
 export interface AlertLeadTimeRow {
+  /** The case this PRE_MOVE row is filed under — often the PENDING audit case. */
   opportunityCaseId: string;
+  /** The CLAIM case that owns the mirror, when the two differ. Null when unresolved. */
+  ownerCaseId: string | null;
+  paperTradeId: number | null;
   symbol: string | null;
   optionSymbol: string | null;
   discoveryStage: DiscoveryStage | null;
   ownerNotifiedAtMs: number | null;
+  /** Whether that instant was recorded at delivery or derived from the mirror's entry. */
+  ownerAlertInstantProvenance: OwnerAlertInstantProvenance;
   /** Premium already consumed between detection and alert. Large = we were late. */
   premiumConsumedBeforeAlertPct: number | null;
   rewardRemainingFraction: number | null;
@@ -74,6 +88,8 @@ export interface PreMoveNightlyLane {
   milestoneAttainment: Record<string, { reached: number; of: number; rate: number | null; medianMsToReach: number | null }>;
   /** Alerts where a milestone had ALREADY been hit before we spoke. */
   alertsWithMilestoneAlreadyHit: number;
+  /** Rows whose alert instant came from the mirror's entry rather than a recorded send. */
+  alertInstantsDerived: number;
   medianPremiumConsumedBeforeAlertPct: number | null;
   medianRewardRemainingFraction: number | null;
   rows: AlertLeadTimeRow[];
@@ -99,31 +115,28 @@ function median(xs: number[]): number | null {
 /**
  * The frozen mirror for a case, and its marks on that exact contract.
  *
- * Identity comes from the mirror row, and the marks are filtered on their OWN
- * option_symbol inside `excursionForPaperTradeOnDb`. A mark on a re-selected strike is
+ * IDENTITY RUNS THROUGH THE OPPORTUNITY CASE, NOT AN ALERT ID.
+ *
+ * This function used to read `opportunity_cases.alert_id` and look the mirror up by it.
+ * An owner callout never writes an `options_alerts` row, so that column is null on every
+ * owner case in existence — 0 of 106 in production. The lookup returned null for the
+ * entire owner lane, silently, and every owner lead time, milestone and realized outcome
+ * on this report was therefore absent rather than wrong.
+ *
+ * The mirror is now resolved from the owner population index, which is keyed on BOTH
+ * identities of a callout: the claim case that owns the mirror, and the pending audit
+ * case that owns this very PRE_MOVE row. Marks are still filtered on their OWN
+ * `option_symbol` inside `excursionForPaperTradeOnDb` — a mark on a re-selected strike is
  * an observation of a different instrument and can never enter a lead time for this one.
  */
 function mirrorForCase(
-  db: PreMoveNightlyDb,
+  population: OwnerMirrorPopulation,
   opportunityCaseId: string,
-): { tradeId: number; optionSymbol: string | null; returnPct: number | null; status: string | null } | null {
-  try {
-    const alert = db.prepare("SELECT alert_id FROM opportunity_cases WHERE opportunity_id=?").get?.(opportunityCaseId) as any;
-    if (!alert?.alert_id) return null;
-    const t = db.prepare(
-      `SELECT id, option_symbol, return_pct, status FROM options_paper_trades
-        WHERE alert_id=? ORDER BY id ASC LIMIT 1`,
-    ).get?.(alert.alert_id) as any;
-    if (!t?.id) return null;
-    return {
-      tradeId: Number(t.id),
-      optionSymbol: t.option_symbol == null ? null : String(t.option_symbol),
-      returnPct: t.return_pct == null ? null : Number(t.return_pct),
-      status: t.status == null ? null : String(t.status),
-    };
-  } catch {
-    return null;
-  }
+): OwnerMirrorRecord | null {
+  const m = population.byCaseId.get(opportunityCaseId);
+  // An OCC mismatch is a mirror, but not THIS callout's evidence. Refused rather than
+  // priced, which is the same rule the owner mirror audit applies.
+  return m && m.occExact ? m : null;
 }
 
 function marksFor(db: PreMoveNightlyDb, tradeId: number, occ: string | null): Array<{ atMs: number | null; returnPct: number | null }> {
@@ -142,42 +155,70 @@ function marksFor(db: PreMoveNightlyDb, tradeId: number, occ: string | null): Ar
   }
 }
 
-function buildLane(db: PreMoveNightlyDb, lane: PreMoveLane, sinceMs: number | null): PreMoveNightlyLane {
-  const census = summarizePreMoveDiscoveryOnDb(db, { sinceMs, lane });
-  const discoveries = listPreMoveDiscoveriesOnDb(db, { sinceMs, lane, ownerAlertedOnly: true, limit: 1000 });
+/**
+ * How an owner alert instant was obtained, so a derived one can never be quoted as a
+ * recorded one.
+ */
+export type OwnerAlertInstantProvenance = "RECORDED" | "DERIVED_FROM_MIRROR_ENTRY" | "UNAVAILABLE";
 
+/**
+ * The alert instant for a PRE_MOVE row, and where it came from.
+ *
+ * `owner_notified_at_ms` is null on every historical row, because the promotion that
+ * writes it was keyed on the wrong case id for its whole life. Those rows are not
+ * backfilled — nothing invents a notification timestamp — but the owner mirror's own
+ * `entered_at_ms` is a real observation of the same event: the mirror is opened
+ * immediately AFTER the Discord send, in the same block, so it is at or after the true
+ * alert instant. Every lead time measured from it is therefore equal to or SHORTER than
+ * the truth, which is the safe direction: it can understate how early a callout was and
+ * cannot overstate it.
+ *
+ * The provenance travels with the value. A derived instant is never written back.
+ */
+function alertInstantFor(
+  row: PreMoveRow,
+  mirror: OwnerMirrorRecord | null,
+): { atMs: number | null; provenance: OwnerAlertInstantProvenance } {
+  if (row.ownerNotifiedAtMs != null) return { atMs: row.ownerNotifiedAtMs, provenance: "RECORDED" };
+  if (mirror?.enteredAtMs != null) return { atMs: mirror.enteredAtMs, provenance: "DERIVED_FROM_MIRROR_ENTRY" };
+  return { atMs: null, provenance: "UNAVAILABLE" };
+}
+
+function laneFromRows(
+  db: PreMoveNightlyDb,
+  lane: PreMoveLane,
+  census: PreMoveStageCensus,
+  discoveries: readonly PreMoveRow[],
+  population: OwnerMirrorPopulation,
+): PreMoveNightlyLane {
   const rows: AlertLeadTimeRow[] = [];
   for (const d of discoveries) {
-    const mirror = mirrorForCase(db, d.opportunityCaseId);
+    const mirror = mirrorForCase(population, d.opportunityCaseId);
     const excursion = mirror
-      ? excursionForPaperTradeOnDb(db as any, mirror.tradeId, mirror.optionSymbol)
+      ? excursionForPaperTradeOnDb(db as any, mirror.paperTradeId, mirror.optionSymbol)
       : { state: "NO_MIRROR" as const, mfePct: null, maePct: null, marksOnContract: 0 };
-    const marks = mirror ? marksFor(db, mirror.tradeId, mirror.optionSymbol) : [];
+    const marks = mirror ? marksFor(db, mirror.paperTradeId, mirror.optionSymbol) : [];
+    const alert = alertInstantFor(d, mirror);
 
     const lead = computeAlertLeadTime({
-      alertAtMs: d.ownerNotifiedAtMs,
+      alertAtMs: alert.atMs,
       marks,
       premiumConsumedBeforeAlertPct: d.premiumExpansionConsumedPct,
       excursionVerified: excursion.state === "VERIFIED_EXCURSION",
     });
 
-    // A return is REALIZED only on a closed mirror. An open trade's absent return is
-    // "not yet", never a zero, and pooling the two would drag every expectancy toward 0.
-    const closed = mirror?.status === "EXITED";
-    const realizedEvidence = !mirror
-      ? "UNAVAILABLE" as const
-      : closed && mirror.returnPct != null
-        ? "VERIFIED" as const
-        : closed
-          ? "UNAVAILABLE" as const
-          : "STILL_OPEN" as const;
-
+    // A return is REALIZED only on a closed mirror on the exact contract. An open trade's
+    // absent return is "not yet", never a zero, and pooling the two would drag every
+    // expectancy toward 0.
     rows.push({
       opportunityCaseId: d.opportunityCaseId,
+      ownerCaseId: mirror?.opportunityCaseId ?? null,
+      paperTradeId: mirror?.paperTradeId ?? null,
       symbol: d.symbol,
       optionSymbol: d.optionSymbol,
       discoveryStage: d.discoveryStage,
-      ownerNotifiedAtMs: d.ownerNotifiedAtMs,
+      ownerNotifiedAtMs: alert.atMs,
+      ownerAlertInstantProvenance: alert.provenance,
       premiumConsumedBeforeAlertPct: d.premiumExpansionConsumedPct,
       rewardRemainingFraction: d.rewardRemainingFraction,
       rewardRemainingBand: d.rewardRemainingBand,
@@ -186,8 +227,8 @@ function buildLane(db: PreMoveNightlyDb, lane: PreMoveLane, sinceMs: number | nu
       postAlertMfePct: lead.postAlertMfePct,
       excursionState: excursion.state,
       marksOnContract: excursion.marksOnContract,
-      realizedReturnPct: realizedEvidence === "VERIFIED" ? (mirror?.returnPct ?? null) : null,
-      realizedEvidence,
+      realizedReturnPct: mirror?.realizedEvidence === "VERIFIED" ? mirror.realizedReturnPct : null,
+      realizedEvidence: mirror?.realizedEvidence ?? "UNAVAILABLE",
     });
   }
 
@@ -215,6 +256,7 @@ function buildLane(db: PreMoveNightlyDb, lane: PreMoveLane, sinceMs: number | nu
     gradedAlerts: rows.length,
     milestoneAttainment,
     alertsWithMilestoneAlreadyHit: rows.filter((r) => r.milestonesReachedBeforeAlert.length > 0).length,
+    alertInstantsDerived: rows.filter((r) => r.ownerAlertInstantProvenance === "DERIVED_FROM_MIRROR_ENTRY").length,
     medianPremiumConsumedBeforeAlertPct: median(
       rows.map((r) => r.premiumConsumedBeforeAlertPct).filter((v): v is number => v != null),
     ),
@@ -223,6 +265,80 @@ function buildLane(db: PreMoveNightlyDb, lane: PreMoveLane, sinceMs: number | nu
     ),
     rows,
   };
+}
+
+/**
+ * A non-owner lane, exactly as before: membership from the stored `lane` column, and only
+ * rows that actually recorded an owner notification.
+ *
+ * Rows the owner lane has claimed are removed here so the lanes stay disjoint. A PRE_MOVE
+ * row stamped SHADOW at capture time that later produced an owner callout belongs to one
+ * population, not two, and pooling it would double-count the only lane that matters.
+ */
+function buildLane(
+  db: PreMoveNightlyDb,
+  lane: PreMoveLane,
+  sinceMs: number | null,
+  population: OwnerMirrorPopulation,
+  claimedByOwner: ReadonlySet<string>,
+): PreMoveNightlyLane {
+  const census = summarizePreMoveDiscoveryOnDb(db, { sinceMs, lane });
+  const discoveries = listPreMoveDiscoveriesOnDb(db, { sinceMs, lane, ownerAlertedOnly: true, limit: 1000 })
+    .filter((d) => !claimedByOwner.has(d.opportunityCaseId));
+  return laneFromRows(db, lane, census, discoveries, population);
+}
+
+/**
+ * THE OWNER LANE, RESOLVED CASE-FIRST.
+ *
+ * Membership cannot come from the `lane` column. That column is stamped at CAPTURE time,
+ * on a tick that cannot know whether an owner will later be notified, so it reads SHADOW
+ * or RESEARCH; `recordPreMoveAlertOnDb` was supposed to promote it and never matched a
+ * row, because the observation is written under the scanner's PENDING audit case while
+ * the promotion was keyed on the claim case minted at delivery. Production at 801b7d0d:
+ * 0 rows with `lane='OWNER'`, 0 rows with a non-null `owner_notified_at_ms`, against 74
+ * exact owner mirrors.
+ *
+ * So the owner lane is built from the mirrors — the objects that PROVE an owner was
+ * notified, because a mirror only exists if the Discord opening was sent — and their
+ * PRE_MOVE rows are fetched by both case identities. That is evidence, not a label.
+ */
+function buildOwnerLane(
+  db: PreMoveNightlyDb,
+  sinceMs: number | null,
+  population: OwnerMirrorPopulation,
+): { lane: PreMoveNightlyLane; claimedCaseIds: Set<string> } {
+  const caseIds: string[] = [];
+  for (const m of population.mirrors) {
+    if (!m.occExact || m.caseIdentityAmbiguous) continue;
+    caseIds.push(m.opportunityCaseId);
+    if (m.preMoveCaseId) caseIds.push(m.preMoveCaseId);
+  }
+  const all = listPreMoveDiscoveriesByCaseIdsOnDb(db as any, caseIds)
+    .filter((r) => sinceMs == null || (r.firstDetectedAtMs != null && r.firstDetectedAtMs >= sinceMs));
+
+  // One callout can own two PRE_MOVE rows — the pending audit row and, on later ticks, a
+  // row under the claim case. Keep the EARLIEST detection per mirror: it is the one that
+  // saw the setup before the alert, and the later one would report every callout as late.
+  const best = new Map<number, PreMoveRow>();
+  for (const r of all) {
+    const mirror = mirrorForCase(population, r.opportunityCaseId);
+    if (!mirror) continue;
+    const prev = best.get(mirror.paperTradeId);
+    if (!prev || (r.firstDetectedAtMs ?? Infinity) < (prev.firstDetectedAtMs ?? Infinity)) {
+      best.set(mirror.paperTradeId, r);
+    }
+  }
+  const discoveries = [...best.values()].sort(
+    (a, b) => (b.firstDetectedAtMs ?? 0) - (a.firstDetectedAtMs ?? 0),
+  );
+
+  const claimedCaseIds = new Set(all.map((r) => r.opportunityCaseId));
+  const census = censusFromPreMoveRows(
+    discoveries,
+    (r) => alertInstantFor(r, mirrorForCase(population, r.opportunityCaseId)).atMs,
+  );
+  return { lane: laneFromRows(db, "OWNER", census, discoveries, population), claimedCaseIds };
 }
 
 /**
@@ -292,7 +408,25 @@ export function buildPreMoveNightlyReport(
   opts: { sinceMs?: number | null } = {},
 ): PreMoveNightlyReport {
   const sinceMs = opts.sinceMs ?? null;
-  const lanes = LANES.map((lane) => buildLane(db, lane, sinceMs));
+  // Resolved ONCE. Every lane below reads the same owner population, so a mirror cannot be
+  // counted in two lanes and the owner lane cannot disagree with itself between sections.
+  const population = (() => {
+    try { return loadOwnerMirrorPopulationOnDb(db as any, { sinceMs: null }); }
+    catch {
+      return {
+        version: "OWNER_MIRROR_IDENTITY_V1" as const,
+        mirrors: [], withoutCaseIdentity: 0, ambiguousCaseIds: [],
+        byCaseId: new Map(),
+      } as OwnerMirrorPopulation;
+    }
+  })();
+
+  const ownerBuilt = buildOwnerLane(db, sinceMs, population);
+  const lanes = LANES.map((lane) =>
+    lane === "OWNER"
+      ? ownerBuilt.lane
+      : buildLane(db, lane, sinceMs, population, ownerBuilt.claimedCaseIds),
+  );
   const owner = lanes.find((l) => l.lane === "OWNER")!;
   return {
     version: PRE_MOVE_NIGHTLY_VERSION,
@@ -301,9 +435,15 @@ export function buildPreMoveNightlyReport(
     questions: standingQuestions(owner),
     note:
       "Lanes are never pooled: an owner validation alert and a shadow observation describe "
-      + "populations that have never coexisted. Lead time is measured FROM the alert on the frozen "
-      + "contract's own marks; a milestone reached before the alert is reported separately and never "
-      + "counted as lead time. Post-alert MFE requires VERIFIED excursion evidence; realized return "
-      + "does not and is never suppressed alongside it.",
+      + "populations that have never coexisted. OWNER membership is proven by the paper mirror the "
+      + "callout left, not by the `lane` column — that column is stamped at capture time, before "
+      + "anyone knows an owner will be notified, and its promotion was keyed on the wrong case id "
+      + "for its entire life. Lead time is measured FROM the alert on the frozen contract's own "
+      + "marks; a milestone reached before the alert is reported separately and never counted as "
+      + "lead time. Where no send instant was recorded, the mirror's own entry is used and the row "
+      + "says so in `ownerAlertInstantProvenance` — that instant is at or AFTER the true send, so "
+      + "every lead time derived from it is a floor, never a flattering estimate. Post-alert MFE "
+      + "requires VERIFIED excursion evidence; realized return does not and is never suppressed "
+      + "alongside it.",
   };
 }

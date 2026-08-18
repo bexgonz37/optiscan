@@ -97,7 +97,20 @@ export interface PreMoveDetectionInput {
 }
 
 export interface PreMoveAlertInput {
+  /** The CLAIM case — the row minted at delivery, which owns the mirror. */
   opportunityCaseId: string;
+  /**
+   * The PENDING audit case — the row the scanner wrote when it first saw the setup, and
+   * the only one holding pre-alert detection timestamps.
+   *
+   * These are two different `opportunity_cases` rows for one callout, and the observation
+   * lives under the pending one. Promoting on the claim id alone matched ZERO rows in
+   * production: every PRE_MOVE row stayed SHADOW/RESEARCH and `owner_notified_at_ms`
+   * stayed null across the whole table. Tried FIRST, because the claim row — when it
+   * exists at all — was created on a tick AFTER the alert, and measuring lead time from
+   * its detection instant would report every callout as later than it was.
+   */
+  preMoveCaseId?: string | null;
   ownerNotifiedAtMs: number;
   underlyingAtAlert: number | null;
   optionAtAlert: number | null;
@@ -383,25 +396,36 @@ export function recordPreMoveObservationOnDb(db: PreMoveDb, input: PreMoveDetect
  */
 export function recordPreMoveAlertOnDb(db: PreMoveDb, input: PreMoveAlertInput): boolean {
   if (!hasTable(db)) return false;
-  try {
-    const res = db.prepare(
-      `UPDATE ${TABLE} SET
-         owner_notified_at_ms=COALESCE(owner_notified_at_ms, ?),
-         underlying_at_alert=COALESCE(underlying_at_alert, ?),
-         option_at_alert=COALESCE(option_at_alert, ?),
-         lane=COALESCE(?, lane),
-         updated_at_ms=?
-       WHERE opportunity_case_id=?`,
-    ).run?.(
-      input.ownerNotifiedAtMs, num(input.underlyingAtAlert), num(input.optionAtAlert),
-      input.lane ?? null, input.ownerNotifiedAtMs, input.opportunityCaseId,
-    );
-    if (!res || res.changes === 0) return false;
-  } catch {
-    return false;
+  // Pending audit case first — it is the row that holds the pre-alert observation. The
+  // claim case is the fallback for callouts whose observation was captured after the
+  // thesis went active and is therefore already bound to the claim id.
+  const candidates = [input.preMoveCaseId, input.opportunityCaseId]
+    .filter((v): v is string => typeof v === "string" && v.length > 0);
+  for (const caseId of candidates) {
+    let changed = false;
+    try {
+      const res = db.prepare(
+        `UPDATE ${TABLE} SET
+           owner_notified_at_ms=COALESCE(owner_notified_at_ms, ?),
+           underlying_at_alert=COALESCE(underlying_at_alert, ?),
+           option_at_alert=COALESCE(option_at_alert, ?),
+           lane=COALESCE(?, lane),
+           updated_at_ms=?
+         WHERE opportunity_case_id=?`,
+      ).run?.(
+        input.ownerNotifiedAtMs, num(input.underlyingAtAlert), num(input.optionAtAlert),
+        input.lane ?? null, input.ownerNotifiedAtMs, caseId,
+      );
+      changed = Boolean(res && res.changes > 0);
+    } catch {
+      return false;
+    }
+    if (changed) {
+      reclassify(db, caseId, input.ownerNotifiedAtMs);
+      return true;
+    }
   }
-  reclassify(db, input.opportunityCaseId, input.ownerNotifiedAtMs);
-  return true;
+  return false;
 }
 
 // ── population reporting ─────────────────────────────────────────────────────
@@ -443,13 +467,7 @@ export function summarizePreMoveDiscoveryOnDb(
   db: PreMoveDb,
   opts: { sinceMs?: number | null; lane?: PreMoveLane | null; limit?: number } = {},
 ): PreMoveStageCensus {
-  const empty: PreMoveStageCensus = {
-    examined: 0, byStage: { ...EMPTY_STAGES },
-    byQuality: { COMPLETE: 0, PARTIAL: 0, INSUFFICIENT: 0 },
-    withOwnerAlert: 0, earlyRate: null, tooLateRate: null,
-    medianPremiumConsumedBeforeAlertPct: null, medianDetectionToAlertMs: null,
-  };
-  if (!hasTable(db)) return empty;
+  if (!hasTable(db)) return emptyCensus();
   const limit = Math.max(1, Math.min(20_000, opts.limit ?? 5000));
   const where: string[] = [];
   const params: any[] = [];
@@ -462,10 +480,39 @@ export function summarizePreMoveDiscoveryOnDb(
         ORDER BY first_detected_at_ms DESC LIMIT ?`,
     ).all?.(...params, limit) ?? []) as Record<string, any>[];
   } catch {
-    return empty;
+    return emptyCensus();
   }
+  return censusFromPreMoveRows(rows.map(toRow));
+}
 
-  const out: PreMoveStageCensus = { ...empty, byStage: { ...EMPTY_STAGES }, byQuality: { COMPLETE: 0, PARTIAL: 0, INSUFFICIENT: 0 } };
+function emptyCensus(): PreMoveStageCensus {
+  return {
+    examined: 0, byStage: { ...EMPTY_STAGES },
+    byQuality: { COMPLETE: 0, PARTIAL: 0, INSUFFICIENT: 0 },
+    withOwnerAlert: 0, earlyRate: null, tooLateRate: null,
+    medianPremiumConsumedBeforeAlertPct: null, medianDetectionToAlertMs: null,
+  };
+}
+
+/**
+ * The census over an ALREADY-SELECTED set of rows.
+ *
+ * Split out from the query so a lane whose membership cannot be expressed as a `WHERE`
+ * clause can still be counted the same way. The owner lane is exactly that case: an owner
+ * callout's PRE_MOVE row is written under the scanner's pending audit case while the
+ * `lane` column was stamped at capture time, before anyone knew an owner would be
+ * notified. Membership there is proven by the owner paper mirror, not by the column, and
+ * one census implementation must serve both or the two will drift.
+ *
+ * `alertAtMsOf` supplies the alert instant per row. It exists so a caller holding better
+ * evidence than the stored `owner_notified_at_ms` can pass it WITH its provenance rather
+ * than writing a derived value back into the table.
+ */
+export function censusFromPreMoveRows(
+  rows: readonly PreMoveRow[],
+  alertAtMsOf: (r: PreMoveRow) => number | null = (r) => r.ownerNotifiedAtMs,
+): PreMoveStageCensus {
+  const out = emptyCensus();
   const expansions: number[] = [];
   const leads: number[] = [];
   let gradable = 0;
@@ -474,9 +521,9 @@ export function summarizePreMoveDiscoveryOnDb(
 
   for (const r of rows) {
     out.examined += 1;
-    const stage = (r.discovery_stage ?? "UNGRADABLE") as DiscoveryStage;
+    const stage = (r.discoveryStage ?? "UNGRADABLE") as DiscoveryStage;
     if (stage in out.byStage) out.byStage[stage] += 1;
-    const q = (r.evidence_quality ?? "INSUFFICIENT") as PreMoveEvidenceQuality;
+    const q = (r.evidenceQuality ?? "INSUFFICIENT") as PreMoveEvidenceQuality;
     if (q in out.byQuality) out.byQuality[q] += 1;
 
     if (stage !== "UNGRADABLE") {
@@ -484,13 +531,12 @@ export function summarizePreMoveDiscoveryOnDb(
       if (stage === "PRE_TRIGGER" || stage === "EARLY_CONFIRMATION" || stage === "EARLY_EXPANSION") early += 1;
       if (stage === "TOO_LATE") tooLate += 1;
     }
-    if (r.owner_notified_at_ms != null) {
+    const alert = alertAtMsOf(r);
+    if (alert != null) {
       out.withOwnerAlert += 1;
-      const exp = num(r.premium_expansion_consumed_pct);
-      if (exp != null) expansions.push(exp);
-      const det = num(r.first_detected_at_ms);
-      const alert = num(r.owner_notified_at_ms);
-      if (det != null && alert != null && alert >= det) leads.push(alert - det);
+      if (r.premiumExpansionConsumedPct != null) expansions.push(r.premiumExpansionConsumedPct);
+      const det = r.firstDetectedAtMs;
+      if (det != null && alert >= det) leads.push(alert - det);
     }
   }
 
@@ -498,6 +544,36 @@ export function summarizePreMoveDiscoveryOnDb(
   out.tooLateRate = gradable ? +(tooLate / gradable).toFixed(4) : null;
   out.medianPremiumConsumedBeforeAlertPct = median(expansions);
   out.medianDetectionToAlertMs = median(leads);
+  return out;
+}
+
+/**
+ * PRE_MOVE rows for a known set of opportunity cases.
+ *
+ * The owner lane is resolved case-first — from the paper mirrors that prove an owner was
+ * notified — rather than by filtering on a `lane` column the capture site could not know
+ * the value of. Ids are chunked so a large owner population cannot exceed SQLite's
+ * variable limit.
+ */
+export function listPreMoveDiscoveriesByCaseIdsOnDb(
+  db: PreMoveDb,
+  caseIds: readonly string[],
+): PreMoveRow[] {
+  if (!hasTable(db) || !caseIds.length) return [];
+  const unique = [...new Set(caseIds.filter((id) => typeof id === "string" && id.length > 0))];
+  const out: PreMoveRow[] = [];
+  const CHUNK = 400;
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    const slice = unique.slice(i, i + CHUNK);
+    try {
+      const rows = (db.prepare(
+        `SELECT * FROM ${TABLE} WHERE opportunity_case_id IN (${slice.map(() => "?").join(",")})`,
+      ).all?.(...slice) ?? []) as Record<string, any>[];
+      for (const r of rows) out.push(toRow(r));
+    } catch {
+      return out;
+    }
+  }
   return out;
 }
 

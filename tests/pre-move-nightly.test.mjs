@@ -36,25 +36,47 @@ function db() {
 /**
  * One alerted owner case with a mirror on the exact contract.
  * `marks` are [returnPct, offsetMsFromDetection] pairs.
+ *
+ * NO ALERT ID ANYWHERE, deliberately. An owner callout never writes an `options_alerts`
+ * row, so `opportunity_cases.alert_id` and `options_paper_trades.alert_id` are both null
+ * in production — 0 of 106 and 0 of 74 respectively at 801b7d0d. This fixture used to set
+ * both, which is the subscriber lane's shape, and so it could only ever exercise the join
+ * that never fires for a real owner trade.
+ *
+ * The link that DOES exist is the opportunity case recorded on the mirror's own feature
+ * snapshot, judged against the exact contract the case froze.
  */
 function seedAlerted(d, {
   caseId, alertOffsetMs = 2 * MIN, marks = [], occ = OCC,
   detectionAsk = 2.0, alertAsk = 2.2, status = "ENTERED", returnPct = null,
+  enteredAtMs = T0,
 }) {
-  const alertId = `oa_${caseId}`;
   d.prepare(
     `INSERT INTO opportunity_cases
        (opportunity_id, underlying_symbol, detected_at_ms, source_path, acceptance_decision,
         delivery_decision, case_json, created_at_ms, updated_at_ms, alert_id)
-     VALUES (?,?,?,'owner','accepted','delivered','{}',?,?,?)`,
-  ).run(caseId, "NVDA", T0, T0, T0, alertId);
+     VALUES (?,?,?,'owner','accepted','delivered',?,?,?,NULL)`,
+  ).run(
+    caseId, "NVDA", T0,
+    JSON.stringify({
+      underlyingSymbol: "NVDA",
+      opportunityFingerprint: `of_${caseId}`,
+      selectedContract: { optionSymbol: occ, side: "call", strike: 180, expiration: "2026-08-14", dte: 4 },
+      frozenTrade: { entryMid: detectionAsk, targetT1: detectionAsk * 1.5, targetT2: detectionAsk * 2, stop: detectionAsk * 0.7 },
+    }),
+    T0, T0,
+  );
 
   const info = d.prepare(
     `INSERT INTO options_paper_trades
        (option_symbol, side, strike, expiration, dte, result_class, entry_fill, status, return_pct,
-        paper_kind, alert_id, created_at_ms, updated_at_ms)
-     VALUES (?,'call',180,'2026-08-14',4,'REAL_OPTION_PAPER',?,?,?,'OWNER_VALIDATION_PAPER',?,?,?)`,
-  ).run(occ, detectionAsk, status, returnPct, alertId, T0, T0);
+        entered_at_ms, feature_snapshot_json, paper_kind, alert_id, created_at_ms, updated_at_ms)
+     VALUES (?,'call',180,'2026-08-14',4,'REAL_OPTION_PAPER',?,?,?,?,?,'OWNER_VALIDATION_PAPER',NULL,?,?)`,
+  ).run(
+    occ, detectionAsk, status, returnPct, enteredAtMs,
+    JSON.stringify({ lane: "OWNER_ONLY", opportunityCaseId: caseId, quality: 0.85 }),
+    T0, T0,
+  );
 
   for (const [ret, off, markOcc] of marks) {
     d.prepare(

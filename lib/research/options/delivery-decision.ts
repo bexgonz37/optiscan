@@ -37,6 +37,7 @@ import {
   releaseOpportunityOpeningClaimOnDb,
 } from "../../opportunity-case/live.ts";
 import { recordPreMoveAlertOnDb } from "./pre-move-store.ts";
+import { preMoveCaseIdForFingerprint } from "../../opportunity-case/owner-mirror-identity.ts";
 
 export interface DeliverySubmission {
   deliveryInput: DeliveryInput;
@@ -377,6 +378,13 @@ async function sendOwnerPrivateOpening(
     try {
       recordPreMoveAlertOnDb(db as any, {
         opportunityCaseId: claim.opportunityCaseId,
+        // The observation row is written by the scanner under the PENDING audit case, a
+        // different `opportunity_cases` row from the one this claim just minted. Keyed on
+        // the claim id alone, this promotion matched zero rows for its entire life — the
+        // OWNER lane was permanently empty and every lead time unmeasurable. The pending
+        // id is a pure function of the fingerprint both rows carry, so it is derived here
+        // rather than stored. Additive: it writes only to the audit table, after the send.
+        preMoveCaseId: preMoveCaseIdForFingerprint(claim.fingerprint),
         ownerNotifiedAtMs: nowMs,
         underlyingAtAlert: s.deliveryInput.underlyingPrice ?? s.deliveryInput.currentUnderlyingPrice ?? null,
         // The ask at alert is what the owner would have paid, matching the ask recorded
