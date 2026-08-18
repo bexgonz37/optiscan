@@ -104,6 +104,12 @@ function seedOwnerCallout(d, {
     thesisFingerprint: `ot_test_${seq}`,
     sessionDate,
     setupFamily: strategy,
+    // ~27 evaluations per case in production, one per strategy considered. The first entry
+    // is deliberately NOT the traded one, so a resolver that reads [0] fails here.
+    strategyEvaluations: [
+      { strategyId: "vwap_rejection", strategyVersion: "1", strength: 42, signal: "NEUTRAL", evidence: [], contradictingEvidence: [{}, {}] },
+      { strategyId: strategy, strategyVersion: "1", strength: 100, signal: "SUPPORTIVE", evidence: [{}], contradictingEvidence: [] },
+    ],
     selectedContract: { optionSymbol: frozenOcc, side, strike: 301, expiration: "2026-08-19", dte: 2 },
     frozenTrade: { entryMid: entryFill, targetT1, targetT2, stop },
     caseRole: id === claimCaseId ? "claim" : "pending_audit",
@@ -570,6 +576,14 @@ test("a winner trace carries strategy, strength, contract, targets, path and mil
   assert.equal(row.side, "PUT");
   assert.equal(row.strategyKey, "lower_high_continuation");
   assert.equal(row.selection.deliveryQualityScore, 100, "the delivery-time quality score, 0–100. Research only.");
+  assert.equal(
+    row.selection.selectionStrength, 100,
+    "the SELECTED strategy's strength, read from the evaluation that was actually traded",
+  );
+  assert.equal(row.selection.signalVerdict, "SUPPORTIVE");
+  assert.equal(row.selection.signalsMatched, 1);
+  assert.equal(row.selection.contradictingEvidence, 0);
+  assert.equal(row.selection.strategyVersion, "1");
   assert.equal(row.entryFill, 1.0);
   assert.equal(row.targetT1, 1.4);
   assert.equal(row.realizedReturnPct, 44.42);
@@ -615,6 +629,10 @@ test("a loser that worked, reversed, held overnight and gapped through its stop 
   assert.ok(row.stopEvidence.stopSlippagePct < -50, "it filled far below the 2.10 stop");
   assert.equal(row.stopEvidence.stopLevel, 2.1);
   assert.equal(row.selection.deliveryQualityScore, 60);
+  assert.equal(
+    row.selection.selectionStrength, 100,
+    "selection strength and delivery quality are different numbers and never stand in for each other",
+  );
 
   // The two traces must be distinguishable from the payload alone.
   const winner = seedOwnerCallout(d, { returnPct: 44.42, marks: ramp(T0, 50, 44.42) });

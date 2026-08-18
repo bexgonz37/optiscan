@@ -173,6 +173,19 @@ export interface OwnerLearningRow {
      * reproducible-looking one.
      */
     deliveryQualityScore: number | null;
+    /**
+     * The SELECTED strategy's 0–100 strength, frozen on the case. THIS is the field an
+     * earlier audit split at 100 and below 75 — it lives in
+     * `case_json.strategyEvaluations[]`, matched on the strategy that was actually
+     * traded, and it disagrees with `deliveryQualityScore` (100 vs 81 on the same
+     * callout). Both are carried under their own names so neither can stand in for the
+     * other. RESEARCH ONLY.
+     */
+    selectionStrength: number | null;
+    strategyVersion: string | null;
+    signalVerdict: string | null;
+    signalsMatched: number | null;
+    contradictingEvidence: number | null;
     readinessState: string | null;
     ownerReason: string | null;
     discoveryStage: string | null;
@@ -409,6 +422,11 @@ export function buildOwnerLearningRow(
   // ── pre-callout features, research only ───────────────────────────────────
   const selection = {
     deliveryQualityScore: mirror.deliveryQualityScore,
+    selectionStrength: mirror.selectionStrength,
+    strategyVersion: mirror.strategyVersion,
+    signalVerdict: mirror.signalVerdict,
+    signalsMatched: mirror.signalsMatched,
+    contradictingEvidence: mirror.contradictingEvidence,
     readinessState: mirror.readinessState,
     ownerReason: mirror.ownerReason,
     discoveryStage: str(pre?.discovery_stage),

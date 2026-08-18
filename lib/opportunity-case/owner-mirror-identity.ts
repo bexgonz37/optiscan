@@ -155,6 +155,42 @@ export interface OwnerCaseFacts {
   preMoveCaseId: string | null;
   /** Null for every owner case in existence. Read only to prove that, never to resolve. */
   alertId: string | null;
+  /**
+   * The SELECTED strategy's own evaluation, as frozen on the case.
+   *
+   * `strength` here is the 0–100 selection strength — a different quantity from the
+   * delivery quality score on the mirror, and the one an earlier audit split at 100 and
+   * 75. Both are carried, separately named, because they disagree: this IWM callout
+   * scored 100 on selection strength and 81 on delivery quality.
+   */
+  selectionStrength: number | null;
+  strategyVersion: string | null;
+  signalVerdict: string | null;
+  signalsMatched: number | null;
+  contradictingEvidence: number | null;
+}
+
+/**
+ * The evaluation belonging to the strategy that was actually selected.
+ *
+ * A case carries ~27 evaluations, one per strategy the scanner considered. Reading the
+ * first, or the strongest, would report a strategy that was never traded — and on this
+ * IWM case the first entry is `vwap_rejection` while the callout was
+ * `lower_high_continuation`. Matched on identity, and null when no evaluation matches
+ * rather than falling back to whichever one sorted first.
+ */
+function selectedEvaluation(
+  evaluations: unknown,
+  setupFamily: string | null,
+): Record<string, any> | null {
+  if (!Array.isArray(evaluations) || !setupFamily) return null;
+  const key = setupFamily.trim().toLowerCase();
+  for (const e of evaluations) {
+    if (!e || typeof e !== "object") continue;
+    const id = String((e as any).strategyId ?? "").trim().toLowerCase();
+    if (id === key) return e as Record<string, any>;
+  }
+  return null;
 }
 
 export function loadOwnerCaseFactsOnDb(
@@ -178,6 +214,8 @@ export function loadOwnerCaseFactsOnDb(
   const frozen = (c.frozenTrade ?? {}) as Record<string, any>;
   const summary = (c.summary ?? {}) as Record<string, any>;
   const sideRaw = String(contract.side ?? "").trim().toUpperCase();
+  const setupFamily = str(row.setup_family) ?? str(c.setupFamily);
+  const evaluation = selectedEvaluation(c.strategyEvaluations, setupFamily);
   // Read from `case_json` rather than the columnar field: BOTH writers persist it there
   // (`adaptOptionsLiveToCase` for the pending row, the claim path for the delivery row),
   // whereas the `opportunity_fingerprint` COLUMN is only written by the claim path and is
@@ -187,7 +225,7 @@ export function loadOwnerCaseFactsOnDb(
   return {
     opportunityCaseId: String(row.opportunity_id),
     symbol: str(row.underlying_symbol) ?? str(c.underlyingSymbol),
-    setupFamily: str(row.setup_family) ?? str(c.setupFamily),
+    setupFamily,
     direction: str(row.direction) ?? str(c.direction),
     sessionDate: str(c.sessionDate),
     detectedAtMs: num(row.detected_at_ms) ?? num(c.detectedAtMs),
@@ -201,6 +239,13 @@ export function loadOwnerCaseFactsOnDb(
     thesisFingerprint: str(c.thesisFingerprint),
     preMoveCaseId: preMoveCaseIdForFingerprint(fingerprint),
     alertId: str(row.alert_id) ?? str(c.alertId),
+    selectionStrength: num(evaluation?.strength),
+    strategyVersion: str(evaluation?.strategyVersion),
+    signalVerdict: str(evaluation?.signal),
+    signalsMatched: Array.isArray(evaluation?.evidence) ? evaluation.evidence.length : null,
+    contradictingEvidence: Array.isArray(evaluation?.contradictingEvidence)
+      ? evaluation.contradictingEvidence.length
+      : null,
   };
 }
 
@@ -275,6 +320,16 @@ export interface OwnerMirrorRecord {
   deliveryQuality: number | null;
   /** `deliveryQuality` on a 0–100 scale, for readability only. Research only. */
   deliveryQualityScore: number | null;
+  /**
+   * The SELECTED strategy's 0–100 strength, frozen on the case at callout time. A
+   * different quantity from `deliveryQualityScore` and never a substitute for it.
+   * RESEARCH ONLY — nothing reads it as a gate.
+   */
+  selectionStrength: number | null;
+  strategyVersion: string | null;
+  signalVerdict: string | null;
+  signalsMatched: number | null;
+  contradictingEvidence: number | null;
   readinessState: string | null;
   ownerReason: string | null;
 
@@ -398,6 +453,11 @@ function toRecord(
     exactContractMarksAvailable: marks.on > 0,
     deliveryQuality: quality,
     deliveryQualityScore: quality == null ? null : Math.round(quality * 100),
+    selectionStrength: facts?.selectionStrength ?? null,
+    strategyVersion: facts?.strategyVersion ?? null,
+    signalVerdict: facts?.signalVerdict ?? null,
+    signalsMatched: facts?.signalsMatched ?? null,
+    contradictingEvidence: facts?.contradictingEvidence ?? null,
     readinessState: str(snap.readinessState),
     ownerReason: str(snap.ownerReason),
     caseIdentityAmbiguous: ambiguous,
