@@ -14,7 +14,7 @@
   Target 2, stop, exit, overnight handling, provider cap, subscriber-readiness threshold,
   Discord message or delivery authority was touched. `OWNER_SELECTION_STRENGTH_GATE_V1`
   was not created. No Profit Protection was added. `LHC_SELECT_V1` untouched.
-- Final production SHA `b1d2ac4`.
+- Final production SHA `06e3ca0`, verified local = `origin/main` = production.
 
 ### THE DEFECT — an owner callout has no `alert_id`, and six consumers joined on one
 
@@ -218,18 +218,38 @@ matches rather than falling back to whichever sorted first. A regression fixture
 different strategy in slot 0 for exactly this reason.
 
 The two numbers disagree on the same callout — selection strength 100, delivery quality 81
-— which is the whole argument for keeping them apart. Both are RESEARCH ONLY. The
-delivery-quality separation observed this session (below 75: PF 0.5162 over 25 closed
-trades; 75 and above: PF 0.7615 over 42) is stated under the honest name; both sides are
-below break-even and neither authorises anything.
+— which is the whole argument for keeping them apart, and it is why the delivery-quality
+split measured earlier in this session (below 75: PF 0.5162 over 25 trades; 75 and above:
+PF 0.7615 over 42) is a DIFFERENT cut from the one the audit reported, not a weaker
+version of it.
+
+With the real field the audit's finding reproduces, on 67 closed owner trades:
+
+| selection strength | n | profit factor | mean | winners |
+|---|---|---|---|---|
+| = 100 | 36 | **1.1885** | +4.06% | 19 |
+| 75–99 | 5 | 1.4533 | +8.89% | 3 |
+| < 75 | 26 | **0.1670** | −31.00% | 5 |
+
+The audit reported n~34 at PF ~1.205 and n~13 at PF 0.027; the direction and the magnitude
+of the split hold, the exact counts do not, and the sub-75 bucket is twice the size it was
+described as. 14 of the 74 mirrors carry no strength at all — their case holds no
+evaluation matching the strategy that was traded — and those are null, never zero.
+
+This is RESEARCH ONLY and is stated here so the next session argues with a number rather
+than a memory. It is in-sample on a single 7-session window, the sub-75 bucket is
+26 trades, and `OWNER_SELECTION_STRENGTH_GATE_V1` remains uncreated.
 
 ### `OWNER_VALIDATION_PAPER` is a lane now, in both senses
 
 `QuantLane` had seven members and this was not one of them, so the lane most relevant to
 whether the callouts work had no row in the quant report at all. It has one, with its
 MFE/MAE recomputed from same-contract marks rather than the contaminated stored columns.
-The older lanes still read those columns and are deliberately left alone — moving their
-published numbers is a separate decision from repairing owner identity.
+The contrast is now visible in one table: `owner_validation_paper` reports an average MFE
+of **+26.55%** while `delivered_alert_paper`, still reading the stored column, reports
+**−19.47%** — a *negative maximum favourable excursion*, which is not a number that can
+exist. The older lanes still read those columns and are deliberately left alone.
+Moving their published numbers is a separate decision from repairing owner identity.
 
 Evidence Learning already carried `OWNER_VALIDATION_PAPER` as its own audience
 (`ai.ownerLane` PASS in production) and needed no change. `paper_trade_outcomes` is keyed
