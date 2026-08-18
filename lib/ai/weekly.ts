@@ -330,6 +330,7 @@ async function generateWeeklyProposalsForReport(
       toolInputSchema: WEEKLY_PROPOSALS_TOOL_SCHEMA as unknown as Record<string, unknown>,
       validatorName: "validateWeeklyProposals",
       promptVersion: WEEKLY_PROPOSAL_PROMPT_VERSION,
+      jobType: args.jobType ?? "weekly_proposals",
     },
     (json) => validateWeeklyProposals(json),
     args.provider,

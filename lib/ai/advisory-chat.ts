@@ -25,6 +25,9 @@ import type { CanonicalFindingsReport } from "./findings-report.ts";
 
 export const ADVISORY_CHAT_PROMPT_VERSION = "advisory-chat-v1";
 
+/** Ledger label for Ask OptiScan spend. Shared with the budget report. */
+export const ADVISORY_CHAT_JOB_TYPE = "advisory_chat";
+
 /** Default screen prompts. Plain questions an owner would actually ask. */
 export const SUGGESTED_PROMPTS: Array<{ prompt: string; mode: ChatMode }> = [
   { prompt: "What should I investigate first?", mode: "INVESTIGATE" },
@@ -279,6 +282,12 @@ export async function answerAdvisoryChat(input: {
         toolInputSchema: ANSWER_TOOL_SCHEMA,
         validatorName: "advisoryChatAnswer",
         promptVersion: ADVISORY_CHAT_PROMPT_VERSION,
+        // Ask OptiScan is owner-triggered and unbounded in frequency, and it ran on the
+        // Sonnet-tier model with no ledger row and no budget check — the one AI path that
+        // could quietly outspend every scheduled job combined. It is now metered like any
+        // other, and refused once the combined monthly cap is reached.
+        jobType: ADVISORY_CHAT_JOB_TYPE,
+        meter: true,
       },
       validateShape,
       deps,

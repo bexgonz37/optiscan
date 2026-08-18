@@ -61,6 +61,7 @@ export async function analyzeResearchTask(db: DbLike, task: ResearchTaskLike, en
       maxRetries: 1,
       validatorName: "research_analysis_v1",
       promptVersion: "rq1",
+      jobType: `research_queue:${task.kind}`,
     }, validateAnalysis, { env });
 
     const costUsd = estimateCostUsd(cfg.nightlyModel, call.inputTokens, call.outputTokens);

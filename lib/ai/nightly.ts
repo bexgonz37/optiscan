@@ -151,6 +151,9 @@ async function narrateStoredNightlyReport(
       toolInputSchema: NIGHTLY_NARRATIVE_TOOL_SCHEMA as unknown as Record<string, unknown>,
       validatorName: "validateNightlyNarrative",
       promptVersion: NIGHTLY_NARRATION_PROMPT_VERSION,
+      // Attribution only. This job records its own spend row; `meter` stays off so the
+      // month is never billed twice for one call.
+      jobType: opts.jobType ?? "nightly_diagnosis",
     },
     (json) => validateNightlyNarrative(json, report.summary, research ?? undefined),
     opts.provider,

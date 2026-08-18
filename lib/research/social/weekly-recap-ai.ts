@@ -20,6 +20,9 @@ import { LABEL_COMBINED_PEAK, LABEL_COMBINED_TRACKED, type WeeklySocialRecap } f
 
 export const RECAP_AI_PROMPT_VERSION = "weekly-social-recap-v1";
 
+/** Ledger label for content-wording spend. */
+export const RECAP_AI_JOB_TYPE = "social_recap_rewrite";
+
 export interface AiRewriteResult {
   ok: boolean;
   /** Accepted variants only. Any variant failing validation is dropped. */
@@ -131,6 +134,11 @@ export async function rewriteRecapDraft(input: {
         maxOutputTokens: Math.min(cfg.maxOutputTokensPerJob, 2_500),
         timeoutMs: cfg.jobTimeoutMs,
         maxRetries: Math.min(cfg.maxRetries, 1),
+        // Content wording counts against the SAME monthly AI budget as the research jobs.
+        // It had no ledger row at all, so a marketing rewrite could consume budget the
+        // nightly analyst then believed it still had.
+        jobType: RECAP_AI_JOB_TYPE,
+        meter: true,
         toolName: "recap_rewrite",
         toolInputSchema: REWRITE_SCHEMA,
         validatorName: "weeklyRecapRewrite",

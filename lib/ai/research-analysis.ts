@@ -278,6 +278,7 @@ export async function runNightlyResearchAnalysis(
         toolInputSchema: RESEARCH_ANALYSIS_TOOL_SCHEMA as unknown as Record<string, unknown>,
         validatorName: "validateResearchAnalysis",
         promptVersion: RESEARCH_ANALYSIS_PROMPT_VERSION,
+        jobType: RESEARCH_ANALYSIS_JOB_TYPE,
       },
       validateAnalysis,
       opts.provider,

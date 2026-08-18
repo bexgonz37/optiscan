@@ -11,6 +11,7 @@ import {
   type AiJobRunStats,
 } from "./store.ts";
 import { nightlyRunKey, weeklyRunKey, nextNightlyEligibleMs, nextWeeklyEligibleMs } from "./schedule.ts";
+import { aiBudgetReportOnDb, type AiBudgetReport } from "./monthly-budget.ts";
 import { buildQuantDashboard, type QuantDashboard } from "./quant-dashboard.ts";
 import { momentumDiagnosticsForDay } from "../momentum-diagnostics.ts";
 import { evidenceLearningSnapshotOnDb, type EvidenceLearningSnapshot } from "./evidence-learning.ts";
@@ -41,6 +42,15 @@ export interface AiOverview {
     inputTokens: number;
     outputTokens: number;
   };
+  /**
+   * The COMBINED budget across every AI ledger, and the one to read.
+   *
+   * `cost` above reports `ai_job_runs` alone. It is kept because existing consumers read it,
+   * but it is a per-ledger figure and is not the month's spend: on 2026-08-18 it said $1.0195
+   * while the asymmetry ledger separately held $0.2005. `budget.spendUsd` is the total the
+   * $20 cap is actually applied to.
+   */
+  budget: AiBudgetReport;
   runs: AiJobRunStats;
   schedule: {
     nightlyDueNow: boolean;
@@ -104,6 +114,7 @@ export function aiOverviewOnDb(db: DbLike, env: NodeJS.ProcessEnv = process.env,
       inputTokens: tokenTotals.i,
       outputTokens: tokenTotals.o,
     },
+    budget: aiBudgetReportOnDb(db, cfg, nowMs),
     runs: aiJobRunStatsOnDb(db),
     schedule: {
       nightlyDueNow: nightlyRunKey(nowMs) != null,
