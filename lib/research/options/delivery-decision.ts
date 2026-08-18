@@ -37,6 +37,7 @@ import {
   releaseOpportunityOpeningClaimOnDb,
 } from "../../opportunity-case/live.ts";
 import { recordPreMoveAlertOnDb } from "./pre-move-store.ts";
+import { recordPreMoveV2AlertOnDb } from "./pre-move-v2-store.ts";
 import { preMoveCaseIdForFingerprint } from "../../opportunity-case/owner-mirror-identity.ts";
 
 export interface DeliverySubmission {
@@ -392,6 +393,50 @@ async function sendOwnerPrivateOpening(
         // expansion that is really just half a spread.
         optionAtAlert: s.deliveryInput.contract?.ask ?? null,
         lane: "OWNER",
+      });
+    } catch { /* isolated */ }
+    // PRE_MOVE_DISCOVERY_V2: the alert-instant snapshot, taken HERE because here is the
+    // only moment it is true. V2's denominator is the session's high-to-low range, and
+    // the V1 row keeps that range as a running MAX/MIN for the whole life of the case —
+    // reading it later would let the rest of the day enlarge the denominator of a
+    // decision made now, and every callout would look earlier the longer its session
+    // ran. Write-once, measurement only, and isolated for the same reason as the mirror:
+    // the alert is already out and no measurement may retract it.
+    try {
+      const fs = (s.deliveryInput.featureSnapshot as { underlying?: Record<string, unknown> } | null)?.underlying ?? {};
+      const fnum = (v: unknown): number | null => {
+        const x = Number(v);
+        return v == null || v === "" || !Number.isFinite(x) ? null : x;
+      };
+      const isCall = s.deliveryInput.contract.side === "call";
+      // Direction-specific, exactly as the V1 capture site derives it: a call waits on
+      // resistance above, a put on support below. One level for both would report every
+      // put as pre-trigger.
+      const brokeFavorably = isCall ? fs.hodBreak : fs.lodBreak;
+      recordPreMoveV2AlertOnDb(db as any, {
+        opportunityCaseId: claim.opportunityCaseId,
+        preMoveCaseId: preMoveCaseIdForFingerprint(claim.fingerprint),
+        side: isCall ? "CALL" : "PUT",
+        ownerNotifiedAtMs: nowMs,
+        underlyingAtAlert: s.deliveryInput.underlyingPrice ?? s.deliveryInput.currentUnderlyingPrice ?? null,
+        sessionHighAtAlert: fnum(fs.hod),
+        sessionLowAtAlert: fnum(fs.lod),
+        sessionOpenAtAlert: fnum(fs.sessionOpen) ?? fnum(fs.open),
+        vwapAtAlert: fnum(fs.vwap),
+        triggerLevelAtAlert: isCall ? fnum(fs.nearestResistance) : fnum(fs.nearestSupport),
+        triggerTakenAtAlert: brokeFavorably == null ? null : brokeFavorably === true,
+        optionAtAlert: s.deliveryInput.contract?.ask ?? null,
+        optionAtFirstDetection: s.deliveryInput.optionAtFirstDetection ?? null,
+        underlyingAtFirstDetection: s.deliveryInput.underlyingAtFirstDetection ?? null,
+        firstSetupObservedAtMs: s.deliveryInput.firstDetectedAtMs ?? null,
+        firstFullConfirmationAtMs: s.deliveryInput.firstReadyAtMs ?? null,
+        // The frozen premiums the owner was actually shown. Never a later, better level:
+        // a target time measured against an improved entry is a target the callout never
+        // set.
+        entryPremium: s.deliveryInput.entry?.mid ?? null,
+        target1Premium: s.deliveryInput.entry?.t1 ?? null,
+        target2Premium: s.deliveryInput.entry?.t2 ?? null,
+        stopPremium: s.deliveryInput.entry?.stop ?? null,
       });
     } catch { /* isolated */ }
     return {

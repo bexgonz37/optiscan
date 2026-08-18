@@ -2234,6 +2234,46 @@ CREATE TABLE IF NOT EXISTS opportunity_pre_move_discovery (
   missing_fields_json TEXT,
   classification_reason TEXT,
 
+  -- ── PRE_MOVE_DISCOVERY_V2 (additive, measurement only) ────────────────────
+  -- The V1 columns above cannot answer the earliness question and are left exactly
+  -- as they are: V1 rows keep their V1 stage forever and nothing here rewrites one.
+  --
+  -- These are the ALERT-INSTANT snapshot. V2 refuses to classify against
+  -- session_high/session_low above because those are a running MAX/MIN that keeps
+  -- WIDENING AFTER THE ALERT — using them would let the rest of the day enlarge the
+  -- denominator of a decision made hours earlier, and every callout would drift
+  -- earlier the longer its session ran. Write-once, captured at the send.
+  --
+  -- A row with v2_captured = 0 is UNGRADABLE in V2 forever. That is the prospective
+  -- rule: nothing is back-filled and no post-alert observation is admitted as though
+  -- it had been in hand at the time.
+  v2_captured INTEGER NOT NULL DEFAULT 0,
+  session_high_at_alert REAL,
+  session_low_at_alert REAL,
+  session_open_at_alert REAL,
+  vwap_at_alert REAL,
+  trigger_level_at_alert REAL,
+  trigger_taken_at_alert INTEGER,
+  first_partial_confirmation_at_ms INTEGER,
+  first_expansion_at_ms INTEGER,
+  entry_premium REAL,
+  target1_premium REAL,
+  target2_premium REAL,
+  stop_premium REAL,
+  v2_model_version TEXT,
+  v2_definition_hash TEXT,
+  v2_discovery_stage TEXT,
+  v2_trigger_state TEXT,
+  v2_session_move_consumed_fraction REAL,
+  v2_reward_remaining_fraction REAL,
+  v2_underlying_move_consumed_pct REAL,
+  v2_premium_expansion_consumed_pct REAL,
+  v2_distance_to_trigger_pct REAL,
+  v2_extension_from_vwap_pct REAL,
+  v2_evidence_quality TEXT,
+  v2_missing_fields_json TEXT,
+  v2_reason TEXT,
+
   observations INTEGER NOT NULL DEFAULT 1,
   created_at_ms INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL
@@ -2961,6 +3001,42 @@ const CONTENT_DRAFT_COLUMN_MIGRATIONS: Array<[string, string]> = [
   ["discord_attempt_count", "ALTER TABLE content_drafts ADD COLUMN discord_attempt_count INTEGER NOT NULL DEFAULT 0"],
   ["discord_last_attempt_at_ms", "ALTER TABLE content_drafts ADD COLUMN discord_last_attempt_at_ms INTEGER"],
 ];
+/**
+ * PRE_MOVE_DISCOVERY_V2 columns on an existing `opportunity_pre_move_discovery`.
+ *
+ * Purely additive and all nullable except the capture flag, which defaults to 0 so
+ * every pre-existing row is correctly UNGRADABLE in V2 rather than silently adopting
+ * a stage it was never measured for.
+ */
+const PRE_MOVE_V2_COLUMN_MIGRATIONS: Array<[string, string]> = [
+  ["v2_captured", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN v2_captured INTEGER NOT NULL DEFAULT 0"],
+  ["session_high_at_alert", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN session_high_at_alert REAL"],
+  ["session_low_at_alert", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN session_low_at_alert REAL"],
+  ["session_open_at_alert", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN session_open_at_alert REAL"],
+  ["vwap_at_alert", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN vwap_at_alert REAL"],
+  ["trigger_level_at_alert", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN trigger_level_at_alert REAL"],
+  ["trigger_taken_at_alert", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN trigger_taken_at_alert INTEGER"],
+  ["first_partial_confirmation_at_ms", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN first_partial_confirmation_at_ms INTEGER"],
+  ["first_expansion_at_ms", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN first_expansion_at_ms INTEGER"],
+  ["entry_premium", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN entry_premium REAL"],
+  ["target1_premium", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN target1_premium REAL"],
+  ["target2_premium", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN target2_premium REAL"],
+  ["stop_premium", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN stop_premium REAL"],
+  ["v2_model_version", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN v2_model_version TEXT"],
+  ["v2_definition_hash", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN v2_definition_hash TEXT"],
+  ["v2_discovery_stage", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN v2_discovery_stage TEXT"],
+  ["v2_trigger_state", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN v2_trigger_state TEXT"],
+  ["v2_session_move_consumed_fraction", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN v2_session_move_consumed_fraction REAL"],
+  ["v2_reward_remaining_fraction", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN v2_reward_remaining_fraction REAL"],
+  ["v2_underlying_move_consumed_pct", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN v2_underlying_move_consumed_pct REAL"],
+  ["v2_premium_expansion_consumed_pct", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN v2_premium_expansion_consumed_pct REAL"],
+  ["v2_distance_to_trigger_pct", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN v2_distance_to_trigger_pct REAL"],
+  ["v2_extension_from_vwap_pct", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN v2_extension_from_vwap_pct REAL"],
+  ["v2_evidence_quality", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN v2_evidence_quality TEXT"],
+  ["v2_missing_fields_json", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN v2_missing_fields_json TEXT"],
+  ["v2_reason", "ALTER TABLE opportunity_pre_move_discovery ADD COLUMN v2_reason TEXT"],
+];
+
 const MOMENTUM_DIAGNOSTIC_COLUMN_MIGRATIONS: Array<[string, string]> = [
   ["classification", "ALTER TABLE momentum_diagnostics ADD COLUMN classification TEXT"],
   ["dominant_reason", "ALTER TABLE momentum_diagnostics ADD COLUMN dominant_reason TEXT"],
@@ -3043,6 +3119,15 @@ function migrate(db: Database.Database) {
     // the migration that creates the column.
     db.exec(
       "CREATE INDEX IF NOT EXISTS idx_content_drafts_delivery_reason ON content_drafts(discord_delivery_status, discord_delivery_reason)",
+    );
+  }
+  // PRE_MOVE_DISCOVERY_V2 (additive, measurement only): the alert-instant snapshot the
+  // V2 stage is computed from. Existing rows keep v2_captured = 0 and stay UNGRADABLE.
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='opportunity_pre_move_discovery'").get()) {
+    const preMoveCols = cols("opportunity_pre_move_discovery");
+    for (const [col, sql] of PRE_MOVE_V2_COLUMN_MIGRATIONS) if (!preMoveCols.has(col)) db.exec(sql);
+    db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_pre_move_v2_stage ON opportunity_pre_move_discovery(v2_captured, v2_discovery_stage)",
     );
   }
   // Analog Engine (additive): replay-seed observability — attempted-vs-succeeded calls + per-symbol status.
