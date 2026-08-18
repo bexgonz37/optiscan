@@ -569,7 +569,7 @@ test("a winner trace carries strategy, strength, contract, targets, path and mil
   assert.equal(row.optionSymbol, "O:IWM260819P00301000");
   assert.equal(row.side, "PUT");
   assert.equal(row.strategyKey, "lower_high_continuation");
-  assert.equal(row.selection.selectionStrength, 100, "delivery-time quality, 0–100. Research only.");
+  assert.equal(row.selection.deliveryQualityScore, 100, "the delivery-time quality score, 0–100. Research only.");
   assert.equal(row.entryFill, 1.0);
   assert.equal(row.targetT1, 1.4);
   assert.equal(row.realizedReturnPct, 44.42);
@@ -614,7 +614,7 @@ test("a loser that worked, reversed, held overnight and gapped through its stop 
   assert.equal(row.flags.includes("STOP_LEAKAGE"), true);
   assert.ok(row.stopEvidence.stopSlippagePct < -50, "it filled far below the 2.10 stop");
   assert.equal(row.stopEvidence.stopLevel, 2.1);
-  assert.equal(row.selection.selectionStrength, 60);
+  assert.equal(row.selection.deliveryQualityScore, 60);
 
   // The two traces must be distinguishable from the payload alone.
   const winner = seedOwnerCallout(d, { returnPct: 44.42, marks: ramp(T0, 50, 44.42) });
@@ -696,5 +696,34 @@ test("the owner learning path has zero production authority", () => {
     ctx.ownerValidation.note.includes("NEVER pool"),
     "the lane's own note forbids the one summarisation that would destroy it",
   );
+  d.close();
+});
+
+test("OWNER_VALIDATION_PAPER is a quant lane of its own, with a resolved excursion", async () => {
+  const { buildQuantLaneReport } = await import("../lib/research/options/quant-lanes.ts");
+  const d = db();
+  const seeded = seedOwnerCallout(d, { returnPct: 44.42, marks: ramp(T0, 50, 44.42) });
+  // A stored peak nothing on the frozen contract printed. The lane must not read it.
+  d.prepare("UPDATE options_paper_trades SET mfe_pct=900, mae_pct=-900 WHERE id=?").run(seeded.tradeId);
+  // A subscriber mirror in the same window, to prove the lanes do not merge.
+  d.prepare(
+    `INSERT INTO options_paper_trades (option_symbol, result_class, side, strike, expiration, dte,
+       entry_fill, exit_fill, strategy, status, return_pct, entered_at_ms, exit_at_ms,
+       feature_snapshot_json, alert_id, paper_kind, created_at_ms, updated_at_ms)
+     VALUES ('O:IWM260819P00301000','REAL_OPTION_PAPER','put',301,'2026-08-19',2,1.0,0.2,
+             'lower_high_continuation','EXITED',-80,?,?,'{}','oa_sub_9','DELIVERED_ALERT_PAPER',?,?)`,
+  ).run(T0, T0 + 60 * MIN, T0, T0);
+
+  const lanes = buildQuantLaneReport(d, {}).lanes;
+  const owner = lanes.find((l) => l.lane === "owner_validation_paper");
+  const delivered = lanes.find((l) => l.lane === "delivered_alert_paper");
+  assert.ok(owner, "the owner lane has a row of its own — it had none at all before");
+  assert.equal(owner.sampleSize, 1);
+  assert.equal(owner.winners, 1);
+  assert.equal(delivered.sampleSize, 1);
+  assert.equal(delivered.losers, 1, "and the two never merge");
+  assert.equal(owner.mfeAvg, 50, "recomputed from same-contract marks, not the stored 900");
+  assert.notEqual(owner.mfeAvg, 900);
+  assert.equal(owner.maeAvg, 0);
   d.close();
 });

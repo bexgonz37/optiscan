@@ -264,12 +264,17 @@ export interface OwnerMirrorRecord {
   exactContractMarksAvailable: boolean;
 
   /**
-   * The delivery-time selection quality, 0..1, as recorded on the mirror's own feature
+   * The delivery-time QUALITY score, 0..1, as recorded on the mirror's own feature
    * snapshot. Exposed for research only — nothing reads it as a gate.
+   *
+   * This is NOT the `selStrength` an earlier audit reported taking values of exactly 100
+   * and below 75. No field of that name is persisted anywhere in this repository, and the
+   * owner lane's stored quality spans 0.70–0.86 in production, so that audit's split
+   * cannot be reproduced from stored evidence and is not silently renamed into this one.
    */
-  selectionQuality: number | null;
-  /** `selectionQuality` on the 0–100 scale the readiness board speaks. Research only. */
-  selectionStrength: number | null;
+  deliveryQuality: number | null;
+  /** `deliveryQuality` on a 0–100 scale, for readability only. Research only. */
+  deliveryQualityScore: number | null;
   readinessState: string | null;
   ownerReason: string | null;
 
@@ -391,8 +396,8 @@ function toRecord(
     marksOnContract: marks.on,
     marksOffContract: marks.off,
     exactContractMarksAvailable: marks.on > 0,
-    selectionQuality: quality,
-    selectionStrength: quality == null ? null : Math.round(quality * 100),
+    deliveryQuality: quality,
+    deliveryQualityScore: quality == null ? null : Math.round(quality * 100),
     readinessState: str(snap.readinessState),
     ownerReason: str(snap.ownerReason),
     caseIdentityAmbiguous: ambiguous,

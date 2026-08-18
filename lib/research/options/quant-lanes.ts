@@ -1,10 +1,18 @@
 /**
  * Lane-labeled quant aggregates for options research — never blend lanes.
+ *
+ * `owner_validation_paper` is the forward-validation population the private callouts
+ * actually produce, and it was missing from this union entirely — so the lane most
+ * relevant to whether the callouts work had no row in the quant report at all. It is a
+ * lane of its own, never merged into `delivered_alert_paper` (a different audience) or
+ * `research_only_paper` (a different gate).
  */
 import { buildShadowSoakAggregate } from "./shadow-outcomes.ts";
+import { excursionForPaperTradeOnDb } from "../../opportunity-case/excursion.ts";
 
 export type QuantLane =
   | "delivered_alert_paper"
+  | "owner_validation_paper"
   | "shadow_would_send"
   | "shadow_would_block"
   | "research_only_paper"
@@ -82,7 +90,22 @@ function confidenceFor(n: number, completenessPct: number): "LOW" | "MEDIUM" | "
   return "LOW";
 }
 
-function paperLaneMetrics(db: QuantDb, kind: string, lane: QuantLane, label: string): LaneMetricBundle {
+/**
+ * @param resolveExcursion recompute MFE/MAE from same-contract marks instead of reading
+ *   the stored `mfe_pct`/`mae_pct` columns. Those columns are the ones an earlier packet
+ *   found contaminated — 36 of 78 delivered cases carry a peak the frozen contract never
+ *   printed, from running maxima poisoned by re-selected strikes. The owner lane is new
+ *   and starts clean; the older lanes still read the stored columns and are deliberately
+ *   left alone here, because moving their published numbers is a separate decision from
+ *   repairing owner identity.
+ */
+function paperLaneMetrics(
+  db: QuantDb,
+  kind: string,
+  lane: QuantLane,
+  label: string,
+  resolveExcursion = false,
+): LaneMetricBundle {
   const empty: LaneMetricBundle = {
     lane, label, sampleSize: 0, completenessPct: 0, confidence: "LOW",
     alerts: 0, winners: 0, losers: 0, winRate: null, avgReturn: null, medianReturn: null,
@@ -91,10 +114,20 @@ function paperLaneMetrics(db: QuantDb, kind: string, lane: QuantLane, label: str
     insufficientEvidence: true,
   };
   if (!hasTable(db, "options_paper_trades")) return empty;
-  const rows = db.prepare(
-    `SELECT return_pct, mfe_pct, mae_pct, exit_reason, strategy, status
+  const raw = db.prepare(
+    `SELECT id, option_symbol, return_pct, mfe_pct, mae_pct, exit_reason, strategy, status
      FROM options_paper_trades WHERE paper_kind=? AND status='EXITED' AND return_pct IS NOT NULL`,
-  ).all(kind) as { return_pct: number; mfe_pct: number | null; mae_pct: number | null; exit_reason: string | null; strategy: string | null; status: string }[];
+  ).all(kind) as { id: number; option_symbol: string | null; return_pct: number; mfe_pct: number | null; mae_pct: number | null; exit_reason: string | null; strategy: string | null; status: string }[];
+  // A trajectory claim needs a same-contract mark series dense enough to have seen the
+  // extremes. Where it does not exist the value is null — never the stored number, and
+  // never 0, which would assert an observation nobody made.
+  const rows = resolveExcursion
+    ? raw.map((r) => {
+      const e = excursionForPaperTradeOnDb(db as never, Number(r.id), r.option_symbol);
+      const verified = e.state === "VERIFIED_EXCURSION";
+      return { ...r, mfe_pct: verified ? e.mfePct : null, mae_pct: verified ? e.maePct : null };
+    })
+    : raw;
   const returns = rows.map((r) => Number(r.return_pct));
   const wins = returns.filter((x) => x > 0);
   const losses = returns.filter((x) => x <= 0);
@@ -231,6 +264,7 @@ export function buildQuantLaneReport(db: QuantDb, env: NodeJS.ProcessEnv = proce
     minSample: MIN_SAMPLE,
     lanes: [
       paperLaneMetrics(db, "DELIVERED_ALERT_PAPER", "delivered_alert_paper", "Real delivered subscriber"),
+      paperLaneMetrics(db, "OWNER_VALIDATION_PAPER", "owner_validation_paper", "Owner validation (private callouts)", true),
       shadowLaneMetrics(db, true, "shadow_would_send", "Shadow would-send"),
       shadowLaneMetrics(db, false, "shadow_would_block", "Shadow would-block"),
       paperLaneMetrics(db, "RESEARCH_ONLY_PAPER", "research_only_paper", "Research-only paper"),

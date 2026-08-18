@@ -162,8 +162,17 @@ export interface OwnerLearningRow {
 
   /** Pre-callout features, research only. Null where the evidence was never captured. */
   selection: {
-    /** Delivery-time quality on the 0–100 scale. Research only — reads no gate. */
-    selectionStrength: number | null;
+    /**
+     * The delivery-time QUALITY score on a 0–100 scale. Research only — reads no gate.
+     *
+     * Deliberately not called `selStrength`. An earlier audit reported a selection
+     * strength taking values of exactly 100 (n~34) and below 75 (n~13); no field of that
+     * name is persisted in this repository, and the owner lane's stored quality spans
+     * 70–86 in production. Whatever that audit measured, it was not this column, and
+     * renaming this one into it would launder an unreproducible finding into a
+     * reproducible-looking one.
+     */
+    deliveryQualityScore: number | null;
     readinessState: string | null;
     ownerReason: string | null;
     discoveryStage: string | null;
@@ -399,7 +408,7 @@ export function buildOwnerLearningRow(
 
   // ── pre-callout features, research only ───────────────────────────────────
   const selection = {
-    selectionStrength: mirror.selectionStrength,
+    deliveryQualityScore: mirror.deliveryQualityScore,
     readinessState: mirror.readinessState,
     ownerReason: mirror.ownerReason,
     discoveryStage: str(pre?.discovery_stage),

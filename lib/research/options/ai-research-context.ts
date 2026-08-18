@@ -175,8 +175,8 @@ export interface OwnerTradeTrace {
   side: "CALL" | "PUT" | null;
   strategy: string | null;
   sessionDate: string | null;
-  /** Delivery-time selection quality, 0–100. RESEARCH ONLY — reads no gate. */
-  selectionStrength: number | null;
+  /** Delivery-time QUALITY score, 0–100. RESEARCH ONLY — reads no gate. */
+  deliveryQualityScore: number | null;
   rewardRemainingBand: string | null;
   discoveryStage: string | null;
   entryFill: number | null;
@@ -216,7 +216,7 @@ function traceOf(r: OwnerLearningRow): OwnerTradeTrace {
     side: r.side,
     strategy: r.strategyKey ?? r.setupFamily,
     sessionDate: r.sessionDate,
-    selectionStrength: r.selection.selectionStrength,
+    deliveryQualityScore: r.selection.deliveryQualityScore,
     rewardRemainingBand: r.selection.rewardRemainingBand,
     discoveryStage: r.selection.discoveryStage,
     entryFill: r.entryFill,
