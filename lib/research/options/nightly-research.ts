@@ -29,7 +29,14 @@ import { OWNER_VALIDATION_PAPER_KIND } from "../../opportunity-case/owner-mirror
 import { buildProspectiveScoreboard, weeklyVerdict, type ProspectiveScoreboard } from "./prospective-scoreboard.ts";
 import { listShadowDecisionsOnDb, refreshShadowOutcomesOnDb, currentStatusOnDb, recordStatusOnDb, registerExperimentOnDb, type ShadowDb } from "./shadow-arm-store.ts";
 import { seedLhcFindingsOnDb, type FindingsDb } from "./findings-store.ts";
-import { LHC_SELECT_V1, checkFrozen, type ExperimentStatus } from "./experiment-registry.ts";
+import {
+  LHC_SELECT_V1, checkFrozen, OWNER_SELECTION_STRENGTH_GATE_V1,
+  checkOwnerSelectionStrengthFrozen, type ExperimentStatus,
+} from "./experiment-registry.ts";
+import {
+  buildOwnerSelectionStrengthScoreboardOnDb, supportedRegistryStatus,
+  type StrengthScoreboard,
+} from "./owner-selection-strength-scoreboard.ts";
 import { COHORT_STRATEGY } from "./lower-high-cohort.ts";
 
 export interface NightlyDb extends ShadowDb, FindingsDb {}
@@ -189,6 +196,15 @@ export interface NightlyResearchResult {
   verdict: { verdict: string; reason: string };
   findingsWritten: number;
   outcomesRefreshed: number;
+  /**
+   * `OWNER_SELECTION_STRENGTH_GATE_V1`, measured against the owner lane.
+   *
+   * Additive and independently isolated: null means this board could not be built tonight,
+   * which changes nothing about the rest of the session's evidence. Its verdict comes from
+   * PROSPECTIVE outcomes only — the sessions the rule was read from cannot vindicate it.
+   */
+  ownerSelectionStrength: StrengthScoreboard | null;
+  ownerSelectionStrengthFrozen: boolean;
   skippedReason?: string;
 }
 
@@ -275,6 +291,65 @@ export function runNightlyResearchOnDb(
     }
   }
 
+  // OWNER_SELECTION_STRENGTH_GATE_V1 — registered and measured every night, wholly isolated
+  // from the block above. It observes callouts that were already delivered and already
+  // tracked; it can reject nothing, and no delivery path reads its board.
+  const strengthFrozen = checkOwnerSelectionStrengthFrozen();
+  let ownerSelectionStrength: StrengthScoreboard | null = null;
+  try {
+    registerExperimentOnDb(db, OWNER_SELECTION_STRENGTH_GATE_V1, nowMs);
+  } catch { /* isolated */ }
+  try {
+    ownerSelectionStrength = buildOwnerSelectionStrengthScoreboardOnDb(db as never, { nowMs });
+  } catch { /* isolated: an additive board must never cost the session its research */ }
+
+  // Advance its lifecycle only while the definition is unchanged. A rule that moved is a rule
+  // whose prospective sample is void, and recording progress for it would launder the reset.
+  if (strengthFrozen.frozen && ownerSelectionStrength) {
+    const target = supportedRegistryStatus(ownerSelectionStrength);
+    const from = currentStatusOnDb(db, OWNER_SELECTION_STRENGTH_GATE_V1.experimentId, OWNER_SELECTION_STRENGTH_GATE_V1.experimentVersion);
+    // The rule was read from a real cohort, so HISTORICAL_TESTED is where it legitimately
+    // starts; VALIDATION_TESTED is on the path but is NOT a claim of a held-back block —
+    // `validationSessions` is empty and the frozen caveats say so.
+    const path: ExperimentStatus[] = ["PROPOSED", "HISTORICAL_TESTED", "VALIDATION_TESTED", "PROSPECTIVE_SHADOW", "PAPER_VALIDATION"];
+    const endIdx = path.indexOf(target);
+    if (endIdx >= 0) {
+      if (from == null) {
+        try {
+          const r = recordStatusOnDb(db, {
+            experimentId: OWNER_SELECTION_STRENGTH_GATE_V1.experimentId,
+            experimentVersion: OWNER_SELECTION_STRENGTH_GATE_V1.experimentVersion,
+            status: "PROPOSED",
+            reason: "registered by the nightly research aggregation",
+            actor: "deterministic",
+          }, nowMs);
+          if (r.recorded) statusChanged = true;
+        } catch { /* isolated */ }
+      }
+      const startIdx = Math.max(0, path.indexOf(from ?? "PROPOSED"));
+      for (let k = startIdx; k < endIdx; k++) {
+        try {
+          const r = recordStatusOnDb(db, {
+            experimentId: OWNER_SELECTION_STRENGTH_GATE_V1.experimentId,
+            experimentVersion: OWNER_SELECTION_STRENGTH_GATE_V1.experimentVersion,
+            status: path[k + 1],
+            reason: `${ownerSelectionStrength.prospective.closedOutcomes} closed prospective outcome(s) over ` +
+              `${ownerSelectionStrength.prospective.independentSessions} independent session(s); verdict ` +
+              `${ownerSelectionStrength.verdict}`,
+            evidence: {
+              prospectiveClosedOutcomes: ownerSelectionStrength.prospective.closedOutcomes,
+              prospectiveIndependentSessions: ownerSelectionStrength.prospective.independentSessions,
+              verdict: ownerSelectionStrength.verdict,
+              inSampleOnly: ownerSelectionStrength.prospective.closedOutcomes === 0,
+            },
+            actor: "deterministic",
+          }, nowMs);
+          if (r.recorded) statusChanged = true;
+        } catch { break; }
+      }
+    }
+  }
+
   return {
     ran: true,
     sessionDate: opts.sessionDate,
@@ -288,6 +363,8 @@ export function runNightlyResearchOnDb(
     verdict,
     findingsWritten: findings,
     outcomesRefreshed,
+    ownerSelectionStrength,
+    ownerSelectionStrengthFrozen: strengthFrozen.frozen,
   };
 }
 
@@ -328,6 +405,35 @@ export function formatNightlyResearchSections(r: NightlyResearchResult): string[
       : null,
     `Verdict: ${r.verdict.verdict} â€” ${r.verdict.reason}`,
   ].filter(Boolean).join("\n"));
+
+  // The owner strength gate gets its own block rather than a line inside EXPERIMENTS, because
+  // its arms are a different shape: it rejects from an already-delivered population, so its
+  // "baseline" is a subset of the callouts above and must never be read as a second count of them.
+  const st = r.ownerSelectionStrength;
+  if (st) {
+    const w = st.prospective.closedOutcomes > 0 ? st.prospective : st.inSample;
+    const windowLabel = st.prospective.closedOutcomes > 0
+      ? `prospective, from ${st.frozen.prospectiveStartDate}`
+      : "IN-SAMPLE ONLY — no prospective outcome has closed yet";
+    sections.push([
+      `**EXPERIMENTS** — ${st.experimentId} (${st.mode})`,
+      !st.definitionFrozen.frozen ? `⚠️ ${st.definitionFrozen.message}` : null,
+      `Window: ${windowLabel}.`,
+      `Baseline (evaluable) ${w.simulation.baseline.n} trades PF ${pf(w.simulation.baseline.profitFactor)} · ` +
+        `shadow ${w.simulation.shadow.n} PF ${pf(w.simulation.shadow.profitFactor)} ` +
+        `(ex-best ${pf(w.simulation.shadow.profitFactorExBestWinner)})`,
+      `Kept ${w.simulation.winnersRetained.length} of ${w.simulation.winnersRetained.length + w.simulation.winnersRejected.length} winners · ` +
+        `rejected ${w.simulation.lossesRejected.length} of ${w.simulation.lossesRejected.length + w.simulation.lossesRetained.length} losses`,
+      w.simulation.coverage.unevaluable
+        ? `${w.simulation.coverage.unevaluable} callout(s) carry no strength — excluded from BOTH arms, never counted as rejections.`
+        : null,
+      w.simulation.winnersRejected.length
+        ? `⚠️ Winners it would have dropped: ${w.simulation.winnersRejected.map((x) => `${x.symbol} ${pct(x.returnPct)}`).join(", ")}`
+        : null,
+      `Verdict: ${st.verdict} — ${st.verdictReason}`,
+      "Shadow only: no callout was rejected, delayed or reordered by any of this.",
+    ].filter(Boolean).join("\n"));
+  }
 
   sections.push([
     "**WHAT OPTISCAN LEARNED**",

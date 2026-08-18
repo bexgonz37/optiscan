@@ -27,6 +27,8 @@ import { listShadowDecisionsOnDb, refreshShadowOutcomesOnDb, currentStatusOnDb, 
 import { listFindingsOnDb, seedLhcFindingsOnDb, type FindingsDb } from "./findings-store.ts";
 import { LHC_SELECT_V1, checkFrozen, canTransition, type ExperimentStatus } from "./experiment-registry.ts";
 import { buildAiResearchContextOnDb, type AiResearchContext, type ResearchContextDb } from "./ai-research-context.ts";
+import { combinedMonthlySpendUsdOnDb } from "../../ai/monthly-budget.ts";
+import { monthKey as etMonthKey } from "../../ai/store.ts";
 
 export interface WeeklyDb extends ShadowDb, FindingsDb {}
 
@@ -70,7 +72,10 @@ export interface AiBudgetReport {
   dailyOutputTokens: number;
   monthlyInputTokens: number;
   monthlyOutputTokens: number;
+  /** COMBINED across every AI ledger, not `ai_job_runs` alone. */
   estimatedMonthlySpendUsd: number;
+  /** Per-ledger breakdown behind `estimatedMonthlySpendUsd`. */
+  spendByLedger: Record<string, number>;
   monthlyBudgetUsd: number | null;
   budgetRemainingUsd: number | null;
   skippedOptionalJobs: number;
@@ -82,20 +87,31 @@ export interface AiBudgetReport {
 }
 
 /**
- * Read the existing `ai_job_runs` ledger. Reports only; the enforcement gate is
- * `costGateOnDb`, which already runs pre-flight in the nightly and weekly jobs.
+ * Report month-to-date AI spend. Reports only; enforcement is `combinedCostGateOnDb`, which
+ * runs pre-flight at the provider chokepoint for every call.
+ *
+ * TWO THINGS THIS USED TO GET WRONG.
+ *
+ * The month key was `new Date(nowMs).toISOString().slice(0, 7)` — UTC. Every row in
+ * `ai_job_runs` is stamped with an EASTERN month key, so on the first days of a month this
+ * report summed a bucket the ledger never wrote to and reported the month as nearly free. A
+ * budget report that resets early is worse than none.
+ *
+ * And it read `ai_job_runs` alone, which is one of two ledgers. `combinedMonthlySpendUsdOnDb`
+ * is now the source, so this figure and the figure the gate enforces are the same figure.
  */
 export function buildAiBudgetReportOnDb(
   db: WeeklyDb,
   opts: { nowMs?: number; monthlyBudgetUsd?: number | null } = {},
 ): AiBudgetReport {
   const nowMs = opts.nowMs ?? Date.now();
-  const monthKey = new Date(nowMs).toISOString().slice(0, 7);
+  // Eastern, matching how every ai_job_runs row is stamped.
+  const monthKey = etMonthKey(nowMs);
   const dayStartMs = nowMs - 86_400_000;
   const empty: AiBudgetReport = {
     monthKey, nightlyRequests: 0, weeklyRequests: 0, otherRequests: 0,
     dailyInputTokens: 0, dailyOutputTokens: 0, monthlyInputTokens: 0, monthlyOutputTokens: 0,
-    estimatedMonthlySpendUsd: 0,
+    estimatedMonthlySpendUsd: 0, spendByLedger: {},
     monthlyBudgetUsd: opts.monthlyBudgetUsd ?? null,
     budgetRemainingUsd: opts.monthlyBudgetUsd ?? null,
     skippedOptionalJobs: 0, skippedForBudget: 0,
@@ -107,7 +123,8 @@ export function buildAiBudgetReportOnDb(
     try { return Number((db.prepare(sql).get(...a) as any)?.v ?? 0); } catch { return 0; }
   };
 
-  const monthlySpend = n("SELECT COALESCE(SUM(estimated_cost_usd),0) v FROM ai_job_runs WHERE month_key=?", monthKey);
+  const combined = combinedMonthlySpendUsdOnDb(db as never, monthKey);
+  const monthlySpend = combined.totalUsd;
   const budget = opts.monthlyBudgetUsd ?? null;
 
   return {
@@ -123,10 +140,16 @@ export function buildAiBudgetReportOnDb(
     monthlyInputTokens: n("SELECT COALESCE(SUM(input_tokens),0) v FROM ai_job_runs WHERE month_key=?", monthKey),
     monthlyOutputTokens: n("SELECT COALESCE(SUM(output_tokens),0) v FROM ai_job_runs WHERE month_key=?", monthKey),
     estimatedMonthlySpendUsd: Math.round(monthlySpend * 10000) / 10000,
+    spendByLedger: combined.byLedger,
     monthlyBudgetUsd: budget,
     budgetRemainingUsd: budget == null ? null : Math.round((budget - monthlySpend) * 10000) / 10000,
     skippedOptionalJobs: n("SELECT COUNT(*) v FROM ai_job_runs WHERE month_key=? AND status LIKE 'SKIPPED%'", monthKey),
-    skippedForBudget: n("SELECT COUNT(*) v FROM ai_job_runs WHERE month_key=? AND error_category='budget'", monthKey),
+    // Both spellings: the nightly's own pre-flight records 'budget', the provider chokepoint
+    // records 'budget_exhausted'. Counting one would report half the refusals as zero.
+    skippedForBudget: n(
+      "SELECT COUNT(*) v FROM ai_job_runs WHERE month_key=? AND (error_category IN ('budget','budget_exhausted') OR status=?)",
+      monthKey, "BUDGET_EXHAUSTED",
+    ),
     budgetMayStop: BUDGET_OPTIONAL_JOBS,
     budgetMayNeverStop: BUDGET_EXEMPT_SUBSYSTEMS,
   };

@@ -235,8 +235,13 @@ test("the nightly run is deterministic, changes no production behaviour, and see
   assert.equal(r.experimentFrozen, true);
   assert.equal(r.findingsWritten, 6);
   assert.equal(d.prepare("SELECT COUNT(*) n FROM options_learning_findings").get().n, 6);
-  // Registered on first run.
-  assert.equal(d.prepare("SELECT COUNT(*) n FROM options_experiment_registry").get().n, 1);
+  // Registered on first run. Asserted by IDENTITY, not by row count: the nightly registers
+  // every frozen experiment, so a count would fail the moment a second one is added — which
+  // is a registry that grew, not a defect.
+  const ids = d.prepare("SELECT experiment_id FROM options_experiment_registry ORDER BY experiment_id").all().map((r) => r.experiment_id);
+  assert.ok(ids.includes("LHC_SELECT_V1"));
+  assert.ok(ids.includes("OWNER_SELECTION_STRENGTH_GATE_V1"));
+  assert.equal(new Set(ids).size, ids.length, "each experiment is registered exactly once");
   d.close();
 });
 
@@ -245,7 +250,10 @@ test("the nightly run is idempotent", () => {
   runNightlyResearchOnDb(d, { sessionDate: SESSION, nowMs: T0 });
   runNightlyResearchOnDb(d, { sessionDate: SESSION, nowMs: T0 + 86_400_000 });
   assert.equal(d.prepare("SELECT COUNT(*) n FROM options_learning_findings").get().n, 6);
-  assert.equal(d.prepare("SELECT COUNT(*) n FROM options_experiment_registry").get().n, 1);
+  // Re-running must not re-register: one row per experiment, however many times it runs.
+  const rows = d.prepare("SELECT experiment_id, COUNT(*) n FROM options_experiment_registry GROUP BY experiment_id").all();
+  for (const r of rows) assert.equal(r.n, 1, `${r.experiment_id} registered ${r.n} times`);
+  assert.ok(rows.some((r) => r.experiment_id === "OWNER_SELECTION_STRENGTH_GATE_V1"));
   d.close();
 });
 
