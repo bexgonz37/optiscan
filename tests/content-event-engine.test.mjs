@@ -97,20 +97,36 @@ test("after-hours language blocks live-setup phrases", () => {
   assert.equal(validateSocialDraftLanguage("Recap from the regular session on AMD").ok, true);
 });
 
-test("contentWebhookConfigured uses recap in the two-channel Discord model", () => {
-  assert.equal(contentWebhookConfigured({ DISCORD_WEBHOOK_RECAP: "https://discord.com/api/webhooks/x" }), true);
-  assert.equal(contentWebhookConfigured({ DISCORD_WEBHOOK_CONTENT: "https://discord.com/api/webhooks/y" }), false);
+test("content requires its OWN webhook, and the recap channel no longer qualifies", () => {
+  // This test used to assert the reverse: recap true, content false. Content drafts shared
+  // the owner's recap channel and 1209 of them were delivered into it in production.
+  // Marketing drafts and owner validation results are different audiences with different
+  // rules about what may be claimed, so they no longer share a destination.
+  assert.equal(contentWebhookConfigured({ DISCORD_WEBHOOK_CONTENT: "https://discord.com/api/webhooks/y" }), true);
+  assert.equal(contentWebhookConfigured({ DISCORD_WEBHOOK_RECAP: "https://discord.com/api/webhooks/x" }), false);
   assert.equal(contentWebhookConfigured({}), false);
 });
 
-test("content drafts route to recap, not Alerts", () => {
+test("content routes ONLY to the content webhook — never recap, alerts, or a default", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const src = readFileSync(join(here, "../lib/notifications.ts"), "utf8");
   const runtime = readFileSync(join(here, "../lib/content/content-drafts-runtime.ts"), "utf8");
-  assert.doesNotMatch(src, /DISCORD_WEBHOOK_CONTENT|owner_actionable|owner_research|lifecycle/);
-  assert.match(runtime, /discordWebhookConfigured\("recap"\)/);
-  assert.match(runtime, /webhook:\s*"recap"/);
+  assert.match(runtime, /discordWebhookConfigured\("content"\)/);
+  assert.match(runtime, /webhook:\s*"content"/);
+  assert.doesNotMatch(runtime, /webhook:\s*"recap"/);
   assert.doesNotMatch(runtime, /webhook:\s*"options"/);
+  // The content kind must resolve with NO fallback. Every other kind may fall back to
+  // DISCORD_WEBHOOK_URL; if content did, an unset variable would silently send marketing
+  // drafts to whatever channel the default points at.
+  assert.match(src, /if \(kind === "content"\) return env\.DISCORD_WEBHOOK_CONTENT;/);
+  assert.doesNotMatch(src, /DISCORD_WEBHOOK_CONTENT\s*\?\?/);
+});
+
+test("an unconfigured content webhook HOLDS drafts rather than discarding or re-routing them", async () => {
+  const { NO_CONTENT_WEBHOOK_OWNER_ACTION } = await import("../lib/content/content-drafts-runtime.ts");
+  assert.match(NO_CONTENT_WEBHOOK_OWNER_ACTION, /DISCORD_WEBHOOK_CONTENT/);
+  assert.match(NO_CONTENT_WEBHOOK_OWNER_ACTION, /persisted/);
+  assert.match(NO_CONTENT_WEBHOOK_OWNER_ACTION, /never sent to the recap, alert or/);
 });
 
 test("no Twitter auto-post path exists in runtime exports", () => {

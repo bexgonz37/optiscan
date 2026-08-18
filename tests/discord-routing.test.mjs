@@ -186,10 +186,14 @@ test("watchlist messages require watchlist and do not fallback to alerts or reca
   assert.equal(posted, 0);
 });
 
-test("webhook resolver source exposes options stocks watchlist recap and default kinds", () => {
+test("webhook resolver exposes the trade kinds plus a fallback-free content kind", () => {
   const notifications = read("lib/notifications.ts");
   const mirror = read("lib/notifications/owner-intraday-mirror.ts");
-  assert.doesNotMatch(notifications, /owner_research|owner_actionable|DISCORD_WEBHOOK_OWNER|DISCORD_WEBHOOK_LIFECYCLE|DISCORD_WEBHOOK_CONTENT/);
+  // The trade-carrying kinds are unchanged. DISCORD_WEBHOOK_CONTENT was previously banned
+  // from this file outright; it is now the one kind with no fallback, which is what keeps
+  // owner-only marketing drafts out of the channels that carry trades.
+  assert.doesNotMatch(notifications, /owner_research|owner_actionable|DISCORD_WEBHOOK_OWNER|DISCORD_WEBHOOK_LIFECYCLE/);
+  assert.match(notifications, /if \(kind === "content"\) return env\.DISCORD_WEBHOOK_CONTENT;/);
   assert.match(mirror, /canonical_options_alert_already_sent/);
 });
 
@@ -207,7 +211,12 @@ test("health routing table marks Alerts Watchlist and Recaps", () => {
   const alerts = rows.find((r) => r.messageType === "Alerts");
   const watchlist = rows.find((r) => r.messageType === "Watchlist");
   const recaps = rows.find((r) => r.messageType === "Recaps");
-  assert.equal(rows.length, 3);
+  const content = rows.find((r) => r.messageType === "Content drafts");
+  assert.equal(rows.length, 4);
+  // An unset content webhook is OPTIONAL, not BLOCKED: holding drafts in the app is a valid
+  // configuration, and a red row here would sit beside the channels that carry real trades.
+  assert.equal(content?.status, "OPTIONAL");
+  assert.match(content?.error ?? "", /never re-routed to recap or alerts/);
   assert.equal(alerts?.destination, "Alerts webhook (DISCORD_WEBHOOK_OPTIONS)");
   assert.match(alerts?.categories ?? "", /TRADE NOW/);
   assert.match(alerts?.categories ?? "", /BEARISH TRADE CANDIDATE/);
@@ -215,19 +224,21 @@ test("health routing table marks Alerts Watchlist and Recaps", () => {
   assert.match(watchlist?.categories ?? "", /premarket refresh/);
   assert.equal(watchlist?.nextScheduledWindow, "NEXT SESSION WATCHLIST at 2026-07-28T22:00:00.000Z");
   assert.equal(recaps?.destination, "Recap webhook (DISCORD_WEBHOOK_RECAP)");
-  assert.match(recaps?.categories ?? "", /content drafts/);
-  assert.equal(rows.some((r) => /owner|lifecycle webhook|content webhook/i.test(`${r.messageType} ${r.destination} ${r.error ?? ""}`)), false);
+  assert.doesNotMatch(recaps?.categories ?? "", /content drafts/, "content no longer shares the recap channel");
+  // Owner and lifecycle channels still must not exist. The content row is now expected —
+  // it is the row that keeps marketing drafts off the recap channel.
+  assert.equal(rows.some((r) => /owner|lifecycle webhook/i.test(`${r.messageType} ${r.destination}`)), false);
 });
 
-test("production code routes content drafts to recap and keeps daily summary off Alerts", () => {
+test("production code routes content drafts to their own channel and keeps daily summary off Alerts", () => {
   const ownerNotify = read("lib/notifications/owner-research-notify.ts");
   const contentRuntime = read("lib/content/content-drafts-runtime.ts");
   const daily = read("lib/research/options/daily-summary.ts");
   assert.match(ownerNotify, /requiredEnv: "DISCORD_WEBHOOK_OPTIONS"/);
   assert.match(ownerNotify, /requiredEnv: "DISCORD_WEBHOOK_WATCHLIST"/);
   assert.match(ownerNotify, /requiredEnv: "DISCORD_WEBHOOK_RECAP"/);
-  assert.match(contentRuntime, /webhook:\s*"recap"/);
-  assert.doesNotMatch(contentRuntime, /webhook:\s*"content"/);
+  assert.match(contentRuntime, /webhook:\s*"content"/);
+  assert.doesNotMatch(contentRuntime, /webhook:\s*"recap"/);
   assert.doesNotMatch(daily, /:\s*"options"/, "daily summary must not fallback to options");
 });
 

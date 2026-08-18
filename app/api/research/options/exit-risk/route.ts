@@ -47,9 +47,11 @@ export async function GET(req: Request) {
     return NextResponse.json({
       ok: true,
       mode: "OBSERVATION_ONLY",
-      productionBehaviorChanged: false,
       exitPolicyChanged: false,
       stopPolicyChanged: false,
+      // `productionBehaviorChanged` comes from the report itself, where it is a literal
+      // false. Restating it here would let a route-level constant mask a report that ever
+      // said otherwise, which is the one thing this field exists to make impossible.
       ...report,
       // The per-trade observations are large and are the study's raw material rather than its
       // finding. Available on request; never the default payload.

@@ -32,7 +32,6 @@ import {
 import { tradingDay } from "../trading-session.ts";
 import { evaluateMarketSessionGuard } from "../market-session-guard.ts";
 import { evaluateInstrumentSession } from "../instrument-session-authority.ts";
-import { recapDeliveryEnabled } from "../notifications/recap-delivery-guard.ts";
 import { classifyDeliveryResult, describeReason, redactForPersistence } from "./delivery-reason.ts";
 import { deriveFailureCause } from "./failure-cause.ts";
 import {
@@ -215,10 +214,47 @@ export function classifyContentDeliveryPolicy(input: {
   return { policy: "DELIVER_CURRENT_RESEARCH", reason: "current-session owner research inside its delivery window" };
 }
 
-/** Content drafts route to Recaps in the three-channel Discord setup. */
+/**
+ * Content drafts require their OWN webhook, and route nowhere else.
+ *
+ * They used to require and use DISCORD_WEBHOOK_RECAP — the owner's recap channel — and in
+ * production 1209 drafts were delivered into it. Owner validation results and marketing
+ * drafts are different audiences with different rules about what may be claimed, and sharing
+ * one channel is how the distinction stops being visible at the moment it matters most.
+ *
+ * With DISCORD_WEBHOOK_CONTENT unset this returns false, and the scan persists every draft
+ * with SKIPPED_NO_WEBHOOK — the existing RETRY bucket, not a discard. The drafts stay in the
+ * private app and the existing recovery path delivers them once the webhook is configured.
+ * Nothing is lost and nothing is re-routed.
+ */
 export function contentWebhookConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
-  return recapDeliveryEnabled(env) && Boolean(String(env.DISCORD_WEBHOOK_RECAP ?? "").trim());
+  return contentDeliveryEnabled(env) && Boolean(String(env.DISCORD_WEBHOOK_CONTENT ?? "").trim());
 }
+
+/**
+ * The kill switch for content DELIVERY, defaulting to on.
+ *
+ * Content used to be governed by DISCORD_RECAP_ENABLED, which was correct only while it
+ * shared the recap channel. Now that it has its own destination, letting the recap switch
+ * silence it would be the same conflation running the other way — turning off recaps would
+ * stop marketing drafts, and turning them back on would resume them, neither being what the
+ * owner asked for.
+ *
+ * Unset means enabled, so configuring the new webhook is the only step required. Explicit
+ * "0" or "false" holds drafts in the retry pool with DISABLED_BY_KILL_SWITCH as the reason.
+ * `CONTENT_EVENTS_ENABLED` remains the master switch for generating drafts at all; this one
+ * governs only whether generated drafts are delivered.
+ */
+export function contentDeliveryEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = String(env.DISCORD_CONTENT_ENABLED ?? "").trim().toLowerCase();
+  return !(raw === "0" || raw === "false");
+}
+
+/** What the owner has to do when content is being held. Stated, never inferred from silence. */
+export const NO_CONTENT_WEBHOOK_OWNER_ACTION =
+  "Set DISCORD_WEBHOOK_CONTENT to a dedicated private content channel. Until then, drafts are " +
+  "persisted and visible in the private app, and are never sent to the recap, alert or " +
+  "subscriber channels.";
 
 export function draftFingerprint(input: {
   caseId: string;
@@ -244,17 +280,26 @@ function defaultSend(): (content: string) => Promise<ContentDeliverResult> {
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { postToDiscord, discordWebhookConfigured } = require("@/lib/notifications");
-      if (!discordWebhookConfigured("recap")) {
-        return { ok: false, messageId: null, error: "DISCORD_WEBHOOK_RECAP not configured" };
+      if (!discordWebhookConfigured("content")) {
+        return { ok: false, messageId: null, error: "DISCORD_WEBHOOK_CONTENT not configured" };
       }
       const r = await postToDiscord(
         { content },
-        { webhook: "recap", skipPublicCheck: true, audience: "subscriber", payloadType: "content_drafts" },
+        {
+          webhook: "content",
+          skipPublicCheck: true,
+          // `owner_admin` is the truthful audience: these are drafts for the owner to review
+          // and post by hand, not anything a subscriber receives. It does NOT loosen
+          // redaction — internal case ids and links are stripped either way, because
+          // `includeInternalLink` is not set and sanitization requires both.
+          audience: "owner_admin",
+          payloadType: "content_drafts",
+        },
       );
       return {
         ok: !r.suppressed,
         messageId: r.messageId ?? null,
-        error: r.suppressed ? `recap suppressed: ${r.suppressionReason}` : null,
+        error: r.suppressed ? `content channel suppressed: ${r.suppressionReason}` : null,
         suppressed: r.suppressed,
       };
     } catch (e: any) {
@@ -688,7 +733,7 @@ export async function runContentDraftsScan(
         // different owner actions with different fixes. They shared a status
         // before; they no longer share a reason.
         const deferral = describeReason(
-          recapDeliveryEnabled(env) ? "SKIPPED_NO_WEBHOOK" : "DISABLED_BY_KILL_SWITCH",
+          contentDeliveryEnabled(env) ? "SKIPPED_NO_WEBHOOK" : "DISABLED_BY_KILL_SWITCH",
         );
         try {
           db.prepare(

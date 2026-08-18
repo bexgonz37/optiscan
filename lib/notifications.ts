@@ -60,6 +60,17 @@ export type DiscordWebhookKind =
   | "stocks"
   | "watchlist"
   | "recap"
+  /**
+   * Owner-only X/Twitter content drafts.
+   *
+   * Deliberately has NO fallback in `webhookEnv`. Every other kind falls back to
+   * DISCORD_WEBHOOK_URL, and content used to route to the recap channel outright — 1209
+   * drafts delivered there in production, interleaved with the owner's own recap. Marketing
+   * drafts and validation results are different audiences, and a fallback is how they end up
+   * sharing a channel without anyone deciding that they should. When DISCORD_WEBHOOK_CONTENT
+   * is unset, drafts are persisted and retained for the private app, never re-routed.
+   */
+  | "content"
   | "default";
 
 const WATCH_DEDUP_MS = 30 * 60_000;
@@ -93,6 +104,9 @@ function webhookEnv(kind: DiscordWebhookKind, env: NodeJS.ProcessEnv = process.e
   if (kind === "stocks") return env.DISCORD_WEBHOOK_STOCKS;
   if (kind === "watchlist") return env.DISCORD_WEBHOOK_WATCHLIST;
   if (kind === "recap") return env.DISCORD_WEBHOOK_RECAP;
+  // No `?? env.DISCORD_WEBHOOK_URL`. Absent means absent, so content is held rather than sent
+  // to whatever channel the default webhook happens to point at.
+  if (kind === "content") return env.DISCORD_WEBHOOK_CONTENT;
   return env.DISCORD_WEBHOOK_URL;
 }
 

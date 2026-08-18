@@ -2,6 +2,8 @@ export type DiscordRoutingWebhookStatus = {
   options: boolean;
   watchlist: boolean;
   recap: boolean;
+  /** Owner-only X/Twitter content drafts. Has no fallback destination. */
+  content?: boolean;
   stocks?: boolean;
   default?: boolean;
 };
@@ -70,10 +72,27 @@ export function buildDiscordRoutingRows(input: {
       enabled: w.recap,
       lastSend: input.lastRecapSendAt ?? null,
       lastFailure: input.lastRecapFailureAt ?? null,
-      categories: "AI recaps, missed opportunities, blocked winners, research, daily/weekly performance, content drafts",
+      categories: "AI recaps, missed opportunities, blocked winners, research, daily/weekly performance",
       nextScheduledWindow: null,
       schedulerStatus: "event-driven and scheduled recaps",
       ...recap,
+    },
+    {
+      messageType: "Content drafts",
+      destination: "Content webhook (DISCORD_WEBHOOK_CONTENT)",
+      enabled: Boolean(w.content),
+      lastSend: null,
+      lastFailure: null,
+      categories: "owner-only X/Twitter draft bundles — never auto-posted, never a subscriber claim",
+      nextScheduledWindow: null,
+      schedulerStatus: "scanned on the content beat",
+      // OPTIONAL rather than BLOCKED: an unset content webhook is a valid configuration in
+      // which drafts are held in the private app. It is not a broken alert path, and marking
+      // it BLOCKED would put a red row next to the channels that actually carry trades.
+      status: w.content ? "READY" : "OPTIONAL",
+      error: w.content
+        ? null
+        : "DISCORD_WEBHOOK_CONTENT not configured — drafts are persisted and shown in the app, and are never re-routed to recap or alerts",
     },
   ];
 }

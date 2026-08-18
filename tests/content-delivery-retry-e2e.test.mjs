@@ -7,7 +7,13 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { runContentDraftsScan } from "../lib/content/content-drafts-runtime.ts";
 
-const ENV = { CONTENT_EVENTS_ENABLED: "1", DISCORD_RECAP_ENABLED: "1", DISCORD_WEBHOOK_RECAP: "https://example/webhook" };
+// Content now requires its own dedicated webhook; the recap one no longer enables delivery.
+const ENV = {
+  CONTENT_EVENTS_ENABLED: "1",
+  DISCORD_RECAP_ENABLED: "1",
+  DISCORD_WEBHOOK_RECAP: "https://example/webhook",
+  DISCORD_WEBHOOK_CONTENT: "https://example/content-webhook",
+};
 const vars = () => ({ confidence: 0.72, relativeVolume: 4.2, callFlow: 1200 });
 const CONTENT_EVENT_MS = Date.parse("2026-08-04T14:58:20Z");
 const CONTENT_NOW_MS = Date.parse("2026-08-04T15:00:00Z");
@@ -131,7 +137,9 @@ test("REGRESSION E2E: a DUPLICATE bundle is terminal and is never resent", async
 
 test("REGRESSION E2E: the kill switch defers drafts and names itself as the reason", async () => {
   const db = makeDb("ce_ks");
-  const killed = { ...ENV, DISCORD_RECAP_ENABLED: "0" };
+  // Content has its own kill switch now. DISCORD_RECAP_ENABLED governs the recap channel,
+  // which content no longer uses, and must not silence a channel it does not own.
+  const killed = { ...ENV, DISCORD_CONTENT_ENABLED: "0" };
 
   const res = await runContentDraftsScan(db, {
     send: async () => { throw new Error("must not send while the kill switch is on"); },
@@ -147,4 +155,16 @@ test("REGRESSION E2E: the kill switch defers drafts and names itself as the reas
     assert.equal(row.r, "DISABLED_BY_KILL_SWITCH", "and says so — not 'no webhook'");
     assert.equal(row.t, 1);
   }
+});
+
+test("REGRESSION: turning recaps off does NOT silence the content channel", async () => {
+  const db = makeDb("ce_recap_off");
+  const sent = [];
+  const res = await runContentDraftsScan(db, {
+    send: async (c) => { sent.push(c); return { ok: true, suppressed: false, messageId: "m", error: null }; },
+    loadCaseVars: vars,
+    now: () => CONTENT_NOW_MS,
+  }, { ...ENV, DISCORD_RECAP_ENABLED: "0" });
+  assert.equal(res.skippedNoWebhook, 0, "the recap switch must not govern a channel it does not own");
+  assert.ok(sent.length >= 1);
 });
