@@ -1,5 +1,187 @@
 # Current Task Packet
 
+## Packet update — 2026-08-18 (2) The budget was never one budget, and the strength finding counted trades the rule cannot judge
+
+### Verified state (checked, not assumed)
+
+- Baseline verified from git AND production BEFORE any change:
+  local = `origin/main` = production = `0774e62`, confirmed against `/api/healthz`
+  (`commit`, `branch: main`, `db: true`, `schemaOk: true`, lifecycle active, loop running).
+  Tracked tree clean apart from six line-ending-only `docs/brain` files (`git diff --numstat`
+  empty), and every untracked scratch file left untouched.
+- Production healthy throughout. Session `afterhours` for the whole window.
+- **No trading logic changed.** No scanner rule, strategy threshold, selection, ranking,
+  CALL/PUT decision, contract/strike/expiration choice, DTE rule, Target 1, Target 2, stop,
+  exit, overnight handling, provider cap or subscriber-readiness threshold was touched. No
+  callout was rejected, delayed, reordered or annotated by anything built here.
+- Every figure below was reproduced against production, not carried over from the prompt.
+
+### THE BUDGET WAS REPORTED AS ENFORCED BY FOUR SURFACES AND ENFORCED BY NONE
+
+Three independent escapes, each of which left the reported number lower than the real one:
+
+1. `AI_MONTHLY_HARD_LIMIT_USD` clamped at **100_000**. The $20 cap was a DEFAULT, not a
+   ceiling — one mistyped Railway variable could raise it four orders of magnitude and every
+   surface would still say "enforced".
+2. **Two ledgers, neither aware of the other.** `ai_job_runs` counted the nightly/weekly/
+   research jobs against a dollar limit; `asymmetry_ai_ledger` counted the High-Asymmetry
+   review against a CALL-COUNT limit (25/month) and contributed **nothing** to the dollar
+   figure. Measured in production 2026-08-18: **$1.0195** and **$0.2005** — two answers to one
+   question, neither the total.
+3. **Two call sites reached the provider with no ledger row and no gate at all**:
+   `ai/advisory-chat.ts` (Ask OptiScan) and `research/social/weekly-recap-ai.ts`, both on the
+   Sonnet-tier model. They did not fail. They spent. Ask OptiScan is owner-triggered and
+   unbounded in frequency, and it is the path this session was about to expand across every
+   metric card in the private app.
+
+`AI_MONTHLY_HARD_CAP_USD = 20` is now a constant in `ai/config.ts`; env may only ever LOWER
+it, and the soft limit is clamped to the hard limit so a warn threshold cannot sit above the
+threshold that blocks. `ai/monthly-budget.ts` sums **across ledgers**, so $12 and $9 now cross
+a cap that neither crosses alone.
+
+**Enforcement moved to the single provider chokepoint** (`runStructuredAiJob`). A call site
+that has to remember to check is one that will eventually forget, and the two that forgot were
+invisible rather than noisy. The gate reserves the call's maximum possible cost BEFORE the
+first byte is sent, and **fails closed**: an unreadable ledger means spend cannot be proven, so
+no call is made. In production a missing DB is itself a refusal.
+
+Failed attempts are charged. **11 of 31 recorded August runs were `VALIDATION_FAILED`** and
+they cost real money; recording only successes is how a month of retries becomes invisible.
+
+Refused calls return the same shape as a disabled key — every consumer's existing "AI
+unavailable, show the deterministic answer" branch already handles it — and record
+`BUDGET_EXHAUSTED` with the job type. **No deterministic path reads any of this.**
+
+Observed per-job cost, from the production ledger: nightly diagnosis ~$0.038/session,
+nightly research analysis ~$0.029/session, weekly proposals ~$0.200/week, asymmetry review
+~$0.011/session. **Projected ~$2.20/month against the $20 cap.** The headroom is real; the
+risk was never the scheduled jobs, it was the unmetered paths.
+
+Also fixed: `buildAiBudgetReportOnDb` keyed its month in **UTC** while every `ai_job_runs` row
+is stamped **Eastern**. On the first days of a month it summed a bucket the ledger never wrote
+to and reported the month as nearly free. A budget report that resets early is worse than none.
+
+### `OWNER_SELECTION_STRENGTH_GATE_V1` — and the number it was built from is not what it says
+
+Frozen. Shadow only. Hash `9b4f77b3c6268bf9e94781dc849ad2ef`. Prospective from **2026-08-19**;
+`creationSha` 24a17c0, `evidenceSha` `0774e62…`.
+
+The recorded finding read **"selectionStrength < 75 — n≈26, PF 0.167, mean −31%"**. Reproduced
+against production it is **`< 75` OR NOT MEASURED AT ALL**:
+
+| bucket | n | PF | mean | winners |
+|---|---|---|---|---|
+| strength < 75 | 13 | **0.0273** | −39.03% | 1 |
+| strength MISSING | 13 | **0.3305** | −22.98% | 4 |
+| the two together | 26 | 0.1670 | −31.00% | 5 | ← the recorded number |
+
+Thirteen closed owner trades carry no strength because their case holds no evaluation matching
+the strategy that was traded. Folding them in credits the rule with avoiding 12 losses it can
+decide **plus 9 it cannot**, and charges it 1 rejected winner instead of 5. **Missing evidence
+is not a low score.**
+
+So the verdict is **three-valued**. `UNEVALUABLE` rows sit in NEITHER arm and are reported as
+their own population. And the baseline arm is restricted to the same 54 evaluable rows the
+shadow arm sees — a 41-trade shadow arm against a 67-trade baseline is two populations, not a
+comparison.
+
+In sample, 54 evaluable rows over 7 sessions:
+
+```
+baseline (evaluable)  n=54  PF 0.7726  mean −5.87%  PF ex-best 0.7160
+shadow (>= 75)        n=41  PF 1.2183  mean +4.64%  PF ex-best 1.1279  win rate 53.66%
+rejected (< 75)       n=13  PF 0.0273  mean −39.03%
+unevaluable           n=13  PF 0.3305  — belongs to no arm
+winners rejected 1 of 23 · losses rejected 12 of 31 · better in 6 of 7 sessions, worse in 0
+```
+
+Unlike `LHC_SELECT_V1` it **survives removal of its best winner** (1.1279) and that winner is
+only 7.4% of gross gains. Recorded — with the caveat that worries me more: **it drops 5 of the
+lane's 7 CALLs against 8 of its 47 PUTs.** On an 87%-put population a strength floor may be
+acting as a direction filter, and this sample cannot tell them apart.
+
+All of it is in-sample and gates nothing. The verdict is derived from **prospective outcomes
+only**, behind 20 closed outcomes across 5 validated independent sessions, and reaches
+`READY_FOR_HUMAN_REVIEW` at most.
+
+**Censoring (Phase F): structurally absent for this experiment, and that is a property of its
+shape.** It only ever REJECTS from an already-delivered, already-tracked population — owner is
+74 openings / **74 exact mirrors / mirror rate 1.00 / 0 OCC mismatches** — so every rejected
+trade keeps a real exact-contract outcome. A filter that ADMITTED something never delivered
+would have no outcome at all; this one cannot. Coverage is measured on every run, not assumed.
+
+### Profit protection and overnight risk: observation, and a degenerate feature set caught by its own test
+
+Neither study produces a rule. No trailing stop, break-even stop, profit lock, sell-at-level,
+cutoff time or stop change exists, is proposed, or is implied.
+
+**The test found a real flaw in the feature set I had just written.** Running peak, retracement
+from it, and time since it are **structurally constant at a first touch**: the touching mark is
+necessarily the running maximum, because any earlier higher mark would itself have been at or
+above the milestone and would have been the touch. Three columns that could not vary were about
+to enter a separation study as three features. They are replaced by the path shape on the way
+in — heat taken, deepest give-back, pullback count — and a **degenerate-column guard** now
+drives two very different paths to the same milestone and fails if any contrasted feature
+reports the same value for both.
+
+No-hindsight is enforced structurally: the mark series is **sliced at the touch index** before
+any statistic is computed, and a test appends a −90% collapse and a +900% moonshot after each
+milestone and asserts every observation is byte-identical.
+
+Overnight: `winnersThatRequiredTheHold` is computed FIRST and returned unconditionally, so the
+gap distribution cannot be obtained without also obtaining what a flat close-before-the-bell
+rule would destroy. It is deliberately a FLOOR — a trade already at its realized return by the
+close is not counted.
+
+### Content drafts were sharing the owner's recap channel
+
+Production: `contentEventsEnabled: true`, **1209 drafts SENT** — all into
+`DISCORD_WEBHOOK_RECAP`, interleaved with the owner's own recap, and posted with
+`audience: "subscriber"` for an owner-only artifact.
+
+Content now has `DISCORD_WEBHOOK_CONTENT` and routes **nowhere else**. It is the one webhook
+kind with **no fallback** to `DISCORD_WEBHOOK_URL` — absent means absent, so drafts are held
+rather than sent to whatever the default points at. With it unset, drafts persist with
+`SKIPPED_NO_WEBHOOK`, the **existing retry bucket**, stay visible in the private app, and the
+existing recovery path delivers them once the webhook is configured. Nothing is lost, nothing
+is re-routed.
+
+Content also got its own kill switch, `DISCORD_CONTENT_ENABLED` (unset = enabled). It was
+governed by `DISCORD_RECAP_ENABLED`, which was correct only while it shared the recap channel;
+leaving it there would be the same conflation running the other way.
+
+> **OWNER ACTION REQUIRED:** set `DISCORD_WEBHOOK_CONTENT` in Railway. Until then content
+> drafts are generated and held, not delivered. Nothing is lost.
+
+### Metric glossary
+
+22 research terms added to the existing `lib/metric-glossary.ts` / `<InfoTip>` primitives —
+reused, not rebuilt. Tests pin that the definitions stay **educational**: no entry may read as
+a recommendation, and none may imply a threshold makes anything subscriber-ready. The
+probability entry carries its own counter-example (touched +25% on 54% of setups, PF still
+0.67), and the verdict entry states that **none of these statuses is an approval**.
+
+### What remains research / shadow only
+
+Everything above. No gate, threshold, ranking weight, contract selection, target, stop, exit or
+subscriber decision reads any of it. Tests read the new modules as source and fail on any
+INSERT/UPDATE/DELETE or provider call in them.
+
+### Regression cover
+
+`ai-monthly-budget` (20), `owner-selection-strength-experiment` (27),
+`exit-risk-observation` (22), `metric-glossary-research` (10).
+
+Pinned: env cannot raise the cap but may lower it; combined spend crosses a cap neither ledger
+crosses alone; a required ledger that will not read fails CLOSED; the provider is never
+contacted after a refusal; one call is never billed twice; a missing strength is never a
+rejection; both experiment arms share one population; a wrong-contract mirror is censored, not
+priced; marks after a milestone cannot move it; no contrasted feature is constant; the
+overnight report cannot be read without its winner count; content routes only to its own
+channel and the recap switch cannot silence it.
+
+`npm test` 4344 pass, 0 fail. `npx tsc --noEmit` clean. `npm run build` clean.
+
 ## Packet update — 2026-08-18 OptiScan was capturing the owner callouts and the learning pipeline could not see them
 
 ### Verified state (checked, not assumed)
