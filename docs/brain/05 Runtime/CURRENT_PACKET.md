@@ -1,5 +1,281 @@
 # Current Task Packet
 
+## Packet update — 2026-08-18 OptiScan was capturing the owner callouts and the learning pipeline could not see them
+
+### Verified state (checked, not assumed)
+
+- Baseline verified from git AND production BEFORE any change:
+  local = `origin/main` = production = `801b7d0d`. Tracked tree clean (the four modified
+  `docs/brain/02 Components` files are line-ending only — `git diff --numstat` is empty),
+  19 untracked scratch files untouched and still 19 at the end.
+- Production healthy throughout. Session `AFTERHOURS` for the whole engineering window.
+- **No trading logic changed.** No scanner setup rule, strategy threshold, selection,
+  ranking, CALL/PUT decision, contract/strike/expiration choice, DTE rule, Target 1,
+  Target 2, stop, exit, overnight handling, provider cap, subscriber-readiness threshold,
+  Discord message or delivery authority was touched. `OWNER_SELECTION_STRENGTH_GATE_V1`
+  was not created. No Profit Protection was added. `LHC_SELECT_V1` untouched.
+- Final production SHA `b1d2ac4`.
+
+### THE DEFECT — an owner callout has no `alert_id`, and six consumers joined on one
+
+`sendOwnerPrivateOpening` claims an Opportunity Case, sends the Discord opening, and
+mirrors the trade into `options_paper_trades` as `OWNER_VALIDATION_PAPER`. Nothing on that
+path writes an `options_alerts` row. So `opportunity_cases.alert_id` and
+`options_paper_trades.alert_id` are null for every owner callout ever made:
+
+```
+owner mirrors 74   with alert_id 0
+owner cases   74   with alert_id 0
+owner mirrors with a case id on their own feature snapshot   74
+```
+
+Six learning consumers resolved owner evidence through `alert_id` anyway. **None of them
+errored.** They returned the empty set, and an empty set is indistinguishable from a quiet
+day. That is the whole shape of this defect: it could only be found by asking a question
+the system had no way to answer wrongly.
+
+The link that does exist is the opportunity case the mirror records on its own feature
+snapshot. `owner-mirror-audit.ts` already used it — which is why the mirror RATE was
+measurable while nothing else about the lane was — and it is now extracted into
+`lib/opportunity-case/owner-mirror-identity.ts` so a seventh consumer cannot reinvent the
+broken one.
+
+**There are also TWO Opportunity Case rows behind one callout**, which is why no PRE_MOVE
+row has ever been promoted to the OWNER lane. The scanner writes a PENDING audit case that
+owns the observation; delivery mints a CLAIM case that owns the mirror.
+`recordPreMoveAlertOnDb` was keyed on the claim id and matched zero rows for its entire
+life. The pending id is not missing, it is computable — a pure function of the opportunity
+fingerprint both rows carry. Verified against production before any code was written:
+owner case `oc_alfb24` (IWM `O:IWM260819P00301000`, `of_1d78kh2`) derives `oc_us70d7`,
+which exists, carries the same fingerprint and the same frozen contract, and was detected
+1.8 seconds BEFORE the alert went out.
+
+The resolver fails closed. Two mirrors naming one case is AMBIGUOUS and resolves to
+nothing rather than to whichever row sorted first. A mirror on a contract the case did not
+freeze is OCC_MISMATCH and is never handed back as the callout's evidence, because a
+different strike's return is not this decision's return. Nothing fabricates an alert id,
+an `options_alerts` row, or a historical notification timestamp.
+
+### BEFORE and AFTER, on the same production evidence
+
+The clean comparison is session **2026-08-17**, which is closed and cannot move. The owner
+summary used to read `DELIVERED_ALERT_PAPER`, whose last row is 2026-08-06:
+
+| owner summary, 2026-08-17 | BEFORE | AFTER |
+|---|---|---|
+| openings | 0 | **13** |
+| exact mirrors | 0 | **13** |
+| mirror rate | n/a (`alert_id IS NOT NULL`) | **1.00** (exact OCC) |
+| closed / open | 0 / 0 | **12 / 1** |
+| wins / losses | 0 / 0 | **7 / 5** |
+| profit factor | null | **1.4618** |
+| PUT / CALL | 0 / 0 | **13 / 0** |
+
+Over the whole forward record the lane is **74 openings, 74 exact mirrors, 67 closed, 27
+wins, 40 losses, win rate 40.3%, mean −9.19%, median −40.29%, PF 0.6654, PF without the
+best winner 0.6226, 66 puts and 8 calls across 7 sessions.** The nightly received the
+equivalent of zeros for all of it.
+
+`byStrategy` now separates them: `lower_high_continuation` 46 trades PF 0.8291,
+`vwap_rejection` 13 PF 0.6281, `sr_reclaim` 4 and `breakout_forming` 3 with no winners
+at all.
+
+### Session accounting: 0 independent sessions became 7
+
+`loadCohortMembersOnDb`'s `LEFT JOIN opportunity_cases c ON c.alert_id = t.alert_id` gave
+every owner row a null case and therefore a null `session_date`. **A null session date is
+not a missing label — it is an independence count of zero**, and the owner lane sat
+permanently at INSUFFICIENT_EVIDENCE with 74 verified excursions and 67 verified realized
+outcomes behind it. No sample size could have opened it.
+
+Identity now falls back to the case the mirror names; a trade with no case at all still
+gets the session it was ENTERED in, via the repository's Eastern trading-day helper rather
+than a UTC split that moves every post-20:00 ET entry into the next day.
+
+Independence is also no longer `new Set(sessionDate).size`. A calendar date is not a
+trading session, and a weekend or a corrupt epoch produces a well-formed `YYYY-MM-DD` that
+clears a floor unchallenged. `countIndependentSessions` validates each date and REPORTS
+what it rejected.
+
+**The floors were not lowered.** They are still 20 trades over 5 independent sessions, and
+a regression test seeds 25 trades over four sessions and asserts the gate still refuses.
+
+### The owner probability gate opened on its own evidence
+
+| `HISTORICAL_COHORT_V1:paperKind=OWNER_VALIDATION_PAPER` | BEFORE | AFTER |
+|---|---|---|
+| verified excursions | 74 | 74 |
+| verified realized outcomes | 67 | 67 |
+| independent sessions | **0** | **7** |
+| verdict | INSUFFICIENT_EVIDENCE | **SUPPORTED** |
+| member case ids | 0 | 74 |
+
+Nothing about the population changed. Only its identity did.
+
+```
+P(+10) 0.6622  (49/74)      win rate      0.4030
+P(+25) 0.5405  (40/74)      profit factor 0.6654
+P(+50) 0.0676  ( 5/74)      expectancy   -9.19%
+P(+100) 0      ( 0/74)      PF ex-top     0.6226
+                            E[MFE] +25.79%   E[MAE] -32.05%
+```
+
+Read the two columns as two different claims, because they are: a lane that touches +25%
+on 54% of setups and still returns a profit factor of 0.67 is a lane whose exit policy
+gives back more than its selection captures. That is the same shape the delivered lane
+showed at PF 0.94, and it is the reason the next work is exit research and not selection
+tuning.
+
+### PRE_MOVE: 0 owner rows became 70
+
+The OWNER lane cannot take its membership from the `lane` column. That column is stamped
+at CAPTURE time, on a tick that cannot know whether an owner will later be notified, so it
+reads SHADOW or RESEARCH; the promotion that was supposed to fix it never matched a row.
+Production before: **0 rows with `lane='OWNER'`, 0 rows with a non-null
+`owner_notified_at_ms`**, against 74 exact owner mirrors, and every standing pre-move
+question answering INSUFFICIENT_EVIDENCE.
+
+Membership is now proven by the MIRROR — the object that only exists if the Discord
+opening was actually sent — and its PRE_MOVE row is fetched by both case identities. That
+is evidence, not a label. Rows the owner lane claims are removed from the others so one
+callout is never counted in two populations.
+
+`recordPreMoveAlertOnDb` now tries the pending audit case FIRST and the claim case second.
+Order matters: the claim-case row, where it exists at all, was written on a tick AFTER the
+alert, and measuring lead time from its detection instant would report every callout as
+later than it was.
+
+**Historical rows are not backfilled and no notification timestamp is invented.** Where
+none was recorded the mirror's own `entered_at_ms` is used and the row SAYS SO in
+`ownerAlertInstantProvenance`. The mirror opens immediately after the send, in the same
+block, so that instant is at or after the true one: every lead time derived from it is a
+FLOOR. It can understate how early a callout was; it cannot overstate it. All 70 current
+owner rows are `DERIVED_FROM_MIRROR_ENTRY` and say so.
+
+### Two trades the nightly can now tell apart
+
+The test of a research context is not whether it contains a winner and a loser. It is
+whether they are visibly different WITHOUT a reader who already knows which is which.
+
+```
+IWM  O:IWM260819P00301000  PUT  lower_high_continuation
+  entry 0.986  T1 1.42  T2 1.86  stop 0.59   realized +44.42%   206 marks
+  MFE +44.42%  MAE -12.37%   +10% at 6.4min  +25% at 14.4min  +50% never
+  EVENTUAL_T1_WINNER · TARGET_1_HIT · SAME_DAY_EXIT
+  PRE_TRIGGER · LARGE_REMAINING · reward remaining 1.0 · delta -0.45 · OI 1342
+  selection strength 100 · delivery quality 81 · signal SUPPORTIVE · 0 contradicting
+
+NFLX O:NFLX260814P00074000 PUT  lower_high_continuation
+  entry 0.726  T1 1.04  T2 1.36  stop 0.43   realized -85.67%   552 marks
+  MFE +31.68%  MAE -85.67%   +10% at 7.2min  +25% at 16.2min  +50% never
+  GOOD_MOVE_THEN_REVERSED · STOP_LEAKAGE · OVERNIGHT_GAP · HELD_OVERNIGHT · OPENING_BELL_EXIT
+  stop 0.43, exit fill 0.104 = -75.81% slippage · overnight gap -61.98 points
+  selection strength · delivery quality 81 · signal verdict — all carried per trade
+```
+
+Same strategy, same side, same delivery quality, nearly identical milestone timings — and
+opposite outcomes. What separates them is entirely in the second half of the trade, which
+is exactly the finding, and it is now stated in the payload rather than left for a model
+to infer.
+
+Across the lane: 42 of 74 crossed a session boundary, 36 carried a measured overnight gap,
+13 filled materially below their frozen stop. **Nothing was changed about the stop.** The
+evidence to study it is simply now visible.
+
+### Path labels are measurements, not judgements
+
+`NEVER_WORKED` 13 · `WORKED_SMALL_THEN_FAILED` 15 · `GOOD_MOVE_THEN_REVERSED` 12 ·
+`EVENTUAL_T1_WINNER` 25 · `WORKED_AND_HELD` 2 · `PATH_UNKNOWN` 7 (all still open).
+
+Every threshold is a named constant. `PATH_UNKNOWN` is what a trade gets when its marks
+cannot support a verdict — never `NEVER_WORKED`, which is the flattering answer for a
+scanner and the damning one for a trade. No stored `maxReturnPct`, `mfe_pct` or `mae_pct`
+is read anywhere in the owner lane: one fallback to a field that is wrong on 36 of 78
+delivered cases would put a phantom number into every label at once.
+
+`GOOD_MOVE_THEN_REVERSED` and `EVENTUAL_T1_WINNER` are separate labels precisely so the
+Profit Protection question can be asked later without being begged now.
+
+### Two selection numbers that were being confused with each other
+
+The field first shipped in this session as `selectionStrength` was the delivery QUALITY
+score off the mirror's feature snapshot, which spans 0.70 to 0.86 across 67 closed owner
+trades — never 1.0. The audit that motivated exposing it described a `selStrength` taking
+values of exactly 100 and below 75, so the two could not be the same thing, and it was
+renamed `deliveryQualityScore` rather than shipped under a name it did not earn.
+
+**Then the real one turned up.** `selStrength` is
+`case_json.strategyEvaluations[].strength` — a 0–100 score frozen per strategy at callout,
+present on both case rows, 27 evaluations deep. Both fields are now carried under their own
+names, together with `strategyVersion`, `signalVerdict`, `signalsMatched` and
+`contradictingEvidence` from the same evaluation.
+
+The load-bearing detail is WHICH evaluation. A case holds one per strategy the scanner
+considered, and on the IWM winner the FIRST entry is `vwap_rejection` while the callout was
+`lower_high_continuation`. Reading `[0]`, or the strongest, reports a strategy that was
+never traded. The match is on the strategy that was actually selected, and null when none
+matches rather than falling back to whichever sorted first. A regression fixture puts a
+different strategy in slot 0 for exactly this reason.
+
+The two numbers disagree on the same callout — selection strength 100, delivery quality 81
+— which is the whole argument for keeping them apart. Both are RESEARCH ONLY. The
+delivery-quality separation observed this session (below 75: PF 0.5162 over 25 closed
+trades; 75 and above: PF 0.7615 over 42) is stated under the honest name; both sides are
+below break-even and neither authorises anything.
+
+### `OWNER_VALIDATION_PAPER` is a lane now, in both senses
+
+`QuantLane` had seven members and this was not one of them, so the lane most relevant to
+whether the callouts work had no row in the quant report at all. It has one, with its
+MFE/MAE recomputed from same-contract marks rather than the contaminated stored columns.
+The older lanes still read those columns and are deliberately left alone — moving their
+published numbers is a separate decision from repairing owner identity.
+
+Evidence Learning already carried `OWNER_VALIDATION_PAPER` as its own audience
+(`ai.ownerLane` PASS in production) and needed no change. `paper_trade_outcomes` is keyed
+on `paper_trades(id)` — the legacy stock table — so an options mirror is structurally
+ineligible for it. **No owner rows were forced into it.** That is a real gap and it is a
+schema decision, not an identity one.
+
+### Two caveats worth more than the numbers beside them
+
+**100% PRE_TRIGGER is not a finding.** All 70 owner rows grade PRE_TRIGGER with a median
+detection-to-alert gap of **1.6 seconds**. A stage computed over a 1.6-second window is not
+measuring earliness; it is measuring that detection and delivery happen in the same tick.
+The stage column is doing almost no work in the owner lane and should not be read as
+"every callout was early" until the detection instant genuinely precedes the alert.
+
+**`medianRewardRemainingFraction` is 1.0 on 65 of 70 rows.** A metric that returns its
+maximum for almost every row is a metric that has not yet discriminated anything.
+
+### What remains research / shadow only
+
+Everything above. No gate, threshold, ranking weight, contract selection, target, stop,
+exit or subscriber decision reads any of it. The AI may analyse, compare and propose
+bounded experiments; it may not edit code, deploy, change a live threshold, alter ranking
+or selection, move a target or a stop, approve a subscriber strategy, or rewrite history.
+A test reads the two new modules as source and fails on any INSERT, UPDATE, DELETE or
+provider call in them.
+
+### Regression cover
+
+`tests/owner-mirror-identity.test.mjs`, 22 tests, every fixture built the way production
+builds one — **no alert id anywhere** — so a regression cannot pass by handing the code the
+subscriber lane's shape. The fixtures in `lhc-nightly-research`, `pre-move-nightly` and
+`after-close-autonomy` were doing exactly that and were seeding `DELIVERED_ALERT_PAPER`
+rows with an `alert_id` while calling them owner alerts; they now seed owner callouts.
+
+Pinned: the pending id stays a pure function of the fingerprint; a wrong-contract mirror
+and a double-claimed case both fail closed; a case id is matched exactly, never as a
+substring and never through the LIKE wildcard that `oc_` carries in its own name; owner and
+subscriber stay disjoint on the same contract in the same session; a Saturday does not
+count toward independence and two trades on one Monday are one session; the probability
+floors still refuse at four sessions; a stored peak nothing printed does not become an
+excursion; `PATH_UNKNOWN` is never rendered as `NEVER_WORKED`; and the winner and loser
+traces stay distinguishable.
+
+`npm test` twice: 4263 pass, 0 fail. `npx tsc --noEmit` clean. `npm run build` clean.
+
 ## Packet update — 2026-08-10 (5) The session count was right, the bookkeeping was not, and the realized profit factor is 0.94
 
 ### Verified state (checked, not assumed)
