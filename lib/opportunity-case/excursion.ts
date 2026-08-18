@@ -27,6 +27,8 @@
  * Read-only over the mark series. Zero provider calls.
  */
 
+import { ownerMirrorTradeIdsForCaseOnDb } from "./owner-mirror-identity.ts";
+
 export interface ExcursionDb {
   prepare(sql: string): {
     get: (...a: any[]) => any;
@@ -162,28 +164,50 @@ interface FrozenMark {
 /**
  * Every mark recorded against this case's frozen contract, across all linked mirrors.
  *
- * The filter is on the MARK's own `option_symbol`, not the mirror's. A mirror is
- * normally single-contract, but the mark row is where the observation actually lives
- * and it is the only field that can prove which instrument produced the price.
+ * TWO LINKS, BECAUSE THERE ARE TWO KINDS OF CASE.
+ *
+ * A delivered subscriber alert links its mirror through `alert_id`, and that is correct
+ * and untouched. An OWNER callout has no alert id at all — it never writes an
+ * `options_alerts` row — so this function used to return `hasMirror: false` for the whole
+ * owner lane and every owner case reported NO_MIRROR, which reads as "nothing ever
+ * observed this trade" for 74 mirrors carrying dense same-contract mark series.
+ *
+ * The owner link is the opportunity case recorded on the mirror's own feature snapshot,
+ * resolved by `owner-mirror-identity.ts`. Both links are tried and the ids are UNIONED:
+ * they are disjoint in practice, and a case that somehow had both would be describing one
+ * trade twice, which the id set collapses.
+ *
+ * The mark filter stays on the MARK's own `option_symbol`, not the mirror's. A mirror is
+ * normally single-contract, but the mark row is where the observation actually lives and
+ * it is the only field that can prove which instrument produced the price.
  */
 function loadFrozenMarks(
   db: ExcursionDb,
   alertId: string | null,
+  opportunityCaseId: string,
   frozenOcc: string | null,
 ): { onFrozen: FrozenMark[]; offFrozen: number; hasMirror: boolean } {
-  if (!alertId || !hasTable(db, "options_paper_trades")) {
+  if (!hasTable(db, "options_paper_trades")) {
     return { onFrozen: [], offFrozen: 0, hasMirror: false };
   }
-  let tradeIds: number[] = [];
+  const ids = new Set<number>();
+  if (alertId) {
+    try {
+      for (const r of db.prepare("SELECT id FROM options_paper_trades WHERE alert_id=?").all(alertId) as any[]) {
+        const n = Number(r.id);
+        if (Number.isFinite(n)) ids.add(n);
+      }
+    } catch { /* isolated: the owner link below may still resolve */ }
+  }
   try {
-    tradeIds = (db.prepare("SELECT id FROM options_paper_trades WHERE alert_id=?").all(alertId) as any[])
-      .map((r) => Number(r.id))
-      .filter((n) => Number.isFinite(n));
-  } catch {
+    for (const n of ownerMirrorTradeIdsForCaseOnDb(db as any, opportunityCaseId)) ids.add(n);
+  } catch { /* isolated */ }
+  const tradeIds = [...ids];
+  if (!tradeIds.length) {
     return { onFrozen: [], offFrozen: 0, hasMirror: false };
   }
-  if (!tradeIds.length || !hasTable(db, "options_paper_marks")) {
-    return { onFrozen: [], offFrozen: 0, hasMirror: tradeIds.length > 0 };
+  if (!hasTable(db, "options_paper_marks")) {
+    return { onFrozen: [], offFrozen: 0, hasMirror: true };
   }
 
   const onFrozen: FrozenMark[] = [];
@@ -250,7 +274,7 @@ export function recomputeExcursionOnDb(
     return base;
   }
 
-  const { onFrozen, offFrozen, hasMirror } = loadFrozenMarks(db, facts.alertId, facts.frozenOcc);
+  const { onFrozen, offFrozen, hasMirror } = loadFrozenMarks(db, facts.alertId, opportunityCaseId, facts.frozenOcc);
   base.marksOnFrozen = onFrozen.length;
   base.marksOffFrozen = offFrozen;
 

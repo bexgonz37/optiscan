@@ -34,6 +34,11 @@ import { LHC_SELECT_V1, checkFrozen } from "./experiment-registry.ts";
 import { buildOwnerAlertSummaryOnDb, type NightlyDb } from "./nightly-research.ts";
 import { censusShaAttribution, POLICY_VERSIONS } from "./policy-attribution.ts";
 import { buildPreMoveNightlyReport, type PreMoveNightlyReport } from "./pre-move-nightly.ts";
+import {
+  buildOwnerLearningReportOnDb,
+  type OwnerLaneStatistics,
+  type OwnerLearningRow,
+} from "./owner-learning.ts";
 
 export interface ResearchContextDb extends ShadowDb, FindingsDb, NightlyDb {}
 
@@ -149,6 +154,132 @@ export function buildOwnerLaneContext(
       ? "No owner opening CLOSED in this session. Expectancy and profit factor are UNAVAILABLE, not zero."
       : "Closed owner Discord openings, priced on the exact contract the alert froze. " +
         "immediateFailures and profitGivenBack are counted only where the same-contract mark series supports the claim.",
+  };
+}
+
+// ── owner validation lane ───────────────────────────────────────────────────────────────────
+
+/**
+ * One owner trade, compressed to what a reader needs to tell it apart from another one.
+ *
+ * Every field is a stored measurement or a labelled derivation of one. A narrator may
+ * compare, group and explain these; it may not produce one. The point of carrying the
+ * path label, the milestone timings and the stop evidence TOGETHER is that a +44% winner
+ * and an -86% loser must be visibly different in the payload itself — not distinguishable
+ * only by someone who already knows which is which.
+ */
+export interface OwnerTradeTrace {
+  opportunityCaseId: string;
+  symbol: string | null;
+  optionSymbol: string | null;
+  side: "CALL" | "PUT" | null;
+  strategy: string | null;
+  sessionDate: string | null;
+  /** Delivery-time selection quality, 0–100. RESEARCH ONLY — reads no gate. */
+  selectionStrength: number | null;
+  rewardRemainingBand: string | null;
+  discoveryStage: string | null;
+  entryFill: number | null;
+  targetT1: number | null;
+  targetT2: number | null;
+  stop: number | null;
+  realizedReturnPct: number | null;
+  realizedEvidence: string;
+  mfePct: number | null;
+  maePct: number | null;
+  marksOnContract: number;
+  msToMilestone: Record<string, number | null>;
+  pathLabel: string;
+  flags: string[];
+  stopSlippagePct: number | null;
+  overnightGapPct: number | null;
+  heldOvernight: boolean;
+  limitations: string[];
+}
+
+export interface OwnerValidationLaneContext {
+  lane: string;
+  /** The whole forward owner record, not one session. */
+  scope: "ALL_FORWARD_SESSIONS";
+  statistics: OwnerLaneStatistics;
+  /** A bounded, deliberately varied sample. Aggregates first; rows only where they earn it. */
+  notableTrades: OwnerTradeTrace[];
+  unavailableMetrics: string[];
+  note: string;
+}
+
+function traceOf(r: OwnerLearningRow): OwnerTradeTrace {
+  return {
+    opportunityCaseId: r.opportunityCaseId,
+    symbol: r.symbol,
+    optionSymbol: r.optionSymbol,
+    side: r.side,
+    strategy: r.strategyKey ?? r.setupFamily,
+    sessionDate: r.sessionDate,
+    selectionStrength: r.selection.selectionStrength,
+    rewardRemainingBand: r.selection.rewardRemainingBand,
+    discoveryStage: r.selection.discoveryStage,
+    entryFill: r.entryFill,
+    targetT1: r.targetT1,
+    targetT2: r.targetT2,
+    stop: r.stop,
+    realizedReturnPct: r.realizedReturnPct,
+    realizedEvidence: r.realizedEvidence,
+    mfePct: r.mfePct,
+    maePct: r.maePct,
+    marksOnContract: r.marksOnContract,
+    msToMilestone: r.msToMilestone,
+    pathLabel: r.pathLabel,
+    flags: r.flags,
+    stopSlippagePct: r.stopEvidence.stopSlippagePct,
+    overnightGapPct: r.stopEvidence.overnightGapPct,
+    heldOvernight: r.stopEvidence.crossedSessionBoundary,
+    limitations: r.limitations,
+  };
+}
+
+/**
+ * Which owner trades get a row of their own.
+ *
+ * The best winner and the worst loser first, because the two questions the nightly must
+ * answer are "what did the winners share" and "what did the ones that never worked
+ * share", and a payload that cannot show one of each cannot support either answer. Then
+ * one representative per path label, so every behaviour the lane exhibits is present at
+ * least once rather than the tail being represented by whichever row sorted first.
+ */
+function selectNotableOwnerTrades(rows: readonly OwnerLearningRow[], cap: number): OwnerTradeTrace[] {
+  const closed = rows.filter((r) => r.occExact && r.realizedReturnPct != null);
+  const picked: OwnerLearningRow[] = [];
+  const take = (r: OwnerLearningRow | undefined) => {
+    if (r && !picked.some((p) => p.paperTradeId === r.paperTradeId)) picked.push(r);
+  };
+  const sorted = [...closed].sort((a, b) => (b.realizedReturnPct as number) - (a.realizedReturnPct as number));
+  take(sorted[0]);
+  take(sorted[sorted.length - 1]);
+  for (const label of new Set(closed.map((r) => r.pathLabel))) {
+    take(closed.find((r) => r.pathLabel === label));
+  }
+  return picked.slice(0, cap).map(traceOf);
+}
+
+export function buildOwnerValidationLaneContext(db: ResearchContextDb): OwnerValidationLaneContext | null {
+  let report;
+  try { report = buildOwnerLearningReportOnDb(db as never, {}); }
+  catch { return null; }
+  const s = report.statistics;
+  return {
+    lane: s.lane,
+    scope: "ALL_FORWARD_SESSIONS",
+    statistics: s,
+    notableTrades: selectNotableOwnerTrades(report.rows, ANOMALY_CAP),
+    unavailableMetrics: s.unavailableMetrics,
+    note:
+      "The forward validation population the private callouts actually produce: one paper mirror per "
+      + "Discord opening, on the EXACT contract that was called. Identity runs through the opportunity "
+      + "case recorded on the mirror, never an alert id — owner callouts write no options_alerts row, "
+      + "and every consumer that assumed one reported this lane as empty. NEVER pool these figures with "
+      + "DELIVERED_ALERT_PAPER or any research arm. Path labels are measurements with stated thresholds: "
+      + "read them, do not invent them, and treat PATH_UNKNOWN as unmeasured rather than as a failure.",
   };
 }
 
@@ -328,6 +459,11 @@ export interface AiResearchContext {
   /** Stated in the payload so the rule survives prompt edits. */
   readingRules: string[];
   ownerDiscord: OwnerLaneContext | null;
+  /**
+   * The OWNER_VALIDATION_PAPER lane over the whole forward record. Null only when the
+   * store is unavailable — never an empty object, which would read as a measured zero.
+   */
+  ownerValidation: OwnerValidationLaneContext | null;
   experiment: ExperimentContext;
   confirmationCost: ConfirmationCostContext;
   researchLane: ResearchLaneContext;
@@ -353,6 +489,11 @@ export const READING_RULES: readonly string[] = Object.freeze([
   "Expectancy and profit factor are computed from CLOSED outcomes only. Open positions have no result.",
   "A positive peak (MFE) is never a win. Only a realized return is a result.",
   "`sampleSize: 0` means the section is describing an empty population; say that rather than describing its metrics.",
+  "OWNER_VALIDATION_PAPER, DELIVERED_ALERT_PAPER and every research arm are DISJOINT populations. "
+    + "Never add, average or compare their figures as though they described one book of trades.",
+  "A path label (NEVER_WORKED, GOOD_MOVE_THEN_REVERSED, EVENTUAL_T1_WINNER, …) is a measurement with a "
+    + "stated threshold, not a judgement. PATH_UNKNOWN means the marks could not support a verdict; it is "
+    + "never 'the trade did nothing'.",
 ]);
 
 const AUTHORITY_INSTRUCTIONS: readonly string[] = Object.freeze([
@@ -503,6 +644,10 @@ export function buildAiResearchContextOnDb(
     sessionDate,
     readingRules: [...READING_RULES],
     ownerDiscord: sessionDate ? buildOwnerLaneContext(db, sessionDate, rows) : null,
+    // Cumulative by design, and separate from `ownerDiscord` on purpose: one session of
+    // owner callouts cannot answer whether the callouts work, and a nightly that only
+    // ever sees today has no way to notice that it has been shown the same day twice.
+    ownerValidation: buildOwnerValidationLaneContext(db),
     experiment,
     confirmationCost: buildConfirmationCostContext(rows),
     researchLane,

@@ -24,6 +24,8 @@
  * Impure (SQLite), testable OnDb core.
  */
 
+import { buildOwnerLearningReportOnDb, type OwnerLaneStatistics } from "./owner-learning.ts";
+import { OWNER_VALIDATION_PAPER_KIND } from "../../opportunity-case/owner-mirror-identity.ts";
 import { buildProspectiveScoreboard, weeklyVerdict, type ProspectiveScoreboard } from "./prospective-scoreboard.ts";
 import { listShadowDecisionsOnDb, refreshShadowOutcomesOnDb, currentStatusOnDb, recordStatusOnDb, registerExperimentOnDb, type ShadowDb } from "./shadow-arm-store.ts";
 import { seedLhcFindingsOnDb, type FindingsDb } from "./findings-store.ts";
@@ -32,9 +34,25 @@ import { COHORT_STRATEGY } from "./lower-high-cohort.ts";
 
 export interface NightlyDb extends ShadowDb, FindingsDb {}
 
-/** Owner Discord alert performance â€” the PRIMARY population. Closed outcomes only. */
+/**
+ * Owner Discord callout performance — the PRIMARY population.
+ *
+ * THE LANE IS `OWNER_VALIDATION_PAPER`, AND IT USED NOT TO BE.
+ *
+ * This summary was built from `DELIVERED_ALERT_PAPER` and counted a "paper mirror" as any
+ * row with a non-null `alert_id`. Both are the subscriber lane's shape. An owner callout
+ * writes no `options_alerts` row at all, so it has no alert id — production at 801b7d0d:
+ * 0 of 106 owner cases and 0 of 74 owner mirrors carry one. The section printed under
+ * "OWNER DISCORD ALERTS" therefore described a population the owner never received, while
+ * the real one was invisible.
+ *
+ * Identity now runs through `owner-mirror-identity.ts`: the opportunity case recorded on
+ * the mirror's own feature snapshot, checked against the exact OCC the callout froze.
+ */
 export interface OwnerAlertSummary {
   sessionDate: string;
+  /** The lane this summary describes. Stated in the payload so it cannot be mistaken. */
+  lane: typeof OWNER_VALIDATION_PAPER_KIND;
   openings: number;
   paperMirrors: number;
   closed: number;
@@ -42,109 +60,119 @@ export interface OwnerAlertSummary {
   ungradable: number;
   realizedWins: number;
   realizedLosses: number;
+  winRate: number | null;
   expectancyPct: number | null;
+  medianRealizedReturnPct: number | null;
   profitFactor: number | null;
+  profitFactorWithoutTopWinner: number | null;
   bestWinnerPct: number | null;
   worstLossPct: number | null;
+  callCount: number;
+  putCount: number;
   /** Never cleared +5% on a trustworthy path. */
   immediateFailures: number;
   /** Reached >= +20% and closed at or below 0. */
   profitGivenBack: number;
   /** Rows without enough same-contract marks to support either claim above. */
   withoutTrajectoryEvidence: number;
+  /** Closed rows that filled materially below the frozen stop. */
+  stopLeakage: number;
+  heldOvernight: number;
+  overnightGaps: number;
   byStrategy: { strategy: string; n: number; wins: number; losses: number; expectancyPct: number | null; profitFactor: number | null }[];
+  byPathLabel: Record<string, number>;
+  /** Distinct VERIFIED trading sessions, not distinct calendar dates. */
+  independentSessions: number;
+  sessions: string[];
   mirrorRate: number | null;
+  unavailableMetrics: string[];
 }
-
-const MIN_MARKS = 20;
 
 function hasTable(db: NightlyDb, name: string): boolean {
   try { return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name)); }
   catch { return false; }
 }
 
-function stats(returns: number[]): { expectancyPct: number | null; profitFactor: number | null } {
-  if (!returns.length) return { expectancyPct: null, profitFactor: null };
-  const w = returns.filter((x) => x > 0);
-  const l = returns.filter((x) => x <= 0);
-  const gross = w.reduce((s, x) => s + x, 0);
-  const lossSum = -l.reduce((s, x) => s + x, 0);
+function summaryFromOwnerLane(sessionDate: string, s: OwnerLaneStatistics, extra: {
+  immediateFailures: number; profitGivenBack: number;
+}): OwnerAlertSummary {
   return {
-    expectancyPct: returns.reduce((s, x) => s + x, 0) / returns.length,
-    profitFactor: lossSum > 0 ? gross / lossSum : null,
+    sessionDate,
+    lane: OWNER_VALIDATION_PAPER_KIND,
+    openings: s.openings,
+    paperMirrors: s.exactMirrors,
+    closed: s.closed,
+    open: s.open,
+    ungradable: s.ungradable,
+    realizedWins: s.wins,
+    realizedLosses: s.losses,
+    winRate: s.winRate,
+    expectancyPct: s.meanRealizedReturnPct,
+    medianRealizedReturnPct: s.medianRealizedReturnPct,
+    profitFactor: s.profitFactor,
+    profitFactorWithoutTopWinner: s.profitFactorWithoutTopWinner,
+    bestWinnerPct: s.bestWinnerPct,
+    worstLossPct: s.worstLossPct,
+    callCount: s.callCount,
+    putCount: s.putCount,
+    immediateFailures: extra.immediateFailures,
+    profitGivenBack: extra.profitGivenBack,
+    withoutTrajectoryEvidence: s.withoutTrajectoryEvidence,
+    stopLeakage: s.stopLeakage,
+    heldOvernight: s.heldOvernight,
+    overnightGaps: s.overnightGaps,
+    byStrategy: s.byStrategy,
+    byPathLabel: s.byPathLabel,
+    independentSessions: s.sessionAudit.independentSessions,
+    sessions: s.sessions,
+    mirrorRate: s.mirrorRate,
+    unavailableMetrics: s.unavailableMetrics,
   };
 }
 
+const EMPTY_OWNER_SUMMARY = (sessionDate: string): OwnerAlertSummary => ({
+  sessionDate, lane: OWNER_VALIDATION_PAPER_KIND,
+  openings: 0, paperMirrors: 0, closed: 0, open: 0, ungradable: 0,
+  realizedWins: 0, realizedLosses: 0, winRate: null, expectancyPct: null,
+  medianRealizedReturnPct: null, profitFactor: null, profitFactorWithoutTopWinner: null,
+  bestWinnerPct: null, worstLossPct: null, callCount: 0, putCount: 0,
+  immediateFailures: 0, profitGivenBack: 0, withoutTrajectoryEvidence: 0,
+  stopLeakage: 0, heldOvernight: 0, overnightGaps: 0,
+  byStrategy: [], byPathLabel: {}, independentSessions: 0, sessions: [],
+  mirrorRate: null, unavailableMetrics: [],
+});
+
 /**
- * Owner Discord openings for one ET session, priced on the EXACT contract the alert froze.
- * Same-contract marks only â€” a mark on a re-selected OCC is a different instrument, which is
- * the defect that produced a phantom +149% MFE in an earlier packet.
+ * Owner Discord openings for one ET session, priced on the EXACT contract the callout froze.
+ *
+ * Same-contract marks only — a mark on a re-selected OCC is a different instrument, which is
+ * the defect that produced a phantom +149% MFE in an earlier packet. Session membership is
+ * decided in JS from `entered_at_ms`, never in SQL: SQLite's `localtime` is the container's
+ * timezone (UTC on Railway), and an ET boundary resolved in UTC silently moves every
+ * post-20:00 ET opening into the next day.
  */
 export function buildOwnerAlertSummaryOnDb(db: NightlyDb, sessionDate: string): OwnerAlertSummary {
-  const empty: OwnerAlertSummary = {
-    sessionDate, openings: 0, paperMirrors: 0, closed: 0, open: 0, ungradable: 0,
-    realizedWins: 0, realizedLosses: 0, expectancyPct: null, profitFactor: null,
-    bestWinnerPct: null, worstLossPct: null, immediateFailures: 0, profitGivenBack: 0,
-    withoutTrajectoryEvidence: 0, byStrategy: [], mirrorRate: null,
-  };
-  if (!hasTable(db, "options_paper_trades")) return empty;
-
-  // Session membership is decided in JS, not SQL: SQLite's `localtime` is the container's
-  // timezone (UTC on Railway), and an ET session boundary resolved in UTC silently moves every
-  // post-20:00 ET opening into the next day.
-  let rows: any[] = [];
+  if (!hasTable(db, "options_paper_trades")) return EMPTY_OWNER_SUMMARY(sessionDate);
+  let report;
   try {
-    const all = db.prepare(
-      `SELECT t.id, t.strategy, t.status, t.return_pct, t.option_symbol, t.alert_id, t.entered_at_ms,
-              (SELECT COUNT(*) FROM options_paper_marks m WHERE m.trade_id=t.id AND m.option_symbol=t.option_symbol) marks,
-              (SELECT MAX(m.return_pct) FROM options_paper_marks m WHERE m.trade_id=t.id AND m.option_symbol=t.option_symbol) peak
-         FROM options_paper_trades t
-        WHERE t.paper_kind='DELIVERED_ALERT_PAPER' AND t.entered_at_ms IS NOT NULL`,
-    ).all() as any[];
-    rows = all.filter(
-      (r) => new Date(r.entered_at_ms).toLocaleDateString("en-CA", { timeZone: "America/New_York" }) === sessionDate,
-    );
-  } catch { return empty; }
-
-  const closedRows = rows.filter((r) => r.status === "EXITED" && r.return_pct != null);
-  const returns = closedRows.map((r) => Number(r.return_pct));
-  const { expectancyPct, profitFactor } = stats(returns);
-  const wins = returns.filter((x) => x > 0);
-  const losses = returns.filter((x) => x <= 0);
-
-  const trustworthy = closedRows.filter((r) => Number(r.marks ?? 0) >= MIN_MARKS && r.peak != null);
-  const byStrategyMap = new Map<string, number[]>();
-  for (const r of closedRows) {
-    const k = r.strategy ?? "unknown";
-    const list = byStrategyMap.get(k) ?? [];
-    list.push(Number(r.return_pct));
-    byStrategyMap.set(k, list);
+    report = buildOwnerLearningReportOnDb(db as any, { sessionDate });
+  } catch {
+    return EMPTY_OWNER_SUMMARY(sessionDate);
   }
 
-  return {
-    sessionDate,
-    openings: rows.length,
-    paperMirrors: rows.filter((r) => r.alert_id != null).length,
-    closed: closedRows.length,
-    open: rows.filter((r) => r.status !== "EXITED").length,
-    ungradable: rows.filter((r) => r.status === "EXITED" && r.return_pct == null).length,
-    realizedWins: wins.length,
-    realizedLosses: losses.length,
-    expectancyPct,
-    profitFactor,
-    bestWinnerPct: wins.length ? Math.max(...wins) : null,
-    worstLossPct: losses.length ? Math.min(...losses) : null,
-    immediateFailures: trustworthy.filter((r) => Number(r.peak) < 5).length,
-    profitGivenBack: trustworthy.filter((r) => Number(r.peak) >= 20 && Number(r.return_pct) <= 0).length,
-    withoutTrajectoryEvidence: closedRows.length - trustworthy.length,
-    byStrategy: [...byStrategyMap.entries()].map(([strategy, rs]) => ({
-      strategy, n: rs.length,
-      wins: rs.filter((x) => x > 0).length,
-      losses: rs.filter((x) => x <= 0).length,
-      ...stats(rs),
-    })).sort((a, b) => b.n - a.n),
-    mirrorRate: rows.length ? rows.filter((r) => r.alert_id != null).length / rows.length : null,
-  };
+  // immediateFailures / profitGivenBack keep their published meaning and change only their
+  // evidence source: a VERIFIED excursion on the frozen contract rather than a raw
+  // MAX(mark.return_pct) behind a 20-mark floor. A row whose path cannot be claimed is in
+  // neither bucket and is counted in `withoutTrajectoryEvidence` instead.
+  const graded = report.rows.filter(
+    (r) => r.occExact && r.status === "EXITED" && r.realizedReturnPct != null && r.mfePct != null,
+  );
+  const immediateFailures = graded.filter((r) => (r.mfePct as number) < 5).length;
+  const profitGivenBack = graded.filter(
+    (r) => (r.mfePct as number) >= 20 && (r.realizedReturnPct as number) <= 0,
+  ).length;
+
+  return summaryFromOwnerLane(sessionDate, report.statistics, { immediateFailures, profitGivenBack });
 }
 
 export interface NightlyResearchResult {

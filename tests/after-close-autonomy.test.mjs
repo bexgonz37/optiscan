@@ -75,19 +75,56 @@ CREATE TABLE options_learning_findings (finding_id TEXT PRIMARY KEY, strategy TE
   experiment_status TEXT, must_not_be_summarized_as TEXT, deployment_sha TEXT, created_at_ms INTEGER NOT NULL,
   updated_at_ms INTEGER NOT NULL);
 CREATE TABLE options_paper_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, option_symbol TEXT NOT NULL, result_class TEXT NOT NULL,
+  side TEXT, strike REAL, expiration TEXT, dte INTEGER, entry_fill REAL, exit_fill REAL, session TEXT,
+  feature_snapshot_json TEXT,
   strategy TEXT, status TEXT NOT NULL, return_pct REAL, exit_reason TEXT, entered_at_ms INTEGER, exit_at_ms INTEGER,
   alert_id TEXT, paper_kind TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
+CREATE TABLE opportunity_cases (opportunity_id TEXT PRIMARY KEY, underlying_symbol TEXT NOT NULL, direction TEXT,
+  setup_family TEXT, detected_at_ms INTEGER NOT NULL, market_session TEXT, source_path TEXT NOT NULL,
+  acceptance_decision TEXT NOT NULL, delivery_decision TEXT NOT NULL, rejection_reason_codes_json TEXT,
+  alert_id TEXT, case_json TEXT NOT NULL, session_date TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
 CREATE TABLE options_paper_marks (id INTEGER PRIMARY KEY AUTOINCREMENT, trade_id INTEGER NOT NULL, option_symbol TEXT NOT NULL,
   mark_at_ms INTEGER NOT NULL, return_pct REAL, created_at_ms INTEGER NOT NULL, UNIQUE(trade_id, mark_at_ms));
 CREATE TABLE options_alerts (alert_id TEXT PRIMARY KEY, paper_trade_id INTEGER);
 `;
 
-/** One delivered owner alert that won, with enough same-contract marks to support a path claim. */
+/**
+ * One OWNER callout that won, with enough same-contract marks to support a path claim.
+ *
+ * The owner lane is `OWNER_VALIDATION_PAPER` and it carries NO alert id — an owner callout
+ * never writes an `options_alerts` row. This fixture previously seeded a
+ * DELIVERED_ALERT_PAPER row with `alert_id='oa_1'` and called it an owner alert, which is
+ * the subscriber lane's shape; the whole after-close chain was therefore proven against a
+ * population the owner never received. Identity is the opportunity case the mirror records
+ * on its own feature snapshot, matched to the exact contract the case froze.
+ */
 function seedOwnerLane(db) {
   db.prepare(
-    `INSERT INTO options_paper_trades (id, option_symbol, result_class, strategy, status, return_pct, exit_reason, entered_at_ms, exit_at_ms, alert_id, paper_kind, created_at_ms, updated_at_ms)
-     VALUES (1,'O:AAPL260807P00230000','WIN','lower_high_continuation','EXITED',34.5,'target',?,?,'oa_1','DELIVERED_ALERT_PAPER',?,?)`,
-  ).run(ENTRY, ENTRY + 3_600_000, ENTRY, ENTRY);
+    `INSERT INTO opportunity_cases (opportunity_id, underlying_symbol, direction, setup_family,
+       detected_at_ms, market_session, source_path, acceptance_decision, delivery_decision,
+       alert_id, case_json, session_date, created_at_ms, updated_at_ms)
+     VALUES ('oc_owner_1','AAPL','bearish','lower_high_continuation',?,'regular','options_live',
+             'accepted','delivered',NULL,?,'2026-08-07',?,?)`,
+  ).run(
+    ENTRY,
+    JSON.stringify({
+      underlyingSymbol: "AAPL",
+      opportunityFingerprint: "of_afterclose_1",
+      selectedContract: { optionSymbol: "O:AAPL260807P00230000", side: "put", strike: 230, expiration: "2026-08-07", dte: 0 },
+      frozenTrade: { entryMid: 2, targetT1: 3, targetT2: 4, stop: 1.4 },
+    }),
+    ENTRY, ENTRY,
+  );
+  db.prepare(
+    `INSERT INTO options_paper_trades (id, option_symbol, result_class, side, strike, expiration, dte,
+       entry_fill, exit_fill, session, feature_snapshot_json, strategy, status, return_pct, exit_reason,
+       entered_at_ms, exit_at_ms, alert_id, paper_kind, created_at_ms, updated_at_ms)
+     VALUES (1,'O:AAPL260807P00230000','WIN','put',230,'2026-08-07',0,2,2.69,'regular',?,
+             'lower_high_continuation','EXITED',34.5,'target',?,?,NULL,'OWNER_VALIDATION_PAPER',?,?)`,
+  ).run(
+    JSON.stringify({ lane: "OWNER_ONLY", opportunityCaseId: "oc_owner_1", quality: 1 }),
+    ENTRY, ENTRY + 3_600_000, ENTRY, ENTRY,
+  );
   const m = db.prepare("INSERT INTO options_paper_marks (trade_id, option_symbol, mark_at_ms, return_pct, created_at_ms) VALUES (1,'O:AAPL260807P00230000',?,?,?)");
   for (let i = 0; i < 25; i++) m.run(ENTRY + i * 60_000, i, ENTRY + i * 60_000);
 }

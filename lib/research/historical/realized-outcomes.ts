@@ -56,6 +56,7 @@
  */
 import type { StoreDb } from "./store.ts";
 import { countIndependentSessions, type IndependentSessionCount } from "./trading-sessions.ts";
+import { ownerMirrorTradeIdsForCaseOnDb } from "../../opportunity-case/owner-mirror-identity.ts";
 import type { WinnerEvent } from "./winner-events.ts";
 
 export const REALIZED_OUTCOME_VERSION = "HIST_REALIZED_V1" as const;
@@ -202,25 +203,50 @@ function entryAgreementOf(historicalAsk: number | null, paperEntryFill: number):
 /**
  * Candidate paper trades for one opportunity case.
  *
- * Goes through the case's `alert_id`, which is the link the delivery lane actually wrote.
- * `options_paper_trades` has no case-id column, so the case is resolved to its alert and
- * the mirror is found from there — the same chain the mirror integrity check uses.
+ * TWO LINKS, ONE FOR EACH KIND OF CALLOUT.
+ *
+ * A delivered subscriber alert links its mirror through the case's `alert_id`, and that
+ * chain is the one the delivery lane actually wrote. An OWNER callout has no alert id at
+ * all — it never writes an `options_alerts` row — so this function returned the empty set
+ * for every owner case, and `realizedOutcomeForEvent` refused each one as
+ * NO_PAPER_TRADE_FOR_CASE. That refusal is indistinguishable from "the policy has no
+ * recorded outcome", which is exactly what it is not.
+ *
+ * The owner link is the case recorded on the mirror's own feature snapshot. Both are
+ * tried and the rows are unioned by id, so a case with both describes one trade once.
+ * Every identity rule downstream — exact OCC, same case, entry instant in window — is
+ * unchanged and still decides what may be joined.
  */
 function paperTradesForCase(db: StoreDb, opportunityCaseId: string): PaperTradeRow[] {
+  const byId = new Map<number, PaperTradeRow>();
+  const cols = `id, option_symbol, entry_fill, exit_fill, return_pct, status, exit_reason,
+              entered_at_ms, exit_at_ms, alert_id, paper_kind`;
   try {
     const alert = db.prepare(
       "SELECT alert_id FROM opportunity_cases WHERE opportunity_id = ?",
     ).get?.(opportunityCaseId) as { alert_id?: string | null } | undefined;
     const alertId = alert?.alert_id ? String(alert.alert_id) : null;
-    if (!alertId) return [];
-    return (db.prepare(
-      `SELECT id, option_symbol, entry_fill, exit_fill, return_pct, status, exit_reason,
-              entered_at_ms, exit_at_ms, alert_id, paper_kind
-         FROM options_paper_trades WHERE alert_id = ?`,
-    ).all?.(alertId) ?? []) as PaperTradeRow[];
-  } catch {
-    return [];
-  }
+    if (alertId) {
+      for (const r of (db.prepare(
+        `SELECT ${cols} FROM options_paper_trades WHERE alert_id = ?`,
+      ).all?.(alertId) ?? []) as PaperTradeRow[]) {
+        byId.set(Number((r as any).id), r);
+      }
+    }
+  } catch { /* isolated: the owner link below may still resolve */ }
+
+  try {
+    const ids = ownerMirrorTradeIdsForCaseOnDb(db as any, opportunityCaseId);
+    if (ids.length) {
+      for (const r of (db.prepare(
+        `SELECT ${cols} FROM options_paper_trades WHERE id IN (${ids.map(() => "?").join(",")})`,
+      ).all?.(...ids) ?? []) as PaperTradeRow[]) {
+        byId.set(Number((r as any).id), r);
+      }
+    }
+  } catch { /* isolated */ }
+
+  return [...byId.values()];
 }
 
 /**

@@ -33,6 +33,8 @@
  * exit, or any subscriber decision.
  */
 import { excursionForPaperTradeOnDb } from "../../opportunity-case/excursion.ts";
+import { countIndependentSessions, type IndependentSessionCount } from "../historical/trading-sessions.ts";
+import { tradingDay } from "../../trading-session.ts";
 
 export const HISTORICAL_COHORT_VERSION = "HISTORICAL_COHORT_V1" as const;
 
@@ -80,6 +82,15 @@ export interface CohortMember {
   /** The lane this trade belongs to. Never blended with another. */
   paperKind: string | null;
   sessionDate: string | null;
+  /**
+   * Where the session date came from.
+   *
+   * CASE   — the opportunity case's own `session_date`, joined through `alert_id`.
+   * MIRROR_ENTRY — derived from the mirror's `entered_at_ms` in Eastern time, which is
+   *          the only session a trade can belong to and the only source available to a
+   *          lane that carries no alert id.
+   */
+  sessionDateSource: "CASE" | "MIRROR_ENTRY" | "UNAVAILABLE";
   symbol: string | null;
   optionSymbol: string | null;
   strategyKey: string | null;
@@ -101,9 +112,12 @@ export type EvidenceVerdict = "SUPPORTED" | "INSUFFICIENT_EVIDENCE";
 export interface EvidenceStrength {
   verdict: EvidenceVerdict;
   trades: number;
+  /** VERIFIED trading sessions. A weekend or a holiday never counts toward this. */
   independentSessions: number;
   minTrades: number;
   minSessions: number;
+  /** Which dates counted, which were rejected, and why. Reported, never silent. */
+  sessionAudit: IndependentSessionCount;
   reason: string;
 }
 
@@ -218,7 +232,22 @@ export function timeOfDayBucketOf(atMs: number | null): string | null {
   return "AFTERHOURS";
 }
 
-function strength(trades: number, sessions: number, what: string): EvidenceStrength {
+/**
+ * Independence, counted against the trading calendar rather than the string set.
+ *
+ * `new Set(sessionDate).size` was the old count, and a calendar date is not a trading
+ * session: a weekend, a market holiday or a corrupt epoch produces a well-formed
+ * `YYYY-MM-DD` that clears an independence floor unchallenged. `countIndependentSessions`
+ * validates each date and REPORTS what it rejected — "your floor of 5 was cleared using a
+ * Saturday" is the most useful thing this count can say.
+ */
+function strength(
+  trades: number,
+  sessionDates: ReadonlyArray<string | null>,
+  what: string,
+): EvidenceStrength {
+  const audit = countIndependentSessions(sessionDates);
+  const sessions = audit.independentSessions;
   const ok = trades >= MIN_TRADES_FOR_PROBABILITY && sessions >= MIN_SESSIONS_FOR_PROBABILITY;
   return {
     verdict: ok ? "SUPPORTED" : "INSUFFICIENT_EVIDENCE",
@@ -226,6 +255,7 @@ function strength(trades: number, sessions: number, what: string): EvidenceStren
     independentSessions: sessions,
     minTrades: MIN_TRADES_FOR_PROBABILITY,
     minSessions: MIN_SESSIONS_FOR_PROBABILITY,
+    sessionAudit: audit,
     reason: ok
       ? `${trades} ${what} over ${sessions} independent sessions`
       : `needs >= ${MIN_TRADES_FOR_PROBABILITY} ${what} over >= ${MIN_SESSIONS_FOR_PROBABILITY} sessions; `
@@ -262,9 +292,17 @@ export function loadCohortMembersOnDb(
   try {
     const where = opts.sinceMs != null ? "WHERE t.created_at_ms >= ?" : "";
     const params = opts.sinceMs != null ? [opts.sinceMs, limit] : [limit];
+    // The `alert_id` join is the SUBSCRIBER lane's link and stays exactly as it was.
+    // It is a LEFT join for a reason that used to be invisible: an owner mirror has no
+    // alert id — owner callouts never write an `options_alerts` row — so every owner row
+    // came back with a null case, a null symbol and, fatally, a null `session_date`.
+    // A null session date is not a missing label; it is an independence count of ZERO,
+    // and the owner lane sat permanently at INSUFFICIENT_EVIDENCE with 74 verified
+    // excursions and 67 verified realized outcomes behind it.
     rows = (db.prepare(
       `SELECT t.id, t.option_symbol, t.side, t.dte, t.status, t.return_pct, t.entry_fill,
               t.strategy, t.paper_kind, t.alert_id, t.created_at_ms, t.entered_at_ms, t.underlying_price, t.strike,
+              t.feature_snapshot_json,
               c.opportunity_id, c.underlying_symbol, c.session_date,
               p.discovery_stage
          FROM options_paper_trades t
@@ -277,6 +315,35 @@ export function loadCohortMembersOnDb(
     return [];
   }
 
+  // Case identity for the lanes that record it on the mirror itself rather than through
+  // an alert. Resolved once per case id, not once per row.
+  const caseFactsCache = new Map<string, { symbol: string | null; sessionDate: string | null; stage: string | null } | null>();
+  const caseFacts = (caseId: string) => {
+    if (caseFactsCache.has(caseId)) return caseFactsCache.get(caseId) ?? null;
+    let v: { symbol: string | null; sessionDate: string | null; stage: string | null } | null = null;
+    try {
+      const row = db.prepare(
+        "SELECT underlying_symbol, session_date FROM opportunity_cases WHERE opportunity_id=?",
+      ).get?.(caseId) as Record<string, any> | undefined;
+      if (row) {
+        let stage: string | null = null;
+        try {
+          const pm = db.prepare(
+            "SELECT discovery_stage FROM opportunity_pre_move_discovery WHERE opportunity_case_id=?",
+          ).get?.(caseId) as Record<string, any> | undefined;
+          stage = pm?.discovery_stage == null ? null : String(pm.discovery_stage);
+        } catch { /* isolated */ }
+        v = {
+          symbol: row.underlying_symbol == null ? null : String(row.underlying_symbol),
+          sessionDate: row.session_date == null ? null : String(row.session_date),
+          stage,
+        };
+      }
+    } catch { /* isolated */ }
+    caseFactsCache.set(caseId, v);
+    return v;
+  };
+
   const out: CohortMember[] = [];
   for (const r of rows) {
     const tradeId = Number(r.id);
@@ -288,17 +355,52 @@ export function loadCohortMembersOnDb(
     // A realized return is verified only when the mirror CLOSED and priced its exit
     // against the frozen entry. An open trade's absent return is "not yet".
     const realizedVerified = closed && realized != null && num(r.entry_fill) != null;
+
+    // Identity, in order of strength: the case the alert join found, then the case the
+    // mirror recorded on itself. Nothing is invented when neither exists.
+    let caseId = r.opportunity_id == null ? "" : String(r.opportunity_id);
+    let symbol = r.underlying_symbol == null ? null : String(r.underlying_symbol);
+    let sessionDate = r.session_date == null ? null : String(r.session_date);
+    let sessionDateSource: CohortMember["sessionDateSource"] = sessionDate ? "CASE" : "UNAVAILABLE";
+    let stage = r.discovery_stage == null ? null : String(r.discovery_stage);
+
+    if (!caseId) {
+      const snapCaseId = caseIdFromSnapshot(r.feature_snapshot_json);
+      if (snapCaseId) {
+        caseId = snapCaseId;
+        const f = caseFacts(snapCaseId);
+        if (f) {
+          symbol = symbol ?? f.symbol;
+          if (!sessionDate && f.sessionDate) { sessionDate = f.sessionDate; sessionDateSource = "CASE"; }
+          stage = stage ?? f.stage;
+        }
+      }
+    }
+
+    // A trade's session is the session it was ENTERED in. That is knowable from the
+    // mirror alone and needs no case at all, so it is the floor under every lane rather
+    // than a special case for one. Converted with the repository's Eastern trading-day
+    // helper — never by splitting a UTC ISO string, which moves every post-20:00 ET
+    // entry into the next day.
+    const enteredAtMs = num(r.entered_at_ms);
+    if (!sessionDate && enteredAtMs != null) {
+      sessionDate = tradingDay(enteredAtMs);
+      sessionDateSource = "MIRROR_ENTRY";
+    }
+    if (!symbol && occ) symbol = occUnderlying(occ);
+
     out.push({
-      opportunityCaseId: r.opportunity_id == null ? "" : String(r.opportunity_id),
+      opportunityCaseId: caseId,
       tradeId,
-      sessionDate: r.session_date == null ? null : String(r.session_date),
-      symbol: r.underlying_symbol == null ? null : String(r.underlying_symbol),
+      sessionDate,
+      sessionDateSource,
+      symbol,
       optionSymbol: occ,
       paperKind: r.paper_kind == null ? null : String(r.paper_kind),
       strategyKey: r.strategy == null ? null : String(r.strategy),
       side: r.side == null ? null : (String(r.side).toUpperCase() === "PUT" ? "PUT" : "CALL"),
       dte: num(r.dte),
-      discoveryStage: r.discovery_stage == null ? null : String(r.discovery_stage),
+      discoveryStage: stage,
       realizedReturnPct: realizedVerified ? realized : null,
       realizedVerified,
       mfePct: excursion.state === "VERIFIED_EXCURSION" ? excursion.mfePct : null,
@@ -308,6 +410,25 @@ export function loadCohortMembersOnDb(
     });
   }
   return out;
+}
+
+/** The opportunity case a mirror recorded on itself, or null. Exact, never a substring. */
+function caseIdFromSnapshot(raw: unknown): string | null {
+  if (typeof raw !== "string" || !raw.includes("opportunityCaseId")) return null;
+  try {
+    const v = JSON.parse(raw);
+    const id = v && typeof v === "object" ? (v as Record<string, unknown>).opportunityCaseId : null;
+    const s = id == null ? "" : String(id).trim();
+    return s.length ? s : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `O:IWM260819P00301000` -> `IWM`. Identity only; never used to price anything. */
+function occUnderlying(occ: string): string | null {
+  const m = /^O:([A-Z]+)\d{6}[CP]\d{8}$/.exec(occ.trim().toUpperCase());
+  return m ? m[1] : null;
 }
 
 /**
@@ -334,17 +455,15 @@ export function computeCohortStatistics(
   members: readonly CohortMember[],
   key: CohortKey,
 ): CohortStatistics {
-  const sessions = [...new Set(members.map((m) => m.sessionDate).filter((s): s is string => !!s))].sort();
+  const sessions = countIndependentSessions(members.map((m) => m.sessionDate)).sessions;
   const lanesIncluded = [...new Set(members.map((m) => m.paperKind ?? "UNCLASSIFIED"))].sort();
   const pooledAcrossLanes = lanesIncluded.length > 1;
 
   const excursionRows = members.filter((m) => m.excursionVerified && m.mfePct != null);
-  const excursionSessions = new Set(excursionRows.map((m) => m.sessionDate).filter(Boolean)).size;
-  const excursionSample = strength(excursionRows.length, excursionSessions, "verified excursions");
+  const excursionSample = strength(excursionRows.length, excursionRows.map((m) => m.sessionDate), "verified excursions");
 
   const realizedRows = members.filter((m) => m.realizedVerified && m.realizedReturnPct != null);
-  const realizedSessions = new Set(realizedRows.map((m) => m.sessionDate).filter(Boolean)).size;
-  const realizedSample = strength(realizedRows.length, realizedSessions, "verified realized outcomes");
+  const realizedSample = strength(realizedRows.length, realizedRows.map((m) => m.sessionDate), "verified realized outcomes");
 
   // Milestone probabilities. The counts are reported even when the sample is too small —
   // "3 of 4 reached +25%" is a true statement about four trades — but `probability` stays

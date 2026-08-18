@@ -59,9 +59,18 @@ function db() {
     );
     CREATE TABLE options_paper_trades (
       id INTEGER PRIMARY KEY AUTOINCREMENT, option_symbol TEXT NOT NULL, result_class TEXT NOT NULL,
+      side TEXT, strike REAL, expiration TEXT, dte INTEGER, entry_fill REAL, exit_fill REAL,
       strategy TEXT, status TEXT NOT NULL, return_pct REAL, exit_reason TEXT,
-      entered_at_ms INTEGER, exit_at_ms INTEGER, alert_id TEXT, paper_kind TEXT,
+      entered_at_ms INTEGER, exit_at_ms INTEGER, session TEXT, feature_snapshot_json TEXT,
+      alert_id TEXT, paper_kind TEXT,
       created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
+    );
+    CREATE TABLE opportunity_cases (
+      opportunity_id TEXT PRIMARY KEY, underlying_symbol TEXT NOT NULL, direction TEXT,
+      setup_family TEXT, detected_at_ms INTEGER NOT NULL, market_session TEXT,
+      source_path TEXT NOT NULL, acceptance_decision TEXT NOT NULL, delivery_decision TEXT NOT NULL,
+      rejection_reason_codes_json TEXT, alert_id TEXT, case_json TEXT NOT NULL,
+      session_date TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
     );
     CREATE TABLE options_paper_marks (
       id INTEGER PRIMARY KEY AUTOINCREMENT, trade_id INTEGER NOT NULL, option_symbol TEXT NOT NULL,
@@ -73,18 +82,54 @@ function db() {
 }
 
 let nextTrade = 1;
+
+/**
+ * ONE OWNER CALLOUT: an opportunity case that froze a contract, plus the
+ * OWNER_VALIDATION_PAPER mirror on that exact contract.
+ *
+ * These used to be DELIVERED_ALERT_PAPER rows carrying an `alert_id`, which is the
+ * SUBSCRIBER lane's shape and is precisely what the owner summary was wrongly reading. An
+ * owner callout writes no `options_alerts` row, so `alert_id` is null on both the case and
+ * the mirror; the link is the case id recorded in the mirror's own feature snapshot. The
+ * fixture asserts that shape by using it — a fixture that keeps handing the code an alert
+ * id can only ever prove the broken path still works.
+ */
 function addTrade(d, over = {}) {
   const id = nextTrade++;
   const o = {
     optionSymbol: `O:AAPL260807P00230${String(id).padStart(3, "0")}`,
     strategy: SHADOW_STRATEGY, status: "EXITED", returnPct: -40, exitReason: "stop_hit",
-    enteredAtMs: T0, exitAtMs: T0 + 3_600_000, alertId: `oa_${id}`,
-    paperKind: "DELIVERED_ALERT_PAPER", marks: 30, peak: 2, ...over,
+    enteredAtMs: T0, exitAtMs: T0 + 3_600_000,
+    paperKind: "OWNER_VALIDATION_PAPER", marks: 30, peak: 2, side: "put",
+    caseId: `oc_owner_${id}`, ...over,
   };
   d.prepare(
-    `INSERT INTO options_paper_trades (id, option_symbol, result_class, strategy, status, return_pct, exit_reason, entered_at_ms, exit_at_ms, alert_id, paper_kind, created_at_ms, updated_at_ms)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-  ).run(id, o.optionSymbol, "X", o.strategy, o.status, o.returnPct, o.exitReason, o.enteredAtMs, o.exitAtMs, o.alertId, o.paperKind, T0, T0);
+    `INSERT INTO opportunity_cases (opportunity_id, underlying_symbol, direction, setup_family,
+        detected_at_ms, market_session, source_path, acceptance_decision, delivery_decision,
+        alert_id, case_json, session_date, created_at_ms, updated_at_ms)
+     VALUES (?,?,?,?,?,?,?,?,?,NULL,?,?,?,?)`,
+  ).run(
+    o.caseId, "AAPL", "bearish", o.strategy, T0, "regular", "options_live", "accepted", "delivered",
+    JSON.stringify({
+      underlyingSymbol: "AAPL",
+      opportunityFingerprint: `of_test_${id}`,
+      selectedContract: { optionSymbol: o.optionSymbol, side: o.side, strike: 230, expiration: "2026-08-07", dte: 0 },
+      frozenTrade: { entryMid: 2, targetT1: 3, targetT2: 4, stop: 1.4 },
+    }),
+    "2026-08-07", T0, T0,
+  );
+  d.prepare(
+    `INSERT INTO options_paper_trades (id, option_symbol, result_class, side, strike, expiration, dte,
+        entry_fill, exit_fill, strategy, status, return_pct, exit_reason, entered_at_ms, exit_at_ms,
+        session, feature_snapshot_json, alert_id, paper_kind, created_at_ms, updated_at_ms)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,?)`,
+  ).run(
+    id, o.optionSymbol, "X", o.side, 230, "2026-08-07", 0, 2,
+    o.status === "EXITED" ? 2 * (1 + (o.returnPct ?? 0) / 100) : null,
+    o.strategy, o.status, o.returnPct, o.exitReason, o.enteredAtMs, o.exitAtMs, "regular",
+    JSON.stringify({ lane: "OWNER_ONLY", opportunityCaseId: o.caseId, quality: 0.9 }),
+    o.paperKind, T0, T0,
+  );
   for (let i = 0; i < o.marks; i++) {
     d.prepare("INSERT INTO options_paper_marks (trade_id, option_symbol, mark_at_ms, return_pct, created_at_ms) VALUES (?,?,?,?,?)")
       .run(id, o.optionSymbol, T0 + i * 60_000, i === 0 ? o.peak : Math.min(o.peak, 0), T0);
@@ -136,7 +181,12 @@ test("the owner summary prices only closed openings", () => {
   assert.equal(o.profitFactor, 1.25);
   assert.equal(o.bestWinnerPct, 50);
   assert.equal(o.worstLossPct, -40);
-  assert.equal(o.mirrorRate, 1);
+  assert.equal(o.mirrorRate, 1, "every opening resolved a mirror on the exact contract it froze");
+  assert.equal(o.lane, "OWNER_VALIDATION_PAPER");
+  assert.equal(
+    d.prepare("SELECT COUNT(*) n FROM options_paper_trades WHERE alert_id IS NOT NULL").get().n, 0,
+    "the owner lane resolves with no alert id anywhere",
+  );
   d.close();
 });
 
@@ -144,7 +194,7 @@ test("immediate failures and profit-given-back need trajectory evidence", () => 
   const d = db();
   addTrade(d, { returnPct: -40, peak: 1, marks: 30 });   // never cleared +5
   addTrade(d, { returnPct: -35, peak: 37, marks: 30 });  // worked then lost
-  addTrade(d, { returnPct: -40, peak: 90, marks: 3 });   // too few marks to claim either
+  addTrade(d, { returnPct: -40, peak: 90, marks: 2 });   // too few marks to claim either
   const o = buildOwnerAlertSummaryOnDb(d, SESSION);
   assert.equal(o.immediateFailures, 1);
   assert.equal(o.profitGivenBack, 1);
