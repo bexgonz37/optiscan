@@ -37,6 +37,7 @@ import {
   buildOwnerSelectionStrengthScoreboardOnDb, supportedRegistryStatus,
   type StrengthScoreboard,
 } from "./owner-selection-strength-scoreboard.ts";
+import { buildExitRiskObservationsOnDb, type ExitRiskObservations } from "./exit-risk-loader.ts";
 import { COHORT_STRATEGY } from "./lower-high-cohort.ts";
 
 export interface NightlyDb extends ShadowDb, FindingsDb {}
@@ -205,6 +206,12 @@ export interface NightlyResearchResult {
    */
   ownerSelectionStrength: StrengthScoreboard | null;
   ownerSelectionStrengthFrozen: boolean;
+  /**
+   * Profit-protection and overnight-risk OBSERVATION. No rule, no policy, no exit or stop
+   * change — the studies exist to say whether a rule could ever be honest, not to make one.
+   * Null when the studies could not be built tonight; nothing else depends on them.
+   */
+  exitRisk: ExitRiskObservations | null;
   skippedReason?: string;
 }
 
@@ -350,6 +357,11 @@ export function runNightlyResearchOnDb(
     }
   }
 
+  // Observation studies. Additive, isolated, and they gate nothing: a failure here costs the
+  // session two reports and no evidence.
+  let exitRisk: ExitRiskObservations | null = null;
+  try { exitRisk = buildExitRiskObservationsOnDb(db as never, { nowMs }); } catch { /* isolated */ }
+
   return {
     ran: true,
     sessionDate: opts.sessionDate,
@@ -365,6 +377,7 @@ export function runNightlyResearchOnDb(
     outcomesRefreshed,
     ownerSelectionStrength,
     ownerSelectionStrengthFrozen: strengthFrozen.frozen,
+    exitRisk,
   };
 }
 
