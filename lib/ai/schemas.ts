@@ -74,11 +74,21 @@ export interface AntiFabricationValidationDetail {
   allowedEvidenceSample: QuantEvidence[];
 }
 
+/**
+ * Time-of-day bucket keys and every spelling of them a narrative may legitimately use.
+ *
+ * The compact military forms are here because the model reads the KEY (`open_0930_1000`)
+ * and writes back what it read. Production rejected "0930" as an unsupported COUNT of
+ * nine hundred and thirty -- a category error, not a fabrication: those digits ARE in the
+ * deterministic evidence, they are simply a clock label. Registering the compact spelling
+ * lets the token match as a `time_range`, which must still match evidence. A bucket the
+ * summary does not contain is still rejected.
+ */
 const TIME_BUCKET_LABELS: Record<string, string[]> = {
-  open_0930_1000: ["09:30-10:00", "9:30-10:00"],
-  morning_1000_1200: ["10:00-12:00"],
-  midday_1200_1400: ["12:00-14:00"],
-  afternoon_1400_1600: ["14:00-16:00"],
+  open_0930_1000: ["09:30-10:00", "9:30-10:00", "0930-1000"],
+  morning_1000_1200: ["10:00-12:00", "1000-1200"],
+  midday_1200_1400: ["12:00-14:00", "1200-1400"],
+  afternoon_1400_1600: ["14:00-16:00", "1400-1600"],
 };
 
 const STOPWORDS_WITH_NUMBERS = new Set(["0", "1"]);
@@ -113,6 +123,21 @@ function evidenceForNumber(value: number, source: string): QuantEvidence {
   return { type, value, source, formatted: [...new Set(formatted)] };
 }
 
+/**
+ * Shared token shapes. Extracted to constants so the REGISTRY (what may be cited) and
+ * the EXTRACTOR (what counts as a claim) can never drift into disagreeing about what a
+ * date, a clock time or an OCC symbol looks like -- a drift that shows up as a number
+ * being simultaneously present in evidence and rejected as fabricated.
+ */
+const DATE_RE = /\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/g;
+const OCC_RE = /\b[A-Z]{1,6}\d{6}[CP]\d{8}\b/g;
+const CLOCK_RE = /\b\d{1,2}:\d{2}\b/g;
+const PERCENT_RE = /[-+]?\d+(?:\.\d+)?\s*%/g;
+const PERCENT_STRIP = /[%\s]/g;
+const CURRENCY_RE = /[-+]?\$\s*\d+(?:,\d{3})*(?:\.\d+)?/g;
+const CURRENCY_STRIP = /[$,\s]/g;
+const BARE_NUMBER_RE = /[-+]?\d+(?:\.\d+)?/g;
+
 function canonicalTimeRange(token: string): string {
   return token.replace(/\s+/g, "").replace(/[--]/g, "-");
 }
@@ -128,6 +153,60 @@ function addStringEvidence(registry: QuantEvidence[], value: string, source: str
   }
   for (const m of text.matchAll(/\b[A-Z]{1,6}\d{6}[CP]\d{8}\b/g)) {
     registry.push({ type: "identifier", value: m[0], source, formatted: [m[0]] });
+  }
+  addNumbersInsideText(registry, text, source);
+}
+
+/**
+ * Numbers the deterministic summary PRINTED INSIDE a string -- or inside an object KEY.
+ *
+ * This was the single largest source of false rejections in production. The nightly
+ * summary carries `rejectionReasons: { "daily loss cap reached (8% of equity) - no new
+ * entries": 4 }`. The count 4 entered the registry; the string it is keyed by never did,
+ * because `visit` walked values and only values. So the narrative said "the daily loss
+ * cap (8% of equity) blocked 4 entries" -- quoting our own text verbatim -- and was
+ * rejected for fabricating "8%". Eight of the recorded violations are that one number.
+ *
+ * A figure the deterministic layer wrote down is deterministic evidence. Harvesting it
+ * COMPLETES the registry, it does not relax it: the anti-fabrication rule is unchanged,
+ * every claim is still matched by semantic type, and a number appearing NOWHERE in the
+ * summary -- including nowhere in its prose -- is still rejected exactly as before.
+ *
+ * Dates, clock times and OCC symbols are consumed first so their digits can never be
+ * re-read as a bare count: "2026-08-13" must not license the count 2026.
+ */
+function addNumbersInsideText(registry: QuantEvidence[], text: string, source: string): void {
+  const claimed: Array<[number, number]> = [];
+  const take = (m: RegExpMatchArray): boolean => {
+    const start = m.index ?? 0;
+    const end = start + m[0].length;
+    if (claimed.some(([s2, e2]) => start < e2 && s2 < end)) return false;
+    claimed.push([start, end]);
+    return true;
+  };
+  for (const m of text.matchAll(DATE_RE)) take(m);
+  for (const m of text.matchAll(OCC_RE)) take(m);
+  for (const m of text.matchAll(CLOCK_RE)) take(m);
+
+  for (const m of text.matchAll(PERCENT_RE)) {
+    if (!take(m)) continue;
+    const n = Number(m[0].replace(PERCENT_STRIP, ""));
+    if (!Number.isFinite(n)) continue;
+    const f = normalizeNumber(n);
+    registry.push({ type: "percentage", value: n, source, formatted: [...new Set([...f, ...f.map((v) => v + "%")])] });
+  }
+  for (const m of text.matchAll(CURRENCY_RE)) {
+    if (!take(m)) continue;
+    const n = Number(m[0].replace(CURRENCY_STRIP, ""));
+    if (!Number.isFinite(n)) continue;
+    const f = normalizeNumber(n);
+    registry.push({ type: "currency", value: n, source, formatted: [...new Set([...f, ...f.map((v) => "$" + v)])] });
+  }
+  for (const m of text.matchAll(BARE_NUMBER_RE)) {
+    if (!take(m)) continue;
+    const n = Number(m[0]);
+    if (!Number.isFinite(n)) continue;
+    registry.push({ type: Number.isInteger(n) ? "count" : "decimal", value: n, source, formatted: normalizeNumber(n) });
   }
 }
 
@@ -154,6 +233,11 @@ export function buildQuantEvidenceRegistry(summary: unknown): QuantEvidence[] {
     }
     if (value && typeof value === "object") {
       for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+        // A KEY is deterministic output too. `rejectionReasons` is keyed by the reason
+        // text the scanner itself wrote -- "daily loss cap reached (8% of equity)" -- and
+        // walking values alone left every figure inside those keys unciteable. Eight of
+        // the recorded anti-fabrication rejections are the "8%" inside that one key.
+        addStringEvidence(registry, key, [...path, key].join("."));
         if (TIME_BUCKET_LABELS[key]) {
           for (const label of TIME_BUCKET_LABELS[key]) {
             registry.push({
@@ -282,6 +366,11 @@ function extractClaims(text: string, evidence: QuantEvidence[]): NumericClaimDia
 
   addMatches(/\b[A-Z]{1,6}\d{6}[CP]\d{8}\b/g, "identifier", (token) => token);
   addMatches(/\b\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}\b/g, "time_range", canonicalTimeRange);
+  // Compact military bucket labels ("0930-1000"), the spelling the model reads off the
+  // summary's own `open_0930_1000` key. Classified as a time_range rather than as two
+  // counts, and -- like every time_range -- still required to MATCH evidence, so a window
+  // the summary never reported is rejected exactly as firmly as before.
+  addMatches(/\b(?:[01]\d|2[0-3])[0-5]\d\s*-\s*(?:[01]\d|2[0-3])[0-5]\d\b/g, "time_range", canonicalTimeRange);
   addMatches(/\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/g, "date", (token) => token);
   addMatches(/\b(?:report|id)\s*#?\s*\d+\b/gi, "identifier", (token) => token.replace(/\s+/g, " "));
   addMatches(/\b\d{1,2}:\d{2}\b/g, "clock_time", (token) => token);

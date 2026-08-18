@@ -18,6 +18,7 @@ import {
 } from "./monthly-budget.ts";
 import { recordAiJobRunOnDb, type DbLike as BudgetDbLike } from "./store.ts";
 
+import { buildRetryCorrection } from "./retry-correction.ts";
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
 
@@ -300,23 +301,27 @@ export function extractJson(text: string): unknown {
   return extractJsonWithMeta(text).json;
 }
 
-/** Appended to the system prompt on the paid validation retry (attempt > 0). */
-const STRUCTURED_RETRY_INSTRUCTION =
-  " CRITICAL RETRY: your previous reply contained no usable structured payload."
-  + " Respond ONLY with the required structured JSON (call the provided tool when one is defined)."
-  + " Do not emit reasoning, prose, markdown, or an empty object."
-  + " If the evidence is insufficient, return the minimal valid payload (for example an empty list field) instead of nothing.";
-
 async function callOnce(
   input: AiCallInput,
   apiKey: string,
   fetchImpl: typeof fetch,
   attempt: number,
+  /**
+   * What the validator actually rejected last time, when it rejected anything.
+   *
+   * Without this the retry appended one fixed sentence about a missing structured
+   * payload — true only for parse failures, and false for the anti-fabrication and
+   * schema rejections that make up the overwhelming majority. The model was told the
+   * one thing that was not wrong, so it reproduced the identical output: in the
+   * production ledger every rejected token appears exactly twice, once per attempt,
+   * with byte-identical context. See `retry-correction.ts`.
+   */
+  lastViolation?: AiSchemaViolation | null,
 ): Promise<{ text: string; inputTokens: number; outputTokens: number; httpStatus: number; responseType: string; contentTypes: string[] }> {
   const body: any = {
     model: input.model,
     max_tokens: input.maxOutputTokens,
-    system: attempt > 0 ? input.system + STRUCTURED_RETRY_INSTRUCTION : input.system,
+    system: attempt > 0 ? input.system + buildRetryCorrection(lastViolation) : input.system,
     messages: [{ role: "user", content: input.user }],
   };
   if (input.toolName && input.toolInputSchema) {
@@ -561,9 +566,13 @@ export async function runStructuredAiJob<T>(
   let outTok = 0;
   let lastText: string | null = null;
 
+  // Carried across attempts so the retry can be told what was actually wrong rather
+  // than being handed a fixed sentence about a failure mode it did not hit.
+  let lastViolation: AiSchemaViolation | null = null;
+
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
-      const { text, inputTokens, outputTokens, httpStatus, responseType, contentTypes } = await callOnce(input, apiKey, fetchImpl, attempt);
+      const { text, inputTokens, outputTokens, httpStatus, responseType, contentTypes } = await callOnce(input, apiKey, fetchImpl, attempt, lastViolation);
       diagnostics.attempts = attempt + 1;
       diagnostics.httpStatus = httpStatus;
       diagnostics.responseType = responseType;
@@ -600,6 +609,7 @@ export async function runStructuredAiJob<T>(
         diagnostics.expectedValue = violation.expectedValue;
         diagnostics.receivedValue = violation.receivedValue;
         diagnostics.schemaViolations.push(violation);
+        lastViolation = violation;
         if (attempt + 1 >= validationAttempts) {
           diagnostics.stoppedEarly = attempt + 1 < attempts;
           break;

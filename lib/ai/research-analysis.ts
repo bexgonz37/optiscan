@@ -183,6 +183,16 @@ export function researchAnalysisPrompt(
     "You may ONLY use numbers present in the supplied context. Do not invent, estimate, or extrapolate.",
     "A null metric means UNAVAILABLE. It never means zero, and you must never render it as zero.",
     "A finding MUST name its limitations. A finding you cannot qualify is not a finding — omit it.",
+    // The tool schema already carries maxItems, and the model exceeded it anyway: three
+    // recorded runs died on "at most 5 findings" after a full, otherwise-valid payload.
+    // A cap the prompt never states is a cap the model never reads.
+    `Return AT MOST ${MAX_FINDINGS} findings. This is a hard limit, not a target.`,
+    `If more than ${MAX_FINDINGS} conclusions look available, keep only the ${MAX_FINDINGS} resting on the largest`,
+    "samples and drop the rest — do not merge several conclusions into one to fit the cap.",
+    // Every derived percentage in the production failure log was arithmetically CORRECT
+    // and still unsupported: "3 of 4" became "75%", "6344 of 20000" became "31.7%".
+    "Never compute a percentage, share, rate, ratio or average yourself, even from two supplied numbers.",
+    "A quotient you calculated is not evidence. State the raw counts instead.",
     "A conclusion resting on 0 rows must be evidenceStrength INSUFFICIENT.",
     "Returning { findings: [], openQuestions: [...] } is a CORRECT and expected answer when the evidence",
     "supports nothing yet. Do not manufacture a conclusion to fill the array.",
