@@ -252,11 +252,18 @@ export function buildMondayPreflight(
   if (!hasTable(db, "contract_funnel_evidence")) {
     add({ id: "provider.accounting", label: "Provider accounting", status: "UNKNOWN", detail: "funnel evidence table not present" });
   } else {
+    let funnelRows = 0;
+    try {
+      funnelRows = Number((db.prepare("SELECT COUNT(*) n FROM contract_funnel_evidence").get() as any)?.n ?? 0);
+    } catch { /* structural presence without readable evidence remains unknown */ }
     add({
       id: "provider.accounting",
       label: "Provider accounting units",
-      status: "PASS",
-      detail: "refusals report attempts, distinct symbols and window together, so no unit can be quoted as another",
+      status: funnelRows > 0 ? "PASS" : "UNKNOWN",
+      detail: funnelRows > 0
+        ? "refusals report attempts, distinct symbols and window together, so no unit can be quoted as another"
+        : "funnel schema is ready, but no persisted funnel evidence has inspected provider accounting yet",
+      evidence: { funnelRows },
     });
   }
 

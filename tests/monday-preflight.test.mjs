@@ -34,6 +34,9 @@ function db() {
   // database that has actually run a session has it; see the UNKNOWN test below for
   // one that has not.
   ensureContractFunnelSchema(d);
+  d.prepare(`INSERT INTO contract_funnel_evidence
+    (session_date,at_ms,symbol,requested_side,strategy_key,discovery_version,selection_version,terminal_reason)
+    VALUES (?,?,?,?,?,?,?,?)`).run("2026-08-10", NOW, "SPY", "call", "fixture", "fixture", "fixture", "NO_CONTRACT_SELECTED");
   return d;
 }
 
