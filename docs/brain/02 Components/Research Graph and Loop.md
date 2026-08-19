@@ -384,6 +384,19 @@ OBSERVE -> FREEZE -> EVALUATE -> RECORD ACTION TYPE -> WAIT FOR HORIZON
    -> LABEL -> VERIFY COVERAGE -> VERSION DATASET -> RESEARCH-READY EVIDENCE
 ```
 
+### Phase 2A OBSERVE -> FREEZE observability gate — added 2026-08-19
+
+The OBSERVE -> FREEZE edge now exposes bounded, process-lifetime counters for EpisodeV2
+build attempts, successes, classified rejections, persistence outcomes, and action-write
+failures through the canonical system overview health surface. Zero persisted episodes is
+therefore no longer interpreted as healthy capture by itself: the first production sample
+after deployment reported `NEVER_ATTEMPTED` with zero build attempts. A separate read-only,
+zero-provider aggregate over existing observations found 42,731 contract-selected rows:
+2,935 quote timestamps newer than observation (6.87%), 3 equal, and 39,793 older. That
+diagnostic establishes magnitude only. The timestamp semantics, Zone-A validation, episode
+identity, strategy and contract logic, delivery behavior, and subscriber authority are
+unchanged; the OBSERVE -> FREEZE loop is observable, not repaired.
+
 The scheduler checks once per minute. Each run examines at most ten episodes, has an
 independent eight-second deadline, yields between episodes, and issues zero provider
 requests. `INSERT OR IGNORE` plus deterministic label identity makes deploy/restart and
