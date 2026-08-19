@@ -15,7 +15,13 @@ const PRODUCT_NAV: NavItem[] = [
   { href: "/", label: "NOW", icon: "now" },
   { href: "/callouts", label: "AI OPTIONS", icon: "scanner" },
   { href: "/quant", label: "QUANT", icon: "performance" },
+  // The Research Command Center answers five of the eight questions this app exists to
+  // answer -- what OptiScan is learning, which experiments are running, what risk
+  // research says, how early winners are found, and how close subscriber-ready is --
+  // and it was reachable only by opening /research and clicking a card. Promoted.
+  { href: "/research/command-center", label: "RESEARCH", icon: "research" },
   { href: "/watchlist", label: "WATCHLIST", icon: "watchlist" },
+  { href: "/content-drafts", label: "CONTENT", icon: "guide" },
   { href: "/discord", label: "DISCORD", icon: "discord" },
   { href: "/paper", label: "PAPER", icon: "paper" },
   { href: "/settings", label: "SETTINGS", icon: "settings" },
@@ -29,7 +35,6 @@ const ADVANCED_NAV: NavItem[] = [
   { href: "/intelligence", label: "Strategy Lab", icon: "research" },
   { href: "/ai", label: "AI Advisory", icon: "research" },
   { href: "/paper/0dte", label: "0DTE Research", icon: "paper" },
-  { href: "/content-drafts", label: "Content Drafts", icon: "guide" },
   { href: "/pipeline-health", label: "Pipeline Diagnostics", icon: "health" },
   { href: "/pipeline-health/research-platform", label: "Research Platform Ops", icon: "health" },
   { href: "/shadow-soak", label: "Shadow Soak", icon: "health" },
@@ -49,6 +54,10 @@ const ADVANCED_NAV: NavItem[] = [
 const PAGE_META: Record<string, { title: string; sub: string }> = {
   "/": { title: "NOW", sub: "What is actionable — and what to watch next" },
   "/research": { title: "Research", sub: "Quant · Scanner · Strategy · AI (owner)" },
+  "/research/command-center": {
+    title: "Research Command Center",
+    sub: "What the forward evidence says — learning, experiments, risk, and readiness",
+  },
   "/data": { title: "System Health", sub: "Data freshness, Discord, and reliability" },
   "/subscriptions": { title: "Subscriptions", sub: "Stripe ↔ Discord role sync health" },
   "/social-drafts": { title: "Social Drafts", sub: "Verified milestone copy — approve before posting" },
@@ -90,6 +99,10 @@ function isActive(pathname: string, href: string): boolean {
   if (href === "/callouts") {
     return pathname === "/callouts" || pathname === "/swing" || pathname.startsWith("/alert-lab");
   }
+  // `/research` and `/research/command-center` are separate destinations; the generic
+  // prefix rule below would light both when either is open.
+  if (href === "/research") return pathname === "/research";
+  if (href === "/research/command-center") return pathname.startsWith("/research/command-center");
   if (href === "/paper/0dte") {
     return pathname === "/paper/0dte" || pathname.startsWith("/paper/0dte/");
   }
@@ -115,7 +128,9 @@ export function AxiomShell({ children }: { children: ReactNode }) {
       ? "/"
       : segments[0] === "paper" && segments[1] === "0dte"
         ? "/paper/0dte"
-        : `/${segments[0]}`;
+        : segments[0] === "research" && segments[1] === "command-center"
+          ? "/research/command-center"
+          : `/${segments[0]}`;
   const pageMeta = PAGE_META[pageKey] ?? { title: "OptiScan", sub: "Live terminal" };
 
   // Mark the Improvement Agent inactive in the sidebar when automation is off
