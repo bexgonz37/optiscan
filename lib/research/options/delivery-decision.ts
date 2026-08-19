@@ -7,6 +7,7 @@
  */
 import { rankCandidates, type RankableCandidate } from "./ranking.ts";
 import { deliverOptionsCallout, type DeliveryInput } from "./delivery.ts";
+import { markOptionsDeliveryDecisionOnDb } from "./latency-telemetry.ts";
 import { sessionState, type SessionState } from "./session-state.ts";
 import { OPTIONS_TIER0 } from "./discovery.ts";
 import { assertOptionsOpeningSession, assertSubscriberDeliveryAllowed, evaluateMarketSessionGuard, isSameTradingSession } from "../../market-session-guard.ts";
@@ -876,6 +877,15 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
     decisions.push(base);
   }
 
+  if (db) {
+    try {
+      for (const d of decisions) {
+        const traceId = d.sub.deliveryInput.latencyTrace?.traceId;
+        if (traceId) markOptionsDeliveryDecisionOnDb(db, traceId, nowMs, d.finalDeliveryOutcome, d.alertId);
+      }
+    } catch { /* telemetry must never alter ranking or delivery */ }
+  }
+
   const deliver = deps.deliver ?? ((input: DeliveryInput) => deliverOptionsCallout(input, { getDb: deps.getDb }, env));
   for (const d of decisions) {
     if (d.outcome !== "DELIVER_TO_DISCORD") continue;
@@ -895,6 +905,15 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
       d.deliveryFailureCategory = "downstream_error";
       d.finalDeliveryReason = String(err?.message ?? err).slice(0, 200);
     }
+  }
+
+  if (db) {
+    try {
+      for (const d of decisions) {
+        const traceId = d.sub.deliveryInput.latencyTrace?.traceId;
+        if (traceId) markOptionsDeliveryDecisionOnDb(db, traceId, nowMs, d.finalDeliveryOutcome, d.alertId);
+      }
+    } catch { /* telemetry must never alter a completed delivery */ }
   }
 
   // PROSPECTIVE SHADOW ARM — LHC_SELECT_V1 evaluated on the SAME opportunities the baseline

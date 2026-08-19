@@ -17,9 +17,9 @@ import { emitProviderRequest } from "../../provider-accounting-sink.ts";
 
 type PrevChange = { change: number; atMs: number };
 type BarsCache = Map<string, { at: number; bars: Bar[] }>;
-type ChainCache = Map<string, { at: number; outcome: ChainFetchOutcome }>;
+type ChainCache = Map<string, { at: number; expiresAt: number; outcome: ChainFetchOutcome }>;
 type ChainInflight = Map<string, Promise<ChainFetchOutcome>>;
-type LiveChainPartition = Omit<DiscoveryPartition, "side"> & { side: "call" | "put" | null };
+export type LiveChainPartition = Omit<DiscoveryPartition, "side"> & { side: "call" | "put" | null };
 type G = typeof globalThis & {
   __optiscanOptSnap?: { at: number; quotes: any[] };
   __optiscanOptPrev?: Map<string, PrevChange>;
@@ -46,7 +46,8 @@ function toSnapshot(q: any, prev: Map<string, PrevChange>, nowMs: number): Under
   return {
     price: Number.isFinite(price) ? price : null,
     dayDollarVolume: Number.isFinite(price) && q.volume ? price * Number(q.volume) : null,
-    relVolume: null, velPct: Number.isFinite(change) ? change : null, accelPct, gapPct: null,
+    relVolume: null, velPct: Number.isFinite(change) ? change : null, accelPct,
+    volumeAccel: null, volumeSurgeProxy: null, dollarVolumeAccel: null, gapPct: null,
     aboveVwap: null, hodBreak: null, nearResistancePct: null, compressionPct: null,
     realizedVolExpanding: null, openingRange: null, premarketLevelTest: null,
   };
@@ -76,6 +77,10 @@ const CHAIN_CACHE_TTL_MS = Math.max(
   1000,
   Number(process.env.OPTIONS_CHAIN_CACHE_TTL_MS ?? 15_000),
 );
+const CHAIN_STRUCTURAL_EMPTY_CACHE_TTL_MS = Math.max(
+  CHAIN_CACHE_TTL_MS,
+  Number(process.env.OPTIONS_CHAIN_STRUCTURAL_EMPTY_CACHE_TTL_MS ?? 60_000),
+);
 const CHAIN_PARTITION_MAX_PAGES = Math.max(
   1,
   Number(process.env.OPTIONS_CHAIN_PARTITION_MAX_PAGES ?? 2),
@@ -94,6 +99,7 @@ function mapOptionContracts(raw: any[]): ChainContract[] {
     // present on 160/250 NVDA rows) but was never mapped, so NO_GREEKS fired even
     // when the snapshot carried it. Absent on deep ITM/OTM rows — stays null, never 0.
     iv: c.iv ?? c.implied_volatility ?? null, delta: c.delta ?? null, gamma: c.gamma ?? null,
+    theta: c.theta ?? null, vega: c.vega ?? null,
     providerTimestamp: c.providerTimestamp ?? null,
   })).filter((c: ChainContract) => c.optionSymbol && Number.isFinite(c.strike));
 }
@@ -128,6 +134,9 @@ function partitionFromResponse(
   res: any,
   contracts: ChainContract[],
 ): ChainFetchPartitionOutcome {
+  const raw = Array.isArray(res?.contracts) ? res.contracts : [];
+  const strikes = contracts.map((c) => c.strike).filter(Number.isFinite);
+  const providerTimestamps = contracts.map((c) => c.providerTimestamp).filter((x): x is number => x != null);
   return {
     label: part.label,
     side: part.side,
@@ -141,6 +150,17 @@ function partitionFromResponse(
     contractsReceived: contracts.length,
     pagesRequested: Number(res?.pagesRequested ?? CHAIN_PARTITION_MAX_PAGES),
     pagesReceived: Number(res?.pagesReceived ?? 0),
+    requestedMinStrike: res?.requestedMinStrike ?? null,
+    requestedMaxStrike: res?.requestedMaxStrike ?? null,
+    returnedMinStrike: strikes.length ? Math.min(...strikes) : null,
+    returnedMaxStrike: strikes.length ? Math.max(...strikes) : null,
+    rawContractsReceived: raw.length,
+    normalizedContractsReceived: contracts.length,
+    fallbackUsed: Boolean(res?.fallbackUsed),
+    fallbackReason: res?.fallbackReason ?? null,
+    providerTimestamp: providerTimestamps.length ? Math.max(...providerTimestamps) : null,
+    observationTimestamp: Number(res?.observationTimestamp ?? Date.now()),
+    providerRequests: Number(res?.providerRequests ?? 1),
   };
 }
 
@@ -176,6 +196,15 @@ function outcomeFromResponse(part: LiveChainPartition, res: any): ChainFetchOutc
     normalizedContractsReceived: contracts.length,
     safeErrorCode: res?.outcome && String(res.outcome).startsWith("PROVIDER_") ? String(res.outcome) : null,
     safeErrorMessage: safeProviderMessage(res),
+    requestedMinStrike: partition.requestedMinStrike ?? null,
+    requestedMaxStrike: partition.requestedMaxStrike ?? null,
+    returnedMinStrike: partition.returnedMinStrike ?? null,
+    returnedMaxStrike: partition.returnedMaxStrike ?? null,
+    fallbackUsed: partition.fallbackUsed ?? false,
+    fallbackReason: partition.fallbackReason ?? null,
+    providerTimestamp: partition.providerTimestamp ?? null,
+    observationTimestamp: partition.observationTimestamp ?? null,
+    providerRequests: partition.providerRequests ?? 1,
     pagesRequested: partition.pagesRequested,
     pagesReceived: partition.pagesReceived,
   };
@@ -221,6 +250,10 @@ function combineOutcomes(
       normalizedContractsReceived: 0,
       safeErrorCode: "RANGE_NOT_FETCHED",
       safeErrorMessage: null,
+      requestedMinStrike: null, requestedMaxStrike: null,
+      returnedMinStrike: null, returnedMaxStrike: null,
+      fallbackUsed: false, fallbackReason: null,
+      providerTimestamp: null, observationTimestamp: null, providerRequests: 0,
       pagesRequested: 0,
       pagesReceived: 0,
     };
@@ -253,8 +286,123 @@ function combineOutcomes(
     normalizedContractsReceived: contracts.length,
     safeErrorCode: firstBlocking?.safeErrorCode ?? (outcome.startsWith("PROVIDER_") ? outcome : null),
     safeErrorMessage: firstBlocking?.safeErrorMessage ?? null,
+    requestedMinStrike: outcomes.map((o) => o.requestedMinStrike).find((x) => x != null) ?? null,
+    requestedMaxStrike: outcomes.map((o) => o.requestedMaxStrike).find((x) => x != null) ?? null,
+    returnedMinStrike: contracts.length ? Math.min(...contracts.map((c) => c.strike)) : null,
+    returnedMaxStrike: contracts.length ? Math.max(...contracts.map((c) => c.strike)) : null,
+    fallbackUsed: outcomes.some((o) => o.fallbackUsed),
+    fallbackReason: outcomes.map((o) => o.fallbackReason).find(Boolean) ?? null,
+    providerTimestamp: contracts.map((c) => c.providerTimestamp).filter((x): x is number => x != null).sort((a, b) => b - a)[0] ?? null,
+    observationTimestamp: outcomes.map((o) => o.observationTimestamp).filter((x): x is number => x != null).sort((a, b) => b - a)[0] ?? null,
+    providerRequests: outcomes.reduce((n, o) => n + Number(o.providerRequests ?? 0), 0),
     pagesRequested: outcomes.reduce((n, o) => n + Number(o.pagesRequested ?? 0), 0),
     pagesReceived: outcomes.reduce((n, o) => n + Number(o.pagesReceived ?? 0), 0),
+  };
+}
+
+type ChainProvider = (symbol: string, opts: Record<string, unknown>) => Promise<any>;
+
+/**
+ * One partition fetch with a single mechanical recovery for gap-dislocated chains.
+ * A fallback is permitted only after a successful, non-truncated raw-zero response;
+ * provider errors and quota refusals are returned immediately and are never recast as
+ * structural absence. The normal bounded query remains the default and provider caps
+ * are unchanged.
+ */
+export async function fetchPartitionWithRawZeroFallback(
+  fetchChain: ChainProvider,
+  symbol: string,
+  underlyingPrice: number | null | undefined,
+  part: LiveChainPartition,
+  opts: { strikeWindowPct?: number; maxPages?: number; observationTimestamp?: number } = {},
+): Promise<ChainFetchOutcome> {
+  const spot = Number(underlyingPrice);
+  const strikeWindowPct = opts.strikeWindowPct ?? CHAIN_STRIKE_WINDOW_PCT;
+  const maxPages = opts.maxPages ?? CHAIN_PARTITION_MAX_PAGES;
+  const observationTimestamp = opts.observationTimestamp ?? Date.now();
+  const baseOpts: Record<string, unknown> = {
+    dteMin: part.dteMin,
+    dteMax: part.dteMax,
+    maxPages,
+    ...(part.side ? { side: part.side } : {}),
+  };
+  const bounded = Number.isFinite(spot) && spot > 0
+    ? {
+        ...baseOpts,
+        underlyingPrice: spot,
+        strikeAroundPct: strikeWindowPct,
+      }
+    : baseOpts;
+  const boundedRes = await fetchChain(symbol, bounded);
+  const requestedMinStrike = Number.isFinite(spot) && spot > 0
+    ? +(spot * (1 - strikeWindowPct)).toFixed(2)
+    : null;
+  const requestedMaxStrike = Number.isFinite(spot) && spot > 0
+    ? +(spot * (1 + strikeWindowPct)).toFixed(2)
+    : null;
+  const rawCount = Array.isArray(boundedRes?.contracts) ? boundedRes.contracts.length : 0;
+  const boundedSucceededEmpty = boundedRes?.available === true
+    && boundedRes?.outcome === "NO_CONTRACTS_IN_REQUESTED_RANGE"
+    && boundedRes?.truncated !== true
+    && rawCount === 0
+    && requestedMinStrike != null;
+  if (!boundedSucceededEmpty) {
+    return outcomeFromResponse(part, {
+      ...boundedRes,
+      requestedMinStrike,
+      requestedMaxStrike,
+      observationTimestamp,
+      providerRequests: 1,
+      fallbackUsed: false,
+    });
+  }
+
+  const fallbackRes = await fetchChain(symbol, baseOpts);
+  return outcomeFromResponse(part, {
+    ...fallbackRes,
+    requestedMinStrike,
+    requestedMaxStrike,
+    observationTimestamp,
+    providerRequests: 2,
+    fallbackUsed: true,
+    fallbackReason: "BOUNDED_PROVIDER_RAW_ZERO",
+  });
+}
+
+export function createCachedPartitionFetcher(
+  fetchChain: ChainProvider,
+  cache: ChainCache = new Map(),
+  inflight: ChainInflight = new Map(),
+  now: () => number = Date.now,
+) {
+  return async (symbol: string, underlyingPrice: number | null | undefined, part: LiveChainPartition): Promise<ChainFetchOutcome> => {
+    const key = chainCacheKey(symbol, part, underlyingPrice);
+    const nowMs = now();
+    const cached = cache.get(key);
+    if (cached && nowMs < cached.expiresAt) {
+      emitProviderRequest({ endpoint: `/v3/snapshot/options/${symbol.toUpperCase()}`, status: "cache_hit", symbol });
+      return cloneOutcome(cached.outcome, { cacheHit: true, providerRequests: 0 });
+    }
+    const existing = inflight.get(key);
+    if (existing) {
+      emitProviderRequest({ endpoint: `/v3/snapshot/options/${symbol.toUpperCase()}`, status: "dedup_avoided", symbol });
+      return existing.then((outcome) => cloneOutcome(outcome, { dedupHit: true, providerRequests: 0 }));
+    }
+    const pending = fetchPartitionWithRawZeroFallback(fetchChain, symbol, underlyingPrice, part, {
+      observationTimestamp: nowMs,
+    }).then((outcome) => {
+      const structural = outcome.outcome === "CONTRACTS_AVAILABLE"
+        || outcome.outcome === "NO_CONTRACTS_IN_REQUESTED_RANGE";
+      if (structural) {
+        const ttl = outcome.contracts.length === 0
+          ? CHAIN_STRUCTURAL_EMPTY_CACHE_TTL_MS
+          : CHAIN_CACHE_TTL_MS;
+        cache.set(key, { at: now(), expiresAt: now() + ttl, outcome });
+      }
+      return outcome;
+    }).finally(() => inflight.delete(key));
+    inflight.set(key, pending);
+    return pending;
   };
 }
 
@@ -264,41 +412,9 @@ export function buildLiveOptionsDeps(): OptionsMonitorDeps {
   const barsCache = (g.__optiscanOptBars ??= new Map());
   const chainCache = (g.__optiscanOptChainCache ??= new Map());
   const chainInflight = (g.__optiscanOptChainInflight ??= new Map());
-
-  async function fetchPartition(symbol: string, underlyingPrice: number | null | undefined, part: LiveChainPartition): Promise<ChainFetchOutcome> {
-    const key = chainCacheKey(symbol, part, underlyingPrice);
-    const nowMs = Date.now();
-    const cached = chainCache.get(key);
-    if (cached && nowMs - cached.at < CHAIN_CACHE_TTL_MS) {
-      emitProviderRequest({ endpoint: `/v3/snapshot/options/${symbol.toUpperCase()}`, status: "cache_hit", symbol });
-      return cloneOutcome(cached.outcome, { cacheHit: true });
-    }
-    const existing = chainInflight.get(key);
-    if (existing) {
-      emitProviderRequest({ endpoint: `/v3/snapshot/options/${symbol.toUpperCase()}`, status: "dedup_avoided", symbol });
-      return existing.then((outcome: ChainFetchOutcome) => cloneOutcome(outcome, { dedupHit: true }));
-    }
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { fetchOptionChain } = require("@/lib/polygon-provider");
-    const spot = Number(underlyingPrice);
-    const pending = fetchOptionChain(symbol, {
-      dteMin: part.dteMin,
-      dteMax: part.dteMax,
-      maxPages: CHAIN_PARTITION_MAX_PAGES,
-      ...(part.side ? { side: part.side } : {}),
-      ...(Number.isFinite(spot) && spot > 0
-        ? { underlyingPrice: spot, strikeAroundPct: CHAIN_STRIKE_WINDOW_PCT }
-        : {}),
-    }).then((res: any) => {
-      const outcome = outcomeFromResponse(part, res);
-      chainCache.set(key, { at: Date.now(), outcome });
-      return outcome;
-    }).finally(() => {
-      chainInflight.delete(key);
-    });
-    chainInflight.set(key, pending);
-    return pending;
-  }
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { fetchOptionChain } = require("@/lib/polygon-provider");
+  const fetchPartition = createCachedPartitionFetcher(fetchOptionChain, chainCache, chainInflight);
 
   return {
     now: Date.now,

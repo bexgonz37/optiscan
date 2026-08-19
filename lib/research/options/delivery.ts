@@ -53,6 +53,11 @@ import {
 } from "../../opportunity-case/thesis-identity.ts";
 import { quoteFreshness } from "../../quote-freshness.ts";
 import { recordOptionsResearchObservation } from "./prospective-evidence.ts";
+import {
+  markOptionsDiscordAcceptedOnDb,
+  markOptionsDiscordSendStartedOnDb,
+  type OptionsLatencyTrace,
+} from "./latency-telemetry.ts";
 
 export type DeliveryState = "READY" | "SEND_ATTEMPTED" | "SENT" | "SEND_FAILED" | "SEND_RECONCILE_REQUIRED" | "TOO_LATE" | "REJECTED" | "EXPIRED";
 
@@ -88,6 +93,8 @@ export interface DeliveryInput {
   firstReadyAtMs?: number | null;
   readyExpiresAtMs?: number | null;
   featureSnapshot?: Record<string, unknown> | null;
+  episodeKey?: string | null;       // canonical immutable SetupEpisodeV2 identity
+  latencyTrace?: OptionsLatencyTrace | null;
 }
 
 export interface SendResult { ok: boolean; status: number | null; messageId: string | null; latencyMs: number; ambiguous: boolean; error: string | null }
@@ -846,6 +853,12 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
 
   const payload = { content: finalInput.entry ? liveMessage : `${liveMessage}\n\n${BETA_LABEL}` };
   const send = deps.send ?? defaultSend;
+  const discordSendStartedAtMs = now();
+  if (finalInput.latencyTrace?.traceId) {
+    try {
+      markOptionsDiscordSendStartedOnDb(db, finalInput.latencyTrace.traceId, discordSendStartedAtMs);
+    } catch { /* telemetry must never alter send */ }
+  }
   let attempt = priorRetries, res: SendResult;
   for (;;) {
     res = await send(payload);
@@ -857,6 +870,11 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
     // Discord accepted the opening. Finalize the already-linked reservation before the alert can
     // become SENT or enter delivered performance.
     const sentAt = now();
+    if (finalInput.latencyTrace?.traceId) {
+      try {
+        markOptionsDiscordAcceptedOnDb(db, finalInput.latencyTrace.traceId, sentAt, alertId);
+      } catch { /* telemetry must never alter accepted delivery */ }
+    }
     const linked = finalizeDeliveredPaperReservationOnDb(db, paperReservation, sentAt);
     if (!linked) {
       try {
@@ -967,6 +985,32 @@ export async function deliverOptionsCallout(input: DeliveryInput, deps: Delivery
       paperTradeId: paperReservation.paperTradeId,
       discordMessageId: res.messageId ?? null,
     });
+    if (finalInput.episodeKey) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { appendEpisodeActionOnDb } = require("@/lib/research/episode/v2");
+        appendEpisodeActionOnDb(db, {
+          episodeKey: finalInput.episodeKey,
+          kind: "PAPER_TRADE",
+          actionRef: `options_paper_trades:${paperReservation.paperTradeId}`,
+          occurredAtMs: finalInput.decisionMs ?? sentAt,
+          exactOcc: finalInput.contract.optionSymbol,
+          entryConvention: "ACTUAL_PAPER_FROZEN_POLICY",
+          defensibleEntry: true,
+          metadata: { paperKind: "DELIVERED_ALERT_PAPER", alertId },
+        }, sentAt);
+        appendEpisodeActionOnDb(db, {
+          episodeKey: finalInput.episodeKey,
+          kind: "DELIVERED_SUBSCRIBER_TRADE",
+          actionRef: `options_alerts:${alertId}`,
+          occurredAtMs: sentAt,
+          exactOcc: finalInput.contract.optionSymbol,
+          entryConvention: "ACTUAL_PAPER_FROZEN_POLICY",
+          defensibleEntry: true,
+          metadata: { discordMessageId: res.messageId ?? null, paperTradeId: paperReservation.paperTradeId },
+        }, sentAt);
+      } catch { /* evidence linkage must never change SENT */ }
+    }
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { mirrorOwnerIntradayOnSent } = require("@/lib/notifications/owner-intraday-mirror");

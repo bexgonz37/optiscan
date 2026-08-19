@@ -13,6 +13,7 @@
  *   scoring   — how it feeds the overall scanner score / verdict
  *   risk      — limitations or ways it can mislead
  */
+import { canonicalMetricGlossary } from "./terminology.ts";
 
 export interface MetricInfo {
   label: string;
@@ -456,6 +457,9 @@ export const METRIC_GLOSSARY: Record<string, MetricInfo> = {
     scoring: "See factor breakdown on each card; total score is the rank.",
     risk: "Uncalibrated preview — earnings and macro events are not fully checked. Paper-trade before trusting.",
   },
+  // Shared concepts are generated last so the typed canonical terminology
+  // registry overrides legacy wording during the convergence period.
+  ...canonicalMetricGlossary(),
 };
 
 export type MetricKey = keyof typeof METRIC_GLOSSARY;

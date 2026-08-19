@@ -81,11 +81,11 @@ export interface AttainableLadder {
    * MRNA post-mortem.
    */
   entryMark: number;
-  pct10: boolean;
-  pct25: boolean;
-  pct50: boolean;
-  pct100: boolean;
-  pct200: boolean;
+  pct10: boolean | null;
+  pct25: boolean | null;
+  pct50: boolean | null;
+  pct100: boolean | null;
+  pct200: boolean | null;
   mfePct: number | null;
   maePct: number | null;
   finalReturnPct: number | null;
@@ -94,6 +94,8 @@ export interface AttainableLadder {
   timeTo100Ms: number | null;
   timeTo200Ms: number | null;
   marksUsed: number;
+  entryConvention: "BUY_AT_ASK_EXIT_AT_FUTURE_BID";
+  evidenceFingerprint: string;
   /**
    * MARKED means the rung has its own recorded crossing; DERIVED_FROM_MFE means
    * it was inferred from the peak. Both are sound — a peak of +40% did reach
@@ -109,6 +111,11 @@ export interface ExecutableContract {
   strike: number | null;
   expiration: string | null;
   entryMark: number | null;
+  bid: number | null;
+  ask: number | null;
+  quoteTimestampMs: number | null;
+  quoteAgeMs: number | null;
+  entryConvention: "BUY_AT_ASK_EXIT_AT_FUTURE_BID";
   spreadPct: number | null;
   delta: number | null;
   openInterest: number | null;
@@ -194,6 +201,7 @@ export interface ExecutableOpportunityReport {
 const MIN_PEAK_MOVE_PCT = 10;
 /** How many of the session's top movers to measure. Bounds the SQL, not a cap on truth. */
 const DEFAULT_LIMIT = 40;
+const RESEARCH_EXECUTABLE_MAX_QUOTE_AGE_MS = 60_000;
 
 function hasTable(db: EvidenceDb, name: string): boolean {
   try {
@@ -241,21 +249,23 @@ function firstExecutableQuote(
     const r = db.prepare(
       `SELECT option_symbol, option_type, strike, expiration, option_bid, option_ask,
               spread_pct, delta, open_interest, volume, dte,
+              observed_at_ms,
               COALESCE(quote_timestamp_ms, observed_at_ms) AS at_ms
          FROM options_research_observations
         WHERE symbol = ? AND session_date = ?
           AND option_symbol IS NOT NULL
-          AND option_bid IS NOT NULL AND option_ask IS NOT NULL
-          AND option_ask > 0
+          AND option_bid > 0 AND option_ask > option_bid
+          AND quote_timestamp_ms IS NOT NULL
+          AND ABS(observed_at_ms - quote_timestamp_ms) <= ?
         ORDER BY at_ms ASC
         LIMIT 1`,
-    ).get(String(symbol).toUpperCase(), sessionDate) as any;
+    ).get(String(symbol).toUpperCase(), sessionDate, RESEARCH_EXECUTABLE_MAX_QUOTE_AGE_MS) as any;
     if (!r) return null;
     const bid = num(r.option_bid);
     const ask = num(r.option_ask);
-    // The mark is the midpoint of a two-sided quote. Not the last trade, which
-    // may be stale, and not the ask, which overstates what a fill costs.
-    const entryMark = bid != null && ask != null ? (bid + ask) / 2 : null;
+    // A buyer crosses the ask. Midpoint remains a diagnostic display only and
+    // may never consume ask-entry excursion evidence.
+    const entryMark = ask;
     return {
       atMs: Number(r.at_ms),
       contract: {
@@ -264,6 +274,13 @@ function firstExecutableQuote(
         strike: num(r.strike),
         expiration: r.expiration == null ? null : String(r.expiration),
         entryMark,
+        bid,
+        ask,
+        quoteTimestampMs: num(r.at_ms),
+        quoteAgeMs: num(r.at_ms) == null || num(r.observed_at_ms) == null
+          ? null
+          : Math.abs(Number(r.observed_at_ms) - Number(r.at_ms)),
+        entryConvention: "BUY_AT_ASK_EXIT_AT_FUTURE_BID",
         spreadPct: num(r.spread_pct),
         delta: num(r.delta),
         openInterest: num(r.open_interest),
@@ -292,27 +309,31 @@ function ladderFor(
 ): AttainableLadder | null {
   if (!hasTable(db, "asymmetry_outcomes")) return null;
   try {
+    const evidenceFingerprint = `${sessionDate}|${optionSymbol}`;
     const r = db.prepare(
       `SELECT entry_ask, mfe_pct, mae_pct, final_return_pct,
               hit_25, hit_50, hit_100, hit_200,
               time_to_25_ms, time_to_50_ms, time_to_100_ms, time_to_200_ms, marks_used
          FROM asymmetry_outcomes
-        WHERE option_symbol = ? AND session_date = ?
-        ORDER BY marks_used DESC
+        WHERE option_symbol = ? AND session_date = ? AND fingerprint = ?
         LIMIT 1`,
-    ).get(optionSymbol, sessionDate) as any;
+    ).get(optionSymbol, sessionDate, evidenceFingerprint) as any;
     if (!r) return null;
+    const marksUsed = num(r.marks_used);
+    if (marksUsed == null || marksUsed <= 0) return null;
     const mfe = num(r.mfe_pct);
-    const mark = entryMark ?? num(r.entry_ask);
-    if (mark == null) return null;
+    const outcomeEntryAsk = num(r.entry_ask);
+    const mark = entryMark;
+    if (mark == null || outcomeEntryAsk == null) return null;
+    if (Math.abs(mark - outcomeEntryAsk) > Math.max(0.01, mark * 0.005)) return null;
     const marked = r.hit_25 != null || r.hit_50 != null || r.hit_100 != null;
-    const reached = (pct: number, col: unknown) => {
+    const reached = (pct: number, col: unknown): boolean | null => {
       if (col != null) return Number(col) === 1;
-      return mfe != null && mfe >= pct;
+      return mfe == null ? null : mfe >= pct;
     };
     return {
       entryMark: mark,
-      pct10: mfe != null ? mfe >= 10 : false,
+      pct10: mfe == null ? null : mfe >= 10,
       pct25: reached(25, r.hit_25),
       pct50: reached(50, r.hit_50),
       pct100: reached(100, r.hit_100),
@@ -324,7 +345,9 @@ function ladderFor(
       timeTo50Ms: num(r.time_to_50_ms),
       timeTo100Ms: num(r.time_to_100_ms),
       timeTo200Ms: num(r.time_to_200_ms),
-      marksUsed: Number(r.marks_used) || 0,
+      marksUsed,
+      entryConvention: "BUY_AT_ASK_EXIT_AT_FUTURE_BID",
+      evidenceFingerprint,
       ladderSource: marked ? "MARKED" : "DERIVED_FROM_MFE",
     };
   } catch {
@@ -489,11 +512,11 @@ export function measureExecutableOpportunityOnDb(
 
   const attainable = {
     n: withEvidence.length,
-    reached10: withEvidence.filter((m) => m.ladder!.pct10).length,
-    reached25: withEvidence.filter((m) => m.ladder!.pct25).length,
-    reached50: withEvidence.filter((m) => m.ladder!.pct50).length,
-    reached100: withEvidence.filter((m) => m.ladder!.pct100).length,
-    reached200: withEvidence.filter((m) => m.ladder!.pct200).length,
+    reached10: withEvidence.filter((m) => m.ladder!.pct10 === true).length,
+    reached25: withEvidence.filter((m) => m.ladder!.pct25 === true).length,
+    reached50: withEvidence.filter((m) => m.ladder!.pct50 === true).length,
+    reached100: withEvidence.filter((m) => m.ladder!.pct100 === true).length,
+    reached200: withEvidence.filter((m) => m.ladder!.pct200 === true).length,
     medianMfePct: median(withEvidence.map((m) => m.ladder!.mfePct).filter((v): v is number => v != null)),
     medianTimeTo50Minutes: median(
       withEvidence.map((m) => m.ladder!.timeTo50Ms).filter((v): v is number => v != null).map((v) => v / 60_000),

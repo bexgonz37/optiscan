@@ -6,6 +6,7 @@ import { evaluateCallout, formatCallout } from "../lib/research/options/callout.
 import { conservativeEntryFill, buildRealOptionEntry, realOptionExit } from "../lib/research/options/paper.ts";
 import { evaluateOptionsCandidate, selectContractFromChain, runOptionsCandidate } from "../lib/research/options/loop.ts";
 import { readOptionsReportOnDb } from "../lib/research/options/report.ts";
+import { ensureEnterpriseSchemaOnDb } from "../lib/db-schema-readiness.ts";
 
 const NOW = 1_000_000;
 // a FORMING breakout candidate that is NOT up 10% (small velocity, but real early signals)
@@ -31,6 +32,25 @@ test("early signals fire WITHOUT the underlying being up ~10%", () => {
   const sel = selectOptionsStrategy(cand());
   assert.ok(sel.selected, "a strategy was selected on an early, non-extended setup");
   assert.ok(sel.considered.length >= 5, "records every considered strategy");
+});
+
+test("price acceleration cannot activate or double-count volume acceleration", () => {
+  const priceOnly = cand({
+    underlying: { ...cand().underlying, relVolume: null, accelPct: 1, volumeAccel: null },
+    optionsActivity: null,
+  });
+  const signals = activeSignals(priceOnly);
+  assert.equal(signals.has("price_acceleration"), true);
+  assert.equal(signals.has("volume_acceleration"), false);
+  assert.equal(signals.has("rel_volume"), false);
+
+  const distinct = activeSignals(cand({
+    underlying: { ...cand().underlying, relVolume: null, accelPct: 0, volumeAccel: 1, volumeSurgeProxy: 3 },
+  }));
+  assert.equal(distinct.has("price_acceleration"), false);
+  assert.equal(distinct.has("volume_acceleration"), true);
+  assert.equal(distinct.has("volume_surge_proxy"), true);
+  assert.equal(distinct.has("rel_volume"), false, "a surge proxy is not RVOL");
 });
 
 test("strategy selection records rejections and picks the strongest applicable", () => {
@@ -97,6 +117,7 @@ function db() {
           CREATE UNIQUE INDEX options_paper_one_active_thesis_idx ON options_paper_trades(thesis_fingerprint) WHERE status='ENTERED' AND thesis_fingerprint IS NOT NULL;
           CREATE VIEW IF NOT EXISTS options_paper_delivered AS SELECT * FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER';
           CREATE VIEW IF NOT EXISTS options_paper_research AS SELECT * FROM options_paper_trades WHERE paper_kind='RESEARCH_ONLY_PAPER';`);
+  ensureEnterpriseSchemaOnDb(d);
   return d;
 }
 const chain = [{ optionSymbol: "O:HOOD260320C00042000", side: "call", strike: 42, expiration: "2026-03-20", dte: 12, bid: 1.2, ask: 1.3, spreadPct: 8, volume: 400, openInterest: 1200, iv: 0.5, delta: 0.45, providerTimestamp: NOW - 1000 }];
@@ -110,6 +131,8 @@ test("enabled: records a candidate + (with paper flag) a REAL_OPTION_PAPER row; 
   const res = runOptionsCandidate(cand(), chain, { getDb: () => d }, { INDEPENDENT_OPTIONS_DISCOVERY_ENABLED: "1", REAL_OPTION_PAPER_ENABLED: "1" });
   assert.ok(res && res.selection.selected);
   assert.equal(d.prepare("SELECT COUNT(*) n FROM options_candidates").get().n, 1);
+  assert.equal(d.prepare("SELECT COUNT(*) n FROM setup_episodes WHERE episode_version=2").get().n, 1);
+  assert.equal(d.prepare("SELECT COUNT(*) n FROM episode_actions WHERE action_kind='OBSERVATION'").get().n, 1);
   if (res.state === "READY") assert.equal(d.prepare("SELECT COUNT(*) n FROM options_paper_trades WHERE result_class='REAL_OPTION_PAPER'").get().n, 1);
   const rep = readOptionsReportOnDb(d);
   assert.equal(rep.candidates.total, 1);

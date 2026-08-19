@@ -27,13 +27,13 @@
  * version after the fact. It answers "which narrowing killed this candidate",
  * which a keyed table holding only the latest state cannot.
  *
- * SAFETY. Additive and repeat-safe DDL only — CREATE ... IF NOT EXISTS, no ALTER,
- * no destructive statement. Not registered in schema readiness. Every function
- * swallows its own errors and returns a result. A persistence fault here must
- * never reach the scanner, contract selection, or Discord: this is evidence about
- * the pipeline and must always be the thing that gives way.
+ * SAFETY. Additive and repeat-safe DDL only. The schema is registered in canonical
+ * readiness; this local ensure function remains for isolated fixtures and upgrades.
+ * A write fault never changes scanner selection or Discord delivery, but it is
+ * returned, logged, and exposed in health. Diagnostic reads throw on storage/schema
+ * faults so an outage can never masquerade as a legitimate empty evidence set.
  */
-import type { ContractFunnelEvidence } from "./contract-discovery.ts";
+import { terminalStageForEvidence, type ContractFunnelEvidence } from "./contract-discovery.ts";
 
 type StoreDb = {
   prepare: (sql: string) => {
@@ -103,11 +103,61 @@ export function ensureContractFunnelSchema(db: StoreDb): void {
   add("normalized_contracts_received", "normalized_contracts_received INTEGER NOT NULL DEFAULT 0");
   add("chain_outcome", "chain_outcome TEXT");
   add("range_coverage", "range_coverage TEXT NOT NULL DEFAULT 'UNKNOWN'");
+  add("terminal_stage", "terminal_stage TEXT NOT NULL DEFAULT 'OTHER_EXPLICIT_TERMINAL_REASON'");
+  add("with_bid", "with_bid INTEGER NOT NULL DEFAULT 0");
+  add("with_ask", "with_ask INTEGER NOT NULL DEFAULT 0");
+  add("requested_min_strike", "requested_min_strike REAL");
+  add("requested_max_strike", "requested_max_strike REAL");
+  add("returned_min_strike", "returned_min_strike REAL");
+  add("returned_max_strike", "returned_max_strike REAL");
+  add("fallback_used", "fallback_used INTEGER NOT NULL DEFAULT 0");
+  add("fallback_reason", "fallback_reason TEXT");
+  add("provider_timestamp_ms", "provider_timestamp_ms INTEGER");
+  add("observation_timestamp_ms", "observation_timestamp_ms INTEGER");
+  add("provider_requests", "provider_requests INTEGER NOT NULL DEFAULT 0");
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_contract_funnel_stage
+    ON contract_funnel_evidence(session_date, terminal_stage)`);
 }
 
 export interface FunnelWriteResult {
   ok: boolean;
   error: string | null;
+}
+
+type FunnelRuntimeHealth = {
+  writes: number;
+  failures: number;
+  lastSuccessAt: number | null;
+  lastError: string | null;
+  lastErrorAt: number | null;
+};
+
+const funnelHealth = (): FunnelRuntimeHealth => {
+  const root = globalThis as typeof globalThis & { __contractFunnelHealth?: FunnelRuntimeHealth };
+  return (root.__contractFunnelHealth ??= {
+    writes: 0, failures: 0, lastSuccessAt: null, lastError: null, lastErrorAt: null,
+  });
+};
+
+function readFailure(operation: string, error: unknown): never {
+  const message = error instanceof Error ? error.message : String(error);
+  throw new Error(`contract funnel ${operation} failed: ${message}`);
+}
+
+/** A positive empty row count is distinct from an ERROR status. */
+export function contractFunnelHealthOnDb(db: StoreDb): Record<string, unknown> {
+  const runtime = { ...funnelHealth() };
+  try {
+    const count = Number((db.prepare("SELECT COUNT(*) AS n FROM contract_funnel_evidence").get() as { n?: number } | undefined)?.n ?? 0);
+    return { status: "OK", rowCount: count, runtime };
+  } catch (error) {
+    return {
+      status: "ERROR",
+      rowCount: null,
+      error: error instanceof Error ? error.message : String(error),
+      runtime,
+    };
+  }
 }
 
 /**
@@ -134,8 +184,10 @@ export function recordContractFunnelOnDb(
          requested_dte_min, requested_dte_max, fetched_dte_ranges_json,
          requested_expiration_start, requested_expiration_end, expirations_covered_json,
          pages_requested, pages_received, raw_contracts_received, normalized_contracts_received,
-         chain_outcome, range_coverage
-       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         chain_outcome, range_coverage, terminal_stage, with_bid, with_ask,
+         requested_min_strike, requested_max_strike, returned_min_strike, returned_max_strike,
+         fallback_used, fallback_reason, provider_timestamp_ms, observation_timestamp_ms, provider_requests
+       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(
       sessionDate, ev.atMs, ev.symbol, ev.direction ?? null, ev.requestedSide, ev.strategyKey,
       ev.discoveryVersion, ev.selectionVersion,
@@ -153,11 +205,25 @@ export function recordContractFunnelOnDb(
       ev.requestedExpirationStart ?? null, ev.requestedExpirationEnd ?? null, JSON.stringify(ev.expirationsCovered ?? []),
       ev.pagesRequested ?? 0, ev.pagesReceived ?? 0, ev.rawContractsReceived ?? ev.contractsReceived,
       ev.normalizedContractsReceived ?? ev.contractsReceived,
-      ev.chainOutcome ?? null, ev.rangeCoverage ?? "UNKNOWN",
+      ev.chainOutcome ?? null, ev.rangeCoverage ?? "UNKNOWN", terminalStageForEvidence(ev),
+      ev.withBid ?? 0, ev.withAsk ?? 0,
+      ev.requestedMinStrike ?? null, ev.requestedMaxStrike ?? null,
+      ev.returnedMinStrike ?? null, ev.returnedMaxStrike ?? null,
+      ev.fallbackUsed ? 1 : 0, ev.fallbackReason ?? null,
+      ev.providerTimestamp ?? null, ev.observationTimestamp ?? ev.atMs, ev.providerRequests ?? 0,
     );
+    const health = funnelHealth();
+    health.writes += 1;
+    health.lastSuccessAt = Date.now();
+    health.lastError = null;
     return { ok: true, error: null };
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    const error = e instanceof Error ? e.message : String(e);
+    const health = funnelHealth();
+    health.failures += 1;
+    health.lastError = error;
+    health.lastErrorAt = Date.now();
+    return { ok: false, error };
   }
 }
 
@@ -178,8 +244,8 @@ export function readRecentFunnelEvidenceOnDb(
         ORDER BY at_ms DESC LIMIT ?`,
     ).all(...args, limit) as Record<string, unknown>[];
     return rows.map(rowToEvidence);
-  } catch {
-    return [];
+  } catch (error) {
+    return readFailure("recent evidence read", error);
   }
 }
 
@@ -213,8 +279,8 @@ function rowToEvidence(r: Record<string, unknown>): ContractFunnelEvidence {
     putsReceived: n(r.puts_received),
     passedSide: n(r.passed_side),
     passedDte: n(r.passed_dte),
-    withBid: n(r.two_sided),
-    withAsk: n(r.two_sided),
+    withBid: n(r.with_bid ?? r.two_sided),
+    withAsk: n(r.with_ask ?? r.two_sided),
     twoSided: n(r.two_sided),
     withDelta: n(r.with_delta),
     // A NULL coverage means "unknown", and must not read back as 0% coverage.
@@ -240,7 +306,38 @@ function rowToEvidence(r: Record<string, unknown>): ContractFunnelEvidence {
     rangeCoverage: (["FULL", "PARTIAL", "NONE", "UNKNOWN"].includes(String(r.range_coverage))
       ? String(r.range_coverage)
       : "UNKNOWN") as ContractFunnelEvidence["rangeCoverage"],
+    terminalStage: String(r.terminal_stage ?? "OTHER_EXPLICIT_TERMINAL_REASON") as ContractFunnelEvidence["terminalStage"],
+    requestedMinStrike: r.requested_min_strike == null ? null : n(r.requested_min_strike),
+    requestedMaxStrike: r.requested_max_strike == null ? null : n(r.requested_max_strike),
+    returnedMinStrike: r.returned_min_strike == null ? null : n(r.returned_min_strike),
+    returnedMaxStrike: r.returned_max_strike == null ? null : n(r.returned_max_strike),
+    fallbackUsed: n(r.fallback_used) === 1,
+    fallbackReason: r.fallback_reason == null ? null : String(r.fallback_reason),
+    providerTimestamp: r.provider_timestamp_ms == null ? null : n(r.provider_timestamp_ms),
+    observationTimestamp: r.observation_timestamp_ms == null ? null : n(r.observation_timestamp_ms),
+    providerRequests: n(r.provider_requests),
   };
+}
+
+/** Mutually exclusive terminal-stage census. Counts always reconcile to total rows in scope. */
+export function terminalStageBreakdownOnDb(
+  db: StoreDb,
+  sessionDate: string,
+  opts: FunnelScope = {},
+): { stage: string; count: number; distinctSymbols: number }[] {
+  try {
+    ensureContractFunnelSchema(db);
+    const { sql, args } = funnelWhere(sessionDate, opts);
+    return (db.prepare(
+      `SELECT terminal_stage AS stage, COUNT(*) AS count, COUNT(DISTINCT symbol) AS distinctSymbols
+         FROM contract_funnel_evidence WHERE ${sql}
+        GROUP BY terminal_stage ORDER BY count DESC, stage ASC`,
+    ).all(...args) as Array<{ stage: string; count: number; distinctSymbols: number }>).map((r) => ({
+      stage: String(r.stage), count: Number(r.count), distinctSymbols: Number(r.distinctSymbols),
+    }));
+  } catch (error) {
+    return readFailure("terminal-stage breakdown", error);
+  }
 }
 
 export interface DeltaSourceSplit {
@@ -306,8 +403,8 @@ export function deltaSourceSplitOnDb(
     // No selections is not 0% proxy use — it is no evidence. Stay null.
     out.proxyShareOfSelected = selected > 0 ? out.moneynessProxy / selected : null;
     return out;
-  } catch {
-    return empty;
+  } catch (error) {
+    return readFailure("delta-source split", error);
   }
 }
 
@@ -391,8 +488,8 @@ export function strategyStageBreakdownOnDb(
       chainOutcomes: [...new Set(splitConcat(r.chainOutcomes))].sort(),
       rangeCoverage: [...new Set(splitConcat(r.rangeCoverage))].sort(),
     }));
-  } catch {
-    return [];
+  } catch (error) {
+    return readFailure("strategy-stage breakdown", error);
   }
 }
 
@@ -420,8 +517,8 @@ export function terminalReasonBreakdownOnDb(
       count: Number(r.count ?? 0),
       distinctSymbols: Number(r.distinctSymbols ?? 0),
     }));
-  } catch {
-    return [];
+  } catch (error) {
+    return readFailure("terminal-reason breakdown", error);
   }
 }
 
@@ -536,7 +633,7 @@ export function providerPressureAccountingOnDb(
         quotaDistinctSymbols: quota?.distinctSymbols ?? 0,
       },
     };
-  } catch {
-    return empty;
+  } catch (error) {
+    return readFailure("provider-pressure accounting", error);
   }
 }

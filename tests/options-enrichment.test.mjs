@@ -40,13 +40,15 @@ test("5. stale bars are flagged (reject safely)", () => {
   assert.equal(f.stale, true);
 });
 
-test("featuresToUnderlying maps + a volume-surge relVolume proxy fires when no baseline exists", () => {
+test("featuresToUnderlying keeps legitimate RVOL missing and names the surge proxy separately", () => {
   const f = computeOptionsFeatures(bars(40), { nowMs: NOW, session: "regular" });
   const u = featuresToUnderlying(f);
   assert.equal(u.price, f.price);
   assert.equal(u.aboveVwap, true);
-  // volume accelerated in the last bars → proxy relVolume set
-  assert.ok(u.relVolume == null || u.relVolume >= 2);
+  assert.equal(u.relVolume, null, "no time-of-day baseline means RVOL is unknown");
+  assert.ok(u.volumeAccel > 0, "volume acceleration comes from volume bars");
+  assert.ok(u.volumeSurgeProxy >= 2, "the within-sample proxy is explicit and separate");
+  assert.notEqual(f.dollarVolumeAccel, f.volumeAccel, "price-weighted acceleration is independently computed");
 });
 
 // ── chain features (never institutional flow) ──

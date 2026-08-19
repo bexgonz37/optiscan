@@ -35,8 +35,13 @@ import { tradingDay } from "../../trading-session.ts";
 import { selectContractWithEvidence, type ContractFunnelEvidence } from "./contract-discovery.ts";
 import { recordContractFunnelOnDb } from "./contract-funnel-store.ts";
 import { recordPreMoveObservationOnDb, type PreMoveLane } from "./pre-move-store.ts";
+import {
+  appendEpisodeActionOnDb,
+  buildSetupEpisodeV2,
+  persistSetupEpisodeV2OnDb,
+} from "../episode/v2.ts";
 
-export interface ChainContract { optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number; bid: number | null; ask: number | null; spreadPct: number | null; volume: number | null; openInterest: number | null; iv: number | null; delta: number | null; gamma: number | null; providerTimestamp: number | null }
+export interface ChainContract { optionSymbol: string; side: "call" | "put"; strike: number; expiration: string; dte: number; bid: number | null; ask: number | null; spreadPct: number | null; volume: number | null; openInterest: number | null; iv: number | null; delta: number | null; gamma: number | null; theta?: number | null; vega?: number | null; providerTimestamp: number | null }
 
 /**
  * Why a chain fetch returned what it did — never a bare array.
@@ -75,6 +80,17 @@ export interface ChainFetchPartitionOutcome {
   contractsReceived: number;
   pagesRequested: number;
   pagesReceived: number;
+  requestedMinStrike?: number | null;
+  requestedMaxStrike?: number | null;
+  returnedMinStrike?: number | null;
+  returnedMaxStrike?: number | null;
+  rawContractsReceived?: number;
+  normalizedContractsReceived?: number;
+  fallbackUsed?: boolean;
+  fallbackReason?: string | null;
+  providerTimestamp?: number | null;
+  observationTimestamp?: number | null;
+  providerRequests?: number;
   cacheHit?: boolean;
   dedupHit?: boolean;
 }
@@ -100,6 +116,15 @@ export interface ChainFetchOutcome {
   normalizedContractsReceived?: number;
   safeErrorCode?: string | null;
   safeErrorMessage?: string | null;
+  requestedMinStrike?: number | null;
+  requestedMaxStrike?: number | null;
+  returnedMinStrike?: number | null;
+  returnedMaxStrike?: number | null;
+  fallbackUsed?: boolean;
+  fallbackReason?: string | null;
+  providerTimestamp?: number | null;
+  observationTimestamp?: number | null;
+  providerRequests?: number;
   pagesRequested: number;
   pagesReceived: number;
 }
@@ -118,6 +143,12 @@ export function chainOk(contracts: ChainContract[]): ChainFetchOutcome {
     cacheHit: false, dedupHit: false,
     rawContractsReceived: contracts.length, normalizedContractsReceived: contracts.length,
     safeErrorCode: null, safeErrorMessage: null,
+    requestedMinStrike: null, requestedMaxStrike: null,
+    returnedMinStrike: contracts.length ? Math.min(...contracts.map((c) => c.strike)) : null,
+    returnedMaxStrike: contracts.length ? Math.max(...contracts.map((c) => c.strike)) : null,
+    fallbackUsed: false, fallbackReason: null,
+    providerTimestamp: contracts.map((c) => c.providerTimestamp).filter((x): x is number => x != null).sort((a, b) => b - a)[0] ?? null,
+    observationTimestamp: null, providerRequests: 0,
     pagesRequested: 1, pagesReceived: 1,
   };
 }
@@ -208,6 +239,8 @@ export interface OptionsCandidateExtra {
   fractionMove?: number | null;
   /** How the chain fetch actually went, so an empty band can be attributed correctly. */
   chainOutcome?: ChainFetchOutcome | null;
+  /** Mutable trace built by the monitor; carried to portfolio decision + Discord. */
+  latencyTrace?: import("./latency-telemetry.ts").OptionsLatencyTrace | null;
 }
 
 /**
@@ -301,7 +334,7 @@ function recordPreMoveObservation(
       triggerLevel,
       triggerTaken,
       compressionPct: n(input.underlying.compressionPct) ?? n(f.compressionScore),
-      volumeAcceleration: n(f.volumeAccel) ?? n(input.underlying.accelPct),
+      volumeAcceleration: n(f.volumeAccel) ?? n(input.underlying.volumeAccel),
       sessionHigh: n(f.hod),
       sessionLow: n(f.lod),
       vwap: n(f.vwap),
@@ -395,10 +428,12 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
     // Written for EVERY evaluation, selected or not. Until this call existed the
     // record was computed and thrown away, which is why `deltaSource` could not
     // be measured and why the discovery monitor had no input but its own test.
-    // Swallowed like every other evidence write — it can never affect selection.
+    // A failure cannot affect selection, but it must remain visible rather than
+    // masquerading as a genuine zero-row funnel.
     if (res.contractFunnel) {
       const funnel = { ...res.contractFunnel, direction: res.selection.direction ?? null };
-      recordContractFunnelOnDb(db as any, asymSession, funnel);
+      const stored = recordContractFunnelOnDb(db as any, asymSession, funnel);
+      if (!stored.ok) console.error(`[contract-funnel] persistence ERROR: ${stored.error}`);
     }
 
     recordCaptureStageOnDb(db as any, asymSession, "LOOP_REACHED", input.nowMs);
@@ -579,15 +614,60 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
       } catch { /* isolated */ }
     }
     // Enterprise Opportunity Case audit (additive, isolated — never blocks the live path).
+    let persistedOpportunityCaseId: string | null = livingOpportunityCaseId;
     if (env.OPPORTUNITY_CASE_CAPTURE_ENABLED !== "0") {
       try {
         const persistedCase = persistCaseFromOptionsLive(db, { input, evalResult: res, chainLength: chain.length, livingOpportunityCaseId });
+        persistedOpportunityCaseId = persistedCase?.opportunityId ?? persistedOpportunityCaseId;
         // PRE_MOVE_DISCOVERY_V1 capture. This is the boundary where PRE-ENTRY evidence
         // still exists: `input` and `res` are the decision-time picture, and nothing
         // here reads an outcome or issues a provider call. Isolated inside the same
         // best-effort block — a measurement must never be able to fail a scan.
         recordPreMoveObservation(db, input, res, persistedCase, extra, env);
       } catch { /* audit is best-effort */ }
+    }
+    // Canonical immutable market memory. Every evaluated candidate is an
+    // OBSERVATION regardless of ACTIONABLE/WATCH/REJECTED disposition. A
+    // counterfactual is separate and exists only with an exact, defensible quote.
+    let canonicalEpisodeKey: string | null = null;
+    try {
+      const episode = buildSetupEpisodeV2({
+        candidate: input,
+        result: res,
+        candidateId,
+        opportunityCaseId: persistedOpportunityCaseId,
+        thesisFingerprint: livingThesisFingerprint,
+        featureSnapshot: extra.featureSnapshot,
+        env,
+      });
+      const stored = persistSetupEpisodeV2OnDb(db as any, episode, input.nowMs);
+      if (stored.ok) {
+        canonicalEpisodeKey = episode.episodeKey;
+        appendEpisodeActionOnDb(db as any, {
+          episodeKey: episode.episodeKey,
+          kind: "OBSERVATION",
+          actionRef: `options_candidate:${candidateId || episode.episodeKey}`,
+          occurredAtMs: input.nowMs,
+          exactOcc: episode.selectedOcc,
+          metadata: { population: episode.population, sourceLane: episode.sourceLane },
+        }, input.nowMs);
+        if (episode.entryConvention && episode.selectedOcc && res.contract?.ask != null) {
+          appendEpisodeActionOnDb(db as any, {
+            episodeKey: episode.episodeKey,
+            kind: "COUNTERFACTUAL",
+            actionRef: `executable_option:${episode.episodeKey}`,
+            occurredAtMs: input.nowMs,
+            exactOcc: episode.selectedOcc,
+            entryConvention: episode.entryConvention,
+            defensibleEntry: true,
+            metadata: { entryAsk: res.contract.ask, futureExitBasis: "BID" },
+          }, input.nowMs);
+        }
+      } else {
+        console.error(`[setup-episode-v2] persistence ERROR: ${stored.violations.join("; ").slice(0, 180)}`);
+      }
+    } catch (error) {
+      console.error(`[setup-episode-v2] ${String((error as Error)?.message ?? error).slice(0, 180)}`);
     }
     // Real-option paper (separate flag). Public callout DELIVERY is NOT wired here (manual/gated).
     // Options-market-hours only (never open from a stale prior-session quote), and gated on
@@ -607,7 +687,7 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
       // subscriber MIRROR (DELIVERED_ALERT_PAPER) is created ONLY on a real Discord SEND, inside
       // deliverOptionsCallout — so it exists iff an alert was actually delivered.
       if (gate.ok) {
-        persistRealOptionPaperOnDb(db, res.paperEntry, input.nowMs, {
+        const paperTradeId = persistRealOptionPaperOnDb(db, res.paperEntry, input.nowMs, {
           session: input.session,
           coreBroad: extra.coreBroad ?? (input.tier === 1 ? "core" : "broad"),
           featureSnapshotJson: snapJson ?? undefined,
@@ -616,6 +696,18 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
           thesisFingerprint: livingThesisFingerprint,
         });
         paperOptionSymbol = res.paperEntry.optionSymbol;
+        if (canonicalEpisodeKey && paperTradeId > 0) {
+          appendEpisodeActionOnDb(db as any, {
+            episodeKey: canonicalEpisodeKey,
+            kind: "PAPER_TRADE",
+            actionRef: `options_paper_trades:${paperTradeId}`,
+            occurredAtMs: input.nowMs,
+            exactOcc: res.paperEntry.optionSymbol,
+            entryConvention: "ACTUAL_PAPER_FROZEN_POLICY",
+            defensibleEntry: true,
+            metadata: { paperKind: "RESEARCH_ONLY_PAPER" },
+          }, input.nowMs);
+        }
       }
     }
     // GATED private-beta Discord delivery — fire-and-forget, fully isolated. HARD no-op unless
@@ -649,6 +741,8 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
         readyExpiresAtMs: inst.readyExpiresAtMs,
         tradingSessionDate: inst.tradingSessionDate,
         featureSnapshot: (extra.featureSnapshot && typeof extra.featureSnapshot === "object") ? extra.featureSnapshot as Record<string, unknown> : null,
+        episodeKey: canonicalEpisodeKey,
+        latencyTrace: extra.latencyTrace ?? null,
       };
       if (extra.collectDelivery) {
         // Portfolio delivery: submit into the cycle batch so every READY candidate competes before Discord.

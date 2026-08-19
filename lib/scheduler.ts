@@ -18,6 +18,11 @@
 import { schedulerIntervals, jobDue, deriveSchedulerBeatState } from "@/lib/scheduler-policy";
 import { isMarketHoliday, tradingDay } from "@/lib/trading-session";
 import { isEarlyCloseDay } from "@/lib/market-session-guard";
+import {
+  launchAutomatedBackupIfDue,
+  recordStorageOwnerNotificationOnDb,
+  runStorageHealthMaintenanceOnDb,
+} from "@/lib/storage-health";
 
 const LEASE_NAME = "scheduler";
 const BASE_TICK_MS = 15_000;
@@ -282,6 +287,30 @@ async function maintenanceJob(): Promise<void> {
   const { refreshStatistics } = require("@/lib/statistics-store");
   syncPaperOutcomes();
   refreshStatistics();
+  // Storage evidence is sampled off the live path. Warning delivery uses only
+  // the owner-research recap lane and only on a persisted state transition.
+  const storage = runStorageHealthMaintenanceOnDb(db(), process.env, Date.now());
+  launchAutomatedBackupIfDue(process.env, Date.now());
+  const transition = storage.warningTransition;
+  if (transition && transition.state !== "OK") {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { sendOwnerResearchNotify } = require("@/lib/notifications/owner-research-notify");
+    void sendOwnerResearchNotify({
+      db: db(),
+      kind: "storage_warning",
+      content: transition.message,
+      symbol: `storage-${transition.state}`,
+      idempotencyKey: `storage-warning:${transition.id}`,
+    }).then((result: { sent: boolean; reason: string }) => {
+      recordStorageOwnerNotificationOnDb(
+        db(),
+        transition.id,
+        `${result.sent ? "SENT" : "SKIPPED"}:${result.reason}`,
+      );
+    }).catch((err: unknown) => {
+      recordStorageOwnerNotificationOnDb(db(), transition.id, `ERROR:${String(err).slice(0, 180)}`);
+    });
+  }
 }
 
 async function learningJob(): Promise<void> {

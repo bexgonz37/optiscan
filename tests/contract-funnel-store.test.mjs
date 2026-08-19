@@ -21,6 +21,8 @@ import {
   deltaSourceSplitOnDb,
   terminalReasonBreakdownOnDb,
   strategyStageBreakdownOnDb,
+  terminalStageBreakdownOnDb,
+  contractFunnelHealthOnDb,
 } from "../lib/research/options/contract-funnel-store.ts";
 import { selectContractWithEvidence } from "../lib/research/options/contract-discovery.ts";
 import { evaluateDiscoveryHealth } from "../lib/research/options/discovery-monitor.ts";
@@ -226,7 +228,7 @@ test("REAL EVIDENCE: a live selector result persists and reads back unchanged", 
   assert.equal(back.deltaCoverage, 0, "greeks genuinely absent = a MEASURED 0, not unknown");
 });
 
-test("a persistence fault is swallowed and reported, never thrown at the scanner", () => {
+test("a persistence fault is non-fatal to the scanner but cannot masquerade as empty evidence", () => {
   const broken = {
     exec() { throw new Error("disk is on fire"); },
     prepare() { throw new Error("disk is on fire"); },
@@ -234,10 +236,18 @@ test("a persistence fault is swallowed and reported, never thrown at the scanner
   const res = recordContractFunnelOnDb(broken, DAY, ev());
   assert.equal(res.ok, false);
   assert.match(res.error, /disk is on fire/);
-  // And every reader degrades to empty rather than propagating.
-  assert.deepEqual(readRecentFunnelEvidenceOnDb(broken, DAY, 0), []);
-  assert.deepEqual(terminalReasonBreakdownOnDb(broken, DAY), []);
-  assert.equal(deltaSourceSplitOnDb(broken, DAY).total, 0);
+  assert.equal(contractFunnelHealthOnDb(broken).status, "ERROR");
+  assert.throws(() => readRecentFunnelEvidenceOnDb(broken, DAY, 0), /contract funnel recent evidence read failed/);
+  assert.throws(() => terminalReasonBreakdownOnDb(broken, DAY), /contract funnel terminal-reason breakdown failed/);
+  assert.throws(() => deltaSourceSplitOnDb(broken, DAY), /contract funnel delta-source split failed/);
+});
+
+test("health distinguishes a valid empty funnel from a storage error", () => {
+  const d = db();
+  assert.deepEqual(contractFunnelHealthOnDb(d), {
+    status: "OK", rowCount: 0,
+    runtime: contractFunnelHealthOnDb(d).runtime,
+  });
 });
 
 test("evidence is scoped to its session — yesterday cannot leak into today", () => {
@@ -327,4 +337,47 @@ test("SCOPE: an unscoped call still reports the whole session, unchanged", () =>
   assert.equal(deltaSourceSplitOnDb(d, DAY).total, 2);
   assert.equal(terminalReasonBreakdownOnDb(d, DAY).reduce((n, r) => n + r.count, 0), 2);
   assert.equal(readRecentFunnelEvidenceOnDb(d, DAY, 0).length, 2);
+});
+
+test("terminal stages are mutually exclusive and reconcile exactly to the scoped cohort", () => {
+  const d = db();
+  recordContractFunnelOnDb(d, DAY, ev());
+  recordContractFunnelOnDb(d, DAY, ev({
+    terminalReason: "NO_CONTRACTS_RETURNED", selectedOcc: null, deltaSource: null,
+    contractsReceived: 0, callsReceived: 0, passedSide: 0, passedDte: 0,
+    rawContractsReceived: 0, normalizedContractsReceived: 0,
+    chainOutcome: "NO_CONTRACTS_IN_REQUESTED_RANGE",
+  }));
+  recordContractFunnelOnDb(d, DAY, ev({
+    terminalReason: "PROVIDER_TIMEOUT", selectedOcc: null, deltaSource: null,
+    contractsReceived: 0, rawContractsReceived: 0, normalizedContractsReceived: 0,
+    chainOutcome: "PROVIDER_TIMEOUT",
+  }));
+  recordContractFunnelOnDb(d, DAY, ev({
+    terminalReason: "NO_CONTRACT_IN_DTE_RANGE", selectedOcc: null, deltaSource: null,
+    passedSide: 10, passedDte: 0,
+  }));
+
+  const stages = terminalStageBreakdownOnDb(d, DAY);
+  assert.equal(stages.reduce((n, row) => n + row.count, 0), 4);
+  assert.equal(stages.find((r) => r.stage === "CONTRACT_SELECTED")?.count, 1);
+  assert.equal(stages.find((r) => r.stage === "PROVIDER_RAW_ZERO")?.count, 1);
+  assert.equal(stages.find((r) => r.stage === "PROVIDER_REQUEST_FAILURE")?.count, 1);
+  assert.equal(stages.find((r) => r.stage === "DTE_FILTER_ZERO")?.count, 1);
+});
+
+test("fallback strike-range metadata round-trips without recasting success as failure", () => {
+  const d = db();
+  recordContractFunnelOnDb(d, DAY, ev({
+    requestedMinStrike: 131.56, requestedMaxStrike: 154.44,
+    returnedMinStrike: 120, returnedMaxStrike: 120,
+    fallbackUsed: true, fallbackReason: "BOUNDED_PROVIDER_RAW_ZERO",
+    providerRequests: 2, providerTimestamp: NOW - 1000, observationTimestamp: NOW,
+  }));
+  const [row] = readRecentFunnelEvidenceOnDb(d, DAY, 0);
+  assert.equal(row.terminalStage, "CONTRACT_SELECTED");
+  assert.equal(row.fallbackUsed, true);
+  assert.equal(row.requestedMinStrike, 131.56);
+  assert.equal(row.returnedMaxStrike, 120);
+  assert.equal(row.providerRequests, 2);
 });

@@ -9,6 +9,8 @@
     "build": "next build",
     "start": "node scripts/start-next.mjs",
     "test": "node --experimental-strip-types --test \"tests/*.test.mjs\"",
+    "glossary:generate": "node --experimental-strip-types scripts/generate-terminology.mjs",
+    "glossary:check": "node --experimental-strip-types scripts/generate-terminology.mjs --check",
     "worker": "node --experimental-strip-types worker/seed-worker.ts",
     "smoke": "node scripts/prod-smoke.mjs"
   },

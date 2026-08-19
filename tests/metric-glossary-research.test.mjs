@@ -102,5 +102,6 @@ test("metrics that have not discriminated anything yet say so", () => {
   // Reward remaining returns its maximum on 65 of 70 rows and discovery stage grades every
   // row PRE_TRIGGER over a 1.6-second window. Both are honest about it.
   assert.match(metricInfo("rewardRemaining").risk, /has not discriminated anything yet/);
-  assert.match(metricInfo("discoveryStage").risk, /1\.6[- ]second/);
+  assert.match(metricInfo("discoveryStage").what, /PRE_MOVE_DISCOVERY_V2/);
+  assert.doesNotMatch(metricInfo("discoveryStage").risk, /1\.6[- ]second/);
 });

@@ -83,6 +83,23 @@ export type ContractTerminalReason =
 /** How the selected contract's delta was established. Never implied. */
 export type DeltaSource = "PROVIDER_DELTA" | "MONEYNESS_PROXY";
 
+/** Exactly one terminal stage is assigned to every persisted funnel attempt. */
+export type ContractTerminalStage =
+  | "PROVIDER_BUDGET_REFUSAL"
+  | "PROVIDER_REQUEST_FAILURE"
+  | "PROVIDER_RAW_ZERO"
+  | "NORMALIZATION_ZERO"
+  | "EXPIRATION_FILTER_ZERO"
+  | "DTE_FILTER_ZERO"
+  | "STRIKE_FILTER_ZERO"
+  | "DELTA_FILTER_ZERO"
+  | "SPREAD_FILTER_ZERO"
+  | "OI_FILTER_ZERO"
+  | "VOLUME_FILTER_ZERO"
+  | "QUOTE_FRESHNESS_ZERO"
+  | "CONTRACT_SELECTED"
+  | "OTHER_EXPLICIT_TERMINAL_REASON";
+
 /** Version stamps so a stored funnel row records the rules that produced it. */
 export const DISCOVERY_VERSION = "contract-discovery@2";
 export const SELECTION_VERSION = "contract-selection@3";
@@ -215,6 +232,16 @@ export interface ContractFunnelEvidence {
   normalizedContractsReceived: number;
   chainOutcome: ChainFetchOutcome["outcome"] | null;
   rangeCoverage: "FULL" | "PARTIAL" | "NONE" | "UNKNOWN";
+  terminalStage?: ContractTerminalStage;
+  requestedMinStrike?: number | null;
+  requestedMaxStrike?: number | null;
+  returnedMinStrike?: number | null;
+  returnedMaxStrike?: number | null;
+  fallbackUsed?: boolean;
+  fallbackReason?: string | null;
+  providerTimestamp?: number | null;
+  observationTimestamp?: number | null;
+  providerRequests?: number;
 }
 
 function emptyEvidence(
@@ -238,7 +265,32 @@ function emptyEvidence(
     expirationsCovered: [], pagesRequested: 0, pagesReceived: 0,
     rawContractsReceived: 0, normalizedContractsReceived: 0,
     chainOutcome: null, rangeCoverage: "UNKNOWN",
+    terminalStage: "OTHER_EXPLICIT_TERMINAL_REASON",
+    requestedMinStrike: null, requestedMaxStrike: null,
+    returnedMinStrike: null, returnedMaxStrike: null,
+    fallbackUsed: false, fallbackReason: null,
+    providerTimestamp: null, observationTimestamp: atMs, providerRequests: 0,
   };
+}
+
+export function terminalStageForEvidence(ev: ContractFunnelEvidence): ContractTerminalStage {
+  if (ev.terminalReason === "CONTRACT_SELECTED" && ev.selectedOcc) return "CONTRACT_SELECTED";
+  if (ev.terminalReason === "PROVIDER_BUDGET_BLOCKED" || ev.terminalReason === "PROVIDER_QUOTA_EXCEEDED") {
+    return "PROVIDER_BUDGET_REFUSAL";
+  }
+  if (["PROVIDER_CONFIGURATION_MISSING", "PROVIDER_TIMEOUT", "PROVIDER_ERROR"].includes(ev.terminalReason)) {
+    return "PROVIDER_REQUEST_FAILURE";
+  }
+  if (ev.rawContractsReceived === 0 && ev.chainOutcome === "NO_CONTRACTS_IN_REQUESTED_RANGE") {
+    return "PROVIDER_RAW_ZERO";
+  }
+  if (ev.rawContractsReceived > 0 && ev.normalizedContractsReceived === 0) return "NORMALIZATION_ZERO";
+  if (ev.passedSide > 0 && ev.passedDte === 0) return "DTE_FILTER_ZERO";
+  if (ev.terminalReason === "NO_CONTRACT_IN_MONEYNESS_RANGE") return "STRIKE_FILTER_ZERO";
+  if (ev.terminalReason === "NO_CONTRACT_IN_DELTA_RANGE") return "DELTA_FILTER_ZERO";
+  if (ev.terminalReason === "SPREAD_REJECTED") return "SPREAD_FILTER_ZERO";
+  if (ev.terminalReason === "NO_TWO_SIDED_MARKET") return "QUOTE_FRESHNESS_ZERO";
+  return "OTHER_EXPLICIT_TERMINAL_REASON";
 }
 
 /**
@@ -396,6 +448,15 @@ export function selectContractWithEvidence(
   ev.normalizedContractsReceived = Number(opts.chainOutcome?.normalizedContractsReceived ?? chain.length);
   ev.chainOutcome = opts.chainOutcome?.outcome ?? null;
   ev.rangeCoverage = strategyRangeCoverage(opts.chainOutcome ?? null, strategyKey);
+  ev.requestedMinStrike = opts.chainOutcome?.requestedMinStrike ?? null;
+  ev.requestedMaxStrike = opts.chainOutcome?.requestedMaxStrike ?? null;
+  ev.returnedMinStrike = opts.chainOutcome?.returnedMinStrike ?? null;
+  ev.returnedMaxStrike = opts.chainOutcome?.returnedMaxStrike ?? null;
+  ev.fallbackUsed = opts.chainOutcome?.fallbackUsed ?? false;
+  ev.fallbackReason = opts.chainOutcome?.fallbackReason ?? null;
+  ev.providerTimestamp = opts.chainOutcome?.providerTimestamp ?? null;
+  ev.observationTimestamp = opts.chainOutcome?.observationTimestamp ?? nowMs;
+  ev.providerRequests = opts.chainOutcome?.providerRequests ?? 0;
 
   const strat = getStrategy(strategyKey);
   if (!strat) {

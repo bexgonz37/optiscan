@@ -22,6 +22,7 @@ import {
   type SupplementalEvidence,
 } from "./advisory-chat-evidence.ts";
 import type { CanonicalFindingsReport } from "./findings-report.ts";
+import { askOptiscanGlossary } from "../terminology.ts";
 
 export const ADVISORY_CHAT_PROMPT_VERSION = "advisory-chat-v1";
 
@@ -43,18 +44,7 @@ export const SUGGESTED_PROMPTS: Array<{ prompt: string; mode: ChatMode }> = [
 ];
 
 /** Jargon the answer must translate rather than assume. */
-export const GLOSSARY: Record<string, string> = {
-  MFE: "Maximum favourable excursion — the best unrealised gain a trade reached before it closed.",
-  MAE: "Maximum adverse excursion — the worst unrealised loss a trade reached before it closed.",
-  "capture efficiency": "Capture efficiency measures how much of a trade's best available gain the exit policy actually kept.",
-  expectancy: "Expectancy is the average result per trade, combining how often it wins with how much it wins or loses.",
-  "profit factor": "Profit factor is total gains divided by total losses; above 1 means gains outweigh losses.",
-  "delta band": "Delta band is the range of option price sensitivity used to pick a strike.",
-  T1: "T1 is the first profit target for a trade.",
-  T2: "T2 is the second, further profit target.",
-  "0DTE": "0DTE means an option expiring the same day.",
-  VWAP: "VWAP is the volume-weighted average price for the session — a common reference for whether price is strong or weak.",
-};
+export const GLOSSARY: Record<string, string> = askOptiscanGlossary();
 
 export interface AdvisoryChatAnswer {
   answer: string;

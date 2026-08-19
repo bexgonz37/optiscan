@@ -47,7 +47,7 @@ const CASE = Object.freeze({
   evidenceState: "NON_ACTIONABLE_RESEARCH",
 });
 const OPEN_MS = Date.UTC(2026, 7, 19, 13, 30);
-const EXPECTED_ENTRY_MARK = (CASE.entryBid + CASE.entryAsk) / 2;
+const EXPECTED_ENTRY_MARK = CASE.entryAsk;
 
 function seed() {
   const db = new Database(":memory:");
@@ -97,7 +97,7 @@ function seed() {
         hit_25, hit_50, hit_100, hit_200, time_to_25_ms, time_to_50_ms, time_to_100_ms, time_to_200_ms, marks_used)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
-    CASE.sessionDate, "fp_canonical", CASE.occ, CASE.entryAsk,
+    CASE.sessionDate, `${CASE.sessionDate}|${CASE.occ}`, CASE.occ, CASE.entryAsk,
     293, -8, 180, 1, 1, 1, 1, 300_000, 600_000, 1_200_000, 2_100_000, 7,
   );
   return db;

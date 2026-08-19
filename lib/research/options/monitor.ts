@@ -16,6 +16,7 @@ import { decideDeliveryBatch, type DeliverySubmission } from "./delivery-decisio
 import { runOptionsCandidate, type ChainContract, type ChainFetchOutcome } from "./loop.ts";
 import { computeOptionsFeatures, featuresToUnderlying, type Bar, type FeatureContext } from "./features.ts";
 import { summarizeChainFeatures, chainFeaturesToActivity, type OptionContract } from "./chain-features.ts";
+import { persistOptionsLatencyTraceOnDb, type OptionsLatencyTrace } from "./latency-telemetry.ts";
 import { assertSubscriberScanAllowed } from "../../market-session-guard.ts";
 import { bearishPipelineEnabled, latestPendingBearishEscalationForSymbol } from "./bearish-authority.ts";
 import { selectTier2Cycle, tier2PriorityConfig, type Tier2Candidate } from "./tier2-priority.ts";
@@ -34,6 +35,7 @@ export function portfolioDeliveryStatus(env: NodeJS.ProcessEnv = process.env): {
 export interface UnderlyingSnapshot {
   price: number | null; dayDollarVolume: number | null; relVolume: number | null;
   velPct: number | null; accelPct: number | null; gapPct: number | null;
+  volumeAccel?: number | null; volumeSurgeProxy?: number | null; dollarVolumeAccel?: number | null;
   aboveVwap: boolean | null; hodBreak: boolean | null; lodBreak?: boolean | null; nearResistancePct: number | null; nearSupportPct?: number | null;
   compressionPct: number | null; realizedVolExpanding: boolean | null; openingRange: boolean | null; premarketLevelTest: boolean | null;
 }
@@ -245,6 +247,7 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
 
       // STAGE 1.5 — enrich with compact recent bars → decision-time features (when getBars is wired).
       let input = toCandidate(symbol, candTier, session, snap, n0);
+      const candidateCreatedAtMs = now();
       let featureSnapshot: any = { source: "snapshot_only" };
       let fractionMove: number | null = null;
       if (deps.getBars) {
@@ -258,8 +261,8 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
         const u = featuresToUnderlying(f);
         input = { ...input, underlying: u };
         featureSnapshot = { source: "enriched", underlying: f };
-        // record the EFFECTIVE relVolume (the proxy when no baseline exists), so the distribution is
-        // observable during hours; distributions summarize all NON-STALE enriched symbols.
+        // Record only legitimate time-of-day RVOL. The separately named surge
+        // proxy must never enter an RVOL distribution.
         if (u.relVolume != null) record(s.metrics.rvolSamples, u.relVolume);
         if (f.vwapDistPct != null) record(s.metrics.vwapDistSamples, f.vwapDistPct);
         if (f.compressionScore != null) record(s.metrics.compressionSamples, f.compressionScore);
@@ -288,10 +291,12 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
       if (breakerOpen(s, now())) { s.metrics.throttles += 1; return; }
       if (!tryConsume(s, cfg, now(), tier)) { s.metrics.throttles += 1; return; }
       // STAGE 2 — fetch the chain + compute chain features.
+      const chainStartedAtMs = now();
       const chainRes = await deps.getChain(symbol, input.underlying.price ?? null, {
         side: preSelection?.selected?.side ?? null,
         strategyKey: preSelection?.selected?.key ?? null,
       });
+      const chainCompletedAtMs = now();
       const chain = chainRes.contracts;
       s.metrics.providerChain += 1; s.metrics.stage2Chain += 1; s.metrics.chainsFetched += 1; chains += 1; breakerSuccess(s);
       // "Available" is about whether the provider answered, not whether the answer
@@ -314,12 +319,38 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
       const earlinessPhase = classifySessionRangePosition(fractionMove);
       if (earlinessPhase === "early") s.metrics.phaseEarly += 1; else if (earlinessPhase === "during") s.metrics.phaseDuring += 1; else if (earlinessPhase === "late") s.metrics.phaseLate += 1;
 
+      const latencyTrace: OptionsLatencyTrace = {
+        traceId: `olt:${n0}:${tier}:${symbol.toUpperCase()}`,
+        symbol: symbol.toUpperCase(), tier,
+        observationReceivedAtMs: n0,
+        candidateCreatedAtMs,
+        strategyEvaluationCompletedAtMs: null,
+        chainStartedAtMs,
+        chainCompletedAtMs,
+        contractSelectedAtMs: null,
+        providerQuoteTimestampMs: null,
+        providerQuoteAgeMs: null,
+      };
       const res = runOptionsCandidate({ ...input }, chain, getDb ? { getDb } : {}, env, {
         chainOutcome: chainRes,
         featureSnapshot: { ...featureSnapshot, fractionMove, earlinessPhase }, earlinessPhase, escalatedBy, coreBroad: tier === 2 ? "broad" : "core",
-        rankTier: tier, fractionMove,
+        rankTier: tier, fractionMove, latencyTrace,
         ...(portfolio.enabled ? { collectDelivery: (sub) => deliveryBatch.push(sub) } : {}),
       });
+      latencyTrace.strategyEvaluationCompletedAtMs = now();
+      latencyTrace.contractSelectedAtMs = res?.contract ? latencyTrace.strategyEvaluationCompletedAtMs : null;
+      latencyTrace.providerQuoteTimestampMs = res?.contract?.providerTimestamp ?? null;
+      latencyTrace.providerQuoteAgeMs = res?.contract?.providerTimestamp == null
+        ? null
+        : Math.max(0, latencyTrace.strategyEvaluationCompletedAtMs - res.contract.providerTimestamp);
+      if (getDb) {
+        try {
+          persistOptionsLatencyTraceOnDb(
+            getDb(), latencyTrace, res?.selection.selected?.key ?? null,
+            res?.state ?? "NO_SELECTION", latencyTrace.strategyEvaluationCompletedAtMs,
+          );
+        } catch { /* telemetry must never alter evaluation */ }
+      }
       if (res?.selection.selected) { created += 1; s.metrics.candidatesCreated += 1; if (tier === 0) s.metrics.tier0Candidates += 1; s.metrics.latestCandidateMs = now(); s.cooldownStrategy.set(`${symbol}:${res.selection.selected.key}`, now() + cfg.strategyCooldownMs); }
       else { rejected += 1; s.metrics.candidatesRejected += 1; }
       s.cooldownSymbol.set(symbol, now() + cfg.symbolCooldownMs);

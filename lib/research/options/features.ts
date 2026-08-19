@@ -22,7 +22,8 @@ export interface FeatureContext {
 
 export interface OptionsFeatures {
   price: number | null; lastBarAgeMs: number | null; stale: boolean;
-  relVolume: number | null; volumeAccel: number | null; dollarVolume: number | null; dollarVolumeAccel: number | null;
+  relVolume: number | null; volumeAccel: number | null; volumeSurgeProxy: number | null;
+  dollarVolume: number | null; dollarVolumeAccel: number | null;
   vwap: number | null; vwapDistPct: number | null; aboveVwap: boolean | null;
   hod: number | null; lod: number | null; hodProxPct: number | null; lodProxPct: number | null; hodBreak: boolean | null;
   nearestResistance: number | null; nearestResistanceDistPct: number | null;
@@ -45,7 +46,7 @@ export function computeOptionsFeatures(barsIn: Bar[], ctx: FeatureContext): Opti
   const openingRangeActive = ctx.session === "regular" && sessionState(ctx.nowMs) === "OPENING_DISCOVERY";
   const bars = [...barsIn].filter((b) => b.t <= ctx.nowMs).sort((a, b) => a.t - b.t);
   const base: OptionsFeatures = {
-    price: null, lastBarAgeMs: null, stale: true, relVolume: null, volumeAccel: null, dollarVolume: null, dollarVolumeAccel: null,
+    price: null, lastBarAgeMs: null, stale: true, relVolume: null, volumeAccel: null, volumeSurgeProxy: null, dollarVolume: null, dollarVolumeAccel: null,
     vwap: null, vwapDistPct: null, aboveVwap: null, hod: null, lod: null, hodProxPct: null, lodProxPct: null, hodBreak: null,
     nearestResistance: null, nearestResistanceDistPct: null, nearestSupport: null, nearestSupportDistPct: null,
     trendSlopePctPerBar: null, shortMomentumPct: null, velPct: null, accelPct: null, realizedVol: null, realizedVolExpanding: null, atrPct: null,
@@ -64,8 +65,16 @@ export function computeOptionsFeatures(barsIn: Bar[], ctx: FeatureContext): Opti
   const recentVol = bars.slice(-recentN).reduce((a, b) => a + b.v, 0) / recentN;
   const priorVol = priorN > 0 ? bars.slice(-recentN - priorN, -recentN).reduce((a, b) => a + b.v, 0) / priorN : recentVol;
   const volumeAccel = priorVol > 0 ? +((recentVol - priorVol) / priorVol).toFixed(3) : 0;
-  const dollarVolume = +(cumVol * price).toFixed(0);
-  const dollarVolumeAccel = volumeAccel; // same shape (volume × ~constant price intraday)
+  const barDollarVolumes = bars.map((b) => ((b.h + b.l + b.c) / 3) * b.v);
+  const dollarVolume = +barDollarVolumes.reduce((a, x) => a + x, 0).toFixed(0);
+  const recentDollarVolume = barDollarVolumes.slice(-recentN).reduce((a, x) => a + x, 0) / recentN;
+  const priorDollarVolume = priorN > 0
+    ? barDollarVolumes.slice(-recentN - priorN, -recentN).reduce((a, x) => a + x, 0) / priorN
+    : recentDollarVolume;
+  const dollarVolumeAccel = priorDollarVolume > 0
+    ? +((recentDollarVolume - priorDollarVolume) / priorDollarVolume).toFixed(3)
+    : 0;
+  const volumeSurgeProxy = volumeAccel > 0.5 ? +(2 + volumeAccel).toFixed(2) : null;
 
   // VWAP
   const vwapNum = bars.reduce((a, b) => a + ((b.h + b.l + b.c) / 3) * b.v, 0);
@@ -117,7 +126,7 @@ export function computeOptionsFeatures(barsIn: Bar[], ctx: FeatureContext): Opti
   const premarketLevelTest = ctx.session === "premarket" && ((ctx.premarketHigh != null && Math.abs(pct(price, ctx.premarketHigh)) <= 0.3) || (ctx.premarketLow != null && Math.abs(pct(price, ctx.premarketLow)) <= 0.3));
 
   return {
-    price, lastBarAgeMs, stale, relVolume, volumeAccel, dollarVolume, dollarVolumeAccel,
+    price, lastBarAgeMs, stale, relVolume, volumeAccel, volumeSurgeProxy, dollarVolume, dollarVolumeAccel,
     vwap, vwapDistPct, aboveVwap, hod, lod, hodProxPct, lodProxPct, hodBreak,
     nearestResistance, nearestResistanceDistPct, nearestSupport, nearestSupportDistPct,
     trendSlopePctPerBar, shortMomentumPct, velPct, accelPct, realizedVol, realizedVolExpanding, atrPct,
@@ -128,13 +137,13 @@ export function computeOptionsFeatures(barsIn: Bar[], ctx: FeatureContext): Opti
 /** Map enriched features → the monitor's UnderlyingSnapshot shape used by activeSignals/scoreStrategies. */
 export function featuresToUnderlying(f: OptionsFeatures): {
   price: number | null; dayDollarVolume: number | null; relVolume: number | null; velPct: number | null; accelPct: number | null; gapPct: number | null;
+  volumeAccel: number | null; volumeSurgeProxy: number | null; dollarVolumeAccel: number | null;
   aboveVwap: boolean | null; hodBreak: boolean | null; lodBreak: boolean | null; nearResistancePct: number | null; nearSupportPct: number | null; compressionPct: number | null; realizedVolExpanding: boolean | null; openingRange: boolean | null; premarketLevelTest: boolean | null;
 } {
-  // relVolume prefers a real time-of-day baseline; absent that, a bar-based volume-surge PROXY (only
-  // when volume is clearly accelerating) so the rel_volume signal can fire without fabricating a baseline.
-  const relVolume = f.relVolume ?? (f.volumeAccel != null && f.volumeAccel > 0.5 ? +(2 + f.volumeAccel).toFixed(2) : null);
   return {
-    price: f.price, dayDollarVolume: f.dollarVolume, relVolume, velPct: f.velPct, accelPct: f.accelPct, gapPct: f.gapPct,
+    price: f.price, dayDollarVolume: f.dollarVolume, relVolume: f.relVolume,
+    volumeAccel: f.volumeAccel, volumeSurgeProxy: f.volumeSurgeProxy,
+    dollarVolumeAccel: f.dollarVolumeAccel, velPct: f.velPct, accelPct: f.accelPct, gapPct: f.gapPct,
     aboveVwap: f.aboveVwap, hodBreak: f.hodBreak, lodBreak: f.price != null && f.lod != null ? f.price <= f.lod + 1e-9 : null,
     nearResistancePct: f.nearestResistanceDistPct, nearSupportPct: f.nearestSupportDistPct,
     compressionPct: f.compressionScore, realizedVolExpanding: f.realizedVolExpanding,

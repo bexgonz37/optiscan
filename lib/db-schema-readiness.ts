@@ -24,6 +24,15 @@ export const ENTERPRISE_REQUIRED_TABLES = [
   "evidence_learning_examples",
   "evidence_learning_patterns",
   "evidence_learning_runs",
+  "setup_episodes",
+  "episode_labels",
+  "episode_actions",
+  "episode_outcome_labels_v2",
+  "contract_funnel_evidence",
+  "storage_health_samples",
+  "storage_warning_events",
+  "backup_restore_verifications",
+  "options_live_latency_traces",
 ] as const;
 
 export type EnterpriseRequiredTable = (typeof ENTERPRISE_REQUIRED_TABLES)[number];
@@ -249,7 +258,212 @@ CREATE TABLE IF NOT EXISTS evidence_learning_runs (
   source_watermark INTEGER NOT NULL DEFAULT 0,
   created_at_ms INTEGER NOT NULL
 );
+
+-- Canonical Phase-1 market memory. setup_episodes remains the single episode
+-- table; episode_version=2 rows use the additive identity/Zone-A columns below.
+CREATE TABLE IF NOT EXISTS setup_episodes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  episode_key TEXT NOT NULL UNIQUE, source TEXT NOT NULL, symbol TEXT NOT NULL,
+  t0_ms INTEGER NOT NULL, trading_day TEXT NOT NULL, session TEXT NOT NULL,
+  tod_bucket TEXT, asset_class TEXT NOT NULL DEFAULT 'stock', direction TEXT,
+  regime_label TEXT, regime_model_version INTEGER, liquidity_tier TEXT, validity_tier TEXT,
+  price_structure_json TEXT, momentum_json TEXT, volume_json TEXT, volatility_json TEXT,
+  regime_json TEXT, sector_json TEXT, breadth_json TEXT, options_context_json TEXT,
+  catalyst_json TEXT, liquidity_json TEXT, data_quality_json TEXT, missing_json TEXT,
+  gate_results_json TEXT, feature_schema_version INTEGER NOT NULL,
+  max_feature_as_of_ms INTEGER NOT NULL, provenance_json TEXT, created_at_ms INTEGER NOT NULL,
+  episode_version INTEGER NOT NULL DEFAULT 1, population TEXT, zone_a_json TEXT,
+  config_digest TEXT, production_sha TEXT, strategy_version TEXT, feature_version TEXT,
+  selected_strategy TEXT, selection_strength REAL, disposition TEXT, rejection_reason TEXT,
+  candidate_id INTEGER, opportunity_case_id TEXT, thesis_fingerprint TEXT, selected_occ TEXT,
+  source_lane TEXT, entry_convention TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_setup_episodes_sym ON setup_episodes(symbol,t0_ms);
+CREATE INDEX IF NOT EXISTS idx_setup_episodes_v2_population ON setup_episodes(episode_version,population,t0_ms);
+CREATE INDEX IF NOT EXISTS idx_setup_episodes_v2_case ON setup_episodes(opportunity_case_id);
+
+CREATE TABLE IF NOT EXISTS episode_labels (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, episode_key TEXT NOT NULL, horizon TEXT NOT NULL,
+  target_kind TEXT NOT NULL, outcome_kind TEXT NOT NULL, return_pct REAL, mfe_pct REAL, mae_pct REAL,
+  target_before_stop TEXT, time_to_target_ms INTEGER, time_to_invalidation_ms INTEGER,
+  realized_vol REAL, gap_pct REAL, gap_filled INTEGER, model_assumptions_json TEXT,
+  label_as_of_ms INTEGER NOT NULL, computed_at_ms INTEGER NOT NULL,
+  UNIQUE(episode_key,horizon,target_kind)
+);
+
+CREATE TABLE IF NOT EXISTS episode_actions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  episode_key TEXT NOT NULL, action_kind TEXT NOT NULL, action_ref TEXT NOT NULL,
+  occurred_at_ms INTEGER NOT NULL, exact_occ TEXT, entry_convention TEXT,
+  defensible_entry INTEGER NOT NULL DEFAULT 0, metadata_json TEXT, created_at_ms INTEGER NOT NULL,
+  UNIQUE(episode_key,action_kind,action_ref)
+);
+CREATE INDEX IF NOT EXISTS idx_episode_actions_episode ON episode_actions(episode_key,action_kind);
+
+CREATE TABLE IF NOT EXISTS episode_outcome_labels_v2 (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  label_id TEXT NOT NULL UNIQUE, episode_key TEXT NOT NULL, label_kind TEXT NOT NULL,
+  horizon TEXT NOT NULL, exact_occ TEXT, entry_convention TEXT,
+  terminal_return_pct REAL, mfe_pct REAL, mae_pct REAL,
+  hit_10 INTEGER, hit_25 INTEGER, hit_50 INTEGER, hit_100 INTEGER,
+  hit_neg_10 INTEGER, hit_neg_20 INTEGER, hit_stop INTEGER,
+  time_to_10_ms INTEGER, time_to_25_ms INTEGER, time_to_50_ms INTEGER, time_to_100_ms INTEGER,
+  time_to_neg_10_ms INTEGER, time_to_neg_20_ms INTEGER, time_to_stop_ms INTEGER,
+  plus_10_before_neg_10 INTEGER, plus_25_before_neg_20 INTEGER,
+  plus_50_before_stop INTEGER, stop_before_plus_25 INTEGER,
+  coverage TEXT NOT NULL, censored INTEGER NOT NULL DEFAULT 0, missing_reason TEXT,
+  quote_count INTEGER, first_evidence_at_ms INTEGER, last_evidence_at_ms INTEGER,
+  evidence_quality TEXT NOT NULL, intrabar_status TEXT NOT NULL,
+  label_as_of_ms INTEGER NOT NULL, config_digest TEXT NOT NULL, computed_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_episode_outcomes_v2_episode ON episode_outcome_labels_v2(episode_key,label_kind,horizon);
+
+CREATE TABLE IF NOT EXISTS contract_funnel_evidence (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, session_date TEXT NOT NULL, at_ms INTEGER NOT NULL,
+  symbol TEXT NOT NULL, direction TEXT, requested_side TEXT NOT NULL, strategy_key TEXT NOT NULL,
+  discovery_version TEXT NOT NULL, selection_version TEXT NOT NULL,
+  contracts_received INTEGER NOT NULL DEFAULT 0, calls_received INTEGER NOT NULL DEFAULT 0,
+  puts_received INTEGER NOT NULL DEFAULT 0, passed_side INTEGER NOT NULL DEFAULT 0,
+  passed_dte INTEGER NOT NULL DEFAULT 0, two_sided INTEGER NOT NULL DEFAULT 0,
+  with_delta INTEGER NOT NULL DEFAULT 0, delta_coverage REAL, passed_delta_band INTEGER NOT NULL DEFAULT 0,
+  ranked_count INTEGER NOT NULL DEFAULT 0, delta_source TEXT, selected_occ TEXT,
+  terminal_reason TEXT NOT NULL, greeks_missing_on_side INTEGER NOT NULL DEFAULT 0,
+  page_limit_reached INTEGER NOT NULL DEFAULT 0
+);
+
+-- Bounded operational evidence. Samples are written by the detached maintenance
+-- beat, never by the System Health page and never by the live alert path.
+CREATE TABLE IF NOT EXISTS storage_health_samples (
+  sampled_at_ms INTEGER PRIMARY KEY,
+  db_bytes INTEGER NOT NULL,
+  wal_bytes INTEGER NOT NULL,
+  shm_bytes INTEGER NOT NULL,
+  volume_total_bytes INTEGER,
+  volume_available_bytes INTEGER,
+  volume_used_bytes INTEGER,
+  volume_used_pct REAL,
+  write_latency_ms REAL,
+  checkpoint_busy INTEGER,
+  checkpoint_log_pages INTEGER,
+  checkpointed_pages INTEGER,
+  monitor_busy_events_total INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_storage_health_samples_time ON storage_health_samples(sampled_at_ms);
+
+CREATE TABLE IF NOT EXISTS storage_warning_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  state TEXT NOT NULL,
+  previous_state TEXT,
+  volume_used_pct REAL,
+  message TEXT NOT NULL,
+  transitioned_at_ms INTEGER NOT NULL,
+  owner_notified_at_ms INTEGER,
+  owner_notify_result TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_storage_warning_events_time ON storage_warning_events(transitioned_at_ms);
+
+CREATE TABLE IF NOT EXISTS backup_restore_verifications (
+  verification_id TEXT PRIMARY KEY,
+  backup_file TEXT NOT NULL,
+  backup_created_at_ms INTEGER NOT NULL,
+  backup_bytes INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  verified_at_ms INTEGER NOT NULL,
+  temporary_destination TEXT NOT NULL,
+  quick_check_result TEXT NOT NULL,
+  production_overwritten INTEGER NOT NULL DEFAULT 0,
+  details_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_backup_restore_verifications_time ON backup_restore_verifications(verified_at_ms);
+
+CREATE TABLE IF NOT EXISTS options_live_latency_traces (
+  trace_id TEXT PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  tier INTEGER NOT NULL,
+  strategy TEXT,
+  evaluation_outcome TEXT,
+  observation_received_at_ms INTEGER NOT NULL,
+  candidate_created_at_ms INTEGER,
+  strategy_evaluation_completed_at_ms INTEGER,
+  chain_started_at_ms INTEGER,
+  chain_completed_at_ms INTEGER,
+  contract_selected_at_ms INTEGER,
+  delivery_decision_at_ms INTEGER,
+  discord_send_started_at_ms INTEGER,
+  discord_accepted_at_ms INTEGER,
+  provider_quote_timestamp_ms INTEGER,
+  provider_quote_age_ms INTEGER,
+  alert_id TEXT,
+  final_delivery_outcome TEXT,
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_options_latency_created ON options_live_latency_traces(created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_options_latency_delivery ON options_live_latency_traces(final_delivery_outcome,discord_accepted_at_ms);
 `;
+
+const CANONICAL_EVIDENCE_COLUMNS = [
+  ["setup_episodes", "episode_version", "INTEGER NOT NULL DEFAULT 1"],
+  ["setup_episodes", "population", "TEXT"],
+  ["setup_episodes", "zone_a_json", "TEXT"],
+  ["setup_episodes", "config_digest", "TEXT"],
+  ["setup_episodes", "production_sha", "TEXT"],
+  ["setup_episodes", "strategy_version", "TEXT"],
+  ["setup_episodes", "feature_version", "TEXT"],
+  ["setup_episodes", "selected_strategy", "TEXT"],
+  ["setup_episodes", "selection_strength", "REAL"],
+  ["setup_episodes", "disposition", "TEXT"],
+  ["setup_episodes", "rejection_reason", "TEXT"],
+  ["setup_episodes", "candidate_id", "INTEGER"],
+  ["setup_episodes", "opportunity_case_id", "TEXT"],
+  ["setup_episodes", "thesis_fingerprint", "TEXT"],
+  ["setup_episodes", "selected_occ", "TEXT"],
+  ["setup_episodes", "source_lane", "TEXT"],
+  ["setup_episodes", "entry_convention", "TEXT"],
+  ["contract_funnel_evidence", "terminal_stage", "TEXT NOT NULL DEFAULT 'OTHER_EXPLICIT_TERMINAL_REASON'"],
+  ["contract_funnel_evidence", "with_bid", "INTEGER NOT NULL DEFAULT 0"],
+  ["contract_funnel_evidence", "with_ask", "INTEGER NOT NULL DEFAULT 0"],
+  ["contract_funnel_evidence", "requested_min_strike", "REAL"],
+  ["contract_funnel_evidence", "requested_max_strike", "REAL"],
+  ["contract_funnel_evidence", "returned_min_strike", "REAL"],
+  ["contract_funnel_evidence", "returned_max_strike", "REAL"],
+  ["contract_funnel_evidence", "fallback_used", "INTEGER NOT NULL DEFAULT 0"],
+  ["contract_funnel_evidence", "fallback_reason", "TEXT"],
+  ["contract_funnel_evidence", "provider_timestamp_ms", "INTEGER"],
+  ["contract_funnel_evidence", "observation_timestamp_ms", "INTEGER"],
+  ["contract_funnel_evidence", "provider_requests", "INTEGER NOT NULL DEFAULT 0"],
+] as const;
+
+function listMissingCanonicalEvidenceColumns(db: SqliteDb): Array<{ table: string; column: string }> {
+  return CANONICAL_EVIDENCE_COLUMNS
+    .filter(([table, column]) => hasSqliteTable(db, table) && !legacyHasSqliteColumn(db, table, column))
+    .map(([table, column]) => ({ table, column }));
+}
+
+function ensureCanonicalEvidenceColumnsOnDb(db: SqliteDb): void {
+  for (const [table, column, ddl] of CANONICAL_EVIDENCE_COLUMNS) {
+    if (hasSqliteTable(db, table) && !legacyHasSqliteColumn(db, table, column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+    }
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_setup_episodes_v2_population ON setup_episodes(episode_version,population,t0_ms);
+    CREATE INDEX IF NOT EXISTS idx_setup_episodes_v2_case ON setup_episodes(opportunity_case_id);
+    CREATE INDEX IF NOT EXISTS idx_contract_funnel_stage ON contract_funnel_evidence(session_date,terminal_stage);
+    CREATE TRIGGER IF NOT EXISTS trg_setup_episode_v2_immutable_update BEFORE UPDATE ON setup_episodes
+      WHEN OLD.episode_version >= 2 BEGIN SELECT RAISE(ABORT,'SetupEpisodeV2 is immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS trg_setup_episode_v2_immutable_delete BEFORE DELETE ON setup_episodes
+      WHEN OLD.episode_version >= 2 BEGIN SELECT RAISE(ABORT,'SetupEpisodeV2 is immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS trg_episode_actions_append_only_update BEFORE UPDATE ON episode_actions
+      BEGIN SELECT RAISE(ABORT,'episode actions are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS trg_episode_actions_append_only_delete BEFORE DELETE ON episode_actions
+      BEGIN SELECT RAISE(ABORT,'episode actions are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS trg_episode_outcomes_v2_append_only_update BEFORE UPDATE ON episode_outcome_labels_v2
+      BEGIN SELECT RAISE(ABORT,'episode outcome labels are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS trg_episode_outcomes_v2_append_only_delete BEFORE DELETE ON episode_outcome_labels_v2
+      BEGIN SELECT RAISE(ABORT,'episode outcome labels are append-only'); END;
+  `);
+}
 
 export function resolveDbLocation(env: NodeJS.ProcessEnv = process.env): DbLocationInfo {
   const directory = env.ALERT_DB_DIR || path.join(process.cwd(), "data");
@@ -290,8 +504,8 @@ export function listMissingEnterpriseTables(db: SqliteDb): EnterpriseRequiredTab
 /** Apply explicit enterprise DDL. Repeat-safe; additive only. */
 export function ensureEnterpriseSchemaOnDb(db: SqliteDb): EnterpriseRequiredTable[] {
   const before = listMissingEnterpriseTables(db);
-  if (before.length === 0) return [];
   db.exec(ENTERPRISE_SCHEMA_DDL);
+  ensureCanonicalEvidenceColumnsOnDb(db);
   const after = listMissingEnterpriseTables(db);
   if (after.length > 0) {
     throw new Error(`enterprise schema repair incomplete; still missing: ${after.join(", ")}`);
@@ -317,6 +531,7 @@ function buildReadinessCore(
   const missing = listMissingEnterpriseTables(db);
   const present = ENTERPRISE_REQUIRED_TABLES.filter((t) => !missing.includes(t));
   const missingLegacyColumns = listMissingLegacyColumns(db);
+  missingLegacyColumns.push(...listMissingCanonicalEvidenceColumns(db));
   const presentLegacyColumns = LEGACY_COLUMN_CHECKS.filter(
     (c) => !missingLegacyColumns.some((m) => m.table === c.table && m.column === c.column),
   );

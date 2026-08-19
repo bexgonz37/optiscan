@@ -59,7 +59,30 @@ type Overview = {
     ownership?: { owner?: string; independentOwns?: boolean; supervisorOptionsBlocked?: boolean };
     kill_switch?: boolean;
   };
-  database?: { ok?: boolean; note?: string };
+  database?: {
+    ok?: boolean;
+    note?: string;
+    storage?: {
+      current?: {
+        dbBytes?: number; walBytes?: number; shmBytes?: number;
+        volumeTotalBytes?: number | null; volumeAvailableBytes?: number | null;
+        volumeUsedBytes?: number | null; volumeUsedPct?: number | null;
+      };
+      growth?: {
+        oneDayBytes?: number | null; sevenDayBytes?: number | null; thirtyDayBytes?: number | null;
+        projectedDaysToExhaustion?: number | null; basis?: string;
+      };
+      largestTables?: { table: string; estimatedRows: number | null; estimatedBytes: number | null }[];
+      writeLatencyMs?: number | null;
+      sqliteBusyEvents?: { count?: number | null; coverage?: string; reason?: string };
+      checkpoint?: { sampledAtMs?: number; busy?: number | null; logPages?: number | null; checkpointedPages?: number | null } | null;
+      integrity?: { status?: string | null; verifiedAtMs?: number | null; scope?: string; reason?: string };
+      backup?: { file?: string | null; createdAtMs?: number | null; bytes?: number | null; sha256?: string | null; ageMs?: number | null } | null;
+      lastRestoreDrill?: Record<string, unknown> | null;
+      warning?: { state?: string; message?: string; transitionedAtMs?: number | null };
+      bounded?: boolean;
+    } | null;
+  };
   discord?: { summary?: { status: string; count: number }[] };
   entitlement_limitations?: string[];
 };
@@ -77,6 +100,21 @@ function ms(v: number | null | undefined): string {
   if (v == null) return "—";
   if (v < 1000) return `${v} ms`;
   return `${(v / 1000).toFixed(1)} s`;
+}
+
+function bytes(v: number | null | undefined): string {
+  if (v == null) return "Not measured";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let n = Math.max(0, v);
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
+  return `${n.toFixed(i >= 3 ? 2 : i > 0 ? 1 : 0)} ${units[i]}`;
+}
+
+function age(v: number | null | undefined): string {
+  if (v == null) return "Not recorded";
+  const hours = v / 3_600_000;
+  return hours < 48 ? `${hours.toFixed(1)} hours ago` : `${(hours / 24).toFixed(1)} days ago`;
 }
 
 export default function SystemHealthPage() {
@@ -162,6 +200,9 @@ export default function SystemHealthPage() {
           : "Scanner path looks healthy — no aggregated blockers.";
 
   const faults = data.faults ?? [];
+  const storage = data.database?.storage;
+  const storageState = storage?.warning?.state ?? "UNKNOWN";
+  const storageWarn = storageState !== "OK";
 
   return (
     <PageContainer>
@@ -241,7 +282,52 @@ export default function SystemHealthPage() {
           <KeyValue k="Stale symbols" v={data.stale_symbol_count ?? 0} tone={(data.stale_symbol_count ?? 0) > 0 ? "warn" : undefined} />
           <KeyValue k="Database" v={<StatusBadge tone={dbOk ? "live" : "bad"}>{data.database?.note ?? (dbOk ? "OK" : "fault")}</StatusBadge>} />
         </Card>
+
+        <Card title="Storage capacity" meta="Private operational evidence" tone={storageWarn ? "warn" : undefined}>
+          <KeyValue k="Database file" v={bytes(storage?.current?.dbBytes)} />
+          <KeyValue k="Volume used" v={storage?.current?.volumeUsedPct == null ? "Not measured" : `${storage.current.volumeUsedPct.toFixed(1)}%`} tone={storageWarn ? "warn" : undefined} />
+          <KeyValue k="Available" v={bytes(storage?.current?.volumeAvailableBytes)} />
+          <KeyValue k="7-day DB growth" v={bytes(storage?.growth?.sevenDayBytes)} />
+          <KeyValue
+            k="Projected capacity"
+            v={storage?.growth?.projectedDaysToExhaustion == null ? "Needs measured positive growth" : `${storage.growth.projectedDaysToExhaustion.toFixed(0)} days`}
+          />
+          <KeyValue k="Latest backup" v={storage?.backup ? age(storage.backup.ageMs) : "No app backup metadata"} tone={storage?.backup ? undefined : "warn"} />
+          {storage?.warning?.message ? <div className="ui-section-hint">{storage.warning.message}</div> : null}
+        </Card>
       </ResponsiveGrid>
+
+      <DetailsDisclosure summary="Storage, backup, and SQLite details">
+        <Card title="Storage evidence" meta="Bounded samples; no multi-GB table scan runs when this page loads">
+          <ResponsiveGrid min={280}>
+            <div>
+              <KeyValue k="DB / WAL / SHM" v={`${bytes(storage?.current?.dbBytes)} · ${bytes(storage?.current?.walBytes)} · ${bytes(storage?.current?.shmBytes)}`} />
+              <KeyValue k="Volume total / used" v={`${bytes(storage?.current?.volumeTotalBytes)} · ${bytes(storage?.current?.volumeUsedBytes)}`} />
+              <KeyValue k="1d / 7d / 30d growth" v={`${bytes(storage?.growth?.oneDayBytes)} · ${bytes(storage?.growth?.sevenDayBytes)} · ${bytes(storage?.growth?.thirtyDayBytes)}`} />
+              <KeyValue k="Sample write latency" v={ms(storage?.writeLatencyMs)} />
+              <KeyValue k="Monitor lock events" v={storage?.sqliteBusyEvents?.count ?? "Not sampled"} />
+            </div>
+            <div>
+              <KeyValue k="WAL checkpoint" v={storage?.checkpoint ? `${storage.checkpoint.checkpointedPages ?? "?"}/${storage.checkpoint.logPages ?? "?"} pages · busy ${storage.checkpoint.busy ?? "?"}` : "No maintenance sample"} />
+              <KeyValue k="Integrity evidence" v={storage?.integrity?.status ?? storage?.integrity?.reason ?? "Not recorded"} />
+              <KeyValue k="Restore drill" v={storage?.lastRestoreDrill ? "Verified against temporary destination" : "Not recorded"} tone={storage?.lastRestoreDrill ? undefined : "warn"} />
+              <KeyValue k="Backup size" v={bytes(storage?.backup?.bytes)} />
+              <KeyValue k="Backup checksum" v={storage?.backup?.sha256 ? `${storage.backup.sha256.slice(0, 16)}…` : "Not recorded"} />
+            </div>
+          </ResponsiveGrid>
+          {storage?.largestTables?.length ? (
+            <div className="ui-table-scroll" style={{ marginTop: 12 }}>
+              <table className="ui-table">
+                <thead><tr><th>Largest tables (planner estimate)</th><th style={{ textAlign: "right" }}>Estimated rows</th><th>Bytes</th></tr></thead>
+                <tbody>{storage.largestTables.map((t) => (
+                  <tr key={t.table}><td>{t.table}</td><td style={{ textAlign: "right" }}>{t.estimatedRows?.toLocaleString() ?? "Unknown"}</td><td>Not scanned live</td></tr>
+                ))}</tbody>
+              </table>
+            </div>
+          ) : <div className="ui-section-hint">Largest-table estimates are unavailable until SQLite planner statistics exist. OptiScan does not run full COUNT or dbstat scans from this page.</div>}
+          <div className="ui-section-hint">Lock-event coverage is limited to storage-monitor writes because SQLite exposes no global busy counter. Unknown values stay unknown.</div>
+        </Card>
+      </DetailsDisclosure>
 
       {/* Data freshness — secondary; glance card covers high-level health */}
       <DetailsDisclosure summary="Data freshness by type">

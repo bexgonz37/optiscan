@@ -68,12 +68,17 @@ export async function GET(req: Request) {
 
   // Database health — a cheap writable ping, isolated so a DB fault never
   // masquerades as a provider or freshness problem.
-  const db = safe<{ ok: boolean; note: string }>("database", () => {
+  const db = safe<{ ok: boolean; note: string; storage: Record<string, unknown> | null }>("database", () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { getDb } = require("@/lib/db");
-    const one = getDb().prepare("SELECT 1 AS one").get()?.one;
-    return one === 1 ? { ok: true, note: "read/write OK" } : { ok: false, note: "unexpected ping result" };
-  }, { ok: false, note: "database unavailable" });
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getStorageHealthOnDb } = require("@/lib/storage-health");
+    const handle = getDb();
+    const one = handle.prepare("SELECT 1 AS one").get()?.one;
+    return one === 1
+      ? { ok: true, note: "read/write OK", storage: getStorageHealthOnDb(handle, process.env, now) }
+      : { ok: false, note: "unexpected ping result", storage: null };
+  }, { ok: false, note: "database unavailable", storage: null });
 
   const loop = safe("scanner_loop", () => loopState(), { running: false, intervalMs: null, lastTickAt: null, ticks: 0, triggers: 0, alerts: 0, errors: 0, note: "scanner state unavailable" } as any);
   const lastTickAgeMs = loop.lastTickAt == null ? null : Math.max(0, now - loop.lastTickAt);
@@ -150,11 +155,33 @@ export async function GET(req: Request) {
     const sessionGuard = evaluateMarketSessionGuard(now, process.env);
     let runtimeStatus: Record<string, unknown> | null = null;
     let recentSentCount24h: number | null = null;
+    let latency: Record<string, unknown> | null = null;
+    let setupEpisodeV2: Record<string, unknown> | null = null;
+    let contractFunnel: Record<string, unknown> | null = null;
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { getDb } = require("@/lib/db");
       const db = getDb();
       runtimeStatus = readRuntimeStatusOnDb(db, process.env, now) as Record<string, unknown>;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { optionsLatencySummaryOnDb } = require("@/lib/research/options/latency-telemetry");
+        latency = optionsLatencySummaryOnDb(db, now);
+      } catch { latency = null; }
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { setupEpisodeV2HealthOnDb } = require("@/lib/research/episode/v2");
+        setupEpisodeV2 = setupEpisodeV2HealthOnDb(db);
+      } catch (err: any) {
+        setupEpisodeV2 = { status: "ERROR", error: String(err?.message ?? err).slice(0, 180) };
+      }
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { contractFunnelHealthOnDb } = require("@/lib/research/options/contract-funnel-store");
+        contractFunnel = contractFunnelHealthOnDb(db);
+      } catch (err: any) {
+        contractFunnel = { status: "ERROR", error: String(err?.message ?? err).slice(0, 180) };
+      }
       try {
         const since = now - 24 * 3600_000;
         recentSentCount24h = Number((db.prepare(
@@ -199,6 +226,9 @@ export async function GET(req: Request) {
         providerFailures: Number(hb?.providerFailures ?? metrics.providerFailures ?? 0),
         discoveryPaused: callStats?.discoveryPaused ?? false,
       },
+      latency,
+      setupEpisodeV2,
+      contractFunnel,
     };
   }, null as Record<string, unknown> | null);
 

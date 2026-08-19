@@ -23,7 +23,8 @@ export type OwnerResearchNotifyKind =
   | "blocked_candidate"
   | "research_only_bearish"
   | "missed_opportunity"
-  | "shadow_insight";
+  | "shadow_insight"
+  | "storage_warning";
 
 export interface OwnerNotifyResult {
   sent: boolean;
@@ -98,6 +99,7 @@ function webhookConfiguredForDestination(kind: OwnerResearchNotifyKind, env: Nod
 }
 
 function recapClassification(kind: OwnerResearchNotifyKind): string {
+  if (kind === "storage_warning") return "SYSTEM WARNING";
   if (kind === "almost_ready") return "ALMOST READY";
   if (kind === "blocked_candidate") return "BLOCKED";
   if (kind === "missed_opportunity") return "MISSED OPPORTUNITY";

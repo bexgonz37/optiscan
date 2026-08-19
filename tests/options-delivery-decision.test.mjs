@@ -15,6 +15,7 @@ function db() {
           CREATE TABLE options_paper_trades (id INTEGER PRIMARY KEY AUTOINCREMENT, option_symbol TEXT NOT NULL, side TEXT, strike REAL, expiration TEXT, dte INTEGER, result_class TEXT NOT NULL, bid REAL, ask REAL, mid REAL, spread_pct REAL, entry_fill REAL, volume REAL, open_interest REAL, iv REAL, delta REAL, underlying_price REAL, strategy TEXT, target REAL, invalidation REAL, provenance TEXT, status TEXT NOT NULL, exit_fill REAL, pnl REAL, return_pct REAL, exit_reason TEXT, entered_at_ms INTEGER, exit_at_ms INTEGER, session TEXT, core_broad TEXT, feature_snapshot_json TEXT, paper_kind TEXT, alert_id TEXT, entry_source TEXT, experiment_id TEXT, experiment_variant TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
           CREATE VIEW options_paper_delivered AS SELECT * FROM options_paper_trades WHERE paper_kind='DELIVERED_ALERT_PAPER';
           CREATE VIEW options_paper_research AS SELECT * FROM options_paper_trades WHERE paper_kind='RESEARCH_ONLY_PAPER';
+          CREATE TABLE options_live_latency_traces (trace_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, tier INTEGER NOT NULL, strategy TEXT, evaluation_outcome TEXT, observation_received_at_ms INTEGER NOT NULL, candidate_created_at_ms INTEGER, strategy_evaluation_completed_at_ms INTEGER, chain_started_at_ms INTEGER, chain_completed_at_ms INTEGER, contract_selected_at_ms INTEGER, delivery_decision_at_ms INTEGER, discord_send_started_at_ms INTEGER, discord_accepted_at_ms INTEGER, provider_quote_timestamp_ms INTEGER, provider_quote_age_ms INTEGER, alert_id TEXT, final_delivery_outcome TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
           CREATE TABLE options_candidates (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT NOT NULL, tier INTEGER, session TEXT, selected_strategy TEXT, direction TEXT, side TEXT, research_only INTEGER NOT NULL DEFAULT 0, score REAL, considered_json TEXT, state TEXT NOT NULL, why TEXT, option_symbol TEXT, chain_fetch_ms INTEGER, freshness_state TEXT, callout_message TEXT, latency_json TEXT, earliness_phase TEXT, escalated_by TEXT, feature_snapshot_json TEXT, created_at_ms INTEGER NOT NULL);
           CREATE TABLE strategy_readiness_state (strategy_key TEXT PRIMARY KEY, strategy TEXT NOT NULL, strategy_version TEXT NOT NULL, state TEXT NOT NULL, classification TEXT, reason TEXT NOT NULL, sample_size INTEGER, expectancy_pct REAL, profit_factor REAL, evidence_snapshot_json TEXT, actor TEXT NOT NULL, deployment_sha TEXT, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL);
           CREATE TABLE strategy_readiness_transitions (id INTEGER PRIMARY KEY AUTOINCREMENT, strategy_key TEXT NOT NULL, strategy TEXT NOT NULL, strategy_version TEXT NOT NULL, prior_state TEXT, new_state TEXT NOT NULL, reason TEXT NOT NULL, classification TEXT, sample_size INTEGER, metrics_json TEXT, evidence_snapshot_json TEXT, actor TEXT NOT NULL, deployment_sha TEXT, at_ms INTEGER NOT NULL);`);
@@ -203,6 +204,11 @@ test("END-TO-END: monitor cycle in portfolio mode collects READY candidates and 
   assert.equal(new Set(rows.map((r) => r.batch_size)).size, 1, "single batch — candidates competed against each other");
   // sensitivity preserved: candidate rows exist for everything regardless of the delivery outcome
   assert.ok(d.prepare("SELECT COUNT(*) n FROM options_candidates").get().n >= 2);
+  const traces = d.prepare("SELECT * FROM options_live_latency_traces ORDER BY symbol").all();
+  assert.equal(traces.length, 2, "each evaluated candidate has one actual-path trace");
+  assert.ok(traces.every((r) => r.chain_started_at_ms != null && r.chain_completed_at_ms != null));
+  assert.ok(traces.every((r) => r.strategy_evaluation_completed_at_ms != null && r.delivery_decision_at_ms != null));
+  assert.ok(traces.every((r) => r.provider_quote_timestamp_ms === NOW - 1000));
 });
 
 test("missing portfolio delivery config fails closed with zero decision rows", async () => {

@@ -40,6 +40,7 @@ export interface OptionsCandidateInput {
   underlying: {
     price: number | null; dayDollarVolume: number | null; relVolume: number | null;
     velPct: number | null; accelPct: number | null; gapPct: number | null;
+    volumeAccel?: number | null; volumeSurgeProxy?: number | null; dollarVolumeAccel?: number | null;
     aboveVwap: boolean | null; hodBreak: boolean | null; lodBreak?: boolean | null;
     nearResistancePct: number | null;   // distance to a key level above (small = close)
     nearSupportPct?: number | null;     // distance to a key level below (small = close)
@@ -57,7 +58,9 @@ export function activeSignals(c: OptionsCandidateInput): Set<string> {
   const u = c.underlying, o = c.optionsActivity, e = c.earnings;
   const s = new Set<string>();
   if ((u.relVolume ?? 0) >= 2) s.add("rel_volume");
-  if ((u.accelPct ?? 0) > 0) { s.add("price_acceleration"); s.add("volume_acceleration"); }
+  if ((u.accelPct ?? 0) > 0) s.add("price_acceleration");
+  if ((u.volumeAccel ?? 0) > 0) s.add("volume_acceleration");
+  if ((u.volumeSurgeProxy ?? 0) >= 2) s.add("volume_surge_proxy");
   if ((u.accelPct ?? 0) < 0 || (u.velPct ?? 0) < 0) { s.add("downside_acceleration"); s.add("downside_momentum"); }
   if (u.nearResistancePct != null && u.nearResistancePct <= 0.5) s.add("breakout_proximity");
   if (u.nearSupportPct != null && u.nearSupportPct <= 0.5) s.add("support_break_proximity");

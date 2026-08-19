@@ -90,8 +90,8 @@ const addOutcome = (db, occ, over = {}) => db.prepare(
       hit_25, hit_50, hit_100, hit_200, time_to_25_ms, time_to_50_ms, time_to_100_ms, time_to_200_ms, marks_used)
    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 ).run(
-  SESSION, over.fingerprint ?? `fp_${occ}`, occ,
-  over.entryAsk ?? 8.13, over.mfePct ?? 293, over.maePct ?? -8, over.finalPct ?? 180,
+  SESSION, over.fingerprint ?? `${SESSION}|${occ}`, occ,
+  or(over.entryAsk, 8.26), or(over.mfePct, 293), or(over.maePct, -8), or(over.finalPct, 180),
   or(over.hit25, 1), or(over.hit50, 1), or(over.hit100, 1), or(over.hit200, 1),
   or(over.t25, 300_000), or(over.t50, 600_000), or(over.t100, 1_200_000), or(over.t200, 2_100_000),
   over.marksUsed ?? 7,
@@ -155,9 +155,9 @@ test("a quoted mover yields the executable scope end to end", () => {
   assert.equal(m.contract.openInterest, 1800);
   assert.equal(m.contract.volume, 4200);
   assert.equal(m.contract.dte, 2);
-  // The entry mark is the MIDPOINT of a two-sided quote, not the last trade and
-  // not the ask.
-  assert.equal(m.contract.entryMark, (8.0 + 8.26) / 2);
+  assert.equal(m.contract.entryMark, 8.26, "an executable buyer enters at ask");
+  assert.equal(m.contract.entryConvention, "BUY_AT_ASK_EXIT_AT_FUTURE_BID");
+  assert.equal(m.ladder.entryConvention, "BUY_AT_ASK_EXIT_AT_FUTURE_BID");
 
   // And the ladder after entry.
   assert.equal(m.ladder.pct10, true);
@@ -182,7 +182,55 @@ test("the ladder is measured from the first EXECUTABLE mark, not the prior close
   const m = measureExecutableOpportunityOnDb(db, { sessionDate: SESSION }).measurements[0];
   assert.equal(m.firstExecutableNbboAtMs, OPEN_MS,
     "a one-sided book is not a price you can cross and must not count as executable");
-  assert.equal(m.ladder.entryMark, (8.0 + 8.26) / 2);
+  assert.equal(m.ladder.entryMark, 8.26);
+});
+
+test("a different case sharing OCC/session cannot steal the matching case outcome", () => {
+  const db = makeDb();
+  const occ = "O:MRNA260821C00120000";
+  addMover(db, "MRNA");
+  addQuote(db, "MRNA", { occ });
+  addOutcome(db, occ, {
+    fingerprint: "different-case-same-occ-session",
+    entryAsk: 8.26,
+    mfePct: 900,
+    marksUsed: 99,
+  });
+  addOutcome(db, occ, {
+    fingerprint: `${SESSION}|${occ}`,
+    entryAsk: 8.26,
+    mfePct: 25,
+    marksUsed: 2,
+  });
+  const m = measureExecutableOpportunityOnDb(db, { sessionDate: SESSION }).measurements[0];
+  assert.equal(m.ladder.mfePct, 25, "identity wins; marks_used does not choose another case");
+  assert.equal(m.ladder.evidenceFingerprint, `${SESSION}|${occ}`);
+});
+
+test("zero marks and unknown excursions remain unmeasured, not false/zero", () => {
+  const db = makeDb();
+  addMover(db, "MRNA");
+  addQuote(db, "MRNA");
+  addOutcome(db, "O:MRNA260821C00120000", {
+    marksUsed: 0,
+    mfePct: null,
+    maePct: null,
+    hit25: null,
+    hit50: null,
+    hit100: null,
+    hit200: null,
+  });
+  const m = measureExecutableOpportunityOnDb(db, { sessionDate: SESSION }).measurements[0];
+  assert.equal(m.ladder, null);
+});
+
+test("midpoint or mismatched entry cannot consume ask-entry excursion evidence", () => {
+  const db = makeDb();
+  addMover(db, "MRNA");
+  addQuote(db, "MRNA");
+  addOutcome(db, "O:MRNA260821C00120000", { entryAsk: 8.13 });
+  const m = measureExecutableOpportunityOnDb(db, { sessionDate: SESSION }).measurements[0];
+  assert.equal(m.ladder, null, "8.13 midpoint-like denominator cannot consume 8.26 ask entry");
 });
 
 test("+10 is derived from the peak when no rung was marked, and says so", () => {
