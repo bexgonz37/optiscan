@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { schedulerIntervals, jobDue } from "../lib/scheduler-policy.ts";
+import { schedulerIntervals, jobDue, deriveSchedulerBeatState } from "../lib/scheduler-policy.ts";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (p) => readFileSync(join(root, p), "utf8");
@@ -39,7 +39,9 @@ test("scheduler is single-owner (worker lease) and started from server boot", ()
   const sch = read("lib/scheduler.ts");
   assert.ok(/acquireLease\(db\(\), LEASE_NAME/.test(sch), "acquires the scheduler lease");
   assert.ok(/heartbeatLease\(/.test(sch), "heartbeats while owner");
-  assert.ok(/if \(!owner\) return;/.test(sch), "non-owners run no jobs");
+  // Standby still records a completed beat — a non-owner beat DID finish, and
+  // health must not read that as a wedge.
+  assert.ok(/if \(!owner\) \{[^}]*return; \}/.test(sch), "non-owners run no jobs");
   const boot = read("lib/server-boot.ts");
   assert.ok(/startScheduler\(\)/.test(boot), "started from server boot");
 });
@@ -94,4 +96,89 @@ test("broker readiness soak job is wired and never auto-cutovers", () => {
   const soak = read("lib/broker/soak-report.ts");
   assert.match(soak, /cutoverPerformed:\s*false/);
   assert.match(soak, /READINESS_CUTOVER_GATE_MET/);
+});
+
+// ── liveness: a hung job must not kill the beat (2026-08-19 outage) ─────────
+//
+// Production froze at 2026-08-19T04:58:47Z: the beat entered, a job never
+// settled, and because the next tick is only scheduled after the beat resolves,
+// the scheduler stopped forever while `started`/`isOwner`/healthz all still read
+// healthy. The asymmetry marks/transitions/paper-gate/EOD lanes and the
+// supervisor cycle were dead for the rest of the session.
+
+test("job and beat budgets have safe defaults and are clamped", () => {
+  const iv = schedulerIntervals({});
+  assert.equal(iv.jobTimeoutMs, 3 * 60_000);
+  assert.equal(iv.beatTimeoutMs, 10 * 60_000);
+  // The longest legitimate job bounds itself at 120s, so the budget must exceed it.
+  assert.ok(iv.jobTimeoutMs > 120_000, "job budget leaves headroom over the historical miner");
+  assert.ok(iv.beatTimeoutMs > iv.jobTimeoutMs, "a single job cannot exhaust the whole-beat budget");
+  const tooFast = schedulerIntervals({ SCHED_JOB_TIMEOUT_MS: "1", SCHED_BEAT_TIMEOUT_MS: "1" });
+  assert.equal(tooFast.jobTimeoutMs, 30_000, "job budget floored");
+  assert.equal(tooFast.beatTimeoutMs, 60_000, "beat budget floored");
+});
+
+test("runJob races every job against a budget and never awaits it unbounded", () => {
+  const sch = read("lib/scheduler.ts");
+  assert.ok(/Promise\.race\(\[work, budget\]\)/.test(sch), "runJob races the job against its budget");
+  assert.ok(/jobTimeouts\[name\] \+= 1/.test(sch), "a budget overrun is counted, not swallowed");
+  assert.ok(
+    /if \(b\.has\(name\)\) return; \/\/ already running/.test(sch),
+    "the overlap guard keeps an abandoned job from being started twice",
+  );
+});
+
+test("the loop schedules the next tick even when a beat hangs", () => {
+  const sch = read("lib/scheduler.ts");
+  const loop = sch.slice(sch.indexOf("const loop = async () =>"));
+  assert.ok(/Promise\.race\(\[\s*beat\(\)/.test(loop), "the whole beat is raced against a backstop budget");
+  assert.ok(/beatTimeouts \+= 1/.test(loop), "an abandoned beat is counted");
+  // The reschedule must be unconditional — this is the line whose absence caused the outage.
+  assert.ok(
+    /setTimeout\(loop, BASE_TICK_MS\)/.test(loop) && !/if \([^)]*\)\s*g\.__optiscanSchedulerTimer = setTimeout\(loop/.test(loop),
+    "the next tick is scheduled unconditionally",
+  );
+});
+
+test("beat completion is recorded separately from beat start", () => {
+  const sch = read("lib/scheduler.ts");
+  assert.ok(/s\.lastBeatAtMs = nowMs/.test(sch), "beat start is recorded");
+  assert.ok(/s\.lastBeatCompletedAtMs = Date\.now\(\)/.test(sch), "beat completion is recorded");
+});
+
+test("beat state is derived from beat COMPLETION, not from started/isOwner", () => {
+  const base = { baseTickMs: 15_000, beatTimeoutMs: 10 * 60_000 };
+  const frozenAt = 1_787_115_527_627; // 2026-08-19T04:58:47Z — the real freeze instant
+
+  // The outage shape: started, owner, lease held, healthz ok — and dead for 9h22m.
+  const wedged = deriveSchedulerBeatState({
+    started: true, isOwner: true, lastBeatCompletedAtMs: frozenAt,
+    nowMs: frozenAt + 9 * 60 * 60_000 + 22 * 60_000, ...base,
+  });
+  assert.equal(wedged.state, "WEDGED", "a 9h22m gap in completed beats must not read as healthy");
+  assert.match(wedged.reason, /no beat has completed/);
+
+  const healthy = deriveSchedulerBeatState({
+    started: true, isOwner: true, lastBeatCompletedAtMs: frozenAt, nowMs: frozenAt + 5_000, ...base,
+  });
+  assert.equal(healthy.state, "HEALTHY");
+
+  const stale = deriveSchedulerBeatState({
+    started: true, isOwner: true, lastBeatCompletedAtMs: frozenAt, nowMs: frozenAt + 3 * 60_000, ...base,
+  });
+  assert.equal(stale.state, "STALE", "slow but not yet wedged");
+
+  // A standby process is not wedged just because it runs no jobs.
+  assert.equal(deriveSchedulerBeatState({
+    started: true, isOwner: false, lastBeatCompletedAtMs: null, nowMs: frozenAt, ...base,
+  }).state, "STANDBY");
+  assert.equal(deriveSchedulerBeatState({
+    started: false, isOwner: false, lastBeatCompletedAtMs: null, nowMs: frozenAt, ...base,
+  }).state, "NOT_STARTED");
+});
+
+test("runtime status exposes scheduler health so a wedge is visible", () => {
+  const rs = read("lib/runtime-status.ts");
+  assert.ok(/schedulerHealth\(nowMs\)/.test(rs), "runtime status asks for derived health");
+  assert.ok(/health: schedHealth/.test(rs), "and reports it on the scheduler worker block");
 });

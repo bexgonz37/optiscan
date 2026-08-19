@@ -35,7 +35,11 @@ export interface RuntimeStatus {
   };
   worker: {
     scanner: { holderPid: number | null; fresh: boolean; hostname: string | null; heartbeatAt: string | null; running: boolean };
-    scheduler: { holderPid: number | null; fresh: boolean; hostname: string | null; heartbeatAt: string | null; started: boolean; isOwner: boolean; note: string };
+    scheduler: {
+      holderPid: number | null; fresh: boolean; hostname: string | null; heartbeatAt: string | null;
+      started: boolean; isOwner: boolean; note: string;
+      health: import("./scheduler").SchedulerHealth;
+    };
     thisPid: number;
   };
   scanner: { running: boolean; lastTickAt: number | null; ticks: number; triggers: number; alerts: number; errors: number; session: string | null };
@@ -283,6 +287,11 @@ export function buildRuntimeStatus(nowMs: number = Date.now()): RuntimeStatus {
     return require("@/lib/scheduler").schedulerState();
   }, { started: false, isOwner: false, note: "unavailable", lastRun: {}, runs: {} } as any);
 
+  const schedHealth = safe(() => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require("@/lib/scheduler").schedulerHealth(nowMs);
+  }, { state: "NOT_STARTED", reason: "unavailable", stuckJobs: [] } as any);
+
   const supervisor = safe(() => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     return require("@/lib/supervisor-cycle").supervisorTelemetry();
@@ -390,6 +399,10 @@ export function buildRuntimeStatus(nowMs: number = Date.now()): RuntimeStatus {
         holderPid: schedHolder.holder?.pid ?? null, fresh: schedHolder.fresh,
         hostname: schedHolder.holder?.hostname ?? null, heartbeatAt: schedHolder.holder?.heartbeat_at ?? null,
         started: Boolean(sched.started), isOwner: Boolean(sched.isOwner), note: String(sched.note ?? ""),
+        // Aliveness derived from beat COMPLETION. `started`/`isOwner` stayed true
+        // through the whole 2026-08-19 outage; only this distinguishes a scheduler
+        // that is running from one that is merely still resident.
+        health: schedHealth,
       },
       thisPid,
     },

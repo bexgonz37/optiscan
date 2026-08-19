@@ -34,6 +34,24 @@ export interface SchedulerIntervals {
   asymmetryPaperGateMs: number;
   asymmetryEodMs: number;
   historicalMinerMs: number;
+  /**
+   * Per-job wall-clock budget. The beat runs jobs sequentially and awaits each
+   * one, so a job that never settles used to stop the beat from ever returning —
+   * and because the next tick is only scheduled after the beat resolves, the whole
+   * scheduler died silently until the process restarted. On 2026-08-19 that
+   * happened at 00:58 ET and took the asymmetry marks/transitions/paper-gate/EOD
+   * lanes and the supervisor cycle with it for the rest of the session, while
+   * /api/healthz still reported ok. A job that blows this budget is abandoned by
+   * the BEAT (it keeps running; a promise cannot be cancelled) and the in-process
+   * overlap guard stops it from ever being started twice.
+   */
+  jobTimeoutMs: number;
+  /**
+   * Whole-beat budget. Backstop for a hang that is not inside a timed job — the
+   * lease acquire, a synchronous DB call, a due-check. Guarantees the next tick
+   * is always scheduled.
+   */
+  beatTimeoutMs: number;
 }
 
 function clampInt(v: string | undefined, def: number, min: number, max: number): number {
@@ -91,6 +109,14 @@ export function schedulerIntervals(env: NodeJS.ProcessEnv = process.env): Schedu
     // the interval only controls how soon after the close a backfill can begin. A short
     // interval costs nothing when the gate says no — the check reads no provider.
     historicalMinerMs: clampInt(env.SCHED_HISTORICAL_MINER_MS, 15 * 60_000, 60_000, 6 * 60 * 60_000),
+    // 3 min per job. The longest legitimate job is the historical miner, which
+    // bounds ITSELF at HISTORICAL_MINER_MAX_RUN_MS (default 120s), so this leaves
+    // headroom for a slow-but-healthy pass and still frees the beat well inside a
+    // single asymmetry marks interval. Never shorter than 30s.
+    jobTimeoutMs: clampInt(env.SCHED_JOB_TIMEOUT_MS, 3 * 60_000, 30_000, 30 * 60_000),
+    // A beat that reaches this has a hang outside any single job. Generous enough
+    // that a healthy beat running several due jobs back to back never trips it.
+    beatTimeoutMs: clampInt(env.SCHED_BEAT_TIMEOUT_MS, 10 * 60_000, 60_000, 60 * 60_000),
   };
 }
 
@@ -98,4 +124,37 @@ export function schedulerIntervals(env: NodeJS.ProcessEnv = process.env): Schedu
 export function jobDue(lastRunMs: number | null | undefined, intervalMs: number, nowMs: number): boolean {
   if (lastRunMs == null) return true;
   return nowMs - lastRunMs >= intervalMs;
+}
+
+/**
+ * Derive scheduler liveness from beat COMPLETION.
+ *
+ * Pure so it is testable without the scheduler's DI graph. The 2026-08-19 outage
+ * is the reason this exists: every other signal — process up, lease held,
+ * `started: true`, `isOwner: true`, /api/healthz ok — stayed green for the 9h22m
+ * the beat was dead. Only "when did a beat last FINISH" moved.
+ */
+export type SchedulerBeatState = "HEALTHY" | "STALE" | "WEDGED" | "NOT_STARTED" | "STANDBY";
+
+export function deriveSchedulerBeatState(input: {
+  started: boolean;
+  isOwner: boolean;
+  lastBeatCompletedAtMs: number | null;
+  nowMs: number;
+  baseTickMs: number;
+  beatTimeoutMs: number;
+}): { state: SchedulerBeatState; reason: string } {
+  if (!input.started) return { state: "NOT_STARTED", reason: "scheduler has not been started in this process" };
+  if (!input.isOwner) return { state: "STANDBY", reason: "another process holds the scheduler lease" };
+  if (input.lastBeatCompletedAtMs == null) {
+    return { state: "STALE", reason: "no beat has completed since this process started" };
+  }
+  const since = input.nowMs - input.lastBeatCompletedAtMs;
+  if (since > input.beatTimeoutMs) {
+    return { state: "WEDGED", reason: `no beat has completed for ${Math.round(since / 1000)}s` };
+  }
+  if (since > input.baseTickMs * 8) {
+    return { state: "STALE", reason: `last beat completed ${Math.round(since / 1000)}s ago` };
+  }
+  return { state: "HEALTHY", reason: "beats are completing" };
 }

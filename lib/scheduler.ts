@@ -15,7 +15,7 @@
  * It changes no source code, thresholds, or trading rules. Discord delivery for the
  * supervisor cycle stays behind the canonical-path + auto-send gates.
  */
-import { schedulerIntervals, jobDue } from "@/lib/scheduler-policy";
+import { schedulerIntervals, jobDue, deriveSchedulerBeatState } from "@/lib/scheduler-policy";
 import { isMarketHoliday, tradingDay } from "@/lib/trading-session";
 import { isEarlyCloseDay } from "@/lib/market-session-guard";
 
@@ -29,8 +29,17 @@ export interface SchedulerState {
   isOwner: boolean;
   ownerPid: number | null;
   lastBeatAtMs: number | null;
+  /** Set when a beat RETURNS. `lastBeatAtMs` only proves one started. */
+  lastBeatCompletedAtMs: number | null;
   lastRun: Record<JobName, number | null>;
   runs: Record<JobName, number>;
+  /** Per-job count of budget overruns abandoned by the beat. */
+  jobTimeouts: Record<JobName, number>;
+  /** When each in-flight job started; non-null for a job that never settled. */
+  jobStartedAt: Record<JobName, number | null>;
+  /** Beats abandoned by the whole-beat backstop. */
+  beatTimeouts: number;
+  lastTimeoutNote: string | null;
   note: string;
   lastError: string | null;
   /**
@@ -117,18 +126,36 @@ type G = typeof globalThis & {
   __optiscanSchedulerBusy?: Set<JobName>;
 };
 
+const JOB_NAMES: JobName[] = [
+  "maintenance", "learning", "supervisor", "improvement", "aiJobs", "brokerReadiness",
+  "subscriberReadiness", "contentDrafts", "overnightResearch", "watchlistPlanning",
+  "asymmetryTransitions", "asymmetryMarks", "asymmetryPaper", "asymmetryPaperGate",
+  "asymmetryEod", "historicalMiner",
+];
+const EMPTY_JOB_COUNTS = Object.fromEntries(JOB_NAMES.map((n) => [n, 0])) as Record<JobName, number>;
+const EMPTY_JOB_STARTS = Object.fromEntries(JOB_NAMES.map((n) => [n, null])) as Record<JobName, number | null>;
+
 function state(): SchedulerState {
   const g = globalThis as G;
   g.__optiscanScheduler ??= {
-    started: false, isOwner: false, ownerPid: null, lastBeatAtMs: null,
+    started: false, isOwner: false, ownerPid: null, lastBeatAtMs: null, lastBeatCompletedAtMs: null,
     lastRun: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null, brokerReadiness: null, subscriberReadiness: null, contentDrafts: null, overnightResearch: null, watchlistPlanning: null, asymmetryTransitions: null, asymmetryMarks: null, asymmetryPaper: null, asymmetryPaperGate: null, asymmetryEod: null, historicalMiner: null },
     runs: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0, subscriberReadiness: 0, contentDrafts: 0, overnightResearch: 0, watchlistPlanning: 0, asymmetryTransitions: 0, asymmetryMarks: 0, asymmetryPaper: 0, asymmetryPaperGate: 0, asymmetryEod: 0, historicalMiner: 0 },
+    jobTimeouts: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0, subscriberReadiness: 0, contentDrafts: 0, overnightResearch: 0, watchlistPlanning: 0, asymmetryTransitions: 0, asymmetryMarks: 0, asymmetryPaper: 0, asymmetryPaperGate: 0, asymmetryEod: 0, historicalMiner: 0 },
+    jobStartedAt: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null, brokerReadiness: null, subscriberReadiness: null, contentDrafts: null, overnightResearch: null, watchlistPlanning: null, asymmetryTransitions: null, asymmetryMarks: null, asymmetryPaper: null, asymmetryPaperGate: null, asymmetryEod: null, historicalMiner: null },
+    beatTimeouts: 0, lastTimeoutNote: null,
     note: "not started", lastError: null, lastWatchlistPlanning: null, lastHistoricalMiner: null,
     lastProfessionalWatchlist: { overnight: null, premarket: null },
   };
-  // Pre-existing global state from an older build may lack the newer field.
-  g.__optiscanScheduler.lastProfessionalWatchlist ??= { overnight: null, premarket: null };
-  return g.__optiscanScheduler;
+  // Pre-existing global state from an older build may lack the newer fields.
+  const cur = g.__optiscanScheduler;
+  cur.lastProfessionalWatchlist ??= { overnight: null, premarket: null };
+  cur.jobTimeouts ??= { ...EMPTY_JOB_COUNTS };
+  cur.jobStartedAt ??= { ...EMPTY_JOB_STARTS };
+  cur.beatTimeouts ??= 0;
+  cur.lastTimeoutNote ??= null;
+  cur.lastBeatCompletedAtMs ??= null;
+  return cur;
 }
 
 function busy(): Set<JobName> {
@@ -140,7 +167,61 @@ function busy(): Set<JobName> {
 /** Read-only scheduler state for the health surface. */
 export function schedulerState(): SchedulerState {
   const s = state();
-  return { ...s, lastRun: { ...s.lastRun }, runs: { ...s.runs } };
+  return {
+    ...s,
+    lastRun: { ...s.lastRun }, runs: { ...s.runs },
+    jobTimeouts: { ...s.jobTimeouts }, jobStartedAt: { ...s.jobStartedAt },
+  };
+}
+
+export interface SchedulerHealth {
+  state: "HEALTHY" | "STALE" | "WEDGED" | "NOT_STARTED" | "STANDBY";
+  reason: string;
+  lastBeatAtMs: number | null;
+  lastBeatCompletedAtMs: number | null;
+  msSinceLastBeatCompleted: number | null;
+  beatTimeouts: number;
+  lastTimeoutNote: string | null;
+  /** Jobs in flight past their budget — the ones that would have wedged the beat. */
+  stuckJobs: Array<{ job: JobName; startedAtMs: number; elapsedMs: number; timeouts: number }>;
+}
+
+/**
+ * Is the beat actually alive? Derived from beat COMPLETION, not from `started`.
+ *
+ * The 2026-08-19 outage read as healthy everywhere: the process was up, the lease
+ * said `started: true, isOwner: true`, and /api/healthz returned ok — while the
+ * beat had not completed since 00:58 ET. Aliveness has to be measured by the thing
+ * that stops happening.
+ */
+export function schedulerHealth(nowMs: number = Date.now()): SchedulerHealth {
+  const s = state();
+  const iv = schedulerIntervals();
+  const stuckJobs = JOB_NAMES.flatMap((job) => {
+    const startedAtMs = s.jobStartedAt[job];
+    if (startedAtMs == null) return [];
+    const elapsedMs = nowMs - startedAtMs;
+    if (elapsedMs < iv.jobTimeoutMs) return [];
+    return [{ job, startedAtMs, elapsedMs, timeouts: s.jobTimeouts[job] ?? 0 }];
+  });
+  const { state: beatState, reason } = deriveSchedulerBeatState({
+    started: s.started,
+    isOwner: s.isOwner,
+    lastBeatCompletedAtMs: s.lastBeatCompletedAtMs,
+    nowMs,
+    baseTickMs: BASE_TICK_MS,
+    beatTimeoutMs: iv.beatTimeoutMs,
+  });
+  return {
+    state: beatState,
+    reason,
+    lastBeatAtMs: s.lastBeatAtMs,
+    lastBeatCompletedAtMs: s.lastBeatCompletedAtMs,
+    msSinceLastBeatCompleted: s.lastBeatCompletedAtMs == null ? null : nowMs - s.lastBeatCompletedAtMs,
+    beatTimeouts: s.beatTimeouts,
+    lastTimeoutNote: s.lastTimeoutNote,
+    stuckJobs,
+  };
 }
 
 function db(): any {
@@ -149,19 +230,48 @@ function db(): any {
   return getDb();
 }
 
-/** Run one job with an in-process overlap guard; failures never abort the beat. */
+/**
+ * Run one job with an in-process overlap guard and a wall-clock budget; neither a
+ * failure NOR a hang can abort the beat.
+ *
+ * A hung job is abandoned by the beat, not cancelled — JS has no way to cancel an
+ * in-flight promise. It stays in `busy`, so the overlap guard keeps every later
+ * beat from starting a second copy, and its own `finally` removes it if it ever
+ * settles. `lastRun`/`runs` are only advanced on genuine completion, so an
+ * abandoned job still reads as "has not run" in the health surface rather than
+ * being silently credited.
+ */
 async function runJob(name: JobName, fn: () => Promise<void> | void, nowMs: number): Promise<void> {
   const b = busy();
   if (b.has(name)) return; // already running (long job) — skip this beat
   b.add(name);
+  const s = state();
+  const startedAt = Date.now();
+  s.jobStartedAt[name] = startedAt;
+
+  const work = (async () => { await fn(); })().then(
+    () => { s.lastRun[name] = nowMs; s.runs[name] += 1; b.delete(name); s.jobStartedAt[name] = null; },
+    (err: any) => { s.lastError = `${name}: ${err?.message ?? String(err)}`; b.delete(name); s.jobStartedAt[name] = null; },
+  );
+  // Not unref'd: while a job is in flight the process must stay awake long enough
+  // to notice the hang. Cleared the moment the job wins the race.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const budgetMs = schedulerIntervals().jobTimeoutMs;
+  let timedOut = false;
+  const budget = new Promise<void>((resolve) => {
+    timer = setTimeout(() => { timedOut = true; resolve(); }, budgetMs);
+  });
   try {
-    await fn();
-    state().lastRun[name] = nowMs;
-    state().runs[name] += 1;
-  } catch (err: any) {
-    state().lastError = `${name}: ${err?.message ?? String(err)}`;
+    await Promise.race([work, budget]);
   } finally {
-    b.delete(name);
+    if (timer) clearTimeout(timer);
+  }
+  if (timedOut && b.has(name)) {
+    s.jobTimeouts[name] += 1;
+    s.lastTimeoutNote =
+      `${name} exceeded its ${budgetMs}ms budget and was abandoned by the beat at `
+      + `${new Date(Date.now()).toISOString()}; it is still in flight and will not be started again until it settles`;
+    s.lastError = s.lastTimeoutNote;
   }
 }
 
@@ -695,7 +805,7 @@ async function beat(): Promise<void> {
     owner = true;
     s.lastError = `lease unavailable: ${err?.message}`;
   }
-  if (!owner) return;
+  if (!owner) { s.lastBeatCompletedAtMs = Date.now(); return; }
 
   s.isOwner = true;
   s.ownerPid = process.pid;
@@ -744,6 +854,7 @@ async function beat(): Promise<void> {
   if (jobDue(s.lastRun.historicalMiner, iv.historicalMinerMs, nowMs)) {
     await runJob("historicalMiner", () => historicalMinerJob(nowMs), nowMs);
   }
+  s.lastBeatCompletedAtMs = Date.now();
 }
 
 /**
@@ -794,8 +905,34 @@ export function startScheduler(): void {
   if (process.env.SCHEDULER_DISABLED === "1") { s.note = "disabled (SCHEDULER_DISABLED=1)"; return; }
   s.started = true;
   s.note = "started";
+  // The next tick is scheduled after the beat resolves, so the beat must always
+  // resolve. Per-job budgets cover the common case; this races the whole beat as a
+  // backstop for a hang outside any job (lease acquire, a synchronous DB call).
+  // Abandoning a beat is safe: every job carries its own overlap guard, so a
+  // concurrent later beat cannot start a second copy of anything still in flight.
   const loop = async () => {
-    try { await beat(); } catch (err: any) { state().lastError = `beat: ${err?.message}`; }
+    const budgetMs = schedulerIntervals().beatTimeoutMs;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+    const budget = new Promise<void>((resolve) => {
+      timer = setTimeout(() => { timedOut = true; resolve(); }, budgetMs);
+    });
+    try {
+      await Promise.race([
+        beat().catch((err: any) => { state().lastError = `beat: ${err?.message}`; }),
+        budget,
+      ]);
+    } catch (err: any) {
+      state().lastError = `beat: ${err?.message}`;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    if (timedOut) {
+      const s = state();
+      s.beatTimeouts += 1;
+      s.lastTimeoutNote = `beat exceeded its ${budgetMs}ms budget and was abandoned; the next tick was scheduled anyway`;
+      s.lastError = s.lastTimeoutNote;
+    }
     g.__optiscanSchedulerTimer = setTimeout(loop, BASE_TICK_MS);
     (g.__optiscanSchedulerTimer as any)?.unref?.();
   };
