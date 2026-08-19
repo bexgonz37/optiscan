@@ -1,5 +1,181 @@
 # Current Task Packet
 
+## Packet update — 2026-08-18 (4) The homepage was rebuilding every trade in history to show twelve, and the slowest thing in the app had no user
+
+### Verified state (checked, not assumed)
+
+- Baseline verified from git AND production BEFORE any change:
+  local = `origin/main` = production = `4dbf0a71`, confirmed against `/api/healthz`
+  (`ok`, `db: true`, `schemaOk: true`, lifecycle active). Tracked tree clean apart from
+  the six line-ending-only `docs/brain` files carried since the last packet
+  (`git diff --numstat` empty for them), every untracked scratch file left untouched.
+- Production healthy throughout. Session closed/afterhours for the whole window, which
+  matters: it is why one of the findings below could not be observed at all.
+- **No trading logic changed.** No scanner rule, strategy threshold, selection, ranking,
+  CALL/PUT decision, contract/strike/expiration choice, DTE rule, Target 1, Target 2,
+  stop, exit, overnight handling, provider cap or subscriber-readiness threshold was
+  touched. Every change is an index, a payload projection, a measurement, or navigation.
+- `OWNER_SELECTION_STRENGTH_GATE_V1` still hashes `9b4f77b3c6268bf9e94781dc849ad2ef`,
+  still SHADOW_ONLY, still starts prospective **2026-08-19**, `validationSessions` still
+  empty. `PRE_MOVE_DISCOVERY_V2` still hashes `e6eb1148e3bbd29fc4b71c657afbcafc`, still
+  0 captured rows against 10,575 uncaptured. Both now asserted by the smoke test on
+  every deploy rather than by inspection.
+- Subscriber delivery still **NOT_READY**, 12 blocking gates. AI spend $1.49 of the
+  unchanged $20 hard cap across both ledgers.
+
+### THE SLOWEST ENDPOINT IN THE APP HAS NO CONSUMER
+
+`/api/command-center` answers in **117 seconds**. Nothing fetches it. The homepage is
+`NowPage`, which reads `/api/now`; `components/CommandCenter.tsx` is a two-line re-export
+of `NowPage` and never calls the route its name suggests. The only references anywhere
+are its own source and a test that reads that source as text.
+
+It is left in place — deleting a route on the strength of a grep is how you discover the
+one caller you did not grep for — but it is not a "slow page", it is a slow thing nobody
+opens, and it should not appear in a performance ranking as though a user were waiting
+on it. The shared index work below is what actually improved it.
+
+### THE HOMEPAGE BUILT THE ENTIRE TRADE HISTORY, TWICE, TO RENDER FIFTEEN ROWS
+
+Measured against production before writing anything: `/api/now` **5,169–9,504 ms**.
+
+`buildPaperChainDiagnostic` walks **every alert ever SENT**, issuing three to five
+queries per alert, and applies `limit` with a `slice()` on the last line. So a caller
+asking for 12 rows and a caller asking for all of them do exactly the same work. The
+homepage had both: `/api/now` built the whole diagnostic to filter out `paperStatus ===
+"ENTERED"`, and `NowPage` separately fetched `/api/research/options/paper-chain?limit=3`
+— which, with no `days` parameter, also meant all of history.
+
+The fix is a scope, not a second query. `OPEN_POSITIONS_ONLY` narrows the DRIVING set to
+alerts that already have an `ENTERED` `DELIVERED_ALERT_PAPER` mirror and then runs the
+same row-building code. A test asserts the rows are field-identical to the full
+diagnostic's, because the moment they diverge the homepage becomes a second source of
+truth about what the owner is holding.
+
+Under that scope **every aggregate is null, not zero**. A profit factor, an equity figure
+or an exit-policy study over "the trades that happen to still be open right now" is
+survivorship bias wearing the real field's name, and `verifiedTotalPnlUsd: 0` reads as a
+claim that the book made nothing. The types were widened to `| null` so a consumer has to
+handle the absence rather than render the zero.
+
+`/api/now` **5,169–9,504 ms → 227–269 ms**. The second call, now `?days=1&limit=3`,
+**5,103 ms → 210 ms**. The full diagnostic is unchanged at ~5.5s and still walks
+everything, because it is the evidence surface and that is its job.
+
+A wording bug fell out of the same read: the panel titled **"Sent today"** was showing
+the three most recent delivered alerts *whenever they happened*, so on a day with no
+sends it displayed last week's callouts under a heading that says today.
+
+### THE FIRST GUESS AT THE QUANT LAB WAS WRONG, AND THE MEASUREMENT SAID SO
+
+`/api/research/options/pipeline-health` took 26–32s and `quant-lanes` 21s. The obvious
+suspect was the per-trade excursion resolution in the owner lane — an N+1 that is real
+and visible in the source.
+
+It was not the cause. Phase timing added to the route, then per-lane timing inside the
+builder, gave:
+
+| lane | ms | rows returned |
+|---|---|---|
+| shadow_would_send | **34,297** | 145 |
+| shadow_would_block | **7,128** | 89 |
+| owner_validation_paper | 1,591 | 67 |
+| delivered / research / 0DTE | ~10 | — |
+
+Thirty-four seconds to return 145 rows. The cost was never the rows: `options_shadow_
+outcomes` holds millions of `supervisor` rows beside a couple of hundred
+`proposed`/`independent` ones, and the lane query had to scan all of them to find the
+few. The Quant Lab's supervisor tile is a `COUNT(*) WHERE path='supervisor'` over
+**3,735,394** rows with no index on `path` — one number, one full scan, per page load.
+
+The first index attempt was also wrong and the benchmark caught it: at 300k rows with
+two-thirds matching, `(would_send, path)` changed nothing (278ms → 281ms). Rebuilt at
+production's actual selectivity — a few hundred matches in millions — the same query goes
+**262ms → 1ms in memory**, and production is far worse than memory because the scan is
+real disk I/O on a volume-backed database. Leading with `path` matters: `(would_send,
+path)` would still walk half the table.
+
+### THREE MORE PER-ALERT LOOKUPS HAD NO USABLE INDEX
+
+Every one confirmed with `EXPLAIN QUERY PLAN` rather than by reading the schema.
+
+- `options_paper_trades(alert_id)` — `idx_options_paper_kind` leads with `paper_kind`, so
+  a bare `WHERE alert_id=?` could not use it. SCAN → SEARCH.
+- `options_paper_marks(option_symbol, mark_at_ms)` — the premium-series fallback sorted
+  the largest live table (320,583 rows) per ranked callout. SCAN + TEMP B-TREE → SEARCH.
+- `options_candidates(symbol, UPPER(COALESCE(state,'')), created_at_ms, id)` — the paper
+  lifecycle resolves the READY/SELECTED candidate behind every alert. The `UPPER(COALESCE
+  (...))` call is not sargable, so SQLite read every candidate row for the symbol — with
+  `SELECT *`, so including the feature and market-structure JSON blobs — on a 92,618-row
+  table, per alert. Indexed **on the expression** rather than rewriting the predicate, so
+  the query keeps its exact semantics and cannot select a different row.
+
+One suspicion was checked and discarded rather than acted on: `hasTable` is not memoized
+and is called in hot loops, but it benchmarks at **17µs**, so three thousand calls are
+50ms and it is not worth touching.
+
+### SCREENERS-FIRST WAS UNVERIFIABLE AFTER THE CLOSE
+
+Production returned `discoveryStats: null`. That is not evidence that broad discovery is
+off — the loop shows a snapshot recap when the market is shut, and a restart wipes the
+counters — but it is **indistinguishable** from it, and the market was closed for the
+entire audit window. The one question an owner most wants answered at night, *"is my
+scanner still looking at the whole market, or did something quietly restrict it to a
+list?"*, had no answer at night.
+
+`buildCandidateUniverseReport` answers it from configuration, which is true at every
+hour, and reports live counts only when the loop has them. An unobserved cycle now says
+so in words instead of reading as a fault. On `/api/diagnostics/loop-health`.
+
+The architecture itself is sound and is now pinned by tests: broad discovery is **opt-out**
+(only a literal `"0"` disables it, so an unset or malformed value cannot silently shrink
+the universe); the curated list is merged additively and **loses to the whole-market print
+on collision**, so it can raise the floor but never restrict; overriding the curated list
+does not disable the screener. There is **no per-user saved watchlist anywhere in the
+codebase** — the concept does not exist, so nothing can narrow the scan — and a test now
+fails if one is ever added.
+
+`PROFESSIONAL_WATCHLIST_ENABLED` is unset, so the Professional Watchlist is built, wired
+to the scheduler, and returns `enabled: false` with null plans. Implemented, not on.
+
+### The 2.3MB table
+
+`/api/opportunity-cases` returned **2,304 KB**. The Strategy Lab list that consumes it
+renders six scalar fields. It was fetching forty complete Opportunity Case documents
+(~46KB of evidence JSON each) to fill a six-column table. `?view=summary` projects those
+six fields **from the same parsed case object the full response returns**, not from the
+denormalised columns beside it, so the list cannot disagree with the detail view about a
+case's decision or symbol.
+
+### The command center was not in the navigation
+
+Of the eight questions the private app exists to answer, `/research/command-center`
+answers five. It was reachable only by opening `/research` and noticing a card. Promoted
+to primary nav, along with Content Drafts, out of the twenty-one-item Owner Tools drawer.
+
+### Smoke test
+
+`npm run smoke`. ~20s, every request a GET, nothing that could change a trade. Page
+checks assert **shape, never counts** — zero callouts on a quiet Tuesday is correct
+behavior and failing on it teaches the owner to ignore the output. Safety checks assert
+hard, because those failures are invisible from the UI: subscriber delivery blocked, the
+$20 cap intact, configured Discord lanes READY, Explain This refusing an unknown target
+via the free path so the test can never become a recurring charge, and both frozen
+definitions still hashing to their freeze values.
+
+### Discord (audited read-only; no test alert sent)
+
+| lane | state |
+|---|---|
+| Owner alerts / lifecycle | ACTIVE |
+| Watchlist | ACTIVE, next premarket window scheduled |
+| Recaps | CONFIGURED_AND_ENABLED |
+| Content drafts | **CONFIG_REQUIRED** — `DISCORD_WEBHOOK_CONTENT` unset |
+| Subscriber | BLOCKED — NOT_READY, 12 gates |
+
+Content drafts persist in the app and are never re-routed to recap or alerts. 18 sends in
+24h, 0 failures.
+
 ## Packet update — 2026-08-18 (3) The earliness metric measured a 1.6-second window, and the AI retry was told the one thing that was not wrong
 
 ### Verified state (checked, not assumed)
