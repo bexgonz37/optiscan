@@ -1485,6 +1485,27 @@ CREATE TABLE IF NOT EXISTS options_candidates (
   created_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_options_candidates ON options_candidates(symbol, created_at_ms);
+-- PERFORMANCE (2026-08-18 audit): the paper lifecycle resolves the READY/SELECTED
+-- candidate behind EVERY alert, once per alert, with
+--   WHERE symbol=? AND UPPER(COALESCE(state,'')) IN ('READY','SELECTED')
+--     AND created_at_ms <= ? ORDER BY id DESC LIMIT 1
+-- The UPPER(COALESCE(state,'')) call is not sargable against the plain index above, and
+-- ORDER BY id DESC cannot be served by it either, so SQLite read every candidate row
+-- for the symbol -- SELECT *, so including the feature/market-structure JSON blobs --
+-- and sorted them, on a 92k-row table, for each of several hundred alerts. That was the
+-- single largest cost behind the homepage and the paper-chain diagnostic.
+--
+-- An index ON THE EXPRESSION is used deliberately in preference to rewriting the
+-- predicate: the query keeps its exact current semantics, so no row it selects and no
+-- lifecycle stage it reports can change. Additive index only.
+--
+-- Verified with EXPLAIN QUERY PLAN, not assumed. The seek becomes
+-- SEARCH ... (symbol=? AND <expr>=? AND created_at_ms<?). The temp B-tree for
+-- ORDER BY id DESC survives -- an IN() over two state values cannot be walked in one
+-- ordered pass -- but it now sorts only the matching READY/SELECTED rows for that
+-- symbol instead of every candidate row the symbol ever had.
+CREATE INDEX IF NOT EXISTS idx_options_candidates_state_lookup
+  ON options_candidates(symbol, UPPER(COALESCE(state,'')), created_at_ms, id);
 
 CREATE TABLE IF NOT EXISTS options_paper_trades (
   id INTEGER PRIMARY KEY AUTOINCREMENT, option_symbol TEXT NOT NULL, side TEXT, strike REAL, expiration TEXT, dte INTEGER,
@@ -1518,6 +1539,12 @@ CREATE TABLE IF NOT EXISTS options_paper_marks (
   UNIQUE(trade_id, mark_at_ms)
 );
 CREATE INDEX IF NOT EXISTS idx_options_paper_marks_trade ON options_paper_marks(trade_id, mark_at_ms);
+-- PERFORMANCE (2026-08-18 audit): the ranked-setups premium series falls back to
+-- a WHERE option_symbol=? ORDER BY mark_at_ms read when a trade id is not resolvable.
+-- options_paper_marks is the largest live table (320k rows in production) and had no
+-- index on option_symbol, so that fallback scanned and sorted the whole table once per
+-- ranked callout. Additive index only: no mark, return, excursion or statistic changes.
+CREATE INDEX IF NOT EXISTS idx_options_paper_marks_contract ON options_paper_marks(option_symbol, mark_at_ms);
 
 -- Prospective-only audit evidence. This table never authorizes a scan, delivery, paper entry, or exit.
 CREATE TABLE IF NOT EXISTS options_research_observations (
@@ -1571,6 +1598,11 @@ CREATE TABLE IF NOT EXISTS options_alerts (
   created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_options_alerts_state ON options_alerts(state, created_at_ms);
+-- PERFORMANCE (2026-08-18 audit): the homepage sparkline reads recent prints per
+-- symbol (WHERE candidate_symbol=?) and the paper-chain window reads SENT alerts by
+-- send time. Neither had a supporting index. Additive only.
+CREATE INDEX IF NOT EXISTS idx_options_alerts_symbol ON options_alerts(candidate_symbol, updated_at_ms);
+CREATE INDEX IF NOT EXISTS idx_options_alerts_sent ON options_alerts(state, sent_at_ms);
 
 -- Autonomous-runtime state for the options scanner (persistent heartbeat, boot self-check, daily-summary
 -- dedup). Small key/value store; survives restart/deploy so runtime status needs no manual endpoint call.
@@ -3192,6 +3224,13 @@ function migrate(db: Database.Database) {
     db.prepare("CREATE INDEX IF NOT EXISTS idx_options_paper_kind_status ON options_paper_trades(paper_kind, status)").run();
     db.prepare("CREATE INDEX IF NOT EXISTS idx_options_paper_kind_fp ON options_paper_trades(paper_kind, fingerprint)").run();
     db.prepare("CREATE INDEX IF NOT EXISTS idx_options_paper_kind_entered ON options_paper_trades(paper_kind, entered_at_ms)").run();
+    // PERFORMANCE (2026-08-18 audit): the read paths look a paper trade up by
+    // `alert_id` ALONE (paper-chain builds one row per SENT alert; ranked-setups
+    // resolves a premium series per callout). `idx_options_paper_kind` leads with
+    // `paper_kind`, so SQLite cannot use it for a bare `WHERE alert_id=?` and every
+    // such lookup fell back to a full table scan — once per alert, on every homepage
+    // load. Additive index only: no query, threshold, statistic or row is changed by it.
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_options_paper_alert ON options_paper_trades(alert_id)").run();
     db.prepare(
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_options_paper_one_active_thesis ON options_paper_trades(thesis_fingerprint) WHERE status='ENTERED' AND thesis_fingerprint IS NOT NULL",
     ).run();
