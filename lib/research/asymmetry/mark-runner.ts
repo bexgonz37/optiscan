@@ -24,6 +24,14 @@ import { evaluateInstrumentSession } from "../../instrument-session-authority.ts
 import { tradingDay } from "../../trading-session.ts";
 import { horizonWindow, evaluateIndependence } from "./horizon-windows.ts";
 import { recordMarkEvidenceOnDb } from "./mark-evidence-store.ts";
+import { rotateForBudget } from "./sweep-rotation.ts";
+
+/**
+ * Round-robin cursor per session, matching the transition sweep's convention.
+ * Module-scoped; resetting on redeploy only restarts the rotation, which is
+ * harmless because every horizon stays owed until it is genuinely marked.
+ */
+const markSweepCursor = new Map<string, number>();
 
 export const MARKS_ENABLED_ENV = "HIGH_ASYMMETRY_CAPTURE_ENABLED";
 export const MARK_HORIZONS_MINUTES = [1, 3, 5, 10, 15, 30, 60] as const;
@@ -106,6 +114,16 @@ export interface MarkRunResult {
   marksRejected: number;
   outcomesUpdated: number;
   errors: string[];
+  /**
+   * Horizons this sweep DECLINED to attempt because the lane had spent its
+   * minute allowance. Counted, not fired: an attempt with no budget behind it
+   * costs a provider refusal and a transient mark row, and buys nothing —
+   * the horizon is owed either way. Kept apart from `marksRejected`, which
+   * means we asked and were refused.
+   */
+  budgetDeferred: number;
+  /** Open cases the sweep never reached for the same reason. */
+  casesDeferred: number;
 }
 
 export interface MarkDeps {
@@ -132,11 +150,21 @@ export interface MarkDeps {
   env?: NodeJS.ProcessEnv;
   /** Identifies this sweep in the evidence log. Optional. */
   sweepId?: string;
+  /**
+   * How many more provider requests THIS lane may spend right now, read from
+   * its own minute partition (lib/provider-admission.ts). Re-read before every
+   * fetch, so a cache hit — which consumes no budget — leaves the allowance
+   * untouched and the sweep simply continues.
+   *
+   * OPTIONAL, and absent means unbounded, which is what every injected test dep
+   * and every non-live caller gets. Only the scheduler wires the real meter.
+   */
+  admission?: () => number;
 }
 
 /** Sweep due marks for open cases, then re-aggregate outcomes. Never throws. */
 export async function runDueAsymmetryMarks(db: MarkDb, deps: MarkDeps): Promise<MarkRunResult> {
-  const out: MarkRunResult = { ran: false, reason: null, casesRead: 0, marksWritten: 0, marksRejected: 0, outcomesUpdated: 0, errors: [] };
+  const out: MarkRunResult = { ran: false, reason: null, casesRead: 0, marksWritten: 0, marksRejected: 0, outcomesUpdated: 0, errors: [], budgetDeferred: 0, casesDeferred: 0 };
   try {
     const env = deps.env ?? process.env;
     if (env[MARKS_ENABLED_ENV] !== "1") {
@@ -157,7 +185,26 @@ export async function runDueAsymmetryMarks(db: MarkDb, deps: MarkDeps): Promise<
     }
     out.ran = true;
 
-    for (const c of openCases) {
+    // Requests left in this lane's OWN minute partition. Unbounded when no
+    // admission source is wired (tests, replay), so behaviour there is unchanged.
+    const allowance = deps.admission ?? (() => Number.POSITIVE_INFINITY);
+
+    // FAIRNESS, using the primitive the transition sweep already uses for the
+    // same reason. `listCasesOnDb` orders newest-first, so pacing ALONE would
+    // mark the newest cases every sweep and never reach the oldest — and an old
+    // case is exactly the one that owes a 30- or 60-minute horizon right now.
+    // The cursor advances each sweep so every case is reached in bounded time.
+    const startAllowance = allowance();
+    const budgetCases = Number.isFinite(startAllowance)
+      ? Math.max(0, Math.floor(startAllowance))   // a case costs at least one request
+      : openCases.length;
+    const rotation = rotateForBudget(openCases, markSweepCursor.get(deps.sessionDate) ?? 0, budgetCases);
+    markSweepCursor.set(deps.sessionDate, rotation.nextCursor);
+    out.casesDeferred = rotation.deferred;
+    let outOfBudget = false;
+
+    for (const [caseIndex, c] of rotation.selected.entries()) {
+      if (outOfBudget) { out.casesDeferred += rotation.selected.length - caseIndex; break; }
       try {
         const marked = existingHorizons(db, c.sessionDate, c.fingerprint);
         const due = dueHorizons(c.firstDetectedAtMs, deps.nowMs, marked);
@@ -169,7 +216,16 @@ export async function runDueAsymmetryMarks(db: MarkDb, deps: MarkDeps): Promise<
         const usedProviderTimestamps = new Set<number>();
         const usedByHorizon = new Map<number, number>();
 
-        for (const horizon of due) {
+        for (const [dueIndex, horizon] of due.entries()) {
+          // ADMISSION BEFORE ATTEMPT. Firing into an exhausted partition does
+          // not get the quote; it gets a refusal, a transient mark row, and the
+          // same horizon back on the next sweep. Declining costs nothing and
+          // leaves the horizon owed in exactly the same state.
+          if (!(allowance() > 0)) {
+            outOfBudget = true;
+            out.budgetDeferred += due.length - dueIndex;
+            break;
+          }
           const requestStartedAtMs = Date.now();
           const fetched = await deps.quote(c.optionSymbol, c.symbol);
           const q = fetched.quote;

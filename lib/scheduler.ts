@@ -658,6 +658,15 @@ async function asymmetryTransitionsJob(nowMs: number): Promise<void> {
     nowMs,
     clock: Date.now,
     sessionDate: tradingDay(nowMs),
+    // This lane holds no minute reserve, so its real budget is whatever is left
+    // in the shared pool. Ask for that, not for a flat per-sweep number.
+    admission: () => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { remainingMinuteAllowance } = require("@/lib/provider-admission");
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { getCallStats } = require("@/lib/polygon-provider");
+      return remainingMinuteAllowance("asymmetry_discovery", getCallStats());
+    },
   }));
   state().lastAsymmetryTransitions = res;
 }
@@ -676,10 +685,18 @@ async function asymmetryMarksJob(nowMs: number): Promise<void> {
   const { liveAsymmetryQuote } = require("@/lib/research/asymmetry/live-quote");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { withProviderConsumer } = require("@/lib/provider-context");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { remainingMinuteAllowance } = require("@/lib/provider-admission");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getCallStats } = require("@/lib/polygon-provider");
   const res = await withProviderConsumer("asymmetry_mark", () => runDueAsymmetryMarks(db(), {
     quote: liveAsymmetryQuote,
     nowMs,
     sessionDate: tradingDay(nowMs),
+    // Pace the sweep to this lane's OWN partition rather than firing the whole
+    // owed backlog at it. Read fresh per horizon: a cache hit spends nothing, so
+    // the allowance is unchanged and the sweep keeps going.
+    admission: () => remainingMinuteAllowance("asymmetry_mark", getCallStats()),
   }));
   state().lastAsymmetryMarks = res;
 }

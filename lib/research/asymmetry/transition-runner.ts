@@ -21,6 +21,7 @@ import type { AsymmetryResearchState } from "./states.ts";
 import { resolvePaperPermission } from "./paper/activation.ts";
 import { decideNotification, resolveStrategyNotificationStrength } from "./notification-gate.ts";
 import { recordNotifyDecisionOnDb, attachNotifyOutcomeOnDb } from "./notify-journal.ts";
+import { rotateForBudget } from "./sweep-rotation.ts";
 import { isOptionsQuoteSession } from "../../market-session-guard.ts";
 import { evaluateInstrumentSession, optionsSessionAllowsStrategy } from "../../instrument-session-authority.ts";
 
@@ -99,17 +100,12 @@ const sweepCursor = new Map<string, number>();
 /**
  * Order cases so the ones waiting longest are served first, then wrap.
  * Pure and deterministic given a cursor.
+ *
+ * MOVED to `sweep-rotation.ts` so the mark sweep can use the same implementation
+ * without importing this module's notifier/journal/activation graph. Re-exported
+ * here because it is part of this module's published surface and its tests.
  */
-export function rotateForBudget<T>(cases: readonly T[], cursor: number, budget: number): {
-  selected: T[]; nextCursor: number; deferred: number;
-} {
-  if (cases.length === 0 || budget <= 0) return { selected: [], nextCursor: cursor, deferred: cases.length };
-  if (budget >= cases.length) return { selected: [...cases], nextCursor: 0, deferred: 0 };
-  const start = ((cursor % cases.length) + cases.length) % cases.length;
-  const selected: T[] = [];
-  for (let i = 0; i < budget; i++) selected.push(cases[(start + i) % cases.length]);
-  return { selected, nextCursor: (start + budget) % cases.length, deferred: cases.length - budget };
-}
+export { rotateForBudget };
 
 /**
  * The deterministic transition rule. Pure and total: every input maps to
@@ -197,6 +193,12 @@ export interface TransitionDeps {
   sessionDate: string;
   /** Overrides the env-resolved per-sweep quote budget. For tests. */
   maxQuotesPerSweep?: number;
+  /**
+   * How many provider requests THIS lane may spend right now, read from its own
+   * minute partition (lib/provider-admission.ts). Optional; absent means
+   * unbounded, so every injected test dep and non-live caller is unchanged.
+   */
+  admission?: () => number;
 }
 
 /** Module-scoped notifier memory so dedupe survives across sweeps. */
@@ -236,7 +238,19 @@ export async function runAsymmetryTransitions(
     // Spend a bounded number of quote requests per sweep, rotating so every
     // case is observed within ceil(N / budget) sweeps instead of the first N
     // winning forever.
-    const budget = deps.maxQuotesPerSweep ?? resolveSweepQuoteBudget(env);
+    // The configured per-sweep budget is a CEILING, not an entitlement. On
+    // 2026-08-19 this lane served 393 requests against 1,647 refusals (19.3%):
+    // it holds no minute reserve, so it lives entirely in the shared pool, and
+    // asking for a flat 120 every sweep meant most of the ask was refused and
+    // the cases behind the refusals were deferred anyway — at the cost of a
+    // provider refusal each. Take the smaller of what is configured and what
+    // this lane may actually spend right now; the rotation below already makes
+    // a smaller slice fair rather than starving.
+    const configuredBudget = deps.maxQuotesPerSweep ?? resolveSweepQuoteBudget(env);
+    const allowance = deps.admission?.() ?? Number.POSITIVE_INFINITY;
+    const budget = Number.isFinite(allowance)
+      ? Math.max(0, Math.min(configuredBudget, Math.floor(allowance)))
+      : configuredBudget;
     const cursor = sweepCursor.get(deps.sessionDate) ?? 0;
     const { selected: cases, nextCursor, deferred } = rotateForBudget(allCases, cursor, budget);
     sweepCursor.set(deps.sessionDate, nextCursor);
