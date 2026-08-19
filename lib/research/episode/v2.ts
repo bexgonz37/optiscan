@@ -204,6 +204,9 @@ export function buildSetupEpisodeV2(input: {
   featureSnapshot?: unknown;
   env?: NodeJS.ProcessEnv;
 }): SetupEpisodeV2 {
+  const buildAtMs = Number.isFinite(input?.candidate?.nowMs) ? Number(input.candidate.nowMs) : Date.now();
+  buildAttempted(buildAtMs);
+  try {
   const c = input.candidate;
   const r = input.result;
   const env = input.env ?? process.env;
@@ -279,7 +282,7 @@ export function buildSetupEpisodeV2(input: {
   const zoneA = { underlying, option, optiscan, marketContext };
   const violations = validateZoneA(zoneA, c.nowMs);
   if (violations.length) throw new Error(`SetupEpisodeV2 Zone-A leakage: ${violations.join("; ")}`);
-  return {
+  const episode: SetupEpisodeV2 = {
     episodeKey,
     episodeVersion: 2,
     source: "live_scanner",
@@ -306,65 +309,329 @@ export function buildSetupEpisodeV2(input: {
     zoneA,
     maxFeatureAsOfMs: c.nowMs,
   };
+  buildSucceeded(buildAtMs);
+  return episode;
+  } catch (error) {
+    buildRejected(error, buildAtMs);
+    throw error;
+  }
 }
 
 interface EpisodeDb {
   prepare(sql: string): {
     get: (...a: unknown[]) => unknown;
+    all: (...a: unknown[]) => unknown[];
     run: (...a: unknown[]) => { changes: number; lastInsertRowid?: number | bigint };
   };
 }
 
+export type EpisodeBuildRejectionClass =
+  | "ZONE_A_FUTURE_TIMESTAMP"
+  | "OTHER_VALIDATION_REJECTION"
+  | "OTHER_BUILD_ERROR";
+
+export type EpisodeV2EvidenceState =
+  | "NEVER_ATTEMPTED"
+  | "ATTEMPTED_WITH_SUCCESS"
+  | "ATTEMPTED_WITH_REJECTIONS"
+  | "PERSISTENCE_FAILURE";
+
+interface EpisodeHealthState {
+  buildAttempts: number;
+  buildSuccesses: number;
+  buildRejectionsTotal: number;
+  buildRejectionsByClass: Record<EpisodeBuildRejectionClass, number>;
+  persistenceAttempts: number;
+  persistenceSuccesses: number;
+  persistenceFailures: number;
+  observationActionFailures: number;
+  counterfactualActionFailures: number;
+  paperActionFailures: number;
+  subscriberActionFailures: number;
+  lastBuildAttemptAtMs: number | null;
+  lastBuildSuccessAtMs: number | null;
+  lastBuildRejectionAtMs: number | null;
+  lastBuildRejectionClass: EpisodeBuildRejectionClass | null;
+  lastPersistenceSuccessAtMs: number | null;
+  lastPersistenceFailureAtMs: number | null;
+  lastPersistenceError: string | null;
+  lastActionFailureAtMs: number | null;
+  lastActionFailureKind: EpisodeActionKind | null;
+}
+
 type EpisodeHealthGlobal = typeof globalThis & {
-  __setupEpisodeV2Health?: {
-    writes: number; failures: number; lastSuccessAtMs: number | null;
-    lastErrorAtMs: number | null; lastError: string | null;
-  };
+  __setupEpisodeV2Health?: EpisodeHealthState;
 };
 
-function episodeHealthState() {
+function newEpisodeHealthState(): EpisodeHealthState {
+  return {
+    buildAttempts: 0,
+    buildSuccesses: 0,
+    buildRejectionsTotal: 0,
+    buildRejectionsByClass: {
+      ZONE_A_FUTURE_TIMESTAMP: 0,
+      OTHER_VALIDATION_REJECTION: 0,
+      OTHER_BUILD_ERROR: 0,
+    },
+    persistenceAttempts: 0,
+    persistenceSuccesses: 0,
+    persistenceFailures: 0,
+    observationActionFailures: 0,
+    counterfactualActionFailures: 0,
+    paperActionFailures: 0,
+    subscriberActionFailures: 0,
+    lastBuildAttemptAtMs: null,
+    lastBuildSuccessAtMs: null,
+    lastBuildRejectionAtMs: null,
+    lastBuildRejectionClass: null,
+    lastPersistenceSuccessAtMs: null,
+    lastPersistenceFailureAtMs: null,
+    lastPersistenceError: null,
+    lastActionFailureAtMs: null,
+    lastActionFailureKind: null,
+  };
+}
+
+function episodeHealthState(): EpisodeHealthState {
   const g = globalThis as EpisodeHealthGlobal;
-  return (g.__setupEpisodeV2Health ??= {
-    writes: 0, failures: 0, lastSuccessAtMs: null, lastErrorAtMs: null, lastError: null,
-  });
+  return (g.__setupEpisodeV2Health ??= newEpisodeHealthState());
 }
 
-function persistenceOk(nowMs: number) {
-  const s = episodeHealthState();
-  s.writes += 1;
-  s.lastSuccessAtMs = nowMs;
+/** Test-only reset for deterministic counter assertions. It never runs in production code. */
+export function resetSetupEpisodeV2HealthForTests(): void {
+  (globalThis as EpisodeHealthGlobal).__setupEpisodeV2Health = newEpisodeHealthState();
 }
 
-function persistenceFailed(reason: unknown, nowMs: number): string {
-  const message = String((reason as Error)?.message ?? reason).slice(0, 240);
+export function classifyEpisodeBuildRejection(reason: unknown): EpisodeBuildRejectionClass {
+  const message = String((reason as Error)?.message ?? reason);
+  if (/SetupEpisodeV2 Zone-A leakage:.*\.asOfMs\s+\d+\s*>\s*t0Ms\s+\d+/s.test(message)) {
+    return "ZONE_A_FUTURE_TIMESTAMP";
+  }
+  if (/SetupEpisodeV2 Zone-A leakage:/i.test(message)) return "OTHER_VALIDATION_REJECTION";
+  return "OTHER_BUILD_ERROR";
+}
+
+function buildAttempted(nowMs: number): void {
   const s = episodeHealthState();
-  s.failures += 1;
-  s.lastErrorAtMs = nowMs;
-  s.lastError = message;
+  s.buildAttempts += 1;
+  s.lastBuildAttemptAtMs = nowMs;
+}
+
+function buildSucceeded(nowMs: number): void {
+  const s = episodeHealthState();
+  s.buildSuccesses += 1;
+  s.lastBuildSuccessAtMs = nowMs;
+}
+
+function buildRejected(reason: unknown, nowMs: number): void {
+  const rejectionClass = classifyEpisodeBuildRejection(reason);
+  const s = episodeHealthState();
+  s.buildRejectionsTotal += 1;
+  s.buildRejectionsByClass[rejectionClass] += 1;
+  s.lastBuildRejectionAtMs = nowMs;
+  s.lastBuildRejectionClass = rejectionClass;
+}
+
+function boundedErrorMessage(reason: unknown): string {
+  return String((reason as Error)?.message ?? reason).slice(0, 240);
+}
+
+function episodePersistenceAttempted(): void {
+  episodeHealthState().persistenceAttempts += 1;
+}
+
+function episodePersistenceOk(nowMs: number): void {
+  const s = episodeHealthState();
+  s.persistenceSuccesses += 1;
+  s.lastPersistenceSuccessAtMs = nowMs;
+}
+
+function episodePersistenceFailed(reason: unknown, nowMs: number): string {
+  const message = boundedErrorMessage(reason);
+  const s = episodeHealthState();
+  s.persistenceFailures += 1;
+  s.lastPersistenceFailureAtMs = nowMs;
+  s.lastPersistenceError = message;
   return message;
 }
 
+function actionFailed(kind: EpisodeActionKind, reason: unknown, nowMs: number): string {
+  const s = episodeHealthState();
+  if (kind === "OBSERVATION") s.observationActionFailures += 1;
+  else if (kind === "COUNTERFACTUAL") s.counterfactualActionFailures += 1;
+  else if (kind === "PAPER_TRADE" || kind === "OWNER_PAPER") s.paperActionFailures += 1;
+  else if (kind === "DELIVERED_SUBSCRIBER_TRADE") s.subscriberActionFailures += 1;
+  s.lastActionFailureAtMs = nowMs;
+  s.lastActionFailureKind = kind;
+  return boundedErrorMessage(reason);
+}
+
+interface TimestampBucketSummary {
+  key: string;
+  totalRows: number;
+  quoteNewerThanObserved: number;
+  quoteEqualToObserved: number;
+  quoteOlderThanObserved: number;
+  newerThanObservationPct: number | null;
+}
+
+export interface SetupEpisodeV2TimestampDiagnostic {
+  status: "OK" | "ERROR";
+  scope: {
+    candidateState: "CONTRACT_SELECTED";
+    quoteTimestampRequired: true;
+    groupLimit: number;
+  };
+  totalRows: number | null;
+  quoteNewerThanObserved: number | null;
+  quoteEqualToObserved: number | null;
+  quoteOlderThanObserved: number | null;
+  newerThanObservationPct: number | null;
+  reconciles: boolean | null;
+  breakdowns: {
+    bySessionDate: TimestampBucketSummary[];
+    bySide: TimestampBucketSummary[];
+    byStrategy: TimestampBucketSummary[];
+    bySymbol: TimestampBucketSummary[];
+  };
+  readOnly: true;
+  providerCalls: 0;
+  bounded: true;
+  error?: string;
+}
+
+const TIMESTAMP_DIAGNOSTIC_DEFAULT_GROUP_LIMIT = 20;
+const TIMESTAMP_DIAGNOSTIC_MAX_GROUP_LIMIT = 50;
+const TIMESTAMP_SCOPE_SQL = "candidate_state='CONTRACT_SELECTED' AND quote_timestamp_ms IS NOT NULL";
+
+function timestampBucket(row: Record<string, unknown>, key = "ALL"): TimestampBucketSummary {
+  const totalRows = Number(row.totalRows ?? 0);
+  const newer = Number(row.quoteNewerThanObserved ?? 0);
+  const equal = Number(row.quoteEqualToObserved ?? 0);
+  const older = Number(row.quoteOlderThanObserved ?? 0);
+  return {
+    key: String(row.key ?? key),
+    totalRows,
+    quoteNewerThanObserved: newer,
+    quoteEqualToObserved: equal,
+    quoteOlderThanObserved: older,
+    newerThanObservationPct: totalRows > 0 ? +((newer / totalRows) * 100).toFixed(2) : null,
+  };
+}
+
+/**
+ * Historical magnitude of the Zone-A timestamp condition. SQL aggregates only:
+ * no provider import, no HTTP, no writes, and every returned breakdown is capped.
+ */
+export function setupEpisodeV2TimestampDiagnosticOnDb(
+  db: EpisodeDb,
+  opts: { groupLimit?: number } = {},
+): SetupEpisodeV2TimestampDiagnostic {
+  const groupLimit = Math.max(1, Math.min(
+    TIMESTAMP_DIAGNOSTIC_MAX_GROUP_LIMIT,
+    Math.trunc(opts.groupLimit ?? TIMESTAMP_DIAGNOSTIC_DEFAULT_GROUP_LIMIT),
+  ));
+  const emptyBreakdowns = { bySessionDate: [], bySide: [], byStrategy: [], bySymbol: [] };
+  const aggregateColumns = `COUNT(*) AS totalRows,
+    COALESCE(SUM(CASE WHEN quote_timestamp_ms > observed_at_ms THEN 1 ELSE 0 END),0) AS quoteNewerThanObserved,
+    COALESCE(SUM(CASE WHEN quote_timestamp_ms = observed_at_ms THEN 1 ELSE 0 END),0) AS quoteEqualToObserved,
+    COALESCE(SUM(CASE WHEN quote_timestamp_ms < observed_at_ms THEN 1 ELSE 0 END),0) AS quoteOlderThanObserved`;
+  const grouped = (expression: string, orderBy: string): TimestampBucketSummary[] =>
+    (db.prepare(
+      `SELECT ${expression} AS key, ${aggregateColumns}
+         FROM options_research_observations
+        WHERE ${TIMESTAMP_SCOPE_SQL}
+        GROUP BY ${expression}
+        ORDER BY ${orderBy}
+        LIMIT ?`,
+    ).all(groupLimit) as Record<string, unknown>[]).map((row) => timestampBucket(row));
+  try {
+    const total = timestampBucket(db.prepare(
+      `SELECT ${aggregateColumns} FROM options_research_observations WHERE ${TIMESTAMP_SCOPE_SQL}`,
+    ).get() as Record<string, unknown> | undefined ?? {});
+    return {
+      status: "OK",
+      scope: { candidateState: "CONTRACT_SELECTED", quoteTimestampRequired: true, groupLimit },
+      totalRows: total.totalRows,
+      quoteNewerThanObserved: total.quoteNewerThanObserved,
+      quoteEqualToObserved: total.quoteEqualToObserved,
+      quoteOlderThanObserved: total.quoteOlderThanObserved,
+      newerThanObservationPct: total.newerThanObservationPct,
+      reconciles: total.totalRows === total.quoteNewerThanObserved + total.quoteEqualToObserved + total.quoteOlderThanObserved,
+      breakdowns: {
+        bySessionDate: grouped("session_date", "key DESC"),
+        bySide: grouped("UPPER(COALESCE(option_type,'UNKNOWN'))", "totalRows DESC, key ASC"),
+        byStrategy: grouped("COALESCE(strategy_family,'UNKNOWN')", "totalRows DESC, key ASC"),
+        bySymbol: grouped("UPPER(symbol)", "totalRows DESC, key ASC"),
+      },
+      readOnly: true,
+      providerCalls: 0,
+      bounded: true,
+    };
+  } catch (error) {
+    return {
+      status: "ERROR",
+      scope: { candidateState: "CONTRACT_SELECTED", quoteTimestampRequired: true, groupLimit },
+      totalRows: null,
+      quoteNewerThanObserved: null,
+      quoteEqualToObserved: null,
+      quoteOlderThanObserved: null,
+      newerThanObservationPct: null,
+      reconciles: null,
+      breakdowns: emptyBreakdowns,
+      readOnly: true,
+      providerCalls: 0,
+      bounded: true,
+      error: boundedErrorMessage(error),
+    };
+  }
+}
+
 export function setupEpisodeV2HealthOnDb(db: EpisodeDb): Record<string, unknown> {
-  const runtime = episodeHealthState();
+  const state = episodeHealthState();
+  const runtime = {
+    ...state,
+    buildRejectionsByClass: { ...state.buildRejectionsByClass },
+  };
   const episodeCount = Number((db.prepare("SELECT COUNT(*) n FROM setup_episodes WHERE episode_version=2").get() as any)?.n ?? 0);
   const actionCount = Number((db.prepare("SELECT COUNT(*) n FROM episode_actions").get() as any)?.n ?? 0);
   const labelCount = Number((db.prepare("SELECT COUNT(*) n FROM episode_outcome_labels_v2").get() as any)?.n ?? 0);
-  const errorActive = runtime.lastErrorAtMs != null
-    && (runtime.lastSuccessAtMs == null || runtime.lastErrorAtMs >= runtime.lastSuccessAtMs);
+  const timestampDiagnostic = setupEpisodeV2TimestampDiagnosticOnDb(db);
+  const actionFailures = runtime.observationActionFailures + runtime.counterfactualActionFailures
+    + runtime.paperActionFailures + runtime.subscriberActionFailures;
+  const evidenceState: EpisodeV2EvidenceState = runtime.buildAttempts === 0
+    ? "NEVER_ATTEMPTED"
+    : runtime.persistenceFailures > 0 && runtime.persistenceSuccesses === 0
+      ? "PERSISTENCE_FAILURE"
+      : runtime.buildSuccesses > 0
+        ? "ATTEMPTED_WITH_SUCCESS"
+        : "ATTEMPTED_WITH_REJECTIONS";
+  const status = timestampDiagnostic.status === "ERROR"
+    || evidenceState === "PERSISTENCE_FAILURE"
+    || evidenceState === "ATTEMPTED_WITH_REJECTIONS"
+    ? "ERROR"
+    : evidenceState === "NEVER_ATTEMPTED"
+      ? "NO_RUNTIME_EVIDENCE"
+      : runtime.buildRejectionsTotal > 0 || runtime.persistenceFailures > 0 || actionFailures > 0
+        ? "DEGRADED"
+        : "OK";
   return {
-    status: errorActive ? "ERROR" : "OK",
+    status,
+    evidenceState,
     episodeCount,
     actionCount,
     labelCount,
     labelWriterAuthority: "PHASE_2_SUBSTRATE_ONLY",
     runtime,
+    timestampDiagnostic,
   };
 }
 
 export function persistSetupEpisodeV2OnDb(db: EpisodeDb, episode: SetupEpisodeV2, nowMs = Date.now()) {
+  episodePersistenceAttempted();
   const violations = validateZoneA(episode.zoneA, episode.t0Ms);
   if (violations.length) {
-    persistenceFailed(violations.join("; "), nowMs);
+    episodePersistenceFailed(violations.join("; "), nowMs);
     return { ok: false, inserted: false, episodeKey: episode.episodeKey, violations };
   }
   try {
@@ -372,8 +639,8 @@ export function persistSetupEpisodeV2OnDb(db: EpisodeDb, episode: SetupEpisodeV2
     const zoneJson = JSON.stringify(episode.zoneA);
     if (existing) {
       const same = existing.zone_a_json === zoneJson && existing.config_digest === episode.configDigest;
-      if (same) persistenceOk(nowMs);
-      else persistenceFailed("immutable episode identity conflict", nowMs);
+      if (same) episodePersistenceOk(nowMs);
+      else episodePersistenceFailed("immutable episode identity conflict", nowMs);
       return { ok: same, inserted: false, episodeKey: episode.episodeKey, violations: same ? [] : ["immutable episode identity conflict"] };
     }
     const info = db.prepare(
@@ -393,10 +660,10 @@ export function persistSetupEpisodeV2OnDb(db: EpisodeDb, episode: SetupEpisodeV2
       episode.disposition, episode.rejectionReason, episode.candidateId, episode.opportunityCaseId,
       episode.thesisFingerprint, episode.selectedOcc, episode.sourceLane, episode.entryConvention,
     );
-    persistenceOk(nowMs);
+    episodePersistenceOk(nowMs);
     return { ok: true, inserted: info.changes > 0, episodeKey: episode.episodeKey, violations: [] };
   } catch (error) {
-    return { ok: false, inserted: false, episodeKey: episode.episodeKey, violations: [persistenceFailed(error, nowMs)] };
+    return { ok: false, inserted: false, episodeKey: episode.episodeKey, violations: [episodePersistenceFailed(error, nowMs)] };
   }
 }
 
@@ -411,7 +678,7 @@ export function appendEpisodeActionOnDb(db: EpisodeDb, input: {
   metadata?: unknown;
 }, nowMs = Date.now()) {
   if (input.kind === "COUNTERFACTUAL" && (!input.defensibleEntry || !input.exactOcc || !input.entryConvention)) {
-    persistenceFailed("counterfactual requires exact OCC, defensible entry, and explicit convention", nowMs);
+    actionFailed(input.kind, "counterfactual requires exact OCC, defensible entry, and explicit convention", nowMs);
     return { ok: false, inserted: false, reason: "counterfactual requires exact OCC, defensible entry, and explicit convention" };
   }
   try {
@@ -422,10 +689,9 @@ export function appendEpisodeActionOnDb(db: EpisodeDb, input: {
     ).run(input.episodeKey, input.kind, input.actionRef, input.occurredAtMs, input.exactOcc ?? null,
       input.entryConvention ?? null, input.defensibleEntry ? 1 : 0,
       input.metadata == null ? null : JSON.stringify(input.metadata), nowMs);
-    persistenceOk(nowMs);
     return { ok: true, inserted: r.changes > 0, reason: null };
   } catch (error) {
-    return { ok: false, inserted: false, reason: persistenceFailed(error, nowMs) };
+    return { ok: false, inserted: false, reason: actionFailed(input.kind, error, nowMs) };
   }
 }
 
@@ -479,39 +745,34 @@ export function appendOutcomeLabelV2OnDb(db: EpisodeDb, t0Ms: number, label: Out
   const requestedEndAtMs = label.requestedEndAtMs ?? label.labelAsOfMs;
   const labelVersion = label.labelVersion ?? "FORWARD_LABEL_V1";
   if (!(label.labelAsOfMs > t0Ms)) {
-    persistenceFailed("label must be strictly after t0", nowMs);
     return { ok: false, inserted: false, reason: "label must be strictly after t0" };
   }
   if (label.labelKind === "EXACT_OPTION_EXECUTABLE_LABEL" && (!label.exactOcc || !label.entryConvention)) {
-    persistenceFailed("exact-option label requires OCC and entry convention", nowMs);
     return { ok: false, inserted: false, reason: "exact-option label requires OCC and entry convention" };
   }
   if (label.labelKind === "UNDERLYING_LABEL" && (label.exactOcc != null || label.entryConvention != null)) {
-    persistenceFailed("underlying label cannot carry option identity", nowMs);
     return { ok: false, inserted: false, reason: "underlying label cannot carry option identity" };
   }
   if (requestedEndAtMs <= t0Ms || label.labelAsOfMs < requestedEndAtMs) {
-    persistenceFailed("label horizon end must be after t0 and no later than label as-of", nowMs);
     return { ok: false, inserted: false, reason: "label horizon end must be after t0 and no later than label as-of" };
   }
   if (label.coverage === "INSUFFICIENT" && [label.terminalReturnPct, label.mfePct, label.maePct].some((x) => x != null)) {
-    persistenceFailed("insufficient evidence cannot carry return/MFE/MAE", nowMs);
     return { ok: false, inserted: false, reason: "insufficient evidence cannot carry return/MFE/MAE" };
   }
   try {
     const episode = db.prepare(
       "SELECT selected_occ, entry_convention, config_digest FROM setup_episodes WHERE episode_key=? AND episode_version=2",
     ).get(label.episodeKey) as any;
-    if (!episode) return { ok: false, inserted: false, reason: persistenceFailed("SetupEpisodeV2 not found", nowMs) };
+    if (!episode) return { ok: false, inserted: false, reason: boundedErrorMessage("SetupEpisodeV2 not found") };
     if (String(episode.config_digest ?? "") !== label.configDigest) {
-      return { ok: false, inserted: false, reason: persistenceFailed("label config digest does not match frozen episode", nowMs) };
+      return { ok: false, inserted: false, reason: boundedErrorMessage("label config digest does not match frozen episode") };
     }
     if (label.labelKind === "EXACT_OPTION_EXECUTABLE_LABEL") {
       if (String(episode.selected_occ ?? "").toUpperCase() !== String(label.exactOcc ?? "").toUpperCase()) {
-        return { ok: false, inserted: false, reason: persistenceFailed("exact OCC does not match frozen episode", nowMs) };
+        return { ok: false, inserted: false, reason: boundedErrorMessage("exact OCC does not match frozen episode") };
       }
       if (String(episode.entry_convention ?? "") !== String(label.entryConvention ?? "")) {
-        return { ok: false, inserted: false, reason: persistenceFailed("entry convention does not match frozen episode", nowMs) };
+        return { ok: false, inserted: false, reason: boundedErrorMessage("entry convention does not match frozen episode") };
       }
     }
     const bool = (v: boolean | null) => v == null ? null : v ? 1 : 0;
@@ -549,9 +810,8 @@ export function appendOutcomeLabelV2OnDb(db: EpisodeDb, t0Ms: number, label: Out
     const r = db.prepare(
       `INSERT OR IGNORE INTO episode_outcome_labels_v2 (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})`,
     ).run(...values);
-    persistenceOk(nowMs);
     return { ok: true, inserted: r.changes > 0, reason: null };
   } catch (error) {
-    return { ok: false, inserted: false, reason: persistenceFailed(error, nowMs) };
+    return { ok: false, inserted: false, reason: boundedErrorMessage(error) };
   }
 }

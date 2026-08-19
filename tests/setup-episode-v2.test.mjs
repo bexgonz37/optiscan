@@ -9,8 +9,10 @@ import {
   buildSetupEpisodeV2,
   decisionConfigDigest,
   persistSetupEpisodeV2OnDb,
+  resetSetupEpisodeV2HealthForTests,
   setupEpisodeV2HealthOnDb,
   setupEpisodeV2Key,
+  setupEpisodeV2TimestampDiagnosticOnDb,
   validateZoneA,
 } from "../lib/research/episode/v2.ts";
 
@@ -52,8 +54,193 @@ function result(state = "READY", researchOnly = false) {
 function db() {
   const d = new Database(":memory:");
   ensureEnterpriseSchemaOnDb(d);
+  d.exec(`CREATE TABLE IF NOT EXISTS options_research_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    observation_key TEXT NOT NULL UNIQUE,
+    observed_at_ms INTEGER NOT NULL,
+    session_date TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    strategy_family TEXT,
+    candidate_state TEXT,
+    option_type TEXT,
+    quote_timestamp_ms INTEGER,
+    source TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+  )`);
   return d;
 }
+
+test.beforeEach(() => resetSetupEpisodeV2HealthForTests());
+
+function insertTimestampObservation(d, {
+  key, observedAtMs, quoteTimestampMs, sessionDate = "2026-08-19", symbol = "MRNA",
+  side = "call", strategy = "breakout_forming", candidateState = "CONTRACT_SELECTED",
+}) {
+  d.prepare(`INSERT INTO options_research_observations
+    (observation_key,observed_at_ms,session_date,symbol,strategy_family,candidate_state,
+     option_type,quote_timestamp_ms,source,created_at_ms)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+    key, observedAtMs, sessionDate, symbol, strategy, candidateState,
+    side, quoteTimestampMs, "episode-health-test", observedAtMs,
+  );
+}
+
+test("episode build health counts a valid attempt and success", () => {
+  const d = db();
+  buildSetupEpisodeV2({ candidate: candidate(), result: result(), candidateId: 1, env: {} });
+  const health = setupEpisodeV2HealthOnDb(d);
+  assert.equal(health.evidenceState, "ATTEMPTED_WITH_SUCCESS");
+  assert.equal(health.runtime.buildAttempts, 1);
+  assert.equal(health.runtime.buildSuccesses, 1);
+  assert.equal(health.runtime.buildRejectionsTotal, 0);
+});
+
+test("future provider timestamps count as Zone-A rejections, never successes", () => {
+  const d = db();
+  const future = { ...contract, providerTimestamp: T0 + 1 };
+  assert.throws(
+    () => buildSetupEpisodeV2({ candidate: candidate(), result: { ...result(), contract: future }, candidateId: 1, env: {} }),
+    /Zone-A leakage/,
+  );
+  const health = setupEpisodeV2HealthOnDb(d);
+  assert.equal(health.evidenceState, "ATTEMPTED_WITH_REJECTIONS");
+  assert.equal(health.runtime.buildAttempts, 1);
+  assert.equal(health.runtime.buildSuccesses, 0);
+  assert.equal(health.runtime.buildRejectionsTotal, 1);
+  assert.equal(health.runtime.buildRejectionsByClass.ZONE_A_FUTURE_TIMESTAMP, 1);
+  assert.equal(health.runtime.lastBuildRejectionClass, "ZONE_A_FUTURE_TIMESTAMP");
+});
+
+test("generic builder faults have a separate rejection class", () => {
+  const d = db();
+  assert.throws(
+    () => buildSetupEpisodeV2({ candidate: candidate({ underlying: null }), result: result(), candidateId: 1, env: {} }),
+    TypeError,
+  );
+  const runtime = setupEpisodeV2HealthOnDb(d).runtime;
+  assert.equal(runtime.buildAttempts, 1);
+  assert.equal(runtime.buildSuccesses, 0);
+  assert.equal(runtime.buildRejectionsByClass.OTHER_BUILD_ERROR, 1);
+  assert.equal(runtime.buildRejectionsByClass.ZONE_A_FUTURE_TIMESTAMP, 0);
+});
+
+test("episode persistence failure is distinct from builder rejection", () => {
+  const d = db();
+  const ep = buildSetupEpisodeV2({ candidate: candidate(), result: result(), candidateId: 1, env: {} });
+  const failingDb = { prepare() { throw new Error("fixture persistence unavailable"); } };
+  assert.equal(persistSetupEpisodeV2OnDb(failingDb, ep, T0).ok, false);
+  const health = setupEpisodeV2HealthOnDb(d);
+  assert.equal(health.evidenceState, "PERSISTENCE_FAILURE");
+  assert.equal(health.runtime.buildSuccesses, 1);
+  assert.equal(health.runtime.buildRejectionsTotal, 0);
+  assert.equal(health.runtime.persistenceAttempts, 1);
+  assert.equal(health.runtime.persistenceSuccesses, 0);
+  assert.equal(health.runtime.persistenceFailures, 1);
+});
+
+test("action failures are classified separately from build and persistence", () => {
+  const d = db();
+  const failingDb = { prepare() { throw new Error("fixture action unavailable"); } };
+  const common = { episodeKey: "ep2_missing", actionRef: "fixture", occurredAtMs: T0 };
+  assert.equal(appendEpisodeActionOnDb(failingDb, { ...common, kind: "OBSERVATION" }, T0).ok, false);
+  assert.equal(appendEpisodeActionOnDb(failingDb, {
+    ...common, kind: "COUNTERFACTUAL", exactOcc: contract.optionSymbol,
+    entryConvention: "BUY_AT_ASK_EXIT_AT_FUTURE_BID", defensibleEntry: true,
+  }, T0).ok, false);
+  assert.equal(appendEpisodeActionOnDb(failingDb, { ...common, kind: "PAPER_TRADE" }, T0).ok, false);
+  assert.equal(appendEpisodeActionOnDb(failingDb, { ...common, kind: "DELIVERED_SUBSCRIBER_TRADE" }, T0).ok, false);
+  const runtime = setupEpisodeV2HealthOnDb(d).runtime;
+  assert.equal(runtime.buildAttempts, 0);
+  assert.equal(runtime.persistenceAttempts, 0);
+  assert.equal(runtime.persistenceFailures, 0);
+  assert.equal(runtime.observationActionFailures, 1);
+  assert.equal(runtime.counterfactualActionFailures, 1);
+  assert.equal(runtime.paperActionFailures, 1);
+  assert.equal(runtime.subscriberActionFailures, 1);
+});
+
+test("zero episodes distinguishes never attempted from attempted and rejected", () => {
+  const d = db();
+  const before = setupEpisodeV2HealthOnDb(d);
+  assert.equal(before.episodeCount, 0);
+  assert.equal(before.evidenceState, "NEVER_ATTEMPTED");
+  assert.equal(before.status, "NO_RUNTIME_EVIDENCE");
+
+  const future = { ...contract, providerTimestamp: T0 + 1 };
+  assert.throws(() => buildSetupEpisodeV2({
+    candidate: candidate(), result: { ...result(), contract: future }, candidateId: 1, env: {},
+  }));
+  const after = setupEpisodeV2HealthOnDb(d);
+  assert.equal(after.episodeCount, 0);
+  assert.equal(after.evidenceState, "ATTEMPTED_WITH_REJECTIONS");
+  assert.equal(after.status, "ERROR");
+});
+
+test("historical timestamp diagnostic buckets reconcile exactly", () => {
+  const d = db();
+  insertTimestampObservation(d, { key: "newer-call", observedAtMs: T0, quoteTimestampMs: T0 + 1 });
+  insertTimestampObservation(d, { key: "equal-put", observedAtMs: T0, quoteTimestampMs: T0, side: "put", symbol: "TSLA", strategy: "fade" });
+  insertTimestampObservation(d, { key: "older-call", observedAtMs: T0 + 10, quoteTimestampMs: T0 + 9, sessionDate: "2026-08-20" });
+  insertTimestampObservation(d, { key: "newer-put", observedAtMs: T0 + 10, quoteTimestampMs: T0 + 11, sessionDate: "2026-08-20", side: "put", symbol: "AAPL", strategy: "fade" });
+  insertTimestampObservation(d, { key: "excluded-state", observedAtMs: T0, quoteTimestampMs: T0 + 1, candidateState: "READY" });
+  insertTimestampObservation(d, { key: "excluded-null", observedAtMs: T0, quoteTimestampMs: null });
+
+  const diagnostic = setupEpisodeV2TimestampDiagnosticOnDb(d);
+  assert.equal(diagnostic.status, "OK");
+  assert.equal(diagnostic.totalRows, 4);
+  assert.equal(diagnostic.quoteNewerThanObserved, 2);
+  assert.equal(diagnostic.quoteEqualToObserved, 1);
+  assert.equal(diagnostic.quoteOlderThanObserved, 1);
+  assert.equal(diagnostic.newerThanObservationPct, 50);
+  assert.equal(diagnostic.reconciles, true);
+  for (const rows of Object.values(diagnostic.breakdowns)) {
+    for (const row of rows) {
+      assert.equal(row.totalRows, row.quoteNewerThanObserved + row.quoteEqualToObserved + row.quoteOlderThanObserved);
+    }
+  }
+  assert.deepEqual(diagnostic.breakdowns.bySide.map((x) => [x.key, x.totalRows]), [["CALL", 2], ["PUT", 2]]);
+  assert.deepEqual(diagnostic.breakdowns.bySessionDate.map((x) => [x.key, x.totalRows]), [["2026-08-20", 2], ["2026-08-19", 2]]);
+});
+
+test("historical timestamp diagnostic is read-only and makes zero provider calls", () => {
+  const d = db();
+  insertTimestampObservation(d, { key: "one", observedAtMs: T0, quoteTimestampMs: T0 + 1 });
+  const changesBefore = d.prepare("SELECT total_changes() AS n").get().n;
+  const originalFetch = globalThis.fetch;
+  let providerCalls = 0;
+  globalThis.fetch = (...args) => {
+    providerCalls += 1;
+    return originalFetch(...args);
+  };
+  try {
+    const diagnostic = setupEpisodeV2TimestampDiagnosticOnDb(d);
+    assert.equal(diagnostic.readOnly, true);
+    assert.equal(diagnostic.providerCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(providerCalls, 0);
+  assert.equal(d.prepare("SELECT total_changes() AS n").get().n, changesBefore);
+});
+
+test("episode runtime health remains a fixed-size scalar state under repeated failures", () => {
+  const d = db();
+  const shapeBefore = Object.keys(setupEpisodeV2HealthOnDb(d).runtime).sort();
+  for (let i = 0; i < 200; i += 1) {
+    assert.throws(() => buildSetupEpisodeV2({
+      candidate: candidate({ underlying: null, nowMs: T0 + i }), result: result(), candidateId: i, env: {},
+    }));
+  }
+  const runtime = setupEpisodeV2HealthOnDb(d).runtime;
+  assert.deepEqual(Object.keys(runtime).sort(), shapeBefore);
+  assert.equal(runtime.buildAttempts, 200);
+  assert.equal(runtime.buildRejectionsTotal, 200);
+  assert.equal(runtime.buildRejectionsByClass.OTHER_BUILD_ERROR, 200);
+  assert.equal(Object.values(runtime).some(Array.isArray), false);
+  assert.deepEqual(Object.keys(runtime.buildRejectionsByClass).sort(), [
+    "OTHER_BUILD_ERROR", "OTHER_VALIDATION_REJECTION", "ZONE_A_FUTURE_TIMESTAMP",
+  ]);
+});
 
 test("canonical Phase-1 tables are deterministic schema-readiness requirements", () => {
   const d = db();
