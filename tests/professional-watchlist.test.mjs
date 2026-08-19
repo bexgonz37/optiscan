@@ -614,9 +614,12 @@ test("the runner is bounded, contains provider failures, and persists idempotent
   const deps = {
     fetchDailyBars: async (symbol) => {
       dailyCalls += 1;
-      // AMD sorts into the first bounded slice, so this exercises a real failure
-      // inside the run rather than one the symbol cap already excluded.
-      if (symbol === "AMD") throw new Error("provider 500");
+      // IWM is in the CORE_INDEX band, so it is admitted at ANY cap that admits
+      // anything. This used to name AMD, which worked only because admission was
+      // alphabetical — exactly the defect `admission-priority.ts` removed. A test
+      // that depends on sort order is a test that stops testing when the order
+      // changes, so it now depends on the guaranteed band instead.
+      if (symbol === "IWM") throw new Error("provider 500");
       return bars;
     },
     fetchOptionsLiquidity: async (symbol) => liquidity(symbol),
@@ -627,7 +630,7 @@ test("the runner is bounded, contains provider failures, and persists idempotent
   assert.equal(res.ran, true);
   assert.ok(res.providerCalls <= 20, "the provider-call budget must bound the run");
   assert.ok(res.symbolsConsidered <= 6, "the symbol cap must bound the run");
-  assert.ok(res.errors.some((e) => /AMD/.test(e)), "a provider failure is recorded, not thrown");
+  assert.ok(res.errors.some((e) => /IWM/.test(e)), "a provider failure is recorded, not thrown");
   assert.equal(res.persisted, true);
   assert.ok(res.plan.rows.length > 0);
   assert.equal(res.plan.rows.every((r) => r.exactContract === null), true);

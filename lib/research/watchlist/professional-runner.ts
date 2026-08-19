@@ -26,6 +26,11 @@ import {
   type OptionsLiquidityEvidence,
 } from "./universe.ts";
 import { buildWatchlistPlan, type WatchlistPhase, type WatchlistPlan } from "./professional-plan.ts";
+import {
+  allocateAdmissionSlots,
+  DEFAULT_ADMISSION_PRIORITY,
+  type AdmissionPriorityResult,
+} from "./admission-priority.ts";
 import { loadProfessionalPlanOnDb, persistProfessionalPlanOnDb } from "./professional-store.ts";
 import { withProviderConsumer } from "../../provider-context.ts";
 
@@ -59,17 +64,69 @@ export interface ProfessionalWatchlistRunResult {
   symbolsFetched: number;
   providerCalls: number;
   errors: string[];
+  /**
+   * How the bounded slots were allocated. Present so "which symbols were even
+   * looked at, and why" is answerable from the run result instead of inferred
+   * from the published rows.
+   */
+  admission: {
+    bandCounts: Record<string, number>;
+    deferred: string[];
+    starvedBands: string[];
+    guaranteedCoverageBroken: boolean;
+    nextRotationCursor: number;
+  } | null;
 }
 
-/** Bounded run: never fan out across the whole universe in one beat. */
-const DEFAULT_MAX_SYMBOLS = 60;
-const DEFAULT_CALL_BUDGET = 140;
+/**
+ * Bounded run: never fan out across the whole universe in one beat.
+ *
+ * The cap is sized to cover the whole curated universe plus the bounded
+ * evidence bands, because the previous value (60) sat BELOW the curated
+ * universe (78) and the overflow rule was the alphabet — see
+ * `admission-priority.ts`. A cap that silently amputates a human-reviewed list
+ * is not a bound, it is a defect wearing a bound's clothing.
+ */
+const DEFAULT_MAX_SYMBOLS = 94;
+const DEFAULT_CALL_BUDGET = 200;
 const BENCHMARK_SYMBOL = "SPY";
+
+/**
+ * Calls this run genuinely needs: momentum + catalysts, one liquidity probe per
+ * preliminary symbol, the benchmark, and one bar fetch per admitted symbol.
+ *
+ * Derived rather than hardcoded so the budget and the cap cannot drift apart.
+ * They already had: at maxSymbols 60 the true need was 123 against a budget of
+ * 140, and raising the cap without raising the budget would have made
+ * `guarded()` return its fallback for the newly admitted symbols — moving the
+ * truncation from admission to evidence rather than removing it. A symbol
+ * admitted and then silently starved of bars is worse than one never admitted,
+ * because it looks considered.
+ */
+export function providerCallsRequiredFor(maxSymbols: number): number {
+  return 2 + Math.max(0, maxSymbols) * 2 + 1;
+}
+
+function summarizeAdmission(a: AdmissionPriorityResult): ProfessionalWatchlistRunResult["admission"] {
+  const bandCounts: Record<string, number> = {};
+  for (const [band, syms] of Object.entries(a.byBand)) bandCounts[band] = syms.length;
+  return {
+    bandCounts,
+    deferred: a.deferred,
+    starvedBands: a.starvedBands,
+    guaranteedCoverageBroken: a.guaranteedCoverageBroken,
+    nextRotationCursor: a.nextRotationCursor,
+  };
+}
 
 export async function runProfessionalWatchlistOnDb(
   db: RunnerDb,
   deps: ProfessionalWatchlistDeps,
-  opts: { phase?: WatchlistPhase; maxSymbols?: number; providerCallBudget?: number } = {},
+  opts: {
+    phase?: WatchlistPhase; maxSymbols?: number; providerCallBudget?: number;
+    /** Round-robin cursor, only consulted when a band overflows its slots. */
+    rotationCursor?: number;
+  } = {},
 ): Promise<ProfessionalWatchlistRunResult> {
   // Bounded research, not live safety. Attribution is what lets Gate B7 throttle this
   // ahead of scanner or mark traffic instead of guessing which job saturated the cap.
@@ -79,7 +136,10 @@ export async function runProfessionalWatchlistOnDb(
 async function runProfessionalWatchlistInner(
   db: RunnerDb,
   deps: ProfessionalWatchlistDeps,
-  opts: { phase?: WatchlistPhase; maxSymbols?: number; providerCallBudget?: number },
+  opts: {
+    phase?: WatchlistPhase; maxSymbols?: number; providerCallBudget?: number;
+    rotationCursor?: number;
+  },
 ): Promise<ProfessionalWatchlistRunResult> {
   const nowMs = deps.now?.() ?? Date.now();
   const day = tradingDay(nowMs);
@@ -87,14 +147,19 @@ async function runProfessionalWatchlistInner(
   const flags = researchFlags(deps.env ?? process.env);
   const base: ProfessionalWatchlistRunResult = {
     ran: false, reason: null, tradingDay: day, phase, plan: null, persisted: false,
-    symbolsConsidered: 0, symbolsFetched: 0, providerCalls: 0, errors: [],
+    symbolsConsidered: 0, symbolsFetched: 0, providerCalls: 0, errors: [], admission: null,
   };
   if (!flags.professionalWatchlist) {
     return { ...base, reason: "PROFESSIONAL_WATCHLIST_ENABLED is not set" };
   }
 
   const maxSymbols = Math.max(1, Math.min(200, opts.maxSymbols ?? DEFAULT_MAX_SYMBOLS));
-  const budget = Math.max(2, opts.providerCallBudget ?? DEFAULT_CALL_BUDGET);
+  // The budget follows the cap. A caller may still under-fund a run deliberately,
+  // but it can no longer happen by omission.
+  const budget = Math.max(
+    2,
+    opts.providerCallBudget ?? Math.max(DEFAULT_CALL_BUDGET, providerCallsRequiredFor(maxSymbols)),
+  );
   const errors: string[] = [];
   let providerCalls = 0;
 
@@ -117,12 +182,36 @@ async function runProfessionalWatchlistInner(
     : [];
 
   // Which symbols the universe could admit, before the liquidity gate.
-  const { staticUniverseSymbols } = await import("./universe.ts");
-  const preliminary = [...new Set([
-    ...staticUniverseSymbols(),
-    ...momentum.map((m) => String(m.symbol ?? "").toUpperCase()),
-    ...catalysts.map((c) => String(c.symbol ?? "").toUpperCase()),
-  ])].filter(Boolean).sort().slice(0, maxSymbols);
+  //
+  // This used to be `.sort().slice(0, maxSymbols)` — an alphabetical amputation
+  // that cut the entire XL* sector-ETF family on every run. Slot allocation is
+  // now an explicit, banded, testable decision. See `admission-priority.ts`.
+  const { CORE_INDEX_SYMBOLS, SECTOR_ETF_SYMBOLS, LARGE_CAP_LIQUID_SYMBOLS } = await import("./universe.ts");
+  const admission = allocateAdmissionSlots({
+    core: CORE_INDEX_SYMBOLS,
+    sectorEtf: SECTOR_ETF_SYMBOLS,
+    largeCap: LARGE_CAP_LIQUID_SYMBOLS,
+    momentum: momentum.map((m) => ({
+      symbol: String(m?.symbol ?? ""),
+      absMovePct: Number(m?.absMovePct ?? 0),
+      dollarVolume: Number(m?.dollarVolume ?? 0),
+    })),
+    catalysts: catalysts.map((c) => String(c?.symbol ?? "")),
+    config: {
+      maxSymbols,
+      maxCatalystSlots: DEFAULT_ADMISSION_PRIORITY.maxCatalystSlots,
+      maxMomentumSlots: DEFAULT_ADMISSION_PRIORITY.maxMomentumSlots,
+      rotationCursor: opts.rotationCursor ?? 0,
+    },
+  });
+  const preliminary = admission.symbols;
+  if (admission.guaranteedCoverageBroken) {
+    // Loud, because this is precisely the condition that ran silently for the
+    // life of the old slice.
+    errors.push(
+      `admission: cap ${maxSymbols} cannot cover the guaranteed bands (${admission.starvedBands.join(", ")})`,
+    );
+  }
 
   const liquidity: OptionsLiquidityEvidence[] = [];
   for (const symbol of preliminary) {
@@ -201,6 +290,7 @@ async function runProfessionalWatchlistInner(
     symbolsFetched,
     providerCalls,
     errors,
+    admission: summarizeAdmission(admission),
   };
 }
 
@@ -249,8 +339,27 @@ export function liveProfessionalWatchlistDeps(): ProfessionalWatchlistDeps {
         observedAtMs: Date.now(),
       };
     },
-    // Momentum, catalysts, and session levels are deliberately absent from the
-    // default live deps: each needs a real, confirmed source. An unconfigured
-    // source contributes nothing rather than a fabricated name.
+    // Observed whole-market movers, read from rows the scanner already paid for.
+    // ZERO provider requests: `market_mover_observations` is written off the
+    // shared snapshot, so this tier costs a SQL read and nothing else. It is a
+    // real, confirmed source — which is exactly what this slot was waiting for.
+    fetchMomentumCandidates: async () => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { getDb } = require("@/lib/db");
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { momentumCandidatesFromMoversOnDb } = require("./momentum-from-movers.ts");
+        const nowMs = Date.now();
+        return momentumCandidatesFromMoversOnDb(getDb(), {
+          sessionDate: tradingDay(nowMs),
+          nowMs,
+        }).candidates;
+      } catch {
+        return [];
+      }
+    },
+    // Catalysts and session levels remain deliberately absent: each needs a
+    // real, confirmed source, and an unconfigured source must contribute
+    // nothing rather than a fabricated name.
   };
 }
