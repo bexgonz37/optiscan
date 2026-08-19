@@ -39,13 +39,55 @@ export async function GET(req: Request) {
     const claimedRaw = url.searchParams.get("claimed");
     const claimedReturnPct = claimedRaw != null && claimedRaw !== "" ? Number(claimedRaw) : null;
 
-    const symbols = (url.searchParams.get("symbols") ?? "SPY,NVDA,QQQ")
+    // WHERE THE CANDIDATES COME FROM.
+    //
+    // The default was a hardcoded "SPY,NVDA,QQQ", which meant the agent could
+    // only ever re-examine three symbols it already watches. `source=market_movers`
+    // enumerates from `market_mover_observations` instead — independent
+    // market-state discovery, written from the whole-market snapshot before any
+    // eligibility decision — so a symbol OptiScan NEVER OBSERVED can enter the
+    // loop. That is the property MRNA violated on 2026-08-19.
+    const source = (url.searchParams.get("source") ?? "").toLowerCase() === "market_movers"
+      ? "market_movers" as const
+      : "explicit" as const;
+
+    let symbols = (url.searchParams.get("symbols") ?? "SPY,NVDA,QQQ")
       .split(",").map((s) => s.trim().toUpperCase()).filter(Boolean).slice(0, 20);
 
     // Session bounds. A closed session is the only honest forensic window; an
     // open one is reported as partial rather than silently graded as complete.
     const { regularOpenMs, regularCloseMs } = sessionBounds(sessionDate);
     const sessionComplete = nowMs >= regularCloseMs;
+
+    // ── Missed Opportunity V2: coverage, assessed from an INDEPENDENT source ──
+    //
+    // Makes no provider call: mover observations and the reconstruction are both
+    // persisted rows. A coverage case never quotes an executable return — see
+    // coverage.ts for why that separation is load-bearing rather than cautious.
+    let coverage: unknown = null;
+    if (source === "market_movers") {
+      const { listMarketMoversOnDb } = await import("@/lib/research/discovery/mover-store");
+      const { reconstructSymbol } = await import("@/lib/research/missed-opportunity/reconstruct");
+      const { runCoverageSweep } = await import("@/lib/research/missed-opportunity/coverage");
+      const minPeakAbsMovePct = Math.max(Number(url.searchParams.get("minMove") ?? 25) || 25, 1);
+      const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit") ?? 25) || 25));
+      const sweep = runCoverageSweep({
+        sessionDate,
+        listMovers: () => listMarketMoversOnDb(db, sessionDate, { limit, minPeakAbsMovePct }),
+        reconstruct: (symbol) => reconstructSymbol(
+          db, symbol, sessionDate, regularOpenMs, Math.min(nowMs, regularCloseMs + 4 * 60 * 60 * 1000),
+        ),
+        minPeakAbsMovePct,
+      });
+      coverage = sweep;
+      // Only symbols OptiScan DID observe are worth handing to the NBBO forensic;
+      // for the rest there is nothing to reconstruct, and running it would just
+      // re-derive `evidenceQuality: NONE` for every one of them.
+      symbols = sweep.assessments
+        .filter((a) => a.outcome === "OBSERVED_BY_OPTISCAN")
+        .map((a) => a.symbol)
+        .slice(0, 20);
+    }
 
     const results = symbols.map((symbol) => {
       const r = runSymbolForensic({
@@ -68,6 +110,8 @@ export async function GET(req: Request) {
       productionChanged: false,
       sessionDate,
       sessionComplete,
+      candidateSource: source,
+      coverage,
       thresholdPct,
       direction,
       persisted: persist,
