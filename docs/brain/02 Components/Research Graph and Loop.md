@@ -272,3 +272,70 @@ Each hash is content-addressed by BEHAVIOUR, not source text: the definition is 
 across a sweep of inputs, so a moved threshold or a reordered branch changes the hash
 even when the constants still read the same. Reordering the branches is exactly what
 went wrong in PRE_MOVE V1.
+
+---
+
+## Phase 1 convergence graph — added 2026-08-19
+
+Phase 1 establishes one canonical point-in-time memory substrate without changing a
+live strategy, delivery bar, target, stop, exit, provider cap, or subscriber authority.
+
+```
+MARKET OBSERVATION (T0)
+   |
+   +--> shared underlying/chain evidence
+   |       |
+   |       +--> truthful contract-funnel terminal stage
+   |       +--> exact fresh quote eligibility
+   |       +--> deterministic strategy evaluation
+   |
+   +--> SetupEpisodeV2 / Zone A (immutable, as-of <= T0)
+           |
+           +--> OBSERVATION          every evaluated candidate
+           +--> COUNTERFACTUAL       only exact OCC + defensible ask entry
+           +--> PAPER_TRADE          only an actual paper position
+           +--> DELIVERED_SUBSCRIBER only an accepted subscriber delivery
+           |
+           +--> outcome labels       append-only schema is READY
+                                      production label worker is NOT YET LIVE
+```
+
+The canonical join is `episode_key`, a deterministic SHA-256-derived identifier. Zone A
+contains only information knowable at T0 with field-level value, source, as-of time,
+quality, missing reason, and version. Zone B is physically separate and append-only.
+Underlying outcomes and exact-option outcomes cannot share a label identity. Exact-option
+labels require OCC and `BUY_AT_ASK_EXIT_AT_FUTURE_BID`; insufficient coverage remains
+explicitly censored rather than becoming a zero return.
+
+### Phase 1 runtime failure boundaries
+
+1. A bounded strike request may retry once without strike bounds only after a successful,
+   non-truncated raw-zero provider response. Provider failures are not negative-cached.
+2. Contract funnel stages are mutually exclusive and reconcile to the evaluation count.
+   A schema/write/read fault is an ERROR in health and logs, never a zero-row day.
+3. Executable evidence requires an exact session/OCC fingerprint, positive two-sided quote,
+   fresh quote timestamp, and ask-entry agreement. Paper marks from another contract or a
+   midpoint entry cannot be promoted to executable evidence.
+4. Latency timestamps are captured at the actual observation, candidate, chain, decision,
+   and Discord boundaries. Their distributions are descriptive telemetry, not inferred SLO
+   compliance.
+5. Storage sampling and backup verification run off the live decision path. Backup uses the
+   SQLite online backup API, verifies checksum plus `quick_check` in an OS temporary copy,
+   and refuses to restore over the live production database.
+
+### Phase 1 learning loop status
+
+```
+OBSERVE -> FREEZE -> EVALUATE -> RECORD DISTINCT ACTION -> LABEL -> AGGREGATE -> RESEARCH
+   live      live       live              live              ^
+                                                        schema ready;
+                                                        worker Phase 2
+```
+
+The loop is therefore structurally converged but not yet empirically closed. Phase 1 may
+truthfully claim broad non-alert episode capture and action separation. It must not claim
+automatic multi-horizon option labels, calibrated probabilities, analog lookup, or proven
+alpha until the Phase 2 labeler and subsequent research gates exist.
+
+Canonical terminology lives in `lib/terminology.ts`. App tooltips and Ask OptiScan import
+that source; `CANONICAL_TERMINOLOGY.md` is generated and checked, not hand-maintained.
