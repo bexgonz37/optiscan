@@ -87,6 +87,57 @@ test("production-shaped legacy setup_episodes upgrades columns before V2 indexes
   assert.ok(indexes.has("idx_setup_episodes_v2_case"));
 });
 
+test("production-shaped legacy outcome labels upgrade columns before label-version index", () => {
+  const d = new Database(":memory:");
+  d.exec(`CREATE TABLE episode_outcome_labels_v2 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label_id TEXT NOT NULL UNIQUE,
+    episode_key TEXT NOT NULL,
+    label_kind TEXT NOT NULL,
+    horizon TEXT NOT NULL,
+    exact_occ TEXT,
+    entry_convention TEXT,
+    terminal_return_pct REAL,
+    mfe_pct REAL,
+    mae_pct REAL,
+    hit_10 INTEGER,
+    hit_25 INTEGER,
+    hit_50 INTEGER,
+    hit_100 INTEGER,
+    hit_neg_10 INTEGER,
+    hit_neg_20 INTEGER,
+    hit_stop INTEGER,
+    time_to_10_ms INTEGER,
+    time_to_25_ms INTEGER,
+    time_to_50_ms INTEGER,
+    time_to_100_ms INTEGER,
+    time_to_neg_10_ms INTEGER,
+    time_to_neg_20_ms INTEGER,
+    time_to_stop_ms INTEGER,
+    plus_10_before_neg_10 INTEGER,
+    plus_25_before_neg_20 INTEGER,
+    plus_50_before_stop INTEGER,
+    stop_before_plus_25 INTEGER,
+    coverage TEXT NOT NULL,
+    censored INTEGER NOT NULL DEFAULT 0,
+    missing_reason TEXT,
+    quote_count INTEGER,
+    first_evidence_at_ms INTEGER,
+    last_evidence_at_ms INTEGER,
+    evidence_quality TEXT NOT NULL,
+    intrabar_status TEXT NOT NULL,
+    label_as_of_ms INTEGER NOT NULL,
+    config_digest TEXT NOT NULL,
+    computed_at_ms INTEGER NOT NULL
+  )`);
+  assert.doesNotThrow(() => ensureEnterpriseSchemaOnDb(d));
+  const columns = new Set(d.prepare("PRAGMA table_info(episode_outcome_labels_v2)").all().map((r) => r.name));
+  assert.ok(columns.has("label_version"));
+  assert.ok(columns.has("requested_end_at_ms"));
+  const indexes = new Set(d.prepare("PRAGMA index_list(episode_outcome_labels_v2)").all().map((r) => r.name));
+  assert.ok(indexes.has("idx_episode_outcomes_v2_version"));
+});
+
 test("episode identity is deterministic and collision-resistant enough for durable joins", () => {
   const material = {
     source: "live_scanner", symbol: "MRNA", t0Ms: T0, candidateId: 1,

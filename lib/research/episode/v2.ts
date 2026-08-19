@@ -20,10 +20,19 @@ export type EpisodeActionKind =
   | "OBSERVATION"
   | "COUNTERFACTUAL"
   | "PAPER_TRADE"
+  | "OWNER_PAPER"
   | "DELIVERED_SUBSCRIBER_TRADE";
 export type OutcomeLabelKind = "UNDERLYING_LABEL" | "EXACT_OPTION_EXECUTABLE_LABEL";
 export type OutcomeHorizonV2 = "5m" | "15m" | "30m" | "60m" | "session";
 export type EvidenceCoverage = "COMPLETE" | "CENSORED" | "INSUFFICIENT";
+export type CompetingEventOrder =
+  | "FIRST_EVENT"
+  | "SECOND_EVENT"
+  | "NEITHER"
+  | "AMBIGUOUS"
+  | "AMBIGUOUS_INTRABAR"
+  | "UNKNOWN"
+  | "NOT_APPLICABLE";
 
 export interface EvidenceValue<T> {
   value: T | null;
@@ -430,25 +439,45 @@ export interface OutcomeLabelV2 {
   terminalReturnPct: number | null;
   mfePct: number | null;
   maePct: number | null;
-  hit10: boolean | null; hit25: boolean | null; hit50: boolean | null; hit100: boolean | null;
+  hit10: boolean | null; hit25: boolean | null; hit50: boolean | null; hit100: boolean | null; hit200: boolean | null;
   hitNeg10: boolean | null; hitNeg20: boolean | null; hitStop: boolean | null;
-  timeTo10Ms: number | null; timeTo25Ms: number | null; timeTo50Ms: number | null; timeTo100Ms: number | null;
+  timeTo10Ms: number | null; timeTo25Ms: number | null; timeTo50Ms: number | null; timeTo100Ms: number | null; timeTo200Ms: number | null;
   timeToNeg10Ms: number | null; timeToNeg20Ms: number | null; timeToStopMs: number | null;
+  timeToMfeMs: number | null; timeToMaeMs: number | null;
   plus10BeforeNeg10: boolean | null; plus25BeforeNeg20: boolean | null;
-  plus50BeforeStop: boolean | null; stopBeforePlus25: boolean | null;
+  plus50BeforeStop: boolean | null; stopBeforePlus25: boolean | null; plus100BeforeStop: boolean | null;
+  plus10VsNeg10Order: CompetingEventOrder;
+  plus25VsNeg20Order: CompetingEventOrder;
+  plus50VsStopOrder: CompetingEventOrder;
+  stopVsPlus25Order: CompetingEventOrder;
+  plus100VsStopOrder: CompetingEventOrder;
   coverage: EvidenceCoverage;
   censored: boolean;
   missingReason: string | null;
   quoteCount: number | null;
   firstEvidenceAtMs: number | null;
   lastEvidenceAtMs: number | null;
+  requestedEndAtMs: number;
+  evidenceCoverageMs: number | null;
+  largestGapMs: number | null;
+  entryPrice: number | null;
+  entryQuoteAtMs: number | null;
+  entryQuoteAgeMs: number | null;
+  entrySpreadPct: number | null;
+  exitPrice: number | null;
+  evidenceSource: string;
+  evidenceVersion: string;
+  productionSha: string | null;
   evidenceQuality: string;
   intrabarStatus: "ORDERED" | "AMBIGUOUS_INTRABAR" | "NOT_APPLICABLE";
+  labelVersion: string;
   labelAsOfMs: number;
   configDigest: string;
 }
 
 export function appendOutcomeLabelV2OnDb(db: EpisodeDb, t0Ms: number, label: OutcomeLabelV2, nowMs = Date.now()) {
+  const requestedEndAtMs = label.requestedEndAtMs ?? label.labelAsOfMs;
+  const labelVersion = label.labelVersion ?? "FORWARD_LABEL_V1";
   if (!(label.labelAsOfMs > t0Ms)) {
     persistenceFailed("label must be strictly after t0", nowMs);
     return { ok: false, inserted: false, reason: "label must be strictly after t0" };
@@ -457,30 +486,69 @@ export function appendOutcomeLabelV2OnDb(db: EpisodeDb, t0Ms: number, label: Out
     persistenceFailed("exact-option label requires OCC and entry convention", nowMs);
     return { ok: false, inserted: false, reason: "exact-option label requires OCC and entry convention" };
   }
+  if (label.labelKind === "UNDERLYING_LABEL" && (label.exactOcc != null || label.entryConvention != null)) {
+    persistenceFailed("underlying label cannot carry option identity", nowMs);
+    return { ok: false, inserted: false, reason: "underlying label cannot carry option identity" };
+  }
+  if (requestedEndAtMs <= t0Ms || label.labelAsOfMs < requestedEndAtMs) {
+    persistenceFailed("label horizon end must be after t0 and no later than label as-of", nowMs);
+    return { ok: false, inserted: false, reason: "label horizon end must be after t0 and no later than label as-of" };
+  }
   if (label.coverage === "INSUFFICIENT" && [label.terminalReturnPct, label.mfePct, label.maePct].some((x) => x != null)) {
     persistenceFailed("insufficient evidence cannot carry return/MFE/MAE", nowMs);
     return { ok: false, inserted: false, reason: "insufficient evidence cannot carry return/MFE/MAE" };
   }
   try {
+    const episode = db.prepare(
+      "SELECT selected_occ, entry_convention, config_digest FROM setup_episodes WHERE episode_key=? AND episode_version=2",
+    ).get(label.episodeKey) as any;
+    if (!episode) return { ok: false, inserted: false, reason: persistenceFailed("SetupEpisodeV2 not found", nowMs) };
+    if (String(episode.config_digest ?? "") !== label.configDigest) {
+      return { ok: false, inserted: false, reason: persistenceFailed("label config digest does not match frozen episode", nowMs) };
+    }
+    if (label.labelKind === "EXACT_OPTION_EXECUTABLE_LABEL") {
+      if (String(episode.selected_occ ?? "").toUpperCase() !== String(label.exactOcc ?? "").toUpperCase()) {
+        return { ok: false, inserted: false, reason: persistenceFailed("exact OCC does not match frozen episode", nowMs) };
+      }
+      if (String(episode.entry_convention ?? "") !== String(label.entryConvention ?? "")) {
+        return { ok: false, inserted: false, reason: persistenceFailed("entry convention does not match frozen episode", nowMs) };
+      }
+    }
     const bool = (v: boolean | null) => v == null ? null : v ? 1 : 0;
-    const r = db.prepare(
-      `INSERT OR IGNORE INTO episode_outcome_labels_v2
-        (label_id,episode_key,label_kind,horizon,exact_occ,entry_convention,terminal_return_pct,mfe_pct,mae_pct,
-         hit_10,hit_25,hit_50,hit_100,hit_neg_10,hit_neg_20,hit_stop,
-         time_to_10_ms,time_to_25_ms,time_to_50_ms,time_to_100_ms,time_to_neg_10_ms,time_to_neg_20_ms,time_to_stop_ms,
-         plus_10_before_neg_10,plus_25_before_neg_20,plus_50_before_stop,stop_before_plus_25,
-         coverage,censored,missing_reason,quote_count,first_evidence_at_ms,last_evidence_at_ms,evidence_quality,
-         intrabar_status,label_as_of_ms,config_digest,computed_at_ms)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    ).run(
+    const columns = [
+      "label_id","episode_key","label_kind","horizon","exact_occ","entry_convention",
+      "terminal_return_pct","mfe_pct","mae_pct",
+      "hit_10","hit_25","hit_50","hit_100","hit_200","hit_neg_10","hit_neg_20","hit_stop",
+      "time_to_10_ms","time_to_25_ms","time_to_50_ms","time_to_100_ms","time_to_200_ms",
+      "time_to_neg_10_ms","time_to_neg_20_ms","time_to_stop_ms","time_to_mfe_ms","time_to_mae_ms",
+      "plus_10_before_neg_10","plus_25_before_neg_20","plus_50_before_stop","stop_before_plus_25","plus_100_before_stop",
+      "plus_10_vs_neg_10_order","plus_25_vs_neg_20_order","plus_50_vs_stop_order","stop_vs_plus_25_order","plus_100_vs_stop_order",
+      "coverage","censored","missing_reason","quote_count","first_evidence_at_ms","last_evidence_at_ms",
+      "requested_end_at_ms","evidence_coverage_ms","largest_gap_ms",
+      "entry_price","entry_quote_at_ms","entry_quote_age_ms","entry_spread_pct","exit_price",
+      "evidence_source","evidence_version","production_sha","evidence_quality","intrabar_status","label_version",
+      "label_as_of_ms","config_digest","computed_at_ms",
+    ];
+    const values = [
       label.labelId,label.episodeKey,label.labelKind,label.horizon,label.exactOcc,label.entryConvention,
-      label.terminalReturnPct,label.mfePct,label.maePct,bool(label.hit10),bool(label.hit25),bool(label.hit50),bool(label.hit100),
-      bool(label.hitNeg10),bool(label.hitNeg20),bool(label.hitStop),label.timeTo10Ms,label.timeTo25Ms,label.timeTo50Ms,
-      label.timeTo100Ms,label.timeToNeg10Ms,label.timeToNeg20Ms,label.timeToStopMs,bool(label.plus10BeforeNeg10),
-      bool(label.plus25BeforeNeg20),bool(label.plus50BeforeStop),bool(label.stopBeforePlus25),label.coverage,
-      label.censored ? 1 : 0,label.missingReason,label.quoteCount,label.firstEvidenceAtMs,label.lastEvidenceAtMs,
-      label.evidenceQuality,label.intrabarStatus,label.labelAsOfMs,label.configDigest,nowMs,
-    );
+      label.terminalReturnPct,label.mfePct,label.maePct,
+      bool(label.hit10),bool(label.hit25),bool(label.hit50),bool(label.hit100),bool(label.hit200 ?? null),
+      bool(label.hitNeg10),bool(label.hitNeg20),bool(label.hitStop),
+      label.timeTo10Ms,label.timeTo25Ms,label.timeTo50Ms,label.timeTo100Ms,label.timeTo200Ms ?? null,
+      label.timeToNeg10Ms,label.timeToNeg20Ms,label.timeToStopMs,label.timeToMfeMs ?? null,label.timeToMaeMs ?? null,
+      bool(label.plus10BeforeNeg10),bool(label.plus25BeforeNeg20),bool(label.plus50BeforeStop),
+      bool(label.stopBeforePlus25),bool(label.plus100BeforeStop ?? null),
+      label.plus10VsNeg10Order ?? "UNKNOWN",label.plus25VsNeg20Order ?? "UNKNOWN",label.plus50VsStopOrder ?? "NOT_APPLICABLE",
+      label.stopVsPlus25Order ?? "NOT_APPLICABLE",label.plus100VsStopOrder ?? "NOT_APPLICABLE",
+      label.coverage,label.censored ? 1 : 0,label.missingReason,label.quoteCount,
+      label.firstEvidenceAtMs,label.lastEvidenceAtMs,requestedEndAtMs,label.evidenceCoverageMs ?? null,label.largestGapMs ?? null,
+      label.entryPrice ?? null,label.entryQuoteAtMs ?? null,label.entryQuoteAgeMs ?? null,label.entrySpreadPct ?? null,label.exitPrice ?? null,
+      label.evidenceSource ?? "UNKNOWN",label.evidenceVersion ?? "UNKNOWN",label.productionSha ?? null,label.evidenceQuality,label.intrabarStatus,labelVersion,
+      label.labelAsOfMs,label.configDigest,nowMs,
+    ];
+    const r = db.prepare(
+      `INSERT OR IGNORE INTO episode_outcome_labels_v2 (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})`,
+    ).run(...values);
     persistenceOk(nowMs);
     return { ok: true, inserted: r.changes > 0, reason: null };
   } catch (error) {
