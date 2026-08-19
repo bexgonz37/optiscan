@@ -386,22 +386,29 @@ test("recovery delivers the PERSISTED text — it never regenerates or re-dates 
     before.map((r) => [r.id, r.draft_text, r.created_at_ms, r.original_alert_at_ms]),
     "recovery must not rewrite text, creation time, or the original alert timestamp",
   );
-  // The delivered message now carries the RECOMMENDED draft (the oldest row,
-  // template family _0) verbatim. The point of this test — recovery replays
-  // persisted text and never regenerates or re-dates it — is asserted above on
-  // every row, and here on the text that actually went out.
-  const recommended = db.prepare(
-    "SELECT draft_text FROM content_drafts WHERE content_event_id='ce_verbatim' ORDER BY created_at_ms ASC LIMIT 1",
-  ).get();
-  assert.ok(
-    sent[0].includes(recommended.draft_text),
-    "the delivered body carries the persisted recommended draft verbatim",
-  );
+  // Discord now carries a NOTICE, not the copy — the private app is the content
+  // inbox. The guarantee this test exists for is unchanged and is asserted above
+  // on every row: recovery replays persisted state and never regenerates or
+  // re-dates it. What the notice must still do is identify the right idea.
+  assert.match(sent[0], /AMD/, "the notice must name the symbol it is about");
+  assert.match(sent[0], /ready for review/i);
+  assert.equal(/```/.test(sent[0]), false, "the notice must not paste the draft body");
 });
 
 test("recovery stays bounded — a backlog cannot burst into the channel", async () => {
   const db = makeDb();
-  for (let i = 0; i < 5; i++) seedEvent(db, { id: `ce_bk${i}`, occurred_at_ms: CONTENT_EVENT_MS + i });
+  // Five DISTINCT ideas. They used to be five copies of the same AMD event,
+  // which the semantic fingerprint now correctly collapses into one — so
+  // seeding identical events would test deduplication, not the recovery bound
+  // this test is for.
+  for (let i = 0; i < 5; i++) {
+    seedEvent(db, {
+      id: `ce_bk${i}`,
+      opportunity_case_id: `oc_bk${i}`,
+      symbol: `SYM${i}`,
+      occurred_at_ms: CONTENT_EVENT_MS + i,
+    });
+  }
   // Drain all five into the deferred state, one per run (the existing cap).
   for (let i = 0; i < 5; i++) {
     await runContentDraftsScan(db, {

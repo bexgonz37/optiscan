@@ -3049,6 +3049,14 @@ const CONTENT_DRAFT_COLUMN_MIGRATIONS: Array<[string, string]> = [
   ["discord_delivery_detail", "ALTER TABLE content_drafts ADD COLUMN discord_delivery_detail TEXT"],
   ["discord_attempt_count", "ALTER TABLE content_drafts ADD COLUMN discord_attempt_count INTEGER NOT NULL DEFAULT 0"],
   ["discord_last_attempt_at_ms", "ALTER TABLE content_drafts ADD COLUMN discord_last_attempt_at_ms INTEGER"],
+  // Content-worthiness (additive, all nullable). Every draft written before the
+  // worthiness filter existed carries NULL rather than a backfilled score —
+  // those drafts were never scored, and inventing a number for them would make
+  // the "what did the filter change" comparison meaningless.
+  ["content_worthiness", "ALTER TABLE content_drafts ADD COLUMN content_worthiness REAL"],
+  ["content_angle", "ALTER TABLE content_drafts ADD COLUMN content_angle TEXT"],
+  ["worthiness_json", "ALTER TABLE content_drafts ADD COLUMN worthiness_json TEXT"],
+  ["is_alternate", "ALTER TABLE content_drafts ADD COLUMN is_alternate INTEGER NOT NULL DEFAULT 0"],
 ];
 /**
  * PRE_MOVE_DISCOVERY_V2 columns on an existing `opportunity_pre_move_discovery`.
@@ -3168,6 +3176,10 @@ function migrate(db: Database.Database) {
     // the migration that creates the column.
     db.exec(
       "CREATE INDEX IF NOT EXISTS idx_content_drafts_delivery_reason ON content_drafts(discord_delivery_status, discord_delivery_reason)",
+    );
+    // The queue's default sort is highest-worthiness first within a session.
+    db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_content_drafts_worthiness ON content_drafts(trading_session_date, content_worthiness DESC)",
     );
   }
   // PRE_MOVE_DISCOVERY_V2 (additive, measurement only): the alert-instant snapshot the

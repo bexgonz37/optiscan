@@ -152,9 +152,23 @@ function resolve(token: string, v: ContentVars): string | null {
     case "milestonePercent": return fmtSignedPct(v.milestonePercent);
     case "maxReturnPct": return fmtSignedPct(v.maxReturnPct);
     case "elapsed": return v.elapsed ? String(v.elapsed) : null;
-    case "reason": return v.reason ? String(v.reason) : null;
+    // Trailing sentence punctuation is stripped because several templates
+    // supply their own. "…bearish structure intact.." shipped to production
+    // exactly this way.
+    case "reason": return v.reason ? stripTrailingSentencePunctuation(String(v.reason)) : null;
     case "failureCause": return v.failureCause ? String(v.failureCause) : null;
-    case "entryThesis": return v.entryThesis ? String(v.entryThesis) : null;
+    case "entryThesis": return v.entryThesis ? stripTrailingSentencePunctuation(String(v.entryThesis)) : null;
+    // Directional flow evidence, resolved ONLY when it agrees with the side of
+    // the contract the draft is about. Disagreement yields null, which drops
+    // the line, rather than a contradiction the reader has to catch.
+    case "flowEvidence": {
+      const side = String(v.optionType ?? "").trim().toUpperCase();
+      const call = Number(v.callFlow);
+      const put = Number(v.putFlow);
+      if (side === "CALL" && Number.isFinite(call) && call > 0) return "Large call buying detected";
+      if (side === "PUT" && Number.isFinite(put) && put > 0) return "Heavy put buying detected";
+      return null;
+    }
     // "contract" = a composite convenience token used in several templates.
     case "contract": {
       const parts = [resolve("expiration", v), resolve("strike", v), resolve("optionType", v)].filter(Boolean);
@@ -162,6 +176,11 @@ function resolve(token: string, v: ContentVars): string | null {
     }
     default: return null;
   }
+}
+
+/** Drop a trailing period/comma so a template that supplies its own does not double it. */
+function stripTrailingSentencePunctuation(s: string): string {
+  return s.replace(/[.,;:\s]+$/, "");
 }
 
 /** Render one line; returns null (drops the line) if any referenced placeholder is missing. */
@@ -213,9 +232,15 @@ const TEMPLATES: Record<ContentCategory, CategoryTemplates> = {
         "",
         "Here's why:",
         "• Relative volume crossed {{relativeVolume}}",
-        "• Large call buying detected",
+        // Was the literal "• Large call buying detected". A hardcoded
+        // directional claim carries no placeholder, so `renderLine` — the one
+        // mechanism that drops an unsupported line — had nothing to catch, and
+        // production shipped it above PUT contracts. As a placeholder it
+        // resolves only when the flow evidence points the same way as the
+        // contract, and otherwise the line disappears.
+        "• {{flowEvidence}}",
         "• Buyers reclaimed VWAP at {{vwap}}",
-        "• {{sector}} strengthening",
+        "• {{sector}} in focus",
         "",
         "Watching the {{contract}} closely.",
       ],

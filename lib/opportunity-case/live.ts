@@ -21,9 +21,12 @@ import { buildEvidenceEvent, listEvidenceForCaseOnDb, persistEvidenceEventOnDb }
 import {
   contentEventId,
   contentEventTypeFromLifecycle,
+  materialEventDiscriminator,
   persistContentEventOnDb,
   type OpportunityContentEvent,
 } from "./content-events.ts";
+import { thesisDigest } from "../content/content-worthiness.ts";
+import { tradingDay } from "../trading-session.ts";
 import {
   claimMilestoneDeliveryOnDb,
   computeReturnPercent,
@@ -987,7 +990,22 @@ export function emitContentEventForCase(
     if (!oc) return false;
     const s = oc.summary ?? emptyOpportunitySummary();
     const evType = contentEventTypeFromLifecycle(event);
-    const disc = `${event}|${extra?.milestonePercent ?? "none"}|${nowMs}`;
+    // The discriminator is built from what CHANGED, never from the clock. With
+    // `nowMs` in this key the INSERT OR IGNORE below could never collide, so a
+    // still-active case emitted a new event on every repeat evaluation — the
+    // source of the repeated AMD/AMZN/TSLA drafts. See
+    // `materialEventDiscriminator` for what makes each event type distinct.
+    const disc = materialEventDiscriminator({
+      event,
+      sessionDate: tradingDay(nowMs),
+      milestonePercent: extra?.milestonePercent ?? null,
+      maxReturnPercent: s.maxReturnPct,
+      thesisDigest: thesisDigest([
+        ...(s.originalThesis ?? []),
+        s.latestEvidence?.signalType ?? null,
+        extra?.label ?? null,
+      ]),
+    });
     const payload: OpportunityContentEvent = {
       id: contentEventId(opportunityCaseId, evType, disc),
       opportunityCaseId,

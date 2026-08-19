@@ -34,6 +34,7 @@ import { evaluateMarketSessionGuard } from "../market-session-guard.ts";
 import { evaluateInstrumentSession } from "../instrument-session-authority.ts";
 import { classifyDeliveryResult, describeReason, redactForPersistence } from "./delivery-reason.ts";
 import { deriveFailureCause } from "./failure-cause.ts";
+import { gateContentBundle, type ContentGateVerdict } from "./content-gate.ts";
 import {
   classifyDeliveryLane,
   isOutcomeReportCategory,
@@ -256,6 +257,13 @@ export const NO_CONTENT_WEBHOOK_OWNER_ACTION =
   "persisted and visible in the private app, and are never sent to the recap, alert or " +
   "subscriber channels.";
 
+/**
+ * LEGACY fingerprint, kept only because existing rows carry it and the delivery
+ * and census paths still read them. It is NOT used to write new drafts: keyed on
+ * `contentEventId`, which is unique per generation, it could only ever collide
+ * with a literal re-run of the same generation. See
+ * `semanticContentFingerprint` in content-worthiness.ts for what replaced it.
+ */
 export function draftFingerprint(input: {
   caseId: string;
   contentEventId: string;
@@ -471,6 +479,8 @@ function persistDraftRows(
   row: Record<string, unknown>,
   bundle: ContentDraftBundle,
   meta: {
+    /** Verdict from `content-gate.ts`. Only admitted drafts are written. */
+    gate: ContentGateVerdict;
     alertId: string | null;
     claimPacketId: string | null;
     resultType: ContentResultType;
@@ -483,6 +493,11 @@ function persistDraftRows(
   },
 ): { inserted: number; draftIds: string[] } {
   if (!hasTable(db, "content_drafts")) return { inserted: 0, draftIds: [] };
+  // The gate decides WHAT may be written. An unworthy or duplicate idea writes
+  // nothing at all — the correct output for a routine event is zero rows, not a
+  // row nobody will read.
+  if (!meta.gate.admitted.length) return { inserted: 0, draftIds: [] };
+  const scored = hasColumn(db, "content_drafts", "content_worthiness");
   const insert = db.prepare(
     `INSERT OR IGNORE INTO content_drafts (
       id, fingerprint, content_event_id, opportunity_case_id, alert_id, claim_packet_id,
@@ -490,27 +505,25 @@ function persistDraftRows(
       hashtags_json, screenshot_suggestion, chart_annotation, cta_type, result_type,
       frozen_entry, mark_used, original_alert_at_ms, trading_session_date,
       status, discord_delivery_status, discord_message_id, final_copy,
-      created_at_ms, updated_at_ms, approved_at_ms, rejected_at_ms, manually_posted_at_ms
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      created_at_ms, updated_at_ms, approved_at_ms, rejected_at_ms, manually_posted_at_ms${scored ? ", content_worthiness, content_angle, worthiness_json, is_alternate" : ""}
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?${scored ? ",?,?,?,?" : ""})`,
   );
   let inserted = 0;
   const draftIds: string[] = [];
   const caseId = row.opportunity_case_id != null ? String(row.opportunity_case_id) : "";
   const eventId = String(row.id);
-  const eventType = String(row.event_type);
-  const milestone = row.milestone_percent != null ? Number(row.milestone_percent) : null;
 
-  for (const d of bundle.drafts) {
-    const fp = draftFingerprint({
-      caseId,
-      contentEventId: eventId,
-      eventType,
-      milestone,
-      templateFamily: d.templateFamily,
-      platform: "twitter",
-    });
+  for (const a of meta.gate.admitted) {
+    const d = bundle.drafts[a.index];
+    if (!d) continue;
+    // The fingerprint is SEMANTIC now. The old key included `contentEventId`,
+    // which is unique per generation, so the UNIQUE constraint on this column
+    // deduplicated nothing — in the production sample, fingerprint === id for
+    // all 200 rows. A retry, a restart, or an unchanged event re-emitted ten
+    // minutes later now collides here and inserts nothing.
+    const fp = a.fingerprint;
     const id = fp;
-    const info = insert.run(
+    const args: any[] = [
       id, fp, eventId, caseId || null, meta.alertId, meta.claimPacketId,
       bundle.category, d.templateFamily, d.templateVersion || TEMPLATE_VERSION, "twitter",
       d.text, d.charCount, JSON.stringify(d.hashtags), d.suggestedScreenshot, d.suggestedChartAnnotation,
@@ -518,11 +531,29 @@ function persistDraftRows(
       meta.frozenEntry, meta.markUsed, meta.originalAlertAtMs, meta.tradingSessionDate,
       "GENERATED", meta.discordStatus, null, null,
       meta.nowMs, meta.nowMs, null, null, null,
-    );
+    ];
+    if (scored) {
+      args.push(
+        meta.gate.worthiness.score,
+        meta.gate.angle,
+        JSON.stringify(meta.gate.worthiness.dimensions),
+        a.isAlternate ? 1 : 0,
+      );
+    }
+    const info = insert.run(...args);
     if (info.changes > 0) inserted += 1;
     draftIds.push(id);
   }
   return { inserted, draftIds };
+}
+
+function hasColumn(db: RtDb, table: string, column: string): boolean {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>;
+    return cols.some((c) => c?.name === column);
+  } catch {
+    return false;
+  }
 }
 
 function markEventProcessed(db: RtDb, eventId: string, payloadPatch: Record<string, unknown>): void {
@@ -701,8 +732,49 @@ export async function runContentDraftsScan(
     }
 
     const sessionDate = tradingDay(Number(row.occurred_at_ms) || nowMs);
+
+    // ── CONTENT-WORTHINESS + COHERENCE + DEDUPE ─────────────────────────────
+    // The step that decides whether this deserves to exist. Everything above
+    // established that content COULD be made; this establishes whether it
+    // SHOULD. A refusal here is a normal, healthy outcome — on a routine day
+    // the correct number of drafts is zero.
+    const gate = gateContentBundle(db, {
+      symbol: bundle.symbol,
+      category: bundle.category,
+      optionType: row.option_type != null ? String(row.option_type) : null,
+      direction: row.direction != null ? String(row.direction) : null,
+      sessionDate,
+      thesisParts: [
+        firstOf(row.original_thesis_json),
+        firstOf(row.evidence_summary_json),
+        row.label != null ? String(row.label) : null,
+      ],
+      milestone: row.milestone_percent != null ? Number(row.milestone_percent) : null,
+      evidenceState: claim.resultType,
+      claimVerified: claim.ok && needsClaim,
+      hasExactOcc: row.strike != null && row.expiration != null,
+      hasRealizedOutcome: isPerformanceCategory(bundle.category),
+      isMaxExcursion: bundle.category === "NEW_HIGH",
+      ownerValidationOnly: true,
+      magnitudePct: row.return_percent != null ? Number(row.return_percent) : null,
+      eventAgeMs: Math.max(0, nowMs - (Number(row.occurred_at_ms) || nowMs)),
+      drafts: bundle.drafts.map((d) => ({ text: d.text, templateFamily: d.templateFamily })),
+    }, env);
+
+    if (!gate.admitted.length) {
+      out.skipped += 1;
+      markEventProcessed(db, eventId, {
+        contentSkipReason: gate.duplicate ? "duplicate_content_idea" : "below_content_worthiness",
+        contentWorthiness: gate.worthiness.score,
+        contentWorthinessRefusal: gate.refusedBecause,
+        contentIncoherentDrafts: gate.incoherent.length,
+      });
+      continue;
+    }
+
     const discordStatus: DiscordDeliveryStatus = webhookOk ? "PENDING" : "SKIPPED_NO_WEBHOOK";
     const persisted = persistDraftRows(db, row, bundle, {
+      gate,
       alertId: claim.alertId,
       claimPacketId: claim.claimPacketId,
       resultType: claim.resultType,
@@ -915,6 +987,55 @@ function outcomeAlreadyReported(db: RtDb, caseId: string | null, excludeEventId:
   }
 }
 
+/**
+ * Floor for interrupting the owner in Discord.
+ *
+ * Deliberately ABOVE the queue threshold. The queue is somewhere you look when
+ * you choose to; Discord is an interruption. A candidate can be worth reviewing
+ * without being worth a notification, and conflating the two is how a review
+ * queue becomes a firehose.
+ */
+export function discordNoticeFloor(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.CONTENT_DISCORD_MIN_WORTHINESS);
+  if (!Number.isFinite(raw)) return 0.7;
+  return Math.max(0, Math.min(1, raw));
+}
+
+/**
+ * Null means the row predates the worthiness filter and was never scored.
+ * Unknown must not silently mean "below the bar" — those rows deliver as before.
+ */
+function draftWorthiness(db: RtDb, id: string): number | null {
+  try {
+    const r = db.prepare("SELECT content_worthiness AS w FROM content_drafts WHERE id=?").get(id) as any;
+    const w = Number(r?.w);
+    return Number.isFinite(w) ? w : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Backend category constants are not language. */
+export function humanCategory(category: string): string {
+  const map: Record<string, string> = {
+    CLOSED_WINNER: "closed winner",
+    CLOSED_LOSER: "closed loser",
+    WHY_THIS_WORKED: "post-mortem — what worked",
+    WHY_THIS_FAILED: "post-mortem — what failed",
+    RETURN_MILESTONE: "milestone reached",
+    NEW_HIGH: "new high",
+    JUST_ENTERED_RADAR: "new on the radar",
+    HIGH_CONVICTION: "high conviction",
+    CONVICTION_INCREASED: "conviction update",
+    THESIS_WEAKENED: "thesis weakened",
+    NEXT_SESSION_WATCH: "next-session watch",
+    EDUCATIONAL_BREAKDOWN: "breakdown",
+    MARKET_OBSERVATION: "market observation",
+    MISSED_OPPORTUNITY: "missed-opportunity post-mortem",
+  };
+  return map[category] ?? category.toLowerCase().replace(/_/g, " ");
+}
+
 /** Render and send one bundle, then record the outcome on each draft. Never throws. */
 async function deliverDrafts(
   db: RtDb,
@@ -963,15 +1084,35 @@ async function deliverDrafts(
   const [recommended, ...alternates] = pending;
   if (!recommended) return { ok: false, messageId: null, error: "no pending drafts", suppressed: true, reroutedWithoutPosting: true };
 
-  const header = `📝 **CONTENT DRAFTS — OWNER ONLY — ${meta.category}** · ${meta.symbol}\n_Deterministic template drafts for MANUAL review. Never auto-posted. Not financial advice._\n_Result type: ${meta.resultType}_ · _Session: ${meta.sessionDate}_`;
+  // ── the notice, not the draft ────────────────────────────────────
+  //
+  // Discord used to carry the copy itself, so every accepted idea became a code
+  // block in a channel — and with nothing filtering ideas, a wall of them. The
+  // PRIVATE APP is the content inbox; Discord's only job is to say the inbox has
+  // something worth opening. A notice cannot be skimmed instead of reviewed,
+  // cannot be posted by accident, and cannot go stale in a channel.
+  const worthiness = draftWorthiness(db, recommended.id);
+  if (worthiness != null && worthiness < discordNoticeFloor(meta.env)) {
+    markDrafts(
+      db, ids, "VARIANT_HELD_IN_APP",
+      `in the review queue, below the Discord notice bar (${worthiness.toFixed(2)})`,
+      meta.nowMs,
+    );
+    return {
+      ok: false, messageId: null,
+      error: "below the Discord notice bar; queued in the app",
+      suppressed: true, reroutedWithoutPosting: true,
+    };
+  }
+  const header = `📝 **1 content idea ready for review — OWNER ONLY** — ${meta.symbol} · ${humanCategory(meta.category)}`;
   const draftBlocks = [[
-    `**Recommended draft** (${recommended.char_count} chars) · CTA: ${recommended.cta_type}`,
-    "```",
-    recommended.draft_text,
-    "```",
+    worthiness != null
+      ? `_Worthiness ${worthiness.toFixed(2)} · session ${meta.sessionDate}_`
+      : `_Session ${meta.sessionDate}_`,
     alternates.length
-      ? `_${alternates.length} alternate phrasing${alternates.length === 1 ? "" : "s"} available in the app._`
-      : null,
+      ? `_${1 + alternates.length} phrasings waiting in the private app._`
+      : "_Waiting in the private app._",
+    "_Never auto-posted. Open OptiScan to review, edit and post it yourself._",
   ].filter(Boolean).join("\n")];
   const deliveryLabel = policy.policy === "DELIVER_HISTORICAL_REPORT_CARD"
     ? "**HISTORICAL REPORT CARD - NON-ACTIONABLE**\n_Option results below are frozen historical evidence, not a current entry or current quote._"
@@ -1157,7 +1298,28 @@ export function regenerateContentDraftOnDb(
   if (!alt) return null;
 
   const single = { ...bundle, drafts: [alt] };
+  // Owner-requested: worthiness and duplication are already answered by the
+  // fact that a person pressed the button. Coherence is not — a regenerated
+  // angle that contradicts the position is still refused.
+  const gate = gateContentBundle(db, {
+    symbol: bundle.symbol,
+    category: String(existing.category),
+    optionType: event.option_type != null ? String(event.option_type) : null,
+    direction: event.direction != null ? String(event.direction) : null,
+    sessionDate: existing.trading_session_date != null
+      ? String(existing.trading_session_date)
+      : tradingDay(nowMs),
+    thesisParts: [firstOf(event.original_thesis_json), firstOf(event.evidence_summary_json)],
+    milestone: event.milestone_percent != null ? Number(event.milestone_percent) : null,
+    evidenceState: claim.resultType,
+    claimVerified: claim.ok,
+    ownerRequested: true,
+    fingerprintSalt: alt.templateFamily,
+    drafts: [{ text: alt.text, templateFamily: alt.templateFamily }],
+  }, env);
+  if (!gate.admitted.length) return null;
   persistDraftRows(db, event, single, {
+    gate: { ...gate, admitted: gate.admitted.map((a) => ({ ...a, index: 0 })) },
     alertId: claim.alertId ?? (existing.alert_id as string | null) ?? null,
     claimPacketId: claim.claimPacketId,
     resultType: claim.resultType,

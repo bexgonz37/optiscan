@@ -182,9 +182,21 @@ test("one canonical outcome cannot produce multiple Discord report cards", async
   ).get().n;
   assert.ok(dupReason > 0, "the later events are recorded as duplicate outcomes, not lost");
 
-  // Nothing was deleted: every generated draft is still queryable.
+  // Nothing is deleted, and nothing is regenerated. The count is lower than it
+  // once was because the content gate no longer writes a row per template per
+  // event — one idea occupies at most MAX_DRAFTS_PER_IDEA rows, and the three
+  // events of a single closure share one semantic identity. What matters here
+  // is that the rows that exist are STABLE across repeated scans.
   const total = db.prepare("SELECT COUNT(*) n FROM content_drafts WHERE opportunity_case_id='oc_dup'").get().n;
-  assert.ok(total >= 6, `all drafts preserved (found ${total})`);
+  assert.ok(total >= 1, `drafts were generated (found ${total})`);
+  const before = db.prepare(
+    "SELECT id, draft_text FROM content_drafts WHERE opportunity_case_id='oc_dup' ORDER BY id",
+  ).all();
+  for (let i = 0; i < 3; i++) await runContentDraftsScan(db, capture().deps, ENV);
+  const after = db.prepare(
+    "SELECT id, draft_text FROM content_drafts WHERE opportunity_case_id='oc_dup' ORDER BY id",
+  ).all();
+  assert.deepEqual(after, before, "repeated scans must neither add nor rewrite drafts");
 });
 
 test("the three copy variants are never three Discord-visible items", async () => {
@@ -196,9 +208,13 @@ test("the three copy variants are never three Discord-visible items", async () =
 
   assert.equal(sent.length, 1);
   const body = sent[0];
+  // Discord is a NOTICE now: zero draft bodies, not one and not three. The
+  // private app is the content inbox; the channel's only job is to say the
+  // inbox has something in it.
   const codeBlocks = (body.match(/```/g) || []).length / 2;
-  assert.equal(codeBlocks, 1, "one draft body, not three");
-  assert.match(body, /alternate phrasing/i, "the alternates are pointed at, not pasted");
+  assert.equal(codeBlocks, 0, "the notice must not paste any draft body");
+  assert.match(body, /ready for review/i);
+  assert.match(body, /private app/i, "the notice points at the app, it does not replace it");
 
   const held = db.prepare(
     "SELECT COUNT(*) n FROM content_drafts WHERE discord_delivery_reason='VARIANT_HELD_IN_APP'",
