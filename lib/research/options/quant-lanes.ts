@@ -216,7 +216,23 @@ function shadowLaneMetrics(db: QuantDb, wouldSend: boolean, lane: QuantLane, lab
   const losses = returns.filter((x) => x <= 0);
   const okRows = rows.filter((r) => r.data_status === "OK" || r.return_60m != null).length;
   const completenessPct = rows.length ? Math.round((okRows / rows.length) * 1000) / 10 : 0;
-  const agg = buildShadowSoakAggregate(db as any, process.env, 14);
+  // DEAD WORK (2026-08-18 audit). This aggregate is a ~4s build, it was computed
+  // unconditionally in BOTH shadow lanes, and the would-send lane never reads it --
+  // `decisionQuality` is `wouldSend ? undefined : {...}`. So half of that cost was
+  // computed and thrown away, and the other half was the same call repeated.
+  //
+  // Computed lazily, at the one place it is consumed. The would-block lane gets the
+  // identical value it got before; the would-send lane stops paying for a result it
+  // discards. No metric changes.
+  const decisionQuality = wouldSend ? undefined : (() => {
+    const agg = buildShadowSoakAggregate(db as any, process.env, 14);
+    return {
+      severeLossesPrevented: agg.severeLossesPrevented,
+      largeWinnersBlocked: agg.largeWinnersBlocked,
+      falsePositiveProxy: null,
+      falseNegativeProxy: null,
+    };
+  })();
   return {
     lane,
     label,
@@ -243,12 +259,7 @@ function shadowLaneMetrics(db: QuantDb, wouldSend: boolean, lane: QuantLane, lab
     t1HitRate: graded.length ? graded.filter((r) => r.t1_hit === 1).length / graded.length : null,
     t2HitRate: graded.length ? graded.filter((r) => r.t2_hit === 1).length / graded.length : null,
     stopHitRate: graded.length ? graded.filter((r) => r.stop_hit === 1).length / graded.length : null,
-    decisionQuality: wouldSend ? undefined : {
-      severeLossesPrevented: agg.severeLossesPrevented,
-      largeWinnersBlocked: agg.largeWinnersBlocked,
-      falsePositiveProxy: null,
-      falseNegativeProxy: null,
-    },
+    decisionQuality,
     segments: buildStrategySegments(graded.map((r) => ({ return_pct: Number(r.return_60m), strategy: r.strategy }))),
     insufficientEvidence: graded.length < MIN_SAMPLE,
   };
