@@ -717,11 +717,19 @@ async function asymmetryPaperJob(nowMs: number): Promise<void> {
   const { tradingDay } = require("@/lib/trading-session");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { liveAsymmetryQuote } = require("@/lib/research/asymmetry/live-quote");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { remainingMinuteAllowance } = require("@/lib/provider-admission");
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getCallStats } = require("@/lib/polygon-provider");
   const res = await runAsymmetryPaper(db(), {
     quote: liveAsymmetryQuote,
     nowMs,
     sessionDate: tradingDay(nowMs),
     codeVersion: process.env.RAILWAY_GIT_COMMIT_SHA ?? null,
+    // This lane bills to the SAME `asymmetry_mark` partition as the forward-mark
+    // sweep and runs on the same 60s cadence. Pacing one and not the other only
+    // moves the refusals.
+    admission: () => remainingMinuteAllowance("asymmetry_mark", getCallStats()),
   });
   state().lastAsymmetryPaper = res;
 }

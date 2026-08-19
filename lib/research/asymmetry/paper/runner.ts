@@ -64,6 +64,15 @@ export interface PaperRunResult {
   positionsClosed: number;
   positionsUnverified: number;
   providerErrors: number;
+  /**
+   * Entries this sweep DECLINED to price because the lane's minute allowance was
+   * reserved for MANAGING positions that are already open. Deferring an entry
+   * costs nothing — the case is still eligible next sweep — whereas an unmanaged
+   * open position is a live exposure nobody is watching.
+   */
+  entriesDeferredForBudget: number;
+  /** Open positions the sweep could not price at all. Should be zero; if it is not, say so. */
+  positionsDeferredForBudget: number;
   errors: string[];
 }
 
@@ -75,6 +84,16 @@ export interface PaperRunDeps {
   env?: NodeJS.ProcessEnv;
   management?: ManagementConfig;
   codeVersion?: string | null;
+  /**
+   * How many provider requests THIS lane may spend right now, read from its own
+   * minute partition (lib/provider-admission.ts). Optional; absent means
+   * unbounded, so every injected test dep is unchanged.
+   *
+   * This lane bills to `asymmetry_mark`, the SAME partition as the forward-mark
+   * sweep, and both run every 60s. Pacing one and not the other just moves the
+   * refusals.
+   */
+  admission?: () => number;
 }
 
 /** Sweep the paper lane: open eligible entries, then manage open positions. */
@@ -86,6 +105,7 @@ async function runAsymmetryPaperInner(db: RunnerDb, deps: PaperRunDeps): Promise
   const out: PaperRunResult = {
     ran: false, reason: null, activationState: null, paperEntriesAllowed: false,
     casesRead: 0, entriesOpened: 0, entriesSkipped: 0,
+    entriesDeferredForBudget: 0, positionsDeferredForBudget: 0,
     positionsManaged: 0, marksWritten: 0, marksRejected: 0, positionsClosed: 0,
     positionsUnverified: 0, providerErrors: 0, errors: [],
   };
@@ -126,6 +146,24 @@ async function runAsymmetryPaperInner(db: RunnerDb, deps: PaperRunDeps): Promise
       return result;
     };
 
+    // PRIORITY, ENFORCED WITH ARITHMETIC RATHER THAN WITH ORDER.
+    //
+    // Entries run before management in this sweep, so under a tight partition
+    // entries would spend the whole allowance and leave positions that are
+    // ALREADY OPEN unpriced — research starving an active exact-contract
+    // position, which is the one thing the provider priority order forbids.
+    //
+    // Rather than reorder (which would change which quote a position is managed
+    // against, and this lane's semantics depend on entry and management sharing
+    // one quote per contract per sweep), the entry loop simply refuses to spend
+    // the requests management is going to need. Counting open positions is a
+    // cheap DB read and deliberately CONSERVATIVE: some of them share an OCC
+    // with an entry candidate and will be served from the sweep cache for free,
+    // so this over-reserves slightly and never under-reserves.
+    const allowance = deps.admission ?? (() => Number.POSITIVE_INFINITY);
+    const reservedForManagement = listOpenPaperPositionsOnDb(db, deps.sessionDate).length;
+    const entryAllowance = () => allowance() - reservedForManagement;
+
     // ── 1. Entries ────────────────────────────────────────────────────────
     const cases = listCasesOnDb(db, deps.sessionDate, 500);
     out.casesRead = cases.length;
@@ -155,6 +193,12 @@ async function runAsymmetryPaperInner(db: RunnerDb, deps: PaperRunDeps): Promise
         // call to rediscover that.
         if (hasPaperPosition(db, c.sessionDate, fingerprint)) continue;
 
+        // A quote already taken this sweep is free, so only a NEW contract has
+        // to clear the entry allowance.
+        if (!quotes.has(c.optionSymbol.toUpperCase()) && !(entryAllowance() > 0)) {
+          out.entriesDeferredForBudget += 1;
+          continue;
+        }
         const fetched = await fetchQuote(c.optionSymbol, c.symbol);
         const entryQuote: PaperEntryQuote | null = fetched.quote
           ? {
@@ -192,6 +236,13 @@ async function runAsymmetryPaperInner(db: RunnerDb, deps: PaperRunDeps): Promise
     const open = listOpenPaperPositionsOnDb(db, deps.sessionDate);
     for (const p of open) {
       try {
+        // Management is the priority this sweep reserved for, so this should not
+        // fire. If it does, the reservation was wrong and the count says so
+        // rather than the position quietly going unpriced.
+        if (!quotes.has(p.optionSymbol.toUpperCase()) && !(allowance() > 0)) {
+          out.positionsDeferredForBudget += 1;
+          continue;
+        }
         out.positionsManaged += 1;
         const fetched = await fetchQuote(p.optionSymbol, p.symbol);
         const q = fetched.quote;
