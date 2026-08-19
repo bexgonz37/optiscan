@@ -43,6 +43,29 @@ export function ownerResearchIntradayEnabled(env: NodeJS.ProcessEnv = process.en
   return env.OWNER_RESEARCH_DISCORD_ENABLED === "1" && env.OWNER_RESEARCH_INTRADAY_ENABLED === "1";
 }
 
+/**
+ * Presentation-only: stop OWNER WATCH research observations from reaching the
+ * actionable Alerts channel.
+ *
+ * An owner opening that is NOT subscriber-approved is a research observation, not
+ * a trade notification, but it renders into the same channel as a real callout —
+ * on 2026-08-19 the owner received five of them ("🔬 … OWNER WATCH … NOT
+ * SUBSCRIBER-APPROVED") and no actionable callout at all, which makes the channel
+ * useless as a signal.
+ *
+ * This suppresses the Discord POST ONLY. The delivery is still written to the
+ * ledger as SUPPRESSED, the opportunity-case opening claim is still held, the
+ * owner-mirror linkage still resolves, and PRE_MOVE_DISCOVERY_V2 still captures —
+ * because the send result is still reported as delivered to the caller. No gate,
+ * threshold, ranking weight or contract rule is touched, and a subscriber-grade
+ * callout never reaches this path.
+ *
+ * Default OFF, so this is inert until the owner sets it.
+ */
+export function ownerWatchDiscordSuppressed(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.OWNER_WATCH_DISCORD_SUPPRESSED === "1";
+}
+
 export function ownerNotifyDestinationForKind(kind: OwnerResearchNotifyKind): {
   webhook: DiscordWebhookKind;
   requiredEnv: string;
@@ -336,6 +359,45 @@ function markSent(db: NotifyDb, day: string, kind: string, symbol = ""): void {
   ).run(day, kind, symbol, Date.now());
 }
 
+/**
+ * Write the SUPPRESSED ledger row for a research observation that was deliberately
+ * not posted. Same shape and payload_type as a real send, so the owner-mirror
+ * audit and the daily summary still see the opening — the evidence survives, only
+ * the notification does not.
+ */
+function recordSuppressedOwnerNotify(
+  kind: OwnerResearchNotifyKind,
+  content: string,
+  metadata: {
+    idempotencyKey?: string | null;
+    opportunityCaseId?: string | null;
+    thesisFingerprint?: string | null;
+    lifecycleState?: string | null;
+  },
+): string | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { createDiscordDelivery } = require("../alert-store.ts");
+    const destination = ownerNotifyDestinationForKind(kind);
+    return createDiscordDelivery({
+      alertId: null,
+      channelType: "discord_webhook",
+      webhookName: destination.webhook,
+      payloadType: `owner_${kind}`,
+      payload: { content: content.slice(0, 1900) },
+      idempotencyKey: metadata.idempotencyKey ?? null,
+      opportunityCaseId: metadata.opportunityCaseId ?? null,
+      thesisFingerprint: metadata.thesisFingerprint ?? null,
+      openingState: metadata.lifecycleState ?? null,
+      status: "SUPPRESSED",
+      failureReason: "owner_watch_discord_suppressed",
+    });
+  } catch {
+    // Evidence-only. A ledger write failure must never change the delivery outcome.
+    return null;
+  }
+}
+
 async function postOwner(
   kind: OwnerResearchNotifyKind,
   content: string,
@@ -387,6 +449,12 @@ export async function sendOwnerResearchNotify(opts: {
   opportunityCaseId?: string | null;
   thesisFingerprint?: string | null;
   lifecycleState?: string | null;
+  /**
+   * This notify is a RESEARCH OBSERVATION, not an actionable trade callout — an
+   * owner opening that is not subscriber-approved. Eligible for
+   * OWNER_WATCH_DISCORD_SUPPRESSED; evidence is retained either way.
+   */
+  researchObservation?: boolean;
   /** Test hook — bypass default recap post. */
   postOverride?: (content: string) => Promise<{
     ok: boolean;
@@ -424,6 +492,27 @@ export async function sendOwnerResearchNotify(opts: {
     if (!webhookConfiguredForDestination(opts.kind, env)) {
       return { sent: false, skipped: true, reason: `${destination.requiredEnv} not configured`, kind: opts.kind };
     }
+  }
+  // Research observation + suppression on: record it, do not post it. Reported as
+  // delivered so every downstream consumer of the send result (opening claim,
+  // owner-mirror linkage, PRE_MOVE_DISCOVERY_V2 capture) behaves exactly as before.
+  if (opts.researchObservation && ownerWatchDiscordSuppressed(env)) {
+    const deliveryId = recordSuppressedOwnerNotify(opts.kind, normalized.content, {
+      idempotencyKey: opts.idempotencyKey ?? null,
+      opportunityCaseId: opts.opportunityCaseId ?? null,
+      thesisFingerprint: opts.thesisFingerprint ?? null,
+      lifecycleState: opts.lifecycleState ?? null,
+    });
+    markSent(opts.db, day, opts.kind, symbol);
+    return {
+      sent: true,
+      skipped: false,
+      reason: "owner_watch_discord_suppressed",
+      kind: opts.kind,
+      content: normalized.content,
+      messageId: null,
+      deliveryId,
+    };
   }
   const res = opts.postOverride
     ? await opts.postOverride(normalized.content).then((r) => ({

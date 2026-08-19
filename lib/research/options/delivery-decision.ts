@@ -329,6 +329,10 @@ async function sendOwnerPrivateOpening(
       opportunityCaseId: claim.opportunityCaseId,
       thesisFingerprint: claim.thesisFingerprint,
       lifecycleState: "OPENING",
+      // Every opening on this path is owner-private and NOT subscriber-approved —
+      // both callers are the readiness-gate rejection and the bearish owner review.
+      // A subscriber-grade callout never reaches sendOwnerPrivateOpening.
+      researchObservation: true,
       env: { ...env, OWNER_RESEARCH_DISCORD_ENABLED: "1", OWNER_RESEARCH_INTRADAY_ENABLED: "1" } as NodeJS.ProcessEnv,
       nowMs,
       postOverride: opts.postOverride,
