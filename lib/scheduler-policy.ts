@@ -13,6 +13,7 @@ export interface SchedulerIntervals {
   maintenanceMs: number;   // outcome sync + statistics refresh (frequent, bounded)
   learningMs: number;      // model-readiness + bounded retrain check + drift snapshot
   supervisorMs: number;    // supervisor callout cycle
+  forwardLabelsMs: number; // persisted-evidence forward labels (slow path, zero provider calls)
   improvementMs: number;   // low-frequency improvement audit
   aiCheckMs: number;       // how often to CHECK whether an offline AI job is due
   /** How often to CHECK whether today's Brokerage V2 soak readiness report is due. */
@@ -72,6 +73,9 @@ export function schedulerIntervals(env: NodeJS.ProcessEnv = process.env): Schedu
     // does not arrive a minute late at the top of the candle). Never faster than
     // 15s; override with SCHED_SUPERVISOR_MS. Budget-safe: ~12 tickers/cycle.
     supervisorMs: clampInt(env.SCHED_SUPERVISOR_MS, 30_000, 15_000, 30 * 60_000),
+    // One-minute due-work check. The worker has its own 8s deadline and ten-episode
+    // batch, reads persisted evidence only, and resumes safely on the next beat.
+    forwardLabelsMs: clampInt(env.SCHED_FORWARD_LABELS_MS, 60_000, 30_000, 30 * 60_000),
     // 6h default improvement audit; never faster than 1h.
     improvementMs: clampInt(env.SCHED_IMPROVEMENT_MS, 6 * 60 * 60_000, 60 * 60_000, 7 * 24 * 60 * 60_000),
     // 5 min default AI-due CHECK (not the job itself); the job is idempotent and

@@ -138,6 +138,14 @@ export async function GET(req: Request) {
 
   const quota = safe("quota_policy", () => quotaPolicySnapshot(), null as ReturnType<typeof quotaPolicySnapshot> | null);
 
+  const forwardLearning = safe("forward_learning", () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getDb } = require("@/lib/db");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { buildForwardLearningOverviewOnDb } = require("@/lib/research/episode/forward-labeler");
+    return buildForwardLearningOverviewOnDb(getDb(), now, process.env);
+  }, null as Record<string, unknown> | null);
+
   const independentOptions = safe("independent_options", () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { optionsMonitorHealth, optionsMonitorMetrics } = require("@/lib/research/options/monitor");
@@ -281,6 +289,7 @@ export async function GET(req: Request) {
       kill_switch: process.env.OPTIONS_CALLOUTS_KILL === "1",
     },
     independent_options: independentOptions,
+    forward_learning: forwardLearning,
     stock_scanner: {
       running: loop.running,
       interval_ms: loop.intervalMs,

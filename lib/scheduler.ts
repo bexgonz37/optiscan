@@ -27,7 +27,7 @@ import {
 const LEASE_NAME = "scheduler";
 const BASE_TICK_MS = 15_000;
 
-type JobName = "maintenance" | "learning" | "supervisor" | "improvement" | "aiJobs" | "brokerReadiness" | "subscriberReadiness" | "contentDrafts" | "overnightResearch" | "watchlistPlanning" | "asymmetryTransitions" | "asymmetryMarks" | "asymmetryPaper" | "asymmetryPaperGate" | "asymmetryEod" | "historicalMiner";
+type JobName = "maintenance" | "learning" | "supervisor" | "forwardLabels" | "improvement" | "aiJobs" | "brokerReadiness" | "subscriberReadiness" | "contentDrafts" | "overnightResearch" | "watchlistPlanning" | "asymmetryTransitions" | "asymmetryMarks" | "asymmetryPaper" | "asymmetryPaperGate" | "asymmetryEod" | "historicalMiner";
 
 export interface SchedulerState {
   started: boolean;
@@ -88,6 +88,8 @@ export interface SchedulerState {
   lastAsymmetryPaperGate?: unknown;
   /** Last High-Asymmetry EOD review. Read-only diagnostics. */
   lastAsymmetryEod?: unknown;
+  /** Last SetupEpisodeV2 forward-label pass. Persisted evidence only; zero provider calls. */
+  lastForwardLabels?: unknown;
   /**
    * Last content-draft scan. Read-only diagnostics.
    *
@@ -132,7 +134,7 @@ type G = typeof globalThis & {
 };
 
 const JOB_NAMES: JobName[] = [
-  "maintenance", "learning", "supervisor", "improvement", "aiJobs", "brokerReadiness",
+  "maintenance", "learning", "supervisor", "forwardLabels", "improvement", "aiJobs", "brokerReadiness",
   "subscriberReadiness", "contentDrafts", "overnightResearch", "watchlistPlanning",
   "asymmetryTransitions", "asymmetryMarks", "asymmetryPaper", "asymmetryPaperGate",
   "asymmetryEod", "historicalMiner",
@@ -144,10 +146,10 @@ function state(): SchedulerState {
   const g = globalThis as G;
   g.__optiscanScheduler ??= {
     started: false, isOwner: false, ownerPid: null, lastBeatAtMs: null, lastBeatCompletedAtMs: null,
-    lastRun: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null, brokerReadiness: null, subscriberReadiness: null, contentDrafts: null, overnightResearch: null, watchlistPlanning: null, asymmetryTransitions: null, asymmetryMarks: null, asymmetryPaper: null, asymmetryPaperGate: null, asymmetryEod: null, historicalMiner: null },
-    runs: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0, subscriberReadiness: 0, contentDrafts: 0, overnightResearch: 0, watchlistPlanning: 0, asymmetryTransitions: 0, asymmetryMarks: 0, asymmetryPaper: 0, asymmetryPaperGate: 0, asymmetryEod: 0, historicalMiner: 0 },
-    jobTimeouts: { maintenance: 0, learning: 0, supervisor: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0, subscriberReadiness: 0, contentDrafts: 0, overnightResearch: 0, watchlistPlanning: 0, asymmetryTransitions: 0, asymmetryMarks: 0, asymmetryPaper: 0, asymmetryPaperGate: 0, asymmetryEod: 0, historicalMiner: 0 },
-    jobStartedAt: { maintenance: null, learning: null, supervisor: null, improvement: null, aiJobs: null, brokerReadiness: null, subscriberReadiness: null, contentDrafts: null, overnightResearch: null, watchlistPlanning: null, asymmetryTransitions: null, asymmetryMarks: null, asymmetryPaper: null, asymmetryPaperGate: null, asymmetryEod: null, historicalMiner: null },
+    lastRun: { maintenance: null, learning: null, supervisor: null, forwardLabels: null, improvement: null, aiJobs: null, brokerReadiness: null, subscriberReadiness: null, contentDrafts: null, overnightResearch: null, watchlistPlanning: null, asymmetryTransitions: null, asymmetryMarks: null, asymmetryPaper: null, asymmetryPaperGate: null, asymmetryEod: null, historicalMiner: null },
+    runs: { maintenance: 0, learning: 0, supervisor: 0, forwardLabels: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0, subscriberReadiness: 0, contentDrafts: 0, overnightResearch: 0, watchlistPlanning: 0, asymmetryTransitions: 0, asymmetryMarks: 0, asymmetryPaper: 0, asymmetryPaperGate: 0, asymmetryEod: 0, historicalMiner: 0 },
+    jobTimeouts: { maintenance: 0, learning: 0, supervisor: 0, forwardLabels: 0, improvement: 0, aiJobs: 0, brokerReadiness: 0, subscriberReadiness: 0, contentDrafts: 0, overnightResearch: 0, watchlistPlanning: 0, asymmetryTransitions: 0, asymmetryMarks: 0, asymmetryPaper: 0, asymmetryPaperGate: 0, asymmetryEod: 0, historicalMiner: 0 },
+    jobStartedAt: { maintenance: null, learning: null, supervisor: null, forwardLabels: null, improvement: null, aiJobs: null, brokerReadiness: null, subscriberReadiness: null, contentDrafts: null, overnightResearch: null, watchlistPlanning: null, asymmetryTransitions: null, asymmetryMarks: null, asymmetryPaper: null, asymmetryPaperGate: null, asymmetryEod: null, historicalMiner: null },
     beatTimeouts: 0, lastTimeoutNote: null,
     note: "not started", lastError: null, lastWatchlistPlanning: null, lastHistoricalMiner: null,
     lastProfessionalWatchlist: { overnight: null, premarket: null },
@@ -160,6 +162,12 @@ function state(): SchedulerState {
   cur.beatTimeouts ??= 0;
   cur.lastTimeoutNote ??= null;
   cur.lastBeatCompletedAtMs ??= null;
+  for (const name of JOB_NAMES) {
+    cur.lastRun[name] ??= null;
+    cur.runs[name] ??= 0;
+    cur.jobTimeouts[name] ??= 0;
+    cur.jobStartedAt[name] ??= null;
+  }
   return cur;
 }
 
@@ -324,6 +332,22 @@ async function supervisorJob(nowMs: number): Promise<void> {
   const { runSupervisorCycle, supervisorRuntimeEnabled } = require("@/lib/supervisor-cycle");
   if (!supervisorRuntimeEnabled()) return;
   await runSupervisorCycle(nowMs);
+}
+
+async function forwardLabelsJob(nowMs: number): Promise<void> {
+  // Slow-path only: the worker reads persisted SQLite evidence, yields between
+  // episodes, and is independently bounded to 8s / ten episodes by default.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { runForwardLabelWorkerOnDb } = require("@/lib/research/episode/forward-labeler");
+  state().lastForwardLabels = await runForwardLabelWorkerOnDb(db(), { nowMs });
+}
+
+function launchForwardLabels(nowMs: number): void {
+  // The labeler is deliberately detached from the heartbeat. `runJob` still owns
+  // overlap prevention, completion/error accounting, and its wall-clock guard,
+  // while setImmediate ensures even the worker's first synchronous SQLite read
+  // starts only after the current beat has yielded back to the event loop.
+  setImmediate(() => { void runJob("forwardLabels", () => forwardLabelsJob(nowMs), nowMs); });
 }
 
 /** Whether the low-frequency, PROPOSAL-ONLY improvement audit may run. */
@@ -869,6 +893,7 @@ async function beat(): Promise<void> {
   if (jobDue(s.lastRun.maintenance, iv.maintenanceMs, nowMs)) await runJob("maintenance", maintenanceJob, nowMs);
   if (jobDue(s.lastRun.learning, iv.learningMs, nowMs)) await runJob("learning", learningJob, nowMs);
   if (jobDue(s.lastRun.supervisor, iv.supervisorMs, nowMs)) await runJob("supervisor", () => supervisorJob(nowMs), nowMs);
+  if (jobDue(s.lastRun.forwardLabels, iv.forwardLabelsMs, nowMs)) launchForwardLabels(nowMs);
   if (jobDue(s.lastRun.improvement, iv.improvementMs, nowMs)) await runJob("improvement", improvementJob, nowMs);
   // AI jobs: pace the DUE-check, then launch detached (never awaited in the beat).
   if (jobDue(s.lastRun.aiJobs, iv.aiCheckMs, nowMs)) {

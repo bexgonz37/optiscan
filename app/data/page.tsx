@@ -85,6 +85,24 @@ type Overview = {
   };
   discord?: { summary?: { status: string; count: number }[] };
   entitlement_limitations?: string[];
+  forward_learning?: {
+    status?: string;
+    explanation?: string;
+    observedToday?: number | null;
+    awaitingMaturity?: number | null;
+    underlyingOutcomesLabeled?: number | null;
+    exactOptionOutcomesLabeled?: number | null;
+    exactOptionCoveragePct?: number | null;
+    unknownCensoredCount?: number | null;
+    independentSessions?: number | null;
+    latestWorker?: { status?: string; runtime_ms?: number; runtimeMs?: number; labels_inserted?: number; labelsInserted?: number; note?: string } | null;
+    dataset?: { datasetVersion?: string; labelVersion?: string; episodeCount?: number; labelCount?: number; dateFrom?: string | null; dateTo?: string | null } | null;
+    historicalEvidence?: Array<{
+      dataset: string; rowCount: number; distinctSymbols: number | null; distinctOccs: number | null;
+      sessionCount: number | null; earliestMs: number | null; latestMs: number | null;
+      provenance: string; pointInTimeTrust: string; limitations: string[];
+    }>;
+  } | null;
 };
 
 const GOOD_FRESHNESS = new Set(["LIVE", "DEGRADED", "DELAYED", "MARKET_CLOSED"]);
@@ -115,6 +133,15 @@ function age(v: number | null | undefined): string {
   if (v == null) return "Not recorded";
   const hours = v / 3_600_000;
   return hours < 48 ? `${hours.toFixed(1)} hours ago` : `${(hours / 24).toFixed(1)} days ago`;
+}
+
+function count(v: number | null | undefined): string {
+  return v == null ? "Not measured yet" : v.toLocaleString();
+}
+
+function dateRange(from: number | null | undefined, to: number | null | undefined): string {
+  if (from == null || to == null) return "Not measured yet";
+  return `${new Date(from).toLocaleDateString()} – ${new Date(to).toLocaleDateString()}`;
 }
 
 export default function SystemHealthPage() {
@@ -203,6 +230,11 @@ export default function SystemHealthPage() {
   const storage = data.database?.storage;
   const storageState = storage?.warning?.state ?? "UNKNOWN";
   const storageWarn = storageState !== "OK";
+  const learning = data.forward_learning;
+  const inventory = new Map((learning?.historicalEvidence ?? []).map((row) => [row.dataset, row]));
+  const underlyingHistory = inventory.get("historical_underlying_bars");
+  const exactQuoteHistory = inventory.get("historical_option_quotes");
+  const episodeHistory = inventory.get("setup_episode_v2");
 
   return (
     <PageContainer>
@@ -294,6 +326,32 @@ export default function SystemHealthPage() {
           />
           <KeyValue k="Latest backup" v={storage?.backup ? age(storage.backup.ageMs) : "No app backup metadata"} tone={storage?.backup ? undefined : "warn"} />
           {storage?.warning?.message ? <div className="ui-section-hint">{storage.warning.message}</div> : null}
+        </Card>
+
+        <Card title="Forward Learning" meta="Research labels only — no live callout authority" tone={learning?.status === "ERROR" ? "warn" : undefined}>
+          <KeyValue k="Episodes observed today" v={count(learning?.observedToday)} />
+          <KeyValue k="Awaiting maturity" v={count(learning?.awaitingMaturity)} />
+          <KeyValue k="Underlying outcomes labeled" v={count(learning?.underlyingOutcomesLabeled)} />
+          <KeyValue k="Exact-option outcomes labeled" v={count(learning?.exactOptionOutcomesLabeled)} />
+          <KeyValue
+            k="Exact-option coverage"
+            v={learning?.exactOptionCoveragePct == null ? "Not enough eligible evidence" : `${learning.exactOptionCoveragePct.toFixed(1)}%`}
+          />
+          <KeyValue k="Unknown / censored" v={count(learning?.unknownCensoredCount)} />
+          <KeyValue k="Independent sessions" v={count(learning?.independentSessions)} />
+          <KeyValue k="Latest worker" v={learning?.latestWorker?.status ?? learning?.status ?? "Not measured yet"} />
+          <KeyValue k="Dataset version" v={learning?.dataset?.datasetVersion ?? "Not available yet"} />
+          <div className="ui-section-hint">{learning?.explanation ?? "OptiScan is collecting what happened after each observed setup. These labels will be used to test historical patterns; they do not change live callouts."}</div>
+        </Card>
+
+        <Card title="Historical evidence breadth" meta="Breadth and provenance — row count alone is never coverage">
+          <KeyValue k="Underlying history" v={`${count(underlyingHistory?.distinctSymbols)} symbols · ${count(underlyingHistory?.sessionCount)} sessions`} />
+          <KeyValue k="Underlying date range" v={dateRange(underlyingHistory?.earliestMs, underlyingHistory?.latestMs)} />
+          <KeyValue k="Exact option quote history" v={`${count(exactQuoteHistory?.rowCount)} rows · ${count(exactQuoteHistory?.distinctOccs)} exact contracts`} />
+          <KeyValue k="Exact quote sessions" v={count(exactQuoteHistory?.sessionCount)} />
+          <KeyValue k="Forward Setup Episodes" v={`${count(episodeHistory?.rowCount)} episodes · ${count(episodeHistory?.distinctSymbols)} symbols · ${count(episodeHistory?.sessionCount)} sessions`} />
+          <KeyValue k="Exact option labeled episodes" v={count(learning?.exactOptionOutcomesLabeled)} />
+          <div className="ui-section-hint">Historical Greeks and open interest are not reconstructed. Exact-option evidence remains selected; the coverage diagnostics show where it is concentrated.</div>
         </Card>
       </ResponsiveGrid>
 

@@ -339,3 +339,70 @@ alpha until the Phase 2 labeler and subsequent research gates exist.
 
 Canonical terminology lives in `lib/terminology.ts`. App tooltips and Ask OptiScan import
 that source; `CANONICAL_TERMINOLOGY.md` is generated and checked, not hand-maintained.
+
+---
+
+## Phase 2A automatic forward-label graph — added 2026-08-19
+
+Phase 2A closes the label edge with a bounded, restart-safe slow path. It does not add
+historical analogs, probabilities, EV, live reweighting, or any delivery authority.
+
+```
+SetupEpisodeV2 / immutable Zone A
+   |
+   +--> horizon clock: 5m / 15m / 30m / 60m / regular-session close
+   |
+   +--> persisted underlying 1m OHLC ----------------> UNDERLYING_LABEL
+   |
+   +--> frozen exact OCC + contemporaneous ask
+          + persisted exact-OCC future NBBO bid ----> EXACT_OPTION_EXECUTABLE_LABEL
+   |
+   +--> append-only FORWARD_LABEL_V1
+          + path quality / gaps / censoring / missing reason
+          + terminal return / MFE / MAE / threshold times
+          + explicit competing-event order or ambiguity
+          + config digest / production SHA / evidence version
+          |
+          +--> reconciled daily coverage snapshot
+          +--> order-independent deterministic dataset version
+          +--> private Forward Learning / evidence-breadth view
+          +--> future Phase 2B research consumers (NO authority yet)
+```
+
+The exact-option denominator is the frozen contemporaneous ask and every forward mark is
+the bid for the same normalized OCC. Midpoint, last trade, a nearby strike, another
+expiration, or underlying movement cannot substitute. A zero bid is legitimate evidence
+of a -100% executable mark; a missing or crossed book is unknown. Post-horizon marks do
+not prove an in-horizon event. Underlying OHLC can establish that both competing levels
+were inside one minute but cannot establish their sequence, so the canonical order is
+`AMBIGUOUS_INTRABAR`.
+
+### Phase 2A loop closure
+
+```
+OBSERVE -> FREEZE -> EVALUATE -> RECORD ACTION TYPE -> WAIT FOR HORIZON
+   -> LABEL -> VERIFY COVERAGE -> VERSION DATASET -> RESEARCH-READY EVIDENCE
+```
+
+The scheduler checks once per minute. Each run examines at most ten episodes, has an
+independent eight-second deadline, yields between episodes, and issues zero provider
+requests. `INSERT OR IGNORE` plus deterministic label identity makes deploy/restart and
+rerun safe. Dataset identity registers at most 1,000 previously unseen immutable labels
+per beat and combines SHA-256 membership digests with an order-independent XOR, avoiding
+a growing full-label scan. Historical breadth refreshes one dataset off-peak; large
+tables use explicitly identified SQLite planner estimates rather than blocking the live
+scheduler with a multi-million-row `DISTINCT` scan.
+
+Actions remain separate populations: `OBSERVATION`, defensible `COUNTERFACTUAL`, actual
+`PAPER_TRADE`, reconciled `OWNER_PAPER`, and genuinely delivered
+`DELIVERED_SUBSCRIBER_TRADE`. `ACTIONABLE`, `WATCH`, and `REJECTED` episodes can receive
+underlying labels without manufacturing a paper position. Exact-option coverage is
+reported across population, side, DTE, strategy, discovery stage, selection strength,
+liquidity/evidence tier, session, symbol, mover class, and action kind. This visibility
+describes where evidence exists; it is not an alpha claim.
+
+The evidence edge is deliberately reuse-first: historical normalized bars/quotes,
+paper marks, and asymmetry marks are read from SQLite. No forward-capture provider lane
+was added and provider caps are unchanged. Current exact-option coverage is expected to
+remain selected and may be thin; a future capture proposal must first quantify calls per
+minute/day, lane cost, cap share, and the populations whose selection bias would improve.

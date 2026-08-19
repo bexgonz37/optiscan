@@ -15,14 +15,16 @@ test("scheduler intervals have safe defaults", () => {
   assert.equal(iv.maintenanceMs, 5 * 60_000);
   assert.equal(iv.learningMs, 60 * 60_000);
   assert.equal(iv.supervisorMs, 30_000);
+  assert.equal(iv.forwardLabelsMs, 60_000);
   assert.equal(iv.improvementMs, 6 * 60 * 60_000);
   assert.equal(iv.brokerReadinessMs, 60 * 60_000);
 });
 
 test("scheduler intervals are clamped against misconfiguration", () => {
-  const tooFast = schedulerIntervals({ SCHED_MAINTENANCE_MS: "5", SCHED_SUPERVISOR_MS: "1" });
+  const tooFast = schedulerIntervals({ SCHED_MAINTENANCE_MS: "5", SCHED_SUPERVISOR_MS: "1", SCHED_FORWARD_LABELS_MS: "1" });
   assert.equal(tooFast.maintenanceMs, 60_000, "maintenance floored to 60s");
   assert.equal(tooFast.supervisorMs, 15_000, "supervisor floored to 15s");
+  assert.equal(tooFast.forwardLabelsMs, 30_000, "forward labels floored to 30s");
   const garbage = schedulerIntervals({ SCHED_LEARNING_MS: "notanumber" });
   assert.equal(garbage.learningMs, 60 * 60_000, "falls back to default");
 });
@@ -56,6 +58,13 @@ test("scheduler lease failure mode is explicitly documented as bounded degraded 
 test("scheduler guards against overlapping runs of the same job", () => {
   const sch = read("lib/scheduler.ts");
   assert.ok(/if \(b\.has\(name\)\) return;/.test(sch), "in-process overlap guard");
+});
+
+test("forward labels are detached from the scheduler heartbeat", () => {
+  const sch = read("lib/scheduler.ts");
+  assert.ok(/setImmediate\(\(\) => \{ void runJob\("forwardLabels"/.test(sch), "worker starts after the beat yields");
+  assert.ok(/jobDue\(s\.lastRun\.forwardLabels, iv\.forwardLabelsMs, nowMs\)\) launchForwardLabels\(nowMs\)/.test(sch));
+  assert.doesNotMatch(sch, /await runJob\("forwardLabels"/, "heartbeat never awaits the slow-path worker");
 });
 
 test("learning job uses the BOUNDED cycle (gated retrain), never a raw train call", () => {

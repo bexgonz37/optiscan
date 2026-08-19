@@ -12,6 +12,7 @@ const required = [
   "nbbo", "occ", "mfe", "mae", "expectancy", "profit_factor", "baseline", "shadow",
   "winner_retention", "loss_rejection", "evidence_quality", "independent_sessions",
   "reward_remaining", "move_consumed", "discovery_stage", "setup_episode",
+  "forward_label", "evidence_coverage", "dataset_version",
   "historical_analog", "expected_value", "counterfactual", "paper_trade",
 ];
 

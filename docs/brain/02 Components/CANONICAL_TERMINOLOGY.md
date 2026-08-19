@@ -200,6 +200,42 @@ SetupEpisodeV2 stores provenance-bearing underlying, option, and OptiScan state 
 - Evidence requirement: Durable identity, T0, config digest, feature versions, provenance, and explicit missing reasons.
 - Aliases: episode, SetupEpisodeV2
 
+## Forward label
+
+The forward label worker evaluates matured SetupEpisodeV2 records from persisted evidence and records underlying or exact-option outcomes without changing evaluation-time features or live callouts.
+
+- Interpretation: Complete labels support later research; unknown and censored labels are evidence states, not losses.
+- Authority: `OPTISCAN_EVIDENCE`
+- Entry convention: Exact-option executable labels use buy at contemporaneous ask and exit at future bid.
+- Point-in-time caveat: A label is Zone B evidence strictly after T0 and may never rewrite immutable Zone A.
+- Evidence requirement: Episode identity, horizon maturity, source provenance, path coverage, censoring, config digest, label version, and exact OCC where applicable.
+- Aliases: outcome label, automatic forward label
+
+## Evidence coverage
+
+A deterministic reconciliation of complete, censored, missing, ineligible, and still-pending forward evidence, with selection-bias dimensions kept visible.
+
+- Formula: `complete eligible horizon units / all eligible horizon units`
+- Unit: %
+- Interpretation: A null percentage means there is not enough eligible evidence; it must not be displayed as zero.
+- Authority: `OPTISCAN_EVIDENCE`
+- Entry convention: Coverage is reported separately for underlying paths and exact-option executable paths.
+- Point-in-time caveat: Immature horizons are not missing outcomes, and absent evidence is not a negative result.
+- Evidence requirement: Exact reconciled buckets, maturity state, eligibility reason, path quality, independent sessions, and population dimensions.
+- Aliases: forward coverage, label coverage
+
+## Dataset version
+
+The forward dataset version hashes sorted immutable label identities together with episode schema, feature versions, label version, entry/exit convention, source populations, config-digest boundaries, date range, and evidence filters.
+
+- Formula: `sha256(canonical dataset snapshot)`
+- Interpretation: The same evidence and rules produce the same identity; any material cohort or label change produces another identity.
+- Authority: `OPTISCAN_RESEARCH_GOVERNANCE`
+- Entry convention: Included explicitly in the version snapshot.
+- Point-in-time caveat: A dataset version describes already-recorded evidence and grants no live decision authority.
+- Evidence requirement: Canonical sorted snapshot, rows digest, schema/feature/label versions, filters, date range, populations, and config boundaries.
+- Aliases: forward dataset version, dataset snapshot
+
 ## Historical analog
 
 A historical SetupEpisode state used for empirical next-event evidence without importing its outcome into the current feature vector.
@@ -213,7 +249,7 @@ A historical SetupEpisode state used for empirical next-event evidence without i
 
 ## Expected value
 
-A deterministic empirical estimate from actual forward labels, including adverse outcomes and costs; it is not an LLM opinion.
+A deterministic empirical estimate from actual forward labels, including adverse outcomes and costs; it is not a narrative estimate.
 
 - Formula: `sum(probability_i × payoff_i) − modeled costs`
 - Unit: % or currency per opportunity
