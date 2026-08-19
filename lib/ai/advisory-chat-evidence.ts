@@ -200,6 +200,28 @@ export interface SupplementalEvidence {
     replayVersion: string | null;
     warnings: string[];
   } | null;
+  /**
+   * ONE resolved "Explain this" target, when the owner clicked something.
+   *
+   * Carried as supplemental evidence rather than as a second chatbot: the same
+   * validator judges the answer, the same budget meters the call, and the same
+   * ADVISORY_ONLY authority applies. Its facts enter the registry so the model may
+   * quote them — and, because the registry IS what the validator checks against,
+   * "the model may say it" and "the model may not invent it" cannot drift apart.
+   */
+  explainTarget?: {
+    kind: string;
+    id: string;
+    resolved: boolean;
+    title: string;
+    population: string | null;
+    sampleSize: number | null;
+    independentSessions: number | null;
+    evidenceState: string | null;
+    facts: Array<{ label: string; value: number | string | null; unit?: string | null; note?: string | null }>;
+    limitations: string[];
+    mustNotBeReadAs: string[];
+  } | null;
   preMove?: {
     examined: number;
     withOwnerAlert: number;
@@ -324,6 +346,39 @@ function supplementalItems(supp: SupplementalEvidence | undefined): EvidenceItem
       "Not a zero return — an outcome that has not happened yet.");
     o("owner.excursionVerified", "Owner mirrors with a VERIFIED excursion", ol.excursionVerified, "trades", ol.openings,
       "Enough same-contract marks to state the observed extremes. A realized win does not imply this.");
+  }
+
+  // ── the "Explain this" target ───────────────────────────────────────────────
+  //
+  // Emitted LAST and under its own pipeline so it can never be mistaken for a lane
+  // statistic. Every fact keeps the label the deterministic resolver gave it: a value
+  // the model quotes must be traceable to the exact row the panel rendered, not to a
+  // paraphrase of it.
+  const et = supp?.explainTarget;
+  if (et && et.resolved) {
+    for (const [i, f] of et.facts.entries()) {
+      const numeric = isNum(f.value);
+      items.push({
+        id: `explain.${et.kind.toLowerCase()}.${i}`,
+        label: f.label,
+        value: f.value,
+        unit: f.unit ?? null,
+        pipeline: `explain_${et.kind.toLowerCase()}`,
+        lane: et.population ?? "unspecified",
+        timeWindow: "as_rendered",
+        sampleSize: et.sampleSize,
+        confidence: et.sampleSize == null ? "LOW" : et.sampleSize >= 30 ? "HIGH" : et.sampleSize >= 10 ? "MEDIUM" : "LOW",
+        qualityStatus: f.value == null ? "MISSING_DATA" : "VALID",
+        freshness: "current",
+        sourceRef: `explain-target/${et.kind}/${et.id}`,
+        meaning: f.note ?? `${f.label} for ${et.title}.`,
+        // A single trade's figure is true and is NOT a headline: one callout establishes
+        // nothing about the lane, and a top-line claim built from it would be an anecdote
+        // wearing a statistic's clothes.
+        safeForTopLine: et.kind !== "CASE",
+        numericForms: numeric ? numericForms(f.value as number) : [],
+      });
+    }
   }
 
   const pm = supp?.preMove;
@@ -453,6 +508,25 @@ function mandatoryCaveats(supp: SupplementalEvidence | undefined): string[] {
       out.push(`${p.policy} has no evaluable trades (sample size 0) because the required timestamped observations are not stored. It cannot be compared or recommended.`);
     } else if (!p.supported) {
       out.push(`${p.policy} is below the minimum supported sample (${p.sampleSize} of ${ep?.minimumSupportedSample ?? "?"}) and cannot be recommended.`);
+    }
+  }
+  // The explain target's own "must not be read as" list is a CAVEAT, not a note. It is
+  // restated to the model verbatim, so an answer that violates it is violating an
+  // instruction rather than merely omitting a footnote.
+  const et = supp?.explainTarget;
+  if (et) {
+    for (const m of et.mustNotBeReadAs ?? []) out.push(m);
+    if (!et.resolved) {
+      out.push(
+        `The requested target "${et.id}" could not be resolved. Do not describe any trade, `
+        + "experiment or metric as though it had been: say what could not be resolved and stop.",
+      );
+    }
+    if (et.kind === "CASE") {
+      out.push(
+        "This is ONE callout. It is an anecdote and establishes nothing about the lane. "
+        + "Do not generalise from it, and do not present its realized return as typical.",
+      );
     }
   }
   const wl = supp?.watchlist;

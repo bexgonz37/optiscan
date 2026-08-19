@@ -34,6 +34,8 @@ import { LHC_SELECT_V1, checkFrozen } from "./experiment-registry.ts";
 import { buildOwnerAlertSummaryOnDb, type NightlyDb } from "./nightly-research.ts";
 import { censusShaAttribution, POLICY_VERSIONS } from "./policy-attribution.ts";
 import { buildPreMoveNightlyReport, type PreMoveNightlyReport } from "./pre-move-nightly.ts";
+import { buildPreMoveV2Report, type PreMoveV2Report } from "./pre-move-v2-report.ts";
+import { buildOwnerSelectionStrengthScoreboardOnDb, type StrengthScoreboard } from "./owner-selection-strength-scoreboard.ts";
 import {
   buildOwnerLearningReportOnDb,
   type OwnerLaneStatistics,
@@ -474,11 +476,34 @@ export interface AiResearchContext {
    */
   ownerValidation: OwnerValidationLaneContext | null;
   experiment: ExperimentContext;
+  /**
+   * `OWNER_SELECTION_STRENGTH_GATE_V1` — the experiment that is ACTUALLY collecting
+   * prospective evidence right now.
+   *
+   * `experiment` above carries LHC_SELECT_V1 and nothing else, so until this field
+   * existed the nightly and the weekly could describe the owner lane in detail while
+   * knowing nothing about the rule being tested on it. They could not have noticed a
+   * shortfall, a weakening arm or a broken freeze, because the object was not in the
+   * payload — and an absent section reads exactly like a quiet one.
+   *
+   * Null only when the scoreboard cannot be built. Never {}, which would read as a
+   * measured zero.
+   */
+  ownerSelectionStrengthExperiment: StrengthScoreboard | null;
   confirmationCost: ConfirmationCostContext;
   researchLane: ResearchLaneContext;
   missedOpportunities: MissedOpportunityContext | null;
-  /** Pre-move discovery, per lane. Null when the store is unavailable, never {} . */
+  /** PRE_MOVE_DISCOVERY_V1, per lane. Null when the store is unavailable, never {} . */
   preMove: PreMoveNightlyReport | null;
+  /**
+   * PRE_MOVE_DISCOVERY_V2, prospective only.
+   *
+   * Carried BESIDE V1, never instead of it, because they measure different things
+   * against different denominators and are expected to disagree on the same callout.
+   * V2's population starts empty and grows forward, so an early reader will find it
+   * reporting INSUFFICIENT_EVIDENCE — which is the honest answer, not a gap.
+   */
+  preMoveV2: PreMoveV2Report | null;
   systemQuality: SystemQualityContext;
   findings: { findingId: string; statement: string; evidenceStrength: string; sampleSize: number; limitations: readonly string[]; mustNotBeSummarizedAs: string | null }[];
   instructions: string[];
@@ -511,6 +536,13 @@ const AUTHORITY_INSTRUCTIONS: readonly string[] = Object.freeze([
   "Never describe LHC_SELECT_V1 as working, validated, proven or ready. It is PROMISING and UNVALIDATED.",
   "If closedOutcomes is 0, there is no prospective result — say so rather than reporting the historical one as if it were prospective.",
   "Report winners rejected before losses avoided.",
+  "OWNER_SELECTION_STRENGTH_GATE_V1 is SHADOW ONLY. It has rejected nothing, delayed nothing and "
+    + "annotated nothing. Never describe it as validated, working or ready, and never propose promoting it.",
+  "Its verdict is derived from PROSPECTIVE outcomes only. Its in-sample figures describe the window "
+    + "the rule was read FROM and cannot test it; do not present them as evidence that it works.",
+  "PRE_MOVE_DISCOVERY_V2 is prospective-only and its population starts empty. INSUFFICIENT_EVIDENCE "
+    + "is the honest answer there, not a gap to fill. Never blend a V1 stage with a V2 stage: they "
+    + "measure different things against different denominators and are expected to disagree.",
   "Carry each finding's limitations with its number. A finding quoted without its limitation is a misquote.",
   "A null metric is UNAVAILABLE and must never be rendered as 0.",
   "You may propose SHADOW or PAPER_VALIDATION experiments. You may not change a live threshold, " +
@@ -658,6 +690,12 @@ export function buildAiResearchContextOnDb(
     // ever sees today has no way to notice that it has been shown the same day twice.
     ownerValidation: buildOwnerValidationLaneContext(db),
     experiment,
+    // Isolated for the same reason every other section here is: the scoreboard is the
+    // newest object in this payload and its absence must not cost the run the rest.
+    ownerSelectionStrengthExperiment: (() => {
+      try { return buildOwnerSelectionStrengthScoreboardOnDb(db as any, {}); }
+      catch { return null; }
+    })(),
     confirmationCost: buildConfirmationCostContext(rows),
     researchLane,
     missedOpportunities: sessionDate ? buildMissedOpportunityContext(db, sessionDate) : null,
@@ -668,6 +706,10 @@ export function buildAiResearchContextOnDb(
     // its absence must not cost the nightly the rest of its context.
     preMove: (() => {
       try { return buildPreMoveNightlyReport(db as any, { sinceMs: null }); }
+      catch { return null; }
+    })(),
+    preMoveV2: (() => {
+      try { return buildPreMoveV2Report(db as any, { sinceMs: null }); }
       catch { return null; }
     })(),
     systemQuality,
@@ -697,6 +739,11 @@ export const NIGHTLY_ANALYSIS_QUESTIONS: readonly string[] = Object.freeze([
   "Are confirmation delays consuming the edge before entry?",
   "Are contract-quality differences repeating across sessions?",
   "Is any strategy or policy version degrading?",
+  // OWNER_SELECTION_STRENGTH_GATE_V1 is the rule actually under test. Until its
+  // scoreboard entered this payload the analysis could describe the owner lane in
+  // detail and say nothing about the experiment running on it.
+  "Has OWNER_SELECTION_STRENGTH_GATE_V1 accumulated any new PROSPECTIVE closed outcomes, and does its shadow arm still separate from its baseline?",
+  "Has PRE_MOVE_DISCOVERY_V2 captured any new callouts, and does any discovery stage yet hold enough closed outcomes to describe?",
   "What evidence is still too weak to act on?",
   "Is a new bounded shadow or paper experiment justified by tonight's evidence?",
 ]);

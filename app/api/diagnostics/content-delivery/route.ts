@@ -28,6 +28,7 @@ export async function GET(req: Request) {
     const { buildContentDeliveryCensus } = await import("@/lib/content/content-delivery-census");
     const { contentEventsEnabled, contentWebhookConfigured } = await import("@/lib/content/content-drafts-runtime");
     const { recapDeliveryDiagnosis } = await import("@/lib/notifications/recap-health");
+    const { buildLaneSeparationReport } = await import("@/lib/notifications/lane-separation");
     const { getDb } = await import("@/lib/db");
     const { schedulerState } = await import("@/lib/scheduler");
 
@@ -41,6 +42,13 @@ export async function GET(req: Request) {
         contentEventsEnabled: contentEventsEnabled(process.env),
         contentWebhookConfigured: contentWebhookConfigured(process.env),
         recapDelivery: recapDeliveryDiagnosis(process.env),
+        // `contentWebhookConfigured` is true the moment DISCORD_WEBHOOK_CONTENT holds a
+        // non-empty string. It cannot tell a dedicated content channel from a second copy
+        // of the recap webhook -- which is the condition that put 1209 drafts into the
+        // owner's recap channel while every diagnostic read CONFIGURED. This compares the
+        // values and reports only whether two lanes resolve to the same destination; no
+        // URL, fragment or hash is returned.
+        laneSeparation: buildLaneSeparationReport(process.env),
       },
       // Null here means the job has not completed since this process started —
       // which is itself the answer when the backlog is not moving.

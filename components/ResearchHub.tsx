@@ -3,6 +3,7 @@
 import Link from "next/link";
 
 const LINKS = [
+  { href: "/research/command-center", title: "Command Center", sub: "Where the forward evidence stands — owner only" },
   { href: "/quant", title: "Quant Lab", sub: "Lane performance and evidence" },
   { href: "/scanner", title: "Scanner", sub: "Live tape and universe" },
   { href: "/intelligence", title: "Strategy Lab", sub: "Opportunity cases and theses" },
