@@ -270,6 +270,29 @@ async function refreshDiscovery(nowMs: number) {
     if (broad?.available && Array.isArray(broad.quotes)) {
       broadCount = broad.quotes.length;
       source = "broad+curated";
+      // INDEPENDENT MARKET-STATE OBSERVATION, from the snapshot just paid for.
+      //
+      // This runs on the RAW whole-market rows, BEFORE the broad-runner floor
+      // below drops everything over $50 — which is how MRNA (+133% at $147) and
+      // MRNX (+264% at $114) came to leave no trace anywhere in the system on
+      // 2026-08-19 while MRNY, the leveraged ETF on one of them, was scanned.
+      //
+      // It records what the MARKET did. It CANNOT promote a symbol into the
+      // scanner, emit a callout, open a position or touch a gate — the promotion
+      // set below is built from `bySym`, which this never writes to. Fully
+      // isolated: a throw here cannot escape and cannot affect discovery.
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { recordMarketMoverCycle } = require("@/lib/research/discovery/mover-recorder");
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { tradingDay, marketSession } = require("@/lib/trading-session");
+        recordMarketMoverCycle(broad.quotes, {
+          nowMs,
+          sessionDate: tradingDay(nowMs),
+          sessionPhase: marketSession(nowMs),
+          getDb: () => require("@/lib/db").getDb(), // eslint-disable-line @typescript-eslint/no-require-imports
+        });
+      } catch { /* observation must never affect the scanner */ }
       for (const q of broad.quotes) {
         if (!q?.symbol) continue;
         const elig = broadStockEligibility(
