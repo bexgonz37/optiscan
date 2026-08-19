@@ -279,8 +279,8 @@ CREATE TABLE IF NOT EXISTS setup_episodes (
   source_lane TEXT, entry_convention TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_setup_episodes_sym ON setup_episodes(symbol,t0_ms);
-CREATE INDEX IF NOT EXISTS idx_setup_episodes_v2_population ON setup_episodes(episode_version,population,t0_ms);
-CREATE INDEX IF NOT EXISTS idx_setup_episodes_v2_case ON setup_episodes(opportunity_case_id);
+-- V2 indexes are intentionally created by ensureCanonicalEvidenceColumnsOnDb
+-- after legacy production tables receive their additive V2 columns.
 
 CREATE TABLE IF NOT EXISTS episode_labels (
   id INTEGER PRIMARY KEY AUTOINCREMENT, episode_key TEXT NOT NULL, horizon TEXT NOT NULL,

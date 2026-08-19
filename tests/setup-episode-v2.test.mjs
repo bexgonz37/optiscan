@@ -64,6 +64,29 @@ test("canonical Phase-1 tables are deterministic schema-readiness requirements",
   }
 });
 
+test("production-shaped legacy setup_episodes upgrades columns before V2 indexes", () => {
+  const d = new Database(":memory:");
+  d.exec(`CREATE TABLE setup_episodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    episode_key TEXT NOT NULL UNIQUE,
+    source TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    t0_ms INTEGER NOT NULL,
+    trading_day TEXT NOT NULL,
+    session TEXT NOT NULL,
+    feature_schema_version INTEGER NOT NULL,
+    max_feature_as_of_ms INTEGER NOT NULL,
+    created_at_ms INTEGER NOT NULL
+  )`);
+  assert.doesNotThrow(() => ensureEnterpriseSchemaOnDb(d));
+  const columns = new Set(d.prepare("PRAGMA table_info(setup_episodes)").all().map((r) => r.name));
+  assert.ok(columns.has("episode_version"));
+  assert.ok(columns.has("population"));
+  const indexes = new Set(d.prepare("PRAGMA index_list(setup_episodes)").all().map((r) => r.name));
+  assert.ok(indexes.has("idx_setup_episodes_v2_population"));
+  assert.ok(indexes.has("idx_setup_episodes_v2_case"));
+});
+
 test("episode identity is deterministic and collision-resistant enough for durable joins", () => {
   const material = {
     source: "live_scanner", symbol: "MRNA", t0Ms: T0, candidateId: 1,
