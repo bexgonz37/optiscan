@@ -257,18 +257,28 @@ function shadowLaneMetrics(db: QuantDb, wouldSend: boolean, lane: QuantLane, lab
 export function buildQuantLaneReport(db: QuantDb, env: NodeJS.ProcessEnv = process.env): {
   generatedAtMs: number;
   minSample: number;
+  laneTimingsMs: Record<string, number>;
   lanes: LaneMetricBundle[];
 } {
+  // PHASE TIMING (2026-08-18 audit). This builder is 15s of the pipeline-health
+  // route's 22s, and which lane owns that was not observable from outside. Two
+  // Date.now() reads per lane; no metric any lane computes is affected.
+  const laneTimingsMs: Record<string, number> = {};
+  const timed = <T,>(name: string, fn: () => T): T => {
+    const t0 = Date.now();
+    try { return fn(); } finally { laneTimingsMs[name] = Date.now() - t0; }
+  };
   return {
     generatedAtMs: Date.now(),
     minSample: MIN_SAMPLE,
+    laneTimingsMs,
     lanes: [
-      paperLaneMetrics(db, "DELIVERED_ALERT_PAPER", "delivered_alert_paper", "Real delivered subscriber"),
-      paperLaneMetrics(db, "OWNER_VALIDATION_PAPER", "owner_validation_paper", "Owner validation (private callouts)", true),
-      shadowLaneMetrics(db, true, "shadow_would_send", "Shadow would-send"),
-      shadowLaneMetrics(db, false, "shadow_would_block", "Shadow would-block"),
-      paperLaneMetrics(db, "RESEARCH_ONLY_PAPER", "research_only_paper", "Research-only paper"),
-      paperLaneMetrics(db, "ZERO_DTE_RESEARCH_PAPER", "zero_dte_research_paper", "0DTE research paper"),
+      timed("delivered_alert_paper", () => paperLaneMetrics(db, "DELIVERED_ALERT_PAPER", "delivered_alert_paper", "Real delivered subscriber")),
+      timed("owner_validation_paper", () => paperLaneMetrics(db, "OWNER_VALIDATION_PAPER", "owner_validation_paper", "Owner validation (private callouts)", true)),
+      timed("shadow_would_send", () => shadowLaneMetrics(db, true, "shadow_would_send", "Shadow would-send")),
+      timed("shadow_would_block", () => shadowLaneMetrics(db, false, "shadow_would_block", "Shadow would-block")),
+      timed("research_only_paper", () => paperLaneMetrics(db, "RESEARCH_ONLY_PAPER", "research_only_paper", "Research-only paper")),
+      timed("zero_dte_research_paper", () => paperLaneMetrics(db, "ZERO_DTE_RESEARCH_PAPER", "zero_dte_research_paper", "0DTE research paper")),
       {
         lane: "historical_replay",
         label: "Historical replay",
