@@ -30,7 +30,9 @@ export default function IntelligencePage() {
     setLoading(true);
     setErrorTitle(null);
     setErrorDetail(null);
-    const result = await apiFetchJson<CasesResponse>("/api/opportunity-cases?limit=40");
+    // This table renders six scalar fields. Without `view=summary` the route ships
+    // forty complete case documents -- 2.3MB of evidence JSON -- to fill them.
+    const result = await apiFetchJson<CasesResponse>("/api/opportunity-cases?limit=40&view=summary");
     if (!result.ok) {
       const { title, detail } = describeApiLoadFailure(result);
       setErrorTitle(title);
