@@ -69,7 +69,10 @@ export const EXPERIMENT_MODE = "SHADOW_ONLY" as const;
  * is not answerable under the current budget and is declared NOT_STARTED, with
  * the prerequisite named.
  */
-export type MeasurementScope = "COVERAGE" | "EXECUTABLE";
+export type MeasurementScope =
+  | "COVERAGE"
+  | "EXECUTABLE"
+  | "EXECUTABLE_FROM_SHARED_EVIDENCE";
 
 export interface ScopeDeclaration {
   scope: MeasurementScope;
@@ -115,6 +118,48 @@ export const MEASUREMENT_SCOPES: readonly ScopeDeclaration[] = Object.freeze([
       + "refusals. A sample drawn only from the minutes a starved lane happened to win is biased, "
       + "and a biased sample is worse than no sample because it looks like evidence. "
       + "PREREQUISITE: provider-budget headroom that does not come from starving an existing lane.",
+  }),
+  /**
+   * The half of EXECUTABLE that turned out not to need the budget at all.
+   *
+   * The blocker above is real, and it describes going out and quoting movers we
+   * have NOT quoted. It does not describe the movers we DID quote — for those,
+   * every EXECUTABLE field already has a durable source that was paid for once
+   * and written to disk: `options_research_observations` (NBBO, spread, delta,
+   * OI, volume, DTE, OCC), `asymmetry_outcomes` (entry ask, MFE, MAE, the hit
+   * ladder and its timings), `contract_funnel_evidence` (why nothing was
+   * selected). Joining rows costs nothing and starves no one.
+   *
+   * It is a SEPARATE scope rather than an edit to EXECUTABLE because the two
+   * answer different questions and one is strictly narrower. This one measures
+   * the QUOTED subset and reports the size of what it excludes on every run;
+   * EXECUTABLE would measure every discovered mover, and remains not started for
+   * exactly the reason stated above. Collapsing them would let a partial answer
+   * be read as the whole one, which is the failure mode the scope split exists
+   * to prevent.
+   */
+  Object.freeze({
+    scope: "EXECUTABLE_FROM_SHARED_EVIDENCE" as const,
+    started: true,
+    measures: Object.freeze([
+      "quotedFirstExecutableNbboAtMs",
+      "quotedRepresentativeOcc",
+      "quotedEntryMark",
+      "quotedSpreadPct",
+      "quotedDelta",
+      "quotedOpenInterest",
+      "quotedVolume",
+      "quotedDte",
+      "quotedTimeToFirstQuoteMinutes",
+      "quotedAttainablePct10", "quotedAttainablePct25", "quotedAttainablePct50",
+      "quotedAttainablePct100", "quotedAttainablePct200",
+      "quotedAttainableMfePct",
+      "quotedAttainableMaePct",
+      "quotedTimeToMilestoneMs",
+      "quotedNoContractReason",
+      "unmeasuredFraction",
+    ]),
+    blockedBy: null,
   }),
 ]);
 

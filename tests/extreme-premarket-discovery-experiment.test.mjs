@@ -86,7 +86,12 @@ test("it has zero live authority, by declaration and by mode", () => {
   assert.equal(a.mode, "SHADOW_ONLY");
   assert.equal(EXPERIMENT_MODE, "SHADOW_ONLY");
   assert.equal(a.productionBehaviorChanged, false);
-  assert.deepEqual(a.scopesStarted, ["COVERAGE"]);
+  // COVERAGE and the retrospective EXECUTABLE_FROM_SHARED_EVIDENCE are started;
+  // both are answerable from rows already paid for. The PROSPECTIVE EXECUTABLE
+  // scope — going and quoting movers nobody quoted — stays blocked on provider
+  // budget, and the split is what stops the narrow answer being read as the
+  // whole one.
+  assert.deepEqual(a.scopesStarted, ["COVERAGE", "EXECUTABLE_FROM_SHARED_EVIDENCE"]);
   assert.deepEqual(a.scopesBlocked, ["EXECUTABLE"]);
   // The registry has no vocabulary for approval, and this must not introduce one.
   assert.ok(!JSON.stringify(EXTREME_PREMARKET_DISCOVERY_V1).includes("SUBSCRIBER_APPROVED"));
