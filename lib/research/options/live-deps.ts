@@ -358,6 +358,25 @@ export function buildLiveOptionsDeps(): OptionsMonitorDeps {
         .filter((q: any) => tier2Eligible({ symbol: q.symbol, price: q.price, dayDollarVolume: (q.price ?? 0) * (q.volume ?? 0) }).eligible)
         .map((q: any) => String(q.symbol).toUpperCase());
     },
+    /**
+     * The same eligible universe, carrying the day-move the snapshot already
+     * reported, so the cycle can be pointed at what is moving.
+     *
+     * COSTS NOTHING EXTRA. `marketSnapshot` is the shared TTL-cached whole-market
+     * call the scanner and the monitor already share; this reads two more fields
+     * off the response that was already paid for.
+     */
+    tier2Candidates: async () => {
+      const nowMs = Date.now();
+      const quotes = await marketSnapshot(nowMs);
+      return quotes
+        .filter((q: any) => tier2Eligible({ symbol: q.symbol, price: q.price, dayDollarVolume: (q.price ?? 0) * (q.volume ?? 0) }).eligible)
+        .map((q: any) => ({
+          symbol: String(q.symbol).toUpperCase(),
+          changePercent: q.changePercent ?? null,
+          dayDollarVolume: (q.price ?? 0) * (q.volume ?? 0),
+        }));
+    },
   };
 }
 

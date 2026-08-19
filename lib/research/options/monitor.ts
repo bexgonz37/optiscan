@@ -18,6 +18,7 @@ import { computeOptionsFeatures, featuresToUnderlying, type Bar, type FeatureCon
 import { summarizeChainFeatures, chainFeaturesToActivity, type OptionContract } from "./chain-features.ts";
 import { assertSubscriberScanAllowed } from "../../market-session-guard.ts";
 import { bearishPipelineEnabled, latestPendingBearishEscalationForSymbol } from "./bearish-authority.ts";
+import { selectTier2Cycle, tier2PriorityConfig, type Tier2Candidate } from "./tier2-priority.ts";
 import {
   classifySessionRangePosition,
   SESSION_RANGE_POSITION_SEMANTICS,
@@ -50,6 +51,15 @@ export interface OptionsMonitorDeps {
   getBars?: (symbol: string) => Promise<Bar[]>;
   levelContext?: (symbol: string) => Partial<FeatureContext> | null;
   tier2Universe?: () => Promise<string[]> | string[];
+  /**
+   * The Tier-2 eligible universe WITH the day-move each symbol is showing, so
+   * the cycle can be pointed at what is actually moving instead of at whatever
+   * order the provider happened to return.
+   *
+   * Preferred over `tier2Universe` when present. Absent means the old
+   * provider-order behaviour, which is what every existing test injects.
+   */
+  tier2Candidates?: () => Promise<Tier2Candidate[]> | Tier2Candidate[];
   getDb?: () => any;
   now?: () => number;
   session?: () => Session;
@@ -108,6 +118,13 @@ interface MonitorState {
     lastTier0CycleMs: number | null; lastTier1CycleMs: number | null; lastTier2CycleMs: number | null; latestCandidateMs: number | null;
     cycleDurations: number[]; detectionToDecision: number[]; rvolSamples: number[]; vwapDistSamples: number[]; compressionSamples: number[]; fractionMoveSamples: number[];
   };
+  /** Round-robin position in the Tier-2 rotation band. Survives cycles, not restarts. */
+  tier2Cursor: number;
+  /** What the last Tier-2 cycle chose and why. Observability only. */
+  lastTier2Selection: {
+    atMs: number; universeSize: number; priority: string[];
+    rotated: number; deferred: number; cyclesForFullCoverage: number;
+  } | null;
 }
 type G = typeof globalThis & { __optiscanOptionsMonitor?: MonitorState };
 function state(): MonitorState {
@@ -116,6 +133,7 @@ function state(): MonitorState {
     running: false, timers: [], cooldownSymbol: new Map(), cooldownStrategy: new Map(), inFlight: new Set(),
     breaker: { state: "closed", failures: 0, openUntil: 0 }, budget: { windowStart: 0, used: 0 }, budgetTier0: { windowStart: 0, used: 0 },
     metrics: { symbolsScanned: 0, candidatesCreated: 0, candidatesRejected: 0, chainsFetched: 0, providerUnderlying: 0, providerBars: 0, providerChain: 0, providerDetailed: 0, providerFailures: 0, throttles: 0, cooldownSkips: 0, stage1Pass: 0, stage15Enrich: 0, stage15Stale: 0, stage15Forming: 0, stage2Chain: 0, optionsActivityEscalations: 0, tier0Scanned: 0, tier0Candidates: 0, tier0BudgetSkips: 0, phaseEarly: 0, phaseDuring: 0, phaseLate: 0, lastTier0CycleMs: null, lastTier1CycleMs: null, lastTier2CycleMs: null, latestCandidateMs: null, cycleDurations: [], detectionToDecision: [], rvolSamples: [], vwapDistSamples: [], compressionSamples: [], fractionMoveSamples: [] },
+    tier2Cursor: 0, lastTier2Selection: null,
   });
 }
 
@@ -364,6 +382,12 @@ export function optionsMonitorMetrics(): Record<string, unknown> {
   return {
     running: s.running, breaker: s.breaker.state, budgetUsed: s.budget.used, budgetTier0Used: s.budgetTier0.used, queueInFlight: s.inFlight.size,
     sessionState: sessionState(Date.now()),
+    // WHICH symbols the last Tier-2 cycle chose, and how far the rotation has
+    // travelled. Without this the only way to answer "was the day's biggest
+    // mover ever looked at" is to infer it from the absence of a record, which
+    // is exactly how the 2026-08-19 gap stayed invisible for a full session.
+    tier2Selection: s.lastTier2Selection,
+    tier2Cursor: s.tier2Cursor,
     tier0: { scanned: m.tier0Scanned, candidates: m.tier0Candidates, budgetSkips: m.tier0BudgetSkips, lastCycleMs: m.lastTier0CycleMs },
     symbolsScanned: m.symbolsScanned, candidatesCreated: m.candidatesCreated, candidatesRejected: m.candidatesRejected, chainsFetched: m.chainsFetched,
     stages: { stage1Pass: m.stage1Pass, stage15Enrich: m.stage15Enrich, stage15Stale: m.stage15Stale, stage15Forming: m.stage15Forming, stage2Chain: m.stage2Chain, stage3Detailed: m.providerDetailed, optionsActivityEscalations: m.optionsActivityEscalations },
@@ -420,7 +444,9 @@ export function startOptionsMonitor(deps: OptionsMonitorDeps, env: NodeJS.Proces
   }, sessionCadence(cfg, 1, sessionOf()));
   const t2 = setInterval(async () => {
     if (t2Busy) return; t2Busy = true;
-    try { const uni = (await (deps.tier2Universe?.() ?? [])) as string[]; await runOptionsMonitorCycle(2, uni.filter((x) => !tier0Set.has(x.toUpperCase())).slice(0, cfg.maxSymbolsPerTier2Cycle), deps, env, cfg); } catch { /* isolated */ } finally { t2Busy = false; }
+    try {
+      await runOptionsMonitorCycle(2, await selectTier2Symbols(deps, tier0Set, env, cfg), deps, env, cfg);
+    } catch { /* isolated */ } finally { t2Busy = false; }
   }, sessionCadence(cfg, 2, sessionOf()));
   if (typeof (t1 as any).unref === "function") { (t0Timer as any).unref(); (t1 as any).unref(); (t2 as any).unref(); }
   s.timers = [t0Timer, t1, t2];
@@ -428,6 +454,45 @@ export function startOptionsMonitor(deps: OptionsMonitorDeps, env: NodeJS.Proces
   process.once("SIGTERM", stop); process.once("SIGINT", stop);
   return { started: true, reason: "started" };
 }
+/**
+ * The symbols one Tier-2 cycle observes.
+ *
+ * The budget is UNCHANGED — `maxSymbolsPerTier2Cycle` symbols, as before. What
+ * changed is that they are chosen rather than taken off the front of an
+ * arbitrarily ordered list. See `tier2-priority.ts` for the measurement.
+ *
+ * Falls back to the old provider-order slice when no ranked source is wired
+ * (every existing test) or when `OPTIONS_TIER2_PRIORITY=0`.
+ */
+async function selectTier2Symbols(
+  deps: OptionsMonitorDeps,
+  tier0Set: Set<string>,
+  env: NodeJS.ProcessEnv,
+  cfg: OptionsMonitorConfig,
+): Promise<string[]> {
+  const slots = cfg.maxSymbolsPerTier2Cycle;
+  const notTier0 = (sym: string) => !tier0Set.has(sym.toUpperCase());
+
+  if (deps.tier2Candidates && env.OPTIONS_TIER2_PRIORITY !== "0") {
+    const candidates = ((await deps.tier2Candidates()) ?? []).filter((c) => c?.symbol && notTier0(c.symbol));
+    const s = state();
+    const sel = selectTier2Cycle(candidates, s.tier2Cursor ?? 0, slots, tier2PriorityConfig(env));
+    s.tier2Cursor = sel.nextCursor;
+    s.lastTier2Selection = {
+      atMs: Date.now(),
+      universeSize: candidates.length,
+      priority: sel.priority,
+      rotated: sel.rotated.length,
+      deferred: sel.deferred,
+      cyclesForFullCoverage: sel.cyclesForFullCoverage,
+    };
+    return sel.selected;
+  }
+
+  const uni = (await (deps.tier2Universe?.() ?? [])) as string[];
+  return uni.filter(notTier0).slice(0, slots);
+}
+
 export function stopOptionsMonitor(): void { const s = state(); for (const t of s.timers) clearInterval(t); s.timers = []; s.running = false; }
 /** Inspect the live per-symbol cooldown (for the diagnostic — does not mutate state). */
 export function optionsCooldownRemainingMs(symbol: string, nowMs: number = Date.now()): number { return Math.max(0, (state().cooldownSymbol.get(symbol.toUpperCase()) ?? 0) - nowMs); }
