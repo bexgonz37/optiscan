@@ -256,9 +256,32 @@ test("selection bias is reported on every run, not left to be assumed", () => {
   assert.equal(r.bias.withExecutableEvidence, 1);
   assert.equal(r.bias.notAdmitted, 3);
   assert.equal(r.bias.unmeasuredFraction, 0.75);
+  // The buckets must PARTITION the population. They did not at first —
+  // `withExecutableEvidence` counted ladders while the rest counted states, so
+  // a quoted-but-unmarked symbol fell through every bucket. A bias report whose
+  // own arithmetic does not add up gives the reader no reason to trust its
+  // fraction either.
+  const summed = r.bias.withExecutableEvidence + r.bias.quotedWithoutMarks
+    + r.bias.quotedButNoContract + r.bias.admittedNotQuoted + r.bias.notAdmitted;
+  assert.equal(summed, r.bias.moversConsidered, "the bias buckets do not partition the population");
   assert.ok(r.limitations.some((l) => /75%/.test(l)),
     "the excluded share must be stated in plain English, not only as a number");
   assert.ok(r.limitations.some((l) => /cannot describe/i.test(l)));
+});
+
+test("a quoted mover with no marks is its own bucket, not a silent gap", () => {
+  const db = makeDb();
+  addMover(db, "TWST", { peakMovePct: 19 });
+  addQuote(db, "TWST", { occ: "O:TWST_C" });   // quoted, but never marked
+  addMover(db, "MRNA");
+  addQuote(db, "MRNA");
+  addOutcome(db, "O:MRNA260821C00120000");
+  const r = measureExecutableOpportunityOnDb(db, { sessionDate: SESSION });
+  assert.equal(r.bias.withExecutableEvidence, 1);
+  assert.equal(r.bias.quotedWithoutMarks, 1);
+  const summed = r.bias.withExecutableEvidence + r.bias.quotedWithoutMarks
+    + r.bias.quotedButNoContract + r.bias.admittedNotQuoted + r.bias.notAdmitted;
+  assert.equal(summed, r.bias.moversConsidered);
 });
 
 test("no movers and no evidence are distinguishable states", () => {

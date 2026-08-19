@@ -144,9 +144,21 @@ export interface ExecutableMeasurement {
   note: string;
 }
 
+/**
+ * The buckets PARTITION the population: they sum to `moversConsidered`.
+ *
+ * The first version did not. `withExecutableEvidence` counted rows with a
+ * LADDER while the others counted STATES, so a symbol that was quoted but never
+ * marked fell through every bucket and 8 of 40 movers were simply unaccounted
+ * for. A reader checking the arithmetic of a bias report and finding it does not
+ * add up has no reason to trust the fraction either.
+ */
 export interface SelectionBias {
   moversConsidered: number;
+  /** Quoted AND marked — the only rows the ladder can describe. */
   withExecutableEvidence: number;
+  /** Quoted, but no marks were taken, so there is no ladder to report. */
+  quotedWithoutMarks: number;
   quotedButNoContract: number;
   admittedNotQuoted: number;
   notAdmitted: number;
@@ -464,6 +476,9 @@ export function measureExecutableOpportunityOnDb(
   const bias: SelectionBias = {
     moversConsidered: measurements.length,
     withExecutableEvidence: withEvidence.length,
+    quotedWithoutMarks: measurements.filter(
+      (m) => m.state === "EXECUTABLE_EVIDENCE_PRESENT" && m.ladder == null,
+    ).length,
     quotedButNoContract: measurements.filter((m) => m.state === "QUOTED_NO_CONTRACT_SELECTED").length,
     admittedNotQuoted: measurements.filter((m) => m.state === "ADMITTED_NOT_QUOTED").length,
     notAdmitted: measurements.filter((m) => m.state === "NOT_ADMITTED_TO_UNIVERSE").length,
