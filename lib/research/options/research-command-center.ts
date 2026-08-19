@@ -39,6 +39,16 @@ import { listFindingsOnDb } from "./findings-store.ts";
 import { buildPreMoveV2Report } from "./pre-move-v2-report.ts";
 import { OWNER_VALIDATION_PAPER_KIND } from "../../opportunity-case/owner-mirror-identity.ts";
 import { tradingDay } from "../../trading-session.ts";
+import { plainExperiment, plainLabel } from "../plain-language.ts";
+import { measureExecutableOpportunityOnDb } from "./executable-opportunity.ts";
+import {
+  EXTREME_PREMARKET_DISCOVERY_V1,
+  checkExtremePremarketDiscoveryFrozen,
+} from "./experiment-registry.ts";
+import {
+  PRE_MOVE_DISCOVERY_V2_DEFINITION_HASH,
+  PRE_MOVE_DISCOVERY_V2_VERSION,
+} from "./pre-move-discovery-v2.ts";
 
 export const RESEARCH_COMMAND_CENTER_VERSION = "RESEARCH_COMMAND_CENTER_V1";
 
@@ -94,6 +104,13 @@ export interface CurrentEdgePanel {
 
 export interface ShadowExperimentPanel {
   experimentId: string;
+  /**
+   * The same experiment, said in a sentence a person can read. The raw id stays
+   * on the panel for the technical disclosure; it is no longer the heading.
+   */
+  plainTitle: string;
+  plainPurpose: string;
+  plainIfItWorks: string;
   experimentVersion: number;
   mode: string;
   definitionHash: string;
@@ -166,6 +183,46 @@ export interface ReadinessTrajectoryPanel {
   note: string;
 }
 
+export interface MissedOpportunityPanel {
+  sessionDate: string;
+  /** Never observed / observed but not quoted / quoted but rejected / measurable. */
+  byState: Array<{ state: string; plainLabel: string; meaning: string; count: number }>;
+  /** The largest misses, with their state. NEVER with an unmeasured return. */
+  cases: Array<{
+    symbol: string;
+    state: string;
+    plainState: string;
+    peakUnderlyingMovePct: number | null;
+    /** Null unless a real quote exists. An unquoted move has no attainable number. */
+    attainableMfePct: number | null;
+    note: string;
+  }>;
+  /** How much of the discovered population carries no executable evidence. */
+  unmeasuredFraction: number | null;
+  note: string;
+}
+
+export interface ContentQueuePanel {
+  sessionDate: string;
+  awaitingReview: number;
+  approved: number;
+  rejected: number;
+  postedManually: number;
+  /** Highest-worthiness candidates first. */
+  top: Array<{
+    id: string;
+    symbol: string | null;
+    angle: string | null;
+    plainCategory: string;
+    worthiness: number | null;
+    whyInteresting: string;
+    draftText: string;
+  }>;
+  /** Always true. Nothing in this system posts anything anywhere. */
+  manualPostOnly: true;
+  note: string;
+}
+
 export interface ResearchCommandCenter {
   version: typeof RESEARCH_COMMAND_CENTER_VERSION;
   generatedAtMs: number;
@@ -173,6 +230,14 @@ export interface ResearchCommandCenter {
   currentEdge: CurrentEdgePanel;
   shadowExperiments: ShadowExperimentPanel[];
   learned: LearnedPanel;
+  /**
+   * The misses, split by WHY they were missed. The split is the whole point: a
+   * symbol nobody observed and a symbol the rules correctly refused are opposite
+   * findings, and collapsing them into "missed" makes both unreadable.
+   */
+  missedOpportunities: MissedOpportunityPanel;
+  /** The content review queue, summarised. The app is the content inbox. */
+  contentQueue: ContentQueuePanel;
   riskResearch: RiskResearchPanel;
   earlyDiscovery: ReturnType<typeof buildPreMoveV2Report>;
   /** V1's headline number, carried ONLY with the reason it cannot be read as earliness. */
@@ -241,6 +306,191 @@ export function buildTodayPanel(rows: readonly OwnerLearningRow[], nowMs: number
 }
 
 /** Build the whole panel set. Every section fails independently. */
+/**
+ * The two frozen experiments the page could not show.
+ *
+ * They share the shadow-panel shape so the owner reads three cards with the same
+ * columns rather than three unrelated widgets — the comparison "which of these
+ * has enough evidence yet" is only possible if they are presented the same way.
+ *
+ * Where a counter genuinely does not exist for an experiment it is reported as 0
+ * against its requirement rather than omitted. A missing number reads as "fine",
+ * and "we have not started measuring this" is the single most important thing
+ * these cards currently have to say.
+ */
+function buildOtherExperimentPanels(db: OwnerLearningDb, nowMs: number): ShadowExperimentPanel[] {
+  const emptyArm = { profitFactor: null, expectancyPct: null, medianReturnPct: null, winRate: null, sampleSize: 0 };
+  const panels: ShadowExperimentPanel[] = [];
+
+  try {
+    const v2: any = buildPreMoveV2Report(db as any, { sinceMs: null });
+    const captured = Number(v2?.coverage?.capturedRows ?? 0) || 0;
+    const sessions = Number(v2?.coverage?.independentSessions ?? v2?.independentSessions ?? 0) || 0;
+    const p = plainExperiment("PRE_MOVE_DISCOVERY_V2");
+    panels.push({
+      experimentId: "PRE_MOVE_DISCOVERY_V2",
+      plainTitle: p.title, plainPurpose: p.purpose, plainIfItWorks: p.ifItWorks,
+      experimentVersion: Number(PRE_MOVE_DISCOVERY_V2_VERSION) || 2,
+      mode: "SHADOW_ONLY",
+      definitionHash: PRE_MOVE_DISCOVERY_V2_DEFINITION_HASH,
+      definitionFrozen: true,
+      prospectiveStartDate: "2026-08-19",
+      status: String(v2?.verdict ?? "INSUFFICIENT_EVIDENCE"),
+      statusReason: String(v2?.verdictReason ?? "Capture has only just started."),
+      prospectiveClosedOutcomes: Number(v2?.closedOutcomes ?? 0) || 0,
+      requiredClosedOutcomes: 20,
+      independentSessions: sessions,
+      requiredIndependentSessions: 5,
+      baseline: emptyArm,
+      shadow: { ...emptyArm, sampleSize: captured },
+      winnerRetention: null, lossRejection: null, winnersRejected: null,
+      profitFactorExBest: null,
+      tailRobustness:
+        "not measurable yet — this experiment measures WHEN a callout arrived, not what it returned",
+      affectsLiveCallouts: false,
+      authority: "SHADOW_ONLY. Reads persisted rows. No gate, ranking weight, target, stop or exit consults it.",
+      limitations: [
+        "Rows written before the V2 capture site went live carry no alert-instant snapshot and "
+        + "are excluded rather than counted, so nothing is back-filled.",
+      ],
+    });
+  } catch { /* one unavailable experiment must not blank the others */ }
+
+  try {
+    const frozen = checkExtremePremarketDiscoveryFrozen();
+    const exec = measureExecutableOpportunityOnDb(db as any, { sessionDate: tradingDay(nowMs) });
+    const p = plainExperiment("EXTREME_PREMARKET_DISCOVERY_V1");
+    panels.push({
+      experimentId: "EXTREME_PREMARKET_DISCOVERY_V1",
+      plainTitle: p.title, plainPurpose: p.purpose, plainIfItWorks: p.ifItWorks,
+      experimentVersion: Number(EXTREME_PREMARKET_DISCOVERY_V1.experimentVersion) || 1,
+      mode: "SHADOW_ONLY",
+      definitionHash: frozen.actual,
+      definitionFrozen: frozen.frozen,
+      prospectiveStartDate: EXTREME_PREMARKET_DISCOVERY_V1.prospectiveStartDate,
+      status: exec.evidenceState === "MEASURABLE" ? "COLLECTING_DATA" : "INSUFFICIENT_EVIDENCE",
+      statusReason:
+        `${exec.bias.withExecutableEvidence} of ${exec.bias.moversConsidered} discovered movers carry `
+        + "an executable quote today. Going out and quoting movers we have NOT quoted is a separate, "
+        + "unstarted scope that needs provider budget.",
+      prospectiveClosedOutcomes: exec.bias.withExecutableEvidence,
+      requiredClosedOutcomes: 20,
+      independentSessions: exec.bias.withExecutableEvidence > 0 ? 1 : 0,
+      requiredIndependentSessions: 5,
+      baseline: emptyArm,
+      shadow: { ...emptyArm, sampleSize: exec.bias.withExecutableEvidence },
+      winnerRetention: null, lossRejection: null, winnersRejected: null,
+      profitFactorExBest: null,
+      tailRobustness: "not measurable yet",
+      affectsLiveCallouts: false,
+      authority:
+        "SHADOW_ONLY. Observation rows only. It cannot promote a symbol into the scanner, emit a "
+        + "callout, open a position or reach Discord.",
+      limitations: exec.limitations,
+    });
+  } catch { /* isolated */ }
+
+  return panels;
+}
+
+/**
+ * The misses, and — the part that matters — WHY each one was missed.
+ *
+ * Reads the executable measurement, which carries the invariant that an unquoted
+ * move has a NULL attainable return rather than a zero. That invariant is what
+ * stops this panel becoming a list of enormous numbers nobody could have had.
+ */
+function buildMissedOpportunityPanel(db: OwnerLearningDb, nowMs: number): MissedOpportunityPanel {
+  const sessionDate = tradingDay(nowMs);
+  const exec = measureExecutableOpportunityOnDb(db as any, { sessionDate, minPeakAbsMovePct: 10 });
+  const counts = new Map<string, number>();
+  for (const m of exec.measurements) counts.set(m.state, (counts.get(m.state) ?? 0) + 1);
+  return {
+    sessionDate,
+    byState: [...counts.entries()]
+      .map(([state, count]) => {
+        const p = plainLabel(state);
+        return { state, plainLabel: p.label, meaning: p.meaning, count };
+      })
+      .sort((a, b) => b.count - a.count || a.state.localeCompare(b.state)),
+    cases: exec.measurements
+      .slice()
+      .sort((a, b) => (b.peakUnderlyingMovePct ?? 0) - (a.peakUnderlyingMovePct ?? 0))
+      .slice(0, 12)
+      .map((m) => ({
+        symbol: m.symbol,
+        state: m.state,
+        plainState: plainLabel(m.state).label,
+        peakUnderlyingMovePct: m.peakUnderlyingMovePct,
+        // The one field that must never be filled in from the underlying's move.
+        attainableMfePct: m.ladder?.mfePct ?? null,
+        note: m.note,
+      })),
+    unmeasuredFraction: exec.bias.unmeasuredFraction,
+    note:
+      "A big move in the stock is not a missed option trade. Where no option was ever quoted the "
+      + "attainable return is blank, not zero, because nothing was ever priced.",
+  };
+}
+
+/** The content review queue. The private app is the inbox; Discord only notifies. */
+function buildContentQueuePanel(db: OwnerLearningDb, nowMs: number): ContentQueuePanel {
+  const sessionDate = tradingDay(nowMs);
+  const empty: ContentQueuePanel = {
+    sessionDate, awaitingReview: 0, approved: 0, rejected: 0, postedManually: 0, top: [],
+    manualPostOnly: true,
+    note: "Nothing is waiting. On a routine day zero is the correct number.",
+  };
+  const q = (sql: string, ...args: any[]): any[] => {
+    try { return (db as any).prepare(sql).all(...args) as any[]; } catch { return []; }
+  };
+  const counts = q(
+    `SELECT
+        SUM(CASE WHEN approved_at_ms IS NULL AND rejected_at_ms IS NULL THEN 1 ELSE 0 END) AS awaiting,
+        SUM(CASE WHEN approved_at_ms IS NOT NULL THEN 1 ELSE 0 END) AS approved,
+        SUM(CASE WHEN rejected_at_ms IS NOT NULL THEN 1 ELSE 0 END) AS rejected,
+        SUM(CASE WHEN manually_posted_at_ms IS NOT NULL THEN 1 ELSE 0 END) AS posted
+       FROM content_drafts WHERE trading_session_date = ?`,
+    sessionDate,
+  )[0];
+  if (!counts) return empty;
+  const top = q(
+    `SELECT d.id AS id, e.symbol AS symbol, d.category AS category, d.draft_text AS draft_text,
+            d.content_angle AS angle, d.content_worthiness AS worthiness
+       FROM content_drafts d
+       LEFT JOIN opportunity_content_events e ON e.id = d.content_event_id
+      WHERE d.trading_session_date = ? AND d.approved_at_ms IS NULL AND d.rejected_at_ms IS NULL
+        AND COALESCE(d.is_alternate, 0) = 0
+      ORDER BY d.content_worthiness DESC, d.created_at_ms DESC
+      LIMIT 8`,
+    sessionDate,
+  );
+  const awaiting = Number(counts.awaiting) || 0;
+  return {
+    sessionDate,
+    awaitingReview: awaiting,
+    approved: Number(counts.approved) || 0,
+    rejected: Number(counts.rejected) || 0,
+    postedManually: Number(counts.posted) || 0,
+    top: top.map((r) => {
+      const cat = plainLabel(String(r.category ?? ""));
+      return {
+        id: String(r.id),
+        symbol: r.symbol == null ? null : String(r.symbol),
+        angle: r.angle == null ? null : String(r.angle),
+        plainCategory: cat.label,
+        worthiness: r.worthiness == null ? null : Number(r.worthiness),
+        whyInteresting: cat.meaning || `A ${cat.label.toLowerCase()} worth a second look.`,
+        draftText: String(r.draft_text ?? ""),
+      };
+    }),
+    manualPostOnly: true,
+    note: awaiting === 0
+      ? "Nothing is waiting. On a routine day zero is the correct number."
+      : "Reviewed and posted by you. Nothing here is ever posted automatically.",
+  };
+}
+
 export function buildResearchCommandCenterOnDb(
   db: OwnerLearningDb,
   opts: { nowMs?: number } = {},
@@ -330,8 +580,12 @@ export function buildResearchCommandCenterOnDb(
       winRate: a.winRate,
       sampleSize: a.n,
     });
+    const plainSel = plainExperiment(sb.experimentId);
     return [{
       experimentId: sb.experimentId,
+      plainTitle: plainSel.title,
+      plainPurpose: plainSel.purpose,
+      plainIfItWorks: plainSel.ifItWorks,
       experimentVersion: sb.experimentVersion,
       mode: sb.mode,
       definitionHash: sb.definitionFrozen.actual,
@@ -361,6 +615,15 @@ export function buildResearchCommandCenterOnDb(
       limitations: sb.limitations,
     }];
   }, []);
+
+  // The other two frozen experiments were REAL and INVISIBLE. PRE_MOVE_V2 was
+  // rendered as an unrelated "early discovery" card with no sample counters, and
+  // EXTREME_PREMARKET_DISCOVERY_V1 reached no screen at all. An experiment the
+  // owner cannot see the progress of is one they cannot decide about, which is
+  // the only thing a shadow experiment is for.
+  for (const panel of safe<ShadowExperimentPanel[]>("otherExperiments", () => buildOtherExperimentPanels(db, nowMs), [])) {
+    shadowExperiments.push(panel);
+  }
 
   // ── what OptiScan learned ─────────────────────────────────────────────────
   const learned = safe<LearnedPanel>("findings", () => {
@@ -596,6 +859,15 @@ export function buildResearchCommandCenterOnDb(
     currentEdge,
     shadowExperiments,
     learned,
+    missedOpportunities: safe("missedOpportunities", () => buildMissedOpportunityPanel(db, nowMs), {
+      sessionDate: tradingDay(nowMs), byState: [], cases: [], unmeasuredFraction: null,
+      note: "Coverage evidence is unavailable for this session.",
+    }),
+    contentQueue: safe("contentQueue", () => buildContentQueuePanel(db, nowMs), {
+      sessionDate: tradingDay(nowMs), awaitingReview: 0, approved: 0, rejected: 0,
+      postedManually: 0, top: [], manualPostOnly: true as const,
+      note: "The content queue is unavailable.",
+    }),
     riskResearch,
     earlyDiscovery,
     readiness,

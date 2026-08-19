@@ -36,6 +36,7 @@ import {
   LoadingState, ErrorState, DetailsDisclosure,
 } from "@/components/ui/Shell";
 import { InfoTip } from "@/components/InfoTip";
+import { plainLabel } from "@/lib/research/plain-language";
 import { apiFetchJson } from "@/lib/client-auth";
 import { authHeaders } from "@/lib/client-auth";
 
@@ -60,7 +61,8 @@ type Panels = {
     limitations: string[];
   };
   shadowExperiments: Array<{
-    experimentId: string; experimentVersion: number; mode: string;
+    experimentId: string; plainTitle: string; plainPurpose: string; plainIfItWorks: string;
+    experimentVersion: number; mode: string; authority: string;
     definitionHash: string; definitionFrozen: boolean; prospectiveStartDate: string;
     status: string; statusReason: string;
     prospectiveClosedOutcomes: number; requiredClosedOutcomes: number;
@@ -71,6 +73,26 @@ type Panels = {
     profitFactorExBest: Nullable; tailRobustness: string;
     limitations: string[];
   }>;
+  missedOpportunities: {
+    sessionDate: string;
+    byState: Array<{ state: string; plainLabel: string; meaning: string; count: number }>;
+    cases: Array<{
+      symbol: string; state: string; plainState: string;
+      peakUnderlyingMovePct: Nullable; attainableMfePct: Nullable; note: string;
+    }>;
+    unmeasuredFraction: Nullable;
+    note: string;
+  };
+  contentQueue: {
+    sessionDate: string;
+    awaitingReview: number; approved: number; rejected: number; postedManually: number;
+    top: Array<{
+      id: string; symbol: string | null; angle: string | null; plainCategory: string;
+      worthiness: Nullable; whyInteresting: string; draftText: string;
+    }>;
+    manualPostOnly: boolean;
+    note: string;
+  };
   learned: {
     deterministicFindings: Array<{ key: string; title: string; statement: string; evidenceStrength: string; sampleSize: Nullable; limitations: string[] }>;
     aiFindings: Array<{ key: string; title: string; statement: string; evidenceStrength: string; sampleSize: Nullable; limitations: string[] }>;
@@ -250,13 +272,17 @@ export function ResearchCommandCenter() {
       {/* ── CURRENT EDGE ─────────────────────────────────────────────────── */}
       <Card
         title="Current edge"
-        meta={`${e.population} · ${e.dateRange.from ?? "?"} to ${e.dateRange.to ?? "?"}`}
+        meta={`${plainLabel(e.population).label} · ${e.dateRange.from ?? "?"} to ${e.dateRange.to ?? "?"}`}
         actions={<ExplainButton kind="COHORT" id="CURRENT_EDGE" label="Explain this population" />}
       >
         <div style={{ marginBottom: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <StatusBadge tone={evidenceTone(e.evidenceState)}>REALIZED: {e.evidenceState}</StatusBadge>
-          <StatusBadge tone={evidenceTone(e.excursionEvidenceState)}>EXCURSION: {e.excursionEvidenceState}</StatusBadge>
-          <StatusBadge tone="muted">OWNER VALIDATION / PAPER-TRACKED</StatusBadge>
+          <StatusBadge tone={evidenceTone(e.evidenceState)}>
+            Realized results: {plainLabel(e.evidenceState).label}
+          </StatusBadge>
+          <StatusBadge tone={evidenceTone(e.excursionEvidenceState)}>
+            Peak-move results: {plainLabel(e.excursionEvidenceState).label}
+          </StatusBadge>
+          <StatusBadge tone="muted">Owner-only · paper-tracked · never sent to subscribers</StatusBadge>
         </div>
         <ResponsiveGrid min={150}>
           <Tile metric="sampleSize" label="Sample size" value={String(e.sampleSize)} hint="closed outcomes" />
@@ -302,8 +328,8 @@ export function ResearchCommandCenter() {
       {r.shadowExperiments.map((x) => (
         <Card
           key={x.experimentId}
-          title={`${x.experimentId} v${x.experimentVersion}`}
-          meta={`${x.mode} · prospective from ${x.prospectiveStartDate}`}
+          title={x.plainTitle || x.experimentId}
+          meta={`Shadow test · running since ${x.prospectiveStartDate}`}
           actions={<ExplainButton kind="EXPERIMENT" id={x.experimentId} label="Explain this experiment" />}
         >
           <div
@@ -316,10 +342,19 @@ export function ResearchCommandCenter() {
             delayed, reordered or annotated by it, and it cannot become live automatically.
           </div>
 
+          {x.plainPurpose ? (
+            <p style={{ fontSize: 13, margin: "0 0 8px", lineHeight: 1.5 }}>{x.plainPurpose}</p>
+          ) : null}
+          {x.plainIfItWorks ? (
+            <p style={{ fontSize: 12, opacity: 0.8, margin: "0 0 10px", lineHeight: 1.5 }}>
+              <strong>If it works:</strong> {x.plainIfItWorks}
+            </p>
+          ) : null}
+
           <div style={{ marginBottom: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <StatusBadge tone={statusTone(x.status)}>{x.status.replace(/_/g, " ")}</StatusBadge>
+            <StatusBadge tone={statusTone(x.status)}>{plainLabel(x.status).label}</StatusBadge>
             <StatusBadge tone={x.definitionFrozen ? "muted" : "bad"}>
-              {x.definitionFrozen ? "DEFINITION FROZEN" : "DEFINITION CHANGED — SAMPLE INVALID"}
+              {x.definitionFrozen ? "Rule unchanged since it was frozen" : "RULE CHANGED — SAMPLE INVALID"}
             </StatusBadge>
           </div>
           <p style={{ fontSize: 12, opacity: 0.85, margin: "0 0 10px" }}>{x.statusReason}</p>
@@ -364,7 +399,6 @@ export function ResearchCommandCenter() {
             <KeyValue k="Winners rejected" v={x.winnersRejected ?? NA} tone={(x.winnersRejected ?? 0) > 0 ? "warn" : undefined} />
             <KeyValue k={<InfoTip metric="profitFactorExBest">PF ex-best</InfoTip>} v={num(x.profitFactorExBest)} />
             <KeyValue k={<InfoTip metric="tailDependence">Tail robustness</InfoTip>} v={x.tailRobustness} />
-            <KeyValue k="Definition hash" v={<code style={{ fontSize: 11 }}>{x.definitionHash}</code>} />
           </div>
 
           <DetailsDisclosure summary={`Limitations (${x.limitations.length})`}>
@@ -372,8 +406,87 @@ export function ResearchCommandCenter() {
               <p key={i} style={{ fontSize: 12, margin: "4px 0", opacity: 0.85 }}>• {l}</p>
             ))}
           </DetailsDisclosure>
+
+          {/* The identifiers stay available and stop being the headline. Hiding them
+              would be a different mistake: the hash is how "the rule did not move
+              while its evidence accumulated" is checked. */}
+          <DetailsDisclosure summary="Technical details">
+            <KeyValue k="Experiment ID" v={<code style={{ fontSize: 11 }}>{x.experimentId}</code>} />
+            <KeyValue k="Version" v={String(x.experimentVersion)} />
+            <KeyValue k="Mode" v={x.mode} />
+            <KeyValue k="Definition hash" v={<code style={{ fontSize: 11 }}>{x.definitionHash}</code>} />
+            <KeyValue k="Authority" v={x.authority} />
+          </DetailsDisclosure>
         </Card>
       ))}
+
+      {/* ── MISSED OPPORTUNITIES ─────────────────────────────────────────── */}
+      <Card
+        title="Missed opportunities"
+        meta={`${r.missedOpportunities.sessionDate} · split by WHY, not just by how big`}
+      >
+        <p style={{ fontSize: 12, opacity: 0.85, margin: "0 0 10px", lineHeight: 1.5 }}>
+          {r.missedOpportunities.note}
+        </p>
+        {r.missedOpportunities.byState.length ? (
+          <ResponsiveGrid min={170}>
+            {r.missedOpportunities.byState.map((b) => (
+              <Tile key={b.state} label={b.plainLabel} value={String(b.count)} hint={b.meaning} />
+            ))}
+          </ResponsiveGrid>
+        ) : (
+          <p style={{ fontSize: 12, opacity: 0.7 }}>No discovered movers on record for this session.</p>
+        )}
+        {r.missedOpportunities.cases.length ? (
+          <DetailsDisclosure summary={`Largest movers (${r.missedOpportunities.cases.length})`}>
+            {r.missedOpportunities.cases.map((c) => (
+              <div key={c.symbol} style={{ padding: "6px 0", borderBottom: "1px solid #ffffff10" }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+                  <strong style={{ fontSize: 13 }}>{c.symbol}</strong>
+                  <StatusBadge tone="muted">{c.plainState}</StatusBadge>
+                  <span style={{ fontSize: 12, opacity: 0.8 }}>
+                    stock moved {signed(c.peakUnderlyingMovePct)}
+                  </span>
+                  <span style={{ fontSize: 12, opacity: 0.8 }}>
+                    {/* Blank, never zero. Nothing was priced, so nothing is claimed. */}
+                    option peak {c.attainableMfePct == null ? "— never quoted" : signed(c.attainableMfePct)}
+                  </span>
+                </div>
+                <p style={{ fontSize: 12, opacity: 0.75, margin: "4px 0 0" }}>{c.note}</p>
+              </div>
+            ))}
+          </DetailsDisclosure>
+        ) : null}
+      </Card>
+
+      {/* ── CONTENT QUEUE ────────────────────────────────────────────────── */}
+      <Card
+        title="Content waiting for you"
+        meta={`${r.contentQueue.sessionDate} · you post it, nothing posts itself`}
+      >
+        <ResponsiveGrid min={150}>
+          <Tile label="Awaiting review" value={String(r.contentQueue.awaitingReview)} />
+          <Tile label="Approved" value={String(r.contentQueue.approved)} />
+          <Tile label="Rejected" value={String(r.contentQueue.rejected)} />
+          <Tile label="Posted by you" value={String(r.contentQueue.postedManually)} />
+        </ResponsiveGrid>
+        <p style={{ fontSize: 12, opacity: 0.85, margin: "10px 0 0", lineHeight: 1.5 }}>
+          {r.contentQueue.note}
+        </p>
+        {r.contentQueue.top.map((c) => (
+          <div key={c.id} style={{ marginTop: 10, padding: "8px 10px", border: "1px solid #ffffff14", borderRadius: 6 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+              <strong style={{ fontSize: 13 }}>{c.symbol ?? "—"}</strong>
+              <StatusBadge tone="muted">{c.plainCategory}</StatusBadge>
+              {c.worthiness == null ? null : (
+                <span style={{ fontSize: 11, opacity: 0.7 }}>worth {c.worthiness.toFixed(2)}</span>
+              )}
+            </div>
+            <p style={{ fontSize: 12, opacity: 0.8, margin: "4px 0" }}>{c.whyInteresting}</p>
+            <pre style={{ fontSize: 12, whiteSpace: "pre-wrap", margin: 0, opacity: 0.95 }}>{c.draftText}</pre>
+          </div>
+        ))}
+      </Card>
 
       {/* ── WHAT OPTISCAN LEARNED ────────────────────────────────────────── */}
       <Card title="What OptiScan learned" meta="Deterministic findings first; validated AI findings second">
