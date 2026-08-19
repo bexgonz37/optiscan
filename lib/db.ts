@@ -1804,6 +1804,11 @@ CREATE TABLE IF NOT EXISTS options_shadow_decisions (
   created_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_options_shadow_decisions ON options_shadow_decisions(trading_session_date, created_at_ms);
+-- PERFORMANCE (2026-08-18 audit): the Quant Lab counts supervisor observations with
+-- COUNT(*) WHERE path='supervisor'. This table holds 3.7M supervisor rows in
+-- production and had no index on path, so that one number cost a full table scan --
+-- on a volume-backed disk -- every time the page loaded. Additive index only.
+CREATE INDEX IF NOT EXISTS idx_options_shadow_decisions_path ON options_shadow_decisions(path);
 
 -- Shadow soak forward outcomes — isolated from DELIVERED_ALERT_PAPER / claims / social.
 CREATE TABLE IF NOT EXISTS options_shadow_outcomes (
@@ -1866,6 +1871,18 @@ CREATE TABLE IF NOT EXISTS options_shadow_outcomes (
 );
 CREATE INDEX IF NOT EXISTS idx_options_shadow_outcomes ON options_shadow_outcomes(trading_session_date, decision_at_ms);
 CREATE INDEX IF NOT EXISTS idx_options_shadow_outcomes_decision ON options_shadow_outcomes(shadow_decision_id);
+-- PERFORMANCE (2026-08-18 audit): measured, and the measurement overturned the first
+-- guess. Per-lane timing showed the two shadow lanes cost 34.3s and 7.1s of the Quant
+-- Lab's total -- while returning 145 and 89 rows. The cost was never the rows; it was
+-- scanning a table whose proposed/independent rows are a rounding error beside its
+-- supervisor rows, to find them.
+--
+-- Leading with the path column because that is the selective one: with production's mix
+-- an index on (would_send, path) would still walk half the table. Benchmarked at
+-- production selectivity: SCAN 262ms -> SEARCH 1ms in memory, and the production
+-- figure is far larger because the scan is real disk I/O. Additive index only; the
+-- query, its filters and every statistic it feeds are unchanged.
+CREATE INDEX IF NOT EXISTS idx_options_shadow_outcomes_path ON options_shadow_outcomes(path, would_send);
 
 -- Subscriber-readiness state machine (owner-only launch gate). SINGLE row (id=1): the current
 -- NOT_READY / SUBSCRIBER_READY status, the exact evidence snapshot at the last transition, and the
