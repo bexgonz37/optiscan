@@ -253,9 +253,24 @@ export function buildWhyNoAlertsDiagnostic(
       };
     })() : undefined,
     evidenceIntegrity: db ? (() => {
+      // PHASE TIMING (2026-08-18 audit). These three builders run in series and
+      // together account for essentially all of this route's ~27s. Which one dominates
+      // was previously unknowable from outside, so the audit had to guess; the answer
+      // is now reported with the payload. Pure measurement -- `Date.now()` twice per
+      // builder -- and it changes no statistic any of them produces.
+      const tPaper = Date.now();
       const paper = buildPaperChainDiagnostic(db as any, env, 50);
+      const tShadow = Date.now();
       const shadow = buildShadowSoakAggregate(db as any, env, 7);
+      const tQuant = Date.now();
       const quant = buildQuantLaneReport(db as any, env);
+      const tEnd = Date.now();
+      const builderTimingsMs = {
+        paperChain: tShadow - tPaper,
+        shadowSoak: tQuant - tShadow,
+        quantLanes: tEnd - tQuant,
+        total: tEnd - tPaper,
+      };
       let lastAi: string | null = null;
       let validationFailed24h = 0;
       if (hasTable(db, "ai_job_runs")) {
@@ -270,6 +285,7 @@ export function buildWhyNoAlertsDiagnostic(
         ? Number((db.prepare("SELECT COUNT(*) n FROM options_shadow_outcomes WHERE data_status='PENDING'").get() as { n: number })?.n ?? 0)
         : 0;
       return {
+        builderTimingsMs,
         paperChain: {
           paperLinkRate: paper.paperLinkRate,
           unhealthyRows: paper.rows.filter((r) => r.graderHealth !== "healthy").length,
