@@ -1,7 +1,7 @@
 # Research Graph and Loop
 
 Graph Engineering and Loop Engineering memory for the OptiScan research arm.
-Updated 2026-08-19. Companion to the AST graph in `graphify-out/` — that one is
+Updated 2026-08-19 (3). Companion to the AST graph in `graphify-out/` — that one is
 generated, this one records the parts a parser cannot see: which identity a consumer
 joins on, and which of them fail SILENTLY when the join is wrong.
 
@@ -20,6 +20,8 @@ empty set, and reporting it as a quiet day.
 | 0c | **MARKET MOVER OBSERVATION** | `market_mover_observations` (first observation IMMUTABLE, peak advances) | `(session_date, symbol)` | Zero live authority. If this is empty the coverage loop reads as "nothing was missed" |
 | 0d | BROAD STOCK MOMENTUM | `broadStockEligibility()` — $0.50-$50 TRADING gate | symbol | Unchanged and still ceilinged. This is the gate that MAY refuse a $120 stock |
 | 0e | **TIER-2 PRIORITISATION** | `selectTier2Cycle()` — 15 exceptional + rotation, 25 slots | rank, then rotation cursor | Was `.slice(0,25)` of provider order: 1.9% of a 1,347 universe, the same 25 forever |
+| 0f | **WATCHLIST ADMISSION** | `allocateAdmissionSlots()` — banded, guaranteed CORE+SECTOR, bounded momentum, rotated fill | tier band, then rotation cursor | Was `.sort().slice(0,60)` of a 78-symbol curated list: the whole XL* family cut on every run, and a slice never fails |
+| 0g | **WATCHLIST MOMENTUM FEED** | `momentumCandidatesFromMoversOnDb()` — reads 0c, costs ZERO provider requests | `(session_date, symbol)` | If 0c is empty this silently contributes nothing and the watchlist looks merely curated |
 | 1 | LIVE OPPORTUNITY | `options_candidates`, the pending audit case | `opportunity_fingerprint` | — |
 | 2 | STRATEGY EVALUATION | `case_json.strategyEvaluations[]` (~27 per case) | **`strategyId` of the SELECTED strategy** | Reading `[0]` or the strongest reports a strategy that was never traded |
 | 3 | CALLOUT | `discord_deliveries` (`owner_intraday_actionable`, `OPENING`, `SENT`) | `opportunity_case_id` | The only proof an owner was *told*; a mirror proves only that a trade was tracked |
@@ -38,7 +40,11 @@ empty set, and reporting it as a quiet day.
 | 15 | ASK OPTISCAN | `advisory-chat` + `explain-target` | **stable IDs only** | A trade resolved from ticker text has more than one answer |
 | 16 | OWNER DISCORD | `DISCORD_WEBHOOK_RECAP` / owner opening | — | — |
 | 17 | SUBSCRIBER DISCORD | `options_alerts` + `DELIVERED_ALERT_PAPER` | `alert_id` | **Structurally cannot see an owner callout** — that is the safety property |
-| 18 | CONTENT / TWITTER | `content_drafts` → `DISCORD_WEBHOOK_CONTENT` | `verifyContentClaimForCase` | Requires a SENT alert with a delivered mirror; an owner callout has neither |
+| 17b | **EXECUTABLE MEASUREMENT** | `measureExecutableOpportunityOnDb()` — joins 0c + `options_research_observations` + `asymmetry_outcomes` + `contract_funnel_evidence` | `(session_date, symbol)`, then exact OCC | ZERO provider requests. A mover with no NBBO gets a NULL ladder; a zero there would be a claim nobody could have had |
+| 18 | CONTENT EVENT | `opportunity_content_events` | `contentEventId(caseId, type, materialDiscriminator)` | The discriminator carried `nowMs`, so `INSERT OR IGNORE` could never collide and one case emitted events forever |
+| 18a | **CONTENT GATE** | `gateContentBundle()` — dedupe → worthiness → coherence → rank | `semanticContentFingerprint` (symbol, side, category, session, thesis digest, milestone, evidence state) | The old fingerprint included the event id, so the UNIQUE constraint on `content_drafts.fingerprint` deduplicated nothing — 200 rows, 62 distinct texts |
+| 18b | CONTENT / TWITTER | `content_drafts` → `DISCORD_WEBHOOK_CONTENT` (a NOTICE, not the copy) | `verifyContentClaimForCase` | Requires a SENT alert with a delivered mirror; an owner callout has neither |
+| 18c | **CONTENT FEEDBACK** | `contentFeedbackReportOnDb()` — approval/rejection aggregates | `content_drafts.approved_at_ms` / `rejected_at_ms` | These columns were written since the table existed and had NO reader. `scoreContentWorthiness` cannot import this module, so preference can never promote something the verdict refused |
 
 ### Shared fields and every downstream consumer
 
@@ -54,6 +60,8 @@ Before changing one of these, this is the list to walk.
 - **`session_date`** — independence counting everywhere. Validated: a weekend never
   counts toward a floor.
 - **`v2_captured`** — divides the V2 population from everything that predates it.
+- **`content_drafts.fingerprint`** — SEMANTIC now, and the only thing preventing a repeated unchanged event from regenerating the same draft. It must never again include the content-event id, the draft id, a template variant or a timestamp: every one of those is unique per generation, which is how idempotency-for-retries got mistaken for deduplication.
+- **`contract_funnel_evidence.terminal_reason`** — records how the funnel ENDED, and `CONTRACT_SELECTED` is the SUCCESS value. Reading any non-null value as a refusal does not produce a slightly wrong number; it inverts the finding. Consumers: the executable measurement, the missed-opportunity panel.
 - **the 280/minute provider partition** — the one quota every lane competes in, and the
   dependency most easily changed by accident. Consumers and their 2026-08-19 spend:
 
@@ -147,8 +155,10 @@ RECONSTRUCT          reconstructSymbol() over OptiScan's own tables
    |
 CLASSIFY             NOT_ADMITTED_TO_UNIVERSE | ADMITTED_NOT_QUOTED | OBSERVED_BY_OPTISCAN
    |
-QUANTIFY             COVERAGE scope only — move, phase, lag, peak
-                     EXECUTABLE scope NOT STARTED (provider budget)
+QUANTIFY             COVERAGE scope — move, phase, lag, peak
+                     EXECUTABLE_FROM_SHARED_EVIDENCE — the QUOTED subset, joined from
+                     rows already paid for, ZERO provider requests
+                     EXECUTABLE (prospective, every discovered mover) STILL NOT STARTED
    |
 SHADOW TEST          EXTREME_PREMARKET_DISCOVERY_V1, prospective from 2026-08-19
 ```
@@ -162,6 +172,47 @@ different claims were being conflated:
   COVERAGE. Needs only market state.
 
 Placing the second beside the first is not a weaker version of it. Merging them would be.
+
+**The half that did not need the budget — added 2026-08-19 (3).** The EXECUTABLE scope was blocked on provider budget, and that reasoning stands for the question it answers: going out and quoting movers we have NOT quoted needs a lane holding no minute reserve. It does not describe the movers we DID quote. For those, every field already has a durable source on disk, so `measureExecutableOpportunityOnDb` joins them at zero cost and stays runnable while the minute cap is saturated — which is exactly when a budget-caused miss needs investigating.
+
+It is a THIRD scope, `EXECUTABLE_FROM_SHARED_EVIDENCE`, not a flip of the second. The two answer different questions and one is strictly narrower; every field it claims is prefixed `quoted`, and `unmeasuredFraction` states on every response how much of the discovered population it excludes. First production run: 40 movers, 3 measurable, 92.5% unmeasured. A partial answer read as the whole one is the failure the scope split exists to prevent.
+
+### The CONTENT loop — rebuilt 2026-08-19 (3)
+
+The old path had no step between "we rendered some copy" and "it is in the owner's
+queue", so the answer to "should this exist" was always yes. 9,309 drafts, 92% of one
+routine category, one sentence persisted 22 times.
+
+```
+INTERNAL EVENT       emitContentEventForCase — discriminator from WHAT CHANGED,
+                     never from the clock
+   |
+WORTHINESS           deterministic score: novelty, significance, evidence quality,
+                     audience value, timeliness, non-duplication. NO model.
+   |
+CLAIM VERIFICATION   unchanged — a performance category still needs a verified packet
+   |
+COHERENCE            does the copy agree with the position it describes
+   |
+DEDUPE               semantic fingerprint; a batch collapses to one idea
+   |
+RANK / BEST FEW      at most 3 rows per idea
+   |
+PRIVATE REVIEW QUEUE the app is the content inbox
+   |
+DISCORD NOTICE       one line, only above a floor ABOVE the queue threshold
+   |
+MANUAL POST          by hand, always
+   |
+FEEDBACK             approval / rejection / manual post aggregated back into ranking
+```
+
+**The rule that keeps it honest.** On a routine day the correct output is ZERO drafts.
+That is why the design must be able to return zero, and why a ranked top-N cannot be
+the mechanism — a top-N always returns N, which is how "the best of today" quietly
+becomes "today". Feedback tunes the ORDER of things already worth reading; it can never
+promote something the verdict refused, and the separation is structural rather than
+numeric: `content-worthiness.ts` cannot import `content-feedback.ts`.
 
 ### Where the loop can go quiet without erroring
 
@@ -177,7 +228,16 @@ Placing the second beside the first is not a weaker version of it. Merging them 
    to "nothing happened". This is the failure MRNA exposed, and the coverage loop above is
    the guard. `market_mover_observations` going empty restores the blindness silently, so
    `moverRecorderState()` is the thing to check first.
-5. **A research sweep firing more work than its partition allows** → thousands of refusals
+5. **A semantic fingerprint that includes anything unique per generation** → every
+   comparison misses, nothing is ever a duplicate, and the queue fills with the same
+   sentence. It never errors; it looks like a productive day. Guarded by
+   `tests/content-worthiness-and-dedupe.test.mjs`, which asserts the fingerprint carries
+   no event id, draft id or clock.
+6. **A cap that sits below the curated universe it bounds** → the overflow rule becomes
+   whatever the sort order was, and a slice always succeeds. Guarded by
+   `tests/watchlist-admission-priority.test.mjs`, which asserts the property (nothing is
+   cut for sorting late) rather than the current symbol list.
+7. **A research sweep firing more work than its partition allows** → thousands of refusals
    a minute, a transient row for each, and the identical backlog re-fired next sweep. It
    never errors; it looks like a busy provider. Guarded by
    `tests/asymmetry-mark-admission.test.mjs`.
@@ -201,9 +261,12 @@ NONE_NO_HISTORICAL_COHORT`. That is deliberate: it was motivated by ONE example,
 motivated by one vivid example is the likeliest of all to be widened until it fits. Its
 hash covers BOTH the eligibility floors AND the ranking's output ORDER, because probing
 eligibility alone would let the ranking be retuned silently, and the ranking is what
-decides whether a mover is reached. It declares two measurement scopes and only COVERAGE is
-started; EXECUTABLE names provider budget as its prerequisite rather than reporting a
-number it cannot honestly obtain.
+decides whether a mover is reached. It declares THREE measurement scopes. COVERAGE and
+`EXECUTABLE_FROM_SHARED_EVIDENCE` are started — both answerable from rows already paid for.
+The prospective `EXECUTABLE` scope still names provider budget as its prerequisite rather
+than reporting a number it cannot honestly obtain. **The hash did not move**, because it
+covers the eligibility floors and the ranking order and neither changed: adding a scope
+declares what is being measured, not what the rule does.
 
 Each hash is content-addressed by BEHAVIOUR, not source text: the definition is probed
 across a sweep of inputs, so a moved threshold or a reordered branch changes the hash

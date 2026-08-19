@@ -1,5 +1,229 @@
 # Current Task Packet
 
+## Packet update — 2026-08-19 (3) The alphabet, the clock, and the half that did not need the budget
+
+### Verified state (checked, not assumed)
+
+- Baseline verified from git AND production BEFORE any change: local = `origin/main`
+  = production = `684e3fb`, confirmed against `/api/healthz`, with `schedulerHealth`
+  HEALTHY ("beats are completing", 0 beat timeouts, 0 stuck jobs). Every untracked
+  scratch file left untouched. Final state: local = `origin/main` = production =
+  `488a64a`, health green, scheduler HEALTHY.
+- **No trading logic changed.** `delivery-decision.ts`, `scanner-loop.ts`,
+  `contract-selector.ts`, `discovery.ts`, `tier2-priority.ts`, `market-movers.ts`,
+  `provider-budget.ts` and `polygon-provider.js` do not appear in the diff. No
+  strategy threshold, selection, ranking weight for trade authority, CALL/PUT
+  authority, contract rule, DTE rule, Target 1, Target 2, stop, exit, delivery bar,
+  provider cap or readiness threshold was touched. The delivery bar is still 0.70.
+- All three frozen hashes re-verified after the work:
+  `OWNER_SELECTION_STRENGTH_GATE_V1` `9b4f77b3c6268bf9e94781dc849ad2ef`,
+  `PRE_MOVE_DISCOVERY_V2` `e6eb1148e3bbd29fc4b71c657afbcafc`,
+  `EXTREME_PREMARKET_DISCOVERY_V1` `d173a8c4d28c479e71000482f0a39e30`. All still
+  SHADOW_ONLY. `LHC_SELECT_V1` `80e5c5d878f5f9e185661981c87afc63` also unmoved.
+- 4,617 tests pass, 0 fail. `tsc --noEmit` clean. `next build` compiled.
+
+### THE EXECUTABLE HALF DID NOT NEED THE BUDGET IT WAS BLOCKED ON
+
+`EXTREME_PREMARKET_DISCOVERY_V1` declares an EXECUTABLE scope and marks it NOT
+STARTED, blocked on provider budget. That reasoning is sound and it stands — but it
+answers a different question from the one asked. It describes going out and quoting
+movers we have NOT quoted. For the ones we DID quote, every field in that scope
+already has a durable source on disk, paid for once:
+
+| EXECUTABLE field | Source already on disk |
+|---|---|
+| first executable NBBO, spread, delta, OI, volume, DTE, exact OCC | `options_research_observations` |
+| entry ask, MFE, MAE, hit ladder, milestone timings | `asymmetry_outcomes` |
+| why nothing was selected | `contract_funnel_evidence` |
+| when the symbol was first seen at all | `market_mover_observations` |
+
+`executable-opportunity.ts` (`ae17790`) is that join. **ZERO provider requests** —
+typed as the literal `0`, so an edit that introduces one cannot type-check unnoticed.
+Like the coverage forensic it stays runnable while the minute cap is saturated, which
+is precisely when a budget-caused miss needs investigating.
+
+The invariant is the MRNA one: **never claim an unquoted move was attainable.** A
+symbol with no NBBO gets a coverage verdict and a `null` ladder — not a zero, and
+never a return inferred from the underlying. The ladder is measured from the MIDPOINT
+of the first TWO-SIDED quote, because a one-sided book is not a price you can cross.
+
+Registered as a THIRD scope, `EXECUTABLE_FROM_SHARED_EVIDENCE`, rather than by
+flipping `EXECUTABLE` to started. The two answer different questions and one is
+strictly narrower; every field it claims is prefixed `quoted`, and
+`unmeasuredFraction` states on every response how much of the population it excludes.
+**The prospective half stays NOT STARTED and stays blocked on the same budget.**
+
+### WHAT THE FIRST PRODUCTION RUN SAID, AND THE BUG IT FOUND IN ITSELF
+
+`/api/research/executable-opportunity` against production, 2026-08-19, 0 provider
+requests:
+
+| | |
+|---|---|
+| movers considered (peak \|move\| >= 10%) | **40** |
+| with executable evidence | **3 (7.5%)** |
+| `unmeasuredFraction` | **0.925** |
+| median MFE of the 3 measurable | **-18.7%** |
+| reached +10% | **0 of 3** |
+
+**MRNA is now discovered.** Rank 3 of 40, +152.5% peak — the `6c381d2` discovery fix
+holding. It did not reach a contract: `NO_CONTRACTS_RETURNED`. Discovery is no longer
+the bottleneck for it; the chain fetch is.
+
+The run also exposed a defect in the new module. 10 of 40 movers came back
+`QUOTED_NO_CONTRACT_SELECTED` with reason `CONTRACT_SELECTED` — a sentence that
+contradicts itself. `terminal_reason` records how the funnel ENDED, and ending well
+is one of the ways it can end. Treating any non-null value as a refusal does not
+produce a slightly wrong number, it **inverts the finding**, turning symbols the
+funnel served into evidence that the funnel is failing. **Fixed** (`488a64a`), with
+the success value named and a regression test. Found by running the route against
+production, not by inspection.
+
+Three measurable cases is not a finding. It is the first honest number this question
+has ever had.
+
+### THE ALPHABET WAS DECIDING WHICH SECTORS A TRADER COULD SEE
+
+`professional-runner.ts` admitted `[...static, ...momentum, ...catalysts].sort().slice(0, 60)`
+against a 78-symbol curated universe. The `.sort()` was there for determinism, which
+is reasonable; combined with a binding `.slice()` it stopped being a tie-breaker and
+became the selection policy. It cut the same 18 names on every run —
+`V VZ WFC WMT XBI XLB XLC XLE XLF XLI XLK XLP XLRE XLU XLV XLY XOM XOP` — the entire
+XL* sector-ETF family. Nothing ever failed, because a slice always succeeds.
+
+**Fixed** (`2ed21e3`): `admission-priority.ts` allocates the bounded slots by band.
+CORE_INDEX and SECTOR_ETF guaranteed; CONFIRMED_CATALYST and HIGH_VOLUME_MOMENTUM
+bounded in BOTH directions so a mover can earn a slot without evicting standing
+coverage; LARGE_CAP_LIQUID takes the remainder through `rotateForBudget`, the same
+round-robin the Tier-2 and mark sweeps use. Overflow now moves between runs instead
+of freezing.
+
+Two arithmetic points that mattered more than the policy:
+
+- The cap moved 60 -> 94 because a bound BELOW the human-curated universe is not a
+  bound. 78 static + 6 catalyst + 10 momentum.
+- `DEFAULT_CALL_BUDGET` is now DERIVED from the cap (`2 + 2n + 1`) rather than
+  hardcoded beside it. At 60 the true need was 123 against a budget of 140, so raising
+  the cap alone would have moved the truncation from admission to evidence via
+  `guarded()`'s silent fallback. **A symbol admitted and then starved of bars is worse
+  than one never admitted, because it looks considered.**
+
+`HIGH_VOLUME_MOMENTUM` finally has the confirmed source it was written for:
+`market_mover_observations`, written off the snapshot the scanner already paid for.
+Reading it costs **zero provider requests**, and an admitted mover **displaces a lower
+band rather than widening the bound** — asserted by test, because "MRNA can now be
+watched" must not quietly mean "we quote more contracts". Publication stays gated at
+`MAX_PUBLISHED_ROWS = 12`: the message changes which 12, not how many.
+
+Note `PROFESSIONAL_WATCHLIST_ENABLED` is still unset in production, so this changes
+no live Discord output today.
+
+### THE CONTENT ENGINE HAD NO STEP WHERE IT COULD SAY NO
+
+Production evidence, 2026-08-19, from `/api/content-drafts`:
+
+| | |
+|---|---|
+| drafts sampled | 200 |
+| **distinct texts** | **62** |
+| `"Adding conviction to $AMZN."` | persisted **22 times** |
+| `CONVICTION_INCREASED` share | **184 of 200 (92%)** |
+| AMZN drafts in one session | **52** |
+| carrying a verified result | **0 of 200** |
+| drafts citing "large call buying" that named a PUT | **2 of 4** |
+| `fingerprint === id` | **all 200 rows** |
+| total drafts on record | **9,309** |
+
+Three defects stacked, each individually reasonable:
+
+1. `emitContentEventForCase` put `nowMs` in the event discriminator, so
+   `contentEventId` was unique every time and the `INSERT OR IGNORE` that exists to
+   make emission idempotent **could never collide**. A still-active case emitted a new
+   event on every repeat evaluation, forever.
+2. `draftFingerprint` included that event id, so the UNIQUE constraint on
+   `content_drafts.fingerprint` deduplicated nothing. It was retry idempotency wearing
+   deduplication's clothes.
+3. `eligibleCategories` mapped `THESIS_STRENGTHENED -> CONVICTION_INCREASED`
+   unconditionally, bypassing even the confidence thresholds.
+
+**Fixed** (`a131b91`). The discriminator is built from WHAT CHANGED and never from the
+clock: the milestone for a milestone, a bucketed high for a new high, session + thesis
+digest for a thesis event, once-per-case for the rest. The fingerprint is SEMANTIC —
+symbol, side, category, session, thesis digest, milestone, evidence state — and
+deliberately excludes every field that is unique per generation.
+
+`content-gate.ts` is the step that never existed: DEDUPE -> WORTHINESS -> COHERENCE ->
+rank -> at most 3 rows per idea. **It consults no model** — deciding whether an event
+resembles the one from ten minutes ago is arithmetic. An unworthy or duplicate idea
+writes ZERO rows; on a routine day zero is the correct output, which is why the design
+must be able to return it and a ranked top-N cannot.
+
+Coherence compares copy to the position it describes — the one question no existing
+guard asked. `"• Large call buying detected"` was a hardcoded literal with no
+placeholder, so `renderLine`, the only mechanism that drops an unsupported line, had
+nothing to catch. It is now `{{flowEvidence}}` and resolves only when the flow agrees
+with the side. Also refused: MFE described as realized, owner results described as
+subscriber results, backend constants, and the doubled period behind
+`"…bearish structure intact.."`.
+
+Discord becomes a NOTICE — "1 content idea ready for review — MRNA · closed winner" —
+gated on a floor deliberately ABOVE the queue threshold. A candidate can be worth
+reviewing without being worth an interruption. The private app is the content inbox.
+Lane separation was already correct (`DISCORD_LANE_SEPARATION_V1`, zero collisions);
+the defect was volume and shape, not destination.
+
+`content-feedback.ts` reads approval and rejection, written since the table existed and
+**never once read**. It aggregates only. `scoreContentWorthiness` cannot import it, so
+preference orders what is already worth reading and can never promote what is not.
+
+### THE APP WAS WRITTEN IN A VOCABULARY CHOSEN FOR MODULES
+
+`OWNER_VALIDATION_PAPER` was a card subtitle. A 32-character definition hash sat in
+the reading path. Raw experiment ids were headings. **Two of three frozen experiments
+were real and invisible**: `PRE_MOVE_DISCOVERY_V2` rendered as an unrelated "early
+discovery" card with no sample counters, and `EXTREME_PREMARKET_DISCOVERY_V1` reached
+no screen at all. An experiment whose progress cannot be seen is one that cannot be
+decided about, which is the only thing a shadow experiment is for.
+
+**Shipped** (`0648212`): `plain-language.ts` names states, lanes, verdicts and
+experiments — and deliberately does NOT touch metrics, because `metric-glossary.ts`
+stays the single source for those and a test proves this module never shadows a key
+from it. Every label keeps its raw value; the experiment card gains a TECHNICAL
+DETAILS disclosure carrying id, version, mode, hash and authority. Naming a constant
+must not make it unreachable: the hash is precisely how "the rule did not move while
+its evidence accumulated" gets checked.
+
+All three experiments now render in the same shape, because "which of these has enough
+evidence yet" is a comparison the owner can only make if they are presented alike.
+Where a counter does not exist it reports 0 against its requirement rather than being
+omitted — **a missing number reads as fine**, and "we have not started measuring this"
+is the most important thing these cards currently say.
+
+MISSED OPPORTUNITIES splits by WHY: never observed / observed but not quoted / quoted
+but rejected / measurable. It shows the stock's move beside the option's peak, and
+where nothing was quoted the option column reads "never quoted" rather than 0. **A
+zero there would be a claim.**
+
+### Open, deliberately not acted on
+
+- **The prospective EXECUTABLE scope stays blocked.** Measuring the ladder on movers
+  nobody quoted needs a lane holding no minute reserve. Cost math is in the session
+  report; no cap was raised and none should be until the retrospective sample says
+  the question is worth paying for. Today it says 0 of 3 reached +10%.
+- **`NO_CONTRACTS_RETURNED` is the new MRNA bottleneck.** 11 of 40 movers ended there
+  today, MRNA among them. Discovery reaches them; the chain fetch does not return a
+  usable chain. Not investigated this session.
+- **The delivery bar stays 0.70**, and the last actionable callout is still 2026-08-06.
+- **`PROFESSIONAL_WATCHLIST_ENABLED` is unset**, so the repaired watchlist is not
+  producing output. Enabling it is an owner decision with a real Discord consequence.
+- **9,309 historical content drafts are untouched.** Nothing was deleted or
+  backfilled; pre-filter rows carry a NULL worthiness because they were never scored,
+  and inventing a number for them would make "what did the filter change" meaningless.
+- `nearMinuteBudget` callers still ask the global question while holding their own
+  reserves. Unreviewed, carried from the previous packet.
+
+---
+
 ## Packet update — 2026-08-19 (2) The reserve was working, one lane was refusing itself, and a treasury ETF held the slot MRNA needed
 
 ### Verified state (checked, not assumed)
