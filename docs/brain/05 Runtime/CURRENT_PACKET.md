@@ -1,5 +1,172 @@
 # Current Task Packet
 
+## Packet update — 2026-08-18 (3) The earliness metric measured a 1.6-second window, and the AI retry was told the one thing that was not wrong
+
+### Verified state (checked, not assumed)
+
+- Baseline verified from git AND production BEFORE any change:
+  local = `origin/main` = production = `bc18cf1`, confirmed against `/api/healthz`
+  (`commit`, `branch: main`, `db: true`, `schemaOk: true`, lifecycle active, loop running).
+  Tracked tree clean apart from six line-ending-only `docs/brain` files (`git diff --numstat`
+  empty), every untracked scratch file left untouched.
+- Production healthy throughout. Session `afterhours` for the whole window.
+- **No trading logic changed.** No scanner rule, strategy threshold, selection, ranking,
+  CALL/PUT decision, contract/strike/expiration choice, DTE rule, Target 1, Target 2, stop,
+  exit, overnight handling, provider cap or subscriber-readiness threshold was touched. No
+  callout was rejected, delayed, reordered or annotated by anything built here.
+- `OWNER_SELECTION_STRENGTH_GATE_V1` still hashes `9b4f77b3c6268bf9e94781dc849ad2ef`, still
+  starts prospective on **2026-08-19**, still SHADOW_ONLY, still INSUFFICIENT_EVIDENCE at
+  0/20 outcomes and 0/5 sessions. Asserted by test, not by memory.
+
+### PRE_MOVE_DISCOVERY_V1 GRADES 100% OF EVERY LANE THE SAME WAY
+
+Reproduced against production before writing a line: OWNER **70/70 PRE_TRIGGER**,
+RESEARCH 122/125, SHADOW **4943/5000**, median reward remaining **1.0**, median premium
+consumed **0%**. A metric that returns its most flattering value for essentially every
+row has not discriminated anything.
+
+Two independent causes, and V1 is not rewritten — its rows keep their V1 stage forever,
+and a V1/V2 disagreement on one callout is a finding to read, not a conflict to resolve.
+
+1. **The baseline was our own tick.** V1 measures the move consumed between FIRST
+   DETECTION and ALERT. The median owner gap is **1,619 ms**. `sessionOpen` is captured
+   nowhere, so V1 falls back to the detection price and the metric compares the alert
+   price against itself.
+2. **Trigger state short-circuited magnitude.** V1 returns PRE_TRIGGER on
+   `triggerTaken === false` before consulting consumption at all. On an 87%-put lane
+   `lodBreak` is usually false. The inversion is severe: a put alerted a penny off the
+   session low, the whole day's downside already spent, is reported as "the favourable
+   move has not begun".
+
+`PRE_MOVE_DISCOVERY_V2` measures against the SESSION range and treats structure and
+magnitude as two AXES — magnitude decides the late end, structure decides the early end.
+All six stages are reachable with real variance. Frozen at
+`e6eb1148e3bbd29fc4b71c657afbcafc`, hashed by BEHAVIOUR: every boundary is swept from
+both sides in every trigger state, so a moved threshold *or a reordered branch* — which
+is what actually went wrong in V1 — changes the hash.
+
+**The hindsight trap, and why V2 needed its own capture.** V1 maintains
+`session_high`/`session_low` as a running MAX/MIN for the whole life of the row, so they
+KEEP WIDENING AFTER THE ALERT. A test drives one callout through both readings: against
+the 10:04 range it is `MATURE_MOVE`; against the range the afternoon grew it is
+`PRE_TRIGGER_WATCH`. Every callout would drift earlier the longer its session ran, always
+in the flattering direction. V2 refuses those columns and snapshots its own at the send,
+write-once.
+
+**Prospective only.** A row with `v2_captured = 0` is not a V2 row and is EXCLUDED from
+the population rather than counted UNGRADABLE — counting it would dilute every rate with
+callouts the measurement never observed. The population starts empty and grows one
+callout at a time; every early-winner question answers INSUFFICIENT_EVIDENCE until 20
+closed outcomes across 5 independent sessions.
+
+`premiumExpansionConsumedPct` is now **null** when detection and callout are the same
+observation. V1 reported 0%, which reads as "the delay cost the owner nothing" when it
+means "these are one tick".
+
+### THE AI RETRY WAS TOLD THE ONE THING THAT WAS NOT WRONG
+
+11 of 31 recorded August runs were VALIDATION_FAILED and each one paid for two attempts.
+Across 29 diagnostic blocks in production **every rejected token appears exactly TWICE**
+with byte-identical context — "8%" eight times, "75%" four times, "5 of 6" four times.
+The retry was not a second chance; it was the same request asked again.
+
+| root cause | count | fixed at |
+|---|---|---|
+| derived percentage (`3 of 4` becomes `75%`) | 22 | prompt + informed retry |
+| `repeatedPatterns` not an array | 13 | informed retry naming the field |
+| ratio | 6 | informed retry |
+| "at most 5 findings" | 3 | cap stated in the prompt |
+| empty / truncated response | 4 | unchanged retry path |
+| `0930` read as a count of nine hundred and thirty | 2 | evidence shape |
+
+The retry appended one fixed sentence — *"your previous reply contained no usable
+structured payload"* — true for a parse failure and **false** for every anti-fabrication
+or schema rejection, where the payload parsed perfectly. `retry-correction.ts` now builds
+the directive from the violation the validator actually raised, and **never supplies a
+replacement number**: a retry that hands the model a figure turns the validator into a
+suggestion box.
+
+The registry also could not cite what the summary itself printed. The nightly carries
+`rejectionReasons` keyed by our own text, *"daily loss cap reached (8% of equity)"*;
+`buildQuantEvidenceRegistry` walked values and only values, so the count 4 was citable
+and the 8% in the key it hangs from was not. Object keys and numbers inside deterministic
+strings now enter the registry, with dates, clock times and OCC symbols consumed FIRST so
+`2026-08-13` can never license the count 2026.
+
+**NO VALIDATOR WAS LOOSENED.** `evidenceMatches`, the ratio rule and the throw are
+untouched. Pinned: an unsupported number still fails, a derived percentage still fails
+*even when the arithmetic is right*, six findings still fail, an unreported time window
+still fails, and a still-invalid retry still returns no data.
+
+### The private research command center
+
+`/research/command-center`, owner only, built on the existing Shell/InfoTip system.
+
+OPENED TODAY and CLOSED TODAY are separate tiles and are never summed — 42 of 74 owner
+callouts cross a session boundary. Today's rates describe the trades that CLOSED today;
+an open position has no result and is excluded rather than priced as a scratch. A day
+with no closes reports **null, not 0%**.
+
+Tooltips reuse `lib/metric-glossary.ts` and nothing else. A test parses the component,
+collects every metric key it tooltips, fails if one is missing from the glossary, and
+separately fails if the component defines any wording of its own.
+
+**Explain This reuses Ask OptiScan — there is no second chatbot.** A stable id resolves
+into deterministic facts; those facts join the SAME supplemental block every other answer
+reads, so the same validator judges the result and the same $20 cap meters it. `"IWM"`,
+`"IWM put"` and the raw OCC all REFUSE to resolve to a callout, because a symbol seen
+twice in one session has two answers and the wrong one is indistinguishable from the
+right one. The deterministic answer is built FIRST and returned unconditionally: budget
+exhausted returns `AI EXPLANATION UNAVAILABLE — MONTHLY AI BUDGET EXHAUSTED` **alongside**
+the full definition, facts, sample, sessions and limitations.
+
+### Two silent gaps found while wiring it
+
+1. **The AI research context carried `LHC_SELECT_V1` and not
+   `OWNER_SELECTION_STRENGTH_GATE_V1`** — the experiment actually collecting prospective
+   evidence. The nightly and weekly could describe the owner lane in detail while knowing
+   nothing about the rule under test, and could not have noticed a shortfall or a broken
+   freeze, because the object was not in the payload. An absent section reads exactly like
+   a quiet one. Its scoreboard and PRE_MOVE V2 are now both carried, BESIDE V1.
+2. **`discordWebhookSame` had existed since content got its own webhook and nothing ever
+   called it.** `contentWebhookConfigured` is true the moment `DISCORD_WEBHOOK_CONTENT`
+   holds a non-empty string — it cannot tell a dedicated channel from a second copy of the
+   recap webhook, which is the exact condition that put 1209 drafts into the owner's recap
+   channel while every diagnostic read CONFIGURED. `lane-separation.ts` compares the values
+   and reports a BOOLEAN; a test feeds it a secret in four variables and asserts the
+   serialized report contains no token, fragment, host or hash.
+
+> `DISCORD_WEBHOOK_CONTENT` is now **configured** in production
+> (`contentWebhookConfigured: true`, `skippedNoWebhook: 0`, 0 awaiting recovery). The
+> previous packet's OWNER ACTION REQUIRED is resolved.
+
+### Cross-output consistency
+
+One canonical owner callout, seeded through the same migration production runs, traced
+through OWNER LEARNING, the mirror population, NIGHTLY RESEARCH, PRE_MOVE V1, PRE_MOVE V2,
+ASK OPTISCAN, OWNER DISCORD, CONTENT and the SUBSCRIBER route. The fixture PEAKS at
++44.42% and CLOSES at +18.10%, carries a +300% mark on a neighbouring strike, and puts a
+strategy that was never traded in slot 0 of its evaluations — so conflating peak with
+result, admitting another contract's mark, or reading `[0]` all fail.
+
+The subscriber claim path REFUSES it on every identifier and returns null for realized
+return and MFE. Every content performance category is refused; a non-performance category
+resolves to `NON_ACTIONABLE_RESEARCH` with no claim packet and therefore no number to
+print.
+
+### What remains research / shadow only
+
+Everything above. No gate, threshold, ranking weight, contract selection, target, stop,
+exit or subscriber decision reads any of it. No experiment can become live automatically;
+`READY_FOR_HUMAN_REVIEW` is the best reachable status.
+
+### Regression cover
+
+`ai-validation-retry` (18), `pre-move-discovery-v2` (28), `cross-output-consistency` (20),
+`research-command-center` (27), `weekly-wiring-and-lane-separation` (13).
+
+`npm test` **4451 pass, 0 fail**. `npx tsc --noEmit` clean. `npm run build` clean.
+
 ## Packet update — 2026-08-18 (2) The budget was never one budget, and the strength finding counted trades the rule cannot judge
 
 ### Verified state (checked, not assumed)
