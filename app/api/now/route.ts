@@ -83,7 +83,12 @@ export async function GET(req: Request) {
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { buildPaperChainDiagnostic } = require("@/lib/research/options/paper-chain");
-      const chain = buildPaperChainDiagnostic(db, process.env, 40);
+      // OPEN_POSITIONS_ONLY: the homepage shows at most twelve open mirrors, and the
+      // full diagnostic walked every alert ever SENT to find them — the single largest
+      // cost on this route. Same builder, same row definitions, driven from the ENTERED
+      // mirrors instead of from all history. Aggregates are withheld by that scope and
+      // nothing here reads them.
+      const chain = buildPaperChainDiagnostic(db, process.env, 12, null, "OPEN_POSITIONS_ONLY");
       return (chain?.rows ?? []).filter((r: any) => r.paperStatus === "ENTERED").slice(0, 12);
     } catch {
       return [];

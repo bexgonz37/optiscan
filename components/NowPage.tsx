@@ -129,7 +129,12 @@ export function NowPage() {
       return;
     }
     try {
-      const res = await fetch("/api/research/options/paper-chain?limit=3", { cache: "no-store", headers: scanHeaders(), signal });
+      // `days=1` is both the cheap read and the honest one. Without it the route
+      // walks EVERY alert ever SENT (three to five queries each) to hand back three
+      // rows — the second-largest cost on this page — and the rows it returns are the
+      // three most recent alerts in history, which under a heading that says "Sent
+      // today" would show last week's callouts on a day with no sends.
+      const res = await fetch("/api/research/options/paper-chain?days=1&limit=3", { cache: "no-store", headers: scanHeaders(), signal });
       const d = await res.json();
       const rows = d?.diagnostic?.rows ?? d?.rows ?? [];
       setSentToday(Array.isArray(rows) ? rows.filter((r: any) => r?.subscriberDelivered === true).slice(0, 3) : []);
@@ -264,7 +269,7 @@ export function NowPage() {
         action={<Link href="/alerts" className="cc-term-link">ALERTS →</Link>}
       >
         {sentToday.length === 0 ? (
-          <p className="cc-term-empty">No verified Discord-delivered options alerts in the recent sample</p>
+          <p className="cc-term-empty">No verified Discord-delivered options alerts in the last 24 hours</p>
         ) : (
           <div className="cc-term-opp-list">
             {sentToday.map((r: any) => (

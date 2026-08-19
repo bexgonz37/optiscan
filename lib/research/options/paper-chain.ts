@@ -82,6 +82,13 @@ export interface PaperChainRow {
 export interface PaperChainDiagnostic {
   generatedAtMs: number;
   dataSourceLabel: "Production database";
+  /**
+   * FULL — every SENT alert in the window, and the aggregates below describe it.
+   * OPEN_POSITIONS_ONLY — only the currently-open delivered mirrors, and every
+   * aggregate is deliberately left null because summing the trades that happen to be
+   * open right now is a survivorship-biased number, not a smaller true one.
+   */
+  scope: "FULL" | "OPEN_POSITIONS_ONLY";
   selectedWindow: {
     label: string;
     days: number | null;
@@ -107,15 +114,17 @@ export interface PaperChainDiagnostic {
     excludedPnlUsd: number;
     validTrades: number;
     excludedTrades: number;
-  };
-  exitPolicyResearch: ExitPolicyResearchReport;
+  } | null;
+  /** Null under OPEN_POSITIONS_ONLY: unfinished trades cannot support exit research. */
+  exitPolicyResearch: ExitPolicyResearchReport | null;
   rows: PaperChainRow[];
   gradingBacklog: ReturnType<typeof readGradingBacklogOnDb>;
   account: {
     identifier: "delivered_options";
     label: "Delivered Options Paper";
     startingBalanceUsd: number;
-    currentEquityUsd: number;
+    /** Null under OPEN_POSITIONS_ONLY — see `scope`. */
+    currentEquityUsd: number | null;
   };
 }
 
@@ -208,6 +217,21 @@ export function buildPaperChainDiagnostic(
   env: NodeJS.ProcessEnv = process.env,
   limit = 40,
   minSentAtMs: number | null = null,
+  /**
+   * OPEN_POSITIONS_ONLY (2026-08-18 audit) — the homepage needs the handful of
+   * currently-open delivered mirrors and nothing else, but the full diagnostic walks
+   * EVERY alert ever SENT (three to five queries each) and only slices to `limit` at
+   * the very end. That cost the homepage five to nine seconds per load, twice.
+   *
+   * This scope does NOT introduce a second definition of an open position: the driving
+   * set is narrowed to alerts that already have an ENTERED DELIVERED_ALERT_PAPER mirror,
+   * and every row is then built by the SAME code below. What it deliberately does NOT do
+   * is publish aggregates: a profit factor, an equity figure or an exit-policy study over
+   * "only the trades that happen to be open right now" is a survivorship-biased number, so
+   * those fields are left null and `scope` says why. Callers that need evidence must ask
+   * for the full diagnostic.
+   */
+  scope: "FULL" | "OPEN_POSITIONS_ONLY" = "FULL",
 ): PaperChainDiagnostic {
   const nowMs = Date.now();
   const since = nowMs - 24 * 3600_000;
@@ -219,6 +243,7 @@ export function buildPaperChainDiagnostic(
   const out: PaperChainDiagnostic = {
     generatedAtMs: nowMs,
     dataSourceLabel: "Production database",
+    scope,
     selectedWindow: {
       label: selectedDays == null ? "All available history" : `Last ${selectedDays} days`,
       days: selectedDays,
@@ -264,17 +289,29 @@ export function buildPaperChainDiagnostic(
   ).get(since) as { n: number })?.n ?? 0);
   out.paperLinkRate = out.sent24h ? +(out.linked24h / out.sent24h).toFixed(4) : null;
 
-  const alerts = minSentAtMs != null
-    ? db.prepare(
-      `SELECT * FROM options_alerts
+  const alerts = scope === "OPEN_POSITIONS_ONLY"
+    // Driven from the mirror side: `idx_options_paper_kind_status` answers this
+    // directly, so the walk below visits only currently-open positions instead of
+    // every alert in history.
+    ? (db.prepare(
+      `SELECT a.* FROM options_alerts a
+         JOIN options_paper_trades p ON p.alert_id = a.alert_id
+        WHERE p.paper_kind='DELIVERED_ALERT_PAPER' AND p.status='ENTERED'
+          AND a.state='SENT' AND a.research_only=0
+        GROUP BY a.alert_id
+        ORDER BY a.sent_at_ms DESC`,
+    ).all() as Record<string, unknown>[])
+    : minSentAtMs != null
+      ? db.prepare(
+        `SELECT * FROM options_alerts
          WHERE state='SENT' AND research_only=0 AND sent_at_ms IS NOT NULL AND sent_at_ms >= ?
          ORDER BY sent_at_ms DESC`,
-    ).all(minSentAtMs) as Record<string, unknown>[]
-    : db.prepare(
-      `SELECT * FROM options_alerts
+      ).all(minSentAtMs) as Record<string, unknown>[]
+      : db.prepare(
+        `SELECT * FROM options_alerts
          WHERE state='SENT' AND research_only=0
          ORDER BY sent_at_ms DESC`,
-    ).all() as Record<string, unknown>[];
+      ).all() as Record<string, unknown>[];
 
   const researchTrades: ExitResearchTrade[] = [];
 
@@ -472,6 +509,28 @@ export function buildPaperChainDiagnostic(
     } else {
       activeKeys.add(key);
     }
+  }
+
+  if (scope === "OPEN_POSITIONS_ONLY") {
+    // Stop here on purpose. Everything below aggregates the rows into evidence —
+    // realized P&L, account equity and the exit-policy study — and this scope holds
+    // only the positions that are open at this instant. Summing those would report a
+    // profit figure computed from the trades that have not finished yet, which is a
+    // survivorship-biased number wearing the same field name as the real one. The
+    // fields stay at their null/zero initial values and `scope` records why.
+    out.selectedWindow = {
+      label: "Currently-open delivered mirrors",
+      days: null,
+      minSentAtMs: null,
+    };
+    // Explicitly null rather than left at their zero initial values. A
+    // `verifiedTotalPnlUsd: 0` reads as "this book made nothing", which is a claim;
+    // null is the absence of one, and it is what a consumer must be forced to handle.
+    out.verifiedPnlBreakdown = null;
+    out.exitPolicyResearch = null;
+    out.account.currentEquityUsd = null;
+    out.rows = out.rows.slice(0, Math.max(1, limit));
+    return out;
   }
 
   const eligibleTradeIds = new Set(
