@@ -1,5 +1,153 @@
 # Current Task Packet
 
+## Packet update — 2026-08-19 The scheduler died at 00:58 ET and took the whole learning loop with it, and MRNA was never in the universe to miss
+
+### Verified state (checked, not assumed)
+
+- Baseline verified from git AND production BEFORE any change: local = `origin/main`
+  = production = `2ca5f275`, confirmed against `/api/healthz`. NOTE: the owner
+  believed production was `4dbf0a7`; that belief was **12 commits stale** — `4dbf0a7`
+  is an ancestor of HEAD, and exact parity held at `2ca5f27`. Every untracked scratch
+  file left untouched.
+- **No trading logic changed.** No scanner rule, strategy threshold, selection,
+  ranking weight, CALL/PUT decision, contract/strike/expiration choice, DTE rule,
+  Target 1, Target 2, stop, exit, provider cap or readiness threshold was touched.
+- `OWNER_SELECTION_STRENGTH_GATE_V1` still hashes `9b4f77b3c6268bf9e94781dc849ad2ef`,
+  still SHADOW_ONLY, floor still 75, prospective start still **2026-08-19**, still
+  **0 closed prospective outcomes** across 0 sessions — counters untouched.
+- `PRE_MOVE_DISCOVERY_V2` still hashes `e6eb1148e3bbd29fc4b71c657afbcafc` and — unlike
+  every prior packet — is now **capturing**: 5 rows, all 2026-08-19, its first
+  prospective session. EARLY_EXPANSION 2, MATURE_MOVE 2, TOO_LATE 1. Nothing backfilled,
+  no V1 row reclassified.
+
+### THE SCHEDULER WAS DEAD FOR 9h22m AND EVERY HEALTH SURFACE SAID OK
+
+The scheduler heartbeat froze at `2026-08-19T04:58:47Z` (00:58 ET) and had not moved by
+10:20 ET. The scanner loop was healthy the entire time — this was the scheduler alone.
+
+`beat()` awaits every job sequentially with **no timeout**, and `loop()` only schedules
+the next tick *after* `beat()` resolves. One job that never settled therefore stopped the
+scheduler permanently, until a process restart.
+
+What died with it: asymmetry marks, state transitions, the paper-activation gate, the EOD
+review, and the supervisor cycle. All 200 live asymmetry cases sat in `CONFIRMING` with
+**zero** transitions, zero marks, zero outcomes, `leadTime.measured 0`,
+`premiumAvoided.measured 0` — while capture kept writing into a loop whose consumer was
+gone. The research loop was open at both ends.
+
+Nothing surfaced it: process up, lease held, `started: true`, `isOwner: true`,
+`/api/healthz` ok. The scanner has had a watchdog (tick budget, generation fencing, WEDGED
+state) since it hit this same class of failure. The scheduler had nothing.
+
+**Fixed** (`5f9c469`): per-job budget `SCHED_JOB_TIMEOUT_MS` (default 3m) raced in
+`runJob`; whole-beat backstop `SCHED_BEAT_TIMEOUT_MS` (default 10m) so the next tick is
+now scheduled unconditionally; beat COMPLETION recorded separately from beat start;
+`schedulerHealth()` derives HEALTHY/STALE/WEDGED from completion and lists jobs still in
+flight past budget; `/api/runtime/status` reports it. An abandoned job is not cancelled (a
+promise cannot be) — the existing overlap guard is what stops a second copy, and
+`lastRun`/`runs` only advance on genuine completion so an abandoned job is never silently
+credited. `deriveSchedulerBeatState` is pure, so the outage shape is a unit test rather
+than a source-spec assertion.
+
+**Verified recovered in production after deploy**: beats completing, supervisor cycle ran
+10:34 ET (first since 00:58), marks read 333 cases and wrote 95 with **329 outcomes
+updated**, states moved to CONFIRMING 115 / HIGH_ASYMMETRY 80 / PREMIUM_CHASE 2 /
+LIQUIDITY_FAILURE 3, 50 transitions recorded, and the paper-activation gate **ACTIVATED**.
+
+### MRNA WAS NEVER IN THE UNIVERSE — THIS IS COVERAGE, NOT A REJECTION
+
+MRNA closed 62.96 and traded 143 (+127%). It produced **no** OptiScan record of any kind:
+`why-no-alert` = `NOT_OBSERVED`, zero momentum rows in the entire 09:10–10:11 ET window,
+zero opportunity cases, zero NBBO. The missed-opportunity forensic returns
+`evidenceQuality: NONE` — "the system never quoted one".
+
+Broad stock discovery admits `$0.50–$50` (`STOCK_MOMENTUM_MAX_PRICE`, default 50). MRNA
+opened at $116. Empirically confirmed: of 92 tickers scanned in that window, all 25 priced
+over $50 are curated mega-caps/ETFs and **every one of the 67 discovered runners is under
+$50**. The broad lane exists precisely because "the curated scan list can never see a
+random stock up 50% premarket" — the $50 ceiling reintroduces exactly that blindness for
+every stock above it.
+
+The options Tier-2 lane has no price ceiling (`tier2Eligible`: price >= $3, dollar volume
+>= $20M — MRNA cleared roughly $2.3B) but samples `.slice(0, 25)` per 60s off an
+**unranked, unrotated** whole-market list. The day's biggest mover had no more claim on a
+slot than KO. The stock lane ranks by fresh acceleration; the options lane does not rank
+at all. NOT changed — one hindsight example must not redefine live selection.
+
+Its own leveraged ETF, MRNY, WAS scanned at +125.8% and blocked on `persistOk`. OptiScan
+saw the derivative and not the underlying.
+
+### THE +2000% WAS NOT THE MISS. THE MISS WAS +293%
+
+`MRNA 260821C00120000` (2 DTE, ATM at the open, the highest strike the chain carried —
+the chain was built when MRNA was $63):
+
+| | |
+|---|---|
+| prior close 2026-08-18 | **$0.01** |
+| first regular-hours mark 09:30 ET | **$8.13** |
+| high 10:05 ET | **$31.95** |
+| prior-close return (hindsight) | +319,400% |
+| **attainable post-open return** | **+293%** |
+
+The headline percentage is an artifact of a penny prior close and is not claimable. The
+honest number is +293% from the first executable regular-hours mark, on a +29% post-open
+continuation in the underlying (116.05 -> 149.63). Premarket ran 06:45–07:00 ET, then
+consolidated for two and a half hours — the move was fully observable before the open and
+still had most of its option expansion left after it. Classification: **H — generalizable
+market-state coverage gap**, not a mechanical bug and not TOO_LATE.
+
+### FIVE OWNER WATCHES, ZERO CALLOUTS, AND A CHANNEL WITH NO SIGNAL
+
+Today's Discord: 5 deliveries, all `owner_intraday_actionable` to the **Alerts** webhook,
+all "OWNER WATCH · OWNER_ONLY · NOT SUBSCRIBER-APPROVED" (SPY 09:33, SPCX 09:46, DRAM
+09:58, TSLA 10:03, QQQ 10:10). Four puts, one call. The last actual actionable callout was
+**2026-08-06** — 13 days.
+
+Why nothing qualifies: the delivery quality bar is 0.70 and average candidate quality is
+0.628. Since the bar was raised: 9,037 decisions -> 225 deliver-intent -> 8,497
+RESEARCH_ONLY, with **5,682** sitting in the 0.55–0.70 band and 513 Tier-0 research-only
+candidates at quality >= 0.65. The bar sits above the mass of the distribution. NOT
+changed — that is a threshold decision, not a defect.
+
+**Shipped** (`3f3d558`, default OFF): `OWNER_WATCH_DISCORD_SUPPRESSED=1` suppresses the
+Discord POST for owner-private openings only. The ledger row is still written with the
+established SUPPRESSED status and the same `payload_type`, and the send still reports
+delivered — which is load-bearing, because `sendOwnerPrivateOpening` RELEASES the
+opportunity opening claim on a failed send, so reporting suppression as failure would have
+destroyed owner-mirror linkage and PRE_MOVE_V2 capture, the exact evidence this is meant
+to protect.
+
+### THE MISSED-OPPORTUNITY AGENT CANNOT FIND ANYTHING ON ITS OWN
+
+`/api/research/missed-opportunity` defaults to a hardcoded `"SPY,NVDA,QQQ"` and only looks
+wider when handed `&symbols=`. It reconstructs exclusively from OptiScan's own persisted
+decisions and NBBO. So a symbol the system never observed can never enter it: MRNA is
+invisible to the loop that exists to notice exactly this. The Loop Engineering requirement
+— a giant miss automatically becoming durable learning evidence — is **not met**, and no
+code change was made for it this session.
+
+### PROVIDER BUDGET IS STARVING CONTRACT SELECTION
+
+1,513 quota-exceeded events today with the daily cap barely touched (63,585 of 200,000) —
+the *minute* partition is the binding constraint. An on-demand MRNA scan was refused
+outright ("164/280 minute_partition cap"). `NO_CONTRACT_SELECTED` reasons carry
+`[PROVIDER_QUOTA_EXCEEDED]`, the options monitor logged 8,684 throttles against 3,349
+completed provider calls, and the first post-fix mark sweep rejected 1,625 of 1,732 marks
+on `PROVIDER_BUDGET`. Recorded, not changed — raising caps is out of bounds.
+
+### Open, deliberately not acted on
+
+- Tier-2 `.slice(0, 25)` is unranked and unrotated. Candidate for a SHADOW-ONLY experiment
+  ranking the Tier-2 slice by move / relative volume. Not registered: one MRNA is not an
+  evidence basis.
+- `STOCK_MOMENTUM_MAX_PRICE=50` makes every stock above $50 undiscoverable outside the
+  curated list. Same class, same reason for not touching it.
+- The missed-opportunity agent needs a discovery source that does not depend on prior
+  observation, or it will keep confirming only what OptiScan already saw.
+
+---
+
 ## Packet update — 2026-08-18 (4) The homepage was rebuilding every trade in history to show twelve, and the slowest thing in the app had no user
 
 ### Verified state (checked, not assumed)
