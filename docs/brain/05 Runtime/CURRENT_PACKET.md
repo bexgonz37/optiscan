@@ -1,5 +1,183 @@
 # Current Task Packet
 
+## Packet update — 2026-08-19 (2) The reserve was working, one lane was refusing itself, and a treasury ETF held the slot MRNA needed
+
+### Verified state (checked, not assumed)
+
+- Baseline verified from git AND production BEFORE any change: local = `origin/main`
+  = production = `cba11da4`, confirmed against `/api/healthz`, and
+  `schedulerHealth` HEALTHY ("beats are completing", 0 timeouts, 0 stuck jobs) —
+  the 5f9c469 fix holding. Every untracked scratch file left untouched.
+- **No trading logic changed.** No scanner rule, strategy threshold, selection,
+  ranking weight for trade selection, CALL/PUT authority, contract/strike/expiration
+  choice, DTE rule, Target 1, Target 2, stop, exit, delivery bar, provider cap or
+  readiness threshold was touched. `delivery-decision.ts` does not appear in the diff.
+- `OWNER_SELECTION_STRENGTH_GATE_V1` still hashes `9b4f77b3c6268bf9e94781dc849ad2ef`,
+  still SHADOW_ONLY, floor still 75, prospective start still 2026-08-19. Asserted by
+  a new test alongside `LHC_SELECT_V1`, whose gates are also proven unmoved.
+- `PRE_MOVE_DISCOVERY_V2` still hashes `e6eb1148e3bbd29fc4b71c657afbcafc` and is
+  capturing: **8 rows** (up from 5), 2 closed outcomes, 1 independent session, verdict
+  INSUFFICIENT_EVIDENCE — "2/20 closed outcomes, 1/5 independent sessions. Nothing here
+  is a finding yet." Nothing backfilled, `v1RowsUnchanged: true`.
+- `OWNER_WATCH_DISCORD_SUPPRESSED=1` is now SET in production. The code default is
+  still OFF and was not changed.
+
+### THE PROVIDER BUDGET WAS NOT STARVING ANYONE. ONE LANE WAS STARVING ITSELF
+
+The session ran 78,322 requests against **22,260 quota blocks (22.13%)**. The obvious
+reading — research is crowding out live work — is wrong, and the per-consumer numbers
+say so plainly:
+
+| Consumer | Requests | Refusals | Admission |
+|---|---|---|---|
+| `options_paper_mark` | 32,934 | 108 | 99.7% |
+| `scanner` | 31,804 | 1,904 | 94.4% |
+| `options_discovery` | 11,740 | 1,097 | 91.4% |
+| **`asymmetry_mark`** | **748** | **17,483** | **4.1%** |
+| `asymmetry_discovery` | 393 | 1,647 | 19.3% |
+
+Gate B7's reserve was doing its job: no live or execution lane was starved, and the mark
+lane was being served roughly its 44/minute guarantee. **One research lane generated 79%
+of the entire session's refusals by itself.**
+
+`runDueAsymmetryMarks` reads up to 500 open cases and marks every elapsed horizon on
+each. After the scheduler outage that was ~2,300 owed horizons, fired at a 44/minute
+partition on every 60s beat. ~2,000 were refused, each refusal wrote a transient
+`PROVIDER_BUDGET` mark row, and a transient row is re-offered next sweep — so the
+identical backlog was re-fired a minute later, indefinitely. Production shows exactly
+that decay: 1,981 -> 1,959 -> 1,930 -> 1,853 blocks per minute, draining at the reserve
+rate.
+
+Underneath it is a question nobody could ask. A consumer had exactly one thing to
+consult — `nearMinuteBudget(getCallStats())`, "is the MINUTE nearly full" — and that is
+not the question it needed answered, which is "may *I* still spend". Answering the
+second with the first is wrong in both directions: a reserve-holding lane that defers
+because someone else filled the minute has surrendered the guarantee that exists to
+protect it, and a lane that never asks discovers its limit one exception at a time.
+
+**Fixed** (`f7e3bab`): `provider-admission.ts` answers the second question from the
+partition the meter already publishes, with a test pinning that its answer equals exactly
+how many consecutive `decideBudget` calls would be admitted, at every stage of contention.
+Both research sweeps pace against it. Pacing alone would starve — both read their cases
+newest-first, so the cutoff always falls in the same place — so the mark sweep also adopts
+`rotateForBudget`, the round-robin the transition sweep has used for this exact reason
+(moved to `sweep-rotation.ts`, one implementation, re-exported). **Declining is not
+refusing**: declined work writes no row and issues no request, leaving the horizon owed in
+precisely the state a refusal would have, minus the refusal and the write.
+
+Also fixed: requests were ACCOUNTED at response time but METERED at issue time, so slow
+answers were filed under a minute that never spent them. Production reported
+`peakRequestsPerMinute: 449` against a 280 cap — `capUtilizationPctAtPeak: 160.4%` — with
+whole minutes missing, because a 70-second stall moved every request issued during it into
+a later bucket. **No cap was ever breached.** The dashboard an operator reads to answer
+"who saturated the minute" was bucketing by the wrong clock.
+
+### A TREASURY ETF AND A GOLD TRUST HELD SLOTS THE DAY'S BIGGEST MOVER COULD NOT REACH
+
+Measured against the live whole-market snapshot at 10:55 ET:
+
+| | |
+|---|---|
+| tier-2 eligible universe | **1,347 symbols** |
+| observed per 60s cycle | 25 (**1.9%**) |
+| MRNA's index in provider order | **605** |
+| MRNA's rank by \|day move\| | **5 of 1,347** |
+
+The 25 actually taken: `CARR VGSH LLY RF SFM FORM USD VOT CLSK LUNR INTU AAAU W RAMZ
+SPCX BSP RVMD PFE SIL ONTO GSK SBET VB LULU SHY` — VGSH and SHY are short-duration
+treasury ETFs, AAAU is a gold trust. With no rotation either, the same 25 were taken
+every cycle, all session, so MRNA was never going to be reached.
+
+**Fixed** (`9846147`): `selectTier2Cycle` splits the SAME 25 slots into an exceptional
+band (\|move\| >= 10%, capped at 15) and a rotation band on `rotateForBudget`. The whole
+1,347-symbol universe is now swept in 54 cycles on a quiet day; the priority band cannot
+take every slot, by construction and by test. Ranking is \|move\| alone, tie-broken by
+dollar volume then symbol — deliberately NOT a composite with liquidity weighted in,
+because liquidity is already a gate upstream and scoring it twice is how the old
+broad-discovery score ended up preferring mega-caps that were merely large.
+**Provider budget unchanged: exactly 25 symbols per cycle, asserted across universe sizes
+0..1,347.**
+
+### ONE RULE WAS ANSWERING "IS IT TRADABLE" AND "MAY WE LOOK AT IT"
+
+`broadStockEligibility()` is a TRADING gate and its $0.50-$50 band is defensible there.
+But `refreshDiscovery()` called that same function to decide what the scanner was allowed
+to LOOK AT. Against the live snapshot the same morning:
+
+| | |
+|---|---|
+| movers >= +10% passing the floor WITH the $50 ceiling | 67 |
+| movers >= +10% passing it WITHOUT the ceiling | 78 |
+| **invisible to every lane outside the curated list** | **11** |
+
+`MRNX $114 +264%` · `MRNA $147 +133%` · `GDXU $157 +26%` · `BNTX $113 +22%` ·
+`TWST $139 +19%` · `NUGT $185 +17%` · `TEM $58 +18%` · `EL $98 +16%` · `MRK $149 +10%` ·
+`MSTR $103 +12%` · `CRCL $80 +11%`. Note `STOCK_MOMENTUM_MAX_PRICE` is **unset** in
+production — the ceiling is a code default, not a deliberate operator choice.
+
+**Shipped** (`6c381d2`): `market-movers.ts` answers the observation question separately —
+no ceiling, but real floors (>= $1, >= $10M, >= 10%) so a 13,132-row snapshot reduces to
+under 50. The TRADING gate is unchanged, and the same test proves `broadStockEligibility`
+still refuses MRNA on price while discovery admits it. Observe widely, trade narrowly.
+Zero provider cost (it is handed the response discovery already paid for) and zero live
+authority (it writes rows; the promotion set is built from `bySym`, which it never
+touches). Nothing is invented: no relative-volume baseline exists in the snapshot so none
+is computed, a missing quote yields a null spread, velocity is null on first sight.
+
+### THE LOOP COULD NOT NOTICE A MISS WITHOUT HAVING LOOKED
+
+The V1 classifier gates on `hadQuoteEvidence` at step 1 and only reaches
+`OUTSIDE_DISCOVERY_UNIVERSE` at step 2. So the verdict that exists to name this failure is
+**unreachable for exactly the symbols it describes**. Its default symbol list was the
+hardcoded `"SPY,NVDA,QQQ"`.
+
+**Shipped** (`e129de6`): a coverage path beside the winner path, not a weaker version of
+it. `NOT_ADMITTED_TO_UNIVERSE` / `ADMITTED_NOT_QUOTED` / `OBSERVED_BY_OPTISCAN`, reached
+from market-state evidence. **A coverage case never quotes an executable return** — no
+NBBO, no fill, no claim — asserted by test along with the absence of any claimed-return
+field. `&source=market_movers` enumerates from the independent table and hands V1 only the
+symbols OptiScan actually quoted. Makes no provider call, which is load-bearing: the
+forensic must stay runnable while the minute cap is saturated, which is precisely when a
+budget-caused miss needs investigating.
+
+### THE FIRST DEFINITION FROZEN WITH NOTHING BEHIND IT
+
+`EXTREME_PREMARKET_DISCOVERY_V1` (`486216f`), hash
+`d173a8c4d28c479e71000482f0a39e30`, SHADOW_ONLY, prospective from 2026-08-19, zero live
+authority. `historicalResult` empty, `developmentSessions` empty, `sourceCohortId:
+NONE_NO_HISTORICAL_COHORT` — deliberately, because the hypothesis came from ONE example
+and a rule motivated by one vivid example is the likeliest of all to be widened until it
+fits. The hash covers the eligibility floors AND the ranking's output order.
+
+It declares two scopes. **COVERAGE** is started. **EXECUTABLE** — first executable NBBO,
+strategy eligibility, selection strength, the +10/+25/+50/+100/MFE ladder, too-late rate —
+is **NOT STARTED**, because a new research lane holds no minute reserve and on 2026-08-19
+such a lane was served 393 against 1,647. A sample drawn only from the minutes a starved
+lane happened to win is biased, and a biased sample is worse than none because it looks
+like evidence. That is the half that decides whether the hypothesis is worth anything.
+
+### Open, deliberately not acted on
+
+- **The delivery bar stays 0.70.** Shadow measurement of 0.675/0.65 needs unbiased
+  outcome tracking on additional contracts, which is provider spend this budget does not
+  have. Provider-budget repair is the prerequisite, and its effect has not been observed
+  in production yet.
+- **The Watchlist truncates alphabetically.** The static universe is 78 symbols against a
+  `DEFAULT_MAX_SYMBOLS` of 60, and admission is `.sort().slice(0, 60)` — so
+  `V VZ WFC WMT XBI XLB XLC XLE XLF XLI XLK XLP XLRE XLU XLV XLY XOM XOP` are cut on
+  every run. **The entire XL* sector ETF family is invisible to the professional
+  watchlist**, purely because it sorts last. Same defect family as the Tier-2 slice. Its
+  `HIGH_VOLUME_MOMENTUM` tier already exists and is gated on options-liquidity evidence,
+  and `market_mover_observations` is now exactly the confirmed source it was waiting for —
+  but wiring it means a chain fetch per added symbol and a live Discord output change, on
+  top of fixing the truncation first. Not done in the same session as the budget repair.
+- `nearMinuteBudget` callers (`paper-engine`, `scanner-loop`, `position-callout`,
+  `options/monitor`) still ask the global question while holding their own reserves.
+  With the partition in place other lanes alone can reach at most 236/280 (84.3%), so a
+  0.9 fraction can only trip once the asking lane has itself spent reserve. Unreviewed.
+
+---
+
 ## Packet update — 2026-08-19 The scheduler died at 00:58 ET and took the whole learning loop with it, and MRNA was never in the universe to miss
 
 ### Verified state (checked, not assumed)
