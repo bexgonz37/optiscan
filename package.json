@@ -9,7 +9,8 @@
     "build": "next build",
     "start": "node scripts/start-next.mjs",
     "test": "node --experimental-strip-types --test \"tests/*.test.mjs\"",
-    "worker": "node --experimental-strip-types worker/seed-worker.ts"
+    "worker": "node --experimental-strip-types worker/seed-worker.ts",
+    "smoke": "node scripts/prod-smoke.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^11.9.1",
