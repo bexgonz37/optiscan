@@ -24,10 +24,27 @@ export async function GET(req: Request) {
   if (!checkApiToken(req)) return unauthorized();
   deferServerBoot();
   try {
-    const { scannerLoopHealth } = await import("@/lib/scanner-loop");
+    const { scannerLoopHealth, loopState } = await import("@/lib/scanner-loop");
     const { marketSession } = await import("@/lib/trading-session");
+    const { getZeroDteDiscoveryUniverse } = await import("@/lib/universe");
+    const { buildCandidateUniverseReport } = await import("@/lib/research/discovery/candidate-universe-report");
     const health = scannerLoopHealth();
     const nowMs = Date.now();
+
+    // SCREENERS-FIRST, answerable at any hour. `discoveryStats` is in-memory and null
+    // outside market hours, so "is the scanner still looking at the whole market?" was
+    // previously unanswerable after the close. This reads the durable answer from
+    // configuration and reports the live counts only when the loop actually has them.
+    let candidateUniverse: unknown = null;
+    try {
+      const live = loopState();
+      candidateUniverse = buildCandidateUniverseReport({
+        env: process.env,
+        curatedListSize: getZeroDteDiscoveryUniverse().length,
+        discoveryStats: (live as { discoveryStats?: unknown }).discoveryStats as never,
+        session: String((live as { session?: unknown }).session ?? marketSession(nowMs)),
+      });
+    } catch { /* diagnostic only; its absence must not fail loop health */ }
 
     let schedulerOwner: {
       pid: number | null; hostname: string | null; heartbeatAt: string | null; isThisProcess: boolean;
@@ -51,6 +68,7 @@ export async function GET(req: Request) {
       ok: true,
       at: new Date(nowMs).toISOString(),
       loop: health,
+      candidateUniverse,
       session: marketSession(nowMs),
       schedulerOwner,
       pid: process.pid,
