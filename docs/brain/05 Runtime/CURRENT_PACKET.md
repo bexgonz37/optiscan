@@ -1,5 +1,126 @@
 # Current Task Packet
 
+## Packet update — 2026-08-19 (4) Phase 2A automatic forward labeling is deployed; collection, not probability, is now the truth
+
+### Proven release state
+
+- Phase 2A implementation commits: `bc94473` (immutable label/data contracts),
+  `9ce38de` (detached scheduler + owner visibility), and `5f3b66f`
+  (diagnostic truth semantics). GitHub `main` and Railway ran the exact full SHA
+  `5f3b66f1aea257fb5cc4378a1a8a27cde53397b8` for the production proof below.
+- `/api/healthz`: database ready, schema ready, no missing schema, branch `main`.
+  Scheduler: owner PID 1, beats completing, 0 beat/job timeouts, 0 stuck jobs.
+  Scanner running; Polygon connected; three Discord lanes ready; subscriber remains
+  `NOT_READY` with 12 blockers. One Railway replica and the existing `/app/data`
+  volume remain in use; no paid resource was added.
+- 4,656 / 4,656 tests pass. Focused forward-label/schema/scheduler/architecture
+  suites pass; `tsc --noEmit`, production `next build`, and `git diff --check` pass.
+- Graphify was repaired through the existing `uv` runtime and refreshed after the
+  final code and packet edits. The new graph path
+  resolves scheduler -> persisted evidence -> forward labeler -> append-only labels
+  -> precomputed coverage/dataset/inventory -> private system overview. It has no
+  provider or live-decision edge.
+
+### Automatic label loop
+
+The existing loop now closes automatically as:
+
+`OBSERVE -> FREEZE SetupEpisodeV2 Zone A -> EVALUATE -> RECORD ACTION -> WAIT FOR
+HORIZON -> LABEL -> VERIFY COVERAGE -> VERSION DATASET -> RESEARCH-ONLY VIEW`.
+
+- Cadence: 60 seconds by default (30-second floor), detached with `setImmediate`
+  so the scheduler heartbeat never awaits it.
+- Bound: 10 episodes and 8 seconds per run, progressive backlog drain, overlap
+  guard, scheduler wall-clock guard, `setImmediate` yield between episodes.
+- Restart/idempotency: immutable natural label identity plus `INSERT OR IGNORE`;
+  the dataset membership accumulator is transactional, order-independent, and
+  resumes without rescanning all labels.
+- Horizons: 5m, 15m, 30m, 60m, session. Unknown, immature, insufficient, and
+  censored are distinct; absent evidence is never written as false, zero, or loss.
+- Underlying labels record terminal return, MFE, MAE, extrema timing, threshold
+  timing, evidence bounds/gaps, source, coverage, censoring, and missing reason.
+- Exact option labels require the frozen OCC and contemporaneous two-sided entry.
+  Convention is `BUY_AT_ASK_EXIT_AT_FUTURE_BID`; future bids on another OCC cannot
+  cross. Zero bid is valid, crossed/invalid NBBO is not. +10/+25/+50/+100/+200,
+  -10/-20, stop, ordering, `AMBIGUOUS`, and `AMBIGUOUS_INTRABAR` are represented.
+- ACTIONABLE, WATCH/RESEARCH, REJECTED, OBSERVATION, defensible COUNTERFACTUAL,
+  actual paper, OWNER PAPER, and genuinely delivered subscriber actions remain
+  explicit populations. WATCH/rejected episodes need no fake paper trade.
+- Coverage reconciles mature horizon units exactly and exposes population, side,
+  DTE, strategy, discovery stage, selection strength, liquidity/evidence tier,
+  session, symbol, mover class, and action-kind concentration.
+
+### First production worker and dataset truth
+
+The worker completed automatically with batch limit 10, 0 provider calls, 0 DB-busy
+events, and no timeout. Observed production counts are honestly empty: 0 SetupEpisodeV2
+episodes, 0 mature horizon units, 0 underlying labels, 0 exact-option labels, and 0
+independent sessions. Exact-option coverage is `null` / "Not enough eligible evidence",
+not 0%. Empty deterministic dataset identity:
+`fds_57eeef5b437f3c430a9cbff5` (`FORWARD_LABEL_V1`, zero digest).
+
+The private Data page now shows Forward Learning, maturity, label counts, coverage,
+unknown/censored count, independent sessions, worker status, dataset version, and
+historical breadth. It states that labels do not change live callouts. The system
+overview reads precomputed snapshots only; it performs no provider call or large
+synchronous inventory scan.
+
+### Re-measured historical evidence breadth
+
+| Dataset | Rows | Symbols | Exact OCCs | Sessions | Point-in-time truth / limitation |
+|---|---:|---:|---:|---:|---|
+| underlying bars | 60,164 | 15 | n/a | 5 | point-in-time OHLC; fixed-offset session count needs DST validation |
+| exact option quotes | 2,238,462 | not derived in bounded pass | 73 | 9 | exact-OCC NBBO; selected breadth, no historical Greeks/OI |
+| option trades | 0 | n/a | 0 | 0 | trade prints cannot replace executable NBBO |
+| contract reference | 26,366 | 32 | 26,366 | n/a | identity, not price/executability |
+| SetupEpisodeV2 | 0 | 0 | 0 | 0 | immutable T0 observations, not necessarily trades |
+| forward option marks | 467,026 | not derived in bounded pass | 6,215 | 21 | selected paper/asymmetry exact-OCC marks |
+| research observations | 173,013 | 2,949 | 16,720 | 14 | prospective T0 evidence with mixed exact-quote coverage |
+| shadow outcomes | 9,264 | not derived in bounded pass | 7,167 | 18 | shadow-only, no live authority |
+| counterfactual outcomes | 0 | 0 | 0 | 0 | only defensible exact labels will enter |
+
+The inventory is machine-readable in `historical_evidence_inventory` and was filled
+one dataset per after-hours beat. The largest bounded inventory query took 6.18s;
+it ran in the detached slow path, never on an HTTP request. This is why 2.24 million
+quote rows must not be described as broad historical coverage: they represent only
+73 exact contracts.
+
+### Cost, storage, latency, and authority boundaries
+
+- Forward labeling reused only persisted evidence and added exactly 0 provider
+  requests. Provider caps and admission allocations are unchanged. No broad forward
+  capture was added because current coverage must be measured first.
+- Database after inventory: 6,551,068,672 bytes, WAL 73,393,712 bytes, volume 13.588%
+  used, storage warning `OK`. SQLite monitor write latency was 3.42ms and its bounded
+  writer saw 0 busy events. No retention rule or paid storage was added.
+- Live latency traces currently contain 0 samples, so p50/p95/p99 degradation cannot
+  honestly be claimed either way. The worker is detached, recorded 0 DB-busy events,
+  issues 0 provider calls, and the scanner/scheduler remained live during the proof;
+  representative RTH latency still needs measurement once traces exist.
+- No trading/delivery file, delivery bar, strategy threshold, CALL/PUT authority,
+  contract eligibility, target, stop, exit, provider cap, subscriber state, real-money
+  path, news path, or fast-path model was changed. Phase 2B probability/EV authority
+  is explicitly false.
+- Frozen definitions remain exact:
+  `OWNER_SELECTION_STRENGTH_GATE_V1` `9b4f77b3c6268bf9e94781dc849ad2ef`,
+  `PRE_MOVE_DISCOVERY_V2` `e6eb1148e3bbd29fc4b71c657afbcafc`, and
+  `EXTREME_PREMARKET_DISCOVERY_V1` `d173a8c4d28c479e71000482f0a39e30`.
+
+### Phase 2B readiness and next priority
+
+**NOT READY.** The deterministic labeling engine and reproducible dataset identity
+are ready, but production has zero SetupEpisodeV2 episodes/labels/sessions; underlying
+history is only 15 symbols across 5 sessions; exact quote history is 73 selected OCCs;
+and there are no historical option trades. No probability, EV, analog similarity, or
+strategy reweighting is supportable from this cohort.
+
+Next engineering priority: let Phase 2A collect representative independent sessions,
+then review coverage concentration and RTH latency. In parallel, design (do not blindly
+ingest) a bounded Massive archive path: compressed historical market archive plus
+derived episodes/labels, with relational SQLite retained for operational evidence.
+Do not ingest whole-market chains or provision paid object storage until the owner
+approves a measured storage/coverage plan. Do not begin Phase 2B automatically.
+
 ## Packet update — 2026-08-19 (3) The alphabet, the clock, and the half that did not need the budget
 
 ### Verified state (checked, not assumed)
