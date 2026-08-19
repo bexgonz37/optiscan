@@ -200,6 +200,35 @@ test("+10 is derived from the peak when no rung was marked, and says so", () => 
   assert.equal(m.ladder.timeTo25Ms, null, "a derived rung has no timestamp and must not invent one");
 });
 
+test("a SUCCESSFUL funnel terminal reason is not read as a refusal", () => {
+  // `terminal_reason` records how the funnel ENDED, which includes ending well.
+  // The first version of this module read any non-null value as a refusal, and
+  // production immediately labelled 10 of 40 movers "QUOTED_NO_CONTRACT_SELECTED
+  // (CONTRACT_SELECTED)" — a sentence that contradicts itself. A classifier that
+  // turns a success into a failure does not produce a slightly wrong number, it
+  // inverts the finding.
+  const db = makeDb();
+  addMover(db, "AAPL", { peakMovePct: 12 });
+  db.prepare("INSERT INTO contract_funnel_evidence (session_date, at_ms, symbol, terminal_reason) VALUES (?,?,?,?)")
+    .run(SESSION, OPEN_MS, "AAPL", "CONTRACT_SELECTED");
+  const m = measureExecutableOpportunityOnDb(db, { sessionDate: SESSION }).measurements[0];
+  assert.notEqual(m.state, "QUOTED_NO_CONTRACT_SELECTED");
+  assert.equal(m.noContractReason, null);
+  // No NBBO row exists, so the honest verdict is a gap in the record.
+  assert.equal(m.state, "ADMITTED_NOT_QUOTED");
+  assert.equal(m.ladder, null);
+});
+
+test("a negative time-to-first-quote is preserved, not clamped", () => {
+  // The symbol was already being quoted before it qualified as a mover, so
+  // coverage was never the constraint for it. Clamping to zero erases that.
+  const db = makeDb();
+  addMover(db, "WYFI", { peakMovePct: 26, firstObservedAtMs: OPEN_MS + 60 * 60_000 });
+  addQuote(db, "WYFI", { occ: "O:WYFI_P", quoteAtMs: OPEN_MS });
+  const m = measureExecutableOpportunityOnDb(db, { sessionDate: SESSION }).measurements[0];
+  assert.equal(m.timeToFirstQuoteMinutes, -60);
+});
+
 test("a quoted mover the funnel refused is reported with its recorded reason", () => {
   const db = makeDb();
   addMover(db, "GDXU", { peakMovePct: 26 });

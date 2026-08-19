@@ -127,7 +127,13 @@ export interface ExecutableMeasurement {
   peakUnderlyingMovePct: number | null;
   /** First quote that could actually have been acted on. Null = never quoted. */
   firstExecutableNbboAtMs: number | null;
-  /** Minutes between seeing the mover and having a quote for it. */
+  /**
+   * Minutes between first seeing the mover and having an executable quote.
+   *
+   * NEGATIVE is legitimate and worth reading: the symbol was already being
+   * quoted before it qualified as a mover, so coverage was never the constraint
+   * for it. Clamping to zero would erase exactly that distinction.
+   */
   timeToFirstQuoteMinutes: number | null;
   contract: ExecutableContract | null;
   /** NULL unless `firstExecutableNbboAtMs` is non-null. Never a zero-fill. */
@@ -314,6 +320,18 @@ function ladderFor(
   }
 }
 
+/**
+ * `terminal_reason` records how the funnel ENDED, which includes ending well.
+ *
+ * `CONTRACT_SELECTED` is the success value, and the first version of this module
+ * read any non-null terminal reason as a refusal. Production immediately showed
+ * the cost: 10 of 40 movers were labelled QUOTED_NO_CONTRACT_SELECTED with the
+ * reason "CONTRACT_SELECTED", which is a sentence that contradicts itself. A
+ * classifier that turns a success into a failure does not produce a slightly
+ * wrong number; it inverts the finding.
+ */
+const FUNNEL_SUCCESS_REASONS = new Set(["CONTRACT_SELECTED"]);
+
 /** Why the funnel refused, when it refused. Recorded, not inferred. */
 function noContractReason(db: EvidenceDb, symbol: string, sessionDate: string): string | null {
   if (!hasTable(db, "contract_funnel_evidence")) return null;
@@ -323,7 +341,9 @@ function noContractReason(db: EvidenceDb, symbol: string, sessionDate: string): 
         WHERE symbol = ? AND session_date = ? AND terminal_reason IS NOT NULL
         ORDER BY at_ms DESC LIMIT 1`,
     ).get(String(symbol).toUpperCase(), sessionDate) as any;
-    return r?.terminal_reason == null ? null : String(r.terminal_reason);
+    const reason = r?.terminal_reason == null ? null : String(r.terminal_reason);
+    if (reason == null || FUNNEL_SUCCESS_REASONS.has(reason)) return null;
+    return reason;
   } catch {
     return null;
   }
@@ -410,10 +430,14 @@ export function measureExecutableOpportunityOnDb(
         + "No return can be claimed for this symbol.";
     } else if (reason) {
       state = "QUOTED_NO_CONTRACT_SELECTED";
-      note = `Looked at, but the contract funnel selected nothing (${reason}).`;
+      note = `Looked at, but the contract rules refused every candidate (${reason}).`;
     } else {
+      // Reached here with no NBBO and no refusal recorded — including the case
+      // where the funnel reported CONTRACT_SELECTED but no observation row was
+      // written. That is a gap in the record, not a rejection, and saying so is
+      // more useful than guessing which it was.
       state = "ADMITTED_NOT_QUOTED";
-      note = "Admitted to a universe but no NBBO was ever recorded for it.";
+      note = "Admitted to a universe but no two-sided option quote was ever recorded for it.";
     }
 
     measurements.push({
