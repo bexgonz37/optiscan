@@ -113,7 +113,7 @@ function sub(over = {}) {
 const CTX = { deploymentSha: "abc1234", population: "DELIVERED_ALERT_PAPER" };
 const rec = (over = {}) => buildShadowRecord(sub(over), CTX);
 
-// â”€â”€ immutability / freeze â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── immutability / freeze ──────────────────────────────────────────────────
 
 test("the recorded definition hash matches the live gates", () => {
   assert.equal(definitionHash(), LHC_SELECT_V1_DEFINITION_HASH);
@@ -181,7 +181,7 @@ test("findExperiment resolves V1 and does not invent a V2", () => {
   assert.equal(findExperiment("LHC_SELECT_V2"), null);
 });
 
-// â”€â”€ leakage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── leakage ────────────────────────────────────────────────────────────────
 
 test("no denylisted hindsight field can reach the live rule", () => {
   const f = liveFeaturesFromSubmission(sub());
@@ -203,7 +203,7 @@ test("lifetime accumulators are on the denylist", () => {
   assert.ok(HINDSIGHT_DENYLIST.includes("contractCandidateCount"));
 });
 
-// â”€â”€ arm classification â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── arm classification ─────────────────────────────────────────────────────
 
 test("classifyArm covers all four quadrants", () => {
   assert.equal(classifyArm(true, true), "BOTH_ADMIT");
@@ -259,7 +259,7 @@ test("the shadow arm is scoped to lower_high_continuation only", () => {
   assert.ok(!isShadowEligible("vwap_rejection"));
 });
 
-// â”€â”€ confirmation cost â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── confirmation cost ──────────────────────────────────────────────────────
 
 test("confirmation timing is captured with per-field provenance", () => {
   const c = captureConfirmation(sub());
@@ -318,7 +318,7 @@ test("reward remaining reads the level on the thesis side", () => {
   assert.equal(bull.rewardRemainingAtEntry, 0.8);
 });
 
-// â”€â”€ attribution â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── attribution ────────────────────────────────────────────────────────────
 
 test("attribution is frozen from the live policy versions", () => {
   const a = freezeAttribution({ strategyId: "lower_high_continuation", population: "DELIVERED_ALERT_PAPER", deploymentSha: "abc1234" });
@@ -348,7 +348,7 @@ test("every prospective record carries full attribution", () => {
   assert.equal(isLegacyAttribution(r.attribution), false);
 });
 
-// â”€â”€ store â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── store ──────────────────────────────────────────────────────────────────
 
 test("the registry is write-once and refuses a changed definition", () => {
   const d = db();
@@ -461,7 +461,7 @@ test("refreshShadowOutcomes reads the paper store without provider calls", () =>
   d.close();
 });
 
-// â”€â”€ scoreboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── scoreboard ─────────────────────────────────────────────────────────────
 
 function row(over = {}) {
   return {
@@ -614,7 +614,7 @@ test("untrustworthy trajectories are counted, and peak is withheld", () => {
   assert.equal(s.evidenceQuality.trajectoryUntrustworthy, 1);
 });
 
-// â”€â”€ findings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── findings ───────────────────────────────────────────────────────────────
 
 test("every LHC finding is well formed and carries limitations", () => {
   assert.doesNotThrow(() => assertFindingsWellFormed());

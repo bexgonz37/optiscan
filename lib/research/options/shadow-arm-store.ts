@@ -7,7 +7,7 @@
  * 1. REGISTRY IS WRITE-ONCE. `registerExperimentOnDb` is INSERT OR IGNORE, and if a row
  *    already exists with a DIFFERENT `definition_hash` it reports a conflict rather than
  *    overwriting. A rule that changed mid-sample invalidates that sample, and the database is
- *    where that has to be caught â€” a source-level guard test only catches it before deploy.
+ *    where that has to be caught — a source-level guard test only catches it before deploy.
  *
  * 2. DECISIONS ARE IDEMPOTENT AND IMMUTABLE. `decision_key` buckets on the same 5-minute grain
  *    the alert dedup uses, so a re-run of a batch cannot double-count an opportunity, and a
@@ -42,7 +42,7 @@ function hasTable(db: ShadowDb, name: string): boolean {
   } catch { return false; }
 }
 
-// â”€â”€ registry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── registry ────────────────────────────────────────────────────────────────
 
 export type RegisterResult =
   | { ok: true; created: boolean; conflict: false }
@@ -91,7 +91,7 @@ export function registerExperimentOnDb(
   return { ok: true, created: info.changes > 0, conflict: false };
 }
 
-// â”€â”€ lifecycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── lifecycle ───────────────────────────────────────────────────────────────
 
 export function currentStatusOnDb(
   db: ShadowDb, experimentId: string, version: number,
@@ -149,7 +149,7 @@ export function statusHistoryOnDb(db: ShadowDb, experimentId: string, version: n
   }));
 }
 
-// â”€â”€ decisions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── decisions ───────────────────────────────────────────────────────────────
 
 /** Same 5-minute grain the alert dedup uses, so a re-run cannot double-count. */
 export const DECISION_BUCKET_MS = 300_000;
@@ -160,7 +160,7 @@ export function decisionKey(r: Pick<ShadowRecord, "experimentId" | "experimentVe
 }
 
 /**
- * Write one shadow decision. INSERT OR IGNORE â€” a decision is never revised, so a repeated
+ * Write one shadow decision. INSERT OR IGNORE — a decision is never revised, so a repeated
  * batch is a no-op rather than an update.
  */
 export function recordShadowDecisionOnDb(
@@ -189,7 +189,7 @@ export function recordShadowDecisionOnDb(
 }
 
 /**
- * Attach the mirror once it exists. Writes ONLY the linkage column â€” a decision column is
+ * Attach the mirror once it exists. Writes ONLY the linkage column — a decision column is
  * never touched after the fact.
  */
 export function linkPaperTradeOnDb(
@@ -243,7 +243,7 @@ export function linkOutcomeOnDb(db: ShadowDb, o: OutcomeLink): { updated: number
   return { updated: info.changes };
 }
 
-// â”€â”€ reads â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── reads ───────────────────────────────────────────────────────────────────
 
 export interface ShadowDecisionRow {
   decisionKey: string;
@@ -337,7 +337,7 @@ export function listShadowDecisionsOnDb(
 
 /**
  * Refresh outcome columns from the paper store for every linked decision. Deterministic,
- * zero provider calls â€” it reads the same `options_paper_trades` + same-contract marks the
+ * zero provider calls — it reads the same `options_paper_trades` + same-contract marks the
  * cohort loader uses, so a shadow row and a cohort row agree by construction.
  */
 export function refreshShadowOutcomesOnDb(db: ShadowDb, opts: { sinceMs?: number } = {}): { refreshed: number } {
