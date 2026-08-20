@@ -40,6 +40,10 @@ import {
 import { recordPreMoveAlertOnDb } from "./pre-move-store.ts";
 import { recordPreMoveV2AlertOnDb } from "./pre-move-v2-store.ts";
 import { preMoveCaseIdForFingerprint } from "../../opportunity-case/owner-mirror-identity.ts";
+import {
+  classifyOwnerOpening, LATE_PHASE_FRACTION_MOVE,
+  type OwnerOpeningClassification,
+} from "../../notifications/owner-opening-class.ts";
 
 export interface DeliverySubmission {
   deliveryInput: DeliveryInput;
@@ -223,6 +227,20 @@ export interface OwnerOpeningResult {
   /** The canonical mirror on the SAME exact OCC. Null means the opening left no evidence. */
   paperTradeId?: number | null;
   paperReason?: string;
+  /**
+   * ACTIONABLE or WATCH, and why. Reported so a caller can say which population this
+   * opening joined without re-deriving the rule. Null only when the send never got as far
+   * as being classified.
+   */
+  classification?: OwnerOpeningClassification | null;
+  /**
+   * Whether a Discord message actually exists. `sent` is deliberately NOT this: the
+   * suppression path reports `sent: true` so the opportunity opening claim is not released
+   * (releasing it would destroy owner-mirror linkage and PRE_MOVE_V2 capture), which makes
+   * `sent` a statement about the lifecycle, not about Discord. This field is the delivery
+   * truth, and the delivery ledger is where it is durably recorded.
+   */
+  discordPosted?: boolean;
 }
 
 /**
@@ -233,6 +251,12 @@ export interface OwnerOpeningResult {
  * DELIVER_TO_DISCORD path subscribers used, so when the readiness gate closed that path it
  * silenced the owner on BOTH lanes at once. Restoring only puts would leave qualified calls
  * invisible for the same reason.
+ *
+ * ROUTING: the caller supplies a classification from `owner-opening-class.ts`. This function
+ * used to hard-code `researchObservation: true` for every opening, which meant one env flag
+ * suppressed genuine ACTIONABLE callouts and WATCH observations together. It now forwards the
+ * classification's own verdict, so suppression applies to WATCH and nothing else. No delivery
+ * gate, threshold, target, stop, ranking or contract rule is touched by this.
  */
 async function sendOwnerPrivateOpening(
   db: DDb,
@@ -246,10 +270,12 @@ async function sendOwnerPrivateOpening(
     buildContent: (claim: { opportunityCaseId: string; baseUrl: string }) => string;
     why: string | null;
     readinessState?: string | null;
+    classification: OwnerOpeningClassification;
     postOverride?: DecisionDeps["ownerPostOverride"];
   },
 ): Promise<OwnerOpeningResult> {
   const { side, direction, quality, nowMs, env } = opts;
+  const classification = opts.classification;
   let claimedCaseId: string | null = null;
   try {
     const { sendOwnerResearchNotify } = await import("../../notifications/owner-research-notify.ts");
@@ -310,12 +336,16 @@ async function sendOwnerPrivateOpening(
           sent: false,
           reason: claim.reason,
           opportunityCaseId: claim.opportunityCaseId,
+          classification,
+          discordPosted: false,
         };
       }
       return {
         sent: false,
         reason: `owner_thesis_claim_failed:${claim.reason}`,
         opportunityCaseId: claim.opportunityCaseId,
+        classification,
+        discordPosted: false,
       };
     }
     claimedCaseId = claim.opportunityCaseId;
@@ -330,18 +360,29 @@ async function sendOwnerPrivateOpening(
       opportunityCaseId: claim.opportunityCaseId,
       thesisFingerprint: claim.thesisFingerprint,
       lifecycleState: "OPENING",
-      // Every opening on this path is owner-private and NOT subscriber-approved —
-      // both callers are the readiness-gate rejection and the bearish owner review.
-      // A subscriber-grade callout never reaches sendOwnerPrivateOpening.
-      researchObservation: true,
+      // Every opening on this path is owner-private and NOT subscriber-approved. That is
+      // NOT the same as being a research observation: a readiness-gated opening cleared
+      // every bar a subscriber callout must clear and is refused only by an authorization
+      // statement about subscribers. Only WATCH is eligible for OWNER_WATCH_DISCORD_SUPPRESSED.
+      researchObservation: classification.researchObservation,
       env: { ...env, OWNER_RESEARCH_DISCORD_ENABLED: "1", OWNER_RESEARCH_INTRADAY_ENABLED: "1" } as NodeJS.ProcessEnv,
       nowMs,
       postOverride: opts.postOverride,
     });
     if (!sent.sent) {
       releaseOpportunityOpeningClaimOnDb(db as any, claim.opportunityCaseId);
-      return { sent: false, reason: sent.reason, opportunityCaseId: claim.opportunityCaseId };
+      return {
+        sent: false,
+        reason: sent.reason,
+        opportunityCaseId: claim.opportunityCaseId,
+        classification,
+        discordPosted: false,
+      };
     }
+    // `sent.sent` is true for a suppressed observation as well — deliberately, so the
+    // opening claim survives. Whether a Discord message EXISTS is a different question and
+    // the delivery ledger is its authority; this mirrors that answer for the caller.
+    const discordPosted = sent.reason !== "owner_watch_discord_suppressed";
     markOwnerActionableOpeningDeliveredOnDb(db as any, {
       opportunityCaseId: claim.opportunityCaseId,
       discordMessageId: sent.messageId ?? null,
@@ -446,10 +487,12 @@ async function sendOwnerPrivateOpening(
     } catch { /* isolated */ }
     return {
       sent: true,
-      reason: "sent",
+      reason: discordPosted ? "sent" : sent.reason,
       opportunityCaseId: claim.opportunityCaseId,
       paperTradeId: paper.paperTradeId,
       paperReason: paper.reason,
+      classification,
+      discordPosted,
     };
   } catch (error: any) {
     if (claimedCaseId) {
@@ -461,6 +504,8 @@ async function sendOwnerPrivateOpening(
       sent: false,
       reason: `owner_review_failed:${String(error?.message ?? error).slice(0, 120)}`,
       opportunityCaseId: claimedCaseId,
+      classification,
+      discordPosted: false,
     };
   }
 }
@@ -478,6 +523,19 @@ export async function maybeSendBearishOwnerReview(
   if (!db || !shouldSendBearishOwnerReview(decision, env)) {
     return { sent: false, reason: "owner_review_not_enabled", opportunityCaseId: null };
   }
+  // This call site runs BEFORE the research floor, the late-phase bar, the subscriber
+  // quality bar, correlation and ranking, so those bars are evaluated here explicitly.
+  // Moving the call site downstream would change WHICH candidates get an owner review at
+  // all — a delivery-behaviour change this session is not making.
+  const classification = classifyOwnerOpening({
+    path: "bearish_authority",
+    quality,
+    deliverBar: threshold,
+    researchOnly: s.researchOnly,
+    fractionMove: s.fractionMove,
+    researchFloor: decisionConfig(env).researchFloor,
+    bearishState: decision.state,
+  });
   return sendOwnerPrivateOpening(db, s, {
     side: "put",
     direction: "bearish",
@@ -486,6 +544,7 @@ export async function maybeSendBearishOwnerReview(
     env,
     why: decision.reasons[0] ?? null,
     readinessState: decision.state,
+    classification,
     postOverride,
     buildContent: ({ baseUrl }) => formatBearishOwnerReview({
       symbol: s.symbol,
@@ -517,6 +576,8 @@ export async function maybeSendReadinessGatedOwnerOpening(
   s: DeliverySubmission,
   quality: number,
   readinessState: string,
+  /** The deliver bar this batch used, so the classifier asserts the bar rather than assuming it. */
+  deliverBar: number,
   nowMs: number,
   env: NodeJS.ProcessEnv,
   postOverride?: DecisionDeps["ownerPostOverride"],
@@ -526,6 +587,17 @@ export async function maybeSendReadinessGatedOwnerOpening(
   }
   const c = s.deliveryInput.contract;
   const e = s.deliveryInput.entry;
+  // Structurally ACTIONABLE: every bar below has already been passed to reach this line.
+  // Asserted rather than assumed, so an opening that somehow arrives here without having
+  // cleared them is classified WATCH instead of being waved through on its call site.
+  const classification = classifyOwnerOpening({
+    path: "readiness_gate",
+    quality,
+    deliverBar,
+    researchOnly: s.researchOnly,
+    fractionMove: s.fractionMove,
+    researchFloor: decisionConfig(env).researchFloor,
+  });
   return sendOwnerPrivateOpening(db, s, {
     side: s.side,
     direction: s.side === "put" ? "bearish" : "bullish",
@@ -534,6 +606,7 @@ export async function maybeSendReadinessGatedOwnerOpening(
     env,
     why: `readiness_gate:NOT_SUBSCRIBER_APPROVED:${readinessState}`,
     readinessState,
+    classification,
     postOverride,
     buildContent: ({ opportunityCaseId, baseUrl }) => formatPrivateLiveAlert({
       lane: "OWNER_ONLY",
@@ -793,8 +866,10 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
       decisions.push(base);
       continue;
     }
-    if (x.s.fractionMove != null && x.s.fractionMove >= 0.75) {
-      base.reason = `late_phase_fraction_move (${x.s.fractionMove} >= 0.75)`;
+    // Same numeric bar as before; named so `owner-opening-class.ts` provably checks the
+    // identical value rather than a copy that can drift.
+    if (x.s.fractionMove != null && x.s.fractionMove >= LATE_PHASE_FRACTION_MOVE) {
+      base.reason = `late_phase_fraction_move (${x.s.fractionMove} >= ${LATE_PHASE_FRACTION_MOVE})`;
       base.finalDeliveryReason = base.reason;
       decisions.push(base);
       continue;
@@ -861,11 +936,16 @@ export async function decideDeliveryBatch(batch: DeliverySubmission[], deps: Dec
         x.s,
         x.quality,
         readiness.state,
+        deliverBar,
         nowMs,
         env,
         deps.ownerPostOverride,
       );
-      if (owner.sent) base.finalDeliveryReason += "; owner opening delivered";
+      // "delivered" now means a Discord message exists, not merely that the opening
+      // lifecycle advanced. A suppressed WATCH observation says so in the reason instead of
+      // recording itself as an alert the owner received.
+      if (owner.discordPosted) base.finalDeliveryReason += "; owner opening delivered";
+      else if (owner.sent) base.finalDeliveryReason += `; owner opening NOT sent (${owner.reason})`;
       decisions.push(base);
       continue;
     }

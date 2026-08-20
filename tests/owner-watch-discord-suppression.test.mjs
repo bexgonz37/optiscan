@@ -112,10 +112,23 @@ test("suppression is idempotent per day like a real send", async () => {
   assert.match(second.reason, /already sent/);
 });
 
-test("the owner-private opening path is marked as a research observation", () => {
+// The routing repair. `sendOwnerPrivateOpening` used to hard-code
+// `researchObservation: true`, so this one flag suppressed genuine ACTIONABLE callouts
+// alongside WATCH observations. It now forwards the classifier's verdict.
+test("the owner-private opening path no longer hard-codes research observation", () => {
   const dd = read("lib/research/options/delivery-decision.ts");
-  assert.ok(/researchObservation: true/.test(dd), "sendOwnerPrivateOpening tags its notify");
-  // Both callers of sendOwnerPrivateOpening are non-subscriber by construction.
+  // Matched as a property assignment, so the doc comment that explains the old defect is
+  // not itself the thing that fails the test.
+  assert.ok(
+    !/^\s*researchObservation: true\b/m.test(dd),
+    "no owner opening may be tagged a research observation unconditionally",
+  );
+  assert.ok(
+    /researchObservation: classification\.researchObservation/.test(dd),
+    "the notify carries the classifier's verdict",
+  );
+  assert.ok(/classifyOwnerOpening\(/.test(dd), "both owner paths classify before sending");
+  // Both callers of sendOwnerPrivateOpening are still non-subscriber by construction.
   assert.ok(/readiness_gate:NOT_SUBSCRIBER_APPROVED/.test(dd));
 });
 
