@@ -372,6 +372,25 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
     bearishActionable: bearishPipelineEnabled(env),
     chainOutcome: extra.chainOutcome ?? null,
   });
+  // THE DECISION BOUNDARY.
+  //
+  // `evaluateOptionsCandidate` is where strategy selection, contract selection,
+  // the callout verdict and the paper entry are all fixed. Every line after this
+  // is persistence, telemetry and delivery of an already-made decision, so this
+  // instant — not `input.nowMs` — is the last moment at which market evidence
+  // could legitimately have entered the decision.
+  //
+  // `input.nowMs` is the monitor's `n0`, captured before getBars(), feature
+  // computation, strategy scoring and getChain(). It is the OBSERVATION START,
+  // and treating it as the decision instant is what made a quote that arrived
+  // 300ms into a multi-second evaluation look like it came from the future.
+  //
+  // The monitor's `strategyEvaluationCompletedAtMs` is not this instant either:
+  // it is stamped after runOptionsCandidate RETURNS, so it also contains all of
+  // the persistence work below.
+  //
+  // One Date.now() per candidate. Nothing downstream reads it to make a choice.
+  const decisionAtMs = Date.now();
   const snapJson = extra.featureSnapshot !== undefined ? JSON.stringify(extra.featureSnapshot) : null;
   try {
     const db = (deps.getDb ?? liveDb)();
@@ -639,6 +658,17 @@ export function runOptionsCandidate(input: OptionsCandidateInput, chain: ChainCo
         thesisFingerprint: livingThesisFingerprint,
         featureSnapshot: extra.featureSnapshot,
         env,
+        // Phase 2A instrumentation only — t0 and Zone-A validation are unchanged.
+        // quoteEventAtMs is NOT passed: the builder always reads it from the
+        // selected contract's provider timestamp so a local clock can never be
+        // substituted for the exchange one. quoteReceivedAtMs is the measured
+        // chain-response completion instant, or null when the monitor did not
+        // supply a trace — never fabricated from a nearby local clock.
+        clocks: {
+          observationStartedAtMs: extra.latencyTrace?.observationReceivedAtMs ?? input.nowMs,
+          decisionAtMs,
+          quoteReceivedAtMs: extra.latencyTrace?.chainCompletedAtMs ?? null,
+        },
       });
       const stored = persistSetupEpisodeV2OnDb(db as any, episode, input.nowMs);
       if (stored.ok) {

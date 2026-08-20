@@ -397,6 +397,66 @@ diagnostic establishes magnitude only. The timestamp semantics, Zone-A validatio
 identity, strategy and contract logic, delivery behavior, and subscriber authority are
 unchanged; the OBSERVE -> FREEZE loop is observable, not repaired.
 
+### Phase 2A OBSERVE -> FREEZE four-clock semantics — added 2026-08-20
+
+The first gate proved the magnitude. This one names the clocks. It changes what the
+OBSERVE -> FREEZE edge can be OBSERVED to mean, and nothing else: the Zone-A rule, the
+episode identity, contract selection, delivery, and subscriber authority are all
+byte-identical to the prior build, and zero provider calls were added.
+
+Live production on 2026-08-20 rejected 62 of 738 EpisodeV2 builds as
+`ZONE_A_FUTURE_TIMESTAMP`. Of the 594 CONTRACT_SELECTED rows carrying a quote timestamp,
+62 (10.44%) had `quote_timestamp_ms > observed_at_ms`, distributed continuously through
+zero: p50 311ms, p95 2,059ms, max 3,564ms, and nothing at all beyond five seconds. That
+is not the shape of a provider publishing future-dated prints. It is the shape of a
+reference clock captured too early.
+
+It was. The live path captures one local instant at the top of the per-symbol scan and
+then spends real wall-clock on `getBars()`, feature computation, strategy scoring and
+`getChain()` before it ever sees a quote. Comparing an exchange event time against that
+earlier instant asks whether the quote existed before we STARTED LOOKING. The leakage
+question is whether it existed before we DECIDED. Those are different instants on
+different clocks, so the edge now carries four of them and never collapses one into
+another:
+
+```
+observationStartedAtMs  LOCAL    scanner evaluation start (monitor n0)
+        |                        ... getBars, features, strategy scoring ...
+        |                        ... getChain ...
+quoteReceivedAtMs       LOCAL    chain response carrying the selected quote completed
+        |
+decisionAtMs            LOCAL    disposition fixed; nothing later may enter Zone A
+        v
+quoteEventAtMs          FOREIGN  provider/exchange/SIP NBBO event time
+```
+
+`quoteEventAtMs` belongs to a foreign clock, so any difference involving it also carries
+the unknown offset between that clock and ours. Those relations are labelled MIXED_CLOCK
+and must never be read as network or transport latency. Only the local-to-local
+differences are true elapsed durations.
+
+Nothing is clamped. `signedQuoteAgeAt(referenceMs, quoteEventAtMs)` is the one canonical
+calculation and it returns null only when an input is missing — never because the answer
+came out negative. A negative age is the evidence; `Math.max(0, ...)` is what erased it.
+
+Every build attempt is now classified as `BEFORE_OR_AT_OBSERVATION_START`,
+`BETWEEN_OBSERVATION_AND_DECISION`, `AFTER_DECISION`, or
+`INSUFFICIENT_TIMESTAMP_EVIDENCE`, with the same four-way split kept separately for the
+attempts the CURRENT rule rejected. Those rejections still happen, deliberately, so the
+old rule and the new evidence run against the same live traffic and can be compared. The
+counters and the fixed-width signed histograms are process-lifetime and bounded; no
+timestamp event writes a DB row.
+
+Three legacy quote-age implementations still disagree with the canonical helper and are
+listed, live, under `timestampSemantics.legacyQuoteAgeSemantics.stillDivergent`. They are
+not unified here: each feeds a live gate, and changing one would move acceptance in the
+same deployment that is supposed to prove acceptance did not move.
+
+Status after this build: **TIMESTAMP VALIDATION REPAIR PENDING LIVE PROOF.** The loop is
+now observable in the right units. It is still not repaired, and the validator must not
+be touched until a full RTH session reports how many of its `ZONE_A_FUTURE_TIMESTAMP`
+rejections were `BETWEEN_OBSERVATION_AND_DECISION`.
+
 The scheduler checks once per minute. Each run examines at most ten episodes, has an
 independent eight-second deadline, yields between episodes, and issues zero provider
 requests. `INSERT OR IGNORE` plus deterministic label identity makes deploy/restart and

@@ -10,6 +10,20 @@ import { OPTIONS_STRATEGIES } from "../options/strategy-catalog.ts";
 import type { OptionsCandidateInput } from "../options/discovery.ts";
 import type { OptionsEvalResult } from "../options/loop.ts";
 import { tradingDay } from "../../trading-session.ts";
+import {
+  CANONICAL_QUOTE_AGE,
+  LEGACY_QUOTE_AGE_CONSUMERS,
+  decisionClockEvidence,
+  newSignedMsHistogram,
+  newTimestampRelationCounts,
+  recordSignedMs,
+  signedQuoteAgeAt,
+  snapshotSignedMsHistogram,
+  type DecisionClockEvidence,
+  type DecisionClocks,
+  type SignedMsHistogram,
+  type TimestampRelation,
+} from "./clocks.ts";
 
 export const SETUP_EPISODE_V2_VERSION = 2;
 export const SETUP_EPISODE_V2_FEATURE_VERSION = "options-features@2";
@@ -75,6 +89,21 @@ export interface SetupEpisodeV2 {
     marketContext: Record<string, EvidenceValue<unknown>>;
   };
   maxFeatureAsOfMs: number;
+  /**
+   * Phase 2A four-clock instrumentation. ADDITIVE and DIAGNOSTIC ONLY.
+   *
+   * `t0Ms` above keeps its existing meaning (the monitor's observation-start
+   * `n0`) and Zone-A validation still runs against it unchanged, so acceptance
+   * behaviour is identical to the prior build. These clocks exist so the next
+   * live session can answer whether the ZONE_A_FUTURE_TIMESTAMP rejections are
+   * quotes that arrived DURING the evaluation window (legitimate, and currently
+   * discarded) or genuinely after the decision was fixed (real leakage).
+   *
+   * It lives outside `zoneA` on purpose: `decisionAtMs` is by construction
+   * >= t0Ms, so an EvidenceValue carrying it would be a Zone-A violation. It is
+   * decision provenance, not a decision-time market feature.
+   */
+  decisionClocks: DecisionClockEvidence;
 }
 
 const DECISION_ENV_KEYS = [
@@ -203,16 +232,46 @@ export function buildSetupEpisodeV2(input: {
   thesisFingerprint?: string | null;
   featureSnapshot?: unknown;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Phase 2A four-clock evidence from the live path. Optional so every existing
+   * caller and fixture keeps working; when absent the relation is honestly
+   * reported as INSUFFICIENT_TIMESTAMP_EVIDENCE rather than inferred.
+   *
+   * `quoteEventAtMs` is NOT accepted here — it is always read from the selected
+   * contract's provider timestamp below, so no caller can substitute a local
+   * clock for the exchange one.
+   */
+  clocks?: Partial<Omit<DecisionClocks, "quoteEventAtMs">>;
 }): SetupEpisodeV2 {
   const buildAtMs = Number.isFinite(input?.candidate?.nowMs) ? Number(input.candidate.nowMs) : Date.now();
-  buildAttempted(buildAtMs);
+  // The four clocks are assembled BEFORE the try so a Zone-A rejection is still
+  // classified. The rejected population is the whole point of this gate: an
+  // episode that throws never persists, so the in-process counters are the only
+  // place its timestamp relation can ever be observed.
+  const clocks: DecisionClocks = {
+    observationStartedAtMs: input?.clocks?.observationStartedAtMs
+      ?? (Number.isFinite(input?.candidate?.nowMs) ? Number(input.candidate.nowMs) : null),
+    decisionAtMs: input?.clocks?.decisionAtMs ?? null,
+    quoteEventAtMs: input?.result?.contract?.providerTimestamp ?? null,
+    quoteReceivedAtMs: input?.clocks?.quoteReceivedAtMs ?? null,
+  };
+  const clockEvidence = decisionClockEvidence(clocks);
+  buildAttempted(buildAtMs, clockEvidence);
   try {
   const c = input.candidate;
   const r = input.result;
   const env = input.env ?? process.env;
   const digest = decisionConfigDigest(env);
   const selected = r.selection.selected;
-  const quoteAge = r.contract?.providerTimestamp == null ? null : Math.max(0, c.nowMs - r.contract.providerTimestamp);
+  // LEGACY, DELIBERATELY UNCHANGED IN PHASE 2A. Two things are wrong with it and
+  // both stay wrong until the repair pass, so acceptance behaviour cannot move:
+  //   1. the reference clock is t0/observation-start, not the decision instant;
+  //   2. Math.max(0, ...) clamps a negative age to 0, which makes a quote that
+  //      post-dates t0 look maximally fresh to the executability gate below.
+  // Written through the canonical signed helper so the clamp is visible rather
+  // than implied. The value is identical to the previous expression.
+  const signedQuoteAgeAtT0 = signedQuoteAgeAt(c.nowMs, r.contract?.providerTimestamp ?? null);
+  const quoteAge = signedQuoteAgeAtT0 == null ? null : Math.max(0, signedQuoteAgeAtT0);
   const executable = r.contract != null
     && (r.contract.bid ?? 0) > 0
     && (r.contract.ask ?? 0) > (r.contract.bid ?? 0)
@@ -308,11 +367,12 @@ export function buildSetupEpisodeV2(input: {
     featureVersion: SETUP_EPISODE_V2_FEATURE_VERSION,
     zoneA,
     maxFeatureAsOfMs: c.nowMs,
+    decisionClocks: clockEvidence,
   };
   buildSucceeded(buildAtMs);
   return episode;
   } catch (error) {
-    buildRejected(error, buildAtMs);
+    buildRejected(error, buildAtMs, clockEvidence);
     throw error;
   }
 }
@@ -344,10 +404,18 @@ interface EpisodeHealthState {
   persistenceAttempts: number;
   persistenceSuccesses: number;
   persistenceFailures: number;
+  /** Inserts that fell back to the pre-clock column list (schema lag, not a failure). */
+  clockColumnFallbackInserts: number;
   observationActionFailures: number;
   counterfactualActionFailures: number;
   paperActionFailures: number;
   subscriberActionFailures: number;
+  /**
+   * First build attempt of THIS process. Every counter here is process-lifetime,
+   * so a restart resets them; without an explicit start instant a reader cannot
+   * tell a quiet hour from a process that came up sixty seconds ago.
+   */
+  firstBuildAttemptAtMs: number | null;
   lastBuildAttemptAtMs: number | null;
   lastBuildSuccessAtMs: number | null;
   lastBuildRejectionAtMs: number | null;
@@ -357,6 +425,22 @@ interface EpisodeHealthState {
   lastPersistenceError: string | null;
   lastActionFailureAtMs: number | null;
   lastActionFailureKind: EpisodeActionKind | null;
+  /** Phase 2A. Every build ATTEMPT, classified against the four-clock window. */
+  timestampRelationByClass: Record<TimestampRelation, number>;
+  /**
+   * The measurement this gate exists for: of the attempts the CURRENT Zone-A rule
+   * rejected as ZONE_A_FUTURE_TIMESTAMP, where did the quote event actually fall?
+   * A large BETWEEN_OBSERVATION_AND_DECISION count means the rule is discarding
+   * quotes that arrived legitimately during evaluation.
+   */
+  zoneAFutureTimestampRelationByClass: Record<TimestampRelation, number>;
+  /** Signed quoteEventAtMs - observationStartedAtMs over all attempts. */
+  quoteEventAfterObservationStartMsHistogram: SignedMsHistogram;
+  /** Signed decisionAtMs - quoteEventAtMs over all attempts. */
+  quoteAgeAtDecisionMsHistogram: SignedMsHistogram;
+  /** The same two, restricted to ZONE_A_FUTURE_TIMESTAMP rejections. */
+  zoneAFutureQuoteEventAfterObservationStartMsHistogram: SignedMsHistogram;
+  zoneAFutureQuoteAgeAtDecisionMsHistogram: SignedMsHistogram;
 }
 
 type EpisodeHealthGlobal = typeof globalThis & {
@@ -376,10 +460,12 @@ function newEpisodeHealthState(): EpisodeHealthState {
     persistenceAttempts: 0,
     persistenceSuccesses: 0,
     persistenceFailures: 0,
+    clockColumnFallbackInserts: 0,
     observationActionFailures: 0,
     counterfactualActionFailures: 0,
     paperActionFailures: 0,
     subscriberActionFailures: 0,
+    firstBuildAttemptAtMs: null,
     lastBuildAttemptAtMs: null,
     lastBuildSuccessAtMs: null,
     lastBuildRejectionAtMs: null,
@@ -389,6 +475,12 @@ function newEpisodeHealthState(): EpisodeHealthState {
     lastPersistenceError: null,
     lastActionFailureAtMs: null,
     lastActionFailureKind: null,
+    timestampRelationByClass: newTimestampRelationCounts(),
+    zoneAFutureTimestampRelationByClass: newTimestampRelationCounts(),
+    quoteEventAfterObservationStartMsHistogram: newSignedMsHistogram(),
+    quoteAgeAtDecisionMsHistogram: newSignedMsHistogram(),
+    zoneAFutureQuoteEventAfterObservationStartMsHistogram: newSignedMsHistogram(),
+    zoneAFutureQuoteAgeAtDecisionMsHistogram: newSignedMsHistogram(),
   };
 }
 
@@ -411,10 +503,15 @@ export function classifyEpisodeBuildRejection(reason: unknown): EpisodeBuildReje
   return "OTHER_BUILD_ERROR";
 }
 
-function buildAttempted(nowMs: number): void {
+function buildAttempted(nowMs: number, clocks?: DecisionClockEvidence): void {
   const s = episodeHealthState();
   s.buildAttempts += 1;
+  s.firstBuildAttemptAtMs ??= nowMs;
   s.lastBuildAttemptAtMs = nowMs;
+  if (!clocks) return;
+  s.timestampRelationByClass[clocks.timestampRelation] += 1;
+  recordSignedMs(s.quoteEventAfterObservationStartMsHistogram, clocks.relations.quoteEventAfterObservationStartMs);
+  recordSignedMs(s.quoteAgeAtDecisionMsHistogram, clocks.relations.quoteAgeAtDecisionMs);
 }
 
 function buildSucceeded(nowMs: number): void {
@@ -423,17 +520,32 @@ function buildSucceeded(nowMs: number): void {
   s.lastBuildSuccessAtMs = nowMs;
 }
 
-function buildRejected(reason: unknown, nowMs: number): void {
+function buildRejected(reason: unknown, nowMs: number, clocks?: DecisionClockEvidence): void {
   const rejectionClass = classifyEpisodeBuildRejection(reason);
   const s = episodeHealthState();
   s.buildRejectionsTotal += 1;
   s.buildRejectionsByClass[rejectionClass] += 1;
   s.lastBuildRejectionAtMs = nowMs;
   s.lastBuildRejectionClass = rejectionClass;
+  // The comparison that decides the next phase: the population the CURRENT rule
+  // throws away, split by where the quote event genuinely fell. Recorded only
+  // for the future-timestamp class so the other rejection classes cannot dilute it.
+  if (!clocks || rejectionClass !== "ZONE_A_FUTURE_TIMESTAMP") return;
+  s.zoneAFutureTimestampRelationByClass[clocks.timestampRelation] += 1;
+  recordSignedMs(
+    s.zoneAFutureQuoteEventAfterObservationStartMsHistogram,
+    clocks.relations.quoteEventAfterObservationStartMs,
+  );
+  recordSignedMs(s.zoneAFutureQuoteAgeAtDecisionMsHistogram, clocks.relations.quoteAgeAtDecisionMs);
 }
 
 function boundedErrorMessage(reason: unknown): string {
   return String((reason as Error)?.message ?? reason).slice(0, 240);
+}
+
+/** How many inserts had to drop the clock columns because the DB lacked them. */
+function episodeClockColumnFallback(): void {
+  episodeHealthState().clockColumnFallbackInserts += 1;
 }
 
 function episodePersistenceAttempted(): void {
@@ -589,9 +701,20 @@ export function setupEpisodeV2TimestampDiagnosticOnDb(
 
 export function setupEpisodeV2HealthOnDb(db: EpisodeDb): Record<string, unknown> {
   const state = episodeHealthState();
+  // Deep-copy every mutable sub-object. A health response that aliased the live
+  // counters would keep changing under a caller that is still serializing it.
   const runtime = {
     ...state,
     buildRejectionsByClass: { ...state.buildRejectionsByClass },
+    timestampRelationByClass: { ...state.timestampRelationByClass },
+    zoneAFutureTimestampRelationByClass: { ...state.zoneAFutureTimestampRelationByClass },
+    quoteEventAfterObservationStartMsHistogram:
+      snapshotSignedMsHistogram(state.quoteEventAfterObservationStartMsHistogram),
+    quoteAgeAtDecisionMsHistogram: snapshotSignedMsHistogram(state.quoteAgeAtDecisionMsHistogram),
+    zoneAFutureQuoteEventAfterObservationStartMsHistogram:
+      snapshotSignedMsHistogram(state.zoneAFutureQuoteEventAfterObservationStartMsHistogram),
+    zoneAFutureQuoteAgeAtDecisionMsHistogram:
+      snapshotSignedMsHistogram(state.zoneAFutureQuoteAgeAtDecisionMsHistogram),
   };
   const episodeCount = Number((db.prepare("SELECT COUNT(*) n FROM setup_episodes WHERE episode_version=2").get() as any)?.n ?? 0);
   const actionCount = Number((db.prepare("SELECT COUNT(*) n FROM episode_actions").get() as any)?.n ?? 0);
@@ -624,6 +747,78 @@ export function setupEpisodeV2HealthOnDb(db: EpisodeDb): Record<string, unknown>
     labelWriterAuthority: "PHASE_2_SUBSTRATE_ONLY",
     runtime,
     timestampDiagnostic,
+    timestampSemantics: setupEpisodeV2TimestampSemanticsHealth(runtime),
+  };
+}
+
+/**
+ * Phase 2A four-clock evidence, shaped for a reader who has to decide whether
+ * the Zone-A rule is discarding legitimate quotes.
+ *
+ * Everything here is process-lifetime and bounded: four relation counters, a
+ * four-way split of the rejected population, and four fixed-width histograms.
+ * No event rows, no unbounded arrays, no provider calls, no writes.
+ */
+export function setupEpisodeV2TimestampSemanticsHealth(runtime: {
+  buildAttempts: number;
+  firstBuildAttemptAtMs: number | null;
+  buildRejectionsByClass: Record<EpisodeBuildRejectionClass, number>;
+  timestampRelationByClass: Record<TimestampRelation, number>;
+  zoneAFutureTimestampRelationByClass: Record<TimestampRelation, number>;
+  quoteEventAfterObservationStartMsHistogram: SignedMsHistogram;
+  quoteAgeAtDecisionMsHistogram: SignedMsHistogram;
+  zoneAFutureQuoteEventAfterObservationStartMsHistogram: SignedMsHistogram;
+  zoneAFutureQuoteAgeAtDecisionMsHistogram: SignedMsHistogram;
+}): Record<string, unknown> {
+  const rejected = runtime.zoneAFutureTimestampRelationByClass;
+  const classified = Object.values(runtime.timestampRelationByClass).reduce((a, b) => a + b, 0);
+  const rejectedClassified = Object.values(rejected).reduce((a, b) => a + b, 0);
+  const zoneAFutureRejections = runtime.buildRejectionsByClass.ZONE_A_FUTURE_TIMESTAMP;
+  return {
+    model: "FOUR_CLOCK_V1",
+    authority: "DIAGNOSTIC_ONLY",
+    validatorChanged: false,
+    scope: "PROCESS_LIFETIME",
+    bounded: true,
+    providerCalls: 0,
+    firstBuildAttemptAtMs: runtime.firstBuildAttemptAtMs,
+    buildAttempts: runtime.buildAttempts,
+    // Every attempt is classified exactly once, so this must equal buildAttempts.
+    // If it ever does not, a build path is bypassing the instrumentation.
+    attemptsClassified: classified,
+    reconcilesWithBuildAttempts: classified === runtime.buildAttempts,
+    timestampRelation: { ...runtime.timestampRelationByClass },
+    zoneAFutureTimestampRejections: {
+      total: zoneAFutureRejections,
+      classified: rejectedClassified,
+      // Non-strict: a rejection whose clocks were never supplied is still counted
+      // in `total` but lands in INSUFFICIENT_TIMESTAMP_EVIDENCE, so the two agree.
+      reconciles: rejectedClassified === zoneAFutureRejections,
+      beforeOrAtObservationStartCount: rejected.BEFORE_OR_AT_OBSERVATION_START,
+      betweenObservationAndDecisionCount: rejected.BETWEEN_OBSERVATION_AND_DECISION,
+      afterDecisionCount: rejected.AFTER_DECISION,
+      insufficientCount: rejected.INSUFFICIENT_TIMESTAMP_EVIDENCE,
+    },
+    // Surfaced live, not just written in a document: these are the gates that
+    // still measure quote age against the wrong clock and destroy the sign.
+    // None may change before the validator repair is proven.
+    legacyQuoteAgeSemantics: {
+      unified: CANONICAL_QUOTE_AGE.unifiedInPhase2A,
+      canonical: CANONICAL_QUOTE_AGE,
+      stillDivergent: LEGACY_QUOTE_AGE_CONSUMERS,
+    },
+    histograms: {
+      note: "Signed milliseconds. Negative values are preserved evidence, never clamped.",
+      allAttempts: {
+        quoteEventAfterObservationStartMs: runtime.quoteEventAfterObservationStartMsHistogram,
+        quoteAgeAtDecisionMs: runtime.quoteAgeAtDecisionMsHistogram,
+      },
+      zoneAFutureTimestampRejections: {
+        quoteEventAfterObservationStartMs:
+          runtime.zoneAFutureQuoteEventAfterObservationStartMsHistogram,
+        quoteAgeAtDecisionMs: runtime.zoneAFutureQuoteAgeAtDecisionMsHistogram,
+      },
+    },
   };
 }
 
@@ -643,23 +838,52 @@ export function persistSetupEpisodeV2OnDb(db: EpisodeDb, episode: SetupEpisodeV2
       else episodePersistenceFailed("immutable episode identity conflict", nowMs);
       return { ok: same, inserted: false, episodeKey: episode.episodeKey, violations: same ? [] : ["immutable episode identity conflict"] };
     }
-    const info = db.prepare(
-      `INSERT INTO setup_episodes
-        (episode_key,source,symbol,t0_ms,trading_day,session,tod_bucket,asset_class,direction,
+    // The four clocks are written TWICE on purpose, both at INSERT only:
+    //   - provenance_json carries the full evidence block (relations, clock
+    //     domains, classification). It is durable on any schema, including a
+    //     production DB that has not yet received the additive columns.
+    //   - four dedicated columns make the relation SQL-aggregable, which the
+    //     existing timestamp diagnostic requires: it is deliberately aggregate-
+    //     only, and forcing it to parse a JSON blob per row would turn a bounded
+    //     read into a full scan.
+    // The V2 immutability triggers already forbid UPDATE and DELETE, so writing
+    // at INSERT is what preserves immutability here.
+    const clocks = episode.decisionClocks;
+    const provenanceJson = JSON.stringify({ sourceLane: episode.sourceLane, decisionClocks: clocks });
+    const legacyColumns = `episode_key,source,symbol,t0_ms,trading_day,session,tod_bucket,asset_class,direction,
          missing_json,gate_results_json,feature_schema_version,max_feature_as_of_ms,provenance_json,created_at_ms,
          episode_version,population,zone_a_json,config_digest,production_sha,strategy_version,feature_version,
          selected_strategy,selection_strength,disposition,rejection_reason,candidate_id,opportunity_case_id,
-         thesis_fingerprint,selected_occ,source_lane,entry_convention)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    ).run(
+         thesis_fingerprint,selected_occ,source_lane,entry_convention`;
+    const legacyValues = [
       episode.episodeKey, episode.source, episode.symbol, episode.t0Ms, episode.tradingDay, episode.session, null, "option", episode.direction,
       JSON.stringify([]), JSON.stringify({}), 2, episode.maxFeatureAsOfMs,
-      JSON.stringify({ sourceLane: episode.sourceLane }), nowMs,
+      provenanceJson, nowMs,
       2, episode.population, zoneJson, episode.configDigest, episode.productionSha,
       episode.strategyVersion, episode.featureVersion, episode.selectedStrategy, episode.selectionStrength,
       episode.disposition, episode.rejectionReason, episode.candidateId, episode.opportunityCaseId,
       episode.thesisFingerprint, episode.selectedOcc, episode.sourceLane, episode.entryConvention,
-    );
+    ];
+    const clockColumns = `observation_started_at_ms,decision_at_ms,quote_event_at_ms,quote_received_at_ms,timestamp_relation`;
+    const clockValues = [
+      clocks.observationStartedAtMs, clocks.decisionAtMs, clocks.quoteEventAtMs,
+      clocks.quoteReceivedAtMs, clocks.timestampRelation,
+    ];
+    const insert = (columns: string, values: unknown[]) => db.prepare(
+      `INSERT INTO setup_episodes (${columns}) VALUES (${values.map(() => "?").join(",")})`,
+    ).run(...values);
+    let info: { changes: number };
+    try {
+      info = insert(`${legacyColumns},${clockColumns}`, [...legacyValues, ...clockValues]);
+    } catch (columnError) {
+      // A production DB mid-upgrade may not have the clock columns yet. Falling
+      // back keeps episode capture alive (provenance_json still carries every
+      // clock) instead of turning a schema lag into a persistence outage. Any
+      // other failure re-throws below on the second attempt and is reported.
+      if (!/no column named|has no column/i.test(String((columnError as Error)?.message ?? columnError))) throw columnError;
+      episodeClockColumnFallback();
+      info = insert(legacyColumns, legacyValues);
+    }
     episodePersistenceOk(nowMs);
     return { ok: true, inserted: info.changes > 0, episodeKey: episode.episodeKey, violations: [] };
   } catch (error) {

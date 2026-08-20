@@ -283,7 +283,15 @@ CREATE TABLE IF NOT EXISTS setup_episodes (
   config_digest TEXT, production_sha TEXT, strategy_version TEXT, feature_version TEXT,
   selected_strategy TEXT, selection_strength REAL, disposition TEXT, rejection_reason TEXT,
   candidate_id INTEGER, opportunity_case_id TEXT, thesis_fingerprint TEXT, selected_occ TEXT,
-  source_lane TEXT, entry_convention TEXT
+  source_lane TEXT, entry_convention TEXT,
+  -- Phase 2A four-clock instrumentation. Written at INSERT only (the V2 rows are
+  -- immutable by trigger). t0_ms keeps its existing meaning and Zone-A validation
+  -- is unchanged; these record WHICH instant each timestamp actually belongs to.
+  observation_started_at_ms INTEGER,   -- LOCAL: scanner evaluation start (monitor n0)
+  decision_at_ms INTEGER,              -- LOCAL: disposition fixed
+  quote_event_at_ms INTEGER,           -- FOREIGN: provider/exchange/SIP NBBO event time
+  quote_received_at_ms INTEGER,        -- LOCAL: chain response carrying that quote completed
+  timestamp_relation TEXT              -- diagnostic classification, no acceptance authority
 );
 CREATE INDEX IF NOT EXISTS idx_setup_episodes_sym ON setup_episodes(symbol,t0_ms);
 -- V2 indexes are intentionally created by ensureCanonicalEvidenceColumnsOnDb
@@ -493,6 +501,14 @@ const CANONICAL_EVIDENCE_COLUMNS = [
   ["setup_episodes", "selected_occ", "TEXT"],
   ["setup_episodes", "source_lane", "TEXT"],
   ["setup_episodes", "entry_convention", "TEXT"],
+  // Phase 2A four-clock columns. Listed here so a long-lived production DB gets
+  // them via ALTER TABLE BEFORE ensureCanonicalEvidenceColumnsOnDb creates any
+  // index — the ordering the Phase-1 incident violated.
+  ["setup_episodes", "observation_started_at_ms", "INTEGER"],
+  ["setup_episodes", "decision_at_ms", "INTEGER"],
+  ["setup_episodes", "quote_event_at_ms", "INTEGER"],
+  ["setup_episodes", "quote_received_at_ms", "INTEGER"],
+  ["setup_episodes", "timestamp_relation", "TEXT"],
   ["episode_outcome_labels_v2", "hit_200", "INTEGER"],
   ["episode_outcome_labels_v2", "time_to_200_ms", "INTEGER"],
   ["episode_outcome_labels_v2", "time_to_mfe_ms", "INTEGER"],
@@ -544,6 +560,7 @@ function ensureCanonicalEvidenceColumnsOnDb(db: SqliteDb): void {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_setup_episodes_v2_population ON setup_episodes(episode_version,population,t0_ms);
     CREATE INDEX IF NOT EXISTS idx_setup_episodes_v2_case ON setup_episodes(opportunity_case_id);
+    CREATE INDEX IF NOT EXISTS idx_setup_episodes_v2_ts_relation ON setup_episodes(timestamp_relation,t0_ms);
     CREATE INDEX IF NOT EXISTS idx_episode_outcomes_v2_version ON episode_outcome_labels_v2(label_version,computed_at_ms);
     CREATE INDEX IF NOT EXISTS idx_contract_funnel_stage ON contract_funnel_evidence(session_date,terminal_stage);
     CREATE TRIGGER IF NOT EXISTS trg_setup_episode_v2_immutable_update BEFORE UPDATE ON setup_episodes
