@@ -72,11 +72,13 @@ export function buildNightlyRecapMessage(summary: NightlySummary, ctx: RecapCont
   }
 
   lines.push(
-    // "PRIMARY" only holds when this block leads. Once the owner section is above it, this is
-    // the secondary lane and says so — the label has to track the actual ordering.
+    // "PRIMARY" only holds when this block leads. Once the DELIVERED TO YOU section is above
+    // it, this is a secondary lane and says so — the label has to track the actual ordering.
+    // INTERNAL is stated either way: these rows are the Node paper portfolio, which is not
+    // the owner tracking lane and is certainly not a count of messages Discord delivered.
     ctx.researchSections?.length
-      ? `_Lane: internal paper portfolio. Not the delivered Discord alert lane above._`
-      : `_Lane: internal paper portfolio (PRIMARY). Not the delivered Discord alert lane._`,
+      ? `_INTERNAL / PAPER — internal paper portfolio. NOT alerts you received; see DELIVERED TO YOU above._`
+      : `_INTERNAL / PAPER — internal paper portfolio (PRIMARY). NOT alerts you received; no Discord delivery is claimed here._`,
     `Paper trades: ${total} | Wins: ${wins} | Losses: ${losses} | Open/Ungradable: ${openUngradable}`,
   );
   const lossBreakdown = lossBreakdownLine(summary);

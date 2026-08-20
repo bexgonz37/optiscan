@@ -57,9 +57,12 @@ test("nightly recap message is deterministic and contains no internal link", () 
   const msg = buildNightlyRecapMessage(summary(), { topLesson: "Exit management leak", reportUrl: "https://app.example/ai" });
   assert.match(msg, /OptiScan Nightly Review/);
   // The lane must be stated: these counts are the internal paper portfolio, not the
-  // alerts delivered to Discord, and an unlabelled count reads as the latter.
-  assert.match(msg, /Lane: internal paper portfolio/);
-  assert.match(msg, /Not the delivered Discord alert lane/);
+  // alerts delivered to Discord, and an unlabelled count reads as the latter. The label
+  // now leads with INTERNAL / PAPER, matching the recap's DELIVERED TO YOU section, so
+  // the two are told apart by their headings and not by reading the fine print.
+  assert.match(msg, /INTERNAL \/ PAPER/);
+  assert.match(msg, /internal paper portfolio/);
+  assert.match(msg, /NOT alerts you received/);
   assert.match(msg, /Paper trades: 1 \| Wins: 0 \| Losses: 1/);
   assert.match(msg, /Options candidates blocked: 1/);
   assert.match(msg, /Options delivery blocked by config: DISCORD_SUPERVISOR_SEND off/);

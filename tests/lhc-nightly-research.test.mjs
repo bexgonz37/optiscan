@@ -154,7 +154,7 @@ function sub(over = {}) {
 }
 const CTX = { deploymentSha: "abc1234", population: "DELIVERED_ALERT_PAPER" };
 
-// â”€â”€ owner summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── owner summary ──────────────────────────────────────────────────────────
 
 test("the owner summary is empty and honest on a session with no openings", () => {
   const d = db();
@@ -218,14 +218,14 @@ test("the owner summary segments by strategy without summing lanes", () => {
 
 test("a session is bounded in Eastern time, not the container timezone", () => {
   const d = db();
-  // 2026-08-07 20:30 ET is 2026-08-08 00:30 UTC â€” a UTC boundary would misfile it.
+  // 2026-08-07 20:30 ET is 2026-08-08 00:30 UTC — a UTC boundary would misfile it.
   addTrade(d, { enteredAtMs: Date.UTC(2026, 7, 8, 0, 30, 0), returnPct: 10 });
   assert.equal(buildOwnerAlertSummaryOnDb(d, "2026-08-07").openings, 1);
   assert.equal(buildOwnerAlertSummaryOnDb(d, "2026-08-08").openings, 0);
   d.close();
 });
 
-// â”€â”€ nightly research â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── nightly research ───────────────────────────────────────────────────────
 
 test("the nightly run is deterministic, changes no production behaviour, and seeds findings", () => {
   const d = db();
@@ -324,7 +324,7 @@ test("a changed rule freezes the lifecycle instead of advancing it", () => {
   d.close();
 });
 
-// â”€â”€ recap â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── recap ──────────────────────────────────────────────────────────────────
 
 const summary = {
   tradingDay: SESSION,
@@ -334,20 +334,28 @@ const summary = {
   prioritizedIssue: "none",
 };
 
-test("the recap leads with OWNER DISCORD ALERTS when research is available", () => {
+test("the recap leads with DELIVERED TO YOU when research is available", () => {
   const d = db();
   addTrade(d, { returnPct: 50, exitReason: "target_hit", peak: 55 });
   const research = runNightlyResearchOnDb(d, { sessionDate: SESSION, nowMs: T0 });
   const sections = formatNightlyResearchSections(research);
   const msg = buildNightlyRecapMessage(summary, { researchSections: sections });
 
-  const ownerIdx = msg.indexOf("OWNER DISCORD ALERTS");
+  const deliveredIdx = msg.indexOf("DELIVERED TO YOU");
+  const notSentIdx = msg.indexOf("NOT SENT / SUPPRESSED");
+  const internalIdx = msg.indexOf("INTERNAL / PAPER");
   const paperIdx = msg.indexOf("internal paper portfolio");
-  assert.ok(ownerIdx > -1, "owner section must be present");
+  assert.ok(deliveredIdx > -1, "delivered section must be present");
+  assert.ok(notSentIdx > -1, "not-sent section must be present");
+  assert.ok(internalIdx > -1, "internal tracking section must be present");
   assert.ok(paperIdx > -1, "paper portfolio block must survive");
-  assert.ok(ownerIdx < paperIdx, "owner alerts must come FIRST");
-  // The paper block must not read as a verdict on the owner's alerts.
-  assert.match(msg, /Not the delivered Discord alert lane above/);
+  assert.ok(deliveredIdx < notSentIdx, "what was delivered comes FIRST");
+  assert.ok(notSentIdx < internalIdx, "what was suppressed comes before internal tracking");
+  assert.ok(internalIdx < paperIdx, "the Node paper portfolio stays last");
+  // No block below the delivered section may read as a verdict on delivered alerts.
+  assert.match(msg, /NOT alerts you received/);
+  // The old heading claimed a delivered population it computed from paper mirrors.
+  assert.ok(!msg.includes("the alerts you actually received"), "the false heading is gone");
   d.close();
 });
 

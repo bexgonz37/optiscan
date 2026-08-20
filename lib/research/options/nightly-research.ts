@@ -1,5 +1,5 @@
 /**
- * The nightly OptiScan research aggregation â€” deterministic first, AI second, never the
+ * The nightly OptiScan research aggregation — deterministic first, AI second, never the
  * other way round.
  *
  * WHY THIS ORDER MATTERS
@@ -12,7 +12,7 @@
  *
  * WHAT THIS DELIBERATELY SEPARATES
  *
- * The recap's PRIMARY section is OWNER DISCORD ALERTS â€” the mirrors of alerts the owner
+ * The recap's PRIMARY section is OWNER DISCORD ALERTS — the mirrors of alerts the owner
  * actually received. An earlier packet shipped a recap that printed "Trades: 5 | Wins: 0 |
  * Losses: 5" from the internal paper portfolio while the delivered Discord lane was profitable
  * that day. Two populations of the same size sharing zero contracts read as one verdict. So
@@ -39,6 +39,11 @@ import {
 } from "./owner-selection-strength-scoreboard.ts";
 import { buildExitRiskObservationsOnDb, type ExitRiskObservations } from "./exit-risk-loader.ts";
 import { COHORT_STRATEGY } from "./lower-high-cohort.ts";
+import {
+  buildOwnerDeliveryReconciliationOnDb,
+  type OwnerDeliveryReconciliation,
+  type PopulationStats,
+} from "./owner-delivery-reconciliation.ts";
 
 export interface NightlyDb extends ShadowDb, FindingsDb {}
 
@@ -192,7 +197,18 @@ export interface NightlyResearchResult {
   experimentFrozenMessage: string;
   experimentStatus: ExperimentStatus | null;
   statusChanged: boolean;
+  /**
+   * The owner TRACKING lane (`OWNER_VALIDATION_PAPER`). Every row here is a real tracked
+   * trade — and NOT, on its own, evidence that a Discord message was sent. `delivery` below
+   * is what answers that. Kept for the research consumers that were always asking about the
+   * tracking lane, now under a name that says so.
+   */
   owner: OwnerAlertSummary;
+  /**
+   * Discord delivery truth for the session, reconciled against the tracking lane above.
+   * The ONLY source for any claim about what the owner received.
+   */
+  delivery: OwnerDeliveryReconciliation | null;
   scoreboard: ProspectiveScoreboard;
   verdict: { verdict: string; reason: string };
   findingsWritten: number;
@@ -221,7 +237,7 @@ export interface NightlyResearchResult {
  *
  * Status advancement is deterministic and conservative: a decision being recorded moves the
  * experiment to PROSPECTIVE_SHADOW; a first CLOSED prospective outcome moves it to
- * PAPER_VALIDATION. Nothing beyond that is automated â€” PROMISING and above require the weekly
+ * PAPER_VALIDATION. Nothing beyond that is automated — PROMISING and above require the weekly
  * verdict, and no path reaches subscriber approval.
  */
 export function runNightlyResearchOnDb(
@@ -239,6 +255,13 @@ export function runNightlyResearchOnDb(
   try { registerExperimentOnDb(db, LHC_SELECT_V1, nowMs); } catch { /* isolated */ }
 
   const owner = buildOwnerAlertSummaryOnDb(db, opts.sessionDate);
+  // Isolated: a failure to read the delivery ledger costs the recap its delivered section
+  // and nothing else. It must NEVER fall back to the tracking lane — substituting mirrors
+  // for a delivery ledger is the exact defect this reconciliation exists to end.
+  let delivery: OwnerDeliveryReconciliation | null = null;
+  try {
+    delivery = buildOwnerDeliveryReconciliationOnDb(db as never, { sessionDate: opts.sessionDate });
+  } catch { /* isolated */ }
   const decisions = listShadowDecisionsOnDb(db, { experimentId: LHC_SELECT_V1.experimentId });
   const scoreboard = buildProspectiveScoreboard(decisions);
   const verdict = weeklyVerdict(scoreboard);
@@ -371,6 +394,7 @@ export function runNightlyResearchOnDb(
     experimentStatus: currentStatusOnDb(db, LHC_SELECT_V1.experimentId, LHC_SELECT_V1.experimentVersion),
     statusChanged,
     owner,
+    delivery,
     scoreboard,
     verdict,
     findingsWritten: findings,
@@ -382,41 +406,115 @@ export function runNightlyResearchOnDb(
 }
 
 /**
- * The owner recap sections, in the required order: OWNER DISCORD ALERTS first, then the
- * research/experiment material. Pure formatter â€” every value comes from the deterministic
- * result above, never from a model.
+ * The owner recap sections, in the required order: what the owner ACTUALLY received first,
+ * then what was suppressed, then internal tracking, then the research material. Pure
+ * formatter -- every value comes from the deterministic result above, never from a model.
+ *
+ * ── The heading that had to go ───────────────────────────────────────────────
+ *
+ * "OWNER DISCORD ALERTS -- the alerts you actually received" sat above numbers computed
+ * from `OWNER_VALIDATION_PAPER` mirrors, which exist whether or not anything reached
+ * Discord. On 2026-08-20 production wrote ten owner openings, SUPPRESSED every one, and
+ * mirrored most -- and that heading would have reported it as a ten-alert day.
+ *
+ * It is replaced by three separately-sourced sections that cannot be confused for one
+ * another. The delivered one reads `discord_deliveries.status='SENT'` and nothing else.
+ *
+ * ── Encoding ─────────────────────────────────────────────────────────────────
+ *
+ * Every separator in emitted copy is ASCII (`--`, `|`, `,`). The em dashes and middle dots
+ * that used to sit inside these template literals were stored double-encoded and shipped to
+ * Discord as mojibake; `tests/recap-encoding.test.mjs` now guards the whole tree.
  */
 export function formatNightlyResearchSections(r: NightlyResearchResult): string[] {
   const pct = (v: number | null) => (v == null ? "n/a" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`);
   const pf = (v: number | null) => (v == null ? "n/a" : v.toFixed(3));
   const o = r.owner;
   const s = r.scoreboard;
+  const d = r.delivery;
 
   const sections: string[] = [];
 
+  // 1. DELIVERED TO YOU -- the Discord ledger's SENT rows, and nothing else.
+  const ds: PopulationStats | null = d?.deliveredStats ?? null;
+  const ledgerReadable = d != null && d.ledgerAvailable;
   sections.push([
-    "**OWNER DISCORD ALERTS** â€” the alerts you actually received (PRIMARY)",
-    `Openings: ${o.openings} | Paper mirrors: ${o.paperMirrors} | Closed: ${o.closed} | Open: ${o.open} | Ungradable: ${o.ungradable}`,
-    `Wins: ${o.realizedWins} | Losses: ${o.realizedLosses} | Expectancy: ${pct(o.expectancyPct)} | PF: ${pf(o.profitFactor)}`,
-    `Best: ${pct(o.bestWinnerPct)} | Worst: ${pct(o.worstLossPct)}`,
-    `Immediate failures: ${o.immediateFailures} | Profit given back: ${o.profitGivenBack}` +
-      (o.withoutTrajectoryEvidence ? ` | Without path evidence: ${o.withoutTrajectoryEvidence}` : ""),
+    "**DELIVERED TO YOU** -- Discord messages actually SENT (PRIMARY)",
+    ledgerReadable
+      ? `Source: discord_deliveries status=SENT. ${d!.reconciliationNote}.`
+      : "Delivery ledger could not be read tonight. No delivered population is claimed.",
+    ledgerReadable
+      ? `Delivered openings: ${d!.deliveredToYou.length} | Tracked: ${ds?.tracked ?? 0} | Closed: ${ds?.closed ?? 0} | Open: ${ds?.open ?? 0}`
+      : null,
+    ledgerReadable
+      ? `Wins: ${ds?.wins ?? 0} | Losses: ${ds?.losses ?? 0} | Expectancy: ${pct(ds?.expectancyPct ?? null)} | PF: ${pf(ds?.profitFactor ?? null)}`
+      : null,
+    ledgerReadable && (ds?.closed ?? 0) > 0
+      ? `Best: ${pct(ds?.bestPct ?? null)} | Worst: ${pct(ds?.worstPct ?? null)}`
+      : null,
+    // Surfaced by name, never dropped: a delivered alert that nothing is tracking.
+    d != null && d.orphanedDeliveries.length
+      ? `WARNING: ${d.orphanedDeliveries.length} delivered opening(s) have NO tracking row: `
+        + d.orphanedDeliveries.map((x) => x.opportunityCaseId ?? x.deliveryId).join(", ")
+      : null,
+    d != null && d.deliveriesWithoutCaseIdentity
+      ? `WARNING: ${d.deliveriesWithoutCaseIdentity} delivered row(s) carry no case id and cannot be reconciled.`
+      : null,
+    ledgerReadable && !d!.reconciles
+      ? "WARNING: the delivered list does not reconcile with the ledger SENT count."
+      : null,
+  ].filter(Boolean).join("\n"));
+
+  // 2. NOT SENT -- attempted openings the owner never saw, with the ledger's own reasons.
+  sections.push([
+    "**NOT SENT / SUPPRESSED** -- openings attempted that never reached Discord",
+    !ledgerReadable
+      ? "Delivery ledger could not be read tonight."
+      : d!.notSent.length === 0
+        ? "None. Every attempted opening was sent."
+        : `${d!.notSent.length} opening(s) were NOT delivered to you.`,
+    ledgerReadable && d!.notSent.length
+      ? Object.entries(d!.notSentByReason)
+        .sort((a, b) => b[1] - a[1])
+        .map(([reason, n]) => `  ${n} x ${reason}`)
+        .join("\n")
+      : null,
+    ledgerReadable && d!.notSent.length
+      ? "These are excluded from the delivered statistics above. They are not alerts you received."
+      : null,
+  ].filter(Boolean).join("\n"));
+
+  // 3. INTERNAL -- the tracking lane, labelled for exactly what it is.
+  const is: PopulationStats | null = d?.internalPaperStats ?? null;
+  sections.push([
+    `**INTERNAL / PAPER** -- ${OWNER_VALIDATION_PAPER_KIND} tracking, NOT alerts you received`,
+    `Tracked rows with no Discord message: ${is?.tracked ?? 0} | Closed: ${is?.closed ?? 0} | Open: ${is?.open ?? 0}`,
+    (is?.closed ?? 0) > 0
+      ? `Wins: ${is?.wins ?? 0} | Losses: ${is?.losses ?? 0} | Expectancy: ${pct(is?.expectancyPct ?? null)} | PF: ${pf(is?.profitFactor ?? null)}`
+      : "No closed internal rows tonight.",
+    // The whole-lane view stays available, explicitly named as the TRACKING lane so it can
+    // never be read as a count of delivered alerts.
+    `Whole owner tracking lane (delivered + internal): openings ${o.openings}, mirrors ${o.paperMirrors}, `
+      + `closed ${o.closed}, open ${o.open}, ungradable ${o.ungradable}, wins ${o.realizedWins}, `
+      + `losses ${o.realizedLosses}, expectancy ${pct(o.expectancyPct)}, PF ${pf(o.profitFactor)}`,
+    `Immediate failures: ${o.immediateFailures} | Profit given back: ${o.profitGivenBack}`
+      + (o.withoutTrajectoryEvidence ? ` | Without path evidence: ${o.withoutTrajectoryEvidence}` : ""),
     o.byStrategy.length
-      ? `By strategy: ${o.byStrategy.map((b) => `${b.strategy} ${b.wins}W/${b.losses}L PF ${pf(b.profitFactor)}`).join(" Â· ")}`
+      ? `By strategy: ${o.byStrategy.map((b) => `${b.strategy} ${b.wins}W/${b.losses}L PF ${pf(b.profitFactor)}`).join(", ")}`
       : "By strategy: none",
-  ].join("\n"));
+  ].filter(Boolean).join("\n"));
 
   sections.push([
-    `**EXPERIMENTS** â€” ${s.experimentId} (${r.experimentStatus ?? "unregistered"})`,
-    !r.experimentFrozen ? `âš ï¸ ${r.experimentFrozenMessage}` : null,
+    `**EXPERIMENTS** -- ${s.experimentId} (${r.experimentStatus ?? "unregistered"})`,
+    !r.experimentFrozen ? `WARNING: ${r.experimentFrozenMessage}` : null,
     `Baseline admitted ${s.baselineAdmits}. V1 admitted ${s.experimentAdmits}. ` +
       `V1 rejected ${s.baselineOnly} baseline trade(s). V1 recovered ${s.experimentOnly} the baseline skipped.`,
     `${s.closedOutcomes} closed, ${s.openOutcomes} open, ${s.sessionsObserved} session(s) observed.`,
     `Current prospective evidence: ${s.honestSummary}`,
     s.winnersRejected.length
-      ? `âš ï¸ Winners V1 rejected: ${s.winnersRejected.map((w) => `${w.symbol} ${pct(w.returnPct)}`).join(", ")}`
+      ? `WARNING: Winners V1 rejected: ${s.winnersRejected.map((w) => `${w.symbol} ${pct(w.returnPct)}`).join(", ")}`
       : null,
-    `Verdict: ${r.verdict.verdict} â€” ${r.verdict.reason}`,
+    `Verdict: ${r.verdict.verdict} -- ${r.verdict.reason}`,
   ].filter(Boolean).join("\n"));
 
   // The owner strength gate gets its own block rather than a line inside EXPERIMENTS, because
@@ -427,23 +525,23 @@ export function formatNightlyResearchSections(r: NightlyResearchResult): string[
     const w = st.prospective.closedOutcomes > 0 ? st.prospective : st.inSample;
     const windowLabel = st.prospective.closedOutcomes > 0
       ? `prospective, from ${st.frozen.prospectiveStartDate}`
-      : "IN-SAMPLE ONLY — no prospective outcome has closed yet";
+      : "IN-SAMPLE ONLY -- no prospective outcome has closed yet";
     sections.push([
-      `**EXPERIMENTS** — ${st.experimentId} (${st.mode})`,
-      !st.definitionFrozen.frozen ? `⚠️ ${st.definitionFrozen.message}` : null,
+      `**EXPERIMENTS** -- ${st.experimentId} (${st.mode})`,
+      !st.definitionFrozen.frozen ? `WARNING: ${st.definitionFrozen.message}` : null,
       `Window: ${windowLabel}.`,
-      `Baseline (evaluable) ${w.simulation.baseline.n} trades PF ${pf(w.simulation.baseline.profitFactor)} · ` +
+      `Baseline (evaluable) ${w.simulation.baseline.n} trades PF ${pf(w.simulation.baseline.profitFactor)} | ` +
         `shadow ${w.simulation.shadow.n} PF ${pf(w.simulation.shadow.profitFactor)} ` +
         `(ex-best ${pf(w.simulation.shadow.profitFactorExBestWinner)})`,
-      `Kept ${w.simulation.winnersRetained.length} of ${w.simulation.winnersRetained.length + w.simulation.winnersRejected.length} winners · ` +
+      `Kept ${w.simulation.winnersRetained.length} of ${w.simulation.winnersRetained.length + w.simulation.winnersRejected.length} winners | ` +
         `rejected ${w.simulation.lossesRejected.length} of ${w.simulation.lossesRejected.length + w.simulation.lossesRetained.length} losses`,
       w.simulation.coverage.unevaluable
-        ? `${w.simulation.coverage.unevaluable} callout(s) carry no strength — excluded from BOTH arms, never counted as rejections.`
+        ? `${w.simulation.coverage.unevaluable} callout(s) carry no strength -- excluded from BOTH arms, never counted as rejections.`
         : null,
       w.simulation.winnersRejected.length
-        ? `⚠️ Winners it would have dropped: ${w.simulation.winnersRejected.map((x) => `${x.symbol} ${pct(x.returnPct)}`).join(", ")}`
+        ? `WARNING: Winners it would have dropped: ${w.simulation.winnersRejected.map((x) => `${x.symbol} ${pct(x.returnPct)}`).join(", ")}`
         : null,
-      `Verdict: ${st.verdict} — ${st.verdictReason}`,
+      `Verdict: ${st.verdict} -- ${st.verdictReason}`,
       "Shadow only: no callout was rejected, delayed or reordered by any of this.",
     ].filter(Boolean).join("\n"));
   }
@@ -451,7 +549,7 @@ export function formatNightlyResearchSections(r: NightlyResearchResult): string[
   sections.push([
     "**WHAT OPTISCAN LEARNED**",
     `${r.findingsWritten} finding(s) persisted for ${COHORT_STRATEGY}.`,
-    "LHC_SELECT_V1 is PROMISING and UNVALIDATED â€” below break-even without its single convex winner.",
+    "LHC_SELECT_V1 is PROMISING and UNVALIDATED -- below break-even without its single convex winner.",
   ].join("\n"));
 
   return sections;
