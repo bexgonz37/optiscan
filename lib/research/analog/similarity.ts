@@ -90,3 +90,70 @@ function invert(A: number[][]): number[][] {
   }
   return M.map((row) => row.slice(n));
 }
+
+// ── Partial-coverage distance (ANALOG_PARTIAL_DISTANCE_V1, additive) ─────────
+//
+// `mdist` above is unchanged and remains the legacy metric. It inherits `zscore`'s rule
+// that a non-finite input becomes z=0 — which is the TRAINING MEAN of that dimension. For
+// a fully-observed vector that rule never fires. For a vector with a genuinely missing
+// feature it is the worst possible substitution: absence is scored as a perfect match on
+// that dimension, so the analogs with the LEAST evidence are pulled nearest, and a query
+// that is missing a feature entirely still returns a confident answer.
+//
+// `mdistPartial` refuses to invent the value. It computes the quadratic form over the
+// dimensions BOTH vectors actually have, using the principal submatrix of M restricted to
+// those dimensions, and reports the coverage it achieved so the caller can decline.
+//
+// The submatrix is an approximation and is named as one: dropping a dimension from a
+// decorrelating metric is not the same as conditioning on it. It is the conservative
+// choice available without refitting per missingness pattern, it is deterministic, and —
+// unlike imputation — it cannot manufacture similarity that the evidence does not contain.
+// Distance is rescaled by (total dims / shared dims) so a two-dimension comparison is not
+// automatically nearer than a seven-dimension one.
+
+export interface PartialDistance {
+  /** Distance under the metric, or null when the shared support was empty. */
+  distance: number | null;
+  /** Dimensions used. */
+  sharedDims: string[];
+  /** Dimensions dropped because either side lacked them. */
+  droppedDims: string[];
+  /** sharedDims.length / dims.length. */
+  coverage: number;
+}
+
+/**
+ * Distance over the shared-available support of two vectors.
+ * `xAvail` / `yAvail` are per-dimension availability aligned to `model.dims`.
+ */
+export function mdistPartial(
+  model: MetricModel,
+  x: (number | null)[],
+  y: (number | null)[],
+): PartialDistance {
+  const d = model.dims.length;
+  const idx: number[] = [];
+  const dropped: string[] = [];
+  for (let i = 0; i < d; i++) {
+    const xi = x[i], yi = y[i];
+    const ok = xi !== null && yi !== null && Number.isFinite(xi as number) && Number.isFinite(yi as number);
+    if (ok) idx.push(i); else dropped.push(model.dims[i]);
+  }
+  const shared = idx.map((i) => model.dims[i]);
+  const coverage = d === 0 ? 0 : idx.length / d;
+  if (idx.length === 0) return { distance: null, sharedDims: shared, droppedDims: dropped, coverage: 0 };
+
+  const diff = idx.map((i) => {
+    const xz = ((x[i] as number) - model.mean[i]) / (model.std[i] || 1);
+    const yz = ((y[i] as number) - model.mean[i]) / (model.std[i] || 1);
+    return xz - yz;
+  });
+  let s = 0;
+  for (let a = 0; a < idx.length; a++) {
+    let row = 0;
+    for (let b = 0; b < idx.length; b++) row += model.M[idx[a]][idx[b]] * diff[b];
+    s += diff[a] * row;
+  }
+  s = Math.max(0, s) * (d / idx.length); // rescale so fewer dims are not automatically nearer
+  return { distance: Math.sqrt(s), sharedDims: shared, droppedDims: dropped, coverage };
+}

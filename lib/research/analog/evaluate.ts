@@ -12,24 +12,48 @@ import { baselineSuite } from "../eval/baselines.ts";
 import { beatsAllBaselines, evaluate as runEvaluate, walkForwardSplits } from "../eval/harness.ts";
 import type { LabeledEpisode } from "../eval/types.ts";
 import { AnalogScorer, type AnalogConfig } from "./engine.ts";
+import { vectorFromEpisodeRow } from "./feature-vector.ts";
 import { buildPhaseDReport, persistPhaseDReportOnDb, type BaselineOutcome, type DatasetKind, type PhaseDReport } from "./report.ts";
 
 interface EvalDb { prepare(sql: string): { get: (...a: any[]) => any; all: (...a: any[]) => any[]; run: (...a: any[]) => { changes: number } } }
 
 const parse = (s: any) => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
-const encLiquidity = (t: string | null) => (t === "high" ? 2 : t === "medium" ? 1 : 0);
 
-/** Flatten a setup_episodes row's Zone-A JSON blocks into a numeric feature record + cmp keys. */
+/**
+ * Collapse the canonical vector's nulls to 0 for the LEGACY Phase-B `Scorer` interface,
+ * whose `ScoreInput.features` is `Record<string, number>` and cannot express absence.
+ *
+ * This substitution is WRONG and is kept only so the V1 fitted model and the Phase-D
+ * baseline it produced remain reproducible — changing the imputation would silently move
+ * every historical eval number in the same commit that changed the feature plumbing, and
+ * nobody could then say which edit moved the result.
+ *
+ * It is named here rather than hidden inside a `num()` helper so it is visible at the one
+ * place it happens. The leak-fenced path (`retrieval.ts` + `mdistPartial`) does NOT use
+ * this: it keeps nulls and drops the dimension from the distance instead.
+ */
+function legacyZeroFillForScorer(values: Readonly<Record<string, number | null>>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(values)) {
+    if (v !== null) { out[k] = v; continue; }
+    // Legacy substitutions, reproduced exactly:
+    //   cmp_direction — the old encoder was `direction === "bearish" ? 0 : 1`, so an
+    //     absent direction was silently BULLISH. Zero-filling it to 0 would flip every
+    //     such episode to bearish and change the fitted model, so 1 is preserved here.
+    //     (Production carries no null directions: 1,985 bearish + 1,246 bullish = 3,231.)
+    //   everything else — the old `num()` returned 0.
+    out[k] = k === "cmp_direction" ? 1 : 0;
+  }
+  return out;
+}
+
+/**
+ * Flatten a setup_episodes row's Zone-A JSON blocks into the legacy numeric feature record.
+ * Field definitions now come from ANALOG_FEATURE_VECTOR_V1 so this and the live shadow
+ * bridge cannot drift apart; only the null handling is legacy (see above).
+ */
 export function episodeRowToLabeled(row: any, returnPct: number, labelAsOfMs: number): LabeledEpisode {
-  const ps = parse(row.price_structure_json)?.values ?? {};
-  const mo = parse(row.momentum_json)?.values ?? {};
-  const vo = parse(row.volume_json)?.values ?? {};
-  const vl = parse(row.volatility_json)?.values ?? {};
-  const features: Record<string, number> = {
-    velPct: num(mo.velPct), accelPct: num(mo.accelPct), rvol: num(vo.rvol),
-    realizedVol: num(vl.realizedVol), atrPct: num(vl.atrPct), posInRange: num(ps.posInRange), gapPct: num(ps.gapPct),
-    cmp_liquidity: encLiquidity(row.liquidity_tier), cmp_direction: row.direction === "bearish" ? 0 : 1, cmp_symbol: hashNum(row.symbol),
-  };
+  const features = legacyZeroFillForScorer(vectorFromEpisodeRow(row).values);
   return { input: { id: row.episode_key, t0Ms: row.t0_ms, features }, win: returnPct > 0, outcome: returnPct, labelStartMs: row.t0_ms, labelEndMs: labelAsOfMs };
 }
 
@@ -118,5 +142,3 @@ function missingFeatureRates(db: EvalDb): Record<string, number> {
   return { optionsContext: +(miss / total).toFixed(4) };
 }
 function safeAll(db: EvalDb, sql: string, ...a: any[]): any[] { try { return db.prepare(sql).all(...a); } catch { return []; } }
-function num(v: any): number { const n = Number(v); return Number.isFinite(n) ? n : 0; }
-function hashNum(s: string): number { let h = 5381; for (let i = 0; i < String(s).length; i++) h = (((h << 5) + h) ^ String(s).charCodeAt(i)) >>> 0; return h % 100000; }

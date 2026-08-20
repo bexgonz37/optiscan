@@ -9,6 +9,7 @@
  * suppress a live alert. It only produces a record.
  */
 import type { AnalogExplain } from "../analog/engine.ts";
+import { buildAnalogFeatureVector } from "../analog/feature-vector.ts";
 
 /** Decision-time live features (same keys the episode library uses, so scorer dims line up). */
 export interface LiveDecisionFeatures {
@@ -16,18 +17,30 @@ export interface LiveDecisionFeatures {
   liquidityTier: "high" | "medium" | "low"; direction: "bullish" | "bearish"; symbol: string;
 }
 
-const encLiquidity = (t: string) => (t === "high" ? 2 : t === "medium" ? 1 : 0);
-function hashNum(s: string): number { let h = 5381; for (let i = 0; i < String(s).length; i++) h = (((h << 5) + h) ^ String(s).charCodeAt(i)) >>> 0; return h % 100000; }
-
-/** Build the ScoreInput feature record from decision-time live features (no future data). */
+/**
+ * Build the ScoreInput feature record from decision-time live features (no future data).
+ *
+ * The field definitions come from ANALOG_FEATURE_VECTOR_V1. This used to be a second,
+ * independent copy of the vector — including its own `encLiquidity` and `hashNum` — sitting
+ * beside the training-side copy in `analog/evaluate.ts`. Two definitions that must agree
+ * exactly, in different files, with no shared identity: they agreed only until someone
+ * edited one, and the failure would have been silent, because a query vector built in the
+ * wrong space still returns a confident number (the metric scores an absent dimension as
+ * the training mean).
+ *
+ * `cmp_direction` keeps the legacy "not bearish ⇒ bullish" reading so the fitted V1 model
+ * and this query path stay in the same space; `LiveDecisionFeatures.direction` is a closed
+ * union, so the case cannot arise from the live scanner.
+ */
 export function buildDecisionSnapshot(f: LiveDecisionFeatures, t0Ms: number, id: string): { id: string; t0Ms: number; features: Record<string, number> } {
-  return {
-    id, t0Ms,
-    features: {
-      velPct: f.velPct, accelPct: f.accelPct, rvol: f.rvol, realizedVol: f.realizedVol, atrPct: f.atrPct, posInRange: f.posInRange, gapPct: f.gapPct,
-      cmp_liquidity: encLiquidity(f.liquidityTier), cmp_direction: f.direction === "bearish" ? 0 : 1, cmp_symbol: hashNum(f.symbol),
-    },
-  };
+  const v = buildAnalogFeatureVector({
+    velPct: f.velPct, accelPct: f.accelPct, rvol: f.rvol, realizedVol: f.realizedVol,
+    atrPct: f.atrPct, posInRange: f.posInRange, gapPct: f.gapPct,
+    liquidityTier: f.liquidityTier, direction: f.direction, symbol: f.symbol,
+  });
+  const features: Record<string, number> = {};
+  for (const [k, val] of Object.entries(v.values)) features[k] = val === null ? (k === "cmp_direction" ? 1 : 0) : val;
+  return { id, t0Ms, features };
 }
 
 export interface LiveScannerDecision { actionable: boolean; direction: "bullish" | "bearish" }
