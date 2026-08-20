@@ -76,16 +76,27 @@ export async function GET(req: Request) {
 
     const taxonomy = ALL_EVIDENCE_CLASSES.map((c) => evidenceClassSpec(c));
 
-    // ── inventory-only answer ────────────────────────────────────────────────
+    // ── inventory / corpus-level evaluation (no query episode) ───────────────
     if (!episodeKey) {
+      const wantEval = url.searchParams.get("evaluate") === "1";
+      // The evaluation is a corpus-level question ("does retrieval predict anything?"),
+      // not an episode-level one, so it must be answerable without naming an episode.
+      const corpus = wantEval ? loadAnalogCorpusOnDb(db as any, { evidenceClass: clsParam, horizon, limit }) : null;
       return NextResponse.json({
         ok: true,
         authority,
         inventory: analogCorpusInventoryOnDb(db as any),
         evidenceClasses: taxonomy,
         featureVector: describeAnalogFeatureVector(),
+        corpus: corpus ? corpusSummary(corpus) : null,
+        sampleEpisodeKeys: corpus ? corpus.members.slice(-5).map((m) => m.id) : undefined,
+        evaluation: corpus
+          ? evaluateAnalogRetrieval(corpus.members, {
+              maxQueries: clampInt(url.searchParams.get("maxQueries"), 200, 20, 2000),
+            })
+          : null,
         latencyMs: Date.now() - started,
-        note: "Pass ?episode=<episode_key> for an analog cohort. Add &evaluate=1 for the out-of-sample report.",
+        note: "Pass ?episode=<episode_key> for an analog cohort. &evaluate=1 runs the chronological out-of-sample report.",
       });
     }
 
