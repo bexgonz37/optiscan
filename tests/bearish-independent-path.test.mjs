@@ -250,8 +250,16 @@ test("subscriber PUT message uses the compact trader-facing copy", async () => {
   assert.match(content, /Entry: \$0\.49–\$0\.50/);
   assert.match(content, /Why: NVDA broke support and bearish momentum increased\./);
   assert.match(content, /Educational purposes only\. Options are high risk\./);
+  // An owner opening now carries its whole trade plan, and says which entry convention
+  // each price belongs to. Target 2 is present but explicitly reference-only: production
+  // exits the entire position at Target 1, so a live second target would be a fiction.
+  assert.match(content, /Entry shown: live bid\/ask at callout · frozen entry \$0\.49 \(midpoint\)/);
+  assert.match(content, /Target 1: \$0\.65 — FULL EXIT\. The position closes here\./);
+  assert.match(content, /Stop: \$0\.35/);
+  assert.match(content, /Target 2: \$0\.85 — REFERENCE ONLY\./);
   assert.doesNotMatch(content, /View details|\/alerts|\/intelligence|https?:\/\//);
-  assert.doesNotMatch(content, /T1|T2|Confidence|Spread|Volume|OI|Delta|Freshness|Passed|blocker|pipeline|Risk:/i);
+  // Still no internal telemetry or gate language in trader-facing copy.
+  assert.doesNotMatch(content, /Confidence|Spread|Volume|OI:|Delta|Freshness|Passed|blocker|pipeline|Risk:/i);
 });
 
 test("bearish strategy families and active signals are explicit", () => {

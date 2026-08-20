@@ -14,6 +14,11 @@ function fmtPct(n: number | null | undefined): string {
   return `${sign}${n.toFixed(1)}%`;
 }
 
+const mmdd = (iso: string): string => {
+  const m = String(iso).match(/(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[2]}/${m[3]}` : String(iso);
+};
+
 function formatEtTime(timestampMs: number): string {
   return new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
@@ -62,37 +67,80 @@ export function formatReturnMilestoneUpdate(input: {
   return lines.join("\n");
 }
 
-/** Discord copy when an Opportunity Case closes (exit / invalidate). Replies to the opening alert when possible. */
+/**
+ * Discord copy when a position closes. Replies to the opening alert when possible.
+ *
+ * ── The lifecycle this message is allowed to describe ────────────────────────
+ *
+ * Production risk logic exits the ENTIRE position at Target 1 (`decideOptionExit`: the
+ * first branch that matches sets status EXITED and writes an exit fill). There is no
+ * partial exit, no runner, and no profit-lock anywhere in the live path. So every close
+ * this function describes is terminal, and it says so: `TARGET 1 HIT / CLOSED`,
+ * `STOPPED / CLOSED`, `TIME STOP / CLOSED`, `EXPIRED / CLOSED`. A bare "TARGET 1 HIT"
+ * reads as a milestone in an ongoing trade and invites the reader to wonder what happens
+ * at Target 2 — the answer is nothing, because there is no position left.
+ *
+ * The message also repeats the exact contract identity. A lifecycle update that names only
+ * the symbol and side cannot be matched to its opening when two strikes on one underlying
+ * are live, which is precisely when getting it wrong matters.
+ */
 export function formatOpportunityClosedUpdate(input: {
   symbol: string;
   optionType: "CALL" | "PUT" | string;
   strike: number | null;
+  /** The exact OCC the opening named. Carried verbatim so identity survives the lifecycle. */
+  optionSymbol?: string | null;
+  expiration?: string | null;
   summary: OpportunitySummary;
   exitReason?: string | null;
   opportunityCaseId?: string | null;
   invalidated?: boolean;
   detailUrl?: string | null;
   includeInternalLink?: boolean;
+  /** Which lane this close belongs to, when it is not the subscriber lane. */
+  lane?: string | null;
 }): string {
   const sym = input.symbol.toUpperCase();
   const side = String(input.optionType || "").toUpperCase() === "PUT" ? "PUT" : "CALL";
   const reason = String(input.exitReason ?? "").toLowerCase();
   const stopped = input.invalidated || reason === "stop_hit";
   const targetHit = reason === "target_hit";
+  const timeStop = reason === "time_stop";
+  const expired = reason === "expiration" || reason === "expiration_no_quote";
   const winner = !stopped && !targetHit && (input.summary.currentReturnPct ?? 0) > 0;
   const heading = stopped
-    ? `⛔ ${sym} ${side} · STOPPED`
+    ? `⛔ ${sym} ${side} · STOPPED / CLOSED`
     : targetHit
-      ? `🏁 ${sym} ${side} · TARGET 1 HIT`
-      : winner
-        ? `✅ ${sym} ${side} · CLOSED WINNER`
-        : `⚪ ${sym} ${side} · CLOSED`;
+      ? `🏁 ${sym} ${side} · TARGET 1 HIT / CLOSED`
+      : timeStop
+        ? `⏹️ ${sym} ${side} · TIME STOP / CLOSED`
+        : expired
+          ? `⚪ ${sym} ${side} · EXPIRED / CLOSED`
+          : winner
+            ? `✅ ${sym} ${side} · CLOSED WINNER`
+            : `⚪ ${sym} ${side} · CLOSED`;
+  const contractLine = [
+    input.expiration ? mmdd(input.expiration) : null,
+    input.strike != null && Number.isFinite(input.strike) ? `$${Number(input.strike.toFixed(2))}` : null,
+    side === "PUT" ? "Put" : "Call",
+  ].filter(Boolean).join(" ");
   const lines = [
     heading,
     "",
-    `Entry: ${fmtMoney(input.summary.frozenEntry)}`,
-    `${stopped || winner ? "Exit" : "Current"}: ${fmtMoney(input.summary.currentMark)}`,
-    `${stopped || winner ? "Result" : "Move"}: ${fmtPct(input.summary.currentReturnPct)}`,
+    ...(contractLine.trim() ? [`${sym} ${contractLine}`] : []),
+    ...(input.optionSymbol ? [`Contract: ${input.optionSymbol}`] : []),
+    // The internal case id rides along on OWNER-lane copy only, exactly as the opening
+    // does: `formatPrivateLiveAlert` prints `Case:` for non-subscriber-grade openings and
+    // omits it for subscriber-grade ones. Subscriber-facing lifecycle copy carries no
+    // internal identifier, and a test asserts that.
+    ...(input.lane && input.opportunityCaseId ? [`Case: ${input.opportunityCaseId}`] : []),
+    ...(input.lane ? [`Lane: ${input.lane}`] : []),
+    `Entry: ${fmtMoney(input.summary.frozenEntry)} (frozen entry)`,
+    `Exit: ${fmtMoney(input.summary.currentMark)}`,
+    `Result: ${fmtPct(input.summary.currentReturnPct)}`,
+    // Stated once, plainly, so no reader is left holding a position the system already
+    // closed. This is the whole reason Target 2 is never presented as a live target.
+    "Position fully closed. Nothing is held past Target 1.",
     "",
     "Educational purposes only. Options are high risk.",
   ];

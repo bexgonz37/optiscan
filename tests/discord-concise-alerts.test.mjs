@@ -167,10 +167,17 @@ test("almost-ready watchlist and lifecycle samples use their canonical non-openi
   });
   assert.match(t1, /🏁 SPY CALL · TARGET 1 HIT/);
   assert.match(t1, /Entry: \$1\.25\nCurrent: \$1\.56\nMove: \+25\.0%/);
-  assert.match(stopped, /⛔ SPY CALL · STOPPED/);
-  assert.match(stopped, /Entry: \$1\.25\nExit: \$0\.95\nResult: -24\.0%/);
-  assert.match(winner, /✅ NVDA CALL · CLOSED WINNER/);
+  // Every close is terminal — production exits the whole position at Target 1 — so the
+  // close headings say CLOSED alongside the reason rather than reading as a milestone in
+  // an ongoing trade, and the copy states outright that nothing is held past Target 1.
+  assert.match(stopped, /⛔ SPY CALL · STOPPED \/ CLOSED/);
+  assert.match(stopped, /Entry: \$1\.25 \(frozen entry\)\nExit: \$0\.95\nResult: -24\.0%/);
+  assert.match(winner, /⏹️ NVDA CALL · TIME STOP \/ CLOSED/);
   assert.match(winner, /Result: \+42\.0%/);
+  for (const message of [stopped, winner]) {
+    assert.match(message, /Position fully closed\. Nothing is held past Target 1\./);
+    assert.doesNotMatch(message, /Target 2|profit lock|profit-lock|runner|trail/i);
+  }
   for (const message of [t1, stopped, winner]) {
     assert.match(message, /Educational purposes only\. Options are high risk\./);
     assert.doesNotMatch(message, /https?:\/\/|View details|\/alerts|\/intelligence|oc_sample|oc_winner/);

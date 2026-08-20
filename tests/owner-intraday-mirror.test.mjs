@@ -121,7 +121,14 @@ test("formatIntradayActionable uses compact trader-facing copy", () => {
   assert.match(msg, /not a subscriber recommendation/);
   assert.match(msg, /Educational purposes only\. Options are high risk\./);
   assert.match(msg, /View details: \/intelligence\/oc_demo/);
-  assert.doesNotMatch(msg, /Bid\/Ask|Trigger confirmed|Confidence|Spread|pipeline/i);
+  // The owner opening carries its trade plan and names the convention each price uses.
+  assert.match(msg, /Entry shown: live bid\/ask at callout · frozen entry \$1\.25 \(midpoint\)/);
+  assert.match(msg, /Target 1: \$1\.66 — FULL EXIT\./);
+  assert.match(msg, /Stop: \$0\.89/);
+  assert.match(msg, /Target 2: \$2\.10 — REFERENCE ONLY\./);
+  // No raw telemetry FIELD labels. "live bid/ask at callout" is prose naming the
+  // convention, which is the opposite of dumping a Bid/Ask readout into the message.
+  assert.doesNotMatch(msg, /Bid\/Ask:|Trigger confirmed|Confidence|Spread|pipeline/i);
 });
 
 test("regular-session SEND mirror skips because canonical options alert already posted", async () => {

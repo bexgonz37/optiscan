@@ -28,6 +28,12 @@ import { formatOpportunityClosedUpdate, formatReturnMilestoneUpdate } from "./mi
 import { assertSubscriberScanAllowed } from "../../market-session-guard.ts";
 import { isMilestoneDiscordEligibleOnDb } from "../../opportunity-case/milestone-eligibility.ts";
 import { validateLifecycleQuote } from "./lifecycle-session.ts";
+import { OWNER_VALIDATION_PAPER_KIND } from "../../opportunity-case/owner-mirror-identity.ts";
+// Statically imported on purpose. This is the authority that decides whether a lifecycle
+// update may be sent at all, and a dynamic `require` here would fail open in exactly the
+// environments (tests, any non-Next runtime) where the guard most needs to be provable.
+// The module is pure SQL reads plus `tradingDay` — it pulls in no Next server bits.
+import { ownerOpeningWasSentOnDb } from "../../notifications/owner-delivery-truth.ts";
 import { withProviderConsumer } from "../../provider-context.ts";
 
 export interface OpenPosition {
@@ -131,6 +137,14 @@ export interface GradePassResult {
   byReason: Record<string, number>;
   milestonesDelivered?: number;
   closesDelivered?: number;
+  /** Close updates delivered on the OWNER_VALIDATION_PAPER lane. Counted separately. */
+  ownerClosesDelivered?: number;
+  /**
+   * Owner exits that produced NO Discord update, by reason. An owner close that goes
+   * unannounced because its opening was suppressed is correct behaviour and must still be
+   * visible — a silent zero here and a silent zero from a broken resolver look identical.
+   */
+  ownerCloseSkips?: Record<string, number>;
 }
 
 const occUnderlying = (occ: string) => occ.match(/^O:([A-Z]+)/)?.[1] ?? "";
@@ -353,6 +367,85 @@ async function maybeUpdateOpportunityLifecycle(
   }
 }
 
+/**
+ * OWNER LIFECYCLE IDENTITY — how an owner paper exit finds the callout it belongs to.
+ *
+ * The subscriber lane resolves everything through `alert_id`: the alert row carries the
+ * Discord message id, the paper mirror carries the alert id, and `paper_kind` is
+ * DELIVERED_ALERT_PAPER. An owner callout has NONE of that. It writes no `options_alerts`
+ * row at all, so `options_paper_trades.alert_id` is null for every owner mirror ever made,
+ * and every gate on this path — the `paper_kind !== 'DELIVERED_ALERT_PAPER'` guard, the
+ * `pos.alert_id` requirement, `isMilestoneDiscordEligibleOnDb`'s alert lookup, and its
+ * `delivery_decision === 'DELIVERED'` check against a case the owner path stamps
+ * `research_only` — refuses it. Four independent refusals, all returning "not eligible",
+ * which is why owner callouts have never received a single lifecycle update.
+ *
+ * The identity that DOES exist is the one `owner-mirror-identity.ts` documents: the mirror
+ * records its Opportunity Case inside its own `feature_snapshot_json`. That is resolved
+ * here, and then the case is checked against the DISCORD DELIVERY LEDGER, which is the only
+ * thing that knows whether a message was actually posted.
+ *
+ * SUPPRESSED OPENING => NO LIFECYCLE UPDATE, EVER. The case says
+ * `OWNER_ACTIONABLE_DELIVERED` even when nothing was sent (deliberately, so the opening
+ * claim is not released), so the case is not consulted for this. Only `status='SENT'` in
+ * `discord_deliveries` authorises an update, and a reply to a message that does not exist
+ * is exactly the failure that gate prevents.
+ */
+interface OwnerLifecycleIdentity {
+  eligible: boolean;
+  reason: string;
+  opportunityCaseId: string | null;
+  /** The opening Discord message, when one exists. Threading target for the update. */
+  openingMessageId: string | null;
+}
+
+function ownerCaseIdForPaperTrade(db: GradeDb, tradeId: number): string | null {
+  try {
+    const row = db.prepare(
+      "SELECT feature_snapshot_json FROM options_paper_trades WHERE id=?",
+    ).get(tradeId) as { feature_snapshot_json?: string } | undefined;
+    const raw = row?.feature_snapshot_json;
+    if (typeof raw !== "string" || !raw) return null;
+    const snap = JSON.parse(raw);
+    const id = snap && typeof snap === "object" ? snap.opportunityCaseId : null;
+    const s = id == null ? "" : String(id).trim();
+    return s.length ? s : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveOwnerLifecycleIdentity(
+  db: GradeDb,
+  pos: OpenPosition,
+  env: NodeJS.ProcessEnv,
+): OwnerLifecycleIdentity {
+  const none = (reason: string): OwnerLifecycleIdentity =>
+    ({ eligible: false, reason, opportunityCaseId: null, openingMessageId: null });
+  if (env.OPTIONS_OPPORTUNITY_LIFECYCLE_ENABLED === "0") return none("lifecycle_disabled");
+  if (env.OWNER_LIFECYCLE_DISCORD_ENABLED === "0") return none("owner_lifecycle_discord_disabled");
+  const caseId = ownerCaseIdForPaperTrade(db, pos.id);
+  if (!caseId) return none("owner_mirror_names_no_case");
+
+  // The delivery ledger is the ONLY authority consulted here. Not the case, not the
+  // mirror, not the notify log — every one of those is written for a suppressed opening too.
+  let sent = false;
+  try {
+    sent = Boolean(ownerOpeningWasSentOnDb(db as any, caseId));
+  } catch {
+    return { eligible: false, reason: "delivery_ledger_unreadable", opportunityCaseId: caseId, openingMessageId: null };
+  }
+  if (!sent) {
+    return { eligible: false, reason: "opening_not_sent", opportunityCaseId: caseId, openingMessageId: null };
+  }
+
+  // The opening message id lives on the case (written by markOwnerActionableOpeningDelivered
+  // from the real send result, so it is null exactly when nothing was posted). Its absence
+  // does not block the update — the close still goes out, just not threaded.
+  const openingMessageId = resolveOpeningDiscordMessageId(db, caseId, null);
+  return { eligible: true, reason: "opening_sent", opportunityCaseId: caseId, openingMessageId };
+}
+
 async function maybeDeliverOpportunityClosedDiscord(
   db: GradeDb,
   pos: OpenPosition,
@@ -360,26 +453,41 @@ async function maybeDeliverOpportunityClosedDiscord(
   exit: { reason: string | null; returnPct: number | null; exitFill: number | null },
   nowMs: number,
   deps: GradeDeps,
+  opts: { lane?: string | null; replyToMessageId?: string | null } = {},
 ): Promise<boolean> {
   try {
     const oc = loadCaseJsonOnDb(db as any, caseId);
-    const summary = oc?.summary;
-    if (!summary) return false;
+    // The frozen entry is the case's; when the case carries no summary the mirror's own
+    // entry fill is used rather than skipping the close entirely — a real exit that goes
+    // unannounced because a summary row is missing is the outcome this session exists to
+    // remove. The entry convention is labelled in the message, never guessed at.
+    const summary = oc?.summary ?? {
+      frozenEntry: pos.entry_fill,
+      currentMark: exit.exitFill,
+      currentReturnPct: exit.returnPct,
+      currentStatus: "CLOSED",
+      active: false,
+    };
     const content = formatOpportunityClosedUpdate({
       symbol: occUnderlying(pos.option_symbol) || "UNK",
       optionType: pos.side === "put" ? "PUT" : "CALL",
       strike: pos.strike,
+      optionSymbol: pos.option_symbol,
+      expiration: pos.expiration,
+      lane: opts.lane ?? null,
       summary: {
-        ...summary,
-        currentMark: exit.exitFill ?? summary.currentMark,
-        currentReturnPct: exit.returnPct ?? summary.currentReturnPct,
+        ...(summary as any),
+        currentMark: exit.exitFill ?? (summary as any).currentMark,
+        currentReturnPct: exit.returnPct ?? (summary as any).currentReturnPct,
         currentStatus: "CLOSED",
         active: false,
       },
       exitReason: exit.reason,
       opportunityCaseId: caseId,
     });
-    const replyToMessageId = resolveOpeningDiscordMessageId(db, caseId, pos.alert_id);
+    const replyToMessageId = opts.replyToMessageId !== undefined
+      ? opts.replyToMessageId
+      : resolveOpeningDiscordMessageId(db, caseId, pos.alert_id);
     const sent = await sendLifecycleDiscordUpdate(deps, content, replyToMessageId);
     return sent.ok;
   } catch {
@@ -472,6 +580,50 @@ async function gradeOpenOptionPositionsInner(db: GradeDb, deps: GradeDeps, env: 
             } catch { /* Discord close never blocks grading */ }
           }
         } catch { /* isolated */ }
+      }
+      // OWNER lane close. Deliberately separate from the block above rather than folded
+      // into it:
+      //   - it resolves its case through the mirror's feature snapshot, not `alert_id`,
+      //     which is null for every owner mirror in existence;
+      //   - it is authorised by the DISCORD DELIVERY LEDGER, not by the opportunity case;
+      //   - it does NOT call `closeOpportunityOnDb`. That function releases the thesis
+      //     claim and writes a reopen cooldown, which would change WHEN the next owner
+      //     callout for the same thesis may fire. That is delivery-cadence behaviour and
+      //     is out of scope for this session; the divergence is recorded as a known
+      //     limitation rather than silently repaired here.
+      if (pos.paper_kind === OWNER_VALIDATION_PAPER_KIND) {
+        // The same event-time discipline the subscriber close obeys: no verified event
+        // instant, no lifecycle message. An expiration or time-stop can close a position
+        // without a fresh quote, and those exits are recorded as skips rather than
+        // silently producing nothing — an unannounced close and a broken resolver are
+        // indistinguishable from a zero.
+        const skip = (reason: string) => {
+          out.ownerCloseSkips = out.ownerCloseSkips ?? {};
+          out.ownerCloseSkips[reason] = (out.ownerCloseSkips[reason] ?? 0) + 1;
+        };
+        if (!validSessionQuote || validSessionEventAtMs == null) {
+          skip("event_time_unverified");
+        } else {
+          const identity = resolveOwnerLifecycleIdentity(db, pos, env);
+          if (!identity.eligible || !identity.opportunityCaseId) {
+            skip(identity.reason);
+          } else {
+            try {
+              const delivered = await maybeDeliverOpportunityClosedDiscord(db, pos, identity.opportunityCaseId, {
+                reason: d.reason,
+                returnPct: d.returnPct,
+                exitFill: d.exitFill,
+              }, validSessionEventAtMs, deps, {
+                lane: "OWNER_ONLY",
+                replyToMessageId: identity.openingMessageId,
+              });
+              if (delivered) out.ownerClosesDelivered = (out.ownerClosesDelivered ?? 0) + 1;
+              else skip("discord_send_failed");
+            } catch {
+              skip("discord_send_threw");
+            }
+          }
+        }
       }
     } catch { out.errors += 1; }
   }

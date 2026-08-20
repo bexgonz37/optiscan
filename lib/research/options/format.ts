@@ -215,6 +215,50 @@ export function plainEnglishAlertReason(input: PlainEnglishAlertReasonInput): st
     : `${sym} moved above a key level as bullish momentum increased.`;
 }
 
+/**
+ * The trade plan an owner opening must carry, and the entry convention each number is
+ * measured against.
+ *
+ * ── Why the convention is spelled out rather than assumed ────────────────────
+ *
+ * Four different entry prices exist for the same callout, and the message used to show one
+ * of them with no label at all:
+ *
+ *   - the BID–ASK zone in the heading, which is what the contract was quoted at;
+ *   - the FROZEN MIDPOINT, which is what T1/T2/stop are derived from and what the exit
+ *     rules in `grade.ts` compare a refreshed mark against;
+ *   - the PAPER FILL, `conservativeEntryFill(bid, ask)`, which is what realized return,
+ *     MFE and MAE are computed from;
+ *   - the ASK, which PRE_MOVE contexts record as what the owner would actually have paid.
+ *
+ * Reconciling those into one number is a trading-policy decision that would move targets
+ * and exits, and is deliberately NOT made here. What IS fixed is the silence: every price
+ * below now says which convention it belongs to, so the reader is never left inferring it.
+ *
+ * ── Why Target 2 is labelled reference-only ──────────────────────────────────
+ *
+ * The live exit rule closes the WHOLE position at Target 1 (`decideOptionExit`, first
+ * branch: `exitFill >= pos.target` -> `target_hit`, status EXITED). There is no partial
+ * exit, no runner and no profit-lock anywhere in the production risk path. Printing T2 as
+ * a second target would describe a position management that does not exist.
+ */
+function contractPlanLines(i: PrivateLiveAlertInput): string[] {
+  const out: string[] = [];
+  const has = (n: number | null | undefined): n is number => n != null && Number.isFinite(n) && n > 0;
+
+  out.push(
+    `Entry shown: live bid/ask at callout · frozen entry $${px(i.entryMid)} (midpoint)`,
+    "Targets and stop below are measured from the frozen entry.",
+  );
+  if (has(i.t1)) out.push(`Target 1: $${px(i.t1)} — FULL EXIT. The position closes here.`);
+  if (has(i.stop)) out.push(`Stop: $${px(i.stop)}`);
+  if (has(i.t2)) {
+    out.push(`Target 2: $${px(i.t2)} — REFERENCE ONLY. Not an active target; nothing is held past Target 1.`);
+  }
+  out.push("");
+  return out;
+}
+
 /** Primary Alerts-channel opening message. Technical evidence remains in the dossier. */
 export function formatPrivateLiveAlert(i: PrivateLiveAlertInput): string {
   const call = i.side === "call";
@@ -256,6 +300,7 @@ export function formatPrivateLiveAlert(i: PrivateLiveAlertInput): string {
   ];
   if (!subscriberGrade) {
     lines.push(
+      ...contractPlanLines(i),
       `Lane: ${laneLabel} · Readiness: ${i.readinessState ?? "UNKNOWN"}`,
       `Strategy: ${i.strategyKey ?? "unknown"}@${i.strategyVersion ?? "UNKNOWN_LEGACY_VERSION"}`,
       ...(i.rankLabel ? [`Rank: ${i.rankLabel}${i.evidenceStrength ? ` · Evidence: ${i.evidenceStrength}` : ""}`]
