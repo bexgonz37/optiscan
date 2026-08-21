@@ -79,6 +79,13 @@ export interface OptionsMonitorDeps {
    * Absent means the previous behaviour, which is what existing tests inject.
    */
   tier2AwarenessQuotes?: () => Promise<AwarenessQuote[]> | AwarenessQuote[];
+  /**
+   * The GLOBAL provider meter, so promotion capacity is sized against real
+   * shared headroom rather than only this lane's process-local bucket. Absent
+   * means read it from the provider module directly, which is what production
+   * does; injecting it is what makes the saturation behaviour testable.
+   */
+  providerStats?: (nowMs: number) => { minuteCap?: number; callsThisMinute?: number } | null;
   getDb?: () => any;
   now?: () => number;
   session?: () => Session;
@@ -472,6 +479,13 @@ export function optionsMonitorMetrics(): Record<string, unknown> {
     // is exactly how the 2026-08-19 gap stayed invisible for a full session.
     tier2Selection: s.lastTier2Selection,
     tier2Cursor: s.tier2Cursor,
+    // PHASE 10 — CHEAP AWARENESS and DEEP ANALYSIS as separate quantities.
+    //
+    // "25 names scanned" was never a coverage statement; it was a SPEND
+    // statement wearing a coverage statement's clothes, and reporting it as
+    // coverage is what let a 1.6%-visibility architecture look healthy for a
+    // full session. These two must never be collapsed back into one number.
+    coverage: optionsCoverageMetrics(Date.now()),
     tier0: { scanned: m.tier0Scanned, candidates: m.tier0Candidates, budgetSkips: m.tier0BudgetSkips, lastCycleMs: m.lastTier0CycleMs },
     symbolsScanned: m.symbolsScanned, candidatesCreated: m.candidatesCreated, candidatesRejected: m.candidatesRejected, chainsFetched: m.chainsFetched,
     stages: { stage1Pass: m.stage1Pass, stage15Enrich: m.stage15Enrich, stage15Stale: m.stage15Stale, stage15Forming: m.stage15Forming, stage2Chain: m.stage2Chain, stage3Detailed: m.providerDetailed, optionsActivityEscalations: m.optionsActivityEscalations },
@@ -539,17 +553,65 @@ export function startOptionsMonitor(deps: OptionsMonitorDeps, env: NodeJS.Proces
   return { started: true, reason: "started" };
 }
 /**
- * Requests the Tier-2 lane still has in the current minute partition.
+ * Requests the Tier-2 lane can actually spend this minute.
  *
- * Read from the SAME bucket `tryConsume` decrements, so the capacity the cycle
- * plans for and the budget it actually spends against cannot drift apart. A
- * fresh window reports the full cap because none of it has been spent yet.
+ * TWO CEILINGS, AND THE SMALLER WINS. The lane bucket (`tryConsume` decrements
+ * the same one, so plan and spend cannot drift apart) is only half the truth: it
+ * is process-local and knows nothing about the GLOBAL provider meter, which is
+ * shared with the scanner, the marks and everything else.
+ *
+ * Reading the lane bucket alone would compute a large capacity on a fresh local
+ * window while the global 280/min cap was already saturated — which is precisely
+ * the state that produced 11,449 quota blocks. Planning a big cycle into a
+ * saturated provider does not get more data; it converts real headroom into
+ * refusals, and a refusal still costs a request while returning nothing.
+ *
+ * When the global meter is unreadable the lane bucket is used alone. That is the
+ * pre-existing behaviour and is safe, because the lane bucket is the tighter of
+ * the two in normal operation.
  */
-function tier2Headroom(s: MonitorState, cfg: OptionsMonitorConfig, now: number): { remainingThisMinute: number; minuteCap: number } {
+function tier2Headroom(
+  s: MonitorState,
+  cfg: OptionsMonitorConfig,
+  now: number,
+  providerStats?: OptionsMonitorDeps["providerStats"],
+): { remainingThisMinute: number; minuteCap: number } {
   const cap = cfg.providerBudgetPerMinute;
   const windowExpired = now - s.budget.windowStart >= 60_000;
   const used = windowExpired ? 0 : s.budget.used;
-  return { remainingThisMinute: Math.max(0, cap - used), minuteCap: cap };
+  const laneRemaining = Math.max(0, cap - used);
+
+  let globalRemaining = Number.POSITIVE_INFINITY;
+  try {
+    const st = providerStats
+      ? providerStats(now)
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      : require("@/lib/polygon-provider").getCallStats(now);
+    const minuteCap = Number(st?.minuteCap);
+    if (Number.isFinite(minuteCap) && minuteCap > 0) {
+      globalRemaining = Math.max(0, minuteCap - (Number(st?.callsThisMinute) || 0));
+    }
+  } catch { /* meter unreadable — the lane bucket alone is the safe fallback */ }
+
+  return { remainingThisMinute: Math.min(laneRemaining, globalRemaining), minuteCap: cap };
+}
+
+/**
+ * Provider requests one promotion ACTUALLY costs, measured from this process.
+ *
+ * The config carries an ESTIMATE (bars plus an expected fractional chain, since
+ * most promoted symbols are rejected by strategy scoring before any chain is
+ * requested). An estimate is the wrong thing to size a budget with once real
+ * counters exist, so this prefers the measurement and falls back only while the
+ * sample is too small to mean anything.
+ */
+function measuredRequestsPerPromotion(s: MonitorState, fallback: number): number {
+  const m = s.metrics;
+  const scanned = m.symbolsScanned;
+  if (scanned < 50) return fallback; // too small a sample to size a budget on
+  const requests = m.providerBars + m.providerChain + m.providerDetailed;
+  const perSymbol = requests / scanned;
+  return perSymbol > 0.01 ? +perSymbol.toFixed(3) : fallback;
 }
 
 /** Percentile of a numeric sample. Returns null on an empty sample — never 0. */
@@ -581,8 +643,13 @@ function runAwarenessCycle(
     quotes, s.awarenessPrior, now, optionsAwarenessConfig(env),
   );
 
-  const pcfg = promotionCapacityConfig(env);
-  const headroom = tier2Headroom(s, cfg, now);
+  const basePcfg = promotionCapacityConfig(env);
+  // Size the budget on what a promotion is MEASURED to cost, not on the estimate.
+  const pcfg = {
+    ...basePcfg,
+    estRequestsPerPromotion: measuredRequestsPerPromotion(s, basePcfg.estRequestsPerPromotion),
+  };
+  const headroom = tier2Headroom(s, cfg, now, deps.providerStats);
   const capacity = computePromotionCapacity(headroom, pcfg);
   const sel = selectPromotions(sweep, s.tier2Cursor ?? 0, capacity.capacity, pcfg);
 
@@ -744,5 +811,22 @@ async function selectTier2Symbols(
 export function stopOptionsMonitor(): void { const s = state(); for (const t of s.timers) clearInterval(t); s.timers = []; s.running = false; }
 /** Inspect the live per-symbol cooldown (for the diagnostic — does not mutate state). */
 export function optionsCooldownRemainingMs(symbol: string, nowMs: number = Date.now()): number { return Math.max(0, (state().cooldownSymbol.get(symbol.toUpperCase()) ?? 0) - nowMs); }
+/**
+ * Test-only seam onto the cycle's symbol selection.
+ *
+ * Exposed because the property that matters — a 1,606-symbol universe yields
+ * full cheap coverage and a bounded handful of expensive promotions — is a
+ * property of the WIRING, and testing the pure modules alone would leave the
+ * step that actually retired the 25-symbol cap uncovered.
+ */
+export async function __selectTier2SymbolsForTest(
+  deps: OptionsMonitorDeps,
+  tier0: string[] = [],
+  env: NodeJS.ProcessEnv = process.env,
+  cfg: OptionsMonitorConfig = defaultMonitorConfig(env),
+): Promise<string[]> {
+  return selectTier2Symbols(deps, new Set(tier0.map((s) => s.toUpperCase())), env, cfg);
+}
+
 /** Test-only: reset the singleton state (cooldowns/metrics/breaker) for order-independent tests. */
 export function __resetOptionsMonitorForTest(): void { stopOptionsMonitor(); delete (globalThis as G).__optiscanOptionsMonitor; }

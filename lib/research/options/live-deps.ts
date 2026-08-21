@@ -505,6 +505,21 @@ export function buildLiveOptionsDeps(): OptionsMonitorDeps {
      * No per-symbol request of any kind is issued here — not a chain, not a bar,
      * not a quote. The provider cost of full-universe awareness is zero.
      */
+    /**
+     * The GLOBAL provider meter. Promotion capacity is sized against the SHARED
+     * 280/min cap, not only this lane's process-local bucket — otherwise a fresh
+     * local window plans a large cycle into an already-saturated provider, which
+     * converts headroom into refusals rather than into data.
+     */
+    providerStats: (nowMs: number) => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { getCallStats } = require("@/lib/polygon-provider");
+        return getCallStats(nowMs);
+      } catch {
+        return null; // unreadable — the monitor falls back to its lane bucket
+      }
+    },
     tier2AwarenessQuotes: async () => {
       const nowMs = Date.now();
       const quotes = await marketSnapshot(nowMs);
