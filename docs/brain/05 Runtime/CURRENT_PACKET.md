@@ -4,6 +4,10 @@
 
 ### Proven release state
 
+- Shipped `99ff1d7` (ingestion terminal states) and `8f5e918` (breadth counts what it says).
+  LOCAL = ORIGIN/MAIN = PRODUCTION at `8f5e918`, verified via `healthz`. 4,820 / 4,820 tests
+  pass (7 new). `tsc --noEmit --incremental false`, production `next build` and
+  `git diff --check` all clean.
 - Started and verified at `3c89d624bd8daa1a7618dbd854963a9a4b0fa1bc`, LOCAL = ORIGIN/MAIN =
   PRODUCTION, tracked worktree clean, 20 untracked scratch files preserved. `prod-smoke`
   18/18 PASS. `healthz` schemaOk with 0 missing tables; loop `HEALTHY`, scheduler owner
@@ -135,20 +139,26 @@ neither of which was ever driven by a universe definition.
   sessions because it was filled to support exact-OCC mining around 73 contracts — an
   option-evidence errand, not a breadth errand.
 
-Concentration, from `analogCorpusBreadthOnDb` over all 12,900 label rows:
+Concentration, from `analogCorpusBreadthOnDb`. Both denominators are given because the
+diagnostic used to report only one and called it the wrong thing (fixed in `8f5e918`): an
+episode carries one label PER HORIZON, so label rows run ~7.4x episodes and only the
+episode column is a count of independent setups.
 
-| Symbol | Label rows | Share | Cumulative | Sessions | Range |
-|---|---|---|---|---|---|
-| AAPL | 3,409 | 26.4% | 26.4% | 220 | 2023-07-03 → 2026-08-07 |
-| NVDA | 3,121 | 24.2% | 50.6% | 96 | 2023-10-02 → 2026-08-07 |
-| MSFT | 2,441 | 18.9% | 69.5% | 158 | 2023-10-02 → 2024-06-28 |
-| AVGO | 2,079 | 16.1% | 85.7% | 112 | 2023-07-03 → 2023-12-27 |
-| JPM | 828 | 6.4% | **92.1%** | 73 | 2023-07-05 → 2023-12-21 |
-| 12 others | 1,022 | 7.9% | 100% | 1–5 each | 2026-08-03 → 2026-08-07 |
+| Symbol | Episodes | Share | Cum. | Label rows | Share | Sessions | Range |
+|---|---|---|---|---|---|---|---|
+| AAPL | 441 | 25.4% | 25.4% | 3,409 | 26.4% | 220 | 2023-07-03 → 2026-08-07 |
+| NVDA | 431 | 24.8% | 50.1% | 3,121 | 24.2% | 96 | 2023-10-02 → 2026-08-07 |
+| MSFT | 308 | 17.7% | 67.9% | 2,441 | 18.9% | 158 | 2023-10-02 → 2024-06-28 |
+| AVGO | 262 | 15.1% | 82.9% | 2,079 | 16.1% | 112 | 2023-07-03 → 2023-12-27 |
+| JPM | 104 | 6.0% | **88.9%** | 828 | 6.4% | 73 | 2023-07-05 → 2023-12-21 |
+| 12 others | 193 | 11.1% | 100% | 1,022 | 7.9% | 1–5 each | 2026-08-03 → 2026-08-07 |
 
-Five symbols hold 92.1% of the corpus, four of them mega-cap US tech. ETFs are 42 rows,
-**0.33%**. That is the shape of a corpus that cannot separate setup edge from mega-cap
-drift — which is exactly what the previous packet's negative result reported.
+Five symbols hold **88.9% of the episodes** and 92.1% of the label rows; four of the five
+are mega-cap US tech. ETFs are 8 episodes, **0.46%**. That is the shape of a corpus that
+cannot separate setup edge from mega-cap drift — which is exactly what the previous
+packet's negative result reported. The share is stable across both denominators, which is
+precisely why the mislabelled field survived: an inflation factor common to every symbol
+cancels in a ratio and does not cancel in a total.
 
 ### SURVIVORSHIP: the existing corpus is labelled survivorship-free on an unverified assertion
 
