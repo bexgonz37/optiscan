@@ -21,6 +21,13 @@ import { assertSubscriberScanAllowed } from "../../market-session-guard.ts";
 import { bearishPipelineEnabled, latestPendingBearishEscalationForSymbol } from "./bearish-authority.ts";
 import { selectTier2Cycle, tier2PriorityConfig, type Tier2Candidate } from "./tier2-priority.ts";
 import {
+  sweepAwareness, nextObservationCache, optionsAwarenessConfig,
+  type AwarenessQuote, type AwarenessObservation, type AwarenessSweep,
+} from "./awareness.ts";
+import {
+  computePromotionCapacity, selectPromotions, promotionCapacityConfig, explorationSweepCycles,
+} from "./promotion.ts";
+import {
   classifySessionRangePosition,
   SESSION_RANGE_POSITION_SEMANTICS,
 } from "./session-range-position.ts";
@@ -62,6 +69,16 @@ export interface OptionsMonitorDeps {
    * provider-order behaviour, which is what every existing test injects.
    */
   tier2Candidates?: () => Promise<Tier2Candidate[]> | Tier2Candidate[];
+  /**
+   * The FULL Tier-2 eligible universe with every snapshot field already paid
+   * for — the input to cheap awareness.
+   *
+   * Preferred over `tier2Candidates`, which is preferred over `tier2Universe`.
+   * When present, the whole universe is scored every cycle and the expensive
+   * slot count stops being the number of symbols the monitor can see at all.
+   * Absent means the previous behaviour, which is what existing tests inject.
+   */
+  tier2AwarenessQuotes?: () => Promise<AwarenessQuote[]> | AwarenessQuote[];
   getDb?: () => any;
   now?: () => number;
   session?: () => Session;
@@ -127,6 +144,40 @@ interface MonitorState {
     atMs: number; universeSize: number; priority: string[];
     rotated: number; deferred: number; cyclesForFullCoverage: number;
   } | null;
+  /**
+   * Previous cheap observation per symbol, so the next sweep can compute
+   * acceleration. REPLACED wholesale each sweep, never appended — bounded by
+   * the eligible universe (~1.6k entries), so it cannot grow across a session.
+   */
+  awarenessPrior: Map<string, AwarenessObservation>;
+  /** When each symbol was last CHEAPLY observed. Rebuilt each sweep. */
+  cheapObservedAt: Map<string, number>;
+  /**
+   * When each symbol was last DEEPLY analysed. Pruned to the current universe
+   * each sweep so delisted/ineligible names cannot accumulate.
+   */
+  deepAnalyzedAt: Map<string, number>;
+  /** Phase-10 coverage record for the last Tier-2 cycle. */
+  lastAwareness: {
+    atMs: number;
+    eligibleOptionsUniverse: number;
+    cheapObservedThisCycle: number;
+    cheapObservationCoveragePct: number;
+    withVelocity: number;
+    countsByBand: Record<string, number>;
+    deepAnalysisPromoted: number;
+    deepAnalysisDeferred: number;
+    promotionCapacity: number;
+    capacityBoundBy: string;
+    providerHeadroomRatio: number;
+    capacityExplain: string;
+    promotedByScore: string[];
+    promotedByExploration: string[];
+    explorationSweepCycles: number;
+    topRanked: { symbol: string; preScore: number; band: string; reason: string }[];
+  } | null;
+  /** High-priority work refused by the provider budget, for Phase-9 diagnosis. */
+  quotaBlockedHighPriority: number;
 }
 type G = typeof globalThis & { __optiscanOptionsMonitor?: MonitorState };
 function state(): MonitorState {
@@ -136,6 +187,8 @@ function state(): MonitorState {
     breaker: { state: "closed", failures: 0, openUntil: 0 }, budget: { windowStart: 0, used: 0 }, budgetTier0: { windowStart: 0, used: 0 },
     metrics: { symbolsScanned: 0, candidatesCreated: 0, candidatesRejected: 0, chainsFetched: 0, providerUnderlying: 0, providerBars: 0, providerChain: 0, providerDetailed: 0, providerFailures: 0, throttles: 0, cooldownSkips: 0, stage1Pass: 0, stage15Enrich: 0, stage15Stale: 0, stage15Forming: 0, stage2Chain: 0, optionsActivityEscalations: 0, tier0Scanned: 0, tier0Candidates: 0, tier0BudgetSkips: 0, phaseEarly: 0, phaseDuring: 0, phaseLate: 0, lastTier0CycleMs: null, lastTier1CycleMs: null, lastTier2CycleMs: null, latestCandidateMs: null, cycleDurations: [], detectionToDecision: [], rvolSamples: [], vwapDistSamples: [], compressionSamples: [], fractionMoveSamples: [] },
     tier2Cursor: 0, lastTier2Selection: null,
+    awarenessPrior: new Map(), cheapObservedAt: new Map(), deepAnalyzedAt: new Map(),
+    lastAwareness: null, quotaBlockedHighPriority: 0,
   });
 }
 
@@ -486,14 +539,173 @@ export function startOptionsMonitor(deps: OptionsMonitorDeps, env: NodeJS.Proces
   return { started: true, reason: "started" };
 }
 /**
- * The symbols one Tier-2 cycle observes.
+ * Requests the Tier-2 lane still has in the current minute partition.
  *
- * The budget is UNCHANGED — `maxSymbolsPerTier2Cycle` symbols, as before. What
- * changed is that they are chosen rather than taken off the front of an
- * arbitrarily ordered list. See `tier2-priority.ts` for the measurement.
+ * Read from the SAME bucket `tryConsume` decrements, so the capacity the cycle
+ * plans for and the budget it actually spends against cannot drift apart. A
+ * fresh window reports the full cap because none of it has been spent yet.
+ */
+function tier2Headroom(s: MonitorState, cfg: OptionsMonitorConfig, now: number): { remainingThisMinute: number; minuteCap: number } {
+  const cap = cfg.providerBudgetPerMinute;
+  const windowExpired = now - s.budget.windowStart >= 60_000;
+  const used = windowExpired ? 0 : s.budget.used;
+  return { remainingThisMinute: Math.max(0, cap - used), minuteCap: cap };
+}
+
+/** Percentile of a numeric sample. Returns null on an empty sample — never 0. */
+function percentileOf(values: number[], p: number): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
+  return sorted[idx];
+}
+
+/**
+ * ONE CHEAP SWEEP OF THE WHOLE UNIVERSE, then a bounded promotion.
  *
- * Falls back to the old provider-order slice when no ranked source is wired
- * (every existing test) or when `OPTIONS_TIER2_PRIORITY=0`.
+ * This is the function that retires the 25-symbol visibility cap. Every
+ * eligible symbol is scored here, every cycle, from the snapshot the caller
+ * already holds — no provider request is issued by this function or anything it
+ * calls. Only the returned symbols go on to cost anything.
+ */
+function runAwarenessCycle(
+  quotes: AwarenessQuote[],
+  deps: OptionsMonitorDeps,
+  env: NodeJS.ProcessEnv,
+  cfg: OptionsMonitorConfig,
+): string[] {
+  const s = state();
+  const now = (deps.now ?? Date.now)();
+
+  const sweep: AwarenessSweep = sweepAwareness(
+    quotes, s.awarenessPrior, now, optionsAwarenessConfig(env),
+  );
+
+  const pcfg = promotionCapacityConfig(env);
+  const headroom = tier2Headroom(s, cfg, now);
+  const capacity = computePromotionCapacity(headroom, pcfg);
+  const sel = selectPromotions(sweep, s.tier2Cursor ?? 0, capacity.capacity, pcfg);
+
+  s.tier2Cursor = sel.nextCursor;
+  s.awarenessPrior = nextObservationCache(sweep);
+
+  // Cheap-observation recency is rebuilt from THIS sweep, so the map tracks the
+  // live universe exactly and drops names that left it.
+  const observedAt = new Map<string, number>();
+  for (const r of sweep.rows) observedAt.set(r.symbol, now);
+  s.cheapObservedAt = observedAt;
+
+  // Deep-analysis recency is retained across cycles but pruned to the current
+  // universe, so it cannot accumulate delisted symbols over a long session.
+  for (const sym of s.deepAnalyzedAt.keys()) if (!observedAt.has(sym)) s.deepAnalyzedAt.delete(sym);
+  for (const d of sel.promoted) s.deepAnalyzedAt.set(d.symbol, now);
+
+  s.lastAwareness = {
+    atMs: now,
+    eligibleOptionsUniverse: sweep.universeSize,
+    cheapObservedThisCycle: sweep.universeSize,
+    cheapObservationCoveragePct: sweep.universeSize > 0 ? 100 : 0,
+    withVelocity: sweep.withVelocity,
+    countsByBand: { ...sweep.countsByBand },
+    deepAnalysisPromoted: sel.promoted.length,
+    deepAnalysisDeferred: sel.notPromoted,
+    promotionCapacity: capacity.capacity,
+    capacityBoundBy: capacity.boundBy,
+    providerHeadroomRatio: capacity.headroomRatio,
+    capacityExplain: capacity.explain,
+    promotedByScore: sel.byScore,
+    promotedByExploration: sel.byExploration,
+    explorationSweepCycles: explorationSweepCycles(sweep.universeSize, capacity.capacity, pcfg),
+    topRanked: sweep.rows.slice(0, 10).map((r) => ({
+      symbol: r.symbol, preScore: r.preScore, band: r.band, reason: r.reason,
+    })),
+  };
+
+  // Kept in sync so existing observability surfaces keep reporting, with the
+  // meanings the new architecture gives them.
+  s.lastTier2Selection = {
+    atMs: now,
+    universeSize: sweep.universeSize,
+    priority: sel.byScore,
+    rotated: sel.byExploration.length,
+    deferred: sel.notPromoted,
+    cyclesForFullCoverage: 1, // cheap coverage is complete every cycle now
+  };
+
+  if (capacity.capacity === 0 && sweep.rows.some((r) => r.band === "HIGH_PRIORITY" || r.band === "NEWLY_ACCELERATING")) {
+    s.quotaBlockedHighPriority += 1;
+  }
+
+  return sel.promoted.map((d) => d.symbol);
+}
+
+/**
+ * Phase-10 coverage metrics. Reports CHEAP AWARENESS and DEEP ANALYSIS as
+ * separate quantities, because conflating them is what made "25 names scanned"
+ * look like a coverage statement when it was a spend statement.
+ */
+export function optionsCoverageMetrics(nowMs: number = Date.now()): {
+  eligibleOptionsUniverse: number;
+  cheapObservedThisCycle: number;
+  cheapObservationCoveragePct: number;
+  deepAnalysisPromoted: number;
+  deepAnalysisDeferred: number;
+  medianTimeSinceCheapObservationMs: number | null;
+  p95TimeSinceCheapObservationMs: number | null;
+  medianTimeSinceDeepAnalysisMs: number | null;
+  p95TimeSinceDeepAnalysisMs: number | null;
+  providerHeadroom: number;
+  promotionCapacity: number;
+  capacityBoundBy: string | null;
+  quotaBlockedHighPriority: number;
+  explorationSweepCycles: number;
+  countsByBand: Record<string, number>;
+  topRanked: { symbol: string; preScore: number; band: string; reason: string }[];
+  capacityExplain: string | null;
+} {
+  const s = state();
+  const a = s.lastAwareness;
+  const cheapAges = [...s.cheapObservedAt.values()].map((t) => nowMs - t);
+  // Only symbols in the CURRENT universe count, so a name that has never been
+  // deeply analysed is absent rather than recorded as age zero.
+  const deepAges = [...s.deepAnalyzedAt.values()].map((t) => nowMs - t);
+  return {
+    eligibleOptionsUniverse: a?.eligibleOptionsUniverse ?? 0,
+    cheapObservedThisCycle: a?.cheapObservedThisCycle ?? 0,
+    cheapObservationCoveragePct: a?.cheapObservationCoveragePct ?? 0,
+    deepAnalysisPromoted: a?.deepAnalysisPromoted ?? 0,
+    deepAnalysisDeferred: a?.deepAnalysisDeferred ?? 0,
+    medianTimeSinceCheapObservationMs: percentileOf(cheapAges, 50),
+    p95TimeSinceCheapObservationMs: percentileOf(cheapAges, 95),
+    medianTimeSinceDeepAnalysisMs: percentileOf(deepAges, 50),
+    p95TimeSinceDeepAnalysisMs: percentileOf(deepAges, 95),
+    providerHeadroom: a?.providerHeadroomRatio ?? 0,
+    promotionCapacity: a?.promotionCapacity ?? 0,
+    capacityBoundBy: a?.capacityBoundBy ?? null,
+    quotaBlockedHighPriority: s.quotaBlockedHighPriority,
+    explorationSweepCycles: a?.explorationSweepCycles ?? 0,
+    countsByBand: a?.countsByBand ?? {},
+    topRanked: a?.topRanked ?? [],
+    capacityExplain: a?.capacityExplain ?? null,
+  };
+}
+
+/**
+ * The symbols one Tier-2 cycle analyses DEEPLY.
+ *
+ * THREE PATHS, most capable first:
+ *
+ *  1. `tier2AwarenessQuotes` — the whole eligible universe is cheaply scored
+ *     every cycle off the snapshot that was already paid for, and only the
+ *     affordable few are promoted. `maxSymbolsPerTier2Cycle` stops being a
+ *     visibility cap here; it survives only as one input to the capacity
+ *     ceiling. This is the production path.
+ *  2. `tier2Candidates` — ranked by day move, still a hard 25-symbol horizon.
+ *  3. `tier2Universe` — provider order, the original behaviour.
+ *
+ * Paths 2 and 3 are kept because every existing test injects them, and because
+ * a deployment that has not wired the snapshot source must degrade to the
+ * previous behaviour rather than to no coverage at all.
  */
 async function selectTier2Symbols(
   deps: OptionsMonitorDeps,
@@ -503,6 +715,11 @@ async function selectTier2Symbols(
 ): Promise<string[]> {
   const slots = cfg.maxSymbolsPerTier2Cycle;
   const notTier0 = (sym: string) => !tier0Set.has(sym.toUpperCase());
+
+  if (deps.tier2AwarenessQuotes && env.OPTIONS_AWARENESS !== "0") {
+    const quotes = ((await deps.tier2AwarenessQuotes()) ?? []).filter((q) => q?.symbol && notTier0(q.symbol));
+    return runAwarenessCycle(quotes, deps, env, cfg);
+  }
 
   if (deps.tier2Candidates && env.OPTIONS_TIER2_PRIORITY !== "0") {
     const candidates = ((await deps.tier2Candidates()) ?? []).filter((c) => c?.symbol && notTier0(c.symbol));

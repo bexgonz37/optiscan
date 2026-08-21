@@ -493,6 +493,36 @@ export function buildLiveOptionsDeps(): OptionsMonitorDeps {
           dayDollarVolume: (q.price ?? 0) * (q.volume ?? 0),
         }));
     },
+    /**
+     * The FULL eligible universe with every snapshot field it already carries —
+     * the input to cheap awareness.
+     *
+     * COSTS NOTHING EXTRA, and that is the entire point. `marketSnapshot` is the
+     * shared TTL-cached whole-market call the scanner and the monitor already
+     * make; this reads MORE FIELDS OFF THE RESPONSE THAT WAS ALREADY PAID FOR
+     * rather than filtering it down to 25 rows and discarding ~1,581 unread.
+     *
+     * No per-symbol request of any kind is issued here — not a chain, not a bar,
+     * not a quote. The provider cost of full-universe awareness is zero.
+     */
+    tier2AwarenessQuotes: async () => {
+      const nowMs = Date.now();
+      const quotes = await marketSnapshot(nowMs);
+      return quotes
+        .filter((q: any) => tier2Eligible({ symbol: q.symbol, price: q.price, dayDollarVolume: (q.price ?? 0) * (q.volume ?? 0) }).eligible)
+        .map((q: any) => ({
+          symbol: String(q.symbol).toUpperCase(),
+          price: q.price ?? null,
+          changePercent: q.changePercent ?? null,
+          volume: q.volume ?? null,
+          dayHigh: q.dayHigh ?? q.high ?? null,
+          dayLow: q.dayLow ?? q.low ?? null,
+          dayOpen: q.dayOpen ?? q.open ?? null,
+          prevClose: q.prevClose ?? null,
+          bid: q.bid ?? null,
+          ask: q.ask ?? null,
+        }));
+    },
   };
 }
 
