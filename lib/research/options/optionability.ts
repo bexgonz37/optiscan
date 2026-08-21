@@ -407,11 +407,24 @@ export function emptyZeroContractCounters(): Record<ZeroContractCause, number> {
  * taxonomy makes unrepresentable: it tells the operator to widen a delta band
  * when the actual fix is to stop starving the lane.
  */
-export type ZeroContractOrigin = "PROVIDER" | "SELECTOR" | "SYMBOL";
+export type ZeroContractOrigin =
+  /** The market was never successfully asked. Quota, transport, truncation. */
+  | "PROVIDER"
+  /**
+   * We asked a question too specific for the answer to be informative — an
+   * empty 0-7 DTE window on a monthly-only name. Distinct from SELECTOR, which
+   * requires contracts to have arrived and been rejected: here nothing was
+   * rejected, because nothing was returned to reject.
+   */
+  | "REQUEST"
+  /** A usable chain arrived and OUR bands rejected every contract in it. */
+  | "SELECTOR"
+  /** The answer was about the instrument. */
+  | "SYMBOL";
 
 const ORIGIN_BY_CAUSE: Readonly<Record<ZeroContractCause, ZeroContractOrigin>> = Object.freeze({
   NOT_OPTIONABLE: "SYMBOL",
-  NO_CONTRACTS_IN_REQUESTED_DTE: "SELECTOR",
+  NO_CONTRACTS_IN_REQUESTED_DTE: "REQUEST",
   PROVIDER_EMPTY_RESPONSE: "PROVIDER",
   PROVIDER_INCOMPLETE: "PROVIDER",
   REFERENCE_UNKNOWN: "SYMBOL",

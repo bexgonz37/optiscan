@@ -18,6 +18,7 @@ import { computeOptionTargets, safetyBandStopPct } from "../lib/research/options
 import { defaultMonitorConfig } from "../lib/research/options/monitor.ts";
 import { defaultTier2Config, selectOptionsStrategy } from "../lib/research/options/discovery.ts";
 import { canOpenRealOptionPaper, defaultOpenPaperGate } from "../lib/research/options/paper.ts";
+import { decideOptionExit, defaultGradeConfig } from "../lib/research/options/grade.ts";
 
 /* ── 18. provider caps unchanged ───────────────────────────────────────────*/
 
@@ -120,7 +121,14 @@ test("25. no real-money execution path exists or was opened", () => {
 });
 
 test("25b. the new coverage modules contain no order, no delivery and no provider call", () => {
-  for (const f of ["awareness.ts", "promotion.ts", "optionability.ts"]) {
+  // Every module the recovery work added, coverage phase and provider-efficiency
+  // phase alike. Listed explicitly rather than globbed: a new module must be
+  // added here deliberately, which is the moment to ask whether it belongs.
+  for (const f of [
+    "awareness.ts", "promotion.ts", "optionability.ts",
+    "chain-admission.ts", "missed-opportunity.ts", "provider-lane-audit.ts",
+    "live-shadow.ts", "stage15-shadow.ts", "feature-semantics-shadow.ts", "rvol-shadow.ts",
+  ]) {
     const src = readFileSync(new URL(`../lib/research/options/${f}`, import.meta.url), "utf8");
     assert.doesNotMatch(src, /placeOrder|place_option_order|submitOrder/i, `${f}: no order path`);
     assert.doesNotMatch(src, /discord|webhook|sendMessage/i, `${f}: no delivery path`);
@@ -141,4 +149,41 @@ test("targets, stops and the entry denominator are unchanged", () => {
   assert.equal(safetyBandStopPct({}), 40);
   // The denominator is the frozen midpoint, exactly as before.
   assert.match(plan.methodology, /^mid=3\.44; stop=-45% \(1\.89\); R=1\.55; T1=\+1R \(4\.99\); T2=\+2R \(6\.54\)$/);
+});
+
+/* ── 31. exit logic unchanged ──────────────────────────────────────────────*/
+
+test("31. exit logic is unchanged — the same position and quote produce the same decision", () => {
+  const pos = { entry_fill: 2.00, target: 3.00, invalidation: 1.20, entered_at_ms: 0, strategy: "breakout_forming" };
+  const fresh = (bid, ask) => ({ bid, ask, quoteAgeMs: 1_000, providerTimestamp: 0 });
+
+  // A mark at the frozen T1 exits on the target, not on a band.
+  const hit = decideOptionExit(pos, fresh(3.00, 3.10), 60_000, defaultGradeConfig(), {});
+  assert.equal(hit.action, "exit");
+  assert.equal(hit.reason, "target_hit");
+
+  // A mark at the frozen invalidation exits there.
+  const stopped = decideOptionExit(pos, fresh(1.10, 1.20), 60_000, defaultGradeConfig(), {});
+  assert.equal(stopped.action, "exit");
+
+  // In between, it holds. Nothing in the provider-efficiency work introduced a
+  // trail, a time stop, or any other reason to leave a position early — the
+  // delivered lane rides a convex tail and those destroy it.
+  const between = decideOptionExit(pos, fresh(2.20, 2.30), 60_000, defaultGradeConfig(), {});
+  assert.equal(between.action, "hold");
+
+  // The exit CONSTANTS are pinned, not merely the branches. A phase about
+  // provider routing has no business moving a take-profit, a stop, or the
+  // max-hold that already existed — and the delivered lane rides a convex tail,
+  // so tightening any of them is how that lane gets destroyed.
+  const g = defaultGradeConfig({});
+  assert.equal(g.takeProfitPct, 60);
+  assert.equal(g.stopLossPct, 40);
+  assert.equal(g.maxHoldMs, 172_800_000, "the pre-existing 2-day time stop is exactly where it was");
+  assert.equal(g.maxQuoteAgeMs, 900_000);
+
+  // And no TRAILING stop was introduced. The time stop above is pre-existing and
+  // pinned; a trail is a different mechanism and there is still none.
+  const src = readFileSync(new URL("../lib/research/options/grade.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(src, /trailing[_ ]?stop|trailStop/i, "no trailing stop was added");
 });

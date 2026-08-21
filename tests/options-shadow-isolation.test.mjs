@@ -25,7 +25,25 @@ import {
 import { selectOptionsStrategy, scoreStrategies } from "../lib/research/options/discovery.ts";
 import { computeOptionsFeatures } from "../lib/research/options/features.ts";
 
-const SHADOW_FILES = ["stage15-shadow.ts", "feature-semantics-shadow.ts"];
+/**
+ * MEASUREMENT modules. Nothing on a production path may import these at all —
+ * every export is a verdict, and a verdict a decision can read is authority.
+ */
+const SHADOW_FILES = ["stage15-shadow.ts", "feature-semantics-shadow.ts", "rvol-shadow.ts"];
+
+/**
+ * The OBSERVER. Production is REQUIRED to import this — Phases F–J exist to
+ * point the measurements at live candidates, and a shadow with no subject
+ * explains nothing.
+ *
+ * What keeps that safe is not isolation but SHAPE: the only export production
+ * may import is `observeLiveShadow`, which returns void. A caller cannot branch
+ * on what it is not given. Every other export is a reader for reports, and
+ * importing one into a production module is the moment the shadow acquires
+ * authority — so that is what the third test below forbids.
+ */
+const OBSERVER_FILE = "live-shadow.ts";
+const OBSERVER_ALLOWED_IMPORTS = ["observeLiveShadow"];
 const LIB = fileURLToPath(new URL("../lib/", import.meta.url));
 
 /** Every .ts under lib/, so a new importer cannot be added unnoticed. */
@@ -40,20 +58,58 @@ function allLibFiles(dir = LIB, out = []) {
 
 /* ── 15/16/17. ISOLATION ───────────────────────────────────────────────────*/
 
-test("15/16/17. NO production module imports any shadow module", () => {
+/**
+ * Matches an import of `stem` with or WITHOUT the .ts extension.
+ *
+ * The previous pattern required the closing quote immediately after the stem,
+ * so it never matched `from "./stage15-shadow.ts"` — which is how every import
+ * in this repository is written. The guard passed because it could not see any
+ * importer at all, not because there were none. A guard that cannot fail is not
+ * a guard, so the test below proves this one can.
+ */
+const importsModule = (src, stem) =>
+  new RegExp(`from\\s+["'][^"']*${stem}(\\.ts)?["']|require\\(["'][^"']*${stem}(\\.ts)?["']\\)`).test(src);
+
+test("the isolation guard can actually fail — it matches the import style this repo uses", () => {
+  const observer = readFileSync(new URL(`../lib/research/options/${OBSERVER_FILE}`, import.meta.url), "utf8");
+  assert.equal(importsModule(observer, "stage15-shadow"), true,
+    "live-shadow.ts demonstrably imports stage15-shadow.ts, so the matcher must see it");
+  assert.equal(importsModule("from \"./unrelated.ts\"", "stage15-shadow"), false, "and not match everything");
+});
+
+test("15/16/17. NO production module imports a shadow MEASUREMENT module", () => {
+  const exempt = new Set([...SHADOW_FILES, OBSERVER_FILE]);
   const offenders = [];
   for (const file of allLibFiles()) {
-    const base = path.basename(file);
-    if (SHADOW_FILES.includes(base)) continue;
+    if (exempt.has(path.basename(file))) continue;
     const src = readFileSync(file, "utf8");
     for (const shadow of SHADOW_FILES) {
-      const stem = shadow.replace(/\.ts$/, "");
-      if (new RegExp(`from\\s+["'].*${stem}["']|require\\(["'].*${stem}["']\\)`).test(src)) {
+      if (importsModule(src, shadow.replace(/\.ts$/, ""))) {
         offenders.push(`${path.relative(LIB, file)} imports ${shadow}`);
       }
     }
   }
-  assert.deepEqual(offenders, [], "a shadow with a production importer is not a shadow");
+  assert.deepEqual(offenders, [], "a measurement a decision can read is not a shadow");
+});
+
+test("production imports ONLY the void-returning observer from the shadow lane", () => {
+  const offenders = [];
+  for (const file of allLibFiles()) {
+    if (path.basename(file) === OBSERVER_FILE) continue;
+    const src = readFileSync(file, "utf8");
+    if (!importsModule(src, "live-shadow")) continue;
+    const re = /import\s+(type\s+)?\{([^}]*)\}\s+from\s+["'][^"']*live-shadow(\.ts)?["']/g;
+    for (const m of src.matchAll(re)) {
+      for (const raw of m[2].split(",")) {
+        const name = raw.replace(/\btype\b/, "").split(/\sas\s/)[0].trim();
+        if (name && !OBSERVER_ALLOWED_IMPORTS.includes(name)) {
+          offenders.push(`${path.relative(LIB, file)} imports ${name}`);
+        }
+      }
+    }
+  }
+  assert.deepEqual(offenders, [],
+    "observeLiveShadow returns void; importing a READER into production is how a shadow becomes authority");
 });
 
 test("15/16/17. the shadow modules import nothing that can decide, deliver or spend", () => {

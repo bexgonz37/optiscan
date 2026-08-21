@@ -100,8 +100,26 @@ export interface LiveShadowInput {
   considered?: readonly StrategyScore[] | null;
   /** Early-signal keys active for this candidate. */
   activeSignals?: ReadonlySet<string> | null;
-  /** Evidence for the Stage-1.5 gate, all of it already paid for. */
-  stage15?: Stage15Evidence | null;
+  /**
+   * Decision-time underlying values, exactly as production computed them.
+   *
+   * The caller passes RAW VALUES rather than an assembled `Stage15Evidence`,
+   * so a production module never has to name a shadow type — the isolation
+   * guard can then forbid every import of a measurement module, type-only ones
+   * included, instead of carving out an exception a later change could widen.
+   */
+  underlying?: {
+    velPct?: number | null;
+    accelPct?: number | null;
+    relVolume?: number | null;
+    dayDollarVolume?: number | null;
+    compressionPct?: number | null;
+    aboveVwap?: boolean | null;
+  } | null;
+  /** Strategy score at decision time, 0..1. */
+  strategyScore?: number | null;
+  /** True when the candidate could never reach subscribers. */
+  researchOnly?: boolean | null;
   /** Outcome fields, filled in on the post-chain observation. */
   contractsReturned?: number | null;
   selectedOcc?: boolean | null;
@@ -168,7 +186,8 @@ export function evaluateLiveShadow(
 ): LiveShadowRecord {
   const symbol = String(input.symbol ?? "").toUpperCase();
 
-  const stage15 = input.stage15 ? evaluateStage15Shadow(input.stage15, cfg) : null;
+  const evidence = stage15EvidenceOf(input);
+  const stage15 = evidence ? evaluateStage15Shadow(evidence, cfg) : null;
 
   const bars = input.bars ?? null;
   const price = typeof input.price === "number" && Number.isFinite(input.price) ? input.price : null;
@@ -188,6 +207,38 @@ export function evaluateLiveShadow(
   const tie = input.considered ? tieRecord(symbol, input.atMs, input.considered) : null;
 
   return { symbol, atMs: input.atMs, tier: input.tier, stage15, sessionWindow, latePhase, duplication, tie };
+}
+
+/**
+ * The Stage-1.5 gate's evidence, assembled from what the candidate already held.
+ *
+ * Every field is read off values production computed. Nothing is fetched, and
+ * nothing can be seen here that the live decision did not already have — which
+ * is what keeps the Phase-F counterfactual honest about what a real gate would
+ * have known at the moment it would have fired.
+ *
+ * Returns null when there is no underlying block at all: a gate evaluated
+ * against nothing would report a PASS on every field being unknown, and a
+ * hundred of those would drown the population that carries real evidence.
+ */
+function stage15EvidenceOf(input: LiveShadowInput): Stage15Evidence | null {
+  const u = input.underlying;
+  if (!u) return null;
+  return {
+    symbol: String(input.symbol ?? "").toUpperCase(),
+    velPct: u.velPct ?? null,
+    accelPct: u.accelPct ?? null,
+    relVolume: u.relVolume ?? null,
+    dayDollarVolume: u.dayDollarVolume ?? null,
+    compressionPct: u.compressionPct ?? null,
+    aboveVwap: u.aboveVwap ?? null,
+    // The underlying quoted spread is not on the snapshot. Absent, never guessed
+    // — `evaluateStage15Shadow` records it as an unknown and skips the floor.
+    spreadPct: null,
+    strategyScore: input.strategyScore ?? null,
+    researchOnly: input.researchOnly ?? null,
+    tier: input.tier,
+  };
 }
 
 function duplicationFor(strategyKey: string, active: ReadonlySet<string>): DuplicationEffect | null {
@@ -357,9 +408,10 @@ export function observeLiveShadow(
     // The Stage-1.5 counterfactual needs the OUTCOME beside the evidence, so it
     // is only recorded once the chain attempt has actually resolved. Recording
     // it at decision time would leave every attempt looking like a zero.
-    if (input.stage15 && input.contractsReturned != null) {
+    const evidence = stage15EvidenceOf(input);
+    if (evidence && input.contractsReturned != null) {
       push(s.attempts, {
-        evidence: input.stage15,
+        evidence,
         contractsReturned: Math.max(0, Number(input.contractsReturned) || 0),
         selectedOcc: input.selectedOcc === true,
         becameCase: input.becameCase === true,

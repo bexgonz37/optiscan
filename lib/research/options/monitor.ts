@@ -46,7 +46,6 @@ import {
   type MissedOpportunityConfig, type SkipReason,
 } from "./missed-opportunity.ts";
 import { observeLiveShadow } from "./live-shadow.ts";
-import type { Stage15Evidence } from "./stage15-shadow.ts";
 import { splitChainCapacity, actionableReserveFraction } from "./provider-lane-audit.ts";
 import { activeSignals, type StrategySelection } from "./discovery.ts";
 import { tradingDay } from "../../trading-session.ts";
@@ -242,7 +241,7 @@ interface MonitorState {
   /** Bounded per-cause tallies. Fixed key set, so it cannot grow. */
   zeroContractCauses: Record<ZeroContractCause, number>;
   /** The same totals split by whose fault it was. */
-  zeroContractOrigins: { PROVIDER: number; SELECTOR: number; SYMBOL: number };
+  zeroContractOrigins: { PROVIDER: number; REQUEST: number; SELECTOR: number; SYMBOL: number };
 
   /* ── PHASE C · chain admission ───────────────────────────────────────── */
   /**
@@ -254,6 +253,16 @@ interface MonitorState {
    * bound that depends on a downstream function being called is not a bound.
    */
   chainQueue: Map<string, ChainTicket>;
+  /**
+   * Whether the LAST cycle actually ran with admission on.
+   *
+   * Read from the cycle's own env rather than re-derived from `process.env` at
+   * report time. The monitor takes its env as an argument, so a metrics reader
+   * that consults the ambient environment can report "inactive" for a lane that
+   * has been ordering its spend all session — a reporting bug that would make
+   * the rollout impossible to verify.
+   */
+  chainAdmissionActive: boolean;
   lastAdmission: {
     atMs: number; capacity: number; actionableReserved: number;
     admitted: number; deferred: number; expired: number;
@@ -296,8 +305,8 @@ function state(): MonitorState {
     lastAwareness: null, quotaBlockedHighPriority: 0,
     optionability: new Map(), chainSkippedForProvenNotOptionable: 0,
     zeroContractCauses: emptyZeroContractCounters(),
-    zeroContractOrigins: { PROVIDER: 0, SELECTOR: 0, SYMBOL: 0 },
-    chainQueue: new Map(), lastAdmission: null,
+    zeroContractOrigins: { PROVIDER: 0, REQUEST: 0, SELECTOR: 0, SYMBOL: 0 },
+    chainQueue: new Map(), chainAdmissionActive: false, lastAdmission: null,
     missedLastState: new Map(), missedPending: new Map(),
     missedWritten: 0, missedTruncated: 0, lastMissedPruneMs: 0,
   });
@@ -502,7 +511,9 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
         strategyKey: preSelection?.selected?.key ?? null,
         considered: preSelection?.considered ?? null,
         activeSignals: active,
-        stage15: stage15EvidenceOf(symbol, tier, input, preSelection),
+        underlying: input.underlying,
+        strategyScore: preSelection?.selected?.score ?? null,
+        researchOnly: preSelection?.selected?.researchOnly ?? null,
       }, env);
 
       // FORMING, not yet plausible: re-check at the scan cadence (symbolFormingRecheckMs, default 0)
@@ -643,7 +654,9 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
         symbol, atMs: n0, tier,
         side: p.preSelection?.selected?.side ?? null,
         strategyKey: p.preSelection?.selected?.key ?? null,
-        stage15: stage15EvidenceOf(symbol, tier, input, p.preSelection),
+        underlying: input.underlying,
+        strategyScore: p.preSelection?.selected?.score ?? null,
+        researchOnly: p.preSelection?.selected?.researchOnly ?? null,
         contractsReturned: chain.length,
         selectedOcc: !!res?.contract,
         becameCase: !!res?.selection.selected,
@@ -658,6 +671,7 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
     } finally { s.inFlight.delete(symbol); }
   };
 
+  s.chainAdmissionActive = cfg.chainAdmissionEnabled;
   if (!cfg.chainAdmissionEnabled) {
     // STREAMING PATH — the shipped behaviour, unchanged. Each symbol goes
     // straight from its own plausibility verdict to its own chain request.
@@ -767,36 +781,6 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
  * the counter below says so.
  */
 export const CHAIN_QUEUE_MAX = 200;
-
-/**
- * Stage-1.5 shadow evidence, assembled from what the candidate already holds.
- *
- * Every field is read off `input` or the selection. Nothing here fetches, and
- * nothing here can see a value production did not already have — which is what
- * keeps the Phase-F counterfactual honest about what a real gate would have
- * known at the moment it would have fired.
- */
-function stage15EvidenceOf(
-  symbol: string,
-  tier: 0 | 1 | 2,
-  input: OptionsCandidateInput,
-  selection: StrategySelection | null,
-): Stage15Evidence {
-  const u = input.underlying;
-  return {
-    symbol,
-    velPct: u.velPct ?? null,
-    accelPct: u.accelPct ?? null,
-    relVolume: u.relVolume ?? null,
-    dayDollarVolume: u.dayDollarVolume ?? null,
-    compressionPct: u.compressionPct ?? null,
-    aboveVwap: u.aboveVwap ?? null,
-    spreadPct: null, // underlying spread is not on the snapshot; absent, never guessed
-    strategyScore: selection?.selected?.score ?? null,
-    researchOnly: selection?.selected?.researchOnly ?? null,
-    tier,
-  };
-}
 
 /**
  * PHASE B — fold one resolved chain attempt into the counters and the registry.
@@ -1301,7 +1285,7 @@ export function optionabilityMetrics(): {
 /** PHASE B — zero-contract outcomes, by cause and by whose fault it was. */
 export function zeroContractMetrics(): {
   byCause: Record<ZeroContractCause, number>;
-  byOrigin: { PROVIDER: number; SELECTOR: number; SYMBOL: number };
+  byOrigin: { PROVIDER: number; REQUEST: number; SELECTOR: number; SYMBOL: number };
   total: number;
   semantics: string;
 } {
@@ -1312,14 +1296,15 @@ export function zeroContractMetrics(): {
     byCause,
     byOrigin: { ...s.zeroContractOrigins },
     total,
-    semantics: "PROVIDER = the market was never successfully asked; SELECTOR = it answered and our bands "
-      + "rejected every contract; SYMBOL = the answer was about the instrument. A PROVIDER cause can "
-      + "never be reported as a SELECTOR one.",
+    semantics: "PROVIDER = the market was never successfully asked; REQUEST = we asked a window too "
+      + "narrow for an empty answer to mean anything; SELECTOR = it answered and our bands rejected "
+      + "every contract; SYMBOL = the answer was about the instrument. A PROVIDER cause can never be "
+      + "reported as a SELECTOR one.",
   };
 }
 
 /** PHASE C — the admission queue, including whether it is active at all. */
-export function chainAdmissionMetrics(env: NodeJS.ProcessEnv = process.env): {
+export function chainAdmissionMetrics(): {
   active: boolean;
   rolloutControl: string;
   queueDepth: number;
@@ -1328,7 +1313,7 @@ export function chainAdmissionMetrics(env: NodeJS.ProcessEnv = process.env): {
 } {
   const s = state();
   return {
-    active: defaultMonitorConfig(env).chainAdmissionEnabled,
+    active: s.chainAdmissionActive,
     rolloutControl: "OPTIONS_CHAIN_ADMISSION_ENABLED=1",
     queueDepth: s.chainQueue.size,
     queueMax: CHAIN_QUEUE_MAX,
