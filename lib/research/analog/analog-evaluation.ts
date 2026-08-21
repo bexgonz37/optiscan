@@ -209,6 +209,13 @@ export interface AnalogEvalReport {
     byDirection: StratumScore[];
     byRegimeWindow: StratumScore[];
   };
+  /** Whether the corpus handed in was single-horizon. Mixed corpora are reported, never averaged. */
+  corpusShape: {
+    horizonsPresent: string[];
+    mixedHorizons: boolean;
+    duplicateMemberIds: number;
+    note: string;
+  };
   overallVerdict: "SUPPORTED" | "INSUFFICIENT_EVIDENCE";
   verdictReason: string;
   researchAuthority: "RESEARCH_ONLY";
@@ -269,15 +276,24 @@ export function evaluateAnalogRetrieval(
   const predictions: AnalogPrediction[] = [];
   let futureViolations = 0;
   let selfViolations = 0;
-  // Index once. Re-scanning the corpus per retrieved analog would make the audit itself
-  // the most expensive part of the evaluation.
-  const byId = new Map(sorted.map((m) => [m.id, m]));
+
+  // A repeated episode_key means the corpus spans several horizons: one episode carries one
+  // label per horizon, same T0 vector, different outcome. That is a mixed corpus and it is
+  // reported rather than averaged. It also broke the OLD audit, which looked each analog's
+  // id up in a Map and therefore compared against whichever horizon happened to be written
+  // last — 6,000 phantom future-violations on the un-horizoned V2 corpus. The audit now
+  // reads `labelEndMs` off the analog retrieval ACTUALLY returned, so there is nothing to
+  // resolve ambiguously.
+  const idCounts = new Map<string, number>();
+  for (const m of sorted) idCounts.set(m.id, (idCounts.get(m.id) ?? 0) + 1);
+  const duplicateMemberIds = [...idCounts.values()].reduce((a, c) => a + (c - 1), 0);
+  const horizonsPresent = [...new Set(sorted.map((m) => m.horizon ?? "(none)"))].sort();
 
   const bucketMs = options.retrieval?.duplicateBucketMs ?? defaultRetrievalOptions().duplicateBucketMs;
 
   for (const q of queries) {
     const r = retrieveAnalogs(
-      { id: q.id, symbol: q.symbol, t0Ms: q.t0Ms, vector: q.vector },
+      { id: q.id, symbol: q.symbol, t0Ms: q.t0Ms, vector: q.vector, horizon: q.horizon ?? null },
       sorted,
       options.retrieval,
     );
@@ -295,11 +311,9 @@ export function evaluateAnalogRetrieval(
     // Audit the fence rather than trust it.
     let maxEnd: number | null = null;
     for (const a of r.analogs) {
-      const member = byId.get(a.id);
-      if (!member) continue;
-      if (member.labelEndMs > q.t0Ms) futureViolations++;
-      if (member.id === q.id) selfViolations++;
-      maxEnd = maxEnd === null || member.labelEndMs > maxEnd ? member.labelEndMs : maxEnd;
+      if (a.labelEndMs > q.t0Ms) futureViolations++;
+      if (a.id === q.id) selfViolations++;
+      maxEnd = maxEnd === null || a.labelEndMs > maxEnd ? a.labelEndMs : maxEnd;
     }
 
     const insufficient = labeled.length < minObs || sessions < minSes;
@@ -489,6 +503,12 @@ export function evaluateAnalogRetrieval(
   if (scoreable.length < ANALOG_MIN_OBSERVATIONS) reasons.push(`${scoreable.length} scoreable predictions < ${ANALOG_MIN_OBSERVATIONS}`);
   if (querySessions < ANALOG_MIN_INDEPENDENT_SESSIONS) reasons.push(`${querySessions} independent query sessions < ${ANALOG_MIN_INDEPENDENT_SESSIONS}`);
   if (supportedN === 0) reasons.push("no calibration bucket reached the minimum prediction count");
+  if (horizonsPresent.length > 1) {
+    reasons.push(
+      `corpus mixes ${horizonsPresent.length} horizons (${horizonsPresent.join(", ")}); ` +
+      `${duplicateMemberIds} rows repeat an episode_key, so the metric is fitted on each setup more than once`,
+    );
+  }
 
   return {
     evalVersion: ANALOG_EVAL_VERSION,
@@ -527,6 +547,16 @@ export function evaluateAnalogRetrieval(
       futureAnalogViolations: futureViolations,
       selfRetrievalViolations: selfViolations,
       verdict: futureViolations === 0 && selfViolations === 0 ? "CLEAN" : "LEAK_DETECTED",
+    },
+    corpusShape: {
+      horizonsPresent,
+      mixedHorizons: horizonsPresent.length > 1,
+      duplicateMemberIds,
+      note: horizonsPresent.length > 1
+        ? "MIXED HORIZONS. Retrieval fences each query to its own horizon, so no cohort pools them, " +
+          "but the fitted metric still sees every setup once per horizon. Load with a single horizon " +
+          "before reading any number here as a calibration claim."
+        : "single-horizon corpus",
     },
     baselines: {
       version: ANALOG_BASELINE_VERSION,

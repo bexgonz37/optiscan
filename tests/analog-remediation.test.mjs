@@ -481,6 +481,69 @@ test("the baseline verdict refuses to call a win when any baseline survives", ()
   }
 });
 
+// ── the horizon axis: found by the V2 repair, fixed here ──────────────────
+//
+// Loading a V2 class without a horizon returned 6,935 members for ~1,387 episodes — one row
+// per horizon, same episode_key, same T0 vector, five different outcomes. Two things broke:
+// the metric was fitted on every setup five times, and the leakage audit's id→member lookup
+// resolved to whichever horizon was written last, reporting 6,000 future-violations that had
+// not happened. Both are guarded below.
+
+test("a horizon-mixed corpus is reported, never silently averaged", () => {
+  const base = corpusOf({ symbols: ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"], sessions: 24, perSession: 2 });
+  const mixed = base.flatMap((m) => ["5m", "session"].map((h) => ({ ...m, horizon: h })));
+  const report = evaluateAnalogRetrieval(mixed, { maxQueries: 60, bootstrapIterations: 200 });
+  assert.equal(report.corpusShape.mixedHorizons, true);
+  assert.deepEqual(report.corpusShape.horizonsPresent, ["5m", "session"]);
+  assert.equal(report.corpusShape.duplicateMemberIds, base.length);
+  assert.equal(report.overallVerdict, "INSUFFICIENT_EVIDENCE");
+  assert.match(report.verdictReason, /mixes 2 horizons/);
+  // Single-horizon is the clean case and says so.
+  const single = evaluateAnalogRetrieval(base.map((m) => ({ ...m, horizon: "5m" })), {
+    maxQueries: 60, bootstrapIterations: 200,
+  });
+  assert.equal(single.corpusShape.mixedHorizons, false);
+  assert.equal(single.corpusShape.duplicateMemberIds, 0);
+});
+
+test("retrieval never pools horizons, and the audit does not cry wolf on a mixed corpus", () => {
+  const base = corpusOf({ symbols: ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"], sessions: 20, perSession: 2 });
+  // The long horizon resolves much later — under the OLD id-lookup audit this is exactly the
+  // row that turned an in-fence 5m analog into a phantom future violation.
+  const mixed = base.flatMap((m) => [
+    { ...m, horizon: "5m", labelEndMs: m.t0Ms + 5 * 60_000 },
+    { ...m, horizon: "session", labelEndMs: m.t0Ms + 6 * 3_600_000 },
+  ]);
+  const query = mixed.filter((m) => m.horizon === "5m").at(-1);
+  const r = retrieveAnalogs(
+    { id: query.id, symbol: query.symbol, t0Ms: query.t0Ms, vector: query.vector, horizon: "5m" },
+    mixed,
+    { k: 50, perSymbolCap: 50 },
+  );
+  assert.ok(r.analogs.length > 0);
+  assert.ok(r.exclusions.HORIZON_MISMATCH > 0, "the other horizon must be excluded, not blended");
+  for (const a of r.analogs) {
+    assert.equal(a.horizon, "5m");
+    assert.ok(a.labelEndMs <= query.t0Ms, "every retrieved analog finished before the decision");
+  }
+  const report = evaluateAnalogRetrieval(mixed, { maxQueries: 60, bootstrapIterations: 200 });
+  assert.equal(report.leakageAudit.futureAnalogViolations, 0, "no phantom violations from a re-looked-up id");
+  assert.equal(report.leakageAudit.verdict, "CLEAN");
+});
+
+test("an omitted query horizon leaves horizon unfiltered, preserving V1 callers", () => {
+  const corpus = corpusOf({ sessions: 16, perSession: 2 }); // no horizon on any member
+  const query = corpus.at(-1);
+  const r = retrieveAnalogs(
+    { id: query.id, symbol: query.symbol, t0Ms: query.t0Ms, vector: query.vector },
+    corpus,
+    { k: 30 },
+  );
+  assert.equal(r.exclusions.HORIZON_MISMATCH, 0);
+  assert.ok(r.analogs.length > 0);
+  for (const a of r.analogs) assert.equal(a.horizon, null);
+});
+
 // ── 1 / 2: the widened replay stays historical-T0 clean ────────────────────
 
 test("planned horizons never claim a horizon the bar span cannot reach", () => {

@@ -91,6 +91,17 @@ export interface LoadedCorpus {
   droppedUnusableTimestamps: number;
   /** Members whose outcome is unresolved. */
   censoredCount: number;
+  /**
+   * Which label horizons this corpus actually contains. MORE THAN ONE IS A MIXED CORPUS:
+   * the same episode appears once per horizon with the same T0 vector and a different
+   * outcome, so the metric is fitted on each setup repeatedly and a 5-minute result lands
+   * in the same rate as a session-long one. Pass `horizon` to load a single one.
+   */
+  horizonsPresent: string[];
+  /** True when `horizonsPresent.length > 1`. */
+  mixedHorizons: boolean;
+  /** Repeated episode_keys — non-zero exactly when the corpus is horizon-mixed. */
+  duplicateMemberIds: number;
   /** True when `limit` truncated the read — a silently capped corpus is a lie about N. */
   truncated: boolean;
   /** Empty-or-missing-table reason, when applicable. */
@@ -119,6 +130,8 @@ interface AssembleResult {
   droppedByVectorVersion: number;
   droppedUnusableTimestamps: number;
   censoredCount: number;
+  horizonsPresent: string[];
+  duplicateMemberIds: number;
 }
 
 function assemble(
@@ -152,13 +165,24 @@ function assemble(
       labelEndMs,
       tradingDay: tradingDayOf(row, t0Ms),
       evidenceClass,
+      horizon: row.horizon == null ? null : String(row.horizon),
       vector,
       outcome,
     });
   }
   // Deterministic order: chronological, id tiebreak.
   members.sort((a, b) => (a.t0Ms - b.t0Ms) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  return { members, droppedIncomparable, droppedByVectorVersion, droppedUnusableTimestamps, censoredCount };
+  // A repeated episode_key means one episode contributed several rows — in practice one
+  // per horizon. It is reported rather than deduplicated here, because which horizon to
+  // keep is the CALLER'S question and silently picking one would answer it for them.
+  const seen = new Set<string>();
+  let duplicateMemberIds = 0;
+  for (const m of members) { if (seen.has(m.id)) duplicateMemberIds++; else seen.add(m.id); }
+  return {
+    members, droppedIncomparable, droppedByVectorVersion, droppedUnusableTimestamps, censoredCount,
+    horizonsPresent: [...new Set(members.map((m) => m.horizon ?? "(none)"))].sort(),
+    duplicateMemberIds,
+  };
 }
 
 /**
@@ -191,7 +215,8 @@ export function loadAnalogCorpusOnDb(db: CorpusDb, options: LoadCorpusOptions): 
   const empty = (note: string): LoadedCorpus => ({
     corpusVersion: ANALOG_CORPUS_VERSION, evidenceClass, horizon, vectorVersion, members: [],
     rowsRead: 0, droppedIncomparable: 0, droppedByVectorVersion: 0, droppedUnusableTimestamps: 0,
-    censoredCount: 0, truncated: false, note,
+    censoredCount: 0, horizonsPresent: [], mixedHorizons: false, duplicateMemberIds: 0,
+    truncated: false, note,
   });
 
   if (evidenceClass === "HISTORICAL_UNDERLYING_ONLY" || evidenceClass === "MODELED_OPTION") {
@@ -207,7 +232,7 @@ export function loadAnalogCorpusOnDb(db: CorpusDb, options: LoadCorpusOptions): 
       `SELECT e.episode_key, e.symbol, e.t0_ms, e.trading_day, e.direction, e.liquidity_tier,
               e.episode_version, e.zone_a_json,
               e.price_structure_json, e.momentum_json, e.volume_json, e.volatility_json,
-              l.return_pct, l.label_as_of_ms
+              l.horizon, l.return_pct, l.label_as_of_ms
        FROM setup_episodes e
        JOIN episode_labels l ON l.episode_key = e.episode_key
        WHERE ${where} AND l.label_as_of_ms IS NOT NULL
@@ -225,8 +250,16 @@ export function loadAnalogCorpusOnDb(db: CorpusDb, options: LoadCorpusOptions): 
       droppedByVectorVersion: a.droppedByVectorVersion,
       droppedUnusableTimestamps: a.droppedUnusableTimestamps,
       censoredCount: a.censoredCount,
+      horizonsPresent: a.horizonsPresent,
+      mixedHorizons: a.horizonsPresent.length > 1,
+      duplicateMemberIds: a.duplicateMemberIds,
       truncated,
-      note: truncated ? `read capped at ${limit} rows; N is a floor, not the population` : null,
+      note: truncated
+        ? `read capped at ${limit} rows; N is a floor, not the population`
+        : a.horizonsPresent.length > 1
+          ? `MIXED HORIZONS (${a.horizonsPresent.join(", ")}): ${a.duplicateMemberIds} rows repeat an episode_key. ` +
+            "Pass ?horizon= to load one; a mixed corpus fits the metric on each setup once per horizon."
+          : null,
     };
   }
 
@@ -245,7 +278,7 @@ export function loadAnalogCorpusOnDb(db: CorpusDb, options: LoadCorpusOptions): 
               e.episode_version,
               e.price_structure_json, e.momentum_json, e.volume_json, e.volatility_json,
               e.zone_a_json,
-              l.terminal_return_pct, l.censored, l.label_as_of_ms
+              l.horizon, l.terminal_return_pct, l.censored, l.label_as_of_ms
        FROM setup_episodes e
        JOIN episode_outcome_labels_v2 l ON l.episode_key = e.episode_key
        WHERE ${where} AND l.label_as_of_ms IS NOT NULL
@@ -270,8 +303,16 @@ export function loadAnalogCorpusOnDb(db: CorpusDb, options: LoadCorpusOptions): 
       droppedByVectorVersion: a.droppedByVectorVersion,
       droppedUnusableTimestamps: a.droppedUnusableTimestamps,
       censoredCount: a.censoredCount,
+      horizonsPresent: a.horizonsPresent,
+      mixedHorizons: a.horizonsPresent.length > 1,
+      duplicateMemberIds: a.duplicateMemberIds,
       truncated,
-      note: truncated ? `read capped at ${limit} rows; N is a floor, not the population` : null,
+      note: truncated
+        ? `read capped at ${limit} rows; N is a floor, not the population`
+        : a.horizonsPresent.length > 1
+          ? `MIXED HORIZONS (${a.horizonsPresent.join(", ")}): ${a.duplicateMemberIds} rows repeat an episode_key. ` +
+            "Pass ?horizon= to load one; a mixed corpus fits the metric on each setup once per horizon."
+          : null,
     };
   }
 

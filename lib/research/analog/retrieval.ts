@@ -64,6 +64,16 @@ export interface AnalogCorpusMember {
   vector: AnalogFeatureVector;
   /** Realized outcome, or null when censored / unresolved. Null NEVER becomes 0. */
   outcome: number | null;
+  /**
+   * The label horizon this row's outcome belongs to.
+   *
+   * One episode carries a label PER HORIZON, so an un-horizoned load returns the same
+   * `id` and the same T0 vector five times with five different outcomes. Pooled, that
+   * fits the metric on each setup five times over and mixes a 5-minute result into a
+   * session-long rate. Horizon travels WITH the member for the same reason the evidence
+   * class does: so retrieval can refuse the mix instead of averaging it.
+   */
+  horizon?: string | null;
   /** Optional explicit duplicate-manifestation key; derived when absent. */
   dedupKey?: string;
 }
@@ -73,6 +83,12 @@ export interface AnalogQuery {
   symbol: string;
   t0Ms: number;
   vector: AnalogFeatureVector;
+  /**
+   * The horizon being asked about. When set, only analogs of the SAME horizon are eligible.
+   * Omitted leaves horizon unfiltered, which is correct only for a corpus that was already
+   * loaded at a single horizon — `horizonsPresent` on the load result says whether it was.
+   */
+  horizon?: string | null;
 }
 
 export interface RetrievalOptions {
@@ -122,6 +138,15 @@ export interface RetrievedAnalog {
   droppedDims: string[];
   coverage: number;
   evidenceClass: AnalogEvidenceClass;
+  /** The horizon this analog's outcome belongs to. */
+  horizon: string | null;
+  /**
+   * When this analog finished resolving. Carried out so the leakage audit can check the
+   * member retrieval ACTUALLY chose, rather than re-looking-up the id — a lookup that is
+   * ambiguous whenever one episode contributes a row per horizon, and that reported 6,000
+   * phantom future-violations on the un-horizoned V2 corpus before this existed.
+   */
+  labelEndMs: number;
   outcome: number | null;
   sameSymbol: boolean;
 }
@@ -130,6 +155,7 @@ export type ExclusionReason =
   | "SELF"
   | "FUTURE_OR_UNRESOLVED_AT_T0"
   | "EVIDENCE_CLASS_MISMATCH"
+  | "HORIZON_MISMATCH"
   | "FEATURE_VECTOR_VERSION_MISMATCH"
   | "COMPARABILITY_MISMATCH"
   | "COMPARABILITY_KEY_ABSENT"
@@ -177,6 +203,7 @@ const EMPTY_EXCLUSIONS = (): Record<ExclusionReason, number> => ({
   SELF: 0,
   FUTURE_OR_UNRESOLVED_AT_T0: 0,
   EVIDENCE_CLASS_MISMATCH: 0,
+  HORIZON_MISMATCH: 0,
   FEATURE_VECTOR_VERSION_MISMATCH: 0,
   COMPARABILITY_MISMATCH: 0,
   COMPARABILITY_KEY_ABSENT: 0,
@@ -243,6 +270,7 @@ export function retrieveAnalogs(
   const spec = comparabilitySpecFor(query.vector.version);
   const minCmpCoverage = opt.minComparabilityCoverage;
 
+  const queryHorizon = query.horizon ?? null;
   const qDup = duplicateKeyFor(query, opt.duplicateBucketMs);
   let droppedComparabilityKeys = 0;
 
@@ -253,6 +281,8 @@ export function retrieveAnalogs(
     if ((m.dedupKey ?? duplicateKeyFor(m, opt.duplicateBucketMs)) === qDup) { exclusions.SELF++; continue; }
     if (!(m.labelEndMs <= fenceMs)) { exclusions.FUTURE_OR_UNRESOLVED_AT_T0++; continue; }
     if (requested && m.evidenceClass !== requested) { exclusions.EVIDENCE_CLASS_MISMATCH++; continue; }
+    // A 5-minute outcome is not a session outcome, and the same episode supplies both.
+    if (queryHorizon != null && (m.horizon ?? null) !== queryHorizon) { exclusions.HORIZON_MISMATCH++; continue; }
     // Same dimension names, different estimators. Blending versions would return a number
     // and no error, which is the worst available outcome; see feature-vector-v2.ts.
     if (m.vector.version !== query.vector.version) { exclusions.FEATURE_VECTOR_VERSION_MISMATCH++; continue; }
@@ -318,6 +348,8 @@ export function retrieveAnalogs(
       droppedDims: s.droppedDims,
       coverage: +s.coverage.toFixed(4),
       evidenceClass: s.m.evidenceClass,
+      horizon: s.m.horizon ?? null,
+      labelEndMs: s.m.labelEndMs,
       outcome: s.m.outcome,
       sameSymbol: s.m.symbol === query.symbol,
     });

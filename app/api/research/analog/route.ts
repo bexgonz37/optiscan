@@ -143,7 +143,7 @@ export async function GET(req: Request) {
     }
 
     const retrieval = retrieveAnalogs(
-      { id: member.id, symbol: member.symbol, t0Ms: member.t0Ms, vector: member.vector },
+      { id: member.id, symbol: member.symbol, t0Ms: member.t0Ms, vector: member.vector, horizon: member.horizon ?? null },
       corpus.members,
       {
         k: intParam(url.searchParams, "k", 30, 1, 200),
@@ -200,6 +200,7 @@ export async function GET(req: Request) {
 
 function corpusSummary(c: {
   corpusVersion: string; evidenceClass: string; horizon: string | null; vectorVersion: string;
+  horizonsPresent: string[]; mixedHorizons: boolean; duplicateMemberIds: number;
   members: unknown[]; rowsRead: number; droppedIncomparable: number; droppedByVectorVersion: number;
   droppedUnusableTimestamps: number; censoredCount: number; truncated: boolean; note: string | null;
 }) {
@@ -207,6 +208,9 @@ function corpusSummary(c: {
     version: c.corpusVersion,
     evidenceClass: c.evidenceClass,
     horizon: c.horizon,
+    horizonsPresent: c.horizonsPresent,
+    mixedHorizons: c.mixedHorizons,
+    duplicateMemberIds: c.duplicateMemberIds,
     featureVectorVersion: c.vectorVersion,
     members: c.members.length,
     rowsRead: c.rowsRead,
