@@ -23,7 +23,7 @@ export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
     const { getDb } = await import("@/lib/db");
-    const { historicalCoverageOnDb, listIngestProgressOnDb } = await import("@/lib/research/historical/store");
+    const { historicalCoverageOnDb, listIngestProgressOnDb, isTerminalIngestStatus } = await import("@/lib/research/historical/store");
     const { historicalIngestionSessionGate, TIER_1_SYMBOLS } = await import("@/lib/research/historical/ingestion");
 
     const db = getDb() as any;
@@ -43,7 +43,10 @@ export async function GET(req: Request) {
         tier1Symbols: TIER_1_SYMBOLS,
         jobs: progress.length,
         byStatus,
-        resumable: progress.filter((p) => p.status !== "COMPLETE").length,
+        // Resumable means "another provider request is still owed". EXHAUSTED owes none —
+        // the span was examined and came back empty — so counting it here would report
+        // permanent outstanding work that no run can ever clear.
+        resumable: progress.filter((p) => !isTerminalIngestStatus(p.status)).length,
         progress: verbose ? progress : progress.slice(0, 25),
       },
       note:

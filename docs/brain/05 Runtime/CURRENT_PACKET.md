@@ -1,5 +1,307 @@
 # Current Task Packet
 
+## Packet update — 2026-08-21 (2) The broad-corpus gate: the provider is free, the volume is not, and two loops were paying for nothing
+
+### Proven release state
+
+- Started and verified at `3c89d624bd8daa1a7618dbd854963a9a4b0fa1bc`, LOCAL = ORIGIN/MAIN =
+  PRODUCTION, tracked worktree clean, 20 untracked scratch files preserved. `prod-smoke`
+  18/18 PASS. `healthz` schemaOk with 0 missing tables; loop `HEALTHY`, scheduler owner
+  PID 1, ticksStarted = ticksCompleted = 351, 0 timeouts; Polygon connected, quota not
+  exceeded; subscriber `NOT_READY` with 12 blocking gates; 3 Discord lanes ready; AI budget
+  $1.66 of $20.
+- Historical Analog Engine still `RESEARCH_ONLY` / `NOT_CALIBRATED_FOR_LIVE_AUTHORITY`.
+  `timestampSemantics` still present with `validatorChanged: false`
+  (`lib/research/episode/v2.ts`). Owner Discord repair intact
+  (`lib/opportunity-case/owner-mirror-identity.ts`). Frozen digests unchanged:
+  `OWNER_SELECTION_STRENGTH_GATE_V1` `9b4f77b3…`, `PRE_MOVE_DISCOVERY_V2` `e6eb1148…`.
+
+### DECISION GATE: **OUTCOME B — external backfill is required, and it was NOT run**
+
+Zero-cost expansion of the LABELED corpus is **exhausted and proven exhausted**, not
+merely unattempted. `POST /api/research/analog?action=seed-from-store` (dry run, 0 provider
+calls) plans exactly the 231 episodes / 1,221 labels that are already stored, from all 15
+symbols of `historical_underlying_bars` including SPY's honest 0. The committed run on
+2026-08-20 inserted 0 and found 231 already present. There is no second local source that
+can produce a clean label — see "what cannot be labelled for free" below.
+
+No backfill was executed. No provider cap was raised. No plan was purchased. Recurring
+spend change: **$0** — in fact this session REDUCED ongoing spend, below.
+
+### THE FINDING THAT CHANGES THE COST MODEL: two lanes were re-buying data they already had
+
+The provider audit asked what the historical lane costs. The answer was not a projection —
+it was a bill already being paid, every 15 minutes, for nothing.
+
+| Lane | Jobs | Runs | Provider requests | Rows written | Distinct rows that survived |
+|---|---|---|---|---|---|
+| `option_quotes` | 78 | 14,239 | 7,363 | 2,238,462 | 2,238,462 |
+| `contract_reference` | 54 | 6,944 | 6,944 | 6,013,016 | **27,000** |
+| `underlying_bars` | 15 | 15 | 20 | 60,164 | 60,164 |
+
+`underlying_bars` is what a healthy lane looks like: 15 runs for 15 jobs. The other two
+were unbounded.
+
+**Loop 1 — the coverage repair fought the runner it was written to help.** A quote window
+can fall short of its end for two opposite reasons. TRUNCATED means the provider returned a
+capped page and there IS more to buy; the runner leaves that `IN_PROGRESS`. EXHAUSTED means
+the span was examined to its end and the provider had nothing further — a window running
+past the closing bell, or a contract that stopped quoting — and the runner recorded
+`COMPLETE` with `completed_through_ms = toMs`, reasoning in its own comment that "retrying
+would re-fetch the identical page forever". `reopenUndercoveredOptionQuoteJobsOnDb` read
+only the ROWS, which cannot tell those apart. Every exhausted window looked truncated, so
+it was reopened, re-examined for one request, re-marked `COMPLETE` with the identical note,
+and reopened again on the next pass. Forever. The evidence is in the counters: HOOD's
+window carries 1,454 runs and 728 requests for 4,970 rows.
+
+**Loop 2 — contract reference had no idempotence guard at all.** The planner derives its
+reference targets from the option windows it just planned and keeps no memory of what was
+fetched, deliberately, because dedup belongs to the runner that spends the request. The
+quote runner honours that with a prior-status check; `ingestContractReferenceOnDb` had
+none, so it re-fetched the same expiration range for the same underlying on every pass. A
+222x write amplification whose only output was provider spend.
+
+**The fix makes the distinction structural rather than prose.** `IngestStatus` gains
+`EXHAUSTED`, a second TERMINAL status alongside `COMPLETE`, and the two exhaustion branches
+in the quote runner set it. The repair only ever examines `COMPLETE`, so an exhausted
+window is now invisible to it. Everything that means "this job is finished" — the quote
+runner's skip, the contract-reference runner's new skip, the planner's exclusion set, and
+`resumable` on both diagnostics — goes through `isTerminalIngestStatus`, because excluding
+it from the repair but not from the planner would MOVE the loop rather than end it. That is
+pinned by its own test.
+
+Convergence in production is self-healing and costs one final pass: existing rows are
+`COMPLETE` with the exhausted note, get reopened once more, are re-examined by the new
+runner and settle as `EXHAUSTED` — after which the repair, the planner and the runner all
+skip them permanently. No migration is needed; the column is TEXT.
+
+### THE BINDING CONSTRAINT IS STORAGE, NOT THE PROVIDER
+
+Measured from `/api/system/overview` at 2026-08-21T06:11Z:
+
+| | |
+|---|---|
+| `optiscan.db` | **6,743,498,752 B (6.28 GiB)** plus 73 MB WAL |
+| Volume total | 48,891,670,528 B (45.53 GiB) |
+| Volume used | 20,124,463,104 B (18.74 GiB) = **41.2%** |
+| Measured growth | **172,277,760 B/day**, basis `MEASURED_DB_FILE_GROWTH` |
+| Projected exhaustion | **167 days** — on the CURRENT trajectory, before any backfill |
+| Nightly backup | `optiscan-20260821T010350Z.db`, 6,728,810,496 B, **on the same volume** |
+
+The backup is a full same-volume copy, so every byte added to the DB costs two bytes of
+volume. `largestTableBytes` is already unavailable because "dbstat would scan the multi-GB
+database" — the DB is past the size where its own storage report can run.
+
+Bytes per minute bar were **measured, not guessed**: 200,000 rows across 40 symbols into
+the real production schema in memory, `page_count * page_size` before and after, including
+the primary key and `idx_hist_bars_symbol_time` → **172.58 B/bar**. Bars per symbol-session
+are measured from the store itself: 60,164 bars / 75 symbol-sessions = 802 mean, range
+452 (WBD) to 938 (NVDA); 450 / 700 / 900 is used as low / mid / high.
+
+| Scenario | Symbols x sessions | Bars (mid) | SQLite (mid) | Provider requests | Volume after db+backup |
+|---|---|---|---|---|---|
+| **A — current local data only** | 15 x 5, already stored | — | **0** | **0** | 41% (unchanged) |
+| **B — curated list, 2y** | 244 x 504 | 86.1M | 13.84 GiB | 5,937 | **102% — DOES NOT FIT** |
+| **B2 — 200 symbols, 2y** | 200 x 504 | 70.6M | 11.34 GiB | 4,867 | 91% |
+| **C1 — full eligible, 1y** | 3,131 x 252 | 552M | 88.77 GiB | 38,094 | **431% — DOES NOT FIT** |
+| **C — full eligible, 2y** | 3,131 x 504 | 1.10B | 177.54 GiB | 76,188 | **821% — DOES NOT FIT** |
+
+76,188 requests is 38% of ONE day's self-imposed 200,000 cap. The provider side of the full
+universe is affordable and, on a flat-rate plan whose caps are ours rather than Polygon's,
+costs **$0 incremental**. The storage side is impossible: even the modest 200-symbol
+scenario lands the volume at 91% with 172 MB/day still arriving underneath it.
+
+**Storage recommendation: broad historical minute bars must NOT live in `optiscan.db`.**
+The live scanner shares that file; a 90-GB SQLite would make every WAL checkpoint, nightly
+backup and VACUUM a live-latency event, and the same-volume backup doubles whatever it
+weighs. Columnar Parquet partitioned by symbol/month, on offline or object storage,
+compresses minute OHLCV to roughly 12 B/bar against SQLite's 172.58 — the full 2-year
+eligible universe becomes ~12 GiB instead of 178, and the recommended 200-symbol corpus
+becomes **0.79 GiB instead of 11.34**. That single choice is the difference between
+"impossible" and "comfortable", and it is the decision that must be made BEFORE any bytes
+are downloaded.
+
+### WHY THE CORPUS WAS ONLY 17 SYMBOLS
+
+Not a data-availability limit. The corpus is the union of two narrow, purpose-built pulls,
+neither of which was ever driven by a universe definition.
+
+- **The 5 deep symbols are the residue of five hand-typed probe runs.** `replay_runs`
+  records them: `episode_seed_1784662617632` PARTIAL with `quota_exceeded (minute cap):
+  280/280`, `…810251` CANCELED on a polygon timeout, `…885317` CANCELED with no active
+  lease, `…060503` and `…431399` COMPLETED over AAPL / MSFT / NVDA only. AVGO and JPM come
+  from earlier runs in the same series. No run ever resolved a universe.
+- **The other 12 come from `historical_underlying_bars`**, which holds 15 symbols over 5
+  sessions because it was filled to support exact-OCC mining around 73 contracts — an
+  option-evidence errand, not a breadth errand.
+
+Concentration, from `analogCorpusBreadthOnDb` over all 12,900 label rows:
+
+| Symbol | Label rows | Share | Cumulative | Sessions | Range |
+|---|---|---|---|---|---|
+| AAPL | 3,409 | 26.4% | 26.4% | 220 | 2023-07-03 → 2026-08-07 |
+| NVDA | 3,121 | 24.2% | 50.6% | 96 | 2023-10-02 → 2026-08-07 |
+| MSFT | 2,441 | 18.9% | 69.5% | 158 | 2023-10-02 → 2024-06-28 |
+| AVGO | 2,079 | 16.1% | 85.7% | 112 | 2023-07-03 → 2023-12-27 |
+| JPM | 828 | 6.4% | **92.1%** | 73 | 2023-07-05 → 2023-12-21 |
+| 12 others | 1,022 | 7.9% | 100% | 1–5 each | 2026-08-03 → 2026-08-07 |
+
+Five symbols hold 92.1% of the corpus, four of them mega-cap US tech. ETFs are 42 rows,
+**0.33%**. That is the shape of a corpus that cannot separate setup edge from mega-cap
+drift — which is exactly what the previous packet's negative result reported.
+
+### SURVIVORSHIP: the existing corpus is labelled survivorship-free on an unverified assertion
+
+`replay_runs.provider_limitations` reads `{"universeSource":"provider_pit",
+"survivorshipBias":false}` on every seed run. That flag is **caller-supplied**:
+`app/api/research/seed/route.ts` passes `providerPitAvailable: body.providerPitAvailable
+=== true` straight into `classifyUniverse`, which trusts it. Nothing verified an
+entitlement. And the label is decorative regardless: a hand-picked list of five mega-caps
+that are all still listed today has 100% survivorship bias whatever the column says.
+
+What is actually reconstructible:
+
+- **Option contracts — YES.** `/v3/reference/options/contracts?expired=true` is
+  `AVAILABLE_PROVEN` back to 2010 expirations and already integrated;
+  `historical_contract_reference` holds 27,000 rows over 32 underlyings.
+- **Equity ticker membership — UNPROVEN / OWNER VERIFICATION REQUIRED.** No point-in-time
+  equity reference is probed anywhere in `capability-matrix.ts`, and no dated user file
+  exists. `classifyUniverse` therefore resolves to `current_symbols` →
+  `survivorshipBias: true`, `validForVerdict: false`, EXPLORATORY_ONLY. **A broad backfill
+  built from today's tickers cannot issue a GO verdict**, and this limitation must be
+  carried in the corpus rather than in a footnote.
+
+### THE UNIVERSES, TRACED
+
+| Universe | Definition | Count |
+|---|---|---|
+| **Curated scan list** | `DEFAULT_UNIVERSE` = 48 ETFs + 115 mega/large caps + 81 momentum names, deduped (`lib/universe.js`) | **244** |
+| **Live stock discovery** | curated ∪ whole-market snapshot passing `broadStockEligibility`: $0.50–$50, ≥500k day volume, ≥+10% from prev close | curated plus a momentum-gated slice; **no fixed size** |
+| **Options-eligible (Tier 2)** | whole-market snapshot passing `tier2Eligible`: price ≥ $3, day dollar volume ≥ $20M, not OTC/warrant/right/unit/preferred | **3,131 realized** distinct symbols over 2026-07-22…08-20 (`options_candidates`); per-session count not measured |
+| **Historical-research-eligible** | whatever has stored point-in-time bars | **15 symbols, 5 sessions** |
+
+`loop-health` confirms the live verdict `SCREENERS_FIRST`, `broadDiscoveryEnabled: true`,
+`curatedListSize: 244`, curated list SUPPLEMENTAL and additive. There is no per-user
+watchlist. The gap is stark: the system EVALUATES ~3,100 symbols a month and REMEMBERS 17.
+
+### WHAT CANNOT BE LABELLED FOR FREE, AND WHY IT WAS NOT FORCED
+
+OptiScan already possesses decision-time point-in-time evidence at real breadth:
+
+| Table | Rows | Distinct symbols | Range |
+|---|---|---|---|
+| `options_research_observations` | 178,827 | 2,955 | 2026-07-31 → 08-20, 15 sessions |
+| `options_candidates` (carries `feature_snapshot_json`) | 100,174 | 3,131 | 2026-07-22 → 08-20 |
+| `opportunity_cases` | 64,355 | 3,120 | 2026-07-24 → 08-20, 19 sessions |
+| `opportunity_pre_move_discovery` | 15,286 | 2,375 | 2026-08-10 → 08-20, 9 sessions |
+| `options_paper_marks` | 349,680 | 670 contracts | 2026-07-24 → 08-20 |
+
+It is tempting to reconstruct episodes from these, and it would be wrong. An episode needs
+an OUTCOME measured at a fixed horizon after T0, and the only post-T0 underlying path these
+tables contain is **their own observation cadence** — roughly four observations per symbol
+per session, and a symbol is observed *because* it was moving and eligible. The label
+horizon would end "the next time the scanner happened to look", which correlates with
+market activity. That is an endogenously-sampled outcome wearing a 15-minute label. It
+would produce tens of thousands of rows across 3,000 symbols and every one of them would be
+contaminated. **Not done, deliberately.** `historical_underlying_bars` is the only local
+source with a regular grid, and it is exhausted.
+
+### THE BREADTH ALREADY ARRIVING FOR FREE, WHICH NOBODY IS COUNTING
+
+`SetupEpisodeV2` capture landed 2026-08-19 (`7829565`) at the same call site in
+`lib/research/options/loop.ts` that writes `options_candidates`, using the SAME
+`extra.featureSnapshot`. In its **first full session** it produced **1,723 episodes and
+6,935 `FORWARD_EXACT_OPTION` label rows across 21 symbols, plus 8,615
+`FORWARD_UNDERLYING_ONLY` rows across 33 symbols** — at zero marginal provider cost,
+because the scan was paid for anyway. The 3-year, 5-symbol provider-backed replay produced
+1,508 episodes.
+
+At ~21 sessions a month this lane out-produces the entire historical replay corpus within
+days and out-breadths it immediately, with FORWARD evidence that outranks
+`HISTORICAL_UNDERLYING_ONLY` in the taxonomy. **It has two days of history, so it is not an
+answer yet, and it can never reach back before 2026-08-19.** But it means the broad-corpus
+question is really two questions — "how do we get the PAST" (backfill, storage-bound) and
+"are we keeping the PRESENT" (already yes, and accruing) — and only the first one costs
+anything.
+
+Also uncounted: `analogCorpusInventoryOnDb` has no row for `HISTORICAL_EXACT_OPTION`, so
+the 2,238,462 stored NBBO rows over 73 contracts are invisible to the corpus surface even
+though the evidence class is defined and the store is populated. Layer B exists and is not
+wired to the inventory.
+
+### BACKFILL APPROVAL PLAN — NOT EXECUTED, AWAITING OWNER DECISION
+
+Recommended scope, and the reasoning for it rather than a round number: the corpus cannot
+currently separate a setup from a ticker at 17 symbols, and 3,131 symbols multiplies cost
+12x for returns that cannot be read until the first order of magnitude is understood.
+
+- **Universe:** the 244-name curated list, minus names without minute data in the window,
+  targeted at ~200 usable symbols. Explicitly `current_symbols` → survivorship-BIASED →
+  EXPLORATORY_ONLY. It cannot issue a GO and the corpus must say so.
+- **Range:** 2 years, 2024-08 → 2026-08 (504 sessions). MINIMUM USEFUL 2y — enough regimes
+  and enough independent sessions for session-clustered CIs. PREFERRED 3y, to 2023-07-31,
+  the deepest confirmed provider depth. MAXIMUM PRACTICAL is set by storage, not by the
+  provider.
+- **Fields:** 1-minute OHLCV plus VWAP and trade count. REQUIRED. Everything else is
+  UNAVAILABLE historically and must stay missing: **Greeks and IV are snapshot-only and
+  cannot be reconstructed**; **open interest has no intraday history on this plan**; sector
+  and market cap have no source anywhere in the system — `market-context.ts` treats
+  `sector` as an input nobody supplies and tracks it as missing rather than fabricating it.
+- **Endpoint:** `GET /v2/aggs/ticker/{sym}/range/1/minute/{from}/{to}` —
+  `AVAILABLE_PROVEN`, `INTEGRATED`, 50,000-row cap per call, chunked by date.
+- **Estimated requests:** ~4,900 (1 per symbol per 30-day chunk). 2.4% of one day's cap.
+- **Estimated cost:** **$0 incremental** on the current flat-rate plan. No provider-side
+  rate limit was ever observed, which is exactly why OUR caps are load-bearing.
+- **Rate-limit impact:** none if it stays inside the existing session gate. The gate is a
+  REFUSAL during RTH, not a throttle, and it must remain one.
+- **Runtime:** dominated by writes, not requests. Several off-peak nights at
+  `HISTORICAL_MINER_MAX_RUN_MS` = 120s per pass.
+- **Storage:** 11.34 GiB as SQLite rows (91% volume, not acceptable) versus **~0.79 GiB as
+  Parquet** (acceptable). **The storage decision gates the backfill.**
+- **Restart/resume:** already solved. `historical_ingestion_progress` gives per-job
+  cursors, monotonic watermarks and idempotent upserts, and the two loops above are now
+  fixed — a resumable lane whose terminal states are wrong is how this bill was run up.
+- **Validation plan:** duplicate bars (PK-enforced), missing sessions against the trading
+  calendar, impossible OHLC, zero/negative prices, future timestamps, session-boundary and
+  timezone checks, split/corporate-action discontinuity. Exclusions recorded with reasons,
+  never silently repaired.
+
+**OWNER DECISIONS REQUIRED — three, in order:**
+
+1. **Storage architecture.** Parquet/offline for broad bars, or a separate volume, or a
+   volume upgrade (recurring $). Nothing should be downloaded before this is answered, and
+   the 167-day exhaustion projection needs an answer regardless of this project.
+2. **Equity point-in-time membership.** Is a survivorship-free source entitled? If not, the
+   broad corpus is permanently EXPLORATORY_ONLY and can never issue a GO — which may be
+   acceptable for feature research and is NOT acceptable for a probability claim.
+3. **Scope.** ~200 symbols x 2 years as recommended, or wait for the forward lane to accrue
+   breadth on its own for a month at $0 and re-ask.
+
+### Safety invariants held this session
+
+Live scanner authority, strategy thresholds, contract selection, targets, stops, exits,
+delivery eligibility, Discord routing, subscriber readiness, the timestamp validator, live
+provider caps, news and the OpenAI integration are all **unchanged**. Zero provider calls
+were added to any live path; the only provider-facing change REMOVES requests. Everything
+touched is in the historical research lane, off the callout critical path.
+
+### Unresolved scientific questions
+
+- Can equity universe membership be reconstructed point-in-time at all on this plan? Until
+  answered, every broad corpus is survivorship-biased by construction.
+- Does the forward lane's 33-symbol/session breadth, accrued over a month, answer the
+  regime-drift question more cheaply than any backfill? It is free; it is also two days old.
+- 5d and 10d remain reachable only from the 5 deep symbols. No local source can widen them.
+- Does `HISTORICAL_EXACT_OPTION` over 73 contracts support anything, and why is it absent
+  from the corpus inventory?
+
+### Next recommended step
+
+Answer decision 1 (storage). Do **not** begin Feature Edge / Multi-Strategy research, the
+Probability Engine, or any production retune.
+
+---
+
 ## Packet update — 2026-08-21 The 5d analog "signal" was the direction base rate, and the honest answer is NO
 
 ### Proven release state

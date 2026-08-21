@@ -1,7 +1,7 @@
 # Research Graph and Loop
 
 Graph Engineering and Loop Engineering memory for the OptiScan research arm.
-Updated 2026-08-21. Companion to the AST graph in `graphify-out/` — that one is
+Updated 2026-08-21 (2). Companion to the AST graph in `graphify-out/` — that one is
 generated, this one records the parts a parser cannot see: which identity a consumer
 joins on, and which of them fail SILENTLY when the join is wrong.
 
@@ -544,3 +544,113 @@ rather than return zero: a corpus that is all one vector version (`droppedByVect
 a corpus that spans horizons (`mixedHorizons` + `duplicateMemberIds`), and an evaluation
 whose every query abstained (`coverage: 0` with the floor named in `abstainReason`).
 
+---
+
+## Broad historical universe graph — added 2026-08-21
+
+The chain from "what may OptiScan look at" to "what does OptiScan remember". Every stage
+below is RESEARCH_ONLY from H3 onward; nothing here reaches the scanner, a threshold,
+contract selection, Discord or subscriber state.
+
+| # | Stage | Owns | Joined by | Silent-failure risk |
+|---|---|---|---|---|
+| H0a | **CURATED SCAN LIST** | `DEFAULT_UNIVERSE` in `lib/universe.js` — 48 ETFs + 115 mega/large + 81 momentum, deduped to **244** | symbol | SUPPLEMENTAL and additive; the whole-market print wins on collision. It can raise the floor of the universe and can never restrict it — reading it as "the universe" understates coverage by orders of magnitude |
+| H0b | **BROAD STOCK DISCOVERY** | `broadStockEligibility()` — $0.50–$50, ≥500k day volume, ≥+10% from prev close | symbol | The $50 ceiling is a TRADING gate applied to DISCOVERY, so no stock over $50 is promotable outside H0a |
+| H0c | **OPTIONS TIER-2 ELIGIBILITY** | `tier2Eligible()` — price ≥ $3, day dollar volume ≥ $20M, not OTC/warrant/right/unit/preferred | symbol | Computed live off the shared snapshot and never persisted as a list. The only durable trace of who was eligible is who got EVALUATED — `options_candidates`, 3,131 distinct symbols over a month |
+| H1 | **HISTORICAL UNIVERSE RESOLVER** | `classifyUniverse()` in `lib/research/episode/universe.ts` — `provider_pit` / `user_dated_file` / `current_symbols` | source tier | **`providerPitAvailable` is CALLER-SUPPLIED.** `app/api/research/seed/route.ts` forwards `body.providerPitAvailable === true` and the resolver trusts it, so a run can be stamped `survivorshipBias: false` with nothing verified |
+| H2 | **DURABLE BAR STORE** | `historical_underlying_bars` — 60,164 rows, 15 symbols, 1m, 2026-08-03…07 | `(symbol, timeframe, ts_ms)` | The ONLY local source with a regular post-T0 grid. Everything else that looks like a price path is endogenously sampled |
+| H3 | **INGESTION PROGRESS** | `historical_ingestion_progress` — per-job cursor, monotonic `completed_through_ms` | `job_key` | **`status` is the whole safety property.** `COMPLETE` and `EXHAUSTED` are both terminal and mean different things; a reader that collapses them re-buys settled data for ever (see below) |
+| H4 | **PLANNER** | `buildBackfillPlan()` — anchors option windows on real cases, derives reference targets FROM those windows | `(subject, timeframe)` | Keeps no memory of what was fetched, by design. Dedup belongs to the runner that spends the request — a planner that "remembers" would silently narrow coverage |
+| H5 | **RUNNERS** | `ingestUnderlyingBarsOnDb` / `ingestOptionQuotesOnDb` / `ingestContractReferenceOnDb` | `job_key` via `ingestJobKey()` | Each must skip a terminal job itself. `ingestContractReference` did not, and re-bought the same expiration range every pass for ever |
+| H6 | **COVERAGE REPAIR** | `reopenUndercoveredOptionQuoteJobsOnDb` — one-way `COMPLETE → IN_PROGRESS` | `job_key`, evidence from `historical_option_quotes` rows | Reads ROWS. Rows cannot distinguish "truncated page" from "market had nothing", so the STATUS has to carry it |
+| H7 | **LOCAL REPLAY** | `ANALOG_LOCAL_REPLAY_V1` → `seedEpisodesPure` | deterministic `episodeKeyOf` | Zero provider calls, idempotent by key. **A dry run reports INTENT, not delta** — it says "231 would be inserted" where a commit says "231 already present". Reading the dry run as a delta invents expansion that is not there |
+| H8 | **CORPUS INVENTORY** | `analogCorpusInventoryOnDb` — 4 classes | evidence class | **`HISTORICAL_EXACT_OPTION` has no row.** 2,238,462 stored NBBO rows over 73 contracts are invisible to the surface even though the class is defined and the store is populated |
+
+### The two spend loops, and why status had to become structural
+
+Found 2026-08-21 by auditing what the lane had SPENT rather than what it had stored.
+
+```
+                 ┌──────────────────────────────────────────┐
+                 │  runner: span examined, provider empty   │
+                 │  → COMPLETE, completed_through_ms = toMs │
+                 └───────────────────┬──────────────────────┘
+                                     │
+                 ┌───────────────────▼──────────────────────┐
+                 │  repair: rows stop short of window end    │
+   ONE REQUEST   │  → reopen as IN_PROGRESS                  │   FOREVER
+   PER PASS      └───────────────────┬──────────────────────┘
+                                     │
+                                     └──── back to the runner ────┘
+```
+
+78 option-quote windows carried **14,239 runs and 7,363 provider requests** for 2,238,462
+rows. 54 contract-reference jobs carried **6,944 runs and 6,944 requests** writing
+6,013,016 rows that collapse to the **27,000** distinct contracts already stored — 222x
+write amplification. `underlying_bars`, the lane that does check, sat at 15 runs for 15
+jobs.
+
+The repair could not be taught to read the difference out of the rows, because it is not in
+the rows. So the runner's verdict became data: `IngestStatus` gains **`EXHAUSTED`**, and
+every consumer that means "finished" now goes through `isTerminalIngestStatus()` — the
+quote runner's skip, the contract-reference runner's new skip, `completedOptionWindows()`
+in the planner, and `resumable` on both diagnostics. The repair still queries only
+`COMPLETE`, so it can still fix a genuine legacy capped page exactly once, and can never
+see an exhausted window again. Excluding it from the repair but not the planner would have
+MOVED the loop rather than ended it; a test pins that.
+
+### Dynamic boundaries Graphify cannot resolve here
+
+- **`historicalMinerJob` require chain.** `lib/scheduler.ts` reaches
+  `runHistoricalMinerOnDb` through a runtime `require("@/lib/research/historical/miner")`
+  inside the beat, so no static edge exists from the scheduler to the entire ingestion
+  subsystem. The whole lane looks unreachable to the parser and runs every 15 minutes.
+- **`recordMarketMoverCycle` and `getDb`** are both `require`d inside `refreshDiscovery` in
+  `lib/scanner-loop.ts`, deliberately, so the scanner's import graph never gains a database
+  dependency. The observation lane is invisible to the AST from its only caller.
+- **`isTerminalIngestStatus` reads a DATABASE STRING.** Which branch a runner takes is not
+  decidable from source; an unrecognised status is treated as non-terminal, which is the
+  safe direction (it retries) but is the direction that costs money.
+- **The seed route's universe tier** arrives as a request-body string and decides whether a
+  whole corpus is `validForVerdict`. No static caller can be inspected for it.
+- **`fetchMarketSnapshot()` TTL/inflight dedupe** lives on `globalThis`, so scanner
+  discovery, the options monitor and the mover recorder share one response through a
+  side channel the parser cannot follow. A second fetcher would double provider cost with
+  no new import edge.
+
+### Loop — the broad historical learning loop, and where it is blocked
+
+```
+UNIVERSE ──────────────► HISTORICAL DATA ──────► POINT-IN-TIME REPLAY
+   │                          ▲   ▲                      │
+   │                          │   └── BLOCKED: storage    ▼
+   │                          │                     SETUP EPISODES
+   │                    (bars, 15 syms)                   │
+   │                                                      ▼
+   └──► FORWARD CAPTURE ──────────────────────────► OUTCOME LABELS
+        (live, free, 2 days old)                          │
+                                                          ▼
+   FORWARD VALIDATION ◄── SHADOW HYPOTHESIS ◄── HISTORICAL MEMORY
+        (NOT STARTED)         (NOT STARTED)      │
+                                                 ▼
+                                    FEATURE/STRATEGY RESEARCH
+                                          (NOT STARTED)
+```
+
+| Stage | State | Why |
+|---|---|---|
+| UNIVERSE (live) | **LIVE** | `SCREENERS_FIRST`, 244 curated + whole-market broad discovery, verified in `loop-health` |
+| UNIVERSE (historical) | **BLOCKED** | resolves to `current_symbols` → survivorship-biased → EXPLORATORY_ONLY, cannot issue GO |
+| HISTORICAL DATA | **BLOCKED** | not by the provider — 2 years of ~200 symbols is ~4,900 requests and $0 incremental — but by volume: 6.28 GiB DB on a 45.53 GiB volume already 41% used, growing 172 MB/day, 167 days to exhaustion |
+| POINT-IN-TIME REPLAY | **BUILT**, leakage-hardened | `seedEpisodesPure` shared by both lanes; T0 fence and Zone-A blocks enforced in `persistEpisodeOnDb`, not in callers |
+| ZERO-COST WIDENING | **BUILT, EXHAUSTED** | `ANALOG_LOCAL_REPLAY_V1` has consumed all 15 stored symbols; a re-run is a proven no-op |
+| FORWARD CAPTURE | **LIVE** | `SetupEpisodeV2` since 2026-08-19; 1,723 episodes and 33 symbols in one session at zero marginal cost, and it accrues without anyone asking |
+| OUTCOME LABELS | **LIVE** (forward) / **BUILT** (historical) | Phase 2A labeler on the scheduler; historical labels only where bars reach the horizon |
+| HISTORICAL MEMORY | **RESEARCH/SHADOW** | 17 symbols, 92.1% of it in five mega-caps |
+| FEATURE/STRATEGY RESEARCH | **NOT STARTED** | deliberately — the corpus cannot yet separate a setup from a ticker |
+| SHADOW HYPOTHESIS → FORWARD VALIDATION | **NOT STARTED** | and the loop must not close into live authority until the packet's blockers clear |
+
+The loop can go quiet without erroring in one new place, now reported rather than assumed:
+a `seed-from-store` DRY RUN prints what it WOULD write, so a corpus that is already fully
+replayed and one that has never been replayed print the same number. Only the commit path
+distinguishes them, via `episodesAlreadyPresent`.

@@ -310,7 +310,32 @@ export function listContractsForUnderlyingOnDb(
 
 // ── ingestion progress ───────────────────────────────────────────────────────
 
-export type IngestStatus = "PENDING" | "IN_PROGRESS" | "COMPLETE" | "BLOCKED" | "FAILED";
+/**
+ * Where one ingestion job stands.
+ *
+ * COMPLETE and EXHAUSTED are both TERMINAL and both mean "stop asking", but they are not
+ * the same fact and collapsing them is what made the quote lane spend for ever:
+ *
+ *   COMPLETE  — the stored rows reach the end of the window. Full coverage.
+ *   EXHAUSTED — the whole span was EXAMINED and the provider had nothing further to give,
+ *               so the rows stop short and always will: a window running past the closing
+ *               bell, or a contract that stopped quoting. Absence of data, not absence of
+ *               effort.
+ *
+ * The distinction has to be readable, because the coverage repair reopens a terminal job
+ * whose rows fall short of its window. Told only "COMPLETE", it cannot tell a truncated
+ * download from a market that had nothing to print, so it reopened the second kind on
+ * every pass for ever. Anything that treats a job as finished must accept BOTH; only the
+ * repair distinguishes them, and it does so by never looking at EXHAUSTED.
+ */
+export type IngestStatus = "PENDING" | "IN_PROGRESS" | "COMPLETE" | "EXHAUSTED" | "BLOCKED" | "FAILED";
+
+/** The statuses that mean "this job is finished; do not spend another request on it". */
+export const TERMINAL_INGEST_STATUSES: readonly IngestStatus[] = Object.freeze(["COMPLETE", "EXHAUSTED"]);
+
+export function isTerminalIngestStatus(status: string | null | undefined): boolean {
+  return status === "COMPLETE" || status === "EXHAUSTED";
+}
 
 export interface IngestProgress {
   jobKey: string;

@@ -146,14 +146,21 @@ function loadCaseAnchors(
   }
 }
 
-/** Windows already stored completely, so the plan does not re-buy them. */
+/**
+ * Windows already finished, so the plan does not re-buy them.
+ *
+ * Finished is BOTH terminal statuses. EXHAUSTED means the span was examined and the
+ * provider had nothing more — planning it again buys the same empty page — so it has to be
+ * excluded here exactly as COMPLETE is. Leaving it out would move the spend loop from the
+ * repair into the planner rather than ending it.
+ */
 function completedOptionWindows(db: StoreDb): Set<string> {
   const done = new Set<string>();
   if (!hasTable(db, "historical_ingestion_progress")) return done;
   try {
     const rows = (db.prepare(
       `SELECT subject, timeframe FROM historical_ingestion_progress
-        WHERE dataset='option_quotes' AND status='COMPLETE'`,
+        WHERE dataset='option_quotes' AND status IN ('COMPLETE','EXHAUSTED')`,
     ).all?.() ?? []) as any[];
     for (const r of rows) done.add(`${String(r.subject).toUpperCase()}|${String(r.timeframe ?? "")}`);
   } catch { /* an unreadable progress table plans everything, which is safe */ }

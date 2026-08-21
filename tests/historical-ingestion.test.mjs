@@ -340,7 +340,10 @@ test("a window the provider cannot extend is closed rather than retried forever"
   assert.equal(first.jobsCompleted, 1, "an empty span is answered, not left open");
 
   const p = readIngestProgressOnDb(d, ingestJobKey("option_quotes", occ, `${fromMs}..${WEEKEND}`));
-  assert.equal(p.status, "COMPLETE");
+  // EXHAUSTED, not COMPLETE: the span was examined and the provider had nothing. The two
+  // are both terminal and only one of them is full coverage, and a reader that cannot tell
+  // them apart reopens this window for ever.
+  assert.equal(p.status, "EXHAUSTED");
   assert.ok(/no quotes returned/.test(p.lastNote), "and it says the window was empty");
 
   const second = await ingestOptionQuotesOnDb(d, plan, deps, ON);
@@ -365,12 +368,12 @@ test("a page that does not advance past the cursor closes the window", async () 
 
   await ingestOptionQuotesOnDb(d, plan, deps, ON);
   const p = readIngestProgressOnDb(d, key);
-  assert.equal(p.status, "COMPLETE", "the second pass gained nothing, so the window is closed");
+  assert.equal(p.status, "EXHAUSTED", "the second pass gained nothing, so the window is closed");
   assert.ok(/exhausted short of its end/.test(p.lastNote), "and it records that it stopped short");
-  // COMPLETE here means the span was EXAMINED and everything available is stored — which is
-  // true. The old bug was claiming that after a CAPPED page, where more data existed and was
-  // never fetched. The guard against hiding a gap lives in the coverage diagnostic, which
-  // reads the rows rather than this table.
+  // EXHAUSTED means the span was EXAMINED and everything available is stored — which is
+  // true. The old bug was claiming COMPLETE after a CAPPED page, where more data existed and
+  // was never fetched. The guard against hiding a gap lives in the coverage diagnostic,
+  // which reads the rows rather than this table.
   assert.equal(p.requestsSpent, 2, "and it stopped after proving there was nothing more");
 });
 
@@ -515,4 +518,155 @@ test("a job whose window bounds cannot be parsed is reported, not silently skipp
   const rep = reopenUndercoveredOptionQuoteJobsOnDb(d, { nowMs: WEEKEND });
   assert.equal(rep.unparseable, 1);
   assert.equal(rep.reopened, 0);
+});
+
+// ── the spend loops these fences were missing ────────────────────────────────
+//
+// Found on 2026-08-21 by auditing what the historical lane had actually SPENT, not what it
+// had stored: 78 option-quote windows holding 2.24M rows carried 14,239 runs and 7,363
+// provider requests, and 54 contract-reference jobs carried 6,944 runs and 6,944 requests
+// upserting 6,013,016 rows over 27,000 distinct contracts. Both lanes were re-buying data
+// they already had, off-peak, for ever. Every test below fails against that code.
+
+test("an exhausted quote window survives the coverage repair instead of looping", async () => {
+  const d = db();
+  const occ = "O:LOOP260807C00180000";
+  const fromMs = WEEKEND - DAY;
+  const key = ingestJobKey("option_quotes", occ, `${fromMs}..${WEEKEND}`);
+  // A window running past the last quote the provider will ever have: the runner stores
+  // what exists, examines the rest and finds nothing. Its ROWS stop short of the window end
+  // and always will — which is exactly what the repair used to read as a truncated download.
+  const plan = { targets: [{ occ, underlying: "LOOP", fromMs, toMs: WEEKEND }] };
+  const deps = {
+    now: () => WEEKEND,
+    fetchQuotes: async (o, f) => (f === fromMs ? [{ occ: o, tsMs: fromMs + 500, bid: 2, ask: 2.1 }] : []),
+  };
+  await ingestOptionQuotesOnDb(d, plan, deps, ON);
+  await ingestOptionQuotesOnDb(d, plan, deps, ON);
+  const settled = readIngestProgressOnDb(d, key);
+  assert.equal(settled.status, "EXHAUSTED");
+  const spentWhenSettled = settled.requestsSpent;
+
+  // The repair no longer sees it at all, because it only ever examines COMPLETE.
+  const rep = reopenUndercoveredOptionQuoteJobsOnDb(d, { nowMs: WEEKEND });
+  assert.equal(rep.examined, 0, "an exhausted window is not a repair candidate");
+  assert.equal(rep.reopened, 0);
+  assert.equal(readIngestProgressOnDb(d, key).status, "EXHAUSTED", "and it is not reopened");
+
+  // Ten more full cycles of repair-then-run spend nothing. This is the property that was
+  // missing: the loop is convergent, not merely slow.
+  for (let i = 0; i < 10; i++) {
+    reopenUndercoveredOptionQuoteJobsOnDb(d, { nowMs: WEEKEND });
+    const r = await ingestOptionQuotesOnDb(d, plan, deps, ON);
+    assert.equal(r.jobs, 0, `pass ${i}: nothing left to buy`);
+  }
+  assert.equal(readIngestProgressOnDb(d, key).requestsSpent, spentWhenSettled, "zero further provider spend");
+});
+
+test("a legacy window that really was capped is still repaired, exactly once", async () => {
+  // The repair's original purpose must survive: rows written before the coverage fix say
+  // COMPLETE after a single capped page, and there IS more to fetch. It gets reopened,
+  // fetched to its end, and then never churns again.
+  const d = db();
+  const occ = "O:LEGACY260807C00180000";
+  const fromMs = WEEKEND - DAY;
+  const key = ingestJobKey("option_quotes", occ, `${fromMs}..${WEEKEND}`);
+  const ins = d.prepare(
+    `INSERT OR REPLACE INTO historical_option_quotes
+       (occ, ts_ms, bid, ask, bid_size, ask_size, source, ingest_version, ingested_at_ms)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+  );
+  for (let i = 0; i < 100; i++) ins.run(occ, fromMs + i * 1000, 2, 2.1, 1, 1, "t", "t", 1);
+  advanceIngestProgressOnDb(d, {
+    jobKey: key, dataset: "option_quotes", subject: occ, timeframe: `${fromMs}..${WEEKEND}`,
+    cursorMs: WEEKEND, completedThroughMs: WEEKEND, rowsIngested: 100, requestsSpent: 1,
+    status: "COMPLETE", nowMs: 1,
+  });
+
+  assert.equal(reopenUndercoveredOptionQuoteJobsOnDb(d, { nowMs: WEEKEND }).reopened, 1);
+  const plan = { targets: [{ occ, underlying: "LEGACY", fromMs, toMs: WEEKEND }] };
+  // More data really did exist, so the refetch reaches the window end.
+  const deps = { now: () => WEEKEND, fetchQuotes: async (o) => [{ occ: o, tsMs: WEEKEND, bid: 2, ask: 2.1 }] };
+  await ingestOptionQuotesOnDb(d, plan, deps, ON);
+  assert.equal(readIngestProgressOnDb(d, key).status, "COMPLETE", "genuinely covered now");
+
+  const again = reopenUndercoveredOptionQuoteJobsOnDb(d, { nowMs: WEEKEND });
+  assert.equal(again.alreadyCovered, 1);
+  assert.equal(again.reopened, 0, "repaired once, never again");
+});
+
+test("the planner does not re-plan an exhausted window", async () => {
+  const { buildBackfillPlan } = await import("../lib/research/historical/planner.ts");
+  const d = db();
+  const occ = "O:PLAN260807C00180000";
+  const fromMs = WEEKEND - DAY;
+  advanceIngestProgressOnDb(d, {
+    jobKey: ingestJobKey("option_quotes", occ, `${fromMs}..${WEEKEND}`),
+    dataset: "option_quotes", subject: occ, timeframe: `${fromMs}..${WEEKEND}`,
+    cursorMs: WEEKEND, completedThroughMs: WEEKEND, rowsIngested: 5, requestsSpent: 1,
+    status: "EXHAUSTED", nowMs: 1,
+  });
+  const plan = buildBackfillPlan(d, { nowMs: WEEKEND });
+  assert.equal(
+    plan.optionWindows.filter((w) => w.occ.toUpperCase() === occ).length, 0,
+    "excluding it from the repair but not from the plan would move the loop, not end it",
+  );
+});
+
+test("contract reference is not re-fetched for a range already ingested", async () => {
+  const d = db();
+  const spy = { calls: 0 };
+  const plan = { underlyings: ["NVDA", "AAPL"], expirationFrom: "2026-07-01", expirationTo: "2026-08-31" };
+  const deps = {
+    now: () => WEEKEND,
+    fetchContracts: async (u) => {
+      spy.calls += 1;
+      return [{ occ: `O:${u}260807C00180000`, underlying: u, side: "call", strike: 180, expiration: "2026-08-07" }];
+    },
+  };
+  const first = await ingestContractReferenceOnDb(d, plan, deps, ON);
+  assert.equal(first.requestsIssued, 2);
+  assert.equal(spy.calls, 2);
+
+  // The planner re-derives the same targets on every pass; the runner is what must not
+  // re-buy them. Five more passes, zero more requests.
+  for (let i = 0; i < 5; i++) {
+    const again = await ingestContractReferenceOnDb(d, plan, deps, ON);
+    assert.equal(again.requestsIssued, 0, `pass ${i}: settled expirations are not re-asked`);
+    assert.equal(again.jobsCompleted, 2);
+  }
+  assert.equal(spy.calls, 2, "no provider call after the first pass");
+});
+
+test("a different expiration range is still a different job", async () => {
+  const d = db();
+  const spy = { calls: 0 };
+  const deps = {
+    now: () => WEEKEND,
+    fetchContracts: async (u) => { spy.calls += 1; return [{ occ: `O:${u}260807C00180000`, underlying: u, side: "call", strike: 180, expiration: "2026-08-07" }]; },
+  };
+  await ingestContractReferenceOnDb(d, { underlyings: ["NVDA"], expirationFrom: "2026-07-01", expirationTo: "2026-08-31" }, deps, ON);
+  await ingestContractReferenceOnDb(d, { underlyings: ["NVDA"], expirationFrom: "2026-09-01", expirationTo: "2026-10-31" }, deps, ON);
+  assert.equal(spy.calls, 2, "the skip is keyed on the window, not on the symbol");
+});
+
+test("a failed contract-reference job is retried, unlike a finished one", async () => {
+  const d = db();
+  let fail = true;
+  const plan = { underlyings: ["NVDA"], expirationFrom: "2026-07-01", expirationTo: "2026-08-31" };
+  const deps = {
+    now: () => WEEKEND,
+    fetchContracts: async (u) => {
+      if (fail) throw new Error("provider 503");
+      return [{ occ: `O:${u}260807C00180000`, underlying: u, side: "call", strike: 180, expiration: "2026-08-07" }];
+    },
+  };
+  await ingestContractReferenceOnDb(d, plan, deps, ON);
+  const key = ingestJobKey("contract_reference", "NVDA", "2026-07-01..2026-08-31");
+  assert.equal(readIngestProgressOnDb(d, key).status, "FAILED");
+
+  fail = false;
+  const retry = await ingestContractReferenceOnDb(d, plan, deps, ON);
+  assert.equal(retry.requestsIssued, 1, "a failure is not a terminal state");
+  assert.equal(readIngestProgressOnDb(d, key).status, "COMPLETE");
 });

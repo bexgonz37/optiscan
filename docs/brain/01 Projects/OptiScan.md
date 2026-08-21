@@ -10,6 +10,13 @@ Build a professional options intelligence, alerting, research, and decision-supp
 
 Validate and deploy the local options research stack.
 
+**Gate open as of 2026-08-21: broad historical market memory.** The analog engine is built,
+leakage-hardened and answered NO on 17 symbols; widening it is blocked on STORAGE, not on
+the provider. The full eligible universe costs ~$0 in provider requests and ~178 GiB of
+SQLite against a 45.53 GiB volume that is already 41% used and growing 172 MB/day. Three
+owner decisions are outstanding — storage architecture, point-in-time equity membership,
+and scope. See [[../05 Runtime/CURRENT_PACKET]].
+
 ## Components
 
 - [[../02 Components/Options Scanner]]

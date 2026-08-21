@@ -40,6 +40,7 @@ import { sessionState } from "../options/session-state.ts";
 import {
   advanceIngestProgressOnDb,
   ingestJobKey,
+  isTerminalIngestStatus,
   readIngestProgressOnDb,
   writeBarsOnDb,
   writeContractReferenceOnDb,
@@ -402,6 +403,23 @@ export interface ContractRefIngestPlan {
  * This is the entry point to any historical option study: an expired OCC cannot be
  * resolved any other way, and a universe limited to contracts still listed today is a
  * survivorship-biased sample of exactly the wrong kind.
+ *
+ * ── Why a finished job is skipped here, as it is everywhere else ─────────────
+ *
+ * The planner derives its reference targets from the option windows it just planned and
+ * keeps no memory of what has already been fetched — deliberately, because dedup belongs
+ * to the runner that spends the request, not to the planner that only describes work.
+ * Every other dataset's runner honours that: the quote runner reads the prior job and
+ * skips a finished one. This runner did not, so it re-fetched the same expiration range
+ * for the same underlying on every pass, for ever. In production on 2026-08-21 that stood
+ * at 6,944 runs and 6,944 provider requests upserting 6,013,016 rows over the 27,000
+ * distinct contracts already in the table: a 222x write amplification whose only output
+ * was provider spend.
+ *
+ * A contract-reference window over a closed past range is settled — expirations that have
+ * already happened do not change, so re-asking cannot learn anything. A DIFFERENT range is
+ * a different `jobKey` and is still fetched; a FAILED or BLOCKED job is still retried.
+ * Only a proven-finished one is skipped.
  */
 export async function ingestContractReferenceOnDb(
   db: StoreDb,
@@ -428,6 +446,7 @@ export async function ingestContractReferenceOnDb(
     const underlying = String(raw).toUpperCase();
     const jobKey = ingestJobKey("contract_reference", underlying, `${plan.expirationFrom}..${plan.expirationTo}`);
     if (now() - startedMs > maxRunMs) break;
+    if (isTerminalIngestStatus(readIngestProgressOnDb(db, jobKey)?.status)) { res.jobsCompleted += 1; continue; }
     res.jobs += 1;
 
     const admission = accountant.admit(
@@ -515,7 +534,10 @@ export async function ingestOptionQuotesOnDb(
     const occ = String(t.occ).toUpperCase();
     const jobKey = ingestJobKey("option_quotes", occ, `${t.fromMs}..${t.toMs}`);
     const prior = readIngestProgressOnDb(db, jobKey);
-    if (prior?.status === "COMPLETE") { res.jobsCompleted += 1; continue; }
+    // Both terminal statuses mean "do not spend another request on this window". EXHAUSTED
+    // is skipped for the same reason COMPLETE is — the difference between them matters to
+    // the repair and to a coverage report, never to whether there is more to buy.
+    if (isTerminalIngestStatus(prior?.status)) { res.jobsCompleted += 1; continue; }
     res.jobs += 1;
 
     // Resume from where the last pass actually got to, not from the window start.
@@ -580,6 +602,11 @@ export async function ingestOptionQuotesOnDb(
       if (lastTsMs == null) {
         // Nothing at all in the remaining span. The provider has no more to give here, so
         // the window is done — a quiet contract must not become an infinite retry.
+        //
+        // EXHAUSTED, not COMPLETE. The rows do not reach the window end and never will, and
+        // saying COMPLETE here is what let the coverage repair read this as a truncated
+        // download and reopen it on every pass.
+        progressStatus = "EXHAUSTED";
         note = note || `no quotes returned for ${new Date(resumeFromMs).toISOString()}..${new Date(t.toMs).toISOString()}`;
       } else if (lastTsMs <= resumeFromMs) {
         // The page did not advance past where we resumed, so the provider has nothing
@@ -590,6 +617,11 @@ export async function ingestOptionQuotesOnDb(
         // is now true. The distinction is preserved where it matters — the coverage
         // diagnostic reads the ROWS, so an event inside this span with no executable quote
         // is still reported as unsupported rather than hidden behind a completed job.
+        //
+        // The STATUS now carries that same distinction instead of leaving it in prose, so
+        // the repair can act on it rather than having to re-derive it from row coverage —
+        // which it cannot do, because exhausted and truncated look identical in the rows.
+        progressStatus = "EXHAUSTED";
         note = note || `provider returned no rows after ${new Date(resumeFromMs).toISOString()}; `
           + "span examined and exhausted short of its end";
       } else if (lastTsMs < t.toMs - QUOTE_WINDOW_COVERAGE_TOLERANCE_MS) {
@@ -610,7 +642,7 @@ export async function ingestOptionQuotesOnDb(
       rowsIngested: w.written, requestsSpent: 1,
       status: progressStatus, note: note || null, nowMs: now(),
     });
-    if (progressStatus === "COMPLETE") res.jobsCompleted += 1; else res.jobsResumable += 1;
+    if (isTerminalIngestStatus(progressStatus)) res.jobsCompleted += 1; else res.jobsResumable += 1;
   }
 
   res.elapsedMs = now() - startedMs;
