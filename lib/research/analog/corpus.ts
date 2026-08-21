@@ -399,7 +399,7 @@ export function analogCorpusBreadthOnDb(
   opts: { evidenceClass?: AnalogEvidenceClass; limit?: number } = {},
 ): {
   evidenceClass: AnalogEvidenceClass;
-  symbols: Array<{ symbol: string; episodes: number; tradingDays: number; dateFrom: string; dateTo: string; sources: string }>;
+  symbols: Array<{ symbol: string; episodes: number; labelRows: number; tradingDays: number; dateFrom: string; dateTo: string; sources: string }>;
   horizons: Array<{ horizon: string; rows: number; symbols: number; tradingDays: number }>;
   sources: Array<{ source: string; episodes: number; symbols: number; tradingDays: number }>;
   truncated: boolean;
@@ -411,13 +411,20 @@ export function analogCorpusBreadthOnDb(
   const many = <T>(sql: string, params: any[]): T[] => {
     try { return (db.prepare(sql).all(...params) ?? []) as T[]; } catch { return []; }
   };
+  // COUNT(*) over this join counts LABEL ROWS, not episodes — one episode carries one label
+  // PER HORIZON, so the two differ by roughly 7x here. The sibling `sources` query below
+  // already used COUNT(DISTINCT e.episode_key), so a single payload was reporting a field
+  // called `episodes` under two different definitions. Both counts are now returned under
+  // names that say which is which: a concentration table built from the wrong one overstates
+  // every symbol by the same factor, which hides in a share and does not hide in a total.
   const symbols = many<any>(
-    `SELECT e.symbol, COUNT(*) episodes, COUNT(DISTINCT e.trading_day) days,
+    `SELECT e.symbol, COUNT(DISTINCT e.episode_key) episodes, COUNT(*) label_rows,
+            COUNT(DISTINCT e.trading_day) days,
             MIN(e.trading_day) date_from, MAX(e.trading_day) date_to,
             GROUP_CONCAT(DISTINCT e.source) sources
        FROM setup_episodes e JOIN episode_labels l ON l.episode_key = e.episode_key
       WHERE l.outcome_kind = ?
-      GROUP BY e.symbol ORDER BY episodes DESC LIMIT ?`,
+      GROUP BY e.symbol ORDER BY label_rows DESC LIMIT ?`,
     [kind, limit + 1],
   );
   const truncated = symbols.length > limit;
@@ -437,7 +444,8 @@ export function analogCorpusBreadthOnDb(
   return {
     evidenceClass,
     symbols: (truncated ? symbols.slice(0, limit) : symbols).map((r) => ({
-      symbol: String(r.symbol), episodes: Number(r.episodes), tradingDays: Number(r.days),
+      symbol: String(r.symbol), episodes: Number(r.episodes), labelRows: Number(r.label_rows),
+      tradingDays: Number(r.days),
       dateFrom: String(r.date_from ?? ""), dateTo: String(r.date_to ?? ""), sources: String(r.sources ?? ""),
     })),
     horizons: horizons.map((r) => ({

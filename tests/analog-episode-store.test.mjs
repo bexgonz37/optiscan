@@ -78,3 +78,45 @@ test("SAFETY: live episode capture is a hard no-op when EPISODE_CAPTURE_ENABLED 
   assert.equal(res.captured, 0);
   assert.match(res.skippedReason, /EPISODE_CAPTURE_ENABLED/);
 });
+
+// ── corpus breadth counts what it says it counts ─────────────────────────────
+
+test("breadth reports episodes and label rows as separate numbers", async () => {
+  // One episode carries one label PER HORIZON, so COUNT(*) over the episode-to-label join
+  // is a label count wearing an episode's name. The `sources` roll-up in the same payload
+  // always used COUNT(DISTINCT episode_key), so a single response reported a field called
+  // `episodes` under two definitions that differ by the horizon count. A concentration
+  // table built from the wrong one overstates every symbol by the same factor — which
+  // cancels in a share and does not cancel in a total.
+  const { analogCorpusBreadthOnDb } = await import("../lib/research/analog/corpus.ts");
+  const d = db();
+  const HORIZONS = ["15m", "30m", "1h", "EOD"];
+  // NVDA: 3 episodes x 4 horizons = 12 label rows. AAPL: 1 episode x 4 = 4.
+  for (const [symbol, t0s] of [["nvda", [1000, 2000, 3000]], ["aapl", [1000]]]) {
+    for (const t0Ms of t0s) {
+      const e = ep({ symbol, t0Ms });
+      assert.equal(persistEpisodeOnDb(d, e, 1).ok, true);
+      const key = episodeKeyOf(e.source, symbol, t0Ms, e.featureSchemaVersion);
+      for (const horizon of HORIZONS) {
+        persistLabelOnDb(d, key, t0Ms, label({ horizon, labelAsOfMs: t0Ms + 10_000 }), 1);
+      }
+    }
+  }
+
+  const b = analogCorpusBreadthOnDb(d, { evidenceClass: "HISTORICAL_UNDERLYING_ONLY" });
+  const nvda = b.symbols.find((s) => s.symbol.toUpperCase() === "NVDA");
+  const aapl = b.symbols.find((s) => s.symbol.toUpperCase() === "AAPL");
+  assert.equal(nvda.episodes, 3, "three episodes, not twelve");
+  assert.equal(nvda.labelRows, 12);
+  assert.equal(aapl.episodes, 1);
+  assert.equal(aapl.labelRows, 4);
+
+  // The two roll-ups in the same payload must now agree on what an episode is.
+  const bySource = b.sources.reduce((a, s) => a + s.episodes, 0);
+  const bySymbol = b.symbols.reduce((a, s) => a + s.episodes, 0);
+  assert.equal(bySymbol, bySource, "per-symbol and per-source episode counts reconcile");
+  assert.equal(bySymbol, 4);
+
+  // Ordering stays by volume of evidence, so the concentration read is unchanged.
+  assert.equal(b.symbols[0].symbol.toUpperCase(), "NVDA");
+});
