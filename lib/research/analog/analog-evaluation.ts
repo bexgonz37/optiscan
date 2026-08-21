@@ -33,6 +33,27 @@
  * reported beside them. A model that abstains on 97% of queries and is well calibrated on
  * the rest has not earned a calibration claim; it has earned a coverage problem.
  *
+ * ── The comparison, not the score ────────────────────────────────────────────
+ *
+ * A Brier score on its own is unreadable. 0.2098 sounds good until you ask what a model
+ * that knew only "these five mega-caps drifted up through 2023-2024" would have scored,
+ * and the earlier report never asked: its only reference was a constant predictor, which
+ * is the one opponent that cannot know the drift.
+ *
+ * So every query is now also answered by the train-only estimators in `baselines.ts`, from
+ * the SAME fenced training population retrieval used, and the Brier scores are computed
+ * over the SAME scoreable rows. `baselines.verdict` reports NO_INFORMATION_BEYOND_BASELINE
+ * whenever a single baseline survives, because "better than the weakest comparison" is not
+ * a finding.
+ *
+ * ── Intervals are clustered, because the samples are not independent ─────────
+ *
+ * The lift interval resamples SESSIONS, not predictions. Twenty setups on one afternoon
+ * share one market move; resampling them individually would report an interval far tighter
+ * than the evidence supports, in the direction that manufactures significance.
+ * `independence` carries the inflation factor so the gap between "200 queries" and "the
+ * number of days actually observed" is on the face of the report.
+ *
  * ── No tuning here ───────────────────────────────────────────────────────────
  *
  * This module has no search, no parameter sweep, no "best of". It runs one configuration and
@@ -40,13 +61,30 @@
  * becomes a story, and it is the specific thing the session brief forbids.
  */
 import { countIndependentSessions } from "../historical/trading-sessions.ts";
+import { bootstrapClusteredLiftCI, type CI } from "../eval/metrics.ts";
 import {
   ANALOG_MIN_INDEPENDENT_SESSIONS,
   ANALOG_MIN_OBSERVATIONS,
 } from "./cohort-outcomes.ts";
 import { ANALOG_FEATURE_VECTOR_VERSION } from "./feature-vector.ts";
 import {
+  ALL_BASELINES,
+  ANALOG_BASELINE_VERSION,
+  baselinesForQuery,
+  scoreBaselines,
+  type BaselineId,
+  type BaselinePrediction,
+  type BaselineScore,
+} from "./baselines.ts";
+import {
+  clusterLabel,
+  independenceReport,
+  type IndependenceReport,
+  type IndependenceUnit,
+} from "./independence.ts";
+import {
   ANALOG_RETRIEVAL_VERSION,
+  defaultRetrievalOptions,
   retrieveAnalogs,
   type AnalogCorpusMember,
   type RetrievalOptions,
@@ -67,6 +105,8 @@ export interface AnalogEvalOptions {
   minIndependentSessions?: number;
   /** Cap on evaluation queries, for bounded runtime. Reported when it binds. */
   maxQueries?: number;
+  /** Bootstrap iterations for the clustered lift intervals. Deterministic PRNG either way. */
+  bootstrapIterations?: number;
 }
 
 export interface AnalogPrediction {
@@ -88,6 +128,10 @@ export interface AnalogPrediction {
   crossSymbol: number;
   /** The latest labelEndMs among retrieved analogs — must be <= t0Ms. */
   maxAnalogLabelEndMs: number | null;
+  /** When the label finished resolving — the interval used for overlap accounting. */
+  labelEndMs: number;
+  /** Every baseline's answer for this same query, from the same fenced training set. */
+  baselines: Record<BaselineId, BaselinePrediction>;
 }
 
 export interface CalibrationBucket {
@@ -141,10 +185,59 @@ export interface AnalogEvalReport {
     selfRetrievalViolations: number;
     verdict: "CLEAN" | "LEAK_DETECTED";
   };
+  /** Train-only baselines scored over the IDENTICAL scoreable population. */
+  baselines: {
+    version: string;
+    scores: BaselineScore[];
+    /**
+     * Analog minus baseline, per baseline. Positive `brierDelta` means the analog scored
+     * BETTER (Brier is a loss). `liftCI` is the clustered paired bootstrap of that delta —
+     * clustered, because 200 predictions over 40 sessions are not 200 draws.
+     */
+    comparisons: BaselineComparison[];
+    /** The strongest baseline the analog engine failed to beat, or null when it beat them all. */
+    strongestUnbeaten: BaselineId | null;
+    verdict: "ADDS_INFORMATION" | "NO_INFORMATION_BEYOND_BASELINE" | "INSUFFICIENT_EVIDENCE";
+    verdictReason: string;
+  };
+  /** Concentration and overlap over the SCOREABLE population — the honest denominators. */
+  independence: IndependenceReport;
+  /** Brier by stratum. Reported per slice, never pooled back into the headline. */
+  strata: {
+    bySymbolScope: StratumScore[];
+    byQuerySymbol: StratumScore[];
+    byDirection: StratumScore[];
+    byRegimeWindow: StratumScore[];
+  };
   overallVerdict: "SUPPORTED" | "INSUFFICIENT_EVIDENCE";
   verdictReason: string;
   researchAuthority: "RESEARCH_ONLY";
   calibrationStatus: "NOT_CALIBRATED_FOR_LIVE_AUTHORITY";
+}
+
+export interface BaselineComparison {
+  baseline: BaselineId;
+  analogBrier: number | null;
+  baselineBrier: number | null;
+  /** baselineBrier - analogBrier. Positive = the analog is better. */
+  brierDelta: number | null;
+  /** Clustered paired bootstrap of the per-prediction delta. */
+  liftCI: (CI & { clusters: number }) | null;
+  /** Which independence unit the bootstrap resampled. */
+  clusterUnit: IndependenceUnit;
+  /** True only when the interval excludes zero on the favourable side. */
+  analogBeatsBaseline: boolean;
+}
+
+export interface StratumScore {
+  stratum: string;
+  n: number;
+  clusters: number;
+  brier: number | null;
+  baseRateBrier: number | null;
+  realizedWinRate: number | null;
+  meanPredicted: number | null;
+  verdict: "SUPPORTED" | "INSUFFICIENT_EVIDENCE";
 }
 
 const BUCKETS: Array<[number, number]> = [
@@ -180,12 +273,22 @@ export function evaluateAnalogRetrieval(
   // the most expensive part of the evaluation.
   const byId = new Map(sorted.map((m) => [m.id, m]));
 
+  const bucketMs = options.retrieval?.duplicateBucketMs ?? defaultRetrievalOptions().duplicateBucketMs;
+
   for (const q of queries) {
     const r = retrieveAnalogs(
       { id: q.id, symbol: q.symbol, t0Ms: q.t0Ms, vector: q.vector },
       sorted,
       options.retrieval,
     );
+    // Baselines are computed for EVERY query, including abstained ones, and from the same
+    // fenced training set retrieval used. Computing them only where the analog acted would
+    // let the analog choose its own comparison population.
+    const baselines = baselinesForQuery(
+      { id: q.id, symbol: q.symbol, t0Ms: q.t0Ms, vector: q.vector },
+      sorted,
+      { duplicateBucketMs: bucketMs },
+    ).predictions;
     const labeled = r.analogs.filter((a) => a.outcome !== null);
     const sessions = countIndependentSessions(labeled.map((a) => a.tradingDay)).independentSessions;
 
@@ -217,6 +320,8 @@ export function evaluateAnalogRetrieval(
       sameSymbol: r.composition.sameSymbol,
       crossSymbol: r.composition.crossSymbol,
       maxAnalogLabelEndMs: maxEnd,
+      labelEndMs: q.labelEndMs,
+      baselines,
     });
   }
 
@@ -269,6 +374,117 @@ export function evaluateAnalogRetrieval(
 
   const querySessions = countIndependentSessions(predictions.map((p) => p.tradingDay)).independentSessions;
 
+  // ── baselines, over EXACTLY the scoreable population ──────────────────────
+  //
+  // Same rows, same order, same denominator. The comparison is only meaningful if the two
+  // Brier scores were computed over the same queries; anything else compares populations.
+  const baselineScores = scoreBaselines(
+    scoreable.map((p) => ({ id: p.id, win: p.win as boolean, baselines: p.baselines })),
+  );
+
+  // Clustered by trading SESSION: the strictest defensible unit, and the one that speaks to
+  // the actual worry — correlated mega-caps all moving on the same market day.
+  const clusterUnit: IndependenceUnit = "SESSION";
+  const clusters = scoreable.map((p) => clusterLabel(clusterUnit, p));
+  const analogLoss = scoreable.map((p) => ((p.predicted as number) - (p.win ? 1 : 0)) ** 2);
+  const iters = Math.max(200, Math.min(10_000, options.bootstrapIterations ?? 2000));
+
+  const comparisons: BaselineComparison[] = ALL_BASELINES.map((id) => {
+    const score = baselineScores.find((b) => b.baseline === id) ?? null;
+    const baselineLoss = scoreable.map((p) => (p.baselines[id].predicted - (p.win ? 1 : 0)) ** 2);
+    // Brier is a LOSS, so the analog's advantage is baselineLoss - analogLoss. Reported as
+    // a lift so `significant: lo > 0` keeps its ordinary "the candidate won" meaning.
+    const lift = scoreable.length
+      ? bootstrapClusteredLiftCI(baselineLoss, analogLoss, clusters, iters)
+      : null;
+    const analogBrier = brier;
+    const baselineBrier = score?.brier ?? null;
+    return {
+      baseline: id,
+      analogBrier,
+      baselineBrier,
+      brierDelta: analogBrier !== null && baselineBrier !== null ? +(baselineBrier - analogBrier).toFixed(6) : null,
+      liftCI: lift,
+      clusterUnit,
+      analogBeatsBaseline: Boolean(lift?.significant),
+    };
+  });
+
+  // The engine has to beat EVERY baseline, not the friendliest one. A single unbeaten
+  // baseline is a complete answer to "does similarity add information".
+  const unbeaten = comparisons.filter((c) => !c.analogBeatsBaseline);
+  const rank: BaselineId[] = ["GLOBAL_BASE_RATE", "REGIME_BASE_RATE", "SYMBOL_BASE_RATE", "DIRECTION_BASE_RATE", "CONSTANT"];
+  const strongestUnbeaten = rank.find((id) => unbeaten.some((c) => c.baseline === id)) ?? null;
+
+  const baselineEvidenceThin = scoreable.length < ANALOG_MIN_OBSERVATIONS
+    || querySessions < ANALOG_MIN_INDEPENDENT_SESSIONS;
+  const baselineVerdict: "ADDS_INFORMATION" | "NO_INFORMATION_BEYOND_BASELINE" | "INSUFFICIENT_EVIDENCE" =
+    baselineEvidenceThin
+      ? "INSUFFICIENT_EVIDENCE"
+      : unbeaten.length === 0
+        ? "ADDS_INFORMATION"
+        : "NO_INFORMATION_BEYOND_BASELINE";
+  const baselineVerdictReason = baselineEvidenceThin
+    ? `${scoreable.length} scoreable predictions over ${querySessions} independent sessions is below the ` +
+      `${ANALOG_MIN_OBSERVATIONS}/${ANALOG_MIN_INDEPENDENT_SESSIONS} floor; no baseline comparison is decidable`
+    : unbeaten.length === 0
+      ? `the analog Brier beat every train-only baseline with a session-clustered interval excluding zero`
+      : `did not beat ${unbeaten.map((c) => c.baseline).sort().join(", ")} at a session-clustered 95% interval; ` +
+        "similarity has not been shown to add information beyond these";
+
+  // ── independence over the scoreable population ────────────────────────────
+  const independence = independenceReport(
+    scoreable.map((p) => ({ id: p.id, symbol: p.symbol, tradingDay: p.tradingDay, t0Ms: p.t0Ms, labelEndMs: p.labelEndMs })),
+  );
+
+  // ── strata. Reported side by side; never pooled back into the headline. ───
+  const stratum = (name: string, subset: typeof scoreable): StratumScore => {
+    const n = subset.length;
+    const supported = n >= MIN_BUCKET_PREDICTIONS;
+    const wins = subset.filter((p) => p.win).length;
+    return {
+      stratum: name,
+      n,
+      clusters: new Set(subset.map((p) => clusterLabel(clusterUnit, p))).size,
+      brier: n ? +(subset.reduce((a, p) => a + ((p.predicted as number) - (p.win ? 1 : 0)) ** 2, 0) / n).toFixed(6) : null,
+      baseRateBrier: n
+        ? +(subset.reduce((a, p) => a + (p.baselines.GLOBAL_BASE_RATE.predicted - (p.win ? 1 : 0)) ** 2, 0) / n).toFixed(6)
+        : null,
+      realizedWinRate: n ? +(wins / n).toFixed(4) : null,
+      meanPredicted: n ? +(subset.reduce((a, p) => a + (p.predicted as number), 0) / n).toFixed(4) : null,
+      verdict: supported ? "SUPPORTED" : "INSUFFICIENT_EVIDENCE",
+    };
+  };
+  const groupBy = (key: (p: (typeof scoreable)[number]) => string): StratumScore[] => {
+    const groups = new Map<string, typeof scoreable>();
+    for (const p of scoreable) {
+      const k = key(p);
+      const g = groups.get(k);
+      if (g) g.push(p); else groups.set(k, [p]);
+    }
+    return [...groups.keys()].sort().map((k) => stratum(k, groups.get(k) as typeof scoreable));
+  };
+
+  const strata = {
+    bySymbolScope: groupBy((p) =>
+      p.sameSymbol > 0 && p.crossSymbol > 0 ? "MIXED" : p.crossSymbol > 0 ? "CROSS_SYMBOL" : p.sameSymbol > 0 ? "SAME_SYMBOL" : "NONE"),
+    byQuerySymbol: groupBy((p) => p.symbol),
+    // Direction comes off the query's own frozen vector, not from the retrieved cohort.
+    byDirection: groupBy((p) => {
+      const d = (sorted.find((m) => m.id === p.id)?.vector.values.cmp_direction) ?? null;
+      return d === 1 ? "bullish" : d === 0 ? "bearish" : "unknown";
+    }),
+    // "Regime" here is the deterministic recency stratification the REGIME_BASE_RATE uses,
+    // expressed as which half of the eval span the query fell in. It is a slice of the
+    // sample, not a market model, and it is named so nobody reads it as one.
+    byRegimeWindow: groupBy((p) => {
+      const from = queries.length ? queries[0].t0Ms : 0;
+      const to = queries.length ? queries[queries.length - 1].t0Ms : 0;
+      if (!(to > from)) return "single-window";
+      return p.t0Ms < from + (to - from) / 2 ? "eval-first-half" : "eval-second-half";
+    }),
+  };
+
   const reasons: string[] = [];
   if (scoreable.length < ANALOG_MIN_OBSERVATIONS) reasons.push(`${scoreable.length} scoreable predictions < ${ANALOG_MIN_OBSERVATIONS}`);
   if (querySessions < ANALOG_MIN_INDEPENDENT_SESSIONS) reasons.push(`${querySessions} independent query sessions < ${ANALOG_MIN_INDEPENDENT_SESSIONS}`);
@@ -312,9 +528,21 @@ export function evaluateAnalogRetrieval(
       selfRetrievalViolations: selfViolations,
       verdict: futureViolations === 0 && selfViolations === 0 ? "CLEAN" : "LEAK_DETECTED",
     },
+    baselines: {
+      version: ANALOG_BASELINE_VERSION,
+      scores: baselineScores,
+      comparisons,
+      strongestUnbeaten,
+      verdict: baselineVerdict,
+      verdictReason: baselineVerdictReason,
+    },
+    independence,
+    strata,
     overallVerdict: reasons.length === 0 ? "SUPPORTED" : "INSUFFICIENT_EVIDENCE",
     verdictReason: reasons.length === 0
-      ? `${scoreable.length} scoreable out-of-sample predictions over ${querySessions} independent sessions`
+      ? `${scoreable.length} scoreable out-of-sample predictions over ${querySessions} independent sessions ` +
+        `(${independence.clusterCounts.SESSION} session clusters, inflation x${independence.inflationFactor}); ` +
+        `baselines: ${baselineVerdict}`
       : reasons.join("; "),
     researchAuthority: "RESEARCH_ONLY",
     calibrationStatus: "NOT_CALIBRATED_FOR_LIVE_AUTHORITY",

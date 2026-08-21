@@ -76,6 +76,66 @@ export interface CI { point: number; lo: number; hi: number; significant: boolea
  * (e.g. per-episode outcome among selected). `significant` = the CI excludes zero. This is the
  * multiple-testing-aware honesty gate: a scorer only "wins" if lift CI is strictly above 0.
  */
+/**
+ * Paired bootstrap CI for a lift when the observations are NOT independent.
+ *
+ * `bootstrapLiftCI` resamples individual items, which assumes each one is its own draw.
+ * Market observations are not: twenty setups on the same afternoon share one market move,
+ * and resampling them individually treats one day as twenty confirmations. The interval
+ * that comes back is then far too narrow, and it is narrow in the direction that makes a
+ * result look significant.
+ *
+ * This variant resamples CLUSTERS — pass one label per item (a session date, a
+ * symbol-session, whatever the defensible independence unit is) and whole clusters are
+ * drawn with replacement, keeping the within-cluster correlation intact. Same deterministic
+ * PRNG, so the interval is reproducible.
+ *
+ * `significant` keeps the existing one-sided meaning: the lift's CI is strictly above zero.
+ */
+export function bootstrapClusteredLiftCI(
+  candidatePer: number[],
+  baselinePer: number[],
+  clusters: string[],
+  iters = 2000,
+  alpha = 0.05,
+  seed = 12345,
+): CI & { clusters: number } {
+  const n = Math.min(candidatePer.length, baselinePer.length, clusters.length);
+  if (n === 0) return { point: 0, lo: 0, hi: 0, significant: false, clusters: 0 };
+  const byCluster = new Map<string, number[]>();
+  for (let i = 0; i < n; i++) {
+    const d = candidatePer[i] - baselinePer[i];
+    const key = clusters[i];
+    const bucket = byCluster.get(key);
+    if (bucket) bucket.push(d); else byCluster.set(key, [d]);
+  }
+  // Deterministic cluster order — a Map's insertion order depends on input order, and the
+  // resample indexes into this array.
+  const keys = [...byCluster.keys()].sort();
+  const groups = keys.map((k) => byCluster.get(k) as number[]);
+  const k = groups.length;
+  const all = groups.flat();
+  const point = all.reduce((a, x) => a + x, 0) / all.length;
+  const rnd = mulberry32(seed);
+  const means: number[] = [];
+  for (let b = 0; b < iters; b++) {
+    let s = 0, c = 0;
+    for (let i = 0; i < k; i++) {
+      const g = groups[(rnd() * k) | 0];
+      for (const d of g) { s += d; c += 1; }
+    }
+    means.push(c ? s / c : 0);
+  }
+  means.sort((a, b) => a - b);
+  return {
+    point: +point.toFixed(6),
+    lo: +means[Math.floor((alpha / 2) * iters)].toFixed(6),
+    hi: +means[Math.floor((1 - alpha / 2) * iters)].toFixed(6),
+    significant: means[Math.floor((alpha / 2) * iters)] > 0,
+    clusters: k,
+  };
+}
+
 export function bootstrapLiftCI(candidatePer: number[], baselinePer: number[], iters = 2000, alpha = 0.05, seed = 12345): CI {
   const n = Math.min(candidatePer.length, baselinePer.length);
   if (n === 0) return { point: 0, lo: 0, hi: 0, significant: false };

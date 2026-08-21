@@ -39,10 +39,14 @@
  * still resolving at T0 carries information the query could not have had.
  */
 import {
-  buildAnalogFeatureVector,
+  ANALOG_FEATURE_VECTOR_VERSION,
   vectorFromEpisodeRow,
   type AnalogFeatureVector,
 } from "./feature-vector.ts";
+import {
+  ANALOG_FEATURE_VECTOR_V2_VERSION,
+  vectorFromV2EpisodeRow,
+} from "./feature-vector-v2.ts";
 import type { AnalogEvidenceClass } from "./evidence-class.ts";
 import type { AnalogCorpusMember } from "./retrieval.ts";
 
@@ -58,17 +62,33 @@ export interface LoadCorpusOptions {
   horizon?: string;
   /** Hard cap so a research query can never walk a multi-GB table unbounded. */
   limit?: number;
+  /**
+   * Which feature-vector version this corpus is built in. A corpus is SINGLE-VERSION for
+   * the same reason it is single-class: V1 and V2 share dimension names and do not share
+   * estimators, so one metric fitted across both would be fitted on nothing. Rows of the
+   * other version are counted in `droppedByVectorVersion`, never silently discarded.
+   *
+   * Defaults per class: HISTORICAL_* / MODELED_OPTION → V1 (their rows are episode_version
+   * 1 replay rows); FORWARD_* → V2 (their labels only ever attach to episode_version 2).
+   */
+  vectorVersion?: string;
 }
 
 export interface LoadedCorpus {
   corpusVersion: string;
   evidenceClass: AnalogEvidenceClass;
   horizon: string | null;
+  /** The single feature-vector version every member is built in. */
+  vectorVersion: string;
   members: AnalogCorpusMember[];
   /** Rows the query returned before vector/comparability filtering. */
   rowsRead: number;
-  /** Rows dropped because their vector lacked a comparability key. */
+  /** Rows dropped because their vector lacked a REQUIRED comparability key. */
   droppedIncomparable: number;
+  /** Rows dropped because they belong to the other feature-vector version. */
+  droppedByVectorVersion: number;
+  /** Rows dropped because t0 or the label window was not a finite timestamp. */
+  droppedUnusableTimestamps: number;
   /** Members whose outcome is unresolved. */
   censoredCount: number;
   /** True when `limit` truncated the read — a silently capped corpus is a lie about N. */
@@ -93,21 +113,36 @@ function tradingDayOf(row: any, t0Ms: number): string {
   return new Date(t0Ms).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
 }
 
+interface AssembleResult {
+  members: AnalogCorpusMember[];
+  droppedIncomparable: number;
+  droppedByVectorVersion: number;
+  droppedUnusableTimestamps: number;
+  censoredCount: number;
+}
+
 function assemble(
   rows: any[],
   evidenceClass: AnalogEvidenceClass,
   vectorOf: (row: any) => AnalogFeatureVector,
   outcomeOf: (row: any) => number | null,
-): { members: AnalogCorpusMember[]; droppedIncomparable: number; censoredCount: number } {
+  vectorVersion: string,
+): AssembleResult {
   const members: AnalogCorpusMember[] = [];
   let droppedIncomparable = 0;
+  let droppedByVectorVersion = 0;
+  let droppedUnusableTimestamps = 0;
   let censoredCount = 0;
   for (const row of rows) {
     const vector = vectorOf(row);
+    // A version the caller did not ask for is not a defective row. It is a row that
+    // belongs to the other corpus, and it is counted separately so "we found nothing"
+    // and "we found the other version" can never read the same.
+    if (vector.version !== vectorVersion) { droppedByVectorVersion++; continue; }
     if (!vector.comparable) { droppedIncomparable++; continue; }
     const t0Ms = Number(row.t0_ms);
     const labelEndMs = Number(row.label_as_of_ms);
-    if (!Number.isFinite(t0Ms) || !Number.isFinite(labelEndMs)) { droppedIncomparable++; continue; }
+    if (!Number.isFinite(t0Ms) || !Number.isFinite(labelEndMs)) { droppedUnusableTimestamps++; continue; }
     const outcome = outcomeOf(row);
     if (outcome === null) censoredCount++;
     members.push({
@@ -123,7 +158,22 @@ function assemble(
   }
   // Deterministic order: chronological, id tiebreak.
   members.sort((a, b) => (a.t0Ms - b.t0Ms) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  return { members, droppedIncomparable, censoredCount };
+  return { members, droppedIncomparable, droppedByVectorVersion, droppedUnusableTimestamps, censoredCount };
+}
+
+/**
+ * Which vector a row is built in, decided by the row itself rather than by the caller.
+ * `episode_version = 2` rows carry Zone-A JSON and a structurally null `liquidity_tier`;
+ * anything else is a V1 replay row with per-block columns.
+ */
+export function vectorForEpisodeRow(row: Record<string, any>): AnalogFeatureVector {
+  return Number(row.episode_version) === 2 ? vectorFromV2EpisodeRow(row) : vectorFromEpisodeRow(row);
+}
+
+function defaultVectorVersionFor(cls: AnalogEvidenceClass): string {
+  return cls === "FORWARD_EXACT_OPTION" || cls === "FORWARD_UNDERLYING_ONLY"
+    ? ANALOG_FEATURE_VECTOR_V2_VERSION
+    : ANALOG_FEATURE_VECTOR_VERSION;
 }
 
 const finite = (v: unknown): number | null => {
@@ -137,9 +187,11 @@ export function loadAnalogCorpusOnDb(db: CorpusDb, options: LoadCorpusOptions): 
   const { evidenceClass } = options;
   const limit = options.limit ?? DEFAULT_LIMIT;
   const horizon = options.horizon ?? null;
+  const vectorVersion = options.vectorVersion ?? defaultVectorVersionFor(evidenceClass);
   const empty = (note: string): LoadedCorpus => ({
-    corpusVersion: ANALOG_CORPUS_VERSION, evidenceClass, horizon, members: [],
-    rowsRead: 0, droppedIncomparable: 0, censoredCount: 0, truncated: false, note,
+    corpusVersion: ANALOG_CORPUS_VERSION, evidenceClass, horizon, vectorVersion, members: [],
+    rowsRead: 0, droppedIncomparable: 0, droppedByVectorVersion: 0, droppedUnusableTimestamps: 0,
+    censoredCount: 0, truncated: false, note,
   });
 
   if (evidenceClass === "HISTORICAL_UNDERLYING_ONLY" || evidenceClass === "MODELED_OPTION") {
@@ -153,6 +205,7 @@ export function loadAnalogCorpusOnDb(db: CorpusDb, options: LoadCorpusOptions): 
     if (horizon) { where += " AND l.horizon = ?"; params.push(horizon); }
     const rows = db.prepare(
       `SELECT e.episode_key, e.symbol, e.t0_ms, e.trading_day, e.direction, e.liquidity_tier,
+              e.episode_version, e.zone_a_json,
               e.price_structure_json, e.momentum_json, e.volume_json, e.volatility_json,
               l.return_pct, l.label_as_of_ms
        FROM setup_episodes e
@@ -163,12 +216,16 @@ export function loadAnalogCorpusOnDb(db: CorpusDb, options: LoadCorpusOptions): 
     ).all(...params, limit + 1) as any[];
     const truncated = rows.length > limit;
     const use = truncated ? rows.slice(0, limit) : rows;
-    const { members, droppedIncomparable, censoredCount } = assemble(
-      use, evidenceClass, vectorFromEpisodeRow, (r) => finite(r.return_pct),
-    );
+    const a = assemble(use, evidenceClass, vectorForEpisodeRow, (r) => finite(r.return_pct), vectorVersion);
     return {
-      corpusVersion: ANALOG_CORPUS_VERSION, evidenceClass, horizon, members,
-      rowsRead: use.length, droppedIncomparable, censoredCount, truncated,
+      corpusVersion: ANALOG_CORPUS_VERSION, evidenceClass, horizon, vectorVersion,
+      members: a.members,
+      rowsRead: use.length,
+      droppedIncomparable: a.droppedIncomparable,
+      droppedByVectorVersion: a.droppedByVectorVersion,
+      droppedUnusableTimestamps: a.droppedUnusableTimestamps,
+      censoredCount: a.censoredCount,
+      truncated,
       note: truncated ? `read capped at ${limit} rows; N is a floor, not the population` : null,
     };
   }
@@ -185,6 +242,7 @@ export function loadAnalogCorpusOnDb(db: CorpusDb, options: LoadCorpusOptions): 
     if (horizon) { where += " AND l.horizon = ?"; params.push(horizon); }
     const rows = db.prepare(
       `SELECT e.episode_key, e.symbol, e.t0_ms, e.trading_day, e.direction, e.liquidity_tier,
+              e.episode_version,
               e.price_structure_json, e.momentum_json, e.volume_json, e.volatility_json,
               e.zone_a_json,
               l.terminal_return_pct, l.censored, l.label_as_of_ms
@@ -196,16 +254,23 @@ export function loadAnalogCorpusOnDb(db: CorpusDb, options: LoadCorpusOptions): 
     ).all(...params, limit + 1) as any[];
     const truncated = rows.length > limit;
     const use = truncated ? rows.slice(0, limit) : rows;
-    const { members, droppedIncomparable, censoredCount } = assemble(
-      use, evidenceClass, vectorFromV2Row,
+    const a = assemble(
+      use, evidenceClass, vectorForEpisodeRow,
       // A censored label has NO outcome. `terminal_return_pct` may still be non-null on a
       // censored row (a partial path), and treating it as the realized outcome would put a
       // truncated observation into a completed-outcome rate.
       (r) => (Number(r.censored) === 1 ? null : finite(r.terminal_return_pct)),
+      vectorVersion,
     );
     return {
-      corpusVersion: ANALOG_CORPUS_VERSION, evidenceClass, horizon, members,
-      rowsRead: use.length, droppedIncomparable, censoredCount, truncated,
+      corpusVersion: ANALOG_CORPUS_VERSION, evidenceClass, horizon, vectorVersion,
+      members: a.members,
+      rowsRead: use.length,
+      droppedIncomparable: a.droppedIncomparable,
+      droppedByVectorVersion: a.droppedByVectorVersion,
+      droppedUnusableTimestamps: a.droppedUnusableTimestamps,
+      censoredCount: a.censoredCount,
+      truncated,
       note: truncated ? `read capped at ${limit} rows; N is a floor, not the population` : null,
     };
   }
@@ -219,43 +284,15 @@ export function loadAnalogCorpusOnDb(db: CorpusDb, options: LoadCorpusOptions): 
 }
 
 /**
- * V2 episodes carry their Zone-A features in `zone_a_json` as well as the legacy per-block
- * columns. Prefer the blocks when present; fall back to zone_a_json. Absent stays null.
+ * V1-shaped Zone-A fallback, RETIRED.
+ *
+ * `vectorFromV2Row` used to try the V1 per-block columns and then fall back to
+ * `zone_a_json`, and it is what produced the 6,935 NOT_COMPARABLE_VECTOR rejections: it
+ * still demanded `cmp_liquidity`, which no V2 row has or can have. Its replacement is
+ * `feature-vector-v2.ts::vectorFromV2EpisodeRow`, selected per row by `vectorForEpisodeRow`
+ * on `episode_version`. Nothing referenced the old function once that landed, so it is gone
+ * rather than left as a second way to build the same vector.
  */
-export function vectorFromV2Row(row: Record<string, any>): AnalogFeatureVector {
-  const direct = vectorFromEpisodeRow(row);
-  if (direct.unavailable.length === 0) return direct;
-  let zone: any = null;
-  try {
-    zone = typeof row.zone_a_json === "string" ? JSON.parse(row.zone_a_json) : row.zone_a_json;
-  } catch {
-    zone = null;
-  }
-  if (!zone || typeof zone !== "object") return direct;
-  const blocks = (zone.blocks ?? zone) as Record<string, any>;
-  const val = (block: string, key: string): number | null => {
-    const b = blocks?.[block];
-    const v = b?.values?.[key] ?? b?.[key];
-    const n = v === null || v === undefined ? null : Number(v);
-    return n !== null && Number.isFinite(n) ? n : null;
-  };
-  const pick = (k: string, fallback: number | null): number | null => {
-    const cur = direct.values[k];
-    return cur !== null && cur !== undefined ? cur : fallback;
-  };
-  return buildAnalogFeatureVector({
-    velPct: pick("velPct", val("momentum", "velPct")),
-    accelPct: pick("accelPct", val("momentum", "accelPct")),
-    rvol: pick("rvol", val("volume", "rvol")),
-    realizedVol: pick("realizedVol", val("volatility", "realizedVol")),
-    atrPct: pick("atrPct", val("volatility", "atrPct")),
-    posInRange: pick("posInRange", val("priceStructure", "posInRange")),
-    gapPct: pick("gapPct", val("priceStructure", "gapPct")),
-    liquidityTier: row.liquidity_tier ?? null,
-    direction: row.direction ?? null,
-    symbol: row.symbol ?? null,
-  });
-}
 
 /** Per-class inventory for the research surface. Bounded: counts only, no rows. */
 export function analogCorpusInventoryOnDb(db: CorpusDb): Array<{
@@ -308,4 +345,67 @@ export function analogCorpusInventoryOnDb(db: CorpusDb): Array<{
   push("FORWARD_EXACT_OPTION", v2(), ["EXACT_OPTION_EXECUTABLE_LABEL"], null);
   push("FORWARD_UNDERLYING_ONLY", v2(), ["UNDERLYING_LABEL"], null);
   return out;
+}
+
+/**
+ * Per-symbol / per-session breadth of the replay corpus — the answer to "is the corpus
+ * three tickers or thirty", which the class-level inventory cannot give.
+ *
+ * Bounded by `limit` symbols and returns aggregates only, never rows.
+ */
+export function analogCorpusBreadthOnDb(
+  db: CorpusDb,
+  opts: { evidenceClass?: AnalogEvidenceClass; limit?: number } = {},
+): {
+  evidenceClass: AnalogEvidenceClass;
+  symbols: Array<{ symbol: string; episodes: number; tradingDays: number; dateFrom: string; dateTo: string; sources: string }>;
+  horizons: Array<{ horizon: string; rows: number; symbols: number; tradingDays: number }>;
+  sources: Array<{ source: string; episodes: number; symbols: number; tradingDays: number }>;
+  truncated: boolean;
+  note: string | null;
+} {
+  const evidenceClass = opts.evidenceClass ?? "HISTORICAL_UNDERLYING_ONLY";
+  const limit = Math.max(1, Math.min(500, opts.limit ?? 200));
+  const kind = evidenceClass === "MODELED_OPTION" ? "MODELED_OPTION" : "REAL_UNDERLYING";
+  const many = <T>(sql: string, params: any[]): T[] => {
+    try { return (db.prepare(sql).all(...params) ?? []) as T[]; } catch { return []; }
+  };
+  const symbols = many<any>(
+    `SELECT e.symbol, COUNT(*) episodes, COUNT(DISTINCT e.trading_day) days,
+            MIN(e.trading_day) date_from, MAX(e.trading_day) date_to,
+            GROUP_CONCAT(DISTINCT e.source) sources
+       FROM setup_episodes e JOIN episode_labels l ON l.episode_key = e.episode_key
+      WHERE l.outcome_kind = ?
+      GROUP BY e.symbol ORDER BY episodes DESC LIMIT ?`,
+    [kind, limit + 1],
+  );
+  const truncated = symbols.length > limit;
+  const horizons = many<any>(
+    `SELECT l.horizon, COUNT(*) rows, COUNT(DISTINCT e.symbol) symbols, COUNT(DISTINCT e.trading_day) days
+       FROM setup_episodes e JOIN episode_labels l ON l.episode_key = e.episode_key
+      WHERE l.outcome_kind = ? GROUP BY l.horizon ORDER BY l.horizon`,
+    [kind],
+  );
+  const sources = many<any>(
+    `SELECT e.source, COUNT(DISTINCT e.episode_key) episodes, COUNT(DISTINCT e.symbol) symbols,
+            COUNT(DISTINCT e.trading_day) days
+       FROM setup_episodes e JOIN episode_labels l ON l.episode_key = e.episode_key
+      WHERE l.outcome_kind = ? GROUP BY e.source ORDER BY episodes DESC`,
+    [kind],
+  );
+  return {
+    evidenceClass,
+    symbols: (truncated ? symbols.slice(0, limit) : symbols).map((r) => ({
+      symbol: String(r.symbol), episodes: Number(r.episodes), tradingDays: Number(r.days),
+      dateFrom: String(r.date_from ?? ""), dateTo: String(r.date_to ?? ""), sources: String(r.sources ?? ""),
+    })),
+    horizons: horizons.map((r) => ({
+      horizon: String(r.horizon), rows: Number(r.rows), symbols: Number(r.symbols), tradingDays: Number(r.days),
+    })),
+    sources: sources.map((r) => ({
+      source: String(r.source), episodes: Number(r.episodes), symbols: Number(r.symbols), tradingDays: Number(r.days),
+    })),
+    truncated,
+    note: truncated ? `symbol listing capped at ${limit}` : null,
+  };
 }

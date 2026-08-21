@@ -43,6 +43,7 @@ import {
   DISTANCE_DIMENSIONS,
   type AnalogFeatureVector,
 } from "./feature-vector.ts";
+import { comparabilityOf, comparabilitySpecFor } from "./comparability.ts";
 import {
   assertSingleEvidenceClass,
   evidenceClassComposition,
@@ -87,6 +88,13 @@ export interface RetrievalOptions {
   maxRadius?: number;
   /** Bucket width for duplicate-manifestation collapse. */
   duplicateBucketMs?: number;
+  /**
+   * Minimum share of the version's comparability keys that must actually have been
+   * compared. 0 accepts a pair whose only shared key is the required one; 1 demands every
+   * optional key on both sides. Under V1 there are no optional keys, so every eligible
+   * pair scores 1 and this floor cannot change V1 behaviour.
+   */
+  minComparabilityCoverage?: number;
   /** Restrict to one evidence class. Omit to accept the corpus's single class. */
   evidenceClass?: AnalogEvidenceClass;
 }
@@ -99,6 +107,7 @@ export function defaultRetrievalOptions(): Required<Omit<RetrievalOptions, "evid
     minCoverage: 0.6,
     maxRadius: Infinity,
     duplicateBucketMs: 15 * 60_000,
+    minComparabilityCoverage: 0,
     };
 }
 
@@ -121,8 +130,11 @@ export type ExclusionReason =
   | "SELF"
   | "FUTURE_OR_UNRESOLVED_AT_T0"
   | "EVIDENCE_CLASS_MISMATCH"
+  | "FEATURE_VECTOR_VERSION_MISMATCH"
   | "COMPARABILITY_MISMATCH"
+  | "COMPARABILITY_KEY_ABSENT"
   | "NOT_COMPARABLE_VECTOR"
+  | "INSUFFICIENT_COMPARABILITY_COVERAGE"
   | "INSUFFICIENT_FEATURE_COVERAGE"
   | "BEYOND_RADIUS"
   | "DUPLICATE_MANIFESTATION"
@@ -130,7 +142,14 @@ export type ExclusionReason =
 
 export interface RetrievalResult {
   retrievalVersion: string;
+  /** The QUERY's vector version. Every retrieved analog shares it — versions never mix. */
   featureVectorVersion: string;
+  /**
+   * Optional comparability keys skipped, summed over eligible pairs, because one side
+   * lacked the value. Reported so "we compared on fewer keys" can never read as "we
+   * compared and they agreed".
+   */
+  comparabilityKeysDropped: number;
   analogs: RetrievedAnalog[];
   /** Every member that was considered and why it was dropped. Counts only — bounded output. */
   exclusions: Record<ExclusionReason, number>;
@@ -158,8 +177,11 @@ const EMPTY_EXCLUSIONS = (): Record<ExclusionReason, number> => ({
   SELF: 0,
   FUTURE_OR_UNRESOLVED_AT_T0: 0,
   EVIDENCE_CLASS_MISMATCH: 0,
+  FEATURE_VECTOR_VERSION_MISMATCH: 0,
   COMPARABILITY_MISMATCH: 0,
+  COMPARABILITY_KEY_ABSENT: 0,
   NOT_COMPARABLE_VECTOR: 0,
+  INSUFFICIENT_COMPARABILITY_COVERAGE: 0,
   INSUFFICIENT_FEATURE_COVERAGE: 0,
   BEYOND_RADIUS: 0,
   DUPLICATE_MANIFESTATION: 0,
@@ -179,10 +201,14 @@ export function duplicateKeyFor(m: { symbol: string; t0Ms: number; vector: Analo
  * metric learned from future outcomes is look-ahead even when the neighbours it selects are
  * not. This is the subtle leak that survives a correct neighbour filter.
  */
-export function fitRetrievalMetric(eligible: readonly AnalogCorpusMember[], ridge = 0.1): MetricModel | null {
+export function fitRetrievalMetric(
+  eligible: readonly AnalogCorpusMember[],
+  ridge = 0.1,
+  distanceDimensions: readonly string[] = DISTANCE_DIMENSIONS,
+): MetricModel | null {
   const labeled = eligible.filter((m) => m.outcome !== null);
   if (labeled.length < 2) return null;
-  const dims = [...DISTANCE_DIMENSIONS];
+  const dims = [...distanceDimensions];
   const rows = labeled.map((m) => dims.map((d) => {
     const v = m.vector.values[d];
     return v === null || v === undefined ? NaN : v;
@@ -210,8 +236,15 @@ export function retrieveAnalogs(
   // The corpus must be single-class; a mixed corpus is a caller error, not a filter.
   const requested = options.evidenceClass ?? (corpus.length ? assertSingleEvidenceClass(corpus) : undefined);
 
+  // Which keys are comparability keys is a property of the QUERY'S VECTOR VERSION, not a
+  // module constant. Under V1 this resolves to exactly the two required keys the previous
+  // build hard-coded, so V1 retrieval is unchanged; under V2 it resolves to the V2 spec.
+  // An unregistered version throws rather than silently inheriting V1's requirements.
+  const spec = comparabilitySpecFor(query.vector.version);
+  const minCmpCoverage = opt.minComparabilityCoverage;
+
   const qDup = duplicateKeyFor(query, opt.duplicateBucketMs);
-  const qComparable = COMPARABILITY_KEYS.map((k) => query.vector.values[k]);
+  let droppedComparabilityKeys = 0;
 
   const eligible: AnalogCorpusMember[] = [];
   for (const m of corpus) {
@@ -220,15 +253,26 @@ export function retrieveAnalogs(
     if ((m.dedupKey ?? duplicateKeyFor(m, opt.duplicateBucketMs)) === qDup) { exclusions.SELF++; continue; }
     if (!(m.labelEndMs <= fenceMs)) { exclusions.FUTURE_OR_UNRESOLVED_AT_T0++; continue; }
     if (requested && m.evidenceClass !== requested) { exclusions.EVIDENCE_CLASS_MISMATCH++; continue; }
+    // Same dimension names, different estimators. Blending versions would return a number
+    // and no error, which is the worst available outcome; see feature-vector-v2.ts.
+    if (m.vector.version !== query.vector.version) { exclusions.FEATURE_VECTOR_VERSION_MISMATCH++; continue; }
     if (!m.vector.comparable) { exclusions.NOT_COMPARABLE_VECTOR++; continue; }
-    const mismatch = COMPARABILITY_KEYS.some((k, i) => m.vector.values[k] !== qComparable[i]);
-    if (mismatch) { exclusions.COMPARABILITY_MISMATCH++; continue; }
+    const cmp = comparabilityOf(spec, query.vector.values, m.vector.values);
+    if (!cmp.comparable) {
+      if (cmp.verdict === "REQUIRED_KEY_ABSENT") exclusions.COMPARABILITY_KEY_ABSENT++;
+      else exclusions.COMPARABILITY_MISMATCH++;
+      continue;
+    }
+    // An optional key absent on either side is UNKNOWN, never agreement. It lowers the
+    // pair's comparability coverage, and a caller may refuse below a floor.
+    if (cmp.coverage < minCmpCoverage) { exclusions.INSUFFICIENT_COMPARABILITY_COVERAGE++; continue; }
+    droppedComparabilityKeys += cmp.droppedKeys.length;
     eligible.push(m);
   }
 
-  const model = fitRetrievalMetric(eligible);
+  const model = fitRetrievalMetric(eligible, 0.1, spec.distanceDimensions);
   if (!model) {
-    return emptyResult(exclusions, eligible.length, requested);
+    return emptyResult(exclusions, eligible.length, requested, query.vector.version);
   }
 
   const dims = model.dims;
@@ -288,7 +332,8 @@ export function retrieveAnalogs(
 
   return {
     retrievalVersion: ANALOG_RETRIEVAL_VERSION,
-    featureVectorVersion: ANALOG_FEATURE_VECTOR_VERSION,
+    featureVectorVersion: query.vector.version,
+    comparabilityKeysDropped: droppedComparabilityKeys,
     analogs: kept,
     exclusions,
     eligibleCount: eligible.length,
@@ -311,10 +356,12 @@ function emptyResult(
   exclusions: Record<ExclusionReason, number>,
   eligibleCount: number,
   cls: AnalogEvidenceClass | undefined,
+  featureVectorVersion: string = ANALOG_FEATURE_VECTOR_VERSION,
 ): RetrievalResult {
   return {
     retrievalVersion: ANALOG_RETRIEVAL_VERSION,
-    featureVectorVersion: ANALOG_FEATURE_VECTOR_VERSION,
+    featureVectorVersion,
+    comparabilityKeysDropped: 0,
     analogs: [],
     exclusions,
     eligibleCount,

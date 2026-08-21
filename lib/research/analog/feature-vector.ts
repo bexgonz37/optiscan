@@ -40,6 +40,8 @@
  * cross-symbol evidence impossible, which is the opposite of what an analog engine is for.
  */
 
+import { registerComparabilitySpec } from "./comparability.ts";
+
 export const ANALOG_FEATURE_VECTOR_VERSION = "ANALOG_FEATURE_VECTOR_V1";
 
 export type FeatureRole = "distance" | "comparability" | "dedup";
@@ -162,6 +164,21 @@ export const COMPARABILITY_KEYS: readonly string[] = Object.freeze(
   ANALOG_FEATURE_FIELDS.filter((f) => f.role === "comparability").map((f) => f.key).sort(),
 );
 export const DEDUP_KEY = "cmp_symbol";
+
+/**
+ * V1's comparability contract, stated once and registered so retrieval reads it from the
+ * VERSION rather than from a module-level constant. The content is unchanged: both
+ * comparability keys are REQUIRED and there are no optional keys, which is exactly the
+ * behaviour retrieval had before the registry existed. V1 results are therefore
+ * bit-identical; the registry only makes the rule addressable by a second version.
+ */
+export const ANALOG_COMPARABILITY_SPEC_V1 = registerComparabilitySpec({
+  version: ANALOG_FEATURE_VECTOR_VERSION,
+  required: COMPARABILITY_KEYS,
+  optional: [],
+  dedupKey: DEDUP_KEY,
+  distanceDimensions: DISTANCE_DIMENSIONS,
+});
 
 /** A built vector. `values` may contain nulls; `unavailable` names them explicitly. */
 export interface AnalogFeatureVector {
