@@ -79,6 +79,24 @@ Convergence in production is self-healing and costs one final pass: existing row
 runner and settle as `EXHAUSTED` — after which the repair, the planner and the runner all
 skip them permanently. No migration is needed; the column is TEXT.
 
+**Measured after deploy, 06:22 → 06:40, per-job `requests_spent` deltas** (persisted
+counters, not the in-memory call meter, which resets on every container restart):
+
+| | |
+|---|---|
+| `contract_reference` requests | **0** — the loop is dead. It was ~30/hour |
+| `option_quotes` requests | 30, across 20 jobs |
+| — of which gained rows | 9 jobs, **72,865 new NBBO rows**: real backfill the loop had been starving |
+| — of which gained none | 11 jobs, and **10 of those settled to `EXHAUSTED` on that single request** |
+| the 11th | `IN_PROGRESS`, cursor advanced 67 minutes with 106 to go — walking an already-stored span, converging |
+| jobs whose cursor did not move | **0** |
+| terminal count (`COMPLETE` + `EXHAUSTED`) | 111 → 112, monotonic |
+
+That is the whole property: every request the quote lane now spends either buys rows or
+closes a window for ever, and nothing returns from terminal. The lane will keep spending
+while it drains the 35 windows the old repair left open — most of which are gaining rows,
+which is the work it was supposed to be doing all along.
+
 ### THE BINDING CONSTRAINT IS STORAGE, NOT THE PROVIDER
 
 Measured from `/api/system/overview` at 2026-08-21T06:11Z:
