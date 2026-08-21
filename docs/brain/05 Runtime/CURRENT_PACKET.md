@@ -94,8 +94,27 @@ counters, not the in-memory call meter, which resets on every container restart)
 
 That is the whole property: every request the quote lane now spends either buys rows or
 closes a window for ever, and nothing returns from terminal. The lane will keep spending
-while it drains the 35 windows the old repair left open — most of which are gaining rows,
+while it drains the windows the old repair left open — most of which are gaining rows,
 which is the work it was supposed to be doing all along.
+
+Confirmed again over a clean 37-minute window (06:31:31 → 07:08:39, at least two miner
+beats, clear of any deploy transient):
+
+| Dataset | Requests | Rows gained | Jobs touched |
+|---|---|---|---|
+| `option_quotes` | 36 | **130,127** | 11 |
+| `contract_reference` | **0** | 0 | 0 |
+| `underlying_bars` | 0 | 0 | 0 |
+
+Every one of those 36 requests is accounted for: 9 jobs bought rows, 1 closed a window
+permanently, 1 advanced its cursor through an already-stored span, and **0 were stuck with
+neither rows nor cursor movement** — that last number is the loop's signature, and it is
+absent. `IN_PROGRESS` 36 → 34, `EXHAUSTED` 10 → 12, terminal 111 → 113, monotonic.
+
+The shape changed between the two windows and that is the tell: the first pass after deploy
+closed ten exhausted windows, and once that backlog was gone the lane went back to buying
+data — ~3,600 NBBO rows per request. The loop had been starving the backfill it was
+nominally performing.
 
 ### THE BINDING CONSTRAINT IS STORAGE, NOT THE PROVIDER
 
