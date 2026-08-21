@@ -1,5 +1,140 @@
 # Current Task Packet
 
+## Packet update — 2026-08-21 (3) Options coverage recovery: 25 was never a coverage number, it was a spend number
+
+### Proven release state
+
+- Built on `a56a6e57bc3537966f52ba0ab2d3801eb032906c`, verified LOCAL = ORIGIN/MAIN before
+  editing. Four commits, **not pushed** — implementation completed at 14:21 ET on a Friday,
+  inside RTH, and deployment during RTH is not authorised. Held for the post-close window.
+- 4,937 / 4,937 tests pass (baseline 4,820; +117, of which 114 are in 8 new files).
+  `tsc --noEmit --incremental false`, production `next build`, `git diff --check` all clean.
+- No provider cap changed. No production strategy, quality bar, direction rule, tie-break,
+  target, stop, entry denominator, exit rule, subscriber authority, Zone-A validator or
+  real-money behaviour changed. The stock scanner is untouched.
+
+### THE FINDING: the whole-market snapshot was already paid for, and ~98% of it was discarded unread
+
+Tier-2 was reading a shared TTL-cached whole-market snapshot every cycle, filtering it to 25
+symbols, and throwing the other ~1,581 rows away. `tier2-priority.ts` (2026-08-19) had fixed
+WHICH 25 — it could not fix that the number was 25.
+
+| | before | after |
+|---|---|---|
+| eligible options universe | ~1,606 | ~1,606 |
+| cheaply observed per cycle | 25 (1.6%) | **all of them (100%)** |
+| cycles for full cheap coverage | ~160 (~2h40m) | **1** |
+| deep-analysis promotions | fixed 25 | derived, adaptive, bounded |
+| marginal provider cost of awareness | — | **zero** |
+
+Every symbol's price, day move, volume, day range and quote were already in hand when the
+cycle began. Full-universe awareness costs nothing because it reads more fields off a
+response that was already bought. Only promotion costs.
+
+**25 is no longer a visibility cap.** It survives only as one input to a ceiling.
+
+### The pre-score is not "largest day move wins"
+
+Acceleration (0..40) dominates and the quiet-to-active transition (0..18) is paid for
+explicitly, so a name at +2% and climbing outranks one at +30% and flat — the COIN case, and
+the only thing a pure-magnitude ranking can never express. Liquidity is capped at 12 because
+it is already a GATE upstream, and scoring it twice is how the old broad score promoted
+mega-caps that were merely large.
+
+Leveraged/inverse products are **move-normalised** by a known multiplier (SOXL +30% reads as
++10% underlying-equivalent), so a 3x wrapper cannot monopolise the board on mechanical
+multiplication. They are normalised, never excluded — a 3x fund whose underlying genuinely
+moved most still wins. Unknown tickers get 1: absence means "not known to be leveraged",
+never "assumed leveraged", and ticker shape is never consulted (SOXS and SOXX differ by one
+letter and one is a plain index fund).
+
+### MRNA was not starved by another lane
+
+`provider-budget.ts` already guaranteed `options_discovery` a ~28/min reserve nothing else
+can take, and **that guarantee held**. The lane spent its OWN reserve first-come-first-served
+and MRNA (CALL, score 1.0, `research_only 0`) arrived after it was gone — behind requests
+that included the 802 zero-contract attempts. Raising the cross-lane partition would not have
+helped. Arrival order simply is not quality order.
+
+`chain-admission.ts` orders within the existing budget. Quality dominates by construction (a
+1.0 actionable scores 140; aging caps at 30, so no wait lets a 0.5 research-only ticket
+overtake it) while aging still breaks ties so nothing starves. Bounded defer, deadline
+expiry, capped attempts, dedup before spend.
+
+### The 802 zero-contract attempts are not one thing
+
+42% of contract-selection attempts bought nothing. The cheap fix — "it returned zero, stop
+asking" — is wrong in the expensive direction: a wrongly-marked symbol is invisible forever
+and nothing downstream recovers it. A zero answer can be a fact about the SYMBOL or about the
+REQUEST (wrong DTE window, our own page budget, a rate-limit at that instant). Only the first
+is evidence.
+
+Tri-state registry, **UNKNOWN IS ELIGIBLE**. NOT_OPTIONABLE needs authoritative reference
+evidence or corroboration across SEPARATE SESSIONS — 800 empty attempts in one afternoon is
+one observation repeated, and repeating a measurement does not make it truer. Quota refusal,
+timeout, truncation and narrow-DTE windows can never produce it. Verdicts expire. One real
+contract discards all prior negative evidence.
+
+### Two defects found while testing, both spending more at the worst moment
+
+1. **EXTENDED counted absent velocity as zero**, penalising every large mover on the first
+   cycle after a restart, when nothing has a prior. Now requires OBSERVED stalling.
+2. **Capacity was sized on the process-local lane bucket alone**, blind to the shared 280/min
+   meter — it would derive ~112 promotions while the global cap was saturated, the exact
+   state behind 11,449 quota blocks. Now the MINIMUM of lane and real global headroom, using
+   MEASURED requests-per-promotion rather than my estimate. A broken meter falls back to the
+   lane bucket, never to zero.
+
+### Shadows: five measurements, zero authority
+
+Stage 1.5 (`stage1Pass 3,462 / stage15Forming 0` — a gate that rejects nobody) and the Phase
+12 feature semantics (two-day HOD/LOD/VWAP/cumVol window; direction-blind `fractionMove`;
+`discovery.ts:64` emitting both `downside_acceleration` and `downside_momentum` from ONE
+negative condition; strategy-tie resolution; relative-volume feasibility) are computed
+alongside production and consumed by nothing.
+
+Isolation is **tested, not asserted**: a directory sweep proves no production module imports
+either shadow, they value-import no decision module, and production selection and features
+are byte-identical with every shadow executed. The Stage-1.5 report is deliberately two-sided
+— `wouldSaveChainRequests` is never returned without what it would cost in contracts, cases,
+winners and losers, because savings alone make any aggressive gate look good.
+
+### OPEN — owner decisions and risks
+
+1. **DEPLOYMENT IS PENDING.** Four commits held locally, unpushed, awaiting the post-close
+   window or explicit owner approval.
+2. **The one real behavioural change in spend.** Tier-2 deep analysis was a fixed 25/cycle;
+   it is now derived and adaptive up to a hard ceiling of 120 when the provider is genuinely
+   idle. No cap is raised and every bound is enforced, but utilisation of the EXISTING budget
+   rises. Watch the first session; ideally deploy after the optionability savings land.
+   Tunable via `OPTIONS_PROMOTION_HARD_CEILING` / `OPTIONS_PROMOTION_CRITICAL_RESERVE`.
+3. **Phase 13 needs an env change, not a code change.** Capture and Discord are already
+   independent controls. The owner-decided shape is
+   `HIGH_ASYMMETRY_CAPTURE_ENABLED=1` + `HIGH_ASYMMETRY_PRIVATE_ENABLED=0`. Not applied to
+   production env by this session.
+4. **Optionability, admission, missed-opportunity and both shadows are BUILT AND TESTED BUT
+   NOT YET CALLED from the live chain path.** They are complete, pure and green; wiring them
+   into `loop.ts` is a deliberate follow-up so the coverage change can be observed alone.
+5. The Stage-1.5 and Phase-12 shadows have no production sample yet — they need a session of
+   real attempts before any authority question can even be asked.
+
+### Graph Engineering
+
+FULL OPTIONS UNIVERSE → CHEAP AWARENESS → RANK → DEEP PROMOTION → STRATEGY → CHAIN →
+CONTRACT → ACTIONABILITY → DELIVERY → TRACK / LEARN
+
+The edge that changed is the first one. It used to be FULL UNIVERSE → (slice 25) → STRATEGY,
+with no awareness node at all; everything past the slice was reasoning about 1.6% of the
+market. CHEAP AWARENESS is now a real node with zero provider cost, and RANK → DEEP PROMOTION
+is the only place spend enters.
+
+### Loop Engineering
+
+SEE EVERYTHING CHEAPLY → SPEND ON THE BEST → TRACK WHAT WAS SKIPPED → LEARN
+
+"Track what was skipped" is new and is the loop's weakest link until it is wired: the records
+exist and are bounded, but nothing writes them from the live path yet.
+
 ## Packet update — 2026-08-21 (2) The broad-corpus gate: the provider is free, the volume is not, and two loops were paying for nothing
 
 ### Proven release state
