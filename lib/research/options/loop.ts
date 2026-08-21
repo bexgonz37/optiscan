@@ -196,9 +196,25 @@ export function evaluateOptionsCandidate(input: OptionsCandidateInput, chain: Ch
     // single string could not distinguish "the provider returned no calls" from
     // "the calls it returned had no greeks" from "nothing was near the money" —
     // three different defects that need three different fixes.
+    //
+    // AND THE PROSE MUST AGREE WITH THE REASON. "No eligible contract in the
+    // preferred delta/DTE band" is a claim about the MARKET: it says a chain was
+    // received and nothing inside it qualified. It was being printed verbatim on
+    // attempts where zero contracts ever arrived — 802 of them in the audited
+    // session — which reads as "the market had nothing" when the truth was
+    // "we never got an answer". An operator acting on the first sentence widens
+    // a delta band; the actual fix is upstream of the selector entirely.
+    //
+    // The bracketed terminal reason was always correct. This makes the sentence
+    // in front of it correct too. Nothing about the DECISION changes: the state
+    // is REJECTED either way, and no gate, threshold or selection is touched.
+    const received = picked.evidence.contractsReceived ?? 0;
+    const reason = received > 0
+      ? `no eligible contract in the preferred delta/DTE band [${picked.evidence.terminalReason}]`
+      : `no usable chain was received, so no band was ever tested [${picked.evidence.terminalReason}]`;
     return {
       selection, contract: null,
-      callout: { state: "REJECTED", message: null, reason: `no eligible contract in the preferred delta/DTE band [${picked.evidence.terminalReason}]`, freshness: null, entry: null },
+      callout: { state: "REJECTED", message: null, reason, freshness: null, entry: null },
       paperEntry: null, state: "REJECTED", contractFunnel: picked.evidence,
     };
   }

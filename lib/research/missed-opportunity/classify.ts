@@ -35,6 +35,17 @@ import type { SymbolReconstruction } from "./reconstruct.ts";
  * Every pattern here was observed in production output, not invented.
  */
 const REASON_PATTERNS: { re: RegExp; cause: MissedRootCause; family: FailureFamily }[] = [
+  // NO CHAIN AT ALL. Must precede every contract-selection pattern below: an
+  // attempt that received zero contracts never reached a band, so filing it as
+  // WRONG_DTE would point the investigation at a selector that never ran. This
+  // is the reason the pipeline now writes in place of the band prose when
+  // `contractsReceived === 0`, and it is a DATA failure, not a strategy one.
+  // Quota first, because "we ran out of lane" and "the provider had nothing for
+  // us" are different defects with different fixes, and the generic budget
+  // pattern further down would never be reached once the rule below matches.
+  { re: /no usable chain was received[^[]*\[(PROVIDER_QUOTA_EXCEEDED|PROVIDER_BUDGET_BLOCKED)\]/i, cause: "PROVIDER_BUDGET_BLOCKED", family: "NO_FAILURE_ESTABLISHED" },
+  { re: /no usable chain was received/i, cause: "DATA_MISSING", family: "NO_FAILURE_ESTABLISHED" },
+
   // Contract selection — the setup was fine, the contract search failed.
   { re: /no eligible contract in the preferred delta\/dte band/i, cause: "WRONG_DTE", family: "CONTRACT_SELECTION_FAILURE" },
   { re: /no eligible contract/i, cause: "POOR_CONTRACT_RANKING", family: "CONTRACT_SELECTION_FAILURE" },

@@ -120,9 +120,19 @@ test("13b. one real contract discards every empty answer that preceded it", () =
 /* ── 14. quota refusal cannot mark NOT_OPTIONABLE ──────────────────────────*/
 
 test("14. a quota refusal can never mark NOT_OPTIONABLE — it is a fact about us, not the symbol", () => {
-  for (const code of ["PROVIDER_QUOTA_EXCEEDED", "PROVIDER_TIMEOUT", "PROVIDER_FAILURE", "PROVIDER_CONFIGURATION_MISSING"]) {
+  // Quota now has its OWN cause. It shared `OTHER` with timeouts and missing
+  // config, which meant the one refusal that means "we ran out of lane" — the
+  // one that killed MRNA — could not be counted separately from the ones that
+  // mean "the transport broke". Different fixes, so different names.
+  const CAUSE = {
+    PROVIDER_QUOTA_EXCEEDED: "PROVIDER_QUOTA_EXCEEDED",
+    PROVIDER_TIMEOUT: "OTHER",
+    PROVIDER_FAILURE: "OTHER",
+    PROVIDER_CONFIGURATION_MISSING: "OTHER",
+  };
+  for (const code of Object.keys(CAUSE)) {
     const cls = classifyZeroContract(out({ outcome: code }));
-    assert.equal(cls.cause, "OTHER", `${code} classified as OTHER`);
+    assert.equal(cls.cause, CAUSE[code], `${code} classified as ${CAUSE[code]}`);
     assert.equal(cls.countsAsEvidence, false, `${code} is never evidence`);
 
     let rec = unknownRecord("MRNA");
@@ -184,7 +194,7 @@ test("zero-contract causes are summarised, so the eliminable share is measured r
     classifyZeroContract(out(), { referenceKnownOptionable: false }),          // NOT_OPTIONABLE, avoidable
     classifyZeroContract(out(), { referenceKnownOptionable: true }),           // wrong-window, avoidable
     classifyZeroContract(out({ requestedDteMin: 0, requestedDteMax: 7 })),     // too narrow
-    classifyZeroContract(out({ outcome: "PROVIDER_QUOTA_EXCEEDED" })),         // OTHER
+    classifyZeroContract(out({ outcome: "PROVIDER_QUOTA_EXCEEDED" })),         // QUOTA — its own cause
     classifyZeroContract(out({ truncated: true })),                            // INCOMPLETE
     classifyZeroContract(out({ requestedDteMin: 0, requestedDteMax: 60 })),    // clean wide empty
   ];
@@ -193,7 +203,8 @@ test("zero-contract causes are summarised, so the eliminable share is measured r
   assert.equal(s.byCause.NOT_OPTIONABLE, 1);
   assert.equal(s.byCause.NO_CONTRACTS_IN_REQUESTED_DTE, 2);
   assert.equal(s.byCause.PROVIDER_INCOMPLETE, 1);
-  assert.equal(s.byCause.OTHER, 1);
+  assert.equal(s.byCause.PROVIDER_QUOTA_EXCEEDED, 1, "quota is countable on its own");
+  assert.equal(s.byCause.OTHER, 0, "and no longer hides inside OTHER");
   assert.equal(s.byCause.PROVIDER_EMPTY_RESPONSE, 1);
   assert.equal(s.avoidable, 2);
   assert.equal(s.eliminableShare, 0.3333, "measured, not assumed — the 802 are not one thing");

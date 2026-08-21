@@ -46,6 +46,7 @@
  * is an explicit value the caller owns and persists.
  */
 import type { ChainFetchOutcome, ChainFetchOutcomeCode } from "./loop.ts";
+import type { ContractTerminalReason } from "./contract-discovery.ts";
 
 /* ---------------------------------------------------------------------------
  * PHASE 7 — ZERO-CONTRACT CLASSIFICATION
@@ -69,7 +70,29 @@ export type ZeroContractCause =
   | "PROVIDER_INCOMPLETE"
   /** No contract-reference evidence exists yet for this symbol either way. */
   | "REFERENCE_UNKNOWN"
-  /** Quota, timeout, config, transport. Says nothing at all about the symbol. */
+  /**
+   * The provider refused on quota. Its OWN cause, not a member of `OTHER`.
+   *
+   * MRNA died here — bullish CALL, score 1.0, research_only 0 — and while quota
+   * shared a bucket with timeouts and missing config, the one refusal that means
+   * "we ran out of lane, not out of market" was unattributable. A capacity
+   * failure and a transport failure need different fixes, so they need different
+   * names.
+   */
+  | "PROVIDER_QUOTA_EXCEEDED"
+  /**
+   * A USABLE CHAIN ARRIVED and the selector found nothing inside the band.
+   *
+   * Categorically different from every cause above it: those are all statements
+   * that the request failed, this is a statement that the request SUCCEEDED and
+   * the market had nothing to offer. Conflating the two is what let the operator
+   * be told "no eligible contract in delta/DTE band" about a chain that was
+   * never received.
+   */
+  | "NO_ELIGIBLE_CONTRACT"
+  /** A usable chain arrived and every candidate failed spread/OI/volume/two-sided. */
+  | "LIQUIDITY_REJECTION"
+  /** Timeout, config, transport. Says nothing at all about the symbol. */
   | "OTHER";
 
 export interface ZeroContractClassification {
@@ -103,8 +126,14 @@ export function classifyZeroContract(
 
   // Anything that is a fact about the transport, the quota or our own budget is
   // definitionally not evidence about the symbol.
-  if (code === "PROVIDER_QUOTA_EXCEEDED" || code === "PROVIDER_TIMEOUT"
-    || code === "PROVIDER_FAILURE" || code === "PROVIDER_CONFIGURATION_MISSING") {
+  if (code === "PROVIDER_QUOTA_EXCEEDED") {
+    return {
+      cause: "PROVIDER_QUOTA_EXCEEDED", countsAsEvidence: false, wasAvoidable: false,
+      reason: "the lane ran out of budget before the market was asked — a fact about us, not the symbol",
+    };
+  }
+  if (code === "PROVIDER_TIMEOUT" || code === "PROVIDER_FAILURE"
+    || code === "PROVIDER_CONFIGURATION_MISSING") {
     return {
       cause: "OTHER", countsAsEvidence: false, wasAvoidable: false,
       reason: `${code} is a fact about the request path, not about the symbol`,
@@ -342,14 +371,148 @@ export function expireIfStale(
   };
 }
 
+/* ---------------------------------------------------------------------------
+ * PHASE B — THE WHOLE ATTEMPT, NOT ONLY THE FETCH
+ * -------------------------------------------------------------------------*/
+
+/**
+ * Every cause at zero. The single place the cause list is enumerated at runtime,
+ * so adding a cause cannot leave a counter silently missing a key.
+ */
+export const ZERO_CONTRACT_CAUSE_ZEROES: Readonly<Record<ZeroContractCause, number>> = Object.freeze({
+  NOT_OPTIONABLE: 0,
+  NO_CONTRACTS_IN_REQUESTED_DTE: 0,
+  PROVIDER_EMPTY_RESPONSE: 0,
+  PROVIDER_INCOMPLETE: 0,
+  REFERENCE_UNKNOWN: 0,
+  PROVIDER_QUOTA_EXCEEDED: 0,
+  NO_ELIGIBLE_CONTRACT: 0,
+  LIQUIDITY_REJECTION: 0,
+  OTHER: 0,
+});
+
+/** A fresh mutable counter over every cause. */
+export function emptyZeroContractCounters(): Record<ZeroContractCause, number> {
+  return { ...ZERO_CONTRACT_CAUSE_ZEROES };
+}
+
+/**
+ * WHERE a cause comes from. The distinction Phase B exists to enforce.
+ *
+ * `PROVIDER` means the market was never successfully asked. `SELECTOR` means it
+ * was asked, it answered with a usable chain, and our own bands found nothing
+ * inside it. `SYMBOL` means the answer was about the instrument.
+ *
+ * A provider failure reported as a selector failure is the specific lie this
+ * taxonomy makes unrepresentable: it tells the operator to widen a delta band
+ * when the actual fix is to stop starving the lane.
+ */
+export type ZeroContractOrigin = "PROVIDER" | "SELECTOR" | "SYMBOL";
+
+const ORIGIN_BY_CAUSE: Readonly<Record<ZeroContractCause, ZeroContractOrigin>> = Object.freeze({
+  NOT_OPTIONABLE: "SYMBOL",
+  NO_CONTRACTS_IN_REQUESTED_DTE: "SELECTOR",
+  PROVIDER_EMPTY_RESPONSE: "PROVIDER",
+  PROVIDER_INCOMPLETE: "PROVIDER",
+  REFERENCE_UNKNOWN: "SYMBOL",
+  PROVIDER_QUOTA_EXCEEDED: "PROVIDER",
+  NO_ELIGIBLE_CONTRACT: "SELECTOR",
+  LIQUIDITY_REJECTION: "SELECTOR",
+  OTHER: "PROVIDER",
+});
+
+export function zeroContractOrigin(cause: ZeroContractCause): ZeroContractOrigin {
+  return ORIGIN_BY_CAUSE[cause] ?? "PROVIDER";
+}
+
+/**
+ * The cause for an attempt that got a USABLE CHAIN and still selected nothing.
+ *
+ * `classifyZeroContract` answers only the fetch half. This answers the other
+ * half, from the funnel's own terminal reason, and it is the half that produces
+ * `NO_ELIGIBLE_CONTRACT` and `LIQUIDITY_REJECTION`. Those two may ONLY be
+ * reached from here — from a reason that could not have been assigned without
+ * contracts in hand — which is what makes "no eligible contract in the delta
+ * band" unable to describe a chain that never arrived.
+ *
+ * Returns null for a terminal reason that is not a zero-contract selector
+ * outcome (a selection, or a provider fault the fetch classifier already owns).
+ */
+export function selectorZeroContractCause(
+  reason: ContractTerminalReason | null | undefined,
+): ZeroContractCause | null {
+  switch (reason) {
+    case "NO_CONTRACT_IN_DTE_RANGE":
+    case "NO_CONTRACT_IN_DELTA_RANGE":
+    case "NO_CONTRACT_IN_MONEYNESS_RANGE":
+    case "CONTRACT_RANKING_EMPTY":
+    case "NO_CALLS_RETURNED":
+    case "NO_PUTS_RETURNED":
+    case "WRONG_SIDE_RETURNED":
+      return "NO_ELIGIBLE_CONTRACT";
+    case "LIQUIDITY_REJECTED":
+    case "SPREAD_REJECTED":
+    case "PREMIUM_REJECTED":
+    case "NO_TWO_SIDED_MARKET":
+      return "LIQUIDITY_REJECTION";
+    default:
+      return null;
+  }
+}
+
+/**
+ * One cause for one whole chain attempt, fetch and selection together.
+ *
+ * ORDER IS THE POINT. The fetch is classified FIRST, and a selector reason is
+ * consulted only when the fetch actually delivered contracts. A funnel row can
+ * carry a stale or default terminal reason alongside a quota refusal; reading
+ * the selector first would let `PROVIDER_QUOTA_EXCEEDED` be overwritten by
+ * `NO_ELIGIBLE_CONTRACT`, which is precisely the masquerade being prevented.
+ */
+export function classifyChainAttempt(
+  outcome: Parameters<typeof classifyZeroContract>[0],
+  opts: {
+    referenceKnownOptionable?: boolean | null;
+    terminalReason?: ContractTerminalReason | null;
+    contractSelected?: boolean;
+  } = {},
+): ZeroContractClassification & { origin: ZeroContractOrigin } {
+  const contractsReturned = outcome.contracts?.length ?? 0;
+
+  if (contractsReturned === 0) {
+    const c = classifyZeroContract(outcome, opts);
+    return { ...c, origin: zeroContractOrigin(c.cause) };
+  }
+
+  if (opts.contractSelected) {
+    return {
+      cause: "REFERENCE_UNKNOWN", countsAsEvidence: false, wasAvoidable: false,
+      origin: "SYMBOL",
+      reason: "a contract was selected; this attempt has no zero-contract cause",
+    };
+  }
+
+  const selector = selectorZeroContractCause(opts.terminalReason ?? null);
+  if (selector) {
+    return {
+      cause: selector, countsAsEvidence: false, wasAvoidable: false,
+      origin: "SELECTOR",
+      reason: `${contractsReturned} contracts were received and ${opts.terminalReason} rejected every one — a fact about our bands, not about the provider`,
+    };
+  }
+
+  return {
+    cause: "REFERENCE_UNKNOWN", countsAsEvidence: false, wasAvoidable: false,
+    origin: "SYMBOL",
+    reason: `${contractsReturned} contracts received; terminal reason ${opts.terminalReason ?? "unset"} is not a zero-contract outcome`,
+  };
+}
+
 /** Per-cause totals, for measuring which share of the 802 is safely eliminable. */
 export function summarizeZeroContractCauses(
   classifications: readonly ZeroContractClassification[],
 ): { total: number; byCause: Record<ZeroContractCause, number>; avoidable: number; eliminableShare: number } {
-  const byCause: Record<ZeroContractCause, number> = {
-    NOT_OPTIONABLE: 0, NO_CONTRACTS_IN_REQUESTED_DTE: 0, PROVIDER_EMPTY_RESPONSE: 0,
-    PROVIDER_INCOMPLETE: 0, REFERENCE_UNKNOWN: 0, OTHER: 0,
-  };
+  const byCause: Record<ZeroContractCause, number> = { ...ZERO_CONTRACT_CAUSE_ZEROES };
   let avoidable = 0;
   for (const c of classifications) {
     byCause[c.cause] += 1;
