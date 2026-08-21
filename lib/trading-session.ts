@@ -19,6 +19,29 @@ export function etCloseMs(day: string): number {
   return Date.parse(`${day}T16:00:00-05:00`);
 }
 
+/**
+ * Epoch ms of 09:30 US/Eastern on a YYYY-MM-DD trading day (DST-safe).
+ *
+ * Deliberately built the same way as `etCloseMs` — probe both offsets and keep
+ * the one the ET formatter agrees with — rather than by subtracting a fixed
+ * 6h30m from the close. Both are correct today and only one stays correct on a
+ * DST boundary, and this is a session BOUNDARY: getting it wrong slices a
+ * feature window an hour off exactly twice a year, which is the hardest kind of
+ * defect to see in a distribution.
+ *
+ * ADDITIVE. No caller of this file's existing exports changes behaviour, and
+ * this establishes no timestamp authority — it is a calendar lookup that
+ * feature-window shadows use to answer "which bars are today's".
+ */
+export function etSessionOpenMs(day: string): number {
+  const hourFmt = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "2-digit", hour12: false });
+  for (const off of ["-04:00", "-05:00"]) {
+    const ms = Date.parse(`${day}T09:30:00${off}`);
+    if (Number.isFinite(ms) && hourFmt.format(new Date(ms)) === "09") return ms;
+  }
+  return Date.parse(`${day}T09:30:00-05:00`);
+}
+
 /** Minutes until today's 16:00 ET close (negative = after close). */
 export function minutesToClose(nowMs: number = Date.now()): number {
   return Math.round((etCloseMs(tradingDay(nowMs)) - nowMs) / 60000);
