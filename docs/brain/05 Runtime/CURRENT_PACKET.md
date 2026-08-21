@@ -1,5 +1,324 @@
 # Current Task Packet
 
+## Packet update — 2026-08-21 (4) Provider-efficiency Phase 2: everything was built, nothing was reachable
+
+### Proven release state
+
+- **PRODUCTION remains `a56a6e57bc3537966f52ba0ab2d3801eb032906c`.** Nothing was pushed and
+  nothing was deployed. No Railway env var was touched.
+- LOCAL is `main` at **13 commits ahead** of origin — the 5 coverage commits ending
+  `fe3b391`, plus 8 new ones for this phase. Held for owner review.
+- 4,979 / 4,979 tests pass (baseline 4,937; +42 across 2 new files and 3 extended ones).
+  `tsc --noEmit --incremental false`, production `next build`, `git diff --check` all clean.
+- No provider cap changed. No production strategy, quality bar, direction rule, tie-break,
+  target, stop, entry denominator, exit rule, subscriber authority, Zone-A validator or
+  real-money behaviour changed. The stock scanner is untouched.
+
+### THE FINDING: open item 4 from the previous packet was the whole phase
+
+The previous session ended with optionability, chain admission, missed-opportunity capture
+and both shadows "BUILT AND TESTED BUT NOT YET CALLED". That understated it. A repository-wide
+search for importers of `awareness.ts`, `promotion.ts`, `optionability.ts`,
+`chain-admission.ts`, `missed-opportunity.ts`, `stage15-shadow.ts` and
+`feature-semantics-shadow.ts` found **exactly two**, both in `monitor.ts`, both for the
+coverage pair. The other five modules had **no importer outside their own test files.**
+
+Every property they proved was a property of a module. The live chain path still spent a
+request on every plausible symbol in arrival order, still classified an empty chain by
+guesswork, and still wrote down nothing about the symbols it skipped.
+
+This phase changed almost no logic. It made the logic reachable.
+
+### The isolation guard could not fail
+
+Found while wiring the shadows. `options-shadow-isolation.test.mjs` asserted that no
+production module imports a shadow, using the pattern:
+
+```
+from\s+["'].*stage15-shadow["']
+```
+
+which requires the closing quote immediately after the stem. Every import in this repository
+is written `from "./stage15-shadow.ts"`. **The guard had never matched anything.** It was
+passing because it was blind, not because the invariant held.
+
+With the pattern repaired the invariant had to be restated, because Phases F–J deliberately
+give production an importer:
+
+- **MEASUREMENT** modules (`stage15-shadow`, `feature-semantics-shadow`, `rvol-shadow`) — no
+  production module may import them at all, type-only imports included. Every export is a
+  verdict, and a verdict a decision can read is authority.
+- **THE OBSERVER** (`live-shadow`) — production must import it, and may import exactly one
+  export: `observeLiveShadow`, which returns `void`. A caller cannot branch on what it is not
+  given. Importing any reader into `lib/` is now a failing test.
+
+That is why the Stage-1.5 evidence is assembled inside `live-shadow.ts` from raw values
+rather than passed in as a shadow type: it removes the last reason for a production module to
+name a shadow at all.
+
+### PREPARE / COMPLETE, and why admission ships OFF
+
+The per-symbol cycle body now splits at the moment a chain would be spent. PREPARE is
+everything free or already paid for; COMPLETE is the chain request and everything downstream.
+
+With admission **off** the two run back to back and the streaming behaviour is what it was.
+With admission **on**, the whole board prepares first and the lane spends its budget on the
+best tickets rather than on whichever symbol the concurrency pool reached first. The barrier
+is the cost and the point — that ordering cannot exist without knowing the whole board.
+
+**`OPTIONS_CHAIN_ADMISSION_ENABLED` defaults to 0.** Every boundedness property is real and
+tested — deadline, attempt cap, dedup by (symbol, side, strategy), plus a queue cap that does
+not depend on either of the first two being configured sanely. It is off anyway because it
+changes the SHAPE of a cycle on the live path of the primary product, and the owner is not at
+the desk.
+
+### Two defects in my own admission wiring, found by review
+
+1. **A queue that could starve the ticket it was holding.** A deferred ticket was re-offered
+   unconditionally next cycle. When the promoted set rotated — which exploration guarantees —
+   its symbol was no longer prepared, so there was no candidate behind it. It could still WIN
+   a slot on priority, do nothing with it, and vanish, deferring a servable ticket in the
+   process. Carries are now offered only where the same setup was prepared again; the merge in
+   `admitChainRequests` preserves the age and attempt count, which is all a carry actually
+   carries. Unservable carries are dropped and **counted** (`carryDropped`).
+2. **`missedPending` was capped nowhere.** It is drained by the awareness sweep, and a
+   deployment that has not wired the snapshot source never runs one — so on both fallback
+   selection paths it grew for the whole session. A bound that only holds on the production
+   path is not a bound.
+
+The regression test for (1) was checked against the defect by reintroducing it. It fails
+without the fix rather than passing for an unrelated reason.
+
+### A quota refusal and a band rejection are not the same sentence
+
+`PROVIDER_QUOTA_EXCEEDED` shared the `OTHER` bucket with timeouts, transport failures and
+missing config. MRNA died on quota, and the one refusal that means "we ran out of lane" was
+uncountable — so the audit could not separate the share of the 802 needing a scheduling fix
+from the share needing a transport fix.
+
+`NO_ELIGIBLE_CONTRACT` and `LIQUIDITY_REJECTION` did not exist at all. Those are SELECTOR
+outcomes, reachable only from a terminal reason that requires contracts in hand.
+`classifyChainAttempt()` reads the FETCH first and consults the selector only where contracts
+genuinely arrived, so a stale funnel field cannot relabel a quota refusal.
+
+A fourth origin appeared while testing. `NO_CONTRACTS_IN_REQUESTED_DTE` had been filed under
+SELECTOR, which claims our bands rejected contracts — but with zero contracts nothing was
+rejected. It now has its own **REQUEST** origin: we asked a window too narrow for an empty
+answer to mean anything.
+
+**And the prose now agrees with the reason.** "No eligible contract in the preferred delta/DTE
+band" is a claim about the MARKET. It was printed verbatim on attempts where zero contracts
+ever arrived. An operator reading that widens a delta band; the actual fix is upstream of the
+selector entirely. Where `contractsReceived === 0` the sentence now says so, and the
+missed-opportunity classifier files it as `DATA_MISSING` or `PROVIDER_BUDGET_BLOCKED` rather
+than `WRONG_DTE` against a selector that never ran. No gate, threshold or selection changed —
+the state was `REJECTED` either way.
+
+### Phase D: the deferral pool is far smaller than it looks
+
+The audit's honest answer is that almost nothing can yield. Gate B7 already partitions the
+minute cap and it works — `options_discovery` holds a guaranteed ~28/min at a 280 cap, and
+that guarantee held during the MRNA failure. The two largest reserves after the scanner are
+`options_paper_mark` and `asymmetry_mark`, and both are classified **EVIDENCE**, not
+DEFERRABLE: they look deferrable — periodic, not the product, nobody waiting — and they are
+the one thing that must not be, because a horizon that passes while a mark waits cannot be
+backfilled from a market that has moved.
+
+`auditProviderLanes()` reports `yieldableReserved = 0` and concludes that the options lane
+cannot be enlarged by deferral, **only spent in a better order**.
+
+So the fix went inside the lane. `splitChainCapacity()` carves an actionable reserve out of
+the chain budget and `admitChainRequests()` honours it: a research-only ticket may only take a
+shared slot. Priority ordering alone would not have saved MRNA — ordering answers "who goes
+first", and on a cycle where the whole board is research-only that question never arises,
+because the budget is gone before an actionable candidate exists. Only a reserve holds room
+for a ticket that has not been raised yet. The unfilled remainder is left unspent rather than
+handed to research: the faster Tier-0/Tier-1 lanes are still to come inside the same minute.
+
+This is the Tier-0 reserved-budget pattern applied one level down, to the axis that failed.
+It raises no cap — `actionableReserved + shared === total`, always.
+
+### Phase E: the join that never existed
+
+The scan knows which symbols were skipped and why. The sweep knows their pre-score, rank and
+band. Neither alone answers "why did we not deeply analyse COIN at 10:02", and until now
+neither was written down.
+
+`noteSkip()` records the transition; the sweep writes it with the awareness row attached. A
+record with no awareness row behind it is **dropped rather than written with invented zeroes** —
+a rank means nothing without its denominator.
+
+Three bounds, all of them needed:
+
+- **transitions, not states** — one row per symbol per 15 minutes, not 1,600 a minute;
+- **the per-cycle cap**, which sorts capacity failures above judgements so truncation keeps
+  what is hardest to explain;
+- **retention**, swept hourly rather than every beat.
+
+No fabrication is possible by construction: the schema has no column for an OCC, a strike, an
+expiration, a premium or a return, so a later writer cannot quietly start filling one in for a
+contract that was never selected. That is asserted as a `PRAGMA table_info` test, not as a
+comment.
+
+### Phase L: the first rollout spends no more than the old capacity
+
+The previous packet flagged this as open risk 2 — deep analysis had become adaptive up to a
+hard ceiling of **120**. `promotionCapacityConfig()` now clamps that to a separate rollout
+ceiling of **25**, which can only ever LOWER the backstop, so a mis-set
+`OPTIONS_PROMOTION_HARD_CEILING` cannot escape it. It never touches awareness — the full
+universe is still scored every cycle.
+
+The reason is confounding, not caution. Cheap awareness changed the DISTRIBUTION arriving at
+deep analysis; raising throughput at the same moment would make a provider regression and a
+promotion regression indistinguishable, and the audited 802 zero-contract attempts are exactly
+what that looks like. `OPTIONS_PROMOTION_ROLLOUT_CEILING` raises it after the savings are
+measured.
+
+### Phase K: BLOCKED, and the verdict is computed rather than declared
+
+`rel_volume` is a live early signal that never fires, because nothing supplies
+`FeatureContext.timeOfDayAvgVolume`. That is not a neutral omission: four strategies list it —
+`breakout_forming`, `confirmed_breakout`, `opening_range_breakout`, `premarket_level_break`,
+all CALL or `either` — and score is `matched / earlySignals.length`. A permanently-absent
+signal is a permanent score penalty applied to exactly the bullish half of the catalog. It is
+a live candidate explanation for a 9/93 mix with no market content at all.
+
+Which makes "just turn it on" the most tempting and most dangerous option available, so
+`rvol-shadow.ts` cannot do it. It builds the baseline only from volume PRIOR sessions had
+accumulated by the same minute-of-session (the join key is minutes-since-that-session's-open,
+not wall clock, so a DST shift compares like with like), and refuses with a null expectation
+where the history is thin.
+
+**Local status: BLOCKED / NO_INTRADAY_HISTORY.** `historical_underlying_bars` is absent from
+the local development snapshot. That is a fact about the snapshot, NOT about production —
+which is precisely why the verdict is computed at runtime against whatever database it is
+handed rather than written into this document. `/api/research/options` returns it.
+
+### Phase I confirmed at the source
+
+`discovery.ts:65`:
+
+```ts
+if ((u.accelPct ?? 0) < 0 || (u.velPct ?? 0) < 0) { s.add("downside_acceleration"); s.add("downside_momentum"); }
+```
+
+One boolean, two signals — and negative velocity alone is enough to emit "acceleration".
+Measured in shadow, unchanged in production.
+
+### STATUS BY PHASE
+
+| | state | control |
+|---|---|---|
+| A tri-state optionability | **LIVE-WIRED**, active by default | UNKNOWN always eligible; TTL expiry |
+| B zero-contract classification | **LIVE-WIRED**, active | 9 causes, 4 origins, bounded counters |
+| C chain admission | **LIVE-WIRED, DEFAULT-INACTIVE** | `OPTIONS_CHAIN_ADMISSION_ENABLED=1` |
+| D provider lane audit + actionable reserve | **BUILT**; reserve active only with C | `OPTIONS_ACTIONABLE_CHAIN_RESERVE_FRACTION` |
+| E missed / deferred capture | **LIVE-WIRED**, active | `OPTIONS_MISSED_CAPTURE=0` disables |
+| F Stage 1.5 shadow | **SHADOW**, live subject | `OPTIONS_LIVE_SHADOW=0` |
+| G feature semantics V2 | **SHADOW**, live subject | as above |
+| H direction-aware late phase | **SHADOW**, live subject | as above |
+| I bearish dedupe | **SHADOW**, live subject | as above |
+| J tie diagnostics | **SHADOW**, live subject | as above |
+| K relative volume | **BLOCKED — INSUFFICIENT_HISTORY locally** | never activates the production signal |
+| L promotion ceiling | **AUTHORITATIVE at 25** | `OPTIONS_PROMOTION_ROLLOUT_CEILING` |
+| M High Asymmetry | **VERIFIED independently controllable**; env NOT applied | see below |
+| N Discord UX | **NOT STARTED** — deliberately deferred | — |
+| O timestamps | **UNCHANGED** — FOUR_CLOCK_V1 preserved | — |
+
+### OPEN — owner decisions and risks
+
+1. **DEPLOYMENT IS PENDING.** Thirteen commits held locally, unpushed. Production is still
+   `a56a6e5`.
+2. **The one behavioural change that is ON by default is optionability skipping.** A symbol
+   can now stop receiving chain requests — but only after clean, wide-window empty answers on
+   two SEPARATE sessions, and the verdict expires after 30 days. Quota, timeout, truncation
+   and narrow windows can never produce it. Watch
+   `monitor.optionability.chainSkippedForProvenNotOptionable` on the first session; a number
+   that climbs fast means the corroboration rule is too loose, not that the saving is working.
+3. **Miss capture writes rows on the first session.** Bounded to ≤25/cycle with 15-minute
+   transition de-duplication and 30-day retention, but this is a new table with a new write
+   rate. `options_missed_opportunities` row count is the thing to check.
+4. **Admission is unproven in production.** Turning it on is a separate, later decision that
+   should follow a session of clean optionability and miss-capture data — not accompany it.
+5. **The shadows still have no production sample.** They now have a live subject, which is the
+   prerequisite; they need a full session before any authority question can be asked. The
+   Phase-H direction-aware measurement is the one most likely to explain the 9/93 mix.
+6. **Phase M needs an env change, not a code change.** Verified still independently
+   controllable and green. The owner-decided shape — NOT applied by this session:
+   `HIGH_ASYMMETRY_CAPTURE_ENABLED=1`, `HIGH_ASYMMETRY_PRIVATE_ENABLED=0`.
+
+### SAFE POST-CLOSE ROLLOUT ORDER
+
+1. Push the 13 commits. Deploy. Nothing in them is active except optionability skipping, the
+   zero-contract taxonomy, miss capture and the shadow observations.
+2. Apply the Phase-M env pair. It is orthogonal to everything above.
+3. Run ONE full session. Read `/api/research/options` for
+   `monitor.optionability`, `monitor.zeroContract.byOrigin`, `monitor.missedOpportunity` and
+   `shadow`.
+4. Only then consider `OPTIONS_CHAIN_ADMISSION_ENABLED=1`, and only if
+   `zeroContract.byOrigin.PROVIDER` shows the lane is genuinely contended.
+5. `OPTIONS_PROMOTION_ROLLOUT_CEILING` stays at 25 until the measured chain spend per
+   promotion is known against the real universe.
+
+Everything in F–K stays SHADOW indefinitely. Shadow evidence never closes into live authority
+automatically; promoting any of it is a separate reviewed change with its own packet.
+
+### Graph Engineering
+
+FULL OPTIONS SNAPSHOT → CHEAP AWARENESS → PRE-SCORE / RANK → DEEP PROMOTION → **OPTIONABILITY**
+→ **CHAIN ADMISSION** → **STAGE 1.5** → CHAIN → CONTRACT → EPISODE → ACTIONABILITY → DELIVERY
+→ TRACK → LABEL
+
+Three nodes are new and all three sit between promotion and spend, which is where the 802
+zero-contract attempts were being generated. OPTIONABILITY can remove a request before it is
+made; CHAIN ADMISSION decides which of the remaining requests the budget serves; STAGE 1.5 is
+present as an observer with no edge out of it.
+
+THE MISS LOOP, which previously had no edges at all:
+
+AWARE → DEFERRED / DROPPED / QUOTA BLOCKED → RECORD WHY → FORWARD UNDERLYING EVIDENCE →
+RESEARCH
+
+It terminates in underlying evidence and stops there. There is no edge from this loop to a
+contract, a paper trade or a return, and the schema is what enforces that.
+
+SHADOW BRANCHES — all of them leaves, none with an outbound edge into a decision:
+`FEATURE_SEMANTICS_V2`, `DIRECTION_AWARE_LATE_PHASE_V1`, `STAGE15_CHAIN_GATE_V1`,
+`BEARISH_SIGNAL_DEDUPE`, `RVOL`, `TIE_DIAGNOSTICS`.
+
+**Edges Graphify cannot see.** The graph is built from imports, and the provider budget is a
+runtime resource, not a module. These edges exist and no static analysis will find them:
+
+- every lane in `provider-lane-audit.ts` competes for one 280/min meter, so `scanner`,
+  `options_paper_mark` and `asymmetry_mark` are upstream of options chain capacity without
+  importing anything in `lib/research/options/`;
+- `tier2Headroom()` reads the global meter through a `require` inside a `try`, deliberately,
+  so an unreadable meter degrades rather than throws — an import graph sees no dependency;
+- promotion capacity depends on MEASURED requests-per-promotion from this process's own
+  counters, so the graph edge from "what happened last cycle" to "what is affordable next
+  cycle" is through mutable state;
+- the chain queue carries tickets ACROSS cycles, an edge from a cycle to its successor.
+
+### Loop Engineering
+
+SEE EVERYTHING CHEAPLY → PROMOTE THE MOST INTERESTING → SPEND PROVIDER CAPACITY INTELLIGENTLY
+→ SELECT EXACT OPTION → DELIVER → TRACK → LEARN
+
+"Spend provider capacity intelligently" is the link this phase closed, and it closed at two
+different strengths. Optionability (don't spend on a proven negative) is ON. Admission (spend
+the remainder in the right order) is BUILT and OFF.
+
+DID NOT PROMOTE / QUOTA BLOCKED / NO CHAIN → RECORD WHY → LEARN WITHOUT FABRICATING OPTIONS
+
+This was the loop's weakest link in the previous packet — "the records exist and are bounded,
+but nothing writes them from the live path yet". It now closes: `noteSkip()` fires from six
+distinct points in the live path and the sweep writes them with the rank and denominator that
+make them readable later.
+
+The learning half remains deliberately open. Recording why COIN was skipped is not the same as
+knowing whether skipping it was right, and that requires forward outcomes on the underlying —
+which the records now make possible and which nothing yet computes.
+
 ## Packet update — 2026-08-21 (3) Options coverage recovery: 25 was never a coverage number, it was a spend number
 
 ### Proven release state

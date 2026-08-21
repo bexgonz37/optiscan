@@ -1,7 +1,7 @@
 # Research Graph and Loop
 
 Graph Engineering and Loop Engineering memory for the OptiScan research arm.
-Updated 2026-08-21 (2). Companion to the AST graph in `graphify-out/` — that one is
+Updated 2026-08-21 (4). Companion to the AST graph in `graphify-out/` — that one is
 generated, this one records the parts a parser cannot see: which identity a consumer
 joins on, and which of them fail SILENTLY when the join is wrong.
 
@@ -654,3 +654,114 @@ The loop can go quiet without erroring in one new place, now reported rather tha
 a `seed-from-store` DRY RUN prints what it WOULD write, so a corpus that is already fully
 replayed and one that has never been replayed print the same number. Only the commit path
 distinguishes them, via `episodesAlreadyPresent`.
+
+---
+
+## Options provider-efficiency graph — added 2026-08-21 (4)
+
+Three nodes are new and all three sit BETWEEN promotion and spend, which is where the 802
+zero-contract attempts were being generated. The previous phase built them and wired none of
+them; this one made the path run through them.
+
+```
+FULL OPTIONS SNAPSHOT
+  → CHEAP AWARENESS            (zero provider cost, whole eligible universe)
+  → PRE-SCORE / RANK
+  → DEEP PROMOTION             (bounded, ceiling 25 for the first rollout)
+  → OPTIONABILITY              ← NEW. can remove a request before it is made
+  → CHAIN ADMISSION            ← NEW. decides which surviving requests the budget serves
+  → STAGE 1.5                  ← NEW, OBSERVER ONLY. no outbound edge
+  → CHAIN → CONTRACT → EPISODE → ACTIONABILITY → DELIVERY → TRACK → LABEL
+```
+
+| Stage | Owns | Joined by | Silent-failure risk |
+|---|---|---|---|
+| P1 | **OPTIONABILITY** | in-memory tri-state registry in `MonitorState.optionability` | symbol, pruned to the live universe + Tier-0/1 | A wrongly-set NOT_OPTIONABLE makes a symbol invisible and NOTHING downstream recovers it — which is why only reference evidence or two SEPARATE sessions of clean wide empties can set it, and why verdicts expire |
+| P2 | **ZERO-CONTRACT CAUSE** | `classifyChainAttempt()` — 9 causes, 4 origins | the fetch outcome FIRST, the funnel terminal reason only if contracts arrived | Reading the selector first lets a stale funnel field relabel a quota refusal as a band rejection — the exact masquerade the taxonomy exists to prevent |
+| P3 | **CHAIN ADMISSION** | `MonitorState.chainQueue`, rebuilt each cycle from deferrals only | `chainTicketKey(symbol, side, strategyKey)` | A carried ticket whose symbol was not re-prepared has no candidate behind it; offering it lets it win a slot, do nothing, and defer a servable ticket |
+| P4 | **MISSED / DEFERRED** | `options_missed_opportunities` | `(session_date, symbol)`; joined in-process by `missedPending` | The skip site knows the reason and not the rank; the sweep knows the rank and not the reason. A record written without the awareness row would carry a rank with no denominator |
+| P5 | **LIVE SHADOW** | fixed-size rings in `live-shadow.ts` | none — it is a leaf | An empty shadow report and a shadow that never ran read identically; `observed` and `faults` distinguish them |
+
+### The MISS loop, which previously had no edges at all
+
+```
+AWARE → DEFERRED / DROPPED / QUOTA BLOCKED → RECORD WHY → FORWARD UNDERLYING EVIDENCE
+      → RESEARCH
+```
+
+It terminates in underlying evidence and stops there. There is no edge from this loop to a
+contract, a paper trade or a return, and the SCHEMA is what enforces that — there is no
+column for an OCC, a strike, an expiration, a premium or a return, so a later writer cannot
+quietly start filling one in for a contract that was never selected.
+
+### SHADOW branches — all leaves, none with an outbound edge into a decision
+
+`FEATURE_SEMANTICS_V2` · `DIRECTION_AWARE_LATE_PHASE_V1` · `STAGE15_CHAIN_GATE_V1` ·
+`BEARISH_SIGNAL_DEDUPE` · `RVOL` · `TIE_DIAGNOSTICS`
+
+Two different guarantees hold here, and conflating them is how a shadow acquires authority:
+
+- the MEASUREMENT modules have no production importer at all, type-only imports included;
+- the OBSERVER has exactly one production-importable export, `observeLiveShadow`, and it
+  returns `void`. A caller cannot branch on what it is not given.
+
+Both are enforced by `options-shadow-isolation.test.mjs` — which, until this phase, could not
+fail: its pattern required a closing quote immediately after the module stem and every import
+here is written `from "./x.ts"`. It had never matched anything.
+
+### Dynamic boundaries Graphify cannot resolve here
+
+The graph is built from imports and the provider budget is a runtime resource, not a module.
+These edges are real and no static analysis will find them:
+
+- every lane in `provider-lane-audit.ts` competes for ONE 280/min meter, so `scanner`,
+  `options_paper_mark` and `asymmetry_mark` are upstream of options chain capacity without
+  importing anything under `lib/research/options/`;
+- `tier2Headroom()` reads the global meter through a `require` inside a `try`, deliberately,
+  so an unreadable meter degrades to the lane bucket rather than throwing — an import graph
+  sees no dependency at all;
+- promotion capacity is sized on MEASURED requests-per-promotion from this process's own
+  counters, so the edge from "what happened last cycle" to "what is affordable next cycle"
+  runs through mutable state;
+- the chain queue carries tickets ACROSS cycles — an edge from a cycle to its successor.
+
+### Loop — spend intelligently, and learn from what was not spent on
+
+```
+SEE EVERYTHING CHEAPLY → PROMOTE THE MOST INTERESTING → SPEND PROVIDER CAPACITY INTELLIGENTLY
+  → SELECT EXACT OPTION → DELIVER → TRACK → LEARN
+```
+
+"Spend provider capacity intelligently" closed at two different strengths, and the difference
+is deliberate:
+
+| Half | State | Control |
+|---|---|---|
+| don't spend on a proven negative (OPTIONABILITY) | **LIVE**, on by default | UNKNOWN always eligible; 30-day TTL |
+| spend the remainder in the right order (ADMISSION) | **BUILT, DEFAULT-INACTIVE** | `OPTIONS_CHAIN_ADMISSION_ENABLED=1` |
+
+```
+DID NOT PROMOTE / QUOTA BLOCKED / NO CHAIN → RECORD WHY → LEARN WITHOUT FABRICATING OPTIONS
+```
+
+This was the weakest link in the 2026-08-21 (3) packet — "the records exist and are bounded,
+but nothing writes them from the live path yet". It now closes: `noteSkip()` fires from six
+distinct points in the live path and the sweep writes them with the rank and the denominator
+that make them readable later.
+
+The LEARNING half remains deliberately open. Recording why COIN was skipped is not the same as
+knowing whether skipping it was right; that needs forward outcomes on the underlying, which
+these records now make possible and which nothing yet computes.
+
+| Stage | State | Why |
+|---|---|---|
+| CHEAP AWARENESS | **LIVE** | full eligible universe every valid snapshot cycle, zero marginal cost |
+| DEEP PROMOTION | **LIVE**, ceiling 25 | rollout ceiling holds until measured chain spend per promotion is known |
+| OPTIONABILITY | **LIVE-WIRED** | the only new behaviour ON by default |
+| ZERO-CONTRACT CAUSE | **LIVE-WIRED** | observability; changes no decision |
+| CHAIN ADMISSION | **BUILT, DEFAULT-INACTIVE** | unproven change to the SHAPE of a live cycle |
+| ACTIONABLE RESERVE | **BUILT** | active only with admission |
+| MISS CAPTURE | **LIVE-WIRED** | new table, new write rate — watch row count on the first session |
+| STAGE 1.5 / FEATURE V2 / LATE PHASE / DEDUPE / TIES | **SHADOW** | live subject at last; no production sample yet |
+| RELATIVE VOLUME | **BLOCKED — INSUFFICIENT_HISTORY** locally | verdict computed at runtime, never declared in a document |
+| PROMOTION OF ANY SHADOW | **NOT STARTED** | shadow evidence never closes into live authority automatically |
