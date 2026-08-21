@@ -146,9 +146,15 @@ test("capacity scales smoothly with real global headroom", async () => {
   const roomy = await capacityAt(0);
   const mid = await capacityAt(150);
   const tight = await capacityAt(250);
-  assert.equal(roomy > mid, true, `${roomy} > ${mid}`);
+  // MONOTONE, not strictly decreasing. The first-rollout ceiling (25) binds
+  // wherever the provider math would allow more, so roomy and mid can be EQUAL
+  // at the ceiling — that is the ceiling doing its job, not a regression. What
+  // must never happen is capacity RISING as headroom falls.
+  assert.equal(roomy >= mid, true, `${roomy} >= ${mid}`);
   assert.equal(mid > tight, true, `${mid} > ${tight}`);
   assert.equal(tight >= 0, true);
+  assert.equal(roomy <= 25, true,
+    `deep-analysis capacity is capped at the first-rollout ceiling; got ${roomy}`);
 });
 
 test("an unreadable provider meter falls back to the lane bucket rather than to zero", async () => {

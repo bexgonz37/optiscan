@@ -86,15 +86,45 @@ export const DEFAULT_PROMOTION_CAPACITY: Readonly<PromotionCapacityConfig> = Obj
   explorationShare: 0.25,
 });
 
+/**
+ * THE FIRST-ROLLOUT CEILING. 25, and 25 is not an accident.
+ *
+ * `hardCeiling` above is an ANTI-FAN-OUT backstop, and at 120 it is doing that
+ * job correctly — nothing here has ever been able to promote 1,606 symbols. But
+ * the previous phase changed what a promotion is worth: cheap awareness now
+ * ranks the whole universe, so the names reaching deep analysis are a genuinely
+ * different, denser population than the 25 the rotation used to hand over.
+ *
+ * The provider-efficiency work in this phase is UNPROVEN in production. Until
+ * the measured chain spend per promotion is known against the real universe,
+ * raising deep-analysis throughput at the same moment the input distribution
+ * changed would confound the two: a provider regression would be
+ * indistinguishable from a promotion regression, and the audited 802
+ * zero-contract attempts are exactly what that looks like.
+ *
+ * So the first rollout deliberately spends no more than the OLD capacity. This
+ * is a ceiling on SPEND, never on awareness — `sweepAwareness` scores the full
+ * universe regardless, and this number never touches it.
+ *
+ * The owner raises it by setting `OPTIONS_PROMOTION_ROLLOUT_CEILING`, and only
+ * after the savings are measured. Note the direction: this can only ever LOWER
+ * `hardCeiling`, so a mis-set `OPTIONS_PROMOTION_HARD_CEILING` cannot escape it.
+ */
+export const INITIAL_ROLLOUT_PROMOTION_CEILING = 25;
+
 export function promotionCapacityConfig(env: NodeJS.ProcessEnv = process.env): PromotionCapacityConfig {
   const d = DEFAULT_PROMOTION_CAPACITY;
+  const backstop = num(env.OPTIONS_PROMOTION_HARD_CEILING, d.hardCeiling, 1);
+  const rollout = num(env.OPTIONS_PROMOTION_ROLLOUT_CEILING, INITIAL_ROLLOUT_PROMOTION_CEILING, 1);
   return {
     estRequestsPerPromotion: num(env.OPTIONS_PROMOTION_EST_REQUESTS, d.estRequestsPerPromotion, 0.1),
     reservedForCriticalPerCycle: num(env.OPTIONS_PROMOTION_CRITICAL_RESERVE, d.reservedForCriticalPerCycle, 0),
     cycleLatencyBudgetMs: num(env.OPTIONS_PROMOTION_CYCLE_LATENCY_MS, d.cycleLatencyBudgetMs, 1000),
     estPerPromotionMs: num(env.OPTIONS_PROMOTION_EST_MS, d.estPerPromotionMs, 1),
     maxConcurrency: num(env.OPTIONS_MAX_CONCURRENCY, d.maxConcurrency, 1),
-    hardCeiling: num(env.OPTIONS_PROMOTION_HARD_CEILING, d.hardCeiling, 1),
+    // The SMALLER of the backstop and the rollout ceiling. Whichever is tighter
+    // binds, so neither env var can be used to escape the other.
+    hardCeiling: Math.min(backstop, rollout),
     explorationShare: clamp(num(env.OPTIONS_PROMOTION_EXPLORATION_SHARE, d.explorationShare, 0), 0, 0.9),
   };
 }
