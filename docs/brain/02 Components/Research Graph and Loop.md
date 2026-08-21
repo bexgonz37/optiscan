@@ -1,7 +1,7 @@
 # Research Graph and Loop
 
 Graph Engineering and Loop Engineering memory for the OptiScan research arm.
-Updated 2026-08-19 (3). Companion to the AST graph in `graphify-out/` — that one is
+Updated 2026-08-21. Companion to the AST graph in `graphify-out/` — that one is
 generated, this one records the parts a parser cannot see: which identity a consumer
 joins on, and which of them fail SILENTLY when the join is wrong.
 
@@ -479,3 +479,68 @@ paper marks, and asymmetry marks are read from SQLite. No forward-capture provid
 was added and provider caps are unchanged. Current exact-option coverage is expected to
 remain selected and may be thin; a future capture proposal must first quantify calls per
 minute/day, lane cost, cap share, and the populations whose selection bias would improve.
+
+## Historical Analog graph — added 2026-08-21
+
+Stored evidence → point-in-time reconstruction → feature-vector version → comparability →
+corpus → similarity → baselines → OOS evaluation → research surface. Every stage below is
+RESEARCH_ONLY: no edge from any row here reaches the scanner, a threshold, contract
+selection, Discord or subscriber state.
+
+| # | Stage | Owns | Joined by | Silent-failure risk |
+|---|---|---|---|---|
+| A0 | STORED BARS | `historical_underlying_bars` (60,164 rows, 15 symbols, 1m, 2026-08-03…07) | `(symbol, timeframe, ts_ms)` | **`timeframe` is load-bearing.** The seeder's warmup/velocity windows are BAR COUNTS; feeding it 1d bars silently reinterprets a 15-bar window as three trading weeks |
+| A1 | LOCAL REPLAY | `ANALOG_LOCAL_REPLAY_V1` → `seedEpisodesPure` → `persistEpisodeOnDb` | deterministic `episodeKeyOf(source, symbol, t0Ms, schemaVersion)` | Zero provider calls. Re-running is a no-op by key + `INSERT OR IGNORE`. A horizon the bar span cannot reach yields 0 rows, which is why `plannedHorizons` is reported separately from `labelsByHorizon` |
+| A2 | EPISODE ROW | `setup_episodes` | `episode_key`, **and `episode_version`** | `episode_version=2` rows have a structurally NULL `liquidity_tier` and carry features only in `zone_a_json`. Dispatching on the wrong version returns a vector that is well-formed and wrong |
+| A3 | LABEL ROW | `episode_labels` (V1) / `episode_outcome_labels_v2` (V2) | `(episode_key, horizon)` | **One episode has one label PER HORIZON.** A load without `horizon` repeats every `episode_key` and pools a 5-minute outcome with a session one |
+| A4 | FEATURE VECTOR | `ANALOG_FEATURE_VECTOR_V1` / `ANALOG_FEATURE_VECTOR_V2` | `vector.version` | Same seven dimension NAMES, different estimators. Blending versions returns a number and no error |
+| A5 | COMPARABILITY | `ANALOG_COMPARABILITY_V1` registry, resolved FROM the version | `required` / `optional` key sets | An unregistered version THROWS rather than inheriting V1's requirements — a silent V1 fallback is what would reject a future V3 wholesale with nothing in the output to say so |
+| A6 | CORPUS | `ANALOG_CORPUS_V1`, single-class AND single-version AND single-horizon | `(evidenceClass, vectorVersion, horizon)` | `droppedByVectorVersion` and `droppedIncomparable` are separate counters because "nothing matched" and "everything was the other version" mean opposite things |
+| A7 | RETRIEVAL | `ANALOG_RETRIEVAL_V1` — fence on `labelEndMs <= t0`, self/dup/version/horizon exclusions | `AnalogQuery.{id, t0Ms, vector, horizon}` | An optional comparability key absent on one side is DROPPED and counted, never scored as agreement |
+| A8 | BASELINES | `ANALOG_BASELINE_V1` — global / symbol / regime / direction | `eligibleTrainingSet()`, the SAME fence retrieval uses | A baseline built from a weaker fence inflates the opponent and makes the engine look modest; nobody audits the loser |
+| A9 | INDEPENDENCE | `ANALOG_INDEPENDENCE_V1` — PREDICTION / SYMBOL_SESSION / SESSION / SYMBOL | cluster label per unit | `observations` is reported so the gap to the cluster count is visible, NEVER as a sample size |
+| A10 | EVALUATION | `ANALOG_EVAL_V1` + clustered lift CIs | scoreable predictions | The Brier and every baseline Brier must be over the IDENTICAL rows, or the delta is a difference of denominators |
+| A11 | SURFACE | `GET /api/research/analog`, `POST ?action=seed-from-store` | — | Writing is opt-in (`commit=1`); nothing schedules the seeder |
+
+### Dynamic boundaries Graphify cannot resolve
+
+The AST parser sees the imports; it cannot see any of these, and each one is a place a
+correct-looking call returns a wrong answer:
+
+- **`comparabilitySpecFor(version)`** is a runtime registry lookup keyed by a STRING that
+  arrives on the data. No static edge exists from `retrieval.ts` to
+  `feature-vector-v2.ts`; the spec is registered as a side effect of importing the module
+  that defines it. A future vector that is never imported is never registered, and the
+  lookup throws at query time rather than at build time — deliberately.
+- **`vectorForEpisodeRow(row)`** dispatches on `row.episode_version`, a database value.
+  Which vector builder runs is not decidable from the source.
+- **`zone_a_json` traversal** is string-keyed into a JSON blob
+  (`optiscan.sharedFeatureSnapshot.value.underlying.{price,hod,lod,…}`). The producer is
+  `computeOptionsFeatures` in a different subsystem; nothing links the two but the key
+  names, and a rename on the producer side would surface as silently-null dimensions.
+- **`loadAnalogCorpusOnDb` branches on `evidenceClass`** to choose a table AND a default
+  vector version. The class is a request parameter.
+- **The route's dynamic `await import()`** of every analog module defers all of it past the
+  static graph.
+
+### Loop — the analog research loop, and where it deliberately stops
+
+```
+OBSERVE / FREEZE  →  LABEL  →  HISTORICAL MEMORY  →  ANALOG RETRIEVAL
+                                                          ↓
+RESEARCH CONCLUSION  ←  EVALUATION  ←  BASELINE COMPARISON
+```
+
+- **Automatic:** OBSERVE/FREEZE (live scanner → SetupEpisodeV2) and LABEL (the Phase 2A
+  forward labeler on the scheduler).
+- **Manual, by construction:** HISTORICAL MEMORY widening (`POST ?action=seed-from-store`,
+  dry run by default) and EVALUATION (`GET ?evaluate=1`). Neither is scheduled, and
+  neither should be: both are questions an owner asks, not work the system owes.
+- **Closed at RESEARCH CONCLUSION.** There is no edge from the conclusion to any
+  threshold, and there must not be one until the blockers in the current packet clear.
+
+The loop can go quiet without erroring in exactly three places, all of which now report
+rather than return zero: a corpus that is all one vector version (`droppedByVectorVersion`),
+a corpus that spans horizons (`mixedHorizons` + `duplicateMemberIds`), and an evaluation
+whose every query abstained (`coverage: 0` with the floor named in `abstainReason`).
+

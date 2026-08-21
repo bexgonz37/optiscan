@@ -1,5 +1,209 @@
 # Current Task Packet
 
+## Packet update — 2026-08-21 The 5d analog "signal" was the direction base rate, and the honest answer is NO
+
+### Proven release state
+
+- Commits `658ffb9` (breadth + V2 comparability + baselines) and `aa68f08`
+  (single-horizon corpus + leakage-audit repair). LOCAL = ORIGIN/MAIN = PRODUCTION at
+  `aa68f08a9c802e01a863102ad20a46483c9d3b44`, `shaAttribution.state = OBSERVED` from
+  `RAILWAY_GIT_COMMIT_SHA`.
+- 4,813 / 4,813 tests pass (32 new). `tsc --noEmit --incremental false`, production
+  `next build`, and `git diff --check` pass. `prod-smoke` 18/18 PASS.
+- Scheduler owner PID 1 with beats completing; scanner running; Polygon connected;
+  three Discord lanes ready; subscriber `NOT_READY` with 12 blocking gates; AI budget
+  1.66 of 20 dollars. Frozen experiment digests `OWNER_SELECTION_STRENGTH_GATE_V1`
+  (`9b4f77b3…`) and `PRE_MOVE_DISCOVERY_V2` (`e6eb1148…`) unchanged.
+- Changed surface is 12 files, all under `lib/research/analog/`, one addition to
+  `lib/research/eval/metrics.ts`, one research route, one test file. No trading logic,
+  no Discord, no timestamp validator, no scanner, no delivery path. 0 provider calls
+  added to any live path. Zero recurring spend.
+
+### THE FINDING: analog similarity adds no information beyond a train-only base rate
+
+**Status: RESEARCH — CONCLUSION REACHED. The answer is NO.**
+
+The previous packet read a 5d Brier of 0.2098 against a constant predictor's 0.2496 as a
+possible signal, and hypothesised it might be mega-cap regime drift. It is not regime
+drift. It is **direction**.
+
+`cmp_direction` is a REQUIRED comparability key, so every retrieved cohort is already
+single-sided. A cohort's win rate is therefore a direction-conditioned base rate with
+extra steps — and the extra steps subtract value. Best-powered chronological OOS, 424–522
+queries over 55–99 independent trading sessions, every number below the analog engine's
+Brier against train-only baselines scored over the IDENTICAL population:
+
+| Horizon | N | Sessions | Analog | GLOBAL | SYMBOL | REGIME | **DIRECTION** | Strongest unbeaten |
+|---|---|---|---|---|---|---|---|---|
+| 15m | 513 | 55 | 0.2597 | 0.2524 | 0.2541 | 0.2530 | **0.2521** | GLOBAL |
+| 30m | 513 | 55 | 0.2621 | 0.2492 | 0.2474 | 0.2504 | **0.2496** | GLOBAL |
+| 1h  | 513 | 55 | 0.2518 | 0.2499 | 0.2518 | 0.2511 | **0.2495** | GLOBAL |
+| EOD | 513 | 55 | 0.2553 | 0.2499 | 0.2498 | 0.2525 | **0.2467** | GLOBAL |
+| 1d  | 495 | 62 | 0.2616 | 0.2507 | 0.2505 | 0.2511 | **0.2461** | GLOBAL |
+| 3d  | 461 | 79 | 0.2416 | 0.2503 | 0.2502 | 0.2494 | **0.2315** | GLOBAL |
+| 5d  | 424 | 99 | 0.2424 | 0.2503 | 0.2512 | 0.2504 | **0.2330** | GLOBAL |
+
+Brier is a loss; lower is better. The analog engine does not beat the GLOBAL base rate at a
+session-clustered 95% interval at ANY horizon, and loses to the DIRECTION base rate at ALL
+SEVEN. At 30m it is significantly WORSE than global (lift CI `[-0.0201, -0.0059]`, excluding
+zero on the wrong side). No baseline ever backed off (`backoffRate` 0 everywhere), so these
+are each estimator's own evidence, not the global rate wearing four hats.
+
+Two things that looked like corroboration and are not:
+
+- **The 0.2098 headline was a window artifact.** At the previous 200-query / 37-session
+  window the 5d Brier is 0.2098; widening to 424 queries / 99 sessions moves it to 0.2424
+  and opens the global-comparison CI across zero. The earlier number was the narrow tail of
+  the corpus, not the corpus.
+- **Calibration and discrimination are real and still prove nothing.** At 5d the engine is
+  genuinely well calibrated (ECE 0.023; realized 0.32/0.42/0.55/0.61 against predicted
+  0.33/0.45/0.54/0.65) and genuinely discriminates (top-minus-bottom tercile spread 0.220).
+  Both come from the side alone: bearish n=210 realized 0.333, bullish n=214 realized 0.640.
+  A model that knows only which side it is on reproduces the whole effect and scores better.
+
+### Independence: 200 queries were never 200 samples
+
+`ANALOG_INDEPENDENCE_V1` reports the denominators next to the count. At 5d: 424 predictions
+resolve to 192 symbol-sessions, **99 sessions**, and **3 symbols** — inflation x4.28, top
+symbol 45.8%, 13.9% of same-symbol pairs holding overlapping label windows. Verdict
+`CORRELATED`. Every lift interval resamples SESSIONS, not predictions; item-level
+resampling would have reported an interval far tighter than the evidence supports, in
+exactly the flattering direction.
+
+### Corpus breadth: +12 symbols, and none of them at 5d
+
+| | Episodes | Label rows | Symbols | Sessions | Range |
+|---|---|---|---|---|---|
+| Before | 1,508 | 11,679 | 5 | 247 | 2023-07-03 → 2024-06-28 |
+| After | 1,739 | 12,900 | 17 | 252 | 2023-07-03 → 2026-08-07 |
+
+`historical_underlying_bars` already held 60,164 minute bars across 15 symbols over
+2026-08-03…07 that nothing had ever replayed. `ANALOG_LOCAL_REPLAY_V1` runs them through
+the SAME `seedEpisodesPure` the provider lane uses — identical T0 fence, identical Zone-A
+blocks, identical deterministic `episode_key` — for **231 episodes / 1,221 labels, 0
+provider calls, zero spend**. Re-running inserted 0 and found 231 already present, proving
+idempotency against production. Evidence class unchanged: `HISTORICAL_UNDERLYING_ONLY`.
+SPY produced 0 candidate moments and is reported as 0, not omitted.
+
+The honest limit: five sessions of bars cannot resolve a 5-day label. The widening reaches
+15m/30m/1h/EOD (all 5 sessions), 1d (4), 3d (2), and **5d/10d not at all** — those stay at
+5 symbols. `plannedHorizons` states this per symbol up front so "5d: 0 rows" can never be
+read as "5d found nothing".
+
+### V2 comparability: root cause was a missing FIELD, not a missing value
+
+All ~6,935 SetupEpisodeV2 rows loaded as `NOT_COMPARABLE_VECTOR`. `persistSetupEpisodeV2OnDb`
+writes an explicit column list without `liquidity_tier`, and `SetupEpisodeV2` has no such
+field — the null is **structural**, the column is inapplicable rather than empty.
+
+It cannot be reconstructed. The only definition of the tier anywhere
+(`episode/seed.ts::liquidityTier`) is over **one 1-minute bar's** underlying dollar volume
+with a 5,000,000 dollar "high" boundary. V2's nearest frozen quantity is session-to-date
+`dayDollarVolume`, already gated at `OPT_T2_MIN_DOLLAR_VOL` (default **20,000,000**, four
+times V1's high boundary). Forcing V1's thresholds onto it labels 100% of V2 "high": a
+constant column that would clear the rejection, restore 6,935 rows, filter nothing, and
+look exactly like a repair.
+
+So `cmp_liquidity` is absent from V2, and the vector is VERSIONED instead:
+
+- `ANALOG_FEATURE_VECTOR_V2` requires `cmp_direction` and carries the option leg's own
+  frozen `zoneA.option.executableAtT0` as an **optional** comparability key — dropped and
+  counted when either side lacks it, never scored as agreement.
+- `posInRange` is derived as `(price - lod) / (hod - lod)` from the frozen
+  `sharedFeatureSnapshot` — V1's own definition over V2's own T0 inputs. A degenerate range
+  yields null, never 0.5.
+- V1 and V2 share seven dimension NAMES and disagree on window and, for `atrPct` and
+  `posInRange`, on formula. Retrieval refuses cross-version analogs outright rather than
+  z-scoring two estimators into one space, which would return a number and no error.
+- V1's spec is registered unchanged (`required = [cmp_direction, cmp_liquidity]`,
+  `optional = []`), so V1 results are identical and the old evaluation still means what it
+  meant. An unregistered version throws instead of inheriting V1's requirements.
+
+Result, measured in production: `droppedIncomparable` **0** for both V2 classes (was 100%).
+6,935 `FORWARD_EXACT_OPTION` and 8,615 `FORWARD_UNDERLYING_ONLY` rows are now loadable.
+
+### A real defect the V2 repair exposed: a leakage audit that cried wolf
+
+Letting V2 in immediately produced `futureAnalogViolations: 6000` — and the fence was fine.
+An un-horizoned load returns one row PER HORIZON for the same episode (~1,387 episodes x
+5 labels), so `episode_key` repeats. The audit resolved each retrieved analog by looking its
+id up in a Map, which collapsed to whichever horizon was written last — usually the longest,
+whose `labelEndMs` genuinely post-dates the query. Retrieval had fenced correctly on each
+member's own `labelEndMs`; the audit was checking a different row.
+
+An audit that cries wolf is worse than no audit: it would have made a real future-leak
+indistinguishable from its own noise. Fixed two ways — the audit now reads `labelEndMs` off
+the analog retrieval ACTUALLY returned (no lookup left to be ambiguous), and horizon is now
+a first-class axis: it travels with the member, retrieval refuses cross-horizon analogs
+(`HORIZON_MISMATCH`), and a mixed corpus is reported (`horizonsPresent`, `mixedHorizons`,
+`duplicateMemberIds`) and refused a `SUPPORTED` verdict rather than quietly scored. Verified:
+the same corpus at `horizon=5m` audits CLEAN with 1,387 members. Every horizon in the table
+above audits CLEAN.
+
+The pooling also mattered on its own: the metric was being fitted on every setup five times
+over, with a 5-minute result in the same distribution as a session-long one.
+
+### Intraday relevance: what this evidence can and cannot inform
+
+OptiScan's live use is intraday options decision support. The historical corpus is
+**underlying-only**, and the widened part is minute bars over five sessions.
+
+- CAN inform: setup structure, direction/ranking hypotheses, regime tendency, and the
+  negative result above — that similarity over these seven dimensions does not add
+  information at any horizon from 15m to 5d.
+- CANNOT inform: any option-return probability. `HISTORICAL_UNDERLYING_ONLY` carries
+  `optionReturnClaimAllowed: false`, and `optionOutcomeDistribution` throws rather than
+  degrading. An underlying move is not an option return.
+- The 15m/30m/1h numbers are UNDERLYING moves at intraday horizons. They are NOT calibrated
+  intraday option probabilities and must never be quoted as such.
+
+### Exact-option limitation: only time solves this
+
+`FORWARD_EXACT_OPTION` is 6,935 rows across **1 trading day** (2026-08-20), 715 labeled and
+**6,220 censored (89.7%)**. It is now fully comparable and still abstains on every query:
+`ANALOG_MIN_INDEPENDENT_SESSIONS = 5` and one session is one session. This blocker was NOT
+manufactured away and cannot be — it needs forward sessions to accumulate.
+
+### Loop truth
+
+`OBSERVE / FREEZE → LABEL → HISTORICAL MEMORY → ANALOG RETRIEVAL → BASELINE COMPARISON →
+EVALUATION → RESEARCH CONCLUSION`. The loop now closes on a CONCLUSION and stops there. It
+does not close into production authority.
+
+### Authority — unchanged
+
+`RESEARCH_ONLY` / `NOT_CALIBRATED_FOR_LIVE_AUTHORITY`. Nothing here overrides a hard gate,
+changes contract selection, targets, stops, entries, exits, Discord eligibility, subscriber
+readiness or a strategy threshold. Performance: 424–522 queries over 1,411–1,739 members in
+916–1,508 ms, off the scanner critical path, retrieval bounded by `k`.
+
+### Frozen identifiers introduced
+
+`ANALOG_FEATURE_VECTOR_V2`, `ANALOG_COMPARABILITY_V1`, `ANALOG_BASELINE_V1`,
+`ANALOG_INDEPENDENCE_V1`, `ANALOG_LOCAL_REPLAY_V1`. `ANALOG_FEATURE_VECTOR_V1`,
+`ANALOG_RETRIEVAL_V1`, `ANALOG_CORPUS_V1`, `ANALOG_EVAL_V1` and
+`ANALOG_EVIDENCE_CLASS_V1` are unchanged.
+
+### Still required before an authoritative Probability Engine
+
+1. A feature set that is not the direction in disguise. The current seven dimensions carry
+   no information beyond the side at any horizon. Adding rows will not fix that; the vector
+   needs dimensions the side does not already imply, and each new dimension needs a new
+   VERSION evaluated against V1 rather than swapped underneath it.
+2. Forward exact-option sessions. One session, 89.7% censored, cannot calibrate anything.
+   Five independent sessions is the floor to be decidable at all.
+3. Symbol breadth AT THE DAILY HORIZONS. 5d is still 3 query symbols and 45.8% one ticker;
+   the widening reached only the intraday end.
+4. A resolution of the 2-year gap between the 2023–2024 replay block and the 2026-08 block.
+   Cross-regime analog transfer is currently untested and unmeasured.
+5. An independence unit defended on its own merits. Session clustering is the strictest of
+   the four reported; nothing has established it is strict enough for overlapping multi-day
+   label windows.
+
+Until 1 and 2 are answered, the Probability Engine has nothing calibrated to stand on. It
+was not begun in this session and must not be begun on this evidence.
+
+
 ## Packet update — 2026-08-19 (4) Phase 2A automatic forward labeling is deployed; collection, not probability, is now the truth
 
 ### Proven release state

@@ -20,6 +20,7 @@ Validate and deploy the local options research stack.
 - [[../02 Components/earlier-entry]]
 - [[../02 Components/loss-protection]]
 - [[../02 Components/watchlist]]
+- [[../02 Components/Research Graph and Loop]]
 
 ## Current task
 
