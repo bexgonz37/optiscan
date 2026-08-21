@@ -183,6 +183,8 @@ export interface ChainAdmissionResult {
   /** Collapsed duplicates. */
   duplicatesCollapsed: number;
   capacity: number;
+  /** Slots within `capacity` that were withheld from research-only tickets. */
+  actionableReserved: number;
   /**
    * Actionable, non-research tickets that could not be served this cycle. THE
    * MRNA COUNTER: if this is persistently non-zero the lane is genuinely short
@@ -203,8 +205,24 @@ export function admitChainRequests(
   capacity: number,
   nowMs: number,
   cfg: ChainAdmissionConfig = DEFAULT_CHAIN_ADMISSION,
+  opts: { actionableReserved?: number } = {},
 ): ChainAdmissionResult {
   const cap = Math.max(0, Math.floor(capacity));
+  /**
+   * Slots inside `cap` that a research-only ticket may not occupy.
+   *
+   * Priority ordering alone is not enough to protect the actionable candidate.
+   * Ordering answers "who goes first", and on a cycle where the whole board is
+   * research-only that question never arises — the lane is spent before an
+   * actionable candidate appears at all. MRNA did not lose a comparison; it
+   * arrived after the budget was gone. A reserve is the only construct that
+   * holds room for a ticket that has not been raised yet.
+   *
+   * Clamped into [0, cap] so a misconfigured reserve can never exceed the
+   * capacity it is carved from, and never turns into extra spend.
+   */
+  const reserved = Math.max(0, Math.min(cap, Math.floor(opts.actionableReserved ?? 0)));
+  const sharedSlots = cap - reserved;
 
   // 1. DEDUPLICATE before anything is spent. Among duplicates keep the one that
   //    has waited longest, so collapsing never resets a ticket's age.
@@ -264,14 +282,26 @@ export function admitChainRequests(
   const admitted: ChainTicket[] = [];
   const deferred: ChainTicket[] = [];
   let highPriorityDeferred = 0;
+  let sharedUsed = 0;
 
   for (const { t, priority } of live) {
     const key = chainTicketKey(t);
     const attempts = t.attempts ?? 0;
     const waitedMs = Math.max(0, nowMs - t.requestedAtMs);
-    if (admitted.length < cap) {
+    // An actionable ticket may take any free slot. A research-only ticket may
+    // only take one from the shared portion, so the reserve survives a cycle
+    // that is entirely research-only — which is the cycle it exists for.
+    const roomForThis = t.researchOnly ? sharedUsed < sharedSlots : admitted.length < cap;
+    if (roomForThis && admitted.length < cap) {
       admitted.push(t);
-      decisions.push({ key, symbol: t.symbol, outcome: "ADMITTED", priority, waitedMs, attempts, reason: `priority ${priority}` });
+      if (t.researchOnly) sharedUsed += 1;
+      else if (sharedUsed < sharedSlots && admitted.length > reserved) sharedUsed += 1;
+      decisions.push({
+        key, symbol: t.symbol, outcome: "ADMITTED", priority, waitedMs, attempts,
+        reason: reserved > 0
+          ? `priority ${priority} (${t.researchOnly ? "shared slot" : "actionable"}; ${reserved} of ${cap} reserved for actionable)`
+          : `priority ${priority}`,
+      });
     } else {
       // Deferred tickets keep their original requestedAtMs, so waiting
       // accumulates and the aging term can eventually promote them.
@@ -279,10 +309,15 @@ export function admitChainRequests(
       if (!t.researchOnly) highPriorityDeferred += 1;
       decisions.push({
         key, symbol: t.symbol, outcome: "DEFERRED", priority, waitedMs, attempts,
-        reason: `capacity ${cap} exhausted — re-offered next cycle as attempt ${attempts + 1}`,
+        reason: t.researchOnly && admitted.length < cap
+          ? `${sharedSlots} shared slots exhausted; the remaining ${cap - admitted.length} are reserved for actionable candidates — re-offered next cycle as attempt ${attempts + 1}`
+          : `capacity ${cap} exhausted — re-offered next cycle as attempt ${attempts + 1}`,
       });
     }
   }
 
-  return { admitted, deferred, expired, decisions, duplicatesCollapsed, capacity: cap, highPriorityDeferred };
+  return {
+    admitted, deferred, expired, decisions, duplicatesCollapsed,
+    capacity: cap, actionableReserved: reserved, highPriorityDeferred,
+  };
 }
