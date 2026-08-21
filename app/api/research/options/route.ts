@@ -17,6 +17,7 @@ export async function GET(req: Request) {
   const { readOptionsReportOnDb } = await import("@/lib/research/options/report");
   const { researchFlags } = await import("@/lib/research/flags");
   const { optionsMonitorMetrics, optionsMonitorHealth } = await import("@/lib/research/options/monitor");
+  const { optionsTier1 } = await import("@/lib/research/options/discovery");
   const f = researchFlags(process.env);
   const db = getDb();
   const activePaperPositions = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='options_paper_trades'").get()
@@ -34,6 +35,22 @@ export async function GET(req: Request) {
     deliveryDecisions: { enabled: process.env.OPTIONS_PORTFOLIO_DELIVERY_ENABLED === "1", ...(await import("@/lib/research/options/delivery-decision")).deliveryDecisionMetricsOnDb(db) },
     delivery: { enabled: f.independentOptionsDiscovery && f.earlyOptionsCallouts, webhookConfigured: Boolean(String(process.env.DISCORD_WEBHOOK_OPTIONS ?? "").trim()), ...readDeliveryMetricsOnDb(db) },
     report: readOptionsReportOnDb(db),
+    /**
+     * PHASES F–K. Every shadow measurement taken against live candidates this
+     * session, and NOTHING ELSE reads it.
+     *
+     * A READ SURFACE, not a decision path — which is why importing a shadow
+     * reader is allowed here and forbidden under lib/. The findings are
+     * worthless if the owner cannot see them, and dangerous the moment
+     * something under lib/ can.
+     */
+    shadow: {
+      ...(await import("@/lib/research/options/live-shadow")).liveShadowReport(process.env),
+      relativeVolume: (await import("@/lib/research/options/rvol-shadow"))
+        .rvolShadowFeasibility(db as never, optionsTier1(process.env), Date.now()),
+    },
+    providerLanes: (await import("@/lib/research/options/provider-lane-audit"))
+      .auditProviderLanes(Number(process.env.POLYGON_MINUTE_CALL_CAP ?? 280), null, process.env),
   });
 }
 
