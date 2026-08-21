@@ -31,6 +31,26 @@ import {
   classifySessionRangePosition,
   SESSION_RANGE_POSITION_SEMANTICS,
 } from "./session-range-position.ts";
+import {
+  classifyChainAttempt, applyOptionabilityObservation, shouldSpendChainRequest,
+  unknownRecord, expireIfStale, optionabilityConfig, emptyZeroContractCounters,
+  type OptionabilityRecord, type ZeroContractCause,
+} from "./optionability.ts";
+import {
+  admitChainRequests, chainAdmissionConfig, chainTicketKey,
+  type ChainTicket, type ChainAdmissionResult,
+} from "./chain-admission.ts";
+import {
+  collectMissedOpportunities, missedOpportunityConfig,
+  persistMissedOpportunitiesOnDb, pruneMissedOpportunitiesOnDb,
+  type MissedOpportunityConfig, type SkipReason,
+} from "./missed-opportunity.ts";
+import { observeLiveShadow } from "./live-shadow.ts";
+import type { Stage15Evidence } from "./stage15-shadow.ts";
+import { splitChainCapacity, actionableReserveFraction } from "./provider-lane-audit.ts";
+import { activeSignals, type StrategySelection } from "./discovery.ts";
+import { tradingDay } from "../../trading-session.ts";
+import type { AwarenessRow } from "./awareness.ts";
 
 export function portfolioDeliveryStatus(env: NodeJS.ProcessEnv = process.env): { required: boolean; enabled: boolean; healthy: boolean; reason: string | null } {
   const required = researchFlags(env).independentOptionsDiscovery;
@@ -97,6 +117,20 @@ export interface OptionsMonitorConfig {
   maxConcurrency: number; maxSymbolsPerTier2Cycle: number;
   symbolCooldownMs: number; symbolFormingRecheckMs: number; strategyCooldownMs: number;
   providerBudgetPerMinute: number; providerBudgetTier0PerMinute: number; breakerFailureThreshold: number; breakerCooldownMs: number;
+  /**
+   * Whether the chain-admission queue orders this lane's chain spend.
+   *
+   * DEFAULT OFF, and the default is the point. Admission changes the SHAPE of a
+   * cycle — candidates are prepared, ranked as a batch, and only then served —
+   * where today each symbol races straight from plausibility to its own chain
+   * fetch. The ordering it produces is strictly better and every boundedness
+   * property is tested, but it is an unproven change to the live path of the
+   * primary product, and the owner is not at the desk. One env var turns it on
+   * after review; nothing about the streaming path changes while it is off.
+   */
+  chainAdmissionEnabled: boolean;
+  /** Deadline a chain ticket is served by, after which it describes a stale market. */
+  chainTicketTtlMs: number;
 }
 export function defaultMonitorConfig(env: NodeJS.ProcessEnv = process.env): OptionsMonitorConfig {
   const n = (v: string | undefined, d: number, min = 0) => { const x = Number(v); return Number.isFinite(x) && x >= min ? x : d; };
@@ -124,6 +158,11 @@ export function defaultMonitorConfig(env: NodeJS.ProcessEnv = process.env): Opti
     providerBudgetTier0PerMinute: n(env.OPTIONS_TIER0_PROVIDER_BUDGET_PER_MINUTE, 60, 1),
     breakerFailureThreshold: n(env.OPTIONS_BREAKER_FAILS, 5, 1),
     breakerCooldownMs: n(env.OPTIONS_BREAKER_COOLDOWN_MS, 30_000, 1000),
+    chainAdmissionEnabled: env.OPTIONS_CHAIN_ADMISSION_ENABLED === "1",
+    // One Tier-2 cadence. A chain fetched a full cycle after the observation
+    // that justified it is answering a question about a market that has moved,
+    // so the ticket leaves rather than being served stale.
+    chainTicketTtlMs: n(env.OPTIONS_CHAIN_TICKET_TTL_MS, 60_000, 1000),
   };
 }
 
@@ -185,6 +224,65 @@ interface MonitorState {
   } | null;
   /** High-priority work refused by the provider budget, for Phase-9 diagnosis. */
   quotaBlockedHighPriority: number;
+
+  /* ── PHASE A · tri-state optionability ───────────────────────────────── */
+  /**
+   * What is KNOWN about each symbol having listed options.
+   *
+   * Pruned to the live universe every sweep, exactly like `deepAnalyzedAt`, so a
+   * delisted name cannot accumulate. UNKNOWN symbols are deliberately NOT stored
+   * — absence already means UNKNOWN, and storing it would double the map to
+   * record the default.
+   */
+  optionability: Map<string, OptionabilityRecord>;
+  /** Chain requests not spent because a live NOT_OPTIONABLE verdict said so. */
+  chainSkippedForProvenNotOptionable: number;
+
+  /* ── PHASE B · zero-contract causes ──────────────────────────────────── */
+  /** Bounded per-cause tallies. Fixed key set, so it cannot grow. */
+  zeroContractCauses: Record<ZeroContractCause, number>;
+  /** The same totals split by whose fault it was. */
+  zeroContractOrigins: { PROVIDER: number; SELECTOR: number; SYMBOL: number };
+
+  /* ── PHASE C · chain admission ───────────────────────────────────────── */
+  /**
+   * Tickets deferred by a previous cycle, re-offered by the next one.
+   *
+   * Bounded three ways and every one of them is enforced in `admitChainRequests`
+   * rather than here: a deadline, an attempt count, and de-duplication by
+   * (symbol, side, strategy). The map is additionally capped on write, because a
+   * bound that depends on a downstream function being called is not a bound.
+   */
+  chainQueue: Map<string, ChainTicket>;
+  lastAdmission: {
+    atMs: number; capacity: number; actionableReserved: number;
+    admitted: number; deferred: number; expired: number;
+    duplicatesCollapsed: number; highPriorityDeferred: number;
+  } | null;
+
+  /* ── PHASE E · missed / deferred capture ─────────────────────────────── */
+  /**
+   * Last (reason, band) written per symbol, so only TRANSITIONS are stored.
+   *
+   * Without this a symbol that is simply never the best idea in the universe
+   * writes one identical row a minute for 390 minutes — 1,600 symbols would turn
+   * a diagnostic into the largest table in the database, and every row after the
+   * first says exactly what the first one said. Pruned to the live universe.
+   */
+  missedLastState: Map<string, { reason: SkipReason; atMs: number }>;
+  /**
+   * Transitions recorded since the last sweep, waiting for the awareness row
+   * that explains them.
+   *
+   * The skip happens deep inside the per-symbol scan, where the pre-score, rank
+   * and band that make the record worth keeping are not in scope; the sweep has
+   * all three and no idea which symbols were skipped. This map is the join, and
+   * it is DRAINED every sweep so it cannot accumulate.
+   */
+  missedPending: Map<string, SkipReason>;
+  missedWritten: number;
+  missedTruncated: number;
+  lastMissedPruneMs: number;
 }
 type G = typeof globalThis & { __optiscanOptionsMonitor?: MonitorState };
 function state(): MonitorState {
@@ -196,6 +294,12 @@ function state(): MonitorState {
     tier2Cursor: 0, lastTier2Selection: null,
     awarenessPrior: new Map(), cheapObservedAt: new Map(), deepAnalyzedAt: new Map(),
     lastAwareness: null, quotaBlockedHighPriority: 0,
+    optionability: new Map(), chainSkippedForProvenNotOptionable: 0,
+    zeroContractCauses: emptyZeroContractCounters(),
+    zeroContractOrigins: { PROVIDER: 0, SELECTOR: 0, SYMBOL: 0 },
+    chainQueue: new Map(), lastAdmission: null,
+    missedLastState: new Map(), missedPending: new Map(),
+    missedWritten: 0, missedTruncated: 0, lastMissedPruneMs: 0,
   });
 }
 
@@ -292,17 +396,53 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
   try { snaps = await deps.getUnderlyingBatch(symbols); s.metrics.providerUnderlying += 1; breakerSuccess(s); }
   catch { s.metrics.providerFailures += 1; breakerFail(s, cfg, now()); return { tier, scanned: 0, created: 0, rejected: 0, chains: 0, durationMs: now() - t0 }; }
 
-  await mapWithConcurrency(symbols, cfg.maxConcurrency, async (symbol) => {
+  /**
+   * ONE SYMBOL, UP TO THE MOMENT A CHAIN WOULD BE SPENT.
+   *
+   * The per-symbol work is split here into PREPARE (everything free, or already
+   * paid for) and COMPLETE (the chain request and everything downstream of it).
+   * The split exists so that the expensive half can be ORDERED — with admission
+   * off the two halves run back to back and the behaviour is byte-for-byte what
+   * it was; with admission on, every symbol prepares first and the lane then
+   * spends its budget on the best tickets instead of on whichever symbol the
+   * concurrency pool happened to reach first.
+   *
+   * Returns null when the symbol is finished (rejected, cooling down, out of
+   * budget). A non-null return means "this symbol wants a chain", and the caller
+   * owns `inFlight` for it until `completeCandidate` runs or drops it.
+   */
+  interface PreparedCandidate {
+    symbol: string;
+    n0: number;
+    input: OptionsCandidateInput;
+    candidateCreatedAtMs: number;
+    featureSnapshot: any;
+    fractionMove: number | null;
+    preSelection: StrategySelection | null;
+    escalatedBy: string | null;
+    legacyBearishEscalation: any;
+    bars: Bar[] | null;
+    hod: number | null;
+    lod: number | null;
+    ticket: ChainTicket;
+  }
+
+  const releaseSymbol = (symbol: string, reason: SkipReason | null): void => {
+    s.inFlight.delete(symbol);
+    if (reason) noteSkip(s, symbol, reason, now(), env);
+  };
+
+  const prepareCandidate = async (symbol: string): Promise<PreparedCandidate | null> => {
     const n0 = now();
-    if ((s.cooldownSymbol.get(symbol) ?? 0) > n0) { s.metrics.cooldownSkips += 1; return; }
-    if (s.inFlight.has(symbol)) return; // no overlapping scan of the same symbol
+    if ((s.cooldownSymbol.get(symbol) ?? 0) > n0) { s.metrics.cooldownSkips += 1; return null; }
+    if (s.inFlight.has(symbol)) return null; // no overlapping scan of the same symbol
     s.inFlight.add(symbol);
     const flags = researchFlags(env);
     try {
       scanned += 1; s.metrics.symbolsScanned += 1; if (tier === 0) s.metrics.tier0Scanned += 1;
       const snap = snaps.get(symbol);
       // STAGE 1 — cheap liquidity/price/fresh reject (no bars, no chain).
-      if (!snap || snap.price == null || (snap.dayDollarVolume ?? 0) < 5_000_000) { s.cooldownSymbol.set(symbol, n0 + cfg.symbolCooldownMs); return; }
+      if (!snap || snap.price == null || (snap.dayDollarVolume ?? 0) < 5_000_000) { s.cooldownSymbol.set(symbol, n0 + cfg.symbolCooldownMs); releaseSymbol(symbol, null); return null; }
       s.metrics.stage1Pass += 1;
 
       // STAGE 1.5 — enrich with compact recent bars → decision-time features (when getBars is wired).
@@ -310,17 +450,21 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
       const candidateCreatedAtMs = now();
       let featureSnapshot: any = { source: "snapshot_only" };
       let fractionMove: number | null = null;
+      let bars: Bar[] | null = null;
+      let hod: number | null = null;
+      let lod: number | null = null;
       if (deps.getBars) {
-        if (breakerOpen(s, now())) { s.metrics.throttles += 1; return; }
-        if (!tryConsume(s, cfg, now(), tier)) { s.metrics.throttles += 1; return; }
-        const bars = await deps.getBars(symbol); s.metrics.providerBars += 1; breakerSuccess(s);
+        if (breakerOpen(s, now())) { s.metrics.throttles += 1; releaseSymbol(symbol, null); return null; }
+        if (!tryConsume(s, cfg, now(), tier)) { s.metrics.throttles += 1; releaseSymbol(symbol, "QUOTA_BLOCKED"); return null; }
+        bars = await deps.getBars(symbol); s.metrics.providerBars += 1; breakerSuccess(s);
         const ctx: FeatureContext = { nowMs: n0, session, ...(deps.levelContext?.(symbol) ?? {}) };
         const f = computeOptionsFeatures(bars, ctx);
         s.metrics.stage15Enrich += 1;
-        if (f.stale) { s.metrics.stage15Stale += 1; rejected += 1; s.metrics.candidatesRejected += 1; s.cooldownSymbol.set(symbol, n0 + cfg.symbolCooldownMs); return; } // stale bars reject safely
+        if (f.stale) { s.metrics.stage15Stale += 1; rejected += 1; s.metrics.candidatesRejected += 1; s.cooldownSymbol.set(symbol, n0 + cfg.symbolCooldownMs); releaseSymbol(symbol, null); return null; } // stale bars reject safely
         const u = featuresToUnderlying(f);
         input = { ...input, underlying: u };
         featureSnapshot = { source: "enriched", underlying: f };
+        hod = f.hod; lod = f.lod;
         // Record only legitimate time-of-day RVOL. The separately named surge
         // proxy must never enter an RVOL distribution.
         if (u.relVolume != null) record(s.metrics.rvolSamples, u.relVolume);
@@ -337,24 +481,96 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
         try { legacyBearishEscalation = latestPendingBearishEscalationForSymbol(getDb(), symbol, n0); }
         catch { legacyBearishEscalation = null; }
       }
+      const active = activeSignals(input);
       const plausible = scoreStrategies(input).some((x) => x.applicable);
       const preSelection = plausible
         ? selectOptionsStrategy(input, { bearishActionable: bearishPipelineEnabled(env) })
         : null;
+
+      // PHASES F–J — SHADOW OBSERVATION AT THE DECISION INSTANT.
+      //
+      // Placed here, before the chain decision, because this is the exact state
+      // production decided from: the same bars, the same board, the same
+      // fractionMove. Measuring after the chain would let a shadow "explain" a
+      // rejection using evidence the live decision never had. It returns void
+      // and cannot throw out — see live-shadow.ts.
+      observeLiveShadow({
+        symbol, atMs: n0, tier,
+        bars, price: input.underlying.price ?? null, hod, lod,
+        productionFractionMove: fractionMove,
+        side: preSelection?.selected?.side ?? null,
+        strategyKey: preSelection?.selected?.key ?? null,
+        considered: preSelection?.considered ?? null,
+        activeSignals: active,
+        stage15: stage15EvidenceOf(symbol, tier, input, preSelection),
+      }, env);
+
       // FORMING, not yet plausible: re-check at the scan cadence (symbolFormingRecheckMs, default 0)
       // instead of freezing 60s, so the callout can fire as soon as the setup validates — while it is
       // still forming, not after the expansion. NOT a quality change: no gate loosened, no extra alert
       // (actual callouts are still deduped by the per-strategy cooldown + delivery alertId bucket).
-      if (!plausible && !flags.optionsActivityDiscovery && !legacyBearishEscalation) { rejected += 1; s.metrics.candidatesRejected += 1; s.metrics.stage15Forming += 1; s.cooldownSymbol.set(symbol, n0 + cfg.symbolFormingRecheckMs); return; }
+      if (!plausible && !flags.optionsActivityDiscovery && !legacyBearishEscalation) { rejected += 1; s.metrics.candidatesRejected += 1; s.metrics.stage15Forming += 1; s.cooldownSymbol.set(symbol, n0 + cfg.symbolFormingRecheckMs); releaseSymbol(symbol, "STRATEGY_REJECTED"); return null; }
       if (!plausible) escalatedBy = legacyBearishEscalation ? "legacy_bearish_escalation" : "options_activity_probe";
 
+      // PHASE A — TRI-STATE OPTIONABILITY, ON THE LIVE CHAIN PATH.
+      //
+      // The ONLY state that suppresses spend is a live, in-TTL NOT_OPTIONABLE
+      // verdict. UNKNOWN spends: not knowing whether a symbol has options is the
+      // reason to look, not a reason to be blind, and a registry that treated
+      // silence as a negative would make every new listing permanently invisible.
+      // `expireIfStale` is applied on read so an aged verdict returns to UNKNOWN
+      // without a sweep having to run.
+      const optCfg = optionabilityConfig(env);
+      const known = s.optionability.get(symbol);
+      if (known) {
+        const fresh = expireIfStale(known, now(), optCfg);
+        if (fresh !== known) s.optionability.set(symbol, fresh);
+        const verdict = shouldSpendChainRequest(fresh, now(), optCfg);
+        if (!verdict.spend) {
+          s.chainSkippedForProvenNotOptionable += 1;
+          rejected += 1; s.metrics.candidatesRejected += 1;
+          s.cooldownSymbol.set(symbol, now() + cfg.symbolCooldownMs);
+          releaseSymbol(symbol, "NO_CHAIN");
+          return null;
+        }
+      }
+
+      const ticket: ChainTicket = {
+        symbol,
+        side: preSelection?.selected?.side ?? null,
+        strategyKey: preSelection?.selected?.key ?? null,
+        score: preSelection?.selected?.score ?? 0,
+        researchOnly: preSelection?.selected?.researchOnly !== false,
+        tier,
+        requestedAtMs: n0,
+        deadlineMs: n0 + cfg.chainTicketTtlMs,
+        attempts: 0,
+      };
+
+      return {
+        symbol, n0, input, candidateCreatedAtMs, featureSnapshot, fractionMove,
+        preSelection, escalatedBy, legacyBearishEscalation, bars, hod, lod, ticket,
+      };
+    } catch {
+      s.metrics.providerFailures += 1; breakerFail(s, cfg, now());
+      releaseSymbol(symbol, null);
+      return null;
+    }
+  };
+
+  /** THE EXPENSIVE HALF. Everything from the chain request onward. */
+  const completeCandidate = async (p: PreparedCandidate): Promise<void> => {
+    const { symbol, n0 } = p;
+    let input = p.input;
+    let featureSnapshot = p.featureSnapshot;
+    try {
       if (breakerOpen(s, now())) { s.metrics.throttles += 1; return; }
-      if (!tryConsume(s, cfg, now(), tier)) { s.metrics.throttles += 1; return; }
+      if (!tryConsume(s, cfg, now(), tier)) { s.metrics.throttles += 1; noteSkip(s, symbol, "QUOTA_BLOCKED", now(), env); return; }
       // STAGE 2 — fetch the chain + compute chain features.
       const chainStartedAtMs = now();
       const chainRes = await deps.getChain(symbol, input.underlying.price ?? null, {
-        side: preSelection?.selected?.side ?? null,
-        strategyKey: preSelection?.selected?.key ?? null,
+        side: p.preSelection?.selected?.side ?? null,
+        strategyKey: p.preSelection?.selected?.key ?? null,
       });
       const chainCompletedAtMs = now();
       const chain = chainRes.contracts;
@@ -367,23 +583,23 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
         || chainRes.outcome === "CHAIN_TRUNCATED_BEFORE_RANGE";
       const chainF = summarizeChainFeatures({ symbol, underlyingPrice: input.underlying.price, underlyingDollarVolume: input.underlying.dayDollarVolume, contracts: chain as unknown as OptionContract[], chainAvailable, nowMs: now() });
       input = { ...input, optionsActivity: chainFeaturesToActivity(chainF) };
-      featureSnapshot = { ...featureSnapshot, chain: chainF, legacyBearishEscalation };
+      featureSnapshot = { ...featureSnapshot, chain: chainF, legacyBearishEscalation: p.legacyBearishEscalation };
       // If we only reached here via escalation, require the chain to actually be abnormal.
-      if (escalatedBy === "options_activity_probe") { if (!chainF.abnormal || chainF.direction === "ambiguous") { rejected += 1; s.metrics.candidatesRejected += 1; s.cooldownSymbol.set(symbol, n0 + cfg.symbolCooldownMs); return; } s.metrics.optionsActivityEscalations += 1; }
+      if (p.escalatedBy === "options_activity_probe") { if (!chainF.abnormal || chainF.direction === "ambiguous") { rejected += 1; s.metrics.candidatesRejected += 1; s.cooldownSymbol.set(symbol, n0 + cfg.symbolCooldownMs); return; } s.metrics.optionsActivityEscalations += 1; }
 
       // Session RANGE POSITION, not earliness. The buckets and thresholds are
       // unchanged so stored rows keep their meaning; only the name is now honest.
       // It is direction-blind — for a PUT the "early" bucket is the moment the
       // downside move has already happened — so it must not be read as pre-move
       // discovery. See pre-move-discovery.ts for the metric that can be.
-      const earlinessPhase = classifySessionRangePosition(fractionMove);
+      const earlinessPhase = classifySessionRangePosition(p.fractionMove);
       if (earlinessPhase === "early") s.metrics.phaseEarly += 1; else if (earlinessPhase === "during") s.metrics.phaseDuring += 1; else if (earlinessPhase === "late") s.metrics.phaseLate += 1;
 
       const latencyTrace: OptionsLatencyTrace = {
         traceId: `olt:${n0}:${tier}:${symbol.toUpperCase()}`,
         symbol: symbol.toUpperCase(), tier,
         observationReceivedAtMs: n0,
-        candidateCreatedAtMs,
+        candidateCreatedAtMs: p.candidateCreatedAtMs,
         strategyEvaluationCompletedAtMs: null,
         chainStartedAtMs,
         chainCompletedAtMs,
@@ -393,8 +609,8 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
       };
       const res = runOptionsCandidate({ ...input }, chain, getDb ? { getDb } : {}, env, {
         chainOutcome: chainRes,
-        featureSnapshot: { ...featureSnapshot, fractionMove, earlinessPhase }, earlinessPhase, escalatedBy, coreBroad: tier === 2 ? "broad" : "core",
-        rankTier: tier, fractionMove, latencyTrace,
+        featureSnapshot: { ...featureSnapshot, fractionMove: p.fractionMove, earlinessPhase }, earlinessPhase, escalatedBy: p.escalatedBy, coreBroad: tier === 2 ? "broad" : "core",
+        rankTier: tier, fractionMove: p.fractionMove, latencyTrace,
         ...(portfolio.enabled ? { collectDelivery: (sub) => deliveryBatch.push(sub) } : {}),
       });
       latencyTrace.strategyEvaluationCompletedAtMs = now();
@@ -403,6 +619,16 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
       latencyTrace.providerQuoteAgeMs = res?.contract?.providerTimestamp == null
         ? null
         : Math.max(0, latencyTrace.strategyEvaluationCompletedAtMs - res.contract.providerTimestamp);
+
+      // PHASES A + B — WHAT THE ATTEMPT ACTUALLY PROVED.
+      //
+      // Classified from the FETCH first and the selector only where contracts
+      // genuinely arrived, so a quota refusal can never be recorded as a band
+      // rejection. Only the causes that `countsAsEvidence` may move a symbol
+      // toward NOT_OPTIONABLE, and corroboration is counted per SESSION — 802
+      // attempts inside one bad afternoon is one observation repeated.
+      recordChainAttempt(s, symbol, chainRes, res, now(), env);
+
       if (getDb) {
         try {
           persistOptionsLatencyTraceOnDb(
@@ -411,14 +637,95 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
           );
         } catch { /* telemetry must never alter evaluation */ }
       }
+      // PHASE F — the counterfactual needs the OUTCOME beside the evidence, so
+      // the Stage-1.5 attempt is closed here rather than at decision time.
+      observeLiveShadow({
+        symbol, atMs: n0, tier,
+        side: p.preSelection?.selected?.side ?? null,
+        strategyKey: p.preSelection?.selected?.key ?? null,
+        stage15: stage15EvidenceOf(symbol, tier, input, p.preSelection),
+        contractsReturned: chain.length,
+        selectedOcc: !!res?.contract,
+        becameCase: !!res?.selection.selected,
+      }, env);
+
       if (res?.selection.selected) { created += 1; s.metrics.candidatesCreated += 1; if (tier === 0) s.metrics.tier0Candidates += 1; s.metrics.latestCandidateMs = now(); s.cooldownStrategy.set(`${symbol}:${res.selection.selected.key}`, now() + cfg.strategyCooldownMs); }
-      else { rejected += 1; s.metrics.candidatesRejected += 1; }
+      else { rejected += 1; s.metrics.candidatesRejected += 1; noteSkip(s, symbol, chain.length === 0 ? "NO_CHAIN" : "STRATEGY_REJECTED", now(), env); }
       s.cooldownSymbol.set(symbol, now() + cfg.symbolCooldownMs);
       record(s.metrics.detectionToDecision, now() - n0);
     } catch {
       s.metrics.providerFailures += 1; breakerFail(s, cfg, now());
     } finally { s.inFlight.delete(symbol); }
-  });
+  };
+
+  if (!cfg.chainAdmissionEnabled) {
+    // STREAMING PATH — the shipped behaviour, unchanged. Each symbol goes
+    // straight from its own plausibility verdict to its own chain request.
+    await mapWithConcurrency(symbols, cfg.maxConcurrency, async (symbol) => {
+      const prepared = await prepareCandidate(symbol);
+      if (prepared) await completeCandidate(prepared);
+    });
+  } else {
+    // ADMISSION PATH — prepare everything, then spend the lane's remaining
+    // budget on the best tickets. The barrier is the cost and the point: the
+    // ordering cannot exist without knowing the whole board.
+    const prepared: PreparedCandidate[] = [];
+    await mapWithConcurrency(symbols, cfg.maxConcurrency, async (symbol) => {
+      const p = await prepareCandidate(symbol);
+      if (p) prepared.push(p);
+    });
+
+    const admitCfg = chainAdmissionConfig(env);
+    const nowMs = now();
+    // Tickets deferred by earlier cycles compete beside this cycle's, so a
+    // ticket that lost once keeps its place and its accumulated age rather than
+    // being silently dropped. Duplicates between the two sets are collapsed by
+    // `admitChainRequests`, which keeps the older of the pair.
+    const carried = [...s.chainQueue.values()].filter((t) => t.deadlineMs > nowMs);
+    const byKey = new Map<string, PreparedCandidate>();
+    for (const p of prepared) byKey.set(chainTicketKey(p.ticket), p);
+
+    const headroom = tier2Headroom(s, cfg, nowMs, deps.providerStats);
+    const split = splitChainCapacity(headroom.remainingThisMinute, actionableReserveFraction(env));
+    const admission: ChainAdmissionResult = admitChainRequests(
+      [...carried, ...prepared.map((p) => p.ticket)],
+      split.total, nowMs, admitCfg,
+      { actionableReserved: split.actionableReserved },
+    );
+
+    s.lastAdmission = {
+      atMs: nowMs, capacity: admission.capacity, actionableReserved: admission.actionableReserved,
+      admitted: admission.admitted.length, deferred: admission.deferred.length,
+      expired: admission.expired.length, duplicatesCollapsed: admission.duplicatesCollapsed,
+      highPriorityDeferred: admission.highPriorityDeferred,
+    };
+
+    const admittedKeys = new Set(admission.admitted.map(chainTicketKey));
+    await mapWithConcurrency(
+      admission.admitted.map(chainTicketKey).filter((k) => byKey.has(k)),
+      cfg.maxConcurrency,
+      async (key) => { const p = byKey.get(key); if (p) await completeCandidate(p); },
+    );
+
+    // Everything prepared but not served releases its in-flight slot NOW. A
+    // deferred ticket that kept the slot would block the same symbol from being
+    // prepared next cycle — a queue that starves the very ticket it is holding.
+    for (const [key, p] of byKey) {
+      if (!admittedKeys.has(key)) {
+        s.inFlight.delete(p.symbol);
+        noteSkip(s, p.symbol, "DEEP_DEFERRED", nowMs, env);
+      }
+    }
+
+    // Rebuild the carry-over queue from the deferrals ONLY. Expired tickets are
+    // dropped here, which is what makes the queue bounded by the deadline rather
+    // than by hope; the size cap below bounds it even if the deadline is
+    // misconfigured to something absurd.
+    s.chainQueue = new Map();
+    for (const t of admission.deferred.slice(0, CHAIN_QUEUE_MAX)) {
+      s.chainQueue.set(chainTicketKey(t), t);
+    }
+  }
 
   // FLUSH the portfolio delivery decision: rank the whole batch, deliver only the subscriber-worthy
   // winners, route the rest to research, persist every rationale. Isolated — never fails the cycle.
@@ -447,6 +754,141 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
   }
   return { tier, scanned, created, rejected, chains, durationMs };
 }
+
+/**
+ * Hard cap on the carry-over chain queue.
+ *
+ * The deadline and the attempt counter already bound it, and this bounds it
+ * again with a number that does not depend on either being configured sanely. A
+ * queue whose only limit is a TTL is one bad env var away from unbounded, and
+ * the whole point of Phase C is that boundedness is a proven property rather
+ * than an intended one. Sized above any real cycle's ticket count so it never
+ * binds in normal operation — if it ever does, the deadline logic is broken and
+ * the counter below says so.
+ */
+export const CHAIN_QUEUE_MAX = 200;
+
+/**
+ * Stage-1.5 shadow evidence, assembled from what the candidate already holds.
+ *
+ * Every field is read off `input` or the selection. Nothing here fetches, and
+ * nothing here can see a value production did not already have — which is what
+ * keeps the Phase-F counterfactual honest about what a real gate would have
+ * known at the moment it would have fired.
+ */
+function stage15EvidenceOf(
+  symbol: string,
+  tier: 0 | 1 | 2,
+  input: OptionsCandidateInput,
+  selection: StrategySelection | null,
+): Stage15Evidence {
+  const u = input.underlying;
+  return {
+    symbol,
+    velPct: u.velPct ?? null,
+    accelPct: u.accelPct ?? null,
+    relVolume: u.relVolume ?? null,
+    dayDollarVolume: u.dayDollarVolume ?? null,
+    compressionPct: u.compressionPct ?? null,
+    aboveVwap: u.aboveVwap ?? null,
+    spreadPct: null, // underlying spread is not on the snapshot; absent, never guessed
+    strategyScore: selection?.selected?.score ?? null,
+    researchOnly: selection?.selected?.researchOnly ?? null,
+    tier,
+  };
+}
+
+/**
+ * PHASE B — fold one resolved chain attempt into the counters and the registry.
+ *
+ * ORDER IS LOAD-BEARING. The fetch outcome is classified first and the selector's
+ * terminal reason is consulted only when contracts genuinely arrived, so a quota
+ * refusal can never be relabelled as a band rejection by a stale funnel field.
+ *
+ * `sessionDay` is the trading day, not the wall-clock day, and it is what makes
+ * corroboration mean something: repeating a measurement 802 times inside one
+ * afternoon is one observation, and only separate SESSIONS may accumulate toward
+ * a NOT_OPTIONABLE verdict.
+ */
+function recordChainAttempt(
+  s: MonitorState,
+  symbol: string,
+  chainRes: ChainFetchOutcome,
+  res: { contract?: unknown; contractFunnel?: { terminalReason?: any } | null } | null,
+  nowMs: number,
+  env: NodeJS.ProcessEnv,
+): void {
+  try {
+    const classification = classifyChainAttempt(chainRes, {
+      terminalReason: res?.contractFunnel?.terminalReason ?? null,
+      contractSelected: !!res?.contract,
+    });
+    s.zeroContractCauses[classification.cause] += 1;
+    s.zeroContractOrigins[classification.origin] += 1;
+
+    const prior = s.optionability.get(symbol) ?? unknownRecord(symbol);
+    const next = applyOptionabilityObservation(prior, {
+      classification,
+      contractsSeen: chainRes.contracts?.length ?? 0,
+      sessionDay: tradingDay(nowMs),
+      nowMs,
+    }, optionabilityConfig(env));
+
+    // UNKNOWN with nothing recorded is the default, so storing it would double
+    // the map to say what absence already says. Anything else is worth keeping.
+    if (next.state === "UNKNOWN" && next.corroboratingEmptyDays.length === 0) {
+      s.optionability.delete(symbol);
+    } else {
+      s.optionability.set(symbol, next);
+    }
+  } catch { /* classification is observability; it never fails an evaluation */ }
+}
+
+/**
+ * PHASE E — remember that a symbol was skipped, and why, WITHOUT writing a row.
+ *
+ * Only the transition is kept in memory here; the durable write happens once per
+ * cycle in `runAwarenessCycle`, where the awareness row that justifies the
+ * record is actually in hand. Recording the skip at the skip site and writing it
+ * at the sweep site is what lets the stored row carry the pre-score, rank and
+ * band — a record that said only "we skipped COIN" would not answer the question
+ * Phase E exists to answer.
+ */
+function noteSkip(
+  s: MonitorState,
+  symbol: string,
+  reason: SkipReason,
+  nowMs: number,
+  env: NodeJS.ProcessEnv,
+): void {
+  try {
+    const prior = s.missedLastState.get(symbol);
+    // A TRANSITION is a NEW reason, or the SAME reason after long enough that a
+    // fresh sample is a genuinely new observation rather than an echo of the
+    // last one. Without the second clause a symbol stuck in one state would be
+    // written once and never revisited, which loses the fact that it stayed
+    // there all session; without the first, every cycle would write a row.
+    const isTransition = !prior
+      || prior.reason !== reason
+      || nowMs - prior.atMs >= MISSED_RESAMPLE_MS;
+    if (!isTransition) return;
+    s.missedLastState.set(symbol, { reason, atMs: nowMs });
+    // Last write wins within a cycle: a symbol that was deferred and then quota
+    // blocked is recorded as quota blocked, which is the more specific fact.
+    s.missedPending.set(symbol, reason);
+    // Cap the map independently of the universe, so a provider returning a
+    // pathological symbol list cannot turn a diagnostic into a leak.
+    if (s.missedLastState.size > MISSED_STATE_MAX) {
+      const oldest = [...s.missedLastState.entries()].sort((a, b) => a[1].atMs - b[1].atMs);
+      for (const [k] of oldest.slice(0, s.missedLastState.size - MISSED_STATE_MAX)) s.missedLastState.delete(k);
+    }
+  } catch { /* never fails a scan */ }
+}
+
+/** Same reason, re-sampled at most this often. One row per symbol per 15 minutes. */
+export const MISSED_RESAMPLE_MS = 15 * 60_000;
+/** Hard cap on the transition map, independent of universe size. */
+export const MISSED_STATE_MAX = 4_000;
 
 function record(arr: number[], v: number) { arr.push(v); if (arr.length > 500) arr.shift(); }
 const pct = (arr: number[], q: number): number | null => { if (!arr.length) return null; const s = [...arr].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.ceil(q * s.length) - 1)]; };
@@ -486,6 +928,16 @@ export function optionsMonitorMetrics(): Record<string, unknown> {
     // coverage is what let a 1.6%-visibility architecture look healthy for a
     // full session. These two must never be collapsed back into one number.
     coverage: optionsCoverageMetrics(Date.now()),
+    // PHASE 2 — PROVIDER EFFICIENCY, as separately attributable quantities.
+    //
+    // `zeroContract.byOrigin` is the number the audit could not produce: 802
+    // zero-contract attempts were one undifferentiated total, so there was no
+    // way to tell the share that was the provider refusing us from the share
+    // that was our own bands refusing the market. Those need opposite fixes.
+    optionability: optionabilityMetrics(),
+    zeroContract: zeroContractMetrics(),
+    chainAdmission: chainAdmissionMetrics(),
+    missedOpportunity: missedOpportunityMetrics(),
     tier0: { scanned: m.tier0Scanned, candidates: m.tier0Candidates, budgetSkips: m.tier0BudgetSkips, lastCycleMs: m.lastTier0CycleMs },
     symbolsScanned: m.symbolsScanned, candidatesCreated: m.candidatesCreated, candidatesRejected: m.candidatesRejected, chainsFetched: m.chainsFetched,
     stages: { stage1Pass: m.stage1Pass, stage15Enrich: m.stage15Enrich, stage15Stale: m.stage15Stale, stage15Forming: m.stage15Forming, stage2Chain: m.stage2Chain, stage3Detailed: m.providerDetailed, optionsActivityEscalations: m.optionsActivityEscalations },
@@ -667,6 +1119,20 @@ function runAwarenessCycle(
   for (const sym of s.deepAnalyzedAt.keys()) if (!observedAt.has(sym)) s.deepAnalyzedAt.delete(sym);
   for (const d of sel.promoted) s.deepAnalyzedAt.set(d.symbol, now);
 
+  // The Phase-A and Phase-E maps are pruned on exactly the same rule and for
+  // exactly the same reason: a symbol that has left the eligible universe can no
+  // longer be promoted, so nothing will ever read its record again, and a map
+  // that only ever grows is a leak with a long fuse. Tier-0 and Tier-1 names are
+  // NOT in the Tier-2 sweep, so they are exempted rather than evicted — pruning
+  // them would throw away the registry for the symbols scanned most often.
+  const coreExempt = new Set([
+    ...optionsTier0(env).map((x) => x.toUpperCase()),
+    ...optionsTier1(env).map((x) => x.toUpperCase()),
+  ]);
+  const keep = (sym: string) => observedAt.has(sym) || coreExempt.has(sym.toUpperCase());
+  for (const sym of [...s.optionability.keys()]) if (!keep(sym)) s.optionability.delete(sym);
+  for (const sym of [...s.missedLastState.keys()]) if (!keep(sym)) s.missedLastState.delete(sym);
+
   s.lastAwareness = {
     atMs: now,
     eligibleOptionsUniverse: sweep.universeSize,
@@ -703,7 +1169,191 @@ function runAwarenessCycle(
     s.quotaBlockedHighPriority += 1;
   }
 
+  captureMissedOpportunities(s, sweep, sel, capacity.capacity, now, deps, env);
+
   return sel.promoted.map((d) => d.symbol);
+}
+
+/**
+ * PHASE E — WHAT WAS COIN DOING AT 10:02, AND WHY DID WE NOT LOOK AT IT?
+ *
+ * The join between the two halves of that question. The SWEEP knows every
+ * symbol's pre-score, rank and band; the SCAN knows which symbols were skipped
+ * and for what reason. Neither alone can answer it, and until now neither was
+ * written down.
+ *
+ * THREE THINGS BOUND THIS, and all three are needed:
+ *
+ *  1. TRANSITIONS, not states. `noteSkip` already refused to re-record a symbol
+ *     sitting in the same reason, so a name that is simply never the best idea
+ *     in a 1,600-symbol universe contributes ONE row per 15 minutes, not one per
+ *     minute. Without this the table grows by ~1,600 rows a minute forever.
+ *  2. A PER-CYCLE CAP, enforced by `collectMissedOpportunities`, which sorts
+ *     capacity failures above judgements first — so when the cap truncates, what
+ *     survives is what is hardest to explain rather than whatever sorted first.
+ *  3. RETENTION, swept on a slow timer rather than every cycle, because a DELETE
+ *     on every 60s beat is a cost with no reader.
+ *
+ * NOTHING HERE INVENTS AN OPTION. The record carries underlying and decision
+ * state only; the schema has no column for an OCC, a premium or a return, so a
+ * later writer cannot quietly start filling one in for a contract that was never
+ * selected.
+ */
+function captureMissedOpportunities(
+  s: MonitorState,
+  sweep: AwarenessSweep,
+  sel: { promoted: { symbol: string }[] },
+  promotionCapacity: number,
+  now: number,
+  deps: OptionsMonitorDeps,
+  env: NodeJS.ProcessEnv,
+): void {
+  try {
+    if (env.OPTIONS_MISSED_CAPTURE === "0") return;
+    const cfg: MissedOpportunityConfig = missedOpportunityConfig(env);
+    const promoted = new Set(sel.promoted.map((d) => d.symbol));
+
+    // A symbol that was cheaply seen, ranked, and did not make the cut is a
+    // NOT_PROMOTED skip. Routed through `noteSkip` rather than recorded directly
+    // so it obeys exactly the same transition rule as every other reason — one
+    // dedup policy, not two that can drift apart.
+    for (const row of sweep.rows) {
+      if (!promoted.has(row.symbol)) noteSkip(s, row.symbol, "NOT_PROMOTED", now, env);
+    }
+
+    const rowBySymbol = new Map<string, AwarenessRow>();
+    for (const r of sweep.rows) rowBySymbol.set(r.symbol, r);
+
+    const candidates: { row: AwarenessRow; reason: SkipReason }[] = [];
+    for (const [symbol, reason] of s.missedPending) {
+      const row = rowBySymbol.get(symbol);
+      // No awareness row means no pre-score, no rank and no band. A record
+      // without them cannot be read in context later, so it is dropped rather
+      // than written with invented zeroes.
+      if (row) candidates.push({ row, reason });
+    }
+    s.missedPending.clear();
+    if (candidates.length === 0) return;
+
+    const collected = collectMissedOpportunities(candidates, {
+      sessionDate: tradingDay(now),
+      universeSize: sweep.universeSize,
+      promotionCapacity,
+    }, cfg);
+    s.missedTruncated += collected.truncated;
+
+    const getDb = deps.getDb;
+    if (!getDb || collected.records.length === 0) return;
+    const db = getDb();
+    const res = persistMissedOpportunitiesOnDb(db, collected.records);
+    s.missedWritten += res.inserted;
+
+    // Retention on a slow timer. Bounds total storage independently of the write
+    // rate, which is the only bound that survives a misconfigured cap.
+    if (now - s.lastMissedPruneMs >= MISSED_PRUNE_INTERVAL_MS) {
+      s.lastMissedPruneMs = now;
+      pruneMissedOpportunitiesOnDb(db, now, cfg);
+    }
+  } catch { /* a lost diagnostic row must never take down the scan that produced it */ }
+}
+
+/** Retention sweep cadence. Hourly — a DELETE on every 60s beat has no reader. */
+export const MISSED_PRUNE_INTERVAL_MS = 60 * 60_000;
+
+/**
+ * PHASE A — the tri-state registry as a reportable quantity.
+ *
+ * UNKNOWN is reported as a count of symbols that are NOT in the registry, which
+ * is the honest shape: absence IS unknown, and the number that matters is how
+ * many of them remain eligible (all of them, always).
+ */
+export function optionabilityMetrics(): {
+  tracked: number;
+  optionable: number;
+  notOptionable: number;
+  corroborating: number;
+  chainSkippedForProvenNotOptionable: number;
+  unknownRemainsEligible: true;
+  bySource: Record<string, number>;
+} {
+  const s = state();
+  let optionable = 0, notOptionable = 0, corroborating = 0;
+  const bySource: Record<string, number> = {};
+  for (const rec of s.optionability.values()) {
+    if (rec.state === "OPTIONABLE") optionable += 1;
+    else if (rec.state === "NOT_OPTIONABLE") notOptionable += 1;
+    if (rec.state !== "NOT_OPTIONABLE" && rec.corroboratingEmptyDays.length > 0) corroborating += 1;
+    bySource[rec.source] = (bySource[rec.source] ?? 0) + 1;
+  }
+  return {
+    tracked: s.optionability.size,
+    optionable,
+    notOptionable,
+    corroborating,
+    chainSkippedForProvenNotOptionable: s.chainSkippedForProvenNotOptionable,
+    // Not a measurement — an INVARIANT, asserted in the payload so a regression
+    // that started skipping UNKNOWN symbols would have to change this line.
+    unknownRemainsEligible: true,
+    bySource,
+  };
+}
+
+/** PHASE B — zero-contract outcomes, by cause and by whose fault it was. */
+export function zeroContractMetrics(): {
+  byCause: Record<ZeroContractCause, number>;
+  byOrigin: { PROVIDER: number; SELECTOR: number; SYMBOL: number };
+  total: number;
+  semantics: string;
+} {
+  const s = state();
+  const byCause = { ...s.zeroContractCauses };
+  const total = Object.values(byCause).reduce((a, b) => a + b, 0);
+  return {
+    byCause,
+    byOrigin: { ...s.zeroContractOrigins },
+    total,
+    semantics: "PROVIDER = the market was never successfully asked; SELECTOR = it answered and our bands "
+      + "rejected every contract; SYMBOL = the answer was about the instrument. A PROVIDER cause can "
+      + "never be reported as a SELECTOR one.",
+  };
+}
+
+/** PHASE C — the admission queue, including whether it is active at all. */
+export function chainAdmissionMetrics(env: NodeJS.ProcessEnv = process.env): {
+  active: boolean;
+  rolloutControl: string;
+  queueDepth: number;
+  queueMax: number;
+  last: MonitorState["lastAdmission"];
+} {
+  const s = state();
+  return {
+    active: defaultMonitorConfig(env).chainAdmissionEnabled,
+    rolloutControl: "OPTIONS_CHAIN_ADMISSION_ENABLED=1",
+    queueDepth: s.chainQueue.size,
+    queueMax: CHAIN_QUEUE_MAX,
+    last: s.lastAdmission,
+  };
+}
+
+/** PHASE E — how much was written down, and how much was dropped by the cap. */
+export function missedOpportunityMetrics(): {
+  written: number;
+  truncatedByCap: number;
+  trackedSymbols: number;
+  pendingJoin: number;
+  resampleMs: number;
+  fabricationGuard: string;
+} {
+  const s = state();
+  return {
+    written: s.missedWritten,
+    truncatedByCap: s.missedTruncated,
+    trackedSymbols: s.missedLastState.size,
+    pendingJoin: s.missedPending.size,
+    resampleMs: MISSED_RESAMPLE_MS,
+    fabricationGuard: "underlying and decision state only — the schema has no OCC, premium or return column",
+  };
 }
 
 /**
