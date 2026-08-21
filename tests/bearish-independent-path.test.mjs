@@ -156,11 +156,11 @@ test("qualified NVDA $200 PUT becomes READY in shadow mode and SEND only with su
   assert.equal(ready.maySubscriberSend, false);
   const ownerMessage = formatBearishOwnerReview(base, ready);
   // Owner review is not a subscriber send, and the message has to say so.
-  assert.match(ownerMessage, /🔬 NVDA PUT · OWNER WATCH · OWNER_ONLY · NOT SUBSCRIBER-APPROVED/);
-  assert.match(ownerMessage, /Paper: NOT yet mirrored/);
-  assert.match(ownerMessage, /NVDA 07\/27 \$200 Put/);
-  assert.match(ownerMessage, /Entry: \$0\.49–\$0\.50/);
-  assert.match(ownerMessage, /Why: NVDA broke support, stayed below VWAP, and bearish momentum increased\./);
+  assert.match(ownerMessage, /🔬 NVDA PUT · PRIVATE RESEARCH/);
+  assert.match(ownerMessage, /Research-only · not subscriber approved\./);
+  assert.match(ownerMessage, /NVDA 07\/27 \$200P/);
+  assert.match(ownerMessage, /Observed: \$0\.49–\$0\.50/);
+  assert.match(ownerMessage, /Momentum breakdown/, "the setup is still named");
   assert.doesNotMatch(ownerMessage, /PAPER\/BETA|Confidence|Spread|Delta|Passed|blocker|pipeline/i);
 
   const send = evaluateBearishAuthority(base, { BEARISH_PIPELINE_ENABLED: "1", BEARISH_SUBSCRIBER_DELIVERY_ENABLED: "1" });
@@ -243,20 +243,18 @@ test("subscriber PUT message uses the compact trader-facing copy", async () => {
   // BEARISH_SUBSCRIBER_DELIVERY_ENABLED alone does not make a strategy subscriber-
   // grade: with no readiness row the strategy is RESEARCH_ONLY, so the opening is
   // labelled rather than rendered as an approved trade.
-  assert.match(content, /🔬 NVDA PUT · OWNER VALIDATION — PAPER TRACKED/);
-  assert.match(content, /Lane: OWNER_ONLY · Readiness: /);
-  assert.match(content, /Readiness: RESEARCH_ONLY/);
-  assert.match(content, /NVDA 07\/27 \$200 Put/);
-  assert.match(content, /Entry: \$0\.49–\$0\.50/);
-  assert.match(content, /Why: NVDA broke support and bearish momentum increased\./);
+  assert.match(content, /🔬 NVDA PUT · PRIVATE RESEARCH/);
+  assert.match(content, /Research-only · not subscriber approved\./);
+  assert.match(content, /NVDA 07\/27 \$200P/);
+  assert.match(content, /Observed: \$0\.49–\$0\.50/);
+  assert.match(content, /Momentum breakdown/);
   assert.match(content, /Educational purposes only\. Options are high risk\./);
-  // An owner opening now carries its whole trade plan, and says which entry convention
-  // each price belongs to. Target 2 is present but explicitly reference-only: production
-  // exits the entire position at Target 1, so a live second target would be a fiction.
-  assert.match(content, /Entry shown: live bid\/ask at callout · frozen entry \$0\.49 \(midpoint\)/);
-  assert.match(content, /Target 1: \$0\.65 — FULL EXIT\. The position closes here\./);
-  assert.match(content, /Stop: \$0\.35/);
-  assert.match(content, /Target 2: \$0\.85 — REFERENCE ONLY\./);
+  // OWNER DECISION 2026-08-21: the owner opening no longer prints the trade plan.
+  // The plan is UNCHANGED behind it — still computed, still graded, still what
+  // paper and the exit path consume; it is simply not in this message.
+  assert.doesNotMatch(content, /Entry shown|frozen entry/);
+  assert.doesNotMatch(content, /Target 1|Target 2|Stop:/);
+  assert.doesNotMatch(content, /Lane:|Readiness:/);
   assert.doesNotMatch(content, /View details|\/alerts|\/intelligence|https?:\/\//);
   // Still no internal telemetry or gate language in trader-facing copy.
   assert.doesNotMatch(content, /Confidence|Spread|Volume|OI:|Delta|Freshness|Passed|blocker|pipeline|Risk:/i);

@@ -38,18 +38,18 @@ test("2/9. READY + valid call + flags on → ONE message; SENT only after succes
   assert.equal(spy.calls.length, 1);
   // No readiness row ⇒ RESEARCH_ONLY, so the opening must declare itself rather than
   // render as a subscriber-ready trade.
-  assert.match(spy.calls[0].content, /🔬 HOOD CALL · OWNER VALIDATION — PAPER TRACKED/);
-  assert.match(spy.calls[0].content, /Lane: OWNER_ONLY · Readiness: /);
-  assert.match(spy.calls[0].content, /Readiness: RESEARCH_ONLY/);
-  assert.match(spy.calls[0].content, /HOOD 03\/20 \$101 Call/);
-  assert.match(spy.calls[0].content, /Entry: \$1\.20–\$1\.30/);
-  assert.match(spy.calls[0].content, /Why: HOOD pressed against resistance as momentum increased\./);
+  assert.match(spy.calls[0].content, /🔬 HOOD CALL · PRIVATE RESEARCH/);
+  assert.match(spy.calls[0].content, /Research-only · not subscriber approved\./);
+  assert.match(spy.calls[0].content, /HOOD 03\/20 \$101C/);
+  assert.match(spy.calls[0].content, /Observed: \$1\.20–\$1\.30/);
+  assert.match(spy.calls[0].content, /Breakout forming/, "the setup is still named");
   assert.doesNotMatch(spy.calls[0].content, /View details|\/alerts|\/intelligence|https?:\/\//);
-  // An OWNER validation opening names its exact OCC on purpose -- the owner is forward-testing a
-  // specific contract and must be able to confirm the mirror froze that same one. The prohibition
-  // on internal jargon still holds for everything else.
   assert.doesNotMatch(spy.calls[0].content, /PAPER\/BETA|TRADE NOW|Confidence|Spread|DTE/);
-  assert.match(spy.calls[0].content, /Contract: O:HOOD260320C00101000/);
+  // OWNER DECISION 2026-08-21: the raw OCC, lane and readiness left the message.
+  // The alert row below still records the exact contract, so the owner can still
+  // confirm the mirror froze the same one — from the dashboard, not from Discord.
+  assert.doesNotMatch(spy.calls[0].content, /O:HOOD260320C00101000/);
+  assert.doesNotMatch(spy.calls[0].content, /Lane:|Readiness:/);
   const row = d.prepare("SELECT state, sent_at_ms, discord_status, paper_linked FROM options_alerts").get();
   assert.equal(row.state, "SENT"); assert.ok(row.sent_at_ms > 0); assert.equal(row.discord_status, 204);
 });

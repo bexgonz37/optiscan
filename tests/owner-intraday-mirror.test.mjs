@@ -114,18 +114,17 @@ test("formatIntradayActionable uses compact trader-facing copy", () => {
   const msg = formatIntradayActionable(payload);
   // The owner mirror is an OWNER_ONLY lane, so it says so instead of rendering as a
   // subscriber-ready trade.
-  assert.match(msg, /🔬 SPY CALL · OWNER WATCH · OWNER_ONLY · NOT SUBSCRIBER-APPROVED/);
-  assert.match(msg, /SPY 07\/27 \$635 Call/);
-  assert.match(msg, /Entry: \$1\.20–\$1\.30/);
-  assert.match(msg, /Why:/);
-  assert.match(msg, /not a subscriber recommendation/);
+  assert.match(msg, /🔬 SPY CALL · PRIVATE RESEARCH/);
+  assert.match(msg, /SPY 07\/27 \$635C/);
+  assert.match(msg, /Observed: \$1\.20–\$1\.30/);
+  assert.match(msg, /Opening-range breakout/, "the setup is still named");
+  assert.match(msg, /Research-only · not subscriber approved\./);
   assert.match(msg, /Educational purposes only\. Options are high risk\./);
   assert.match(msg, /View details: \/intelligence\/oc_demo/);
-  // The owner opening carries its trade plan and names the convention each price uses.
-  assert.match(msg, /Entry shown: live bid\/ask at callout · frozen entry \$1\.25 \(midpoint\)/);
-  assert.match(msg, /Target 1: \$1\.66 — FULL EXIT\./);
-  assert.match(msg, /Stop: \$0\.89/);
-  assert.match(msg, /Target 2: \$2\.10 — REFERENCE ONLY\./);
+  // OWNER DECISION 2026-08-21: the trade plan no longer prints in the owner
+  // opening. It is unchanged behind the message — see owner-opening-label.test.mjs.
+  assert.doesNotMatch(msg, /Entry shown|frozen entry/);
+  assert.doesNotMatch(msg, /Target 1|Target 2|Stop:/);
   // No raw telemetry FIELD labels. "live bid/ask at callout" is prose naming the
   // convention, which is the opposite of dumping a Bid/Ask readout into the message.
   assert.doesNotMatch(msg, /Bid\/Ask:|Trigger confirmed|Confidence|Spread|pipeline/i);

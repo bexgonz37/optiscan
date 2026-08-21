@@ -1,6 +1,8 @@
 /**
  * Discord copy for options callouts. Pure formatting only.
  */
+import { getStrategy } from "./strategy-catalog.ts";
+
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
 /** Frozen decision-time entry: round((bid + ask) / 2, 2). */
@@ -259,6 +261,22 @@ function contractPlanLines(i: PrivateLiveAlertInput): string[] {
   return out;
 }
 
+/**
+ * The setup name, in words, for the owner opening.
+ *
+ * Reads the strategy catalog rather than carrying a second naming scheme — two
+ * label sets for the same strategies is how they drift apart. An unrecognised
+ * key degrades to a readable form of the key itself rather than to "unknown",
+ * because a name the owner can act on beats a placeholder.
+ */
+export function strategyLabelOf(strategyKey: string | null | undefined): string {
+  const key = String(strategyKey ?? "").trim();
+  if (!key) return "Research setup";
+  const known = getStrategy(key);
+  if (known?.label) return known.label;
+  return key.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+}
+
 /** Primary Alerts-channel opening message. Technical evidence remains in the dossier. */
 export function formatPrivateLiveAlert(i: PrivateLiveAlertInput): string {
   const call = i.side === "call";
@@ -280,41 +298,53 @@ export function formatPrivateLiveAlert(i: PrivateLiveAlertInput): string {
   // that strategy was RESEARCH_ONLY / INSUFFICIENT_EVIDENCE, with nothing in the
   // message to say so.
   const subscriberGrade = openingIsSubscriberGrade(i.lane, i.readinessState);
-  const laneLabel = i.lane ?? "OWNER_ONLY";
-  // Owner openings are live forward-validation, not silence and not a subscriber call. They say
-  // so, and they state that the exact contract below is the one being paper tracked.
-  const paperTracked = i.paperTradeId != null && i.paperTradeId > 0;
-  const heading = subscriberGrade
-    ? `${call ? "🟢" : "🔴"} ${sym} ${call ? "CALL" : "PUT"} ALERT`
-    : paperTracked
-      ? `🔬 ${sym} ${call ? "CALL" : "PUT"} · OWNER VALIDATION — PAPER TRACKED`
-      : `🔬 ${sym} ${call ? "CALL" : "PUT"} · OWNER WATCH · ${laneLabel} · NOT SUBSCRIBER-APPROVED`;
+
+  // OWNER OPENINGS ARE DELIBERATELY MINIMAL (owner decision, 2026-08-21).
+  //
+  // The owner-private opening had accreted every internal field the pipeline
+  // knew: lane, readiness, strategy@version, rank, evidence strength, case id,
+  // raw OCC, a two-target plan, a stop, and a mirror-state line that existed to
+  // describe a transient. It is read by one person who has the dashboard open,
+  // and none of it survived contact with actually being read.
+  //
+  // WHAT IS DELIBERATELY KEPT: the research-only disclaimer. An owner opening
+  // must never be mistakable for a subscriber-approved call — that was the
+  // defect behind the unlabelled "🟢 SPY CALL ALERT" on 2026-08-06, and
+  // shortening the message must not reintroduce it.
+  //
+  // PRESENTATION ONLY. Targets, stops, T2, the frozen entry denominator,
+  // grading, paper mirroring and every backend decision are UNCHANGED and still
+  // computed exactly as before — they simply are not printed here. The
+  // subscriber-grade branch below is untouched.
+  if (!subscriberGrade) {
+    const ownerLines = [
+      `🔬 ${sym} ${call ? "CALL" : "PUT"} · PRIVATE RESEARCH`,
+      "",
+      `${sym} ${mmdd(i.expiration)} $${strikeStr(i.strike)}${call ? "C" : "P"}`,
+      `Observed: ${entryZone}`,
+      "",
+      strategyLabelOf(i.strategyKey),
+      "",
+      "Research-only · not subscriber approved.",
+      "",
+      "Educational purposes only. Options are high risk.",
+    ];
+    if (i.includeInternalLink === true && i.detailUrl) {
+      ownerLines.push("", `View details: ${i.detailUrl}`);
+    }
+    return ownerLines.join("\n");
+  }
+
   const lines = [
-    heading,
+    `${call ? "🟢" : "🔴"} ${sym} ${call ? "CALL" : "PUT"} ALERT`,
     "",
     `${sym} ${mmdd(i.expiration)} $${strikeStr(i.strike)} ${call ? "Call" : "Put"}`,
     `Entry: ${entryZone}`,
     "",
     `Why: ${reason}`,
     "",
+    "Educational purposes only. Options are high risk.",
   ];
-  if (!subscriberGrade) {
-    lines.push(
-      ...contractPlanLines(i),
-      `Lane: ${laneLabel} · Readiness: ${i.readinessState ?? "UNKNOWN"}`,
-      `Strategy: ${i.strategyKey ?? "unknown"}@${i.strategyVersion ?? "UNKNOWN_LEGACY_VERSION"}`,
-      ...(i.rankLabel ? [`Rank: ${i.rankLabel}${i.evidenceStrength ? ` · Evidence: ${i.evidenceStrength}` : ""}`]
-        : i.evidenceStrength ? [`Evidence: ${i.evidenceStrength}`] : []),
-      ...(i.opportunityCaseId ? [`Case: ${i.opportunityCaseId}`] : []),
-      ...(i.optionSymbol ? [`Contract: ${i.optionSymbol}`] : []),
-      paperTracked
-        ? `Paper: tracking THIS contract from $${px(i.entryMid)} · position #${i.paperTradeId}`
-        : "Paper: NOT yet mirrored — this opening is not being tracked.",
-      "Research/paper simulation — not a subscriber recommendation.",
-      "",
-    );
-  }
-  lines.push("Educational purposes only. Options are high risk.");
   if (i.includeInternalLink === true && i.detailUrl) {
     lines.push("", `View details: ${i.detailUrl}`);
   }

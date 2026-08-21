@@ -211,16 +211,18 @@ test("explicit private owner formatting may include an internal dossier link", (
 test("an opening from a non-approved strategy cannot look subscriber-ready", () => {
   const message = opening("call", { lane: "OWNER_ONLY", readinessState: "RESEARCH_ONLY", opportunityCaseId: "oc_1a50klb" });
   assert.doesNotMatch(message, /🟢 SPY CALL ALERT/);
-  assert.match(message, /NOT SUBSCRIBER-APPROVED/);
-  assert.match(message, /Lane: OWNER_ONLY · Readiness: RESEARCH_ONLY/);
-  assert.match(message, /Strategy: sr_reclaim@UNKNOWN_LEGACY_VERSION/);
-  assert.match(message, /Case: oc_1a50klb/);
-  assert.match(message, /not a subscriber recommendation/);
+  // The internal fields (lane, readiness, strategy@version, case id) were
+  // removed from the owner opening on 2026-08-21 by owner decision. The SAFETY
+  // property they were introduced to serve is unchanged and asserted above and
+  // below: a non-approved idea still cannot read as a subscriber-ready trade.
+  assert.match(message, /Research-only · not subscriber approved\./);
+  assert.match(message, /🔬 SPY CALL · PRIVATE RESEARCH/);
 });
 
 test("a DEMOTED strategy is labelled even when sent on the subscriber lane", () => {
   const message = opening("put", { lane: "SUBSCRIBER_APPROVED", readinessState: "DEMOTED" });
   assert.doesNotMatch(message, /🔴 NVDA PUT ALERT/);
-  assert.match(message, /NOT SUBSCRIBER-APPROVED/);
-  assert.match(message, /Readiness: DEMOTED/);
+  // A DEMOTED strategy is not subscriber-grade, so it takes the owner branch and
+  // is labelled research-only. The readiness value itself is no longer printed.
+  assert.match(message, /Research-only · not subscriber approved\./);
 });

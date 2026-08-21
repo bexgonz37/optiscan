@@ -208,7 +208,7 @@ test("a fully-qualified PUT blocked only by readiness still reaches the owner", 
       1,
       "a candidate that cleared every deterministic gate must still produce an owner opening",
     );
-    assert.match(ownerPosts[0], /NOT SUBSCRIBER-APPROVED/);
+    assert.match(ownerPosts[0], /Research-only · not subscriber approved./);
     assert.match(ownerPosts[0], /NVDA/);
 
     // A put that was DELIVERED to the owner is owner-validation evidence, not research.
@@ -238,7 +238,7 @@ test("a fully-qualified CALL blocked only by readiness still reaches the owner",
       1,
       "the call lane lost owner visibility to the same gate and must be restored with it",
     );
-    assert.match(ownerPosts[0], /NOT SUBSCRIBER-APPROVED/);
+    assert.match(ownerPosts[0], /Research-only · not subscriber approved./);
   } finally {
     cleanup(dir);
   }
