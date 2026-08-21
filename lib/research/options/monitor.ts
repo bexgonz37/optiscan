@@ -263,6 +263,13 @@ interface MonitorState {
    * the rollout impossible to verify.
    */
   chainAdmissionActive: boolean;
+  /**
+   * Carried tickets dropped because this cycle did not re-prepare their symbol.
+   *
+   * A persistently large number means the promoted set is churning faster than
+   * the queue can serve it, which is a capacity finding rather than a bug.
+   */
+  chainCarryDropped: number;
   lastAdmission: {
     atMs: number; capacity: number; actionableReserved: number;
     admitted: number; deferred: number; expired: number;
@@ -306,7 +313,7 @@ function state(): MonitorState {
     optionability: new Map(), chainSkippedForProvenNotOptionable: 0,
     zeroContractCauses: emptyZeroContractCounters(),
     zeroContractOrigins: { PROVIDER: 0, REQUEST: 0, SELECTOR: 0, SYMBOL: 0 },
-    chainQueue: new Map(), chainAdmissionActive: false, lastAdmission: null,
+    chainQueue: new Map(), chainAdmissionActive: false, chainCarryDropped: 0, lastAdmission: null,
     missedLastState: new Map(), missedPending: new Map(),
     missedWritten: 0, missedTruncated: 0, lastMissedPruneMs: 0,
   });
@@ -691,13 +698,31 @@ async function runOptionsMonitorCycleInner(tier: 0 | 1 | 2, symbols: string[], d
 
     const admitCfg = chainAdmissionConfig(env);
     const nowMs = now();
-    // Tickets deferred by earlier cycles compete beside this cycle's, so a
-    // ticket that lost once keeps its place and its accumulated age rather than
-    // being silently dropped. Duplicates between the two sets are collapsed by
-    // `admitChainRequests`, which keeps the older of the pair.
-    const carried = [...s.chainQueue.values()].filter((t) => t.deadlineMs > nowMs);
     const byKey = new Map<string, PreparedCandidate>();
     for (const p of prepared) byKey.set(chainTicketKey(p.ticket), p);
+
+    /**
+     * Carried tickets are re-offered ONLY where this cycle prepared the same
+     * setup again.
+     *
+     * A ticket carries two things worth keeping: its original `requestedAtMs`,
+     * which is what the aging term measures, and its attempt count, which is
+     * what eventually retires it. `admitChainRequests` merges both onto the
+     * fresh ticket when it collapses the duplicate, so nothing is lost.
+     *
+     * What it CANNOT carry is the candidate. A chain cannot be fetched for a
+     * symbol this cycle never prepared — there are no features, no strategy and
+     * no input to evaluate against. Offering such a ticket anyway lets it WIN a
+     * slot, do nothing with it, and vanish: a wasted request-slot that also
+     * defers a servable ticket. That is the queue starving the work it exists
+     * to protect, so an unservable carry is dropped and counted instead.
+     */
+    const carried: ChainTicket[] = [];
+    for (const t of s.chainQueue.values()) {
+      if (t.deadlineMs <= nowMs) continue;
+      if (byKey.has(chainTicketKey(t))) carried.push(t);
+      else s.chainCarryDropped += 1;
+    }
 
     const headroom = tier2Headroom(s, cfg, nowMs, deps.providerStats);
     const split = splitChainCapacity(headroom.remainingThisMinute, actionableReserveFraction(env));
@@ -859,7 +884,11 @@ function noteSkip(
     s.missedLastState.set(symbol, { reason, atMs: nowMs });
     // Last write wins within a cycle: a symbol that was deferred and then quota
     // blocked is recorded as quota blocked, which is the more specific fact.
-    s.missedPending.set(symbol, reason);
+    // Capped for the same reason `missedLastState` is, and INDEPENDENTLY of it:
+    // this map is drained by the awareness sweep, and a deployment that has not
+    // wired the snapshot source never runs one. A bound that only holds on the
+    // production path is not a bound.
+    if (s.missedPending.size < MISSED_STATE_MAX) s.missedPending.set(symbol, reason);
     // Cap the map independently of the universe, so a provider returning a
     // pathological symbol list cannot turn a diagnostic into a leak.
     if (s.missedLastState.size > MISSED_STATE_MAX) {
@@ -1309,6 +1338,7 @@ export function chainAdmissionMetrics(): {
   rolloutControl: string;
   queueDepth: number;
   queueMax: number;
+  carryDropped: number;
   last: MonitorState["lastAdmission"];
 } {
   const s = state();
@@ -1317,6 +1347,7 @@ export function chainAdmissionMetrics(): {
     rolloutControl: "OPTIONS_CHAIN_ADMISSION_ENABLED=1",
     queueDepth: s.chainQueue.size,
     queueMax: CHAIN_QUEUE_MAX,
+    carryDropped: s.chainCarryDropped,
     last: s.lastAdmission,
   };
 }

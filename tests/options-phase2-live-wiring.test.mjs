@@ -369,6 +369,36 @@ test("15b. with admission ON the lane still spends within its own budget", async
   assert.equal(m.chainAdmission.queueDepth <= CHAIN_QUEUE_MAX, true, "the carry-over queue is capped");
 });
 
+test("14c. a carried ticket never wins a slot it cannot use", async () => {
+  __resetOptionsMonitorForTest();
+  // A tight budget so tickets are genuinely deferred, then a cycle over a
+  // DIFFERENT symbol set so last cycle's deferrals have no candidate behind them.
+  const first = Array.from({ length: 12 }, (_, i) => `A${i}`);
+  const second = Array.from({ length: 12 }, (_, i) => `B${i}`);
+  const tight = (d) => deps(d, async () => chainOk([]),
+    { providerStats: () => ({ minuteCap: 280, callsThisMinute: 276 }) });
+
+  await runOptionsMonitorCycle(2, first, tight(db()), ADMIT);
+  const carriedIn = optionsMonitorMetrics().chainAdmission.queueDepth;
+
+  const served = [];
+  const d2 = db();
+  await runOptionsMonitorCycle(2, second, {
+    ...tight(d2),
+    getChain: async (sym) => { served.push(sym); return chainOk([]); },
+  }, ADMIT);
+
+  // Every request the second cycle spent went to a symbol it actually prepared.
+  // An A-symbol here would be a slot consumed by a ticket with no candidate
+  // behind it — wasted, and deferring a servable B in the process.
+  assert.deepEqual(served.filter((x) => x.startsWith("A")), [],
+    "a carry with no prepared candidate must never be served");
+  const m = optionsMonitorMetrics().chainAdmission;
+  if (carriedIn > 0) {
+    assert.equal(m.carryDropped > 0, true, "and the unservable carries are counted, not silently lost");
+  }
+});
+
 test("16. no duplicate callout — one cycle produces at most one candidate row per symbol", async () => {
   __resetOptionsMonitorForTest();
   const d = db();
