@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { checkApiToken, unauthorized } from "@/lib/auth";
 import { deferServerBoot } from "@/lib/server-boot";
 import { jsonFromRouteError } from "@/lib/api-response";
+import { intParam } from "@/lib/query-params";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -71,7 +72,7 @@ export async function GET(req: Request) {
       );
     }
     const horizon = url.searchParams.get("horizon") ?? undefined;
-    const limit = clampInt(url.searchParams.get("limit"), 20_000, 100, 50_000);
+    const limit = intParam(url.searchParams, "limit", 20_000, 100, 50_000);
     const episodeKey = url.searchParams.get("episode");
 
     const taxonomy = ALL_EVIDENCE_CLASSES.map((c) => evidenceClassSpec(c));
@@ -92,7 +93,7 @@ export async function GET(req: Request) {
         sampleEpisodeKeys: corpus ? corpus.members.slice(-5).map((m) => m.id) : undefined,
         evaluation: corpus
           ? evaluateAnalogRetrieval(corpus.members, {
-              maxQueries: clampInt(url.searchParams.get("maxQueries"), 200, 20, 2000),
+              maxQueries: intParam(url.searchParams, "maxQueries", 200, 20, 2000),
             })
           : null,
         latencyMs: Date.now() - started,
@@ -122,14 +123,14 @@ export async function GET(req: Request) {
       { id: member.id, symbol: member.symbol, t0Ms: member.t0Ms, vector: member.vector },
       corpus.members,
       {
-        k: clampInt(url.searchParams.get("k"), 30, 1, 200),
-        perSymbolCap: clampInt(url.searchParams.get("perSymbolCap"), 5, 1, 50),
+        k: intParam(url.searchParams, "k", 30, 1, 200),
+        perSymbolCap: intParam(url.searchParams, "perSymbolCap", 5, 1, 50),
       },
     );
     const outcomes = availableOutcomeDistributions({ retrieval, evidenceClass: clsParam });
 
     const evaluation = url.searchParams.get("evaluate") === "1"
-      ? evaluateAnalogRetrieval(corpus.members, { maxQueries: clampInt(url.searchParams.get("maxQueries"), 400, 20, 2000) })
+      ? evaluateAnalogRetrieval(corpus.members, { maxQueries: intParam(url.searchParams, "maxQueries", 400, 20, 2000) })
       : null;
 
     return NextResponse.json({
@@ -188,8 +189,3 @@ function corpusSummary(c: { corpusVersion: string; evidenceClass: string; horizo
   };
 }
 
-function clampInt(raw: string | null, fallback: number, lo: number, hi: number): number {
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.max(lo, Math.min(hi, Math.floor(n)));
-}
